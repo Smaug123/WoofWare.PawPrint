@@ -212,3 +212,82 @@ module TestManagedHeap =
             |> ManagedHeap.recordStringContents addr2 "abcdeg"
 
         ManagedHeap.stringsEqual addr1 addr2 heap |> shouldEqual false
+
+    [<Test>]
+    let ``allocateMultiDimArray: 2D zero-init has product Length and verbatim Lengths`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let state = state loggerFactory
+
+        let elementHandle = ConcreteTypeHandle.Concrete 1
+        let arrayHandle = ConcreteTypeHandle.Array (elementHandle, 2)
+        let zero = CliType.Numeric (CliNumericType.Int32 0)
+        let lengths = ImmutableArray.CreateRange [ 3 ; 4 ]
+
+        let addr, state =
+            IlMachineState.allocateMultiDimArray arrayHandle (fun () -> zero) lengths state
+
+        let array = state.ManagedHeap.Arrays.[addr]
+        array.ConcreteType |> shouldEqual arrayHandle
+        array.Length |> shouldEqual 12
+        array.Lengths |> shouldEqual lengths
+        array.Elements.Length |> shouldEqual 12
+
+        for i = 0 to 11 do
+            array.Elements.[i] |> shouldEqual zero
+
+    [<Test>]
+    let ``allocateMultiDimArray: zero dimension yields empty backing store`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let state = state loggerFactory
+
+        let elementHandle = ConcreteTypeHandle.Concrete 1
+        let arrayHandle = ConcreteTypeHandle.Array (elementHandle, 3)
+        let zero = CliType.Numeric (CliNumericType.Int32 0)
+        let lengths = ImmutableArray.CreateRange [ 5 ; 0 ; 7 ]
+
+        let addr, state =
+            IlMachineState.allocateMultiDimArray arrayHandle (fun () -> zero) lengths state
+
+        let array = state.ManagedHeap.Arrays.[addr]
+        array.Length |> shouldEqual 0
+        array.Lengths |> shouldEqual lengths
+        array.Elements.Length |> shouldEqual 0
+
+    [<Test>]
+    let ``allocateMultiDimArray: rank-4 product overflow is detected before wrapping`` () : unit =
+        // 65536^4 = 2^64, which overflows Int32 *and* Int64; in particular, doing the
+        // multiplication in Int64 would still wrap to 0 here. The divide-before-multiply
+        // guard must fire *before* the running product is multiplied past Int32.MaxValue.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let state = state loggerFactory
+
+        let elementHandle = ConcreteTypeHandle.Concrete 1
+        let arrayHandle = ConcreteTypeHandle.Array (elementHandle, 4)
+        let zero = CliType.Numeric (CliNumericType.Int32 0)
+        let lengths = ImmutableArray.CreateRange [ 65536 ; 65536 ; 65536 ; 65536 ]
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () ->
+                IlMachineState.allocateMultiDimArray arrayHandle (fun () -> zero) lengths state
+                |> ignore
+            )
+
+        exn.Message |> shouldContainText "exceeds Int32.MaxValue"
+
+    [<Test>]
+    let ``allocateMultiDimArray: negative length is rejected`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let state = state loggerFactory
+
+        let elementHandle = ConcreteTypeHandle.Concrete 1
+        let arrayHandle = ConcreteTypeHandle.Array (elementHandle, 2)
+        let zero = CliType.Numeric (CliNumericType.Int32 0)
+        let lengths = ImmutableArray.CreateRange [ 3 ; -1 ]
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () ->
+                IlMachineState.allocateMultiDimArray arrayHandle (fun () -> zero) lengths state
+                |> ignore
+            )
+
+        exn.Message |> shouldContainText "negative length"

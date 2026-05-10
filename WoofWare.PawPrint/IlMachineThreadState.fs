@@ -366,10 +366,12 @@ module IlMachineThreadState =
             failwith
                 "TODO: cannot allocate multi-dim array with rank 0; this should have been ruled out at the dispatch site"
 
-        // Compute the total length in int64 to detect Int32 overflow loudly rather than
-        // silently wrapping into a too-small backing store. The runtime raises
-        // OverflowException in this case; we currently fail fast.
-        let mutable totalLength64 = 1L
+        // Detect Int32 overflow on the running product *before* multiplying, so we never
+        // silently wrap (which would yield a too-small backing store). The runtime raises
+        // OverflowException for these cases; we currently fail fast.  Once `totalLength`
+        // reaches 0 (some dimension was zero), the array is empty and no further dimension
+        // can grow it, so we short-circuit.
+        let mutable totalLength = 1
 
         for i = 0 to dimensionLengths.Length - 1 do
             let d = dimensionLengths.[i]
@@ -378,13 +380,13 @@ module IlMachineThreadState =
                 failwith
                     $"TODO: multi-dim array constructor was given a negative length %d{d} at dimension %d{i}; should raise OverflowException"
 
-            totalLength64 <- totalLength64 * int64 d
-
-        if totalLength64 > int64 System.Int32.MaxValue then
-            failwith
-                $"TODO: multi-dim array total length %d{totalLength64} exceeds Int32.MaxValue; should raise OverflowException"
-
-        let totalLength = int totalLength64
+            if d = 0 || totalLength = 0 then
+                totalLength <- 0
+            elif totalLength > System.Int32.MaxValue / d then
+                failwith
+                    $"TODO: multi-dim array total length exceeds Int32.MaxValue at dimension %d{i}; should raise OverflowException"
+            else
+                totalLength <- totalLength * d
 
         let initialisation =
             (fun _ -> zeroOfType ()) |> Seq.init totalLength |> ImmutableArray.CreateRange
