@@ -978,19 +978,25 @@ module internal MethodTableProjection =
             match field.Name with
             | "ExposedClassObjectRaw" ->
                 match methodTableFor with
-                | RuntimeTypeHandleTarget.Closed handle ->
+                | RuntimeTypeHandleTarget.Closed _
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
+                    // Both Closed instantiations and open generic type definitions
+                    // have a real MethodTable in CoreCLR, so this auxiliary cell is
+                    // well-defined. Pre-allocate the canonical RuntimeType so the
+                    // read through the byref is a pure registry lookup.
                     let _addr, state =
-                        IlMachineRuntimeMetadata.getOrAllocateType
-                            loggerFactory
-                            baseClassTypes
-                            (RuntimeTypeHandleTarget.Closed handle)
-                            state
+                        IlMachineRuntimeMetadata.getOrAllocateType loggerFactory baseClassTypes methodTableFor state
 
                     let ptr =
-                        ManagedPointerSource.Byref (ByrefRoot.MethodTableExposedClassObject handle, [])
+                        ManagedPointerSource.Byref (ByrefRoot.MethodTableExposedClassObject methodTableFor, [])
 
                     Some (ptr, state)
-                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
                 | RuntimeTypeHandleTarget.GenericParameter _
-                | RuntimeTypeHandleTarget.MethodGenericParameter _ -> None
+                | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
+                    // Generic-parameter handles are TypeDescs in CoreCLR; the BCL
+                    // reads `h.AsTypeDesc()->ExposedClassObject` (a different field
+                    // on a different runtime structure) rather than going through
+                    // MethodTableAuxiliaryData. Returning None makes the call site
+                    // fail loudly if a future path mistakenly reaches here.
+                    None
             | _ -> None
