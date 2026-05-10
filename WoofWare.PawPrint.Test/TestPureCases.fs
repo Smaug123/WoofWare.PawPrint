@@ -37,7 +37,7 @@ module TestPureCases =
             "MakeGenericTypeNewConstraint.cs" // past MetadataImport::GetSigOfMethodDef; now blocked by unimplemented QCall ModuleHandle::ResolveMethod during ArgumentException ctor → ResourceManager init
             "ArraySortHelperDefaultInt.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle
             "EnumSemantics.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle
-            "GetDeclaringTypeNestedGeneric.cs" // QCall RuntimeTypeHandle::GetDeclaringTypeHandle now returns the open generic; blocked downstream because MethodTable::AuxiliaryData projection isn't implemented for OpenGenericTypeDefinition
+            "GetDeclaringTypeNestedGeneric.cs" // past MethodTable::AuxiliaryData projection for OpenGenericTypeDefinition; now blocked by ldflda through synthetic MethodTableAuxiliaryData::ExposedClassObjectRaw field address (same blocker as GetElementTypeBasic.cs)
             "IsAssignableToBasic.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle
             "RuntimeTypeGetInterfacesEmpty.cs" // past Span`1::get_Empty; now blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle
             "RuntimeTypeHandleGetInstantiationOpenGeneric.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringMethodForGenericParameter
