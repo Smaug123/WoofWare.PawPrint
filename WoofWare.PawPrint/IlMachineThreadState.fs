@@ -307,6 +307,7 @@ module IlMachineThreadState =
                 NextManagedThreadId = 2
                 LastPInvokeError = 0
                 LastSystemError = 0
+                NextEventPipeId = 1L
             }
 
         state.WithLoadedAssembly assyName entryAssembly
