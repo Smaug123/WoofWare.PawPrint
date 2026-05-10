@@ -43,7 +43,6 @@ module TestPureCases =
             "IsAssignableToBasic.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle
             "RuntimeTypeHandleGetInstantiationOpenGeneric.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringMethodForGenericParameter
             "InitializeArrayBoxedFieldHandle.cs" // past String::FastAllocateString(MethodTable*, nint); now blocked by unimplemented MethodTable field projection for ParentMethodTable
-            "MethodReflectionProbe.cs" // past AssemblyNative_IsApplyUpdateSupported QCall (MetadataUpdater.IsSupported now returns false during static init); now blocked by unimplemented InternalCall RuntimeMethodHandle::GetStubIfNeededInternal during MethodInfo materialisation
             "ArraySortHelperDefaultInt.cs" // past Environment_FailFast QCall (now wired up); now blocked downstream by ResourceManager hitting infinite recursion looking up 'Arg_NullReferenceException' in System.Private.CoreLib, which the BCL escalates to Environment.FailFast
         ]
         |> Set.ofList

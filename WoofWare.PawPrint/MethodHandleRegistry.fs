@@ -167,6 +167,25 @@ module MethodHandleRegistry =
 
         buildRuntimeMethodHandleInternal baseClassTypes allConcreteTypes zero
 
+    /// Build a `RuntimeMethodHandleInternal` value type whose `m_handle` field carries the given
+    /// registry id. Rejects the zero id (which is the BCL's null sentinel and must be constructed
+    /// via `zeroInternalHandle` so the resulting struct's `IsNullHandle()` check sees `IntPtr.Zero`
+    /// rather than a non-null `MethodRegistryHandle 0L`). The id is otherwise assumed live: a
+    /// non-zero id that was never allocated will yield a struct that resolves to `None` from
+    /// `resolveMethodFromId`.
+    let internalHandleFromId
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (allConcreteTypes : AllConcreteTypes)
+        (id : int64)
+        : CliValueType
+        =
+        if id = 0L then
+            failwith
+                "MethodHandleRegistry.internalHandleFromId: refusing to wrap zero id as a live RuntimeMethodHandleInternal; use zeroInternalHandle for the null sentinel"
+
+        let mHandle = CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle id)
+        buildRuntimeMethodHandleInternal baseClassTypes allConcreteTypes mHandle
+
     /// Resolve a `RuntimeMethodHandleInternal` registry id back to its underlying `MethodHandle`,
     /// or return `None` if the id is unknown (including the zero/null id).
     let resolveMethodFromId (id : int64) (reg : MethodHandleRegistry) : MethodHandle option =
