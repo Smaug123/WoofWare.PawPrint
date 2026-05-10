@@ -12,17 +12,63 @@ module internal UnaryMetadataTokenOps =
         let baseClassTypes = ctx.BaseClassTypes
         let activeAssy = ctx.ActiveAssembly
         let metadataToken = ctx.MetadataToken
+        let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
         let logger = ctx.Logger
 
-        let method, methodGenerics =
+        // Resolution mirrors `UnaryMetadataCallOps.executeCall`: in-assembly methods arrive as
+        // MethodDef (optionally wrapped in a MethodSpec for generic methods), cross-assembly
+        // methods arrive as MemberReference (optionally MethodSpec-wrapped). MemberReference
+        // resolution must thread the extracted declaring-type generics back to the concretization
+        // step, otherwise generic types defined in another assembly would lose their instantiation
+        // when projected onto the eval-stack function pointer. For the MethodSpec(MemberReference)
+        // case we additionally bypass the default re-substitution path: the spec's method-generic
+        // args are caller-relative and have already been resolved against the current frame, so
+        // we hand the concrete handles directly to the concretization step rather than letting it
+        // re-substitute them against the (target type's) generics.
+        let state, concretizedMethod, method =
             match metadataToken with
             | MetadataToken.MethodDef handle ->
                 let method =
                     activeAssy.Methods.[handle]
                     |> MethodInfo.mapTypeGenerics (fun (par, _) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
 
-                method, None
+                let state, concretized, _ =
+                    ExecutionConcretization.concretizeMethodForExecution
+                        loggerFactory
+                        baseClassTypes
+                        thread
+                        method
+                        None
+                        None
+                        state
+
+                state, concretized, method
+            | MetadataToken.MemberReference h ->
+                let state, _, method, extractedTypeArgs =
+                    IlMachineState.resolveMember
+                        loggerFactory
+                        baseClassTypes
+                        thread
+                        activeAssy
+                        ImmutableArray.Empty
+                        h
+                        state
+
+                match method with
+                | Choice2Of2 _field -> failwith "tried to Ldftn a field"
+                | Choice1Of2 method ->
+                    let state, concretized, _ =
+                        ExecutionConcretization.concretizeMethodForExecution
+                            loggerFactory
+                            baseClassTypes
+                            thread
+                            method
+                            None
+                            (Some extractedTypeArgs)
+                            state
+
+                    state, concretized, method
             | MetadataToken.MethodSpecification h ->
                 let spec = activeAssy.MethodSpecs.[h]
 
@@ -32,19 +78,65 @@ module internal UnaryMetadataTokenOps =
                         activeAssy.Methods.[token]
                         |> MethodInfo.mapTypeGenerics (fun (par, _) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
 
-                    method, Some spec.Signature
-                | k -> failwith $"Unrecognised MethodSpecification kind: %O{k}"
-            | t -> failwith $"Unexpectedly asked to Ldftn a non-method: {t}"
+                    let state, concretized, _ =
+                        ExecutionConcretization.concretizeMethodForExecution
+                            loggerFactory
+                            baseClassTypes
+                            thread
+                            method
+                            (Some spec.Signature)
+                            None
+                            state
 
-        let state, concretizedMethod, _declaringTypeHandle =
-            ExecutionConcretization.concretizeMethodForExecution
-                loggerFactory
-                baseClassTypes
-                thread
-                method
-                methodGenerics
-                None
-                state
+                    state, concretized, method
+                | MetadataToken.MemberReference ref ->
+                    // Concretize the spec's generic method args against the current frame's
+                    // generic context so `resolveMember` can pick the right overload — the
+                    // member signature may reference these method type parameters by index.
+                    let state, methodGenerics =
+                        ((state, []), spec.Signature)
+                        ||> Seq.fold (fun (state, acc) typeDefn ->
+                            let state, concreteType =
+                                IlMachineState.concretizeType
+                                    loggerFactory
+                                    baseClassTypes
+                                    state
+                                    activeAssy.Name
+                                    currentMethod.DeclaringType.Generics
+                                    currentMethod.Generics
+                                    typeDefn
+
+                            state, concreteType :: acc
+                        )
+
+                    let methodGenerics = List.rev methodGenerics |> ImmutableArray.CreateRange
+
+                    let state, _, method, extractedTypeArgs =
+                        IlMachineState.resolveMember
+                            loggerFactory
+                            baseClassTypes
+                            thread
+                            activeAssy
+                            methodGenerics
+                            ref
+                            state
+
+                    match method with
+                    | Choice2Of2 _field -> failwith "tried to Ldftn a field"
+                    | Choice1Of2 method ->
+                        let state, concretized, _ =
+                            ExecutionConcretization.concretizeMethodForExecutionWithConcreteMethodGenerics
+                                loggerFactory
+                                baseClassTypes
+                                thread
+                                method
+                                methodGenerics
+                                (Some extractedTypeArgs)
+                                state
+
+                        state, concretized, method
+                | k -> failwith $"Unrecognised MethodSpecification kind for Ldftn: %O{k}"
+            | t -> failwith $"Unexpectedly asked to Ldftn a non-method: {t}"
 
         logger.LogDebug (
             "Pushed pointer to function {LdFtnAssembly}.{LdFtnType}.{LdFtnMethodName}",

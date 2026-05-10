@@ -43,7 +43,7 @@ module TestPureCases =
             "RuntimeTypeHandleGetInstantiationOpenGeneric.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringMethodForGenericParameter
             "InitializeArrayBoxedFieldHandle.cs" // past String::FastAllocateString(MethodTable*, nint); now blocked by unimplemented MethodTable field projection for ParentMethodTable
             "MethodReflectionProbe.cs" // past AssemblyNative_IsApplyUpdateSupported QCall (MetadataUpdater.IsSupported now returns false during static init); now blocked by unimplemented InternalCall RuntimeMethodHandle::GetStubIfNeededInternal during MethodInfo materialisation
-            "ArraySortHelperDefaultInt.cs" // past Interlocked.Exchange(ref bool, bool) (covered by InterlockedExchangeBool.cs); now blocked by Ldftn against a MemberReference token (executeLdftn only handles MethodDef/MethodSpec)
+            "ArraySortHelperDefaultInt.cs" // past Ldftn against MemberReference (covered by LdftnCrossAssembly.cs); now blocked by unimplemented QCall Environment_FailFast
         ]
         |> Set.ofList
 
