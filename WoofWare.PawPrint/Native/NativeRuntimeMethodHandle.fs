@@ -2,6 +2,41 @@ namespace WoofWare.PawPrint
 
 [<RequireQualifiedAccess>]
 module NativeRuntimeMethodHandle =
+    let private resolveMethodInfoFromHandleArg
+        (operation : string)
+        (state : IlMachineState)
+        (arg : CliType)
+        : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>
+        =
+        // CoreCLR's RuntimeMethodHandle FCalls dereference the MethodDesc* directly and
+        // assert non-null; PawPrint's existing callers never yield a null handle, so we
+        // surface a contract violation rather than silently producing a default value.
+        let methodHandleId =
+            NativeCall.methodHandleIdOfRuntimeMethodHandleInternal operation arg
+            |> Option.defaultWith (fun () -> failwith $"%s{operation}: null RuntimeMethodHandleInternal")
+
+        let methodHandle =
+            MethodHandleRegistry.resolveMethodFromId methodHandleId state.MethodHandles
+            |> Option.defaultWith (fun () ->
+                failwith $"%s{operation}: registry id %d{methodHandleId} did not resolve to a known MethodHandle"
+            )
+
+        let assemblyFullName = methodHandle.GetAssemblyFullName ()
+
+        let assembly =
+            state.LoadedAssembly' assemblyFullName
+            |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
+
+        let methodDefHandle = methodHandle.GetMethodDefinitionHandle().Get
+
+        let mutable methodInfo =
+            Unchecked.defaultof<MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>>
+
+        if not (assembly.Methods.TryGetValue (methodDefHandle, &methodInfo)) then
+            failwith $"%s{operation}: MethodDef %O{methodDefHandle} not found in assembly %s{assemblyFullName}"
+
+        methodInfo
+
     let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
@@ -31,42 +66,44 @@ module NativeRuntimeMethodHandle =
             // managed strlen path then walks the array as expected.
             let operation = "RuntimeMethodHandle.GetUtf8NameInternal"
 
-            let methodHandleId =
-                NativeCall.methodHandleIdOfRuntimeMethodHandleInternal operation instruction.Arguments.[0]
-                |> Option.defaultWith (fun () ->
-                    // CoreCLR's GetUtf8NameInternal is an FCall that dereferences the
-                    // MethodDesc* directly; the managed wrapper would surface a null
-                    // result as BadImageFormatException. None of PawPrint's current
-                    // callers (the introduced-method iterator) yield a null handle, so
-                    // reaching here would indicate a contract violation upstream.
-                    failwith $"%s{operation}: null RuntimeMethodHandleInternal"
-                )
-
-            let methodHandle =
-                MethodHandleRegistry.resolveMethodFromId methodHandleId state.MethodHandles
-                |> Option.defaultWith (fun () ->
-                    failwith $"%s{operation}: registry id %d{methodHandleId} did not resolve to a known MethodHandle"
-                )
-
-            let assemblyFullName = methodHandle.GetAssemblyFullName ()
-
-            let assembly =
-                state.LoadedAssembly' assemblyFullName
-                |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
-
-            let methodDefHandle = methodHandle.GetMethodDefinitionHandle().Get
-
-            let mutable methodInfo =
-                Unchecked.defaultof<MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>>
-
-            if not (assembly.Methods.TryGetValue (methodDefHandle, &methodInfo)) then
-                failwith $"%s{operation}: MethodDef %O{methodDefHandle} not found in assembly %s{assemblyFullName}"
+            let methodInfo =
+                resolveMethodInfoFromHandleArg operation state instruction.Arguments.[0]
 
             let namePtr, state =
                 NativeCall.allocateNullTerminatedUtf8 ctx.BaseClassTypes methodInfo.Name state
 
             let state =
                 IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer namePtr) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeMethodHandle",
+          "GetAttributes",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System",
+                                              "RuntimeMethodHandleInternal",
+                                              generics) ],
+          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                                      "System.Reflection",
+                                                                      "MethodAttributes",
+                                                                      retGenerics)) when
+            generics.IsEmpty && retGenerics.IsEmpty
+            ->
+            // CoreCLR (runtimehandles.cpp): asserts non-null and returns
+            // (INT32)pMethod->GetAttrs(). The managed wrapper exposes this as the
+            // MethodAttributes flags backing MethodBase.Attributes / RuntimeMethodInfo's
+            // candidate filter.
+            let operation = "RuntimeMethodHandle.GetAttributes"
+
+            let methodInfo =
+                resolveMethodInfoFromHandleArg operation state instruction.Arguments.[0]
+
+            let state =
+                IlMachineState.pushToEvalStack
+                    (CliType.Numeric (CliNumericType.Int32 (int32 methodInfo.MethodAttributes)))
+                    ctx.Thread
+                    state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | _ -> None

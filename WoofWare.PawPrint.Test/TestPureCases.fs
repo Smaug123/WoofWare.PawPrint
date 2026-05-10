@@ -41,7 +41,7 @@ module TestPureCases =
             "RuntimeTypeGetInterfacesEmpty.cs" // past Span`1::get_Empty; now blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle
             "RuntimeTypeHandleGetInstantiationOpenGeneric.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringMethodForGenericParameter
             "InitializeArrayBoxedFieldHandle.cs" // past String::FastAllocateString(MethodTable*, nint); now blocked by unimplemented MethodTable field projection for ParentMethodTable
-            "MethodReflectionProbe.cs" // past RuntimeMethodHandle::GetUtf8NameInternal (RuntimeType.GetMethodCandidates can now read each candidate's name); now blocked by unimplemented InternalCall RuntimeMethodHandle::GetAttributes (used by the candidate filter to inspect each method's MethodAttributes)
+            "MethodReflectionProbe.cs" // past RuntimeMethodHandle::GetAttributes (RuntimeType.GetMethodCandidates can now read each candidate's MethodAttributes); now blocked by unimplemented QCall AssemblyNative_IsApplyUpdateSupported reached during MetadataUpdater static init
             "ArraySortHelperDefaultInt.cs" // past EventPipeInternal_* QCall stubs during EventSource static init; now blocked by unimplemented InternalCall String::.ctor(ReadOnlySpan<char>)
         ]
         |> Set.ofList
