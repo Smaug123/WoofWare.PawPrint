@@ -18,8 +18,8 @@ module TestPureCases =
     let unimplemented =
         [
             "AdvancedStructLayout.cs" // blocked after fixed-buffer pointer arithmetic by MarshalNative_SizeOfHelper for ByValTStr string marshalling
-            "LdtokenField.cs" // past RuntimeTypeHandle::GetInterfaces QCall; now blocked by unimplemented Volatile.Write of an object reference through ReinterpretAs over byte-unaddressable storage during reflection-cache update
-            "RuntimeFieldHandleGetUtf8Name.cs" // exercises RuntimeFieldHandle::GetUtf8NameInternal and RuntimeTypeHandle::GetInterfaces successfully; now blocked at the next step by unimplemented Volatile.Write of an object reference through ReinterpretAs over byte-unaddressable storage during reflection-cache update
+            "LdtokenField.cs" // past Volatile.Write of an object reference; now blocked by unimplemented InternalCall System.Buffer::BulkMoveWithWriteBarrierInternal during reflection-cache update
+            "RuntimeFieldHandleGetUtf8Name.cs" // exercises RuntimeFieldHandle::GetUtf8NameInternal, RuntimeTypeHandle::GetInterfaces, and Volatile.Write of object refs successfully; now blocked at the next step by unimplemented InternalCall System.Buffer::BulkMoveWithWriteBarrierInternal
             "RuntimeTypeGetInterfacesEmpty.cs" // past RuntimeTypeHandle::GetInterfaces QCall; now blocked by unimplemented QCall Environment_FailFast (same as ArraySortHelperDefaultInt.cs)
             "RuntimeTypeGetInterfacesInherited.cs" // exercises the QCall's inherited-base + transitive-interface walk; same Environment_FailFast blocker as RuntimeTypeGetInterfacesEmpty.cs
             "GenericEdgeCases.cs" // blocked after BitOperations.Log2 by unimplemented JIT intrinsic System.Runtime.CompilerServices.Unsafe.CopyBlockUnaligned (reached via int.ToString -> Number.UInt32ToDecStr)
