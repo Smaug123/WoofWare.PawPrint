@@ -96,6 +96,16 @@ module AppProgram =
             match Program.run loggerFactory (Some dllPath) fileStream dotnetRuntimes impls args with
             | RunOutcome.NormalExit (state, thread)
             | RunOutcome.ProcessExit (state, thread) -> exitCodeFromStack state thread
+            | RunOutcome.FailFast (_state, _thread, message) ->
+                // CoreCLR aborts the process via the same SIGABRT path as an unhandled
+                // exception, so we mirror those exit codes.
+                let msg = message |> Option.defaultValue "<no message>"
+                logger.LogCritical ("Guest called Environment.FailFast: {FailFastMessage}", msg)
+
+                if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+                    -532462766
+                else
+                    134
             | RunOutcome.GuestUnhandledException (state, _thread, exn) ->
                 let exceptionTypeName =
                     match state.ManagedHeap.NonArrayObjects |> Map.tryFind exn.ExceptionObject with

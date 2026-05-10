@@ -15,6 +15,9 @@ module TestDebuggerState =
             match outcome with
             | RunOutcome.NormalExit (state, thread)
             | RunOutcome.ProcessExit (state, thread) -> state, thread
+            | RunOutcome.FailFast (_, _, message) ->
+                let m = message |> Option.defaultValue "<no message>"
+                failwith $"PawPrint guest called Environment.FailFast: %s{m}"
             | RunOutcome.GuestUnhandledException (_, _, exn) ->
                 failwith $"PawPrint threw an unexpected guest exception: %O{exn.ExceptionObject}"
 

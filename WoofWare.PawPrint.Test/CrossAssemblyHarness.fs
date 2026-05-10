@@ -102,6 +102,9 @@ module CrossAssemblyHarness =
                 match Program.run loggerFactory (Some entryPath) peImage dotnetRuntimeDirs nativeImpls [] with
                 | RunOutcome.GuestUnhandledException (_, _, exn) ->
                     failwith $"Guest threw unhandled exception: %O{exn.ExceptionObject}"
+                | RunOutcome.FailFast (_, _, message) ->
+                    let m = message |> Option.defaultValue "<no message>"
+                    failwith $"Guest called Environment.FailFast: %s{m}"
                 | RunOutcome.NormalExit (state, thread) -> state, thread
                 | RunOutcome.ProcessExit (state, thread) -> state, thread
 

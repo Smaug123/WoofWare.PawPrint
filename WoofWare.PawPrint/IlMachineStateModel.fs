@@ -199,6 +199,13 @@ type ExecutionResult =
     /// guest execution (e.g. finalizers, AppDomain-unload hooks), this constructor will
     /// need to return the thread to a consistent state first.
     | ProcessExit of IlMachineState * exitingThread : ThreadId
+    /// Environment.FailFast was called on `abortingThread`. Like ProcessExit, the process
+    /// terminates immediately; unlike ProcessExit, this represents an abort (no exit code
+    /// on the stack, no clean-shutdown semantics). `message` is the guest-supplied diagnostic
+    /// string (if any). Distinct from ProcessExit so test harnesses can assert the difference,
+    /// and so callers can surface the abort to the host (logs, non-zero exit) rather than
+    /// reporting a clean exit.
+    | FailFast of IlMachineState * abortingThread : ThreadId * message : string option
     | Stepped of IlMachineState * WhatWeDid
     | UnhandledException of
         IlMachineState *
@@ -228,6 +235,11 @@ type RunOutcome =
     /// code. Distinct from `NormalExit` so the pre-main cctor pump can bail rather
     /// than silently continuing into `Main` after the guest already asked to die.
     | ProcessExit of IlMachineState * exitingThread : ThreadId
+    /// A thread called `Environment.FailFast`. The process aborts immediately; the
+    /// abort message (if any) is surfaced for diagnostics. Distinct from ProcessExit
+    /// because FailFast is semantically an abort, not a clean exit — finalizers do not
+    /// run on real CoreCLR, and the host typically reports a non-zero/abort exit.
+    | FailFast of IlMachineState * abortingThread : ThreadId * message : string option
     | GuestUnhandledException of
         IlMachineState *
         terminatingThread : ThreadId *
