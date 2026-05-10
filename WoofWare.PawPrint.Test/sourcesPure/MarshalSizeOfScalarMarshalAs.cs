@@ -27,12 +27,24 @@ public class MarshalSizeOfScalarMarshalAsTest
         public int Other;
     }
 
+    // SysInt / SysUInt are pointer-sized scalar descriptors typically applied to IntPtr/UIntPtr
+    // fields. They should size as NATIVE_INT_SIZE.
+    [StructLayout(LayoutKind.Sequential)]
+    struct WithSysInt
+    {
+        [MarshalAs(UnmanagedType.SysInt)]
+        public System.IntPtr Handle;
+        public int Other;
+    }
+
     public static int Main(string[] argv)
     {
         // A: 4, B: 2 (offset 4), C: 1 (offset 6), tail-pad to alignment 4 -> 8.
         if (Marshal.SizeOf(typeof(ScalarMatching)) != 8) return 1;
         // Hr: 4, Other: 4 -> 8.
         if (Marshal.SizeOf(typeof(WithHresult)) != 8) return 2;
+        // Handle: 8, Other: 4 (offset 8), tail-pad to alignment 8 -> 16.
+        if (Marshal.SizeOf(typeof(WithSysInt)) != 16) return 3;
         return 0;
     }
 }

@@ -1083,6 +1083,13 @@ and CliValueType =
                     Size = 8
                     Alignment = 8
                 }
+        | UnmanagedType.SysInt
+        | UnmanagedType.SysUInt ->
+            Result.Ok
+                {
+                    Size = NATIVE_INT_SIZE
+                    Alignment = NATIVE_INT_SIZE
+                }
         | other -> Result.Error $"UnmanagedType %O{other} is not yet supported by marshalled-size computation"
 
     /// Compute the unmanaged size of a single field, consulting `[MarshalAs(...)]` descriptors
