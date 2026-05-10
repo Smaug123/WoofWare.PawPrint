@@ -345,6 +345,11 @@ module IntrinsicMethodKeys =
             anyParams "System.Private.CoreLib" "System.Math" "Abs"
             // https://github.com/dotnet/runtime/blob/d258af50034c192bf7f0a18856bf83d2903d98ae/src/libraries/System.Private.CoreLib/src/System/Math.cs#L965C10-L1062C19
             anyParams "System.Private.CoreLib" "System.Math" "Max"
+            // Mirror of Math.Max above: most overloads have a `(val1 <= val2) ? val1 : val2`
+            // IL body, and the [Intrinsic]-marked double/float overloads use the IEEE 754:2019
+            // `minimum` definition expressed in terms of IsNaN/IsNegative — both already supported.
+            // https://github.com/dotnet/runtime/blob/d258af50034c192bf7f0a18856bf83d2903d98ae/src/libraries/System.Private.CoreLib/src/System/Math.cs#L1064-L1187
+            anyParams "System.Private.CoreLib" "System.Math" "Min"
             // https://github.com/dotnet/runtime/blob/d258af50034c192bf7f0a18856bf83d2903d98ae/src/libraries/System.Private.CoreLib/src/System/Buffer.cs#L150
             anyParams "System.Private.CoreLib" "System.Buffer" "Memmove"
             // Managed fast paths use Unsafe.ReadUnaligned/WriteUnaligned; the native fallback remains
