@@ -167,6 +167,19 @@ module MethodHandleRegistry =
 
         buildRuntimeMethodHandleInternal baseClassTypes allConcreteTypes zero
 
+    /// Build a `RuntimeMethodHandleInternal` value type whose `m_handle` field carries the given
+    /// registry id. Callers must ensure `id` was previously allocated (e.g. by
+    /// `getOrAllocateInternalHandle`); this helper performs no validation, so a stale id will
+    /// yield a struct that resolves to `None` from `resolveMethodFromId`.
+    let internalHandleFromId
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (allConcreteTypes : AllConcreteTypes)
+        (id : int64)
+        : CliValueType
+        =
+        let mHandle = CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle id)
+        buildRuntimeMethodHandleInternal baseClassTypes allConcreteTypes mHandle
+
     /// Resolve a `RuntimeMethodHandleInternal` registry id back to its underlying `MethodHandle`,
     /// or return `None` if the id is unknown (including the zero/null id).
     let resolveMethodFromId (id : int64) (reg : MethodHandleRegistry) : MethodHandle option =
