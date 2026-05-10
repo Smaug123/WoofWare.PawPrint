@@ -143,6 +143,8 @@ module Program =
                     )
             | ExecutionResult.ProcessExit (state, exitingThread) ->
                 ProgramStepOutcome.Completed (RunOutcome.ProcessExit (state, exitingThread))
+            | ExecutionResult.FailFast (state, abortingThread, message) ->
+                ProgramStepOutcome.Completed (RunOutcome.FailFast (state, abortingThread, message))
             | ExecutionResult.UnhandledException (state, terminatingThread, exn) ->
                 ProgramStepOutcome.Completed (RunOutcome.GuestUnhandledException (state, terminatingThread, exn))
             | ExecutionResult.Stepped (state, whatWeDid) ->
@@ -420,6 +422,10 @@ module Program =
         | RunOutcome.ProcessExit _ as outcome ->
             // A worker started during cctor pumping called Environment.Exit; the process
             // has torn down. Propagate rather than pressing on into Main.
+            ProgramStartResult.CompletedBeforeMain outcome
+        | RunOutcome.FailFast _ as outcome ->
+            // A worker started during cctor pumping called Environment.FailFast; the
+            // process has aborted. Propagate rather than pressing on into Main.
             ProgramStartResult.CompletedBeforeMain outcome
         | RunOutcome.NormalExit (state, _) ->
 
