@@ -53,8 +53,17 @@ module Intrinsics =
             | PrimitiveType.UIntPtr -> true
             | _ -> false
 
-        let isScalarIntegerPrimitive (primitive : PrimitiveType) : bool =
+        // CIL widens Boolean (1-byte zero-extending) and Char (2-byte zero-extending)
+        // to Int32 on the eval stack and `EvalStackValue.toCliTypeCoerced` already
+        // rewraps from Int32 back to `CliType.Bool` / `CliType.Char`, so for atomic
+        // Exchange / CompareExchange they behave identically to the scalar integers
+        // here. Naming the predicate after the eval-stack shape rather than the spec
+        // name "integer" keeps its contract truthful for the call sites that justify
+        // dispatching to `executeScalarIntegerExchange` / `executeScalarInteger`.
+        let isScalarIntegralLikePrimitive (primitive : PrimitiveType) : bool =
             match primitive with
+            | PrimitiveType.Boolean
+            | PrimitiveType.Char
             | PrimitiveType.SByte
             | PrimitiveType.Byte
             | PrimitiveType.Int16
@@ -750,7 +759,7 @@ module Intrinsics =
                 ConcretePrimitive state.ConcreteTypes valuePrimitive
                 ConcretePrimitive state.ConcreteTypes comparandPrimitive ],
               MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes returnPrimitive) when
-                isScalarIntegerPrimitive locationPrimitive
+                isScalarIntegralLikePrimitive locationPrimitive
                 && locationPrimitive = valuePrimitive
                 && locationPrimitive = comparandPrimitive
                 && locationPrimitive = returnPrimitive
@@ -886,7 +895,7 @@ module Intrinsics =
             | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes locationPrimitive)
                 ConcretePrimitive state.ConcreteTypes valuePrimitive ],
               MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes returnPrimitive) when
-                isScalarIntegerPrimitive locationPrimitive
+                isScalarIntegralLikePrimitive locationPrimitive
                 && locationPrimitive = valuePrimitive
                 && locationPrimitive = returnPrimitive
                 ->
