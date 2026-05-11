@@ -27,6 +27,8 @@ The `../dotnet-runtime` checkout is a clone of `dotnet/runtime`. We use it as a 
 
 4. Verify the source you care about compiles in your head: e.g. for QCall work against RuntimeHandles, glance at `src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs` and `src/coreclr/vm/runtimehandles.cpp` to confirm they look like the .NET 10 shape you expect.
 
+5. Re-audit the JIT's `CORINFO_FIELD_INTRINSIC_*` enum at `src/coreclr/inc/corinfo.h`. As of the audit it has exactly three entries (`ZERO`, `EMPTY_STRING`, `ISLITTLEENDIAN`) and `TestBclIntrinsicStaticFields` in `WoofWare.PawPrint.Test` pins the corresponding BCL field set. If a new entry appears, the JIT is folding `ldsfld` for a slot that PawPrint reads literally: audit the BCL declaration (`grep -nR "\[Intrinsic\]" src/libraries/System.Private.CoreLib/src/`) for any new static field that lacks an initialiser. Don't assume that "the zero-initialised slot is the right value" makes the case safe — `IntPtr::Zero` and `UIntPtr::Zero` look that way but `cliTypeZeroOf` populates them with `NativeIntSource.ManagedPointer Null`, which compares unequal to `Verbatim 0L` in `cgt.un`. Always add a focused guest test (see `IntPtrZero.cs` / `UIntPtrZero.cs` / `BitConverterIsLittleEndian.cs`) before relying on the generic path; lazy population at first `ldsfld`/`ldsflda` (the `System.String::Empty` approach in `UnaryMetadataFieldOps.executeLdsfld`) is the safer default for non-Boolean fields. Then update `expectedIntrinsicStaticFields` in `TestBclIntrinsicStaticFields.fs` to acknowledge the new field.
+
 ## Notes
 
 - The repo's working tree often hosts the user's in-flight PR work; before checking out, confirm `git status` is clean and remember the previous branch (the user can `git switch -` to return).
