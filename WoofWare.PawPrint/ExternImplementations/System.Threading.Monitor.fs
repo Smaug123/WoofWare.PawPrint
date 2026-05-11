@@ -22,11 +22,16 @@ module System_Threading_Monitor =
     /// Monitor.Enter_Slowpath, which calls back into the QCall path. PawPrint runs each
     /// thread to completion between scheduler points, so a "Locked by another thread"
     /// SyncBlock represents real contention with no way to make progress in a fast path.
-    let TryEnter_FastPath (currentThread : ThreadId) (state : IlMachineState) : ExecutionResult =
+    let TryEnter_FastPath
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (currentThread : ThreadId)
+        (state : IlMachineState)
+        : ExecutionResult
+        =
         let lockObj, state = popOneObject currentThread 0 state
 
         let acquired, state =
-            match IlMachineState.evalStackValueToObjectRef state lockObj with
+            match IlMachineState.evalStackValueToObjectRef baseClassTypes state lockObj with
             | None -> failwith "TODO: Monitor.TryEnter_FastPath should throw ArgumentNullException for null obj"
             | Some addr ->
                 match IlMachineState.getSyncBlock addr state with
@@ -53,7 +58,12 @@ module System_Threading_Monitor =
     /// Caller treats the result as: 0 (Contention) → return false; 1 (Entered) → return true;
     /// 2 (UseSlowPath) → call Monitor.TryEnter_Slowpath. We never need the slowpath because
     /// PawPrint can answer Free / SelfHeld / OtherHeld directly from the SyncBlock.
-    let TryEnter_FastPath_WithTimeout (currentThread : ThreadId) (state : IlMachineState) : ExecutionResult =
+    let TryEnter_FastPath_WithTimeout
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (currentThread : ThreadId)
+        (state : IlMachineState)
+        : ExecutionResult
+        =
         let lockObj, state = popOneObject currentThread 0 state
         let timeoutVal, state = popInt32 currentThread 1 state
 
@@ -63,7 +73,7 @@ module System_Threading_Monitor =
             | other -> failwith $"Monitor.TryEnter_FastPath_WithTimeout: expected int32 timeout, got %O{other}"
 
         let result, state =
-            match IlMachineState.evalStackValueToObjectRef state lockObj with
+            match IlMachineState.evalStackValueToObjectRef baseClassTypes state lockObj with
             | None ->
                 failwith "TODO: Monitor.TryEnter_FastPath_WithTimeout should throw ArgumentNullException for null obj"
             | Some addr ->
@@ -98,11 +108,16 @@ module System_Threading_Monitor =
 
     /// .NET 10 InternalCall: Monitor.IsEnteredNative(obj) -> bool.
     /// Returns true if the SyncBlock for `obj` is held by the current thread.
-    let IsEnteredNative (currentThread : ThreadId) (state : IlMachineState) : ExecutionResult =
+    let IsEnteredNative
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (currentThread : ThreadId)
+        (state : IlMachineState)
+        : ExecutionResult
+        =
         let lockObj, state = popOneObject currentThread 0 state
 
         let result =
-            match IlMachineState.evalStackValueToObjectRef state lockObj with
+            match IlMachineState.evalStackValueToObjectRef baseClassTypes state lockObj with
             | None -> failwith "TODO: Monitor.IsEnteredNative should throw ArgumentNullException for null obj"
             | Some addr ->
                 match IlMachineState.getSyncBlock addr state with
@@ -119,11 +134,16 @@ module System_Threading_Monitor =
     /// any non-zero value (Signal/Yield/Contention/Error) routes the IL through Exit_Slowpath.
     /// PawPrint can decrement the SyncBlock directly, so we always return None on success and
     /// fail loud if the unlock would have surfaced as Error in the real runtime.
-    let Exit_FastPath (currentThread : ThreadId) (state : IlMachineState) : ExecutionResult =
+    let Exit_FastPath
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (currentThread : ThreadId)
+        (state : IlMachineState)
+        : ExecutionResult
+        =
         let lockObj, state = popOneObject currentThread 0 state
 
         let state =
-            match IlMachineState.evalStackValueToObjectRef state lockObj with
+            match IlMachineState.evalStackValueToObjectRef baseClassTypes state lockObj with
             | None -> failwith "TODO: Monitor.Exit_FastPath should throw ArgumentNullException for null obj"
             | Some addr ->
                 match IlMachineState.getSyncBlock addr state with

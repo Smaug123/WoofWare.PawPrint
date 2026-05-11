@@ -245,8 +245,13 @@ public static class Entry
 
         ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), []), state
 
-    let private readObjectOut (state : IlMachineState) (ptr : ManagedPointerSource) : ManagedHeapAddress option =
-        match IlMachineState.readManagedByref state ptr with
+    let private readObjectOut
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (ptr : ManagedPointerSource)
+        : ManagedHeapAddress option
+        =
+        match IlMachineState.readManagedByref baseClassTypes state ptr with
         | CliType.ObjectRef maybeAddr -> maybeAddr
         | other -> failwith $"expected ObjectHandleOnStack target to contain object ref, got %O{other}"
 
@@ -314,10 +319,10 @@ public static class Entry
             | None -> failwith "Enum_GetValuesAndNames QCall did not match"
 
         let valuesArray =
-            readObjectOut state valuesOut
+            readObjectOut baseClassTypes state valuesOut
             |> Option.defaultWith (fun () -> failwith "Enum_GetValuesAndNames left values out handle null")
 
-        let namesArray = readObjectOut state namesOut
+        let namesArray = readObjectOut baseClassTypes state namesOut
 
         {
             State = state

@@ -432,7 +432,7 @@ module internal UnaryMetadataCallOps =
 
                 match ptr with
                 | EvalStackValue.ManagedPointer src ->
-                    let deref = IlMachineState.readManagedByref state src
+                    let deref = IlMachineState.readManagedByref baseClassTypes state src
                     IlMachineState.pushToEvalStack deref thread state
                 | other ->
                     failwith $"constrained.callvirt: expected ManagedPointer receiver on the eval stack, got %O{other}"
@@ -507,7 +507,7 @@ module internal UnaryMetadataCallOps =
                                 failwith
                                     $"constrained.callvirt (box case): expected ManagedPointer receiver on the eval stack, got %O{other}"
 
-                        let derefCli = IlMachineState.readManagedByref state src
+                        let derefCli = IlMachineState.readManagedByref baseClassTypes state src
                         let derefEval = EvalStackValue.ofCliType derefCli
 
                         // Share the Box opcode's construction strategy: reuse an existing

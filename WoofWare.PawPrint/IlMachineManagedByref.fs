@@ -104,37 +104,6 @@ module IlMachineManagedByref =
         | CliByteAddressability.Rejected _ -> ValueNone
         | CliByteAddressability.ByteAddressable -> ValueSome (CliType.ToBytes value)
 
-    /// Zero `CliType` template for the trailing `ReinterpretAs` of a byte-view byref
-    /// that the read/write dispatchers use to drive `readManagedByrefBytesAs`. Covers
-    /// the corelib primitives plus `System.Object`, which is the shape produced by
-    /// `Unsafe.As<byte, object>` and the only reference-type reinterpret reachable
-    /// without further metadata. Returning `ValueNone` falls through to the explicit
-    /// failure path in the caller.
-    let private zeroForReinterpretTemplate (ty : ConcreteType<ConcreteTypeHandle>) : CliType voption =
-        if ty.Namespace <> "System" || not ty.Generics.IsEmpty then
-            ValueNone
-        else
-            match ty.Name with
-            | "Boolean" -> ValueSome (CliType.Bool 0uy)
-            | "SByte" -> ValueSome (CliType.Numeric (CliNumericType.Int8 0y))
-            | "Byte" -> ValueSome (CliType.Numeric (CliNumericType.UInt8 0uy))
-            | "Int16" -> ValueSome (CliType.Numeric (CliNumericType.Int16 0s))
-            | "UInt16" -> ValueSome (CliType.Numeric (CliNumericType.UInt16 0us))
-            | "Char" -> ValueSome (CliType.Char (0uy, 0uy))
-            | "Int32"
-            | "UInt32" ->
-                // ECMA III.1.1.1 has no separate unsigned 32-bit stack type;
-                // PawPrint stores UInt32-shaped values in the same CliType as Int32.
-                ValueSome (CliType.Numeric (CliNumericType.Int32 0))
-            | "Int64"
-            | "UInt64" -> ValueSome (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L)))
-            | "IntPtr"
-            | "UIntPtr" -> ValueSome (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
-            | "Single" -> ValueSome (CliType.Numeric (CliNumericType.Float32 0.0f))
-            | "Double" -> ValueSome (CliType.Numeric (CliNumericType.Float64 0.0))
-            | "Object" -> ValueSome (CliType.ObjectRef None)
-            | _ -> ValueNone
-
     let setStatic
         (ty : ConcreteTypeHandle)
         (field : ComparableFieldDefinitionHandle)
@@ -761,23 +730,6 @@ module IlMachineManagedByref =
                 byteAddressableCellBytesAt $"plain byref %O{src}" 0 targetSize raw
                 |> CliType.ofBytesLike targetTemplate
 
-    let readManagedByref (state : IlMachineState) (src : ManagedPointerSource) : CliType =
-        match src with
-        | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
-        | ManagedPointerSource.Byref (root, projs) ->
-            match List.rev projs with
-            | ByrefProjection.ByteOffset _ :: ByrefProjection.ReinterpretAs ty :: _
-            | ByrefProjection.ReinterpretAs ty :: _ ->
-                match zeroForReinterpretTemplate ty with
-                | ValueSome targetTemplate -> readManagedByrefBytesAs state src targetTemplate
-                | ValueNone ->
-                    failwith
-                        $"TODO: read through `ReinterpretAs` as non-primitive type %s{ty.Namespace}.%s{ty.Name}; struct/object byte views are not modelled"
-            | ByrefProjection.ByteOffset n :: _ ->
-                failwith
-                    $"ByteOffset %d{n} without a preceding ReinterpretAs in projection chain: %O{src} (this is an interpreter bug)"
-            | _ -> readProjectedValue (readRootValue state root) projs
-
     let private zeroForConcreteType
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -792,6 +744,40 @@ module IlMachineManagedByref =
 
         CliType.zeroOf state.ConcreteTypes state._LoadedAssemblies baseClassTypes handle
         |> fst
+
+    let readManagedByref
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (src : ManagedPointerSource)
+        : CliType
+        =
+        match src with
+        | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
+        | ManagedPointerSource.Byref (root, projs) ->
+            match List.rev projs with
+            | ByrefProjection.ByteOffset _ :: ByrefProjection.ReinterpretAs ty :: _
+            | ByrefProjection.ReinterpretAs ty :: _ ->
+                // Flatten primitive-like single-field wrappers (IntPtr, UIntPtr,
+                // RuntimeTypeHandle, ...) before driving the byte-view read.
+                // Stored cells use the bare primitive shape (e.g. localloc'd
+                // `Span<IntPtr>` cells written by `Stind_I` are bare
+                // `Numeric (NativeInt ...)`), so the `tryReadCell` fast path in
+                // `readLocalMemoryBytesAs` needs the same shape on the template
+                // to preserve tagged provenance like `TypeHandlePtr` /
+                // `FieldHandlePtr`. Without the unwrap the read falls through
+                // to `LocalMemoryPool.readBytes`, which cannot serialise tagged
+                // sources and so rejects the otherwise-valid read used by the
+                // `RuntimeTypeHandle.Instantiate` / `ModuleHandle.ResolveType`
+                // QCalls. Non-primitive-like wrappers (structs proper) are
+                // unaffected: `unwrapPrimitiveLikeDeep` is a no-op there.
+                let targetTemplate =
+                    zeroForConcreteType baseClassTypes state ty |> CliType.unwrapPrimitiveLikeDeep
+
+                readManagedByrefBytesAs state src targetTemplate
+            | ByrefProjection.ByteOffset n :: _ ->
+                failwith
+                    $"ByteOffset %d{n} without a preceding ReinterpretAs in projection chain: %O{src} (this is an interpreter bug)"
+            | _ -> readProjectedValue (readRootValue state root) projs
 
     /// Outcome of classifying the projection
     /// `[..., ReinterpretAs reinterpretTy, Field field]` over storage of some
@@ -1539,7 +1525,8 @@ module IlMachineManagedByref =
                     $"TODO: primitive indirect store of %O{newValue} through byte-view byref %O{src} cannot preserve %s{reason}"
             | ValueNone ->
                 let existing =
-                    knownExisting |> Option.defaultWith (fun () -> readManagedByref state src)
+                    knownExisting
+                    |> Option.defaultWith (fun () -> readManagedByref baseClassTypes state src)
 
                 let existingSize = CliType.sizeOf existing
                 let newSize = CliType.sizeOf newValue
@@ -1617,7 +1604,7 @@ module IlMachineManagedByref =
                     // Even a byte-renderable payload may need a typed store
                     // when the destination cell carries non-byte-renderable
                     // numeric provenance.
-                    let existing = readManagedByref state src
+                    let existing = readManagedByref baseClassTypes state src
 
                     match byteAddressabilityRejection existing with
                     | Some rejection when isNumericProvenanceRejection rejection ->

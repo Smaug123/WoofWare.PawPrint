@@ -589,7 +589,7 @@ module internal UnaryMetadataObjectOps =
                 let concreteType = ManagedHeap.getObjectConcreteType addr state.ManagedHeap
                 isinstCheck state concreteType actualObj
             | EvalStackValue.ManagedPointer src ->
-                match IlMachineState.readManagedByref state src with
+                match IlMachineState.readManagedByref baseClassTypes state src with
                 | CliType.ObjectRef None -> state, EvalStackValue.NullObjectRef
                 | CliType.ObjectRef (Some addr) ->
                     let concreteType = ManagedHeap.getObjectConcreteType addr state.ManagedHeap

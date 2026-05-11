@@ -1904,7 +1904,7 @@ public unsafe struct PointerWrapper
         let updated = CliType.Numeric (CliNumericType.Float32 0.0f)
         let state = IlMachineState.writeManagedByref state ptr updated
 
-        IlMachineState.readManagedByref state ptr |> shouldEqual updated
+        IlMachineState.readManagedByref bct state ptr |> shouldEqual updated
 
     [<Test>]
     let ``Local memory typed cell write evicts intersecting byte overlay`` () : unit =
@@ -2056,7 +2056,7 @@ public unsafe struct PointerWrapper
 
         let stateAfter = IlMachineState.writeManagedByref state ptr handle
 
-        IlMachineState.readManagedByref stateAfter ptr |> shouldEqual handle
+        IlMachineState.readManagedByref bct stateAfter ptr |> shouldEqual handle
 
     [<Test>]
     let ``Typed write into the middle of an existing cell fails visibly`` () : unit =
@@ -2117,7 +2117,7 @@ public unsafe struct PointerWrapper
 
         let stateAfter = IlMachineState.writeManagedByrefBytesOrTypedCell state ptr handle
 
-        IlMachineState.readManagedByref stateAfter ptr |> shouldEqual handle
+        IlMachineState.readManagedByref bct stateAfter ptr |> shouldEqual handle
 
     [<Test>]
     let ``Stind-shaped store of tagged native-int over an identical-shape cell still preserves provenance`` () : unit =
@@ -2144,7 +2144,7 @@ public unsafe struct PointerWrapper
         let state = IlMachineState.writeManagedByrefBytesOrTypedCell state ptr firstHandle
         let state = IlMachineState.writeManagedByrefBytesOrTypedCell state ptr secondHandle
 
-        IlMachineState.readManagedByref state ptr |> shouldEqual secondHandle
+        IlMachineState.readManagedByref bct state ptr |> shouldEqual secondHandle
 
     [<Test>]
     let ``Stind-shaped partial overwrite of a tagged native-int cell refuses to silently lose provenance`` () : unit =
@@ -2173,7 +2173,7 @@ public unsafe struct PointerWrapper
         |> ignore
 
         // The original tagged cell should still be intact.
-        IlMachineState.readManagedByref state ptr |> shouldEqual handle
+        IlMachineState.readManagedByref bct state ptr |> shouldEqual handle
 
     [<Test>]
     let ``Stind_I through bare local-memory byte view reports provenance preservation failure`` () : unit =
@@ -2211,7 +2211,7 @@ public unsafe struct PointerWrapper
 
         ex.Message |> shouldContainText "<field ID 1234>"
 
-        IlMachineState.readManagedByref state ptr
+        IlMachineState.readManagedByref bct state ptr
         |> shouldEqual (CliType.Numeric (CliNumericType.Int32 0x11223344))
 
     [<Test>]
@@ -2256,7 +2256,7 @@ public unsafe struct PointerWrapper
         // Reading the Int32 cell should reflect the byte overlay: the second
         // little-endian byte of 0x11223344 (0x33) becomes 0xAA, giving
         // 0x1122AA44.
-        match IlMachineState.readManagedByref state ptr with
+        match IlMachineState.readManagedByref bct state ptr with
         | CliType.Numeric (CliNumericType.Int32 v) -> v |> shouldEqual 0x1122AA44
         | other -> failwith $"Expected Int32, got %O{other}"
 
@@ -2281,7 +2281,7 @@ public unsafe struct PointerWrapper
 
         let stateAfter = IlMachineState.writeManagedByrefBytesOrTypedCell state ptr zero
 
-        IlMachineState.readManagedByref stateAfter ptr |> shouldEqual zero
+        IlMachineState.readManagedByref bct stateAfter ptr |> shouldEqual zero
 
     [<Test>]
     let ``Stind-shaped overwrite of a tagged cell with a byte-renderable value succeeds`` () : unit =
@@ -2308,7 +2308,7 @@ public unsafe struct PointerWrapper
 
         let state = IlMachineState.writeManagedByrefBytesOrTypedCell state ptr verbatim
 
-        IlMachineState.readManagedByref state ptr |> shouldEqual verbatim
+        IlMachineState.readManagedByref bct state ptr |> shouldEqual verbatim
 
     [<Test>]
     let ``Stind_I1 via EvalStackValue.ManagedPointer over local-memory Int32 cell scatters one byte`` () : unit =
@@ -2417,7 +2417,7 @@ public unsafe struct PointerWrapper
             | ExecutionResult.Stepped (state, WhatWeDid.Executed) -> state
             | other -> failwith $"Expected Stind_I to step, got %O{other}"
 
-        IlMachineState.readManagedByref state ptr
+        IlMachineState.readManagedByref bct state ptr
         |> shouldEqual (CliType.Numeric (CliNumericType.NativeInt secondHandle))
 
     [<Test>]
@@ -2470,7 +2470,7 @@ public unsafe struct PointerWrapper
                 | ExecutionResult.Stepped (state, WhatWeDid.Executed) -> state
                 | other -> failwith $"Expected Stind_I to step, got %O{other}"
 
-            IlMachineState.readManagedByref state ptr
+            IlMachineState.readManagedByref bct state ptr
             |> shouldEqual (CliType.Numeric (CliNumericType.NativeInt source))
 
         Check.One (
@@ -2483,6 +2483,43 @@ public unsafe struct PointerWrapper
         // check; it intentionally does not compare list membership.
         observedSources.Count |> shouldEqual ((taggedNativeIntSources ()).Length)
         observedDestinations.Count |> shouldEqual 3
+
+    [<Test>]
+    let ``readManagedByref through ReinterpretAs IntPtr preserves tagged native-int provenance`` () : unit =
+        // Regression: when the byref carries a trailing `ReinterpretAs IntPtr`
+        // projection (the shape produced by the `Span<IntPtr>(void*, int)`
+        // constructor over a `stackalloc` buffer) and the storage cell holds a
+        // tagged `NativeIntSource` (e.g. `TypeHandlePtr` written by
+        // `Stind_I`), `readManagedByref` must return the bare native-int cell
+        // with its provenance intact. The byte-view fallback in
+        // `readLocalMemoryBytesAs` cannot serialise tagged sources, so the
+        // fast path that returns the existing typed cell is load-bearing for
+        // the `RuntimeTypeHandle.Instantiate` / `ModuleHandle.ResolveType`
+        // QCalls that walk such buffers.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread =
+            stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Nop)
+
+        let bareLocallocPtr, state =
+            IlMachineState.allocateLocalMemory thread LocalMemoryInitialization.ZeroInitialized 8 state
+
+        let taggedHandle =
+            CliType.Numeric (
+                CliNumericType.NativeInt (
+                    NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed (handleFor bct.Int32))
+                )
+            )
+
+        let state = IlMachineState.writeManagedByref state bareLocallocPtr taggedHandle
+
+        let reinterpretedPtr =
+            bareLocallocPtr
+            |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs (concreteTypeFor bct.IntPtr))
+
+        IlMachineState.readManagedByref bct state reinterpretedPtr
+        |> CliType.unwrapPrimitiveLikeDeep
+        |> shouldEqual taggedHandle
 
     [<Test>]
     let ``Stind_I8 preserves tagged int64 provenance for exact-width typed destinations`` () : unit =
@@ -2522,7 +2559,7 @@ public unsafe struct PointerWrapper
                 | ExecutionResult.Stepped (state, WhatWeDid.Executed) -> state
                 | other -> failwith $"Expected Stind_I8 to step, got %O{other}"
 
-            IlMachineState.readManagedByref state ptr
+            IlMachineState.readManagedByref bct state ptr
             |> shouldEqual (CliType.Numeric (CliNumericType.Int64 source))
 
         Check.One (rawDataPropertyConfig.WithMaxTest 500, Prop.forAll (Arb.fromGen genTaggedInt64StindCase) property)
@@ -3003,10 +3040,10 @@ public unsafe struct PointerWrapper
         //   3. `Unsafe.As<byte, object>(ref byteN)`, appending `ReinterpretAs object`.
         // After `appendProjection` collapses the chained reinterpret, the projection list is
         // `[ReinterpretAs object]` (or `[ReinterpretAs object; ByteOffset N]` for non-zero N).
-        // `readManagedByref` must drive `readManagedByrefBytesAs` with an `ObjectRef None`
-        // template via the `Object` arm of `zeroForReinterpretTemplate`, which then dispatches
-        // through field-precise read and recovers the original reference. Without the `Object`
-        // arm this fails with "struct/object byte views are not modelled".
+        // `readManagedByref` must drive `readManagedByrefBytesAs` with the concrete type's
+        // zero-value template (an `ObjectRef None` for `Object`), which then dispatches through
+        // field-precise read and recovers the original reference. Without that, the read falls
+        // through to a generic byte view and fails with "struct/object byte views are not modelled".
         let state = state ()
         let storedAddr, containerAddr, state = allocateReferenceObjectWithRefField state
         let objectType = concreteTypeFor bct.Object
@@ -3016,7 +3053,7 @@ public unsafe struct PointerWrapper
             |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset 0)
             |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs objectType)
 
-        IlMachineState.readManagedByref state ptr
+        IlMachineState.readManagedByref bct state ptr
         |> shouldEqual (CliType.ObjectRef (Some storedAddr))
 
     [<Test>]

@@ -147,7 +147,7 @@ module Intrinsics =
                 | EvalStackValue.NullObjectRef ->
                     failwith "TODO: Object.GetType receiver was null; throw NullReferenceException"
                 | EvalStackValue.ManagedPointer ptr ->
-                    match IlMachineState.readManagedByref state ptr with
+                    match IlMachineState.readManagedByref baseClassTypes state ptr with
                     | CliType.ObjectRef (Some addr) -> ManagedHeap.getObjectConcreteType addr state.ManagedHeap, state
                     | CliType.ObjectRef None ->
                         failwith "TODO: Object.GetType receiver was null; throw NullReferenceException"
@@ -269,7 +269,7 @@ module Intrinsics =
             | [], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
             | _ -> failwith "bad signature Type.get_IsValueType"
 
-            let target, state = popRuntimeTypeHandle currentThread state
+            let target, state = popRuntimeTypeHandle baseClassTypes currentThread state
 
             let isValueType =
                 match target with
@@ -353,7 +353,7 @@ module Intrinsics =
             | [], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
             | _ -> failwith "bad signature Type.get_IsEnum"
 
-            let target, state = popRuntimeTypeHandle currentThread state
+            let target, state = popRuntimeTypeHandle baseClassTypes currentThread state
 
             let isEnum, state =
                 match target with
@@ -426,7 +426,7 @@ module Intrinsics =
             | [], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
             | _ -> failwith "bad signature Type.get_IsGenericType"
 
-            let target, state = popRuntimeTypeHandle currentThread state
+            let target, state = popRuntimeTypeHandle baseClassTypes currentThread state
 
             let isGenericType =
                 match target with
@@ -574,7 +574,7 @@ module Intrinsics =
                     |> Option.defaultWith (fun () -> failwith $"%s{operation}: expected int32 value, got %O{valueArg}")
 
                 let byrefSrc = popManagedByrefArgument operation byrefArg
-                let currentValue = IlMachineState.readManagedByref state byrefSrc
+                let currentValue = IlMachineState.readManagedByref baseClassTypes state byrefSrc
 
                 let current =
                     match EvalStackValue.ofCliType currentValue with
@@ -610,7 +610,7 @@ module Intrinsics =
                     |> Option.defaultWith (fun () -> failwith $"%s{operation}: expected int64 value, got %O{valueArg}")
 
                 let byrefSrc = popManagedByrefArgument operation byrefArg
-                let currentValue = IlMachineState.readManagedByref state byrefSrc
+                let currentValue = IlMachineState.readManagedByref baseClassTypes state byrefSrc
 
                 let current =
                     match EvalStackValue.ofCliType currentValue with
@@ -669,7 +669,7 @@ module Intrinsics =
                 let byrefArg, state = IlMachineState.popEvalStack currentThread state
 
                 let byrefSrc = popManagedByrefArgument operation byrefArg
-                let currentValue = IlMachineState.readManagedByref state byrefSrc
+                let currentValue = IlMachineState.readManagedByref baseClassTypes state byrefSrc
                 let currentEval = EvalStackValue.ofCliType currentValue
                 let valueCli = EvalStackValue.toCliTypeCoerced currentValue value
                 let comparandCli = EvalStackValue.toCliTypeCoerced currentValue comparand
@@ -721,7 +721,7 @@ module Intrinsics =
                 let comparandSrc = toNativeIntSource comparand
                 let valueSrc = toNativeIntSource value
 
-                let currentValue = IlMachineState.readManagedByref state byrefSrc
+                let currentValue = IlMachineState.readManagedByref baseClassTypes state byrefSrc
 
                 // `ref IntPtr` / `ref UIntPtr` derefs to a wrapper struct. Route the read/write through
                 // the eval-stack flatten/rewrap boundary: `ofCliType` peels the primitive-like
@@ -781,7 +781,7 @@ module Intrinsics =
 
                 let byrefSrc = popManagedByrefArgument "Interlocked.CompareExchange<T>" byrefArg
 
-                let currentValue = IlMachineState.readManagedByref state byrefSrc
+                let currentValue = IlMachineState.readManagedByref baseClassTypes state byrefSrc
 
                 let objectTarget (argName : string) (value : CliType) : ManagedHeapAddress option =
                     match value with
@@ -824,7 +824,7 @@ module Intrinsics =
                 let byrefArg, state = IlMachineState.popEvalStack currentThread state
 
                 let byrefSrc = popManagedByrefArgument operation byrefArg
-                let currentValue = IlMachineState.readManagedByref state byrefSrc
+                let currentValue = IlMachineState.readManagedByref baseClassTypes state byrefSrc
                 let valueCli = EvalStackValue.toCliTypeCoerced currentValue value
 
                 // The intrinsic bypasses normal method-frame construction, so coerce the
@@ -867,7 +867,7 @@ module Intrinsics =
 
                 let valueSrc = toNativeIntSource value
 
-                let currentValue = IlMachineState.readManagedByref state byrefSrc
+                let currentValue = IlMachineState.readManagedByref baseClassTypes state byrefSrc
 
                 // `ref IntPtr` / `ref UIntPtr` derefs to a wrapper struct. Route the read/write through
                 // the eval-stack flatten/rewrap boundary: `ofCliType` peels the primitive-like
@@ -913,7 +913,7 @@ module Intrinsics =
 
                 let byrefSrc = popManagedByrefArgument "Interlocked.Exchange<T>" byrefArg
 
-                let currentValue = IlMachineState.readManagedByref state byrefSrc
+                let currentValue = IlMachineState.readManagedByref baseClassTypes state byrefSrc
 
                 let valueCli = EvalStackValue.toCliTypeCoerced currentValue value
 
@@ -1308,6 +1308,20 @@ module Intrinsics =
 
                 let state = state |> IlMachineState.advanceProgramCounter currentThread
                 Some state
+            | _ -> None
+        | "System.Private.CoreLib", "Unsafe", ("CopyBlock" | "CopyBlockUnaligned") ->
+            // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L313
+            // The CoreLib bodies throw PlatformNotSupportedException; the real JIT replaces
+            // these with `cpblk` (optionally prefixed by `unaligned.`). Both overloads accept
+            // the byref and pointer forms uniformly via managedPointerOfPointerArgument.
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
+                ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
+                ConcreteUInt32 state.ConcreteTypes ],
+              MethodReturnType.Void
+            | [ ConcretePointer _ ; ConcretePointer _ ; ConcreteUInt32 state.ConcreteTypes ], MethodReturnType.Void ->
+                let operation = $"Unsafe.%s{methodToCall.Name}"
+                executeUnsafeCopyBlock baseClassTypes currentThread operation state |> Some
             | _ -> None
         | "System.Private.CoreLib", "String", "op_Implicit" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
@@ -1960,7 +1974,7 @@ module Intrinsics =
             let span : CliValueType =
                 match receiver with
                 | EvalStackValue.ManagedPointer src ->
-                    match IlMachineState.readManagedByref state src with
+                    match IlMachineState.readManagedByref baseClassTypes state src with
                     | CliType.ValueType vt -> vt
                     | other ->
                         failwith $"%s{spanTypeName}.get_Item receiver byref read produced non-value-type %O{other}"
@@ -2022,7 +2036,7 @@ module Intrinsics =
             let span : CliValueType =
                 match receiver with
                 | EvalStackValue.ManagedPointer src ->
-                    match IlMachineState.readManagedByref state src with
+                    match IlMachineState.readManagedByref baseClassTypes state src with
                     | CliType.ValueType vt -> vt
                     | other -> failwith $"Span`1.Clear receiver byref read produced non-value-type %O{other}"
                 | EvalStackValue.UserDefinedValueType vt -> vt

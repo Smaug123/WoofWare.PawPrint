@@ -1144,6 +1144,7 @@ module NativeRuntimeType =
     /// closed `ConcreteTypeHandle` it points to. Open generic type-parameter
     /// references aren't yet representable here and fail loudly.
     let private readTypeHandleInstantiationElement
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (operation : string)
         (state : IlMachineState)
         (buffer : ManagedPointerSource)
@@ -1152,7 +1153,10 @@ module NativeRuntimeType =
         =
         let ptr = nativeIntElementPointer operation buffer index
 
-        match IlMachineState.readManagedByref state ptr |> CliType.unwrapPrimitiveLikeDeep with
+        match
+            IlMachineState.readManagedByref baseClassTypes state ptr
+            |> CliType.unwrapPrimitiveLikeDeep
+        with
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed handle))) ->
             handle
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity))) ->
@@ -1891,7 +1895,7 @@ module NativeRuntimeType =
             let genericArguments =
                 [
                     for index in 0 .. genericArgumentCount - 1 ->
-                        readTypeHandleInstantiationElement operation state instantiationPointer index
+                        readTypeHandleInstantiationElement ctx.BaseClassTypes operation state instantiationPointer index
                 ]
 
             // Stage B2: validate the special-constraint flags
@@ -2343,7 +2347,7 @@ module NativeRuntimeType =
                 let genericArguments =
                     [
                         for index in 0 .. cInstArray - 1 ->
-                            readTypeHandleInstantiationElement operation state pInstArray index
+                            readTypeHandleInstantiationElement ctx.BaseClassTypes operation state pInstArray index
                     ]
 
                 let instantiatedHandle, state =
@@ -2682,7 +2686,7 @@ module NativeRuntimeType =
                 ImmutableArray.CreateRange (
                     seq {
                         for index in 0 .. typeInstCount - 1 ->
-                            readTypeHandleInstantiationElement operation state typeInstArgsPtr index
+                            readTypeHandleInstantiationElement ctx.BaseClassTypes operation state typeInstArgsPtr index
                     }
                 )
 
@@ -2690,7 +2694,12 @@ module NativeRuntimeType =
                 ImmutableArray.CreateRange (
                     seq {
                         for index in 0 .. methodInstCount - 1 ->
-                            readTypeHandleInstantiationElement operation state methodInstArgsPtr index
+                            readTypeHandleInstantiationElement
+                                ctx.BaseClassTypes
+                                operation
+                                state
+                                methodInstArgsPtr
+                                index
                     }
                 )
 
@@ -3834,7 +3843,8 @@ module NativeRuntimeType =
             let methodPtr =
                 NativeCall.managedPointerOfPointerArgument operation "method" instruction.Arguments.[0]
 
-            let currentValue = IlMachineState.readManagedByref state methodPtr
+            let currentValue =
+                IlMachineState.readManagedByref ctx.BaseClassTypes state methodPtr
 
             // RuntimeMethodHandleInternal wraps a single IntPtr-shaped m_handle. The byref came
             // from a managed local of struct type, so primitive-like rewrapping during the

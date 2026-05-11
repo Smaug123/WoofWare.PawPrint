@@ -106,7 +106,7 @@ module internal UnaryMetadataArrayOps =
             | _ -> failwith $"TODO: {index}"
 
         let arrAddr =
-            match IlMachineState.evalStackValueToObjectRef state arr with
+            match IlMachineState.evalStackValueToObjectRef baseClassTypes state arr with
             | Some addr -> addr
             | None -> failwith "TODO: throw NRE"
 
@@ -216,7 +216,7 @@ module internal UnaryMetadataArrayOps =
         let arr, state = IlMachineState.popEvalStack thread state
 
         let arr =
-            match IlMachineState.evalStackValueToObjectRef state arr with
+            match IlMachineState.evalStackValueToObjectRef baseClassTypes state arr with
             | Some addr -> addr
             | None -> failwith "expected heap allocation for array, got null"
 
@@ -280,7 +280,7 @@ module internal UnaryMetadataArrayOps =
         let arr, state = IlMachineState.popEvalStack thread state
 
         let arr =
-            match IlMachineState.evalStackValueToObjectRef state arr with
+            match IlMachineState.evalStackValueToObjectRef baseClassTypes state arr with
             | Some addr -> addr
             | None -> failwith "expected heap allocation for array, got null"
 

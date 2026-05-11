@@ -233,8 +233,16 @@ public static class Entry
 
         ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), []), state
 
-    let private readUInt32Out (state : IlMachineState) (ptr : ManagedPointerSource) : uint32 =
-        match IlMachineState.readManagedByref state ptr |> CliType.unwrapPrimitiveLikeDeep with
+    let private readUInt32Out
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (ptr : ManagedPointerSource)
+        : uint32
+        =
+        match
+            IlMachineState.readManagedByref baseClassTypes state ptr
+            |> CliType.unwrapPrimitiveLikeDeep
+        with
         | CliType.Numeric (CliNumericType.Int32 value) -> uint32 value
         | other -> failwith $"expected UInt32 out value, got %O{other}"
 
@@ -308,7 +316,7 @@ public static class Entry
             | None -> failwith "AssemblyNative_GetResource QCall did not match"
 
         let returnValue, state = IlMachineState.popEvalStack prepared.EntryThread state
-        state, readUInt32Out state lengthOut, returnValue
+        state, readUInt32Out baseClassTypes state lengthOut, returnValue
 
     let private invokeAssemblyNativeGetResourceForAssembly
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)

@@ -8,6 +8,7 @@ module NativeArray =
         | other -> failwith $"%s{operation}: expected %s{argName} as Int32, got %O{other}"
 
     let private readInt32Pointer
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (operation : string)
         (state : IlMachineState)
         (argName : string)
@@ -16,7 +17,9 @@ module NativeArray =
         =
         match ptr with
         | ManagedPointerSource.Null -> failwith $"%s{operation}: expected non-null %s{argName} pointer"
-        | ManagedPointerSource.Byref _ -> IlMachineState.readManagedByref state ptr |> int32OfCliType operation argName
+        | ManagedPointerSource.Byref _ ->
+            IlMachineState.readManagedByref baseClassTypes state ptr
+            |> int32OfCliType operation argName
 
     let private arrayTypeForCreateInstance
         (operation : string)
@@ -105,7 +108,8 @@ module NativeArray =
             let retArray =
                 NativeCall.objectHandleOnStackTarget operation state "retArray" instruction.Arguments.[5]
 
-            let arrayLength = readInt32Pointer operation state "lengths[0]" lengths
+            let arrayLength =
+                readInt32Pointer ctx.BaseClassTypes operation state "lengths[0]" lengths
 
             if arrayLength < 0 then
                 failwith "TODO: Array.CreateInstance with negative length should throw ArgumentOutOfRangeException"
@@ -113,7 +117,8 @@ module NativeArray =
             match lowerBounds with
             | ManagedPointerSource.Null -> ()
             | ManagedPointerSource.Byref _ ->
-                let lowerBound = readInt32Pointer operation state "lowerBounds[0]" lowerBounds
+                let lowerBound =
+                    readInt32Pointer ctx.BaseClassTypes operation state "lowerBounds[0]" lowerBounds
 
                 if lowerBound <> 0 then
                     failwith

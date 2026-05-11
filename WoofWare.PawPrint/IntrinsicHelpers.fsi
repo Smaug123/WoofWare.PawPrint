@@ -19,7 +19,10 @@ module internal IntrinsicHelpers =
     /// Pop a `System.Type`/`System.RuntimeType` receiver from the guest evaluation stack and
     /// recover the runtime type-handle target it represents.
     val popRuntimeTypeHandle :
-        currentThread : ThreadId -> state : IlMachineState -> RuntimeTypeHandleTarget * IlMachineState
+        baseClassTypes : BaseClassTypes<DumpedAssembly> ->
+        currentThread : ThreadId ->
+        state : IlMachineState ->
+            RuntimeTypeHandleTarget * IlMachineState
 
     /// Add an element-count offset to a managed byref, preserving PawPrint's byte-view and
     /// reinterpretation invariants for arrays, strings, local memory, and existing byref views.
@@ -90,5 +93,15 @@ module internal IntrinsicHelpers =
         baseClassTypes : BaseClassTypes<DumpedAssembly> ->
         currentThread : ThreadId ->
         methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> ->
+        state : IlMachineState ->
+            IlMachineState
+
+    /// Execute the `Unsafe.CopyBlock` / `Unsafe.CopyBlockUnaligned` JIT intrinsics, performing
+    /// a forward byte-by-byte copy between managed pointers (cpblk has undefined behaviour on
+    /// overlap per ECMA-335 III.3.30, so no overlap detection is performed).
+    val executeUnsafeCopyBlock :
+        baseClassTypes : BaseClassTypes<DumpedAssembly> ->
+        currentThread : ThreadId ->
+        operation : string ->
         state : IlMachineState ->
             IlMachineState

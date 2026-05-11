@@ -155,6 +155,7 @@ module internal IntrinsicHelpers =
         |> fun (state, _, result) -> state, result
 
     let popRuntimeTypeHandle
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (currentThread : ThreadId)
         (state : IlMachineState)
         : RuntimeTypeHandleTarget * IlMachineState
@@ -164,8 +165,11 @@ module internal IntrinsicHelpers =
         let this =
             match this with
             | EvalStackValue.ObjectRef ptr ->
-                IlMachineState.readManagedByref state (ManagedPointerSource.Byref (ByrefRoot.HeapValue ptr, []))
-            | EvalStackValue.ManagedPointer ptr -> IlMachineState.readManagedByref state ptr
+                IlMachineState.readManagedByref
+                    baseClassTypes
+                    state
+                    (ManagedPointerSource.Byref (ByrefRoot.HeapValue ptr, []))
+            | EvalStackValue.ManagedPointer ptr -> IlMachineState.readManagedByref baseClassTypes state ptr
             | EvalStackValue.NullObjectRef -> failwith "TODO: Type intrinsic receiver was null; throw NRE"
             | EvalStackValue.Float _
             | EvalStackValue.Int32 _
@@ -571,6 +575,7 @@ module internal IntrinsicHelpers =
             failwith $"%s{operation}: %s{ex.Message}"
 
     let readSpanHelpersSequenceEqualByte
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (operation : string)
         (state : IlMachineState)
         (src : ManagedPointerSource)
@@ -593,14 +598,14 @@ module internal IntrinsicHelpers =
                 | ByrefRoot.StringCharAt _, [] -> readPrimitiveByteView ()
                 | _ ->
                     let basePtr = ManagedPointerSource.Byref (byteViewRoot, prefixProjs)
-                    let value = IlMachineState.readManagedByref state basePtr
+                    let value = IlMachineState.readManagedByref baseClassTypes state basePtr
 
                     match value with
                     | CliType.ValueType _ -> byteAtOffset operation src byteOffset value
                     | _ -> readPrimitiveByteView ()
             | ValueNone ->
                 let value =
-                    IlMachineState.readManagedByref state (ManagedPointerSource.Byref (root, projs))
+                    IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.Byref (root, projs))
 
                 byteAtOffset operation src 0 value
 
@@ -666,7 +671,8 @@ module internal IntrinsicHelpers =
                         ManagedPointerByteView.addByteOffset baseClassTypes state byteType i rightPtr
 
                     equal <-
-                        readSpanHelpersSequenceEqualByte operation state left = readSpanHelpersSequenceEqualByte
+                        readSpanHelpersSequenceEqualByte baseClassTypes operation state left = readSpanHelpersSequenceEqualByte
+                            baseClassTypes
                             operation
                             state
                             right
@@ -788,7 +794,7 @@ module internal IntrinsicHelpers =
         let declaringTypeHandle = intrinsicDeclaringTypeHandle state methodToCall
 
         let span =
-            match IlMachineState.readManagedByref state thisPtr with
+            match IlMachineState.readManagedByref baseClassTypes state thisPtr with
             | CliType.ValueType vt when vt.Declared = declaringTypeHandle -> vt
             | CliType.ValueType vt ->
                 failwith
@@ -870,10 +876,16 @@ module internal IntrinsicHelpers =
             && isCorelibConcreteType state "System" "Char" ty.Generics.[0]
         | None -> false
 
-    let spanReceiverValue (operation : string) (state : IlMachineState) (receiver : EvalStackValue) : CliValueType =
+    let spanReceiverValue
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (state : IlMachineState)
+        (receiver : EvalStackValue)
+        : CliValueType
+        =
         match receiver with
         | EvalStackValue.ManagedPointer src ->
-            match IlMachineState.readManagedByref state src with
+            match IlMachineState.readManagedByref baseClassTypes state src with
             | CliType.ValueType vt -> vt
             | other -> failwith $"%s{operation}: receiver byref read produced non-value-type %O{other}"
         | EvalStackValue.UserDefinedValueType vt -> vt
@@ -944,7 +956,7 @@ module internal IntrinsicHelpers =
 
                 let value =
                     match ptr with
-                    | EvalStackValue.ManagedPointer src -> IlMachineState.readManagedByref state src
+                    | EvalStackValue.ManagedPointer src -> IlMachineState.readManagedByref baseClassTypes state src
                     | other -> failwith $"%s{operation}: element pointer was not a managed pointer: %O{other}"
 
                 charOfCliType operation value :: chars, state
@@ -969,7 +981,7 @@ module internal IntrinsicHelpers =
         let operation = $"{methodToCall.DeclaringType.Name}.ToString"
         let elementType = methodToCall.DeclaringType.Generics |> Seq.exactlyOne
         let receiver, state = IlMachineState.popEvalStack currentThread state
-        let span = spanReceiverValue operation state receiver
+        let span = spanReceiverValue baseClassTypes operation state receiver
         let reference, length = spanReferenceAndLength operation state span
 
         if length < 0 then
@@ -992,7 +1004,7 @@ module internal IntrinsicHelpers =
 
                     let value =
                         match ptr with
-                        | EvalStackValue.ManagedPointer src -> IlMachineState.readManagedByref state src
+                        | EvalStackValue.ManagedPointer src -> IlMachineState.readManagedByref baseClassTypes state src
                         | other -> failwith $"%s{operation}: element pointer was not a managed pointer: %O{other}"
 
                     charOfCliType operation value :: chars, state
@@ -1040,8 +1052,8 @@ module internal IntrinsicHelpers =
         let left, state = IlMachineState.popEvalStack currentThread state
 
         let comparisonType = int32OfEvalStackValue operation comparisonType
-        let left = spanReceiverValue operation state left
-        let right = spanReceiverValue operation state right
+        let left = spanReceiverValue baseClassTypes operation state left
+        let right = spanReceiverValue baseClassTypes operation state right
         let left, state = readCharSpanContents baseClassTypes operation state left
         let right, state = readCharSpanContents baseClassTypes operation state right
 
@@ -1062,3 +1074,50 @@ module internal IntrinsicHelpers =
         state
         |> IlMachineState.pushToEvalStack (CliType.ofBool result) currentThread
         |> IlMachineState.advanceProgramCounter currentThread
+
+    let executeUnsafeCopyBlock
+        (baseClassTypes : BaseClassTypes<_>)
+        (currentThread : ThreadId)
+        (operation : string)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        // Stack order: destination (arg0) pushed first, source (arg1), byteCount (arg2) on top.
+        let byteCountArg, state = IlMachineState.popEvalStack currentThread state
+        let sourceArg, state = IlMachineState.popEvalStack currentThread state
+        let destArg, state = IlMachineState.popEvalStack currentThread state
+
+        let byteCount = byteCountOfStackValue operation byteCountArg
+
+        let state =
+            if byteCount = 0 then
+                state
+            else
+                let sourcePtr = managedPointerOfPointerArgument operation sourceArg
+                let destPtr = managedPointerOfPointerArgument operation destArg
+
+                match sourcePtr, destPtr with
+                | ManagedPointerSource.Null, _ -> failwith $"%s{operation}: refusing nonzero byte copy from null source"
+                | _, ManagedPointerSource.Null ->
+                    failwith $"%s{operation}: refusing nonzero byte copy to null destination"
+                | _ ->
+
+                let byteType = byteConcreteType operation baseClassTypes state
+                let mutable state = state
+
+                // cpblk is undefined for overlapping ranges (ECMA-335 III.3.30), so a
+                // forward byte-by-byte copy is per-spec correct here; we don't need the
+                // Memmove-style overlap handling that Buffer.Memmove offers callers.
+                for i = 0 to byteCount - 1 do
+                    let src =
+                        ManagedPointerByteView.addByteOffset baseClassTypes state byteType i sourcePtr
+
+                    let dest =
+                        ManagedPointerByteView.addByteOffset baseClassTypes state byteType i destPtr
+
+                    let value = IlMachineState.readManagedByrefBytesAs state src byteTemplate
+                    state <- IlMachineState.writeManagedByrefBytesOrTypedCell state dest value
+
+                state
+
+        state |> IlMachineState.advanceProgramCounter currentThread
