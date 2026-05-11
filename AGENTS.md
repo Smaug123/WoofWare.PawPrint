@@ -112,6 +112,10 @@ If you find you really do need to implement a dependency, please consider whethe
 
 For detailed guidance on type concretization, generic resolution, and common patterns in the emulated CLR type system, see .claude/commands/type-concretization.md .
 
+## Runtime-Initialised Statics
+
+For the catalogue of BCL static fields whose values come from the runtime (JIT or EE) rather than any managed `.cctor` — and the recipe for diagnosing a guest `FailFast` with *"Encountered infinite recursion while looking up resource 'Arg_NullReferenceException'"* — see `docs/runtime-initialised-statics.md`.
+
 ## Instructions for OpenAI Codex agents specifically
 
 When you've completed a change to the point where you think it can be PR'ed, please commit it.

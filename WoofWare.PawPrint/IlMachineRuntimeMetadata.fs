@@ -548,6 +548,57 @@ module IlMachineRuntimeMetadata =
                 InternedStrings = state.InternedStrings.Add ("", addr)
             }
 
+    /// Allocate a sentinel 2-entry CastCache backing array shaped to match what the native
+    /// EE's `CastCache::Initialize` writes into `CastHelpers::s_table` at startup. The
+    /// array stays a forever-empty sentinel: managed `CastCache.TryGet` reads `version == 0`
+    /// on every probe and returns `CastResult.MaybeCast`, so callers fall through to the
+    /// slow path that PawPrint's type system already handles. `CastCache.TrySet` would
+    /// take the `TableMask == 1` early-return on the sentinel and never mutate it, but
+    /// in any case PawPrint never invokes the instance `TrySet` (CoreCLR only writes to
+    /// the cache from native code).
+    ///
+    /// Layout under managed `CastCache.CreateCastCache(2)` on a 64-bit guest:
+    /// * `int32[]` length = `(size + 1) * sizeof(CastCacheEntry) / 4` = `3 * 24 / 4` = 18.
+    /// * `TableData(table)` skips `sizeof(nint)` bytes from the array's element storage,
+    ///   so the auxiliary header sits at element indices 2, 3, 4 (`hashShift`, `tableMask`,
+    ///   `victimCounter`). The remaining ints are zero-initialised.
+    /// * `hashShift = BitOperations.LeadingZeroCount((nuint)1)` = 63 on 64-bit; PawPrint
+    ///   targets 64-bit guests exclusively, so we hard-code 63.
+    /// * `tableMask = size - 1 = 1`.
+    let internCastCacheSentinelTable
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        : ManagedHeapAddress * IlMachineState
+        =
+        let state, int32Handle =
+            DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Int32
+            |> IlMachineTypeResolution.concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                baseClassTypes.Corelib.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+
+        let arrayTypeHandle = ConcreteTypeHandle.OneDimArrayZero int32Handle
+
+        let zeroInt () : CliType =
+            CliType.Numeric (CliNumericType.Int32 0)
+
+        let addr, state =
+            IlMachineThreadState.allocateArray arrayTypeHandle zeroInt 18 state
+
+        // Auxiliary header: hashShift = 63 (LeadingZeroCount((nuint)1) on 64-bit),
+        // tableMask = size - 1 = 1, victimCounter = 0 (already zero, written for clarity).
+        let state =
+            state
+            |> IlMachineThreadState.setArrayValue addr (CliType.Numeric (CliNumericType.Int32 63)) 2
+            |> IlMachineThreadState.setArrayValue addr (CliType.Numeric (CliNumericType.Int32 1)) 3
+            |> IlMachineThreadState.setArrayValue addr (CliType.Numeric (CliNumericType.Int32 0)) 4
+
+        addr, state
+
     let private concreteTypeFullName (state : IlMachineState) (ty : ConcreteType<ConcreteTypeHandle>) : string =
         match state.LoadedAssembly ty.Assembly with
         | Some assy -> Assembly.fullName assy ty.Identity
