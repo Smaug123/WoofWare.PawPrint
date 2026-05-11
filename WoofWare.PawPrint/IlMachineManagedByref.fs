@@ -63,14 +63,28 @@ module IlMachineManagedByref =
 
             equal
 
-    /// True iff the two values have the same primitive shape (same top-level
-    /// `CliType` constructor, and for `Numeric` the same `CliNumericType`
-    /// constructor). Returning a cell as-is when the requested template has a
-    /// different shape would silently produce, for example, an `Int32` value
-    /// where the caller asked for a `Float32` (their bit patterns differ in
-    /// meaning even when the size matches), so the typed-cell fast paths gate
-    /// on shape equality before short-circuiting the byte-walk reconstruction.
+    /// True iff the two values have the same primitive shape for typed-cell
+    /// fast-path purposes (same top-level `CliType` constructor, and for
+    /// `Numeric` the same `CliNumericType` constructor). Returning a cell as-is
+    /// when the requested template has a different shape would silently
+    /// produce, for example, an `Int32` value where the caller asked for a
+    /// `Float32` (their bit patterns differ in meaning even when the size
+    /// matches), so the typed-cell fast paths gate on shape equality before
+    /// short-circuiting the byte-walk reconstruction.
+    ///
+    /// Primitive-like single-field wrappers (`IntPtr`, `RuntimeTypeHandle`,
+    /// `EnumLike`, ...) are flattened to their stored primitive before
+    /// comparison. The wrapper and its bare-primitive contents share both byte
+    /// representation and `EvalStackValue.ofCliType` flattening behaviour, so
+    /// treating them as the same shape is what lets a wrapped template recover
+    /// a bare cell (and vice versa) without losing tagged `NativeIntSource`
+    /// provenance via the byte-walk fallback. Non-primitive-like value types
+    /// remain deliberately distinct: two unrelated structs of the same size are
+    /// not interchangeable.
     let private haveSameCliShape (a : CliType) (b : CliType) : bool =
+        let a = CliType.unwrapPrimitiveLikeDeep a
+        let b = CliType.unwrapPrimitiveLikeDeep b
+
         match a, b with
         | CliType.Bool _, CliType.Bool _
         | CliType.Char _, CliType.Char _
@@ -90,9 +104,10 @@ module IlMachineManagedByref =
             | CliNumericType.Float64 _, CliNumericType.Float64 _ -> true
             | _ -> false
         | CliType.ValueType _, CliType.ValueType _ ->
-            // Two value-type cells with the same size could still be wholly
-            // unrelated structures; force the byte-walk path to reconstruct
-            // through the requested template rather than aliasing them.
+            // Both sides are non-primitive-like value types (otherwise the
+            // unwrap above would have peeled them away). Two structs with the
+            // same size could still be wholly unrelated, so force the byte-walk
+            // path to reconstruct through the requested template.
             false
         | _ -> false
 
@@ -246,9 +261,11 @@ module IlMachineManagedByref =
                             | ValueNone -> false
 
                     let preservesExistingShape =
-                        // `haveSameCliShape` is deliberately conservative for
-                        // value types, so byte-identical value-type writes
-                        // restamp rather than shortcut through this branch.
+                        // `haveSameCliShape` flattens primitive-like wrappers
+                        // and remains deliberately conservative for arbitrary
+                        // structs, so byte-identical writes between two unrelated
+                        // non-primitive-like value types restamp rather than
+                        // shortcut through this branch.
                         existingSize <> updatedSize || haveSameCliShape existing updated
 
                     if isNoop && preservesExistingShape then
@@ -757,22 +774,7 @@ module IlMachineManagedByref =
             match List.rev projs with
             | ByrefProjection.ByteOffset _ :: ByrefProjection.ReinterpretAs ty :: _
             | ByrefProjection.ReinterpretAs ty :: _ ->
-                // Flatten primitive-like single-field wrappers (IntPtr, UIntPtr,
-                // RuntimeTypeHandle, ...) before driving the byte-view read.
-                // Stored cells use the bare primitive shape (e.g. localloc'd
-                // `Span<IntPtr>` cells written by `Stind_I` are bare
-                // `Numeric (NativeInt ...)`), so the `tryReadCell` fast path in
-                // `readLocalMemoryBytesAs` needs the same shape on the template
-                // to preserve tagged provenance like `TypeHandlePtr` /
-                // `FieldHandlePtr`. Without the unwrap the read falls through
-                // to `LocalMemoryPool.readBytes`, which cannot serialise tagged
-                // sources and so rejects the otherwise-valid read used by the
-                // `RuntimeTypeHandle.Instantiate` / `ModuleHandle.ResolveType`
-                // QCalls. Non-primitive-like wrappers (structs proper) are
-                // unaffected: `unwrapPrimitiveLikeDeep` is a no-op there.
-                let targetTemplate =
-                    zeroForConcreteType baseClassTypes state ty |> CliType.unwrapPrimitiveLikeDeep
-
+                let targetTemplate = zeroForConcreteType baseClassTypes state ty
                 readManagedByrefBytesAs state src targetTemplate
             | ByrefProjection.ByteOffset n :: _ ->
                 failwith
