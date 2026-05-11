@@ -2620,6 +2620,82 @@ public unsafe struct PointerWrapper
         | other -> failwith $"expected FourBytes-shaped result from byte-walk path; got %O{other}"
 
     [<Test>]
+    let ``writeManagedByrefBytesOrTypedCell refuses to install wrapped IntPtr over bare tagged-NativeInt heap field``
+        ()
+        : unit
+        =
+        // Pins the strict (`sameCliConstructor`) shape predicate used by
+        // `tryWriteHeapValueFieldPrecise`. A widened `haveSameCliShape` here
+        // would let `WithFieldSetById` silently install a wrapped-IntPtr
+        // `newValue` into a heap field whose stored shape is bare
+        // `Numeric (NativeInt ...)`, corrupting the field's CLI shape (and,
+        // in the tagged-source case, losing provenance to boot).
+        //
+        // The corruption scenario is the natural composition of two
+        // already-supported flows: an earlier `Stind_I` deposits a
+        // non-byte-addressable `NativeIntSource` (e.g. `FieldHandlePtr` from
+        // `RuntimeFieldHandle.Value`) into a boxed `IntPtr`'s `_value`
+        // slot through a `HeapObjectField` byref, and a later
+        // `Unsafe.WriteUnaligned<IntPtr>` arrives over the box's `HeapValue`
+        // byref carrying a wrapped-IntPtr `newValue` produced by
+        // `cliTypeZeroOfHandle` + `toCliTypeCoerced`. With the strict
+        // comparator the field-precise fast path declines on shape mismatch
+        // and we fall through to byte scatter, which refuses the
+        // non-byte-addressable target loudly. With the widened comparator
+        // we would silently overwrite both the shape and the tag.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, _ =
+            stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Nop)
+
+        let boxedAddr, state = allocateBoxedIntPtr 0L state
+        let fieldId = intPtrValueFieldId ()
+        let taggedSource = NativeIntSource.FieldHandlePtr 0xBEEFL
+
+        let fieldPtr =
+            ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (boxedAddr, fieldId), [])
+
+        let state =
+            IlMachineState.writeManagedByref state fieldPtr (CliType.Numeric (CliNumericType.NativeInt taggedSource))
+
+        // The boxed IntPtr's `_value` field really is bare NativeInt with
+        // the tagged source — this is the precondition for the shape-
+        // corruption regression. If a future refactor canonicalises the
+        // field shape to wrapped form on install, this assertion will fail
+        // before the regression check itself, surfacing the unrelated
+        // representation drift rather than papering over it.
+        ManagedHeap.get boxedAddr state.ManagedHeap
+        |> _.Contents
+        |> CliValueType.DereferenceFieldById fieldId
+        |> shouldEqual (CliType.Numeric (CliNumericType.NativeInt taggedSource))
+
+        // The wrapped-IntPtr template `Unsafe.WriteUnaligned<IntPtr>`
+        // produces via `cliTypeZeroOfHandle` + `EvalStackValue.toCliTypeCoerced`.
+        let wrappedIntPtrNewValue, state =
+            IlMachineState.cliTypeZeroOfHandle state bct (handleFor bct.IntPtr)
+
+        match wrappedIntPtrNewValue with
+        | CliType.ValueType vt when vt.PrimitiveLikeKind.IsSome -> ()
+        | other -> failwith $"expected cliTypeZeroOfHandle for IntPtr to return a primitive-like wrapper; got %O{other}"
+
+        let heapPtr = ManagedPointerSource.Byref (ByrefRoot.HeapValue boxedAddr, [])
+
+        Assert.Throws<System.Exception> (fun () ->
+            IlMachineState.writeManagedByrefBytesOrTypedCell state heapPtr wrappedIntPtrNewValue
+            |> ignore
+        )
+        |> ignore
+
+        // The field cell is genuinely unchanged: same constructor (bare
+        // NativeInt, not wrapped ValueType) and same tagged source. A
+        // regression to the widened comparator would have installed the
+        // wrapped value instead.
+        ManagedHeap.get boxedAddr state.ManagedHeap
+        |> _.Contents
+        |> CliValueType.DereferenceFieldById fieldId
+        |> shouldEqual (CliType.Numeric (CliNumericType.NativeInt taggedSource))
+
+    [<Test>]
     let ``Stind_I8 preserves tagged int64 provenance for exact-width typed destinations`` () : unit =
         let observedSources = HashSet<Int64Source> ()
         let observedDestinations = HashSet<TaggedInt64Destination> ()
