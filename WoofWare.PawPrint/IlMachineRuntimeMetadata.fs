@@ -528,6 +528,26 @@ module IlMachineRuntimeMetadata =
 
         addr, state
 
+    /// Return the address of the canonical empty managed string, allocating it lazily
+    /// on first request. This is the single shared instance that backs both `ldstr ""`
+    /// and `ldsfld System.String::Empty`, satisfying the CLR's invariant that
+    /// `ReferenceEquals(string.Empty, "")` holds.
+    let internCanonicalEmptyString
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        : ManagedHeapAddress * IlMachineState
+        =
+        match state.InternedStrings.TryGetValue "" with
+        | true, addr -> addr, state
+        | false, _ ->
+            let addr, state = allocateManagedString loggerFactory baseClassTypes "" state
+
+            addr,
+            { state with
+                InternedStrings = state.InternedStrings.Add ("", addr)
+            }
+
     let private concreteTypeFullName (state : IlMachineState) (ty : ConcreteType<ConcreteTypeHandle>) : string =
         match state.LoadedAssembly ty.Assembly with
         | Some assy -> Assembly.fullName assy ty.Identity

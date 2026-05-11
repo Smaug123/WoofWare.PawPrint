@@ -20,8 +20,7 @@ module TestPureCases =
             "AdvancedStructLayout.cs" // blocked after fixed-buffer pointer arithmetic by MarshalNative_SizeOfHelper for ByValTStr string marshalling
             "LdtokenField.cs" // past Volatile.Write of an object reference; now blocked by unimplemented InternalCall System.Buffer::BulkMoveWithWriteBarrierInternal during reflection-cache update
             "RuntimeFieldHandleGetUtf8Name.cs" // exercises RuntimeFieldHandle::GetUtf8NameInternal, RuntimeTypeHandle::GetInterfaces, and Volatile.Write of object refs successfully; now blocked at the next step by unimplemented InternalCall System.Buffer::BulkMoveWithWriteBarrierInternal
-            "RuntimeTypeGetInterfacesEmpty.cs" // past RuntimeTypeHandle::GetInterfaces QCall; now blocked by unimplemented QCall Environment_FailFast (same as ArraySortHelperDefaultInt.cs)
-            "RuntimeTypeGetInterfacesInherited.cs" // exercises the QCall's inherited-base + transitive-interface walk; same Environment_FailFast blocker as RuntimeTypeGetInterfacesEmpty.cs
+            "RuntimeTypeGetInterfacesInherited.cs" // exercises the QCall's inherited-base + transitive-interface walk; now blocked by unimplemented InternalCall System.Buffer::BulkMoveWithWriteBarrierInternal during reflection-cache update
             "CrossAssemblyTypes.cs" // past MethodTable::ParentMethodTable projection; now blocked by unimplemented QCall EventPipeInternal_CreateProvider during static init of System.Diagnostics.Tracing.EventPipeInternal
             "InterfaceDispatch.cs" // past MetadataImport::GetCustomAttributeProps; now blocked by unimplemented InternalCall MetadataImport::GetParentToken
             "NullDereferenceTest.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
