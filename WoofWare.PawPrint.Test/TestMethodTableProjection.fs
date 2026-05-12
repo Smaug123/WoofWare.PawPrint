@@ -3079,14 +3079,71 @@ public unsafe struct PointerWrapper
             ]
 
     [<Test>]
-    let ``RawData data projection rejects array addresses`` () : unit =
+    let ``RawData data projects array as byte byref before element 0`` () : unit =
+        // CoreCLR's `Unsafe.As<RawData>(arr).Data` lands at the array's length-and-padding
+        // header, `sizeof(nint)` bytes before the first element. PawPrint models that
+        // "before-element-0" position by anchoring at `ArrayElement(arr, 0)` with a trailing
+        // negative `ByteOffset` so the canonical `+sizeof(nint)` skip used by callers like
+        // `CastCache.TableData` collapses cleanly to `&array[0]` via the existing
+        // `ManagedPointerSource` offset arithmetic.
         let state = state ()
         let arrayAddr, state = allocateIntArray 1 state
+        let byteView = concreteTypeFor bct.Byte
+
+        let nativeIntSize =
+            CliType.sizeOf (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
+
+        let ptr = projectRawDataDataPointer arrayAddr state
+
+        match ptr with
+        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (actualAddr, 0),
+                                      [ ByrefProjection.ReinterpretAs view ; ByrefProjection.ByteOffset offset ]) ->
+            actualAddr |> shouldEqual arrayAddr
+            view |> shouldEqual byteView
+            offset |> shouldEqual (-nativeIntSize)
+        | other -> failwith $"Expected RawData::Data on array to project as byte byref before element 0, got %O{other}"
+
+        // The canonical `+sizeof(nint)` skip should collapse the negative offset, leaving
+        // a clean byte byref at `&array[0]`.
+        let skipped =
+            ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset nativeIntSize) ptr
+
+        match skipped with
+        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (actualAddr, 0), [ ByrefProjection.ReinterpretAs view ]) ->
+            actualAddr |> shouldEqual arrayAddr
+            view |> shouldEqual byteView
+        | other ->
+            failwith
+                $"Expected canonical +sizeof(nint) skip to collapse to a clean byte byref at &array[0], got %O{other}"
+
+    [<Test>]
+    let ``RawData data projection rejects multi-dimensional arrays`` () : unit =
+        // CoreCLR places `2 * rank` int32 bounds entries between the length header and the
+        // first element of an MD array (`MethodTableProjection.baseSize` models this as
+        // `(3 + rank) * NATIVE_INT_SIZE`). The SZ-array projection's canonical
+        // `+sizeof(nint)` skip would therefore not land on element 0 for MD arrays, so the
+        // projection must refuse them rather than silently produce a byref to the bounds
+        // region. We fail loudly with a TODO that names the rank so a future caller knows
+        // exactly what needs modelling.
+        let state = state ()
+
+        let arrayType = ConcreteTypeHandle.Array (handleFor bct.Int32, 2)
+
+        let arrayAddr, state =
+            IlMachineState.allocateMultiDimArray
+                arrayType
+                (fun () -> CliType.Numeric (CliNumericType.Int32 0))
+                (ImmutableArray.Create<int> (2, 3))
+                state
 
         let ex =
-            Assert.Throws<System.Exception> (fun () -> projectRawDataDataPointer arrayAddr state |> ignore)
+            Assert.Throws<System.Exception> (fun () ->
+                RuntimeFieldProjection.tryProjectFieldAddress bct (rawDataField "Data") arrayAddr state
+                |> ignore
+            )
 
-        ex.Message |> shouldContainText "got array"
+        ex.Message
+        |> shouldContainText "TODO: RawData::Data projection for multi-dimensional array (rank 2)"
 
     [<Test>]
     let ``RawData data projects reference-type heap object as a byte-view byref`` () : unit =

@@ -258,11 +258,15 @@ module ManagedHeap =
 
     let getArrayValue (alloc : ManagedHeapAddress) (offset : int) (heap : ManagedHeap) : CliType =
         match heap.Arrays.TryGetValue alloc with
-        | false, _ -> failwith "TODO: array not on heap"
+        | false, _ -> failwith $"TODO: array not on heap (no array registered at %O{alloc})"
         | true, arr ->
 
-        if offset < 0 || offset >= arr.Length then
-            failwith "TODO: raise IndexOutOfBoundsException"
+        if offset < 0 then
+            failwith
+                $"TODO: raise IndexOutOfRangeException: negative array index %d{offset} on array at %O{alloc} (length %d{arr.Length}). A negative index here typically means a byref obtained via `RawData::Data` on an array was read without first applying the canonical `+sizeof(nint)` skip past the length-header region; if you intended to read the length, use `RawArrayData::Length` instead."
+        elif offset >= arr.Length then
+            failwith
+                $"TODO: raise IndexOutOfRangeException: array index %d{offset} >= length %d{arr.Length} on array at %O{alloc}"
 
         arr.Elements.[offset]
 
@@ -283,10 +287,14 @@ module ManagedHeap =
                 alloc
                 (fun arr ->
                     match arr with
-                    | None -> failwith "tried to change element of nonexistent array"
+                    | None -> failwith $"tried to change element of nonexistent array at %O{alloc}"
                     | Some arr ->
-                        if offset < 0 || offset >= arr.Elements.Length then
-                            failwith "TODO: throw somehow"
+                        if offset < 0 then
+                            failwith
+                                $"TODO: raise IndexOutOfRangeException: negative array index %d{offset} on array at %O{alloc} (length %d{arr.Elements.Length}). A negative index here typically means a byref obtained via `RawData::Data` on an array was written without first applying the canonical `+sizeof(nint)` skip past the length-header region."
+                        elif offset >= arr.Elements.Length then
+                            failwith
+                                $"TODO: raise IndexOutOfRangeException: array index %d{offset} >= length %d{arr.Elements.Length} on array at %O{alloc}"
 
                         { arr with
                             Elements = arr.Elements.SetItem (offset, v)

@@ -110,24 +110,40 @@ module internal RuntimeFieldProjection =
                 | false, _ ->
                     $"<missing TypeDef %O{concrete.Definition.Get} in %s{assembly.Name.Name}> (concrete %O{handle})"
 
-    /// `RawData::Data` projects to a byref over the instance data of any non-array heap object.
+    /// `RawData::Data` projects to a byref over the instance data of any heap object.
     /// For boxed value types this is the boxed payload; for reference types this is the
-    /// instance fields (the method-table header is implicit in PawPrint's storage model). Both
-    /// cases share the same byte-view shape; rejecting reference types here would block
-    /// reflection/EventSource code paths whose `obj.GetRawData()` walks reach reference fields
-    /// via byte-arithmetic plus typed reinterpret. Per-byte safety is enforced when the byref
-    /// is read or written, so the projection only needs to fail for arrays.
-    let private requireNonArrayHeapObject (addr : ManagedHeapAddress) (state : IlMachineState) : unit =
-        match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
-        | true, _ -> ()
-        | false, _ ->
-            let arrayDescription =
-                match state.ManagedHeap.Arrays.TryGetValue addr with
-                | true, arr -> describeConcreteType state arr.ConcreteType
-                | false, _ -> "<no heap object at this address>"
+    /// instance fields (the method-table header is implicit in PawPrint's storage model).
+    /// For SZ arrays, CoreCLR places `RawData::Data` at the start of the length-and-padding
+    /// header (`sizeof(nint)` bytes before the first element); see the layout diagram in
+    /// `RuntimeHelpers.CoreCLR.cs:622-638`. Both non-array cases share the same byte-view
+    /// shape over `HeapValue`; the SZ-array case starts at `ArrayElement(arr, 0)` carrying
+    /// a trailing negative `ByteOffset` so the canonical `+sizeof(nint)` skip used by
+    /// `CastCache.TableData` collapses cleanly to `&array[0]` via the existing
+    /// `ManagedPointerSource` offset arithmetic.
+    ///
+    /// MD arrays are explicitly *not* supported by this projection. CoreCLR places
+    /// `2 * rank` int32 bounds entries (lengths and lower bounds) between the length
+    /// header and the first element, so the canonical `+sizeof(nint)` arithmetic that
+    /// works for SZ arrays would land in the middle of the bounds region rather than at
+    /// element 0. `MethodTableProjection.baseSize` already accounts for this with
+    /// `(3 + rank) * NATIVE_INT_SIZE`. We fail loudly here rather than silently produce a
+    /// byref to the wrong location.
+    ///
+    /// Per-byte safety is enforced when the byref is read or written, so the projection
+    /// itself only needs to confirm a heap object exists.
+    let private requireHeapObject (addr : ManagedHeapAddress) (state : IlMachineState) : unit =
+        let exists =
+            state.ManagedHeap.NonArrayObjects.ContainsKey addr
+            || state.ManagedHeap.Arrays.ContainsKey addr
 
-            failwith
-                $"RawData::Data projection expected non-array heap object at %O{addr}, got array %s{arrayDescription}"
+        if not exists then
+            failwith $"RawData::Data projection expected heap object at %O{addr}, but no such object exists"
+
+    /// Size of `nint` on the guest. PawPrint targets 64-bit guests exclusively, so this is
+    /// always 8, but routing through `CliType.sizeOf` keeps the contract explicit and matches
+    /// the helper in `Native/NativeRuntimeType.fs`.
+    let private nativeIntSize : int =
+        CliType.sizeOf (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
 
     let private tryProjectRawDataFieldAddress
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -141,16 +157,50 @@ module internal RuntimeFieldProjection =
         else
             match field.Name with
             | "Data" ->
-                requireNonArrayHeapObject addr state
+                requireHeapObject addr state
 
-                // The projection establishes the runtime storage identity only.
-                // Payload byte-view safety, including object-reference and layout
-                // checks, is enforced when the byref is read or written.
-                ManagedPointerSource.Byref (
-                    ByrefRoot.HeapValue addr,
-                    [ ByrefProjection.ReinterpretAs (byteConcreteType baseClassTypes state) ]
-                )
-                |> Some
+                let byteView = ByrefProjection.ReinterpretAs (byteConcreteType baseClassTypes state)
+
+                match state.ManagedHeap.Arrays.TryGetValue addr with
+                | true, arr ->
+                    // CoreCLR's `Unsafe.As<RawData>(arr).Data` is a byref to the array's
+                    // length-and-padding header, `sizeof(nint)` bytes before the first
+                    // element on SZ arrays. We model that "before-element-0" position by
+                    // anchoring at ArrayElement(arr, 0) with a trailing negative byte
+                    // offset under the byte view. The canonical follow-up arithmetic
+                    // `Unsafe.AddByteOffset(rawData, sizeof(nint))` collapses this offset
+                    // to zero via the existing ByteOffset-pair rule in ManagedPointerSource
+                    // (see `appendProjection` collapse on `n = -m`), leaving &array[0] as
+                    // a clean byte byref. Reads at the raw byref position (i.e. before any
+                    // forward skip) would land at ArrayElement(arr, -k) and fail at the
+                    // array-access boundary with a tightened error message; this is the
+                    // intended degradation for any caller that tries to read the
+                    // length-header bytes through `RawData::Data` rather than via
+                    // `RawArrayData::Length`.
+                    //
+                    // MD arrays have `2 * rank` int32 bounds entries between the length
+                    // header and the first element, so the canonical `+sizeof(nint)`
+                    // arithmetic would not land on element 0. Rather than synthesise a
+                    // byref to the bounds region (which no current caller wants), refuse
+                    // the projection and surface the layout mismatch.
+                    match arr.ConcreteType with
+                    | ConcreteTypeHandle.OneDimArrayZero _ ->
+                        ManagedPointerSource.Byref (
+                            ByrefRoot.ArrayElement (addr, 0),
+                            [ byteView ; ByrefProjection.ByteOffset (-nativeIntSize) ]
+                        )
+                        |> Some
+                    | ConcreteTypeHandle.Array (_, rank) ->
+                        failwith
+                            $"TODO: RawData::Data projection for multi-dimensional array (rank %i{rank}) at %O{addr}; CoreCLR places %i{2 * rank} int32 bounds entries between the length header and element data, which this projection does not yet model"
+                    | other ->
+                        failwith
+                            $"RawData::Data projection encountered array at %O{addr} whose ConcreteType is not an array handle: %O{other}"
+                | false, _ ->
+                    // Non-array heap object: byref to the start of instance data.
+                    // Payload byte-view safety, including object-reference and layout
+                    // checks, is enforced when the byref is read or written.
+                    ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [ byteView ]) |> Some
             | _ ->
                 failwith
                     $"TODO: RawData field address projection for System.Runtime.CompilerServices.RawData::{field.Name}"
