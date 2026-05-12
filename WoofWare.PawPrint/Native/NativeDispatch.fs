@@ -7,6 +7,7 @@ module NativeDispatch =
             NativeEnvironment.tryExecute
             NativeMonitor.tryExecute
             NativeMarshal.tryExecute
+            NativeBuffer.tryExecute
             NativeQCall.tryExecute
             // QCall migration note: some name-based native handlers below still model
             // CoreCLR QCalls on newer runtimes. Move each to NativeQCall as its import

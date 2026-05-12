@@ -199,3 +199,58 @@ module NativeBuffer =
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | _ -> None
+
+    /// Dispatches the InternalCall (FCall) variants of `System.Buffer` that
+    /// take byref `byte` endpoints rather than the QCall pointer endpoints.
+    /// `BulkMoveWithWriteBarrierInternal` is the BCL's primitive for moving
+    /// runs of bytes that may contain object references; the CLR uses GC
+    /// write barriers on the underlying raw memory, but PawPrint's managed
+    /// storage already preserves reference identity through byref writes,
+    /// so the operation reduces to the same byte-wise copy used by
+    /// `Buffer_MemMove`.
+    let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
+        let state = ctx.State
+        let instruction = ctx.Instruction
+
+        match
+            ctx.TargetAssembly.Name.Name,
+            ctx.TargetType.Namespace,
+            ctx.TargetType.Name,
+            instruction.ExecutingMethod.Name,
+            instruction.ExecutingMethod.Signature.ParameterTypes,
+            instruction.ExecutingMethod.Signature.ReturnType
+        with
+        | "System.Private.CoreLib",
+          "System",
+          "Buffer",
+          "BulkMoveWithWriteBarrierInternal",
+          [ ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
+            ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
+            ConcreteUIntPtr state.ConcreteTypes ],
+          MethodReturnType.Void ->
+            let operation = "Buffer_BulkMoveWithWriteBarrierInternal"
+
+            if instruction.Arguments.Length <> 3 then
+                failwith
+                    $"%s{operation}: expected three native arguments after matching signature, got %d{instruction.Arguments.Length}"
+
+            let dest =
+                NativeCall.managedPointerOfPointerArgument operation "dest" instruction.Arguments.[0]
+
+            let src =
+                NativeCall.managedPointerOfPointerArgument operation "src" instruction.Arguments.[1]
+
+            let byteCount = byteCountOfArgument operation instruction.Arguments.[2]
+
+            // CoreCLR's FCall short-circuits `dst == src` and `byteCount == 0`
+            // (see comutilnative.cpp). The byte-wise copy already produces a
+            // no-op for the former; we guard explicitly on the latter to skip
+            // the loop and the byte-template lookup.
+            let state =
+                if byteCount = 0 then
+                    state
+                else
+                    copy ctx.BaseClassTypes state dest src byteCount
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | _ -> None

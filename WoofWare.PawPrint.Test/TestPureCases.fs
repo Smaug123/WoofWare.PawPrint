@@ -18,9 +18,9 @@ module TestPureCases =
     let unimplemented =
         [
             "AdvancedStructLayout.cs" // blocked after fixed-buffer pointer arithmetic by MarshalNative_SizeOfHelper for ByValTStr string marshalling
-            "LdtokenField.cs" // past Volatile.Write of an object reference; now blocked by unimplemented InternalCall System.Buffer::BulkMoveWithWriteBarrierInternal during reflection-cache update
-            "RuntimeFieldHandleGetUtf8Name.cs" // exercises RuntimeFieldHandle::GetUtf8NameInternal, RuntimeTypeHandle::GetInterfaces, and Volatile.Write of object refs successfully; now blocked at the next step by unimplemented InternalCall System.Buffer::BulkMoveWithWriteBarrierInternal
-            "RuntimeTypeGetInterfacesInherited.cs" // exercises the QCall's inherited-base + transitive-interface walk; now blocked by unimplemented InternalCall System.Buffer::BulkMoveWithWriteBarrierInternal during reflection-cache update
+            "LdtokenField.cs" // past InternalCall System.Buffer::BulkMoveWithWriteBarrierInternal; now blocked during reflection-cache update because Buffer's byte-wise copy refuses to byte-view object-reference array cells (`validateByteAddressableCell` rejects ObjectRef storage)
+            "RuntimeFieldHandleGetUtf8Name.cs" // exercises RuntimeFieldHandle::GetUtf8NameInternal, RuntimeTypeHandle::GetInterfaces, and Volatile.Write of object refs successfully; now blocked at the next step in the reflection-cache copy by `validateByteAddressableCell` refusing to byte-view object-reference cells inside Buffer::BulkMoveWithWriteBarrierInternal
+            "RuntimeTypeGetInterfacesInherited.cs" // exercises the QCall's inherited-base + transitive-interface walk; now blocked during the reflection-cache update by `validateByteAddressableCell` refusing to byte-view object-reference cells inside Buffer::BulkMoveWithWriteBarrierInternal
             "CrossAssemblyTypes.cs" // past MethodTable::ParentMethodTable projection; now blocked by unimplemented QCall EventPipeInternal_CreateProvider during static init of System.Diagnostics.Tracing.EventPipeInternal
             "InterfaceDispatch.cs" // past MetadataImport::GetCustomAttributeProps; now blocked by unimplemented InternalCall MetadataImport::GetParentToken
             "NullDereferenceTest.cs" // past CastHelpers.s_table lazy-init and RawData::Data projection on arrays; now blocked by unimplemented JIT intrinsic System.Runtime.CompilerServices.Unsafe.AddByteOffset(&, System.IntPtr) inside CastCache.TableData
