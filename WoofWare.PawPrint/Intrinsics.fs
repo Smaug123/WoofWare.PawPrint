@@ -1897,6 +1897,15 @@ module Intrinsics =
             // case where the source already has a `ReinterpretAs T` (idempotent) or a
             // `[ReinterpretAs T; ByteOffset n]` tail whose `n` cancels the new offset (e.g.
             // `RawData::Data` on an array followed by the canonical `+sizeof(nint)` skip).
+            //
+            // The byte-view path requires the reinterpret target's storage to be
+            // byte-addressable on read. Object references (and value types containing
+            // them) deliberately are not, so a naturally-typed byref to such cells
+            // must stay in its natural form. We short-circuit when (a) the source
+            // is itself naturally-typed (no trailing byte-view tail) and (b) the
+            // byte offset is a whole-cell multiple, so the result is still
+            // expressible without a reinterpret tail. The general byte-view path
+            // handles all other shapes.
             let normalisation =
                 match srcPtr with
                 | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, _), _) ->
@@ -1911,8 +1920,48 @@ module Intrinsics =
                     ByteOffsetNormalisationContext.withArrayElementSize arr elementSize
                 | _ -> ByteOffsetNormalisationContext.fixedStrideRootsOnly
 
+            let typedShortcut : ManagedPointerSource option =
+                match srcPtr with
+                | ManagedPointerSource.Byref (root, projs) ->
+                    let hasByteViewTail =
+                        match List.tryLast projs with
+                        | Some (ByrefProjection.ReinterpretAs _)
+                        | Some (ByrefProjection.ByteOffset _) -> true
+                        | _ -> false
+
+                    if hasByteViewTail then
+                        None
+                    elif offset = 0 then
+                        // Zero-byte advance on a naturally-typed byref is the identity;
+                        // returning the source preserves the typed view that the bytewise
+                        // path would otherwise destroy by appending a `ReinterpretAs T`.
+                        Some srcPtr
+                    else
+                        match root, projs with
+                        | ByrefRoot.ArrayElement (arr, i), [] ->
+                            let arrObj = state.ManagedHeap.Arrays.[arr]
+
+                            if arrObj.Length = 0 then
+                                None
+                            else
+                                let elementSize = CliType.sizeOf arrObj.Elements.[0]
+
+                                if elementSize > 0 && offset % elementSize = 0 then
+                                    Some (
+                                        ManagedPointerSource.Byref (
+                                            ByrefRoot.ArrayElement (arr, i + offset / elementSize),
+                                            []
+                                        )
+                                    )
+                                else
+                                    None
+                        | _ -> None
+                | _ -> None
+
             let ptr =
-                ManagedPointerSource.addByteOffsetUnderReinterpret normalisation tConcrete offset srcPtr
+                match typedShortcut with
+                | Some p -> p
+                | None -> ManagedPointerSource.addByteOffsetUnderReinterpret normalisation tConcrete offset srcPtr
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) currentThread
