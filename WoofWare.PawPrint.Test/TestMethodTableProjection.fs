@@ -2522,6 +2522,180 @@ public unsafe struct PointerWrapper
         |> shouldEqual taggedHandle
 
     [<Test>]
+    let ``readManagedByrefBytesAs with wrapped IntPtr template preserves tagged NativeIntSource`` () : unit =
+        // Regression for `Unsafe.ReadUnaligned<IntPtr>` (Intrinsics.fs) and any
+        // other byte-view caller whose `tZero` template comes from
+        // `cliTypeZeroOfHandle` for a primitive-like wrapper. The template is
+        // the wrapped value-type form of IntPtr; the byte-view read must still
+        // recognise that a stored bare `Numeric (NativeInt ...)` cell — written
+        // by e.g. `Stind_I` from another path — is byte-equivalent to the
+        // requested template, so the fast path returns the cell as-is with its
+        // tagged `NativeIntSource` provenance intact. Without the `haveSameCliShape`
+        // widening, the read falls through to `LocalMemoryPool.readBytes`,
+        // which cannot serialise tagged sources and rejects the otherwise-valid
+        // read.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread =
+            stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Nop)
+
+        let bareLocallocPtr, state =
+            IlMachineState.allocateLocalMemory thread LocalMemoryInitialization.ZeroInitialized 8 state
+
+        let taggedHandle =
+            CliType.Numeric (
+                CliNumericType.NativeInt (
+                    NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed (handleFor bct.Int32))
+                )
+            )
+
+        let state = IlMachineState.writeManagedByref state bareLocallocPtr taggedHandle
+
+        let wrappedIntPtrTemplate, state =
+            IlMachineState.cliTypeZeroOfHandle state bct (handleFor bct.IntPtr)
+
+        // Sanity-check the template is the wrapped form (the regression
+        // assumes that `cliTypeZeroOfHandle` returns a primitive-like wrapper
+        // for `IntPtr`; if that ever changes, this regression must be revisited
+        // because the exposure shape will be different).
+        match wrappedIntPtrTemplate with
+        | CliType.ValueType vt when vt.PrimitiveLikeKind.IsSome -> ()
+        | other -> failwith $"expected cliTypeZeroOfHandle for IntPtr to return a primitive-like wrapper; got %O{other}"
+
+        IlMachineState.readManagedByrefBytesAs state bareLocallocPtr wrappedIntPtrTemplate
+        |> CliType.unwrapPrimitiveLikeDeep
+        |> shouldEqual taggedHandle
+
+    [<Test>]
+    let ``readManagedByrefBytesAs takes byte-walk path for non-primitive-like struct template over bare primitive cell``
+        ()
+        : unit
+        =
+        // Pins the half of `haveSameCliShape` that *doesn't* widen: non-primitive-like
+        // value-type templates (e.g. multi-field structs) must not fast-path against
+        // bare-primitive cells of the same size, because the resulting CLI shape would
+        // be silently misinterpreted. The byte-walk fallback is correct here: it reads
+        // the four bytes of the Int32 cell and reconstructs a `FourBytes` value with
+        // the bytes populated as fields. If the comparator widened too far (e.g. a
+        // future change collapsing `ValueType` shape comparison to size-equality),
+        // this test would fail because the fast path would return the bare Int32 cell
+        // verbatim.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let types = reinterpretWriteTypes loggerFactory
+
+        let state, thread =
+            stateWithSingleInstructionFromState loggerFactory (IlOp.Nullary NullaryIlOp.Nop) types.State
+
+        let ptr, state =
+            IlMachineState.allocateLocalMemory thread LocalMemoryInitialization.ZeroInitialized 4 state
+
+        let bareInt32Cell = CliType.Numeric (CliNumericType.Int32 0x04030201)
+        let state = IlMachineState.writeManagedByref state ptr bareInt32Cell
+
+        let fourBytesHandle =
+            AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes types.FourBytesConcrete.Identity
+            |> Option.defaultWith (fun () -> failwith "FourBytes handle missing")
+
+        let fourBytesTemplate, state =
+            IlMachineState.cliTypeZeroOfHandle state bct fourBytesHandle
+
+        // Sanity-check the template is non-primitive-like.
+        match fourBytesTemplate with
+        | CliType.ValueType vt when vt.PrimitiveLikeKind.IsNone -> ()
+        | other -> failwith $"expected FourBytes to be a non-primitive-like value type; got %O{other}"
+
+        let result = IlMachineState.readManagedByrefBytesAs state ptr fourBytesTemplate
+
+        match result with
+        | CliType.ValueType vt ->
+            vt.PrimitiveLikeKind |> shouldEqual None
+
+            let readField (fieldIndex : int) : byte =
+                match CliValueType.DereferenceFieldById types.FourBytesFields.[fieldIndex] vt with
+                | CliType.Numeric (CliNumericType.UInt8 b) -> b
+                | other -> failwith $"FourBytes::B%d{fieldIndex} was not UInt8: %O{other}"
+
+            [| readField 0 ; readField 1 ; readField 2 ; readField 3 |]
+            |> shouldEqual (System.BitConverter.GetBytes 0x04030201)
+        | other -> failwith $"expected FourBytes-shaped result from byte-walk path; got %O{other}"
+
+    [<Test>]
+    let ``writeManagedByrefBytesOrTypedCell refuses to install wrapped IntPtr over bare tagged-NativeInt heap field``
+        ()
+        : unit
+        =
+        // Pins the strict (`sameCliConstructor`) shape predicate used by
+        // `tryWriteHeapValueFieldPrecise`. A widened `haveSameCliShape` here
+        // would let `WithFieldSetById` silently install a wrapped-IntPtr
+        // `newValue` into a heap field whose stored shape is bare
+        // `Numeric (NativeInt ...)`, corrupting the field's CLI shape (and,
+        // in the tagged-source case, losing provenance to boot).
+        //
+        // The corruption scenario is the natural composition of two
+        // already-supported flows: an earlier `Stind_I` deposits a
+        // non-byte-addressable `NativeIntSource` (e.g. `FieldHandlePtr` from
+        // `RuntimeFieldHandle.Value`) into a boxed `IntPtr`'s `_value`
+        // slot through a `HeapObjectField` byref, and a later
+        // `Unsafe.WriteUnaligned<IntPtr>` arrives over the box's `HeapValue`
+        // byref carrying a wrapped-IntPtr `newValue` produced by
+        // `cliTypeZeroOfHandle` + `toCliTypeCoerced`. With the strict
+        // comparator the field-precise fast path declines on shape mismatch
+        // and we fall through to byte scatter, which refuses the
+        // non-byte-addressable target loudly. With the widened comparator
+        // we would silently overwrite both the shape and the tag.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, _ =
+            stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Nop)
+
+        let boxedAddr, state = allocateBoxedIntPtr 0L state
+        let fieldId = intPtrValueFieldId ()
+        let taggedSource = NativeIntSource.FieldHandlePtr 0xBEEFL
+
+        let fieldPtr =
+            ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (boxedAddr, fieldId), [])
+
+        let state =
+            IlMachineState.writeManagedByref state fieldPtr (CliType.Numeric (CliNumericType.NativeInt taggedSource))
+
+        // The boxed IntPtr's `_value` field really is bare NativeInt with
+        // the tagged source — this is the precondition for the shape-
+        // corruption regression. If a future refactor canonicalises the
+        // field shape to wrapped form on install, this assertion will fail
+        // before the regression check itself, surfacing the unrelated
+        // representation drift rather than papering over it.
+        ManagedHeap.get boxedAddr state.ManagedHeap
+        |> _.Contents
+        |> CliValueType.DereferenceFieldById fieldId
+        |> shouldEqual (CliType.Numeric (CliNumericType.NativeInt taggedSource))
+
+        // The wrapped-IntPtr template `Unsafe.WriteUnaligned<IntPtr>`
+        // produces via `cliTypeZeroOfHandle` + `EvalStackValue.toCliTypeCoerced`.
+        let wrappedIntPtrNewValue, state =
+            IlMachineState.cliTypeZeroOfHandle state bct (handleFor bct.IntPtr)
+
+        match wrappedIntPtrNewValue with
+        | CliType.ValueType vt when vt.PrimitiveLikeKind.IsSome -> ()
+        | other -> failwith $"expected cliTypeZeroOfHandle for IntPtr to return a primitive-like wrapper; got %O{other}"
+
+        let heapPtr = ManagedPointerSource.Byref (ByrefRoot.HeapValue boxedAddr, [])
+
+        Assert.Throws<System.Exception> (fun () ->
+            IlMachineState.writeManagedByrefBytesOrTypedCell state heapPtr wrappedIntPtrNewValue
+            |> ignore
+        )
+        |> ignore
+
+        // The field cell is genuinely unchanged: same constructor (bare
+        // NativeInt, not wrapped ValueType) and same tagged source. A
+        // regression to the widened comparator would have installed the
+        // wrapped value instead.
+        ManagedHeap.get boxedAddr state.ManagedHeap
+        |> _.Contents
+        |> CliValueType.DereferenceFieldById fieldId
+        |> shouldEqual (CliType.Numeric (CliNumericType.NativeInt taggedSource))
+
+    [<Test>]
     let ``Stind_I8 preserves tagged int64 provenance for exact-width typed destinations`` () : unit =
         let observedSources = HashSet<Int64Source> ()
         let observedDestinations = HashSet<TaggedInt64Destination> ()
