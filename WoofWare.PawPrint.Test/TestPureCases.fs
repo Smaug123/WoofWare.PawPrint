@@ -43,6 +43,8 @@ module TestPureCases =
             "InitializeArrayBoxedFieldHandle.cs" // past String::FastAllocateString(MethodTable*, nint); now blocked by unimplemented MethodTable field projection for ParentMethodTable
             "ArraySortHelperDefaultInt.cs" // past Environment_FailFast QCall (now wired up); now blocked downstream by ResourceManager hitting infinite recursion looking up 'Arg_NullReferenceException' in System.Private.CoreLib, which the BCL escalates to Environment.FailFast
             "GenericEdgeCases.cs" // past Unsafe.CopyBlockUnaligned JIT intrinsic; now blocked downstream by ResourceManager hitting infinite recursion looking up 'Arg_NullReferenceException' in System.Private.CoreLib, which the BCL escalates to Environment.FailFast (same blocker as ArraySortHelperDefaultInt.cs)
+            "IntPtrZero.cs" // `IntPtr.Zero` is `[Intrinsic]` with no IL initialiser; the JIT recognises `CORINFO_FIELD_INTRINSIC_ZERO` but the interpreter reads the static slot, where `cliTypeZeroOf` populates `NativeIntSource.ManagedPointer Null`. The C# inequality `zero != default(IntPtr)` lowers to `cgt.un(zero, (nint)0)`, and `EvalStackValueComparisons.cgtUn` has no case relating `ManagedPointer Null` to `Verbatim 0L` (it only handles ManagedPointer-vs-ManagedPointer)
+            "UIntPtrZero.cs" // same blocker as IntPtrZero.cs: `cliTypeZeroOf` for `UIntPtr` is `NativeIntSource.ManagedPointer Null`, and `cgt.un(ManagedPointer Null, Verbatim 0L)` is unimplemented
         ]
         |> Set.ofList
 
