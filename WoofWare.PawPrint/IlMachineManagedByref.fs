@@ -63,14 +63,15 @@ module IlMachineManagedByref =
 
             equal
 
-    /// True iff the two values have the same primitive shape (same top-level
-    /// `CliType` constructor, and for `Numeric` the same `CliNumericType`
-    /// constructor). Returning a cell as-is when the requested template has a
-    /// different shape would silently produce, for example, an `Int32` value
-    /// where the caller asked for a `Float32` (their bit patterns differ in
-    /// meaning even when the size matches), so the typed-cell fast paths gate
-    /// on shape equality before short-circuiting the byte-walk reconstruction.
-    let private haveSameCliShape (a : CliType) (b : CliType) : bool =
+    /// Constructor-level shape comparison: true iff `a` and `b` share the same
+    /// top-level `CliType` constructor (and, for `Numeric`, the same
+    /// `CliNumericType` constructor). Used as the shared primitive by both the
+    /// strict and the widened comparators below; not called directly by the
+    /// fast-path sites. Two value-type cells of the same size could still be
+    /// wholly unrelated structures, so this returns `false` for the
+    /// `ValueType, ValueType` pair and lets the byte-walk path reconstruct
+    /// through the requested template.
+    let private sameCliConstructor (a : CliType) (b : CliType) : bool =
         match a, b with
         | CliType.Bool _, CliType.Bool _
         | CliType.Char _, CliType.Char _
@@ -89,12 +90,45 @@ module IlMachineManagedByref =
             | CliNumericType.Float32 _, CliNumericType.Float32 _
             | CliNumericType.Float64 _, CliNumericType.Float64 _ -> true
             | _ -> false
-        | CliType.ValueType _, CliType.ValueType _ ->
-            // Two value-type cells with the same size could still be wholly
-            // unrelated structures; force the byte-walk path to reconstruct
-            // through the requested template rather than aliasing them.
-            false
+        | CliType.ValueType _, CliType.ValueType _ -> false
         | _ -> false
+
+    /// True iff the two values have the same primitive shape *after* peeling
+    /// primitive-like single-field wrappers (`IntPtr`, `RuntimeTypeHandle`,
+    /// `EnumLike`, ...) from both sides. This is the *read-side* fast-path
+    /// comparator: it lets a wrapped template recover a stored bare cell (and
+    /// vice versa) without losing tagged `NativeIntSource` provenance through
+    /// the byte-walk fallback, since the wrapper and its bare-primitive
+    /// contents share byte representation and `EvalStackValue.ofCliType`
+    /// flattening behaviour.
+    ///
+    /// **Asymmetric output shape, gated by byte-addressability.** Because
+    /// this predicate is permissive about wrapper depth, the sites that
+    /// `match` on it and would otherwise return the stored cell
+    /// (`readLocalMemoryBytesAs`, `tryReadHeapValueFieldPrecise`) further
+    /// gate the fast-path return on `CliType.ByteAddressability`: only
+    /// non-byte-addressable cells (tagged `NativeIntSource`, object refs,
+    /// runtime pointers) skip the byte-walk and propagate storage shape,
+    /// since those carry provenance the byte path cannot reconstruct.
+    /// Byte-addressable cells fall through to the byte-walk so the result
+    /// has the *template*'s exact CLI shape. Callers that pass a wrapped
+    /// template against a non-byte-addressable storage cell still see the
+    /// storage shape and must reconcile via `unwrapPrimitiveLikeDeep` or
+    /// `EvalStackValue.ofCliType`.
+    ///
+    /// **Do NOT use on the write side.** Installing a wrapper-vs-bare-shape
+    /// `newValue` into a heap field whose recorded `Contents` has a different
+    /// shape would overwrite the field's CLI shape via `WithFieldSetById`,
+    /// silently coercing e.g. a boxed-IntPtr `_value` field from bare
+    /// `NativeInt` to wrapped `IntPtr`. Write-side sites use
+    /// `sameCliConstructor` (strict, no unwrap) so a shape mismatch falls
+    /// through to byte-scatter; in the case where byte-scatter can't service
+    /// the write (non-byte-addressable storage), the failure is loud rather
+    /// than a silent corruption of the field's CLI shape.
+    let private haveSameCliShape (a : CliType) (b : CliType) : bool =
+        let a = CliType.unwrapPrimitiveLikeDeep a
+        let b = CliType.unwrapPrimitiveLikeDeep b
+        sameCliConstructor a b
 
     /// Byte image of a CLI value for noop-detection purposes. If a value is
     /// classified as byte-addressable, `CliType.ToBytes` must be able to render
@@ -246,10 +280,20 @@ module IlMachineManagedByref =
                             | ValueNone -> false
 
                     let preservesExistingShape =
-                        // `haveSameCliShape` is deliberately conservative for
-                        // value types, so byte-identical value-type writes
-                        // restamp rather than shortcut through this branch.
-                        existingSize <> updatedSize || haveSameCliShape existing updated
+                        // Strict constructor check (no primitive-like
+                        // unwrap): a typed store whose `updated` shape
+                        // differs from the cell's `existing` shape, even by
+                        // only a wrapper layer, must restamp the cell rather
+                        // than short-circuit. Otherwise a `stind.i` writing
+                        // bare `NativeInt` followed by a byte-identical
+                        // `stobj IntPtr` would leave the cell bare, and the
+                        // next read through the wrapped template would
+                        // observe a shape it can't service. The strict
+                        // comparator also rejects unrelated structs of the
+                        // same size, so byte-identical writes between two
+                        // non-primitive-like value types of the same size
+                        // still restamp through the else branch below.
+                        existingSize <> updatedSize || sameCliConstructor existing updated
 
                     if isNoop && preservesExistingShape then
                         state
@@ -647,13 +691,46 @@ module IlMachineManagedByref =
         // gate matters because, e.g., an `Int32` cell and a `Float32` template
         // have the same size but distinct meanings — falling through here
         // forces a proper bit-reinterpret via the byte path.
-        match LocalMemoryPool.tryReadCell block byteOffset pool with
-        | Some cell when CliType.sizeOf cell = targetSize && haveSameCliShape cell targetTemplate -> cell
-        | _ ->
+        //
+        // The byte-addressability gate (symmetric with
+        // `tryReadHeapValueFieldPrecise`) is what justifies the widened
+        // `haveSameCliShape` here: when the stored cell is byte-addressable
+        // we still defer to the byte-walk, which reconstructs the value in
+        // the *template*'s exact CLI shape via `CliType.ofBytesLike`. So
+        // callers reading with a bare `UInt8` template against a byte-sized
+        // wrapped cell (or vice versa) get the requested shape back, while
+        // non-byte-addressable storage (tagged `NativeIntSource` etc.) keeps
+        // its storage shape so provenance survives.
+        let fastPath =
+            match LocalMemoryPool.tryReadCell block byteOffset pool with
+            | Some cell when CliType.sizeOf cell = targetSize && haveSameCliShape cell targetTemplate ->
+                match CliType.ByteAddressability cell with
+                | CliByteAddressability.Rejected _ -> Some cell
+                | CliByteAddressability.ByteAddressable -> None
+            | _ -> None
+
+        match fastPath with
+        | Some cell -> cell
+        | None ->
 
         let buf = LocalMemoryPool.readBytes block byteOffset targetSize pool
         CliType.ofBytesLike targetTemplate buf
 
+    /// Read the byte range at `src` and rebuild a value of CLI shape compatible
+    /// with `targetTemplate`. **Output shape is path-dependent for primitive-
+    /// like wrapper templates against non-byte-addressable storage.** When a
+    /// typed storage cell starts at the byref, `haveSameCliShape` accepts it,
+    /// and the cell is non-byte-addressable, the cell is returned as-is — so
+    /// a wrapped `IntPtr` template against a bare tagged `Numeric (NativeInt
+    /// FieldHandlePtr ...)` cell returns the bare cell with its provenance
+    /// intact (the byte-walk fallback cannot serialise tagged sources, so
+    /// this fast path is load-bearing). When the cell is byte-addressable,
+    /// the fast path defers to the byte-walk, which produces a value with
+    /// the *template*'s exact CLI shape. Callers reading with a primitive
+    /// template that may land on tagged-pointer storage must reconcile the
+    /// returned shape via `EvalStackValue.ofCliType` (which flattens
+    /// primitive-like wrappers) or an explicit
+    /// `CliType.unwrapPrimitiveLikeDeep`.
     let readManagedByrefBytesAs
         (state : IlMachineState)
         (src : ManagedPointerSource)
@@ -757,22 +834,7 @@ module IlMachineManagedByref =
             match List.rev projs with
             | ByrefProjection.ByteOffset _ :: ByrefProjection.ReinterpretAs ty :: _
             | ByrefProjection.ReinterpretAs ty :: _ ->
-                // Flatten primitive-like single-field wrappers (IntPtr, UIntPtr,
-                // RuntimeTypeHandle, ...) before driving the byte-view read.
-                // Stored cells use the bare primitive shape (e.g. localloc'd
-                // `Span<IntPtr>` cells written by `Stind_I` are bare
-                // `Numeric (NativeInt ...)`), so the `tryReadCell` fast path in
-                // `readLocalMemoryBytesAs` needs the same shape on the template
-                // to preserve tagged provenance like `TypeHandlePtr` /
-                // `FieldHandlePtr`. Without the unwrap the read falls through
-                // to `LocalMemoryPool.readBytes`, which cannot serialise tagged
-                // sources and so rejects the otherwise-valid read used by the
-                // `RuntimeTypeHandle.Instantiate` / `ModuleHandle.ResolveType`
-                // QCalls. Non-primitive-like wrappers (structs proper) are
-                // unaffected: `unwrapPrimitiveLikeDeep` is a no-op there.
-                let targetTemplate =
-                    zeroForConcreteType baseClassTypes state ty |> CliType.unwrapPrimitiveLikeDeep
-
+                let targetTemplate = zeroForConcreteType baseClassTypes state ty
                 readManagedByrefBytesAs state src targetTemplate
             | ByrefProjection.ByteOffset n :: _ ->
                 failwith
@@ -1101,11 +1163,18 @@ module IlMachineManagedByref =
     /// non-byte-addressable (object-reference or runtime-pointer), update it directly via
     /// `WithFieldSetById` and return the new state. Returns `None` when no such field
     /// exists, so the caller falls through to byte scatter (which itself rejects when
-    /// the heap object's storage isn't byte-addressable). Symmetric to
-    /// `tryReadHeapValueFieldPrecise`; the same non-byte-addressable gate keeps
-    /// byte-addressable primitive writes on the byte-scatter path so explicit-layout
-    /// overlap semantics (resolved by `WithBytesAtIfChanged` and `EditedAtTime`) are
-    /// preserved.
+    /// the heap object's storage isn't byte-addressable). Symmetric in *shape* to
+    /// `tryReadHeapValueFieldPrecise`, but deliberately stricter on the shape predicate:
+    /// the comparator here is `sameCliConstructor` (no primitive-like unwrap), so a
+    /// wrapper-vs-bare `newValue` mismatch does *not* fire the install. Widening to
+    /// `haveSameCliShape` here would let `WithFieldSetById` overwrite the field's CLI
+    /// shape — e.g. coercing a boxed `IntPtr._value` from bare `NativeInt` to wrapped
+    /// `IntPtr` when an `Unsafe.WriteUnaligned<IntPtr>` arrives — which is a silent
+    /// corruption of the heap object's structural shape, not the recoverable read-side
+    /// asymmetry that `haveSameCliShape` is designed for. The non-byte-addressable gate
+    /// keeps byte-addressable primitive writes on the byte-scatter path so explicit-
+    /// layout overlap semantics (resolved by `WithBytesAtIfChanged` and `EditedAtTime`)
+    /// are preserved.
     let private tryWriteHeapValueFieldPrecise
         (state : IlMachineState)
         (addr : ManagedHeapAddress)
@@ -1118,7 +1187,7 @@ module IlMachineManagedByref =
 
         let candidates =
             CliValueType.TryFieldsAt byteOffset obj.Contents
-            |> List.filter (fun f -> f.Size = destSize && haveSameCliShape f.Contents newValue)
+            |> List.filter (fun f -> f.Size = destSize && sameCliConstructor f.Contents newValue)
 
         match candidates with
         | [ f ] ->
