@@ -2,8 +2,52 @@
 
 Date: 2026-05-11
 Author: Claude
-Status: Proposed
-Branch base: `rawdata-array-projection` (off `castcache-sentinel-init`)
+Status: Landed (with deviations — see "Landed state" below)
+Branch: `rawdata-array-projection` (merged from `castcache-sentinel-init`,
+         currently rebased on `main`)
+
+## Landed state
+
+What actually shipped on this branch (vs. what this plan originally proposed):
+
+- ✅ `RawData::Data` projection now accepts SZ arrays and emits
+  `(ArrayElement(arr, 0), [ReinterpretAs byte; ByteOffset -nativeIntSize])`
+  (`WoofWare.PawPrint/RuntimeFieldProjection.fs`).
+- ✅ CastCache sentinel auxiliary header moved from indices `2, 3, 4` to
+  `0, 1, 2` (`WoofWare.PawPrint/IlMachineRuntimeMetadata.fs`,
+  `internCastCacheSentinelTable`). The sentinel-layout fix landed as a
+  separate commit (`27fdaff`) after the projection change (`9416fdc`).
+- ⚠️ **Deviation:** the projection is restricted to
+  `ConcreteTypeHandle.OneDimArrayZero`. MD arrays
+  (`ConcreteTypeHandle.Array (_, rank)`) hit a `TODO`-flavoured `failwith`
+  with the rank in the message. `MethodTableProjection.baseSize` already
+  models the `(3 + rank) * NATIVE_INT_SIZE` MD header, so the SZ-only
+  arithmetic in this projection would have landed `2 * rank * sizeof(int32)`
+  bytes inside the bounds region for an MD array — silently wrong. Failing
+  loudly is the honest representation until a real MD-array caller needs it.
+- ⚠️ **Deviation:** `getArrayValue` / `setArrayValue` error messages were
+  **not** tightened for negative indices. The negative-index path isn't
+  currently reachable through any test (the SZ-array byref always pairs
+  with a `+sizeof(nint)` skip before it's dereferenced), so the
+  diagnostic-tightening step (originally step 3) was deferred.
+- ⚠️ **Deviation:** no `RawDataArrayProjection.cs` test was added under
+  `sourcesPure/`. The CastCache end-to-end flow exercises the SZ-array
+  path; an MD-array rejection unit test was added in
+  `TestMethodTableProjection.fs` instead, covering the SZ-vs-MD split that
+  the C# regression test would not have caught anyway.
+- ⚠️ **Deviation:** `NullDereferenceTest.cs` was **not** promoted out of
+  `unimplemented`. Past this PR's two fixes, it hits a new blocker —
+  unimplemented JIT intrinsic
+  `System.Runtime.CompilerServices.Unsafe.AddByteOffset(&, System.IntPtr)`
+  inside `CastCache.TableData`. The `unimplemented` comment in
+  `WoofWare.PawPrint.Test/TestPureCases.fs:26` was updated to reflect that
+  new blocker; further sibling tests (`CastClassInvalid.cs`,
+  `CastclassFailures.cs`, etc.) remain on their pre-existing blockers and
+  were not touched.
+
+The rest of this document is the original design rationale, preserved
+because the option-matrix reasoning is what's worth keeping — not the
+forward-looking task list.
 
 ## Context
 
@@ -99,7 +143,7 @@ fires, we will tighten the error message at `getArrayValue` /
 This avoids touching the ~30-arm DU pattern-match graph that option (b)
 would require.
 
-### Latent sentinel-layout bug
+### Latent sentinel-layout bug (fixed in this PR)
 
 While verifying the CastCache invariants, the
 `internCastCacheSentinelTable` helper added in
@@ -115,10 +159,11 @@ the **wrong array indices**.
 | `TableMask(tableData)` | `ref Unsafe.Add(ref tableData, 1)` | `array[1]` |
 | `VictimCounter(tableData)` | `ref Unsafe.Add(ref tableData, 2)` | `array[2]` |
 
-The current code writes them at `array[2]`, `array[3]`, `array[4]`. The
-bug is latent — until this PR lands, the `RawData::Data` projection
-fails before any consumer reads from those slots — but it would have
-broken correctness as soon as the projection started working.
+The pre-fix code wrote them at `array[2]`, `array[3]`, `array[4]`. The
+bug was latent — until the projection in this PR landed, `RawData::Data`
+failed before any consumer reads from those slots — but it would have
+broken correctness as soon as the projection started working. The fix
+landed alongside the projection change.
 
 ### Why this matters for `TryGet`
 
@@ -142,7 +187,14 @@ the intended sentinel behaviour.
   in place): just verifies a heap object exists, no array rejection.
 - `tryProjectRawDataFieldAddress` for `Data` projects to:
   - non-array: same as today.
-  - array: `(ArrayElement(arr, 0), [ReinterpretAs byte; ByteOffset (-nativeIntSize)])`.
+  - SZ array (`ConcreteTypeHandle.OneDimArrayZero`):
+    `(ArrayElement(arr, 0), [ReinterpretAs byte; ByteOffset (-nativeIntSize)])`.
+  - MD array (`ConcreteTypeHandle.Array (_, rank)`): fails with a
+    `TODO`-flavoured `failwith` naming the rank and the `2 * rank` int32
+    bounds entries that CoreCLR places between the length header and
+    element data. The SZ-only arithmetic would land in the middle of
+    that bounds region, so silent acceptance was rejected in favour of
+    explicit failure until a real MD-array caller appears.
 - Update the docstring above `tryProjectRawDataFieldAddress` to explain
   the new array case: byref is intentionally constructed in a
   "before-element-0" state; the canonical CastCache-style
@@ -180,8 +232,8 @@ to "0, 1, 2", with a one-line derivation: `TableData(table)` returns
 
 ### 3. `WoofWare.PawPrint/IlMachineThreadState.fs` (`getArrayValue`/`setArrayValue`)
 
-Tighten the out-of-bounds error message to flag the likely cause when
-the index is negative:
+**Deferred — not landed.** Originally planned to tighten the out-of-bounds
+error message to flag the likely cause when the index is negative:
 
 > "Array index {i} is negative on array at {addr}. This typically
 > indicates that a byref obtained via `RawData::Data` on an array was
@@ -189,27 +241,34 @@ the index is negative:
 > the length-header region; consider `RawArrayData::Length` if you
 > intended to read the length."
 
-This change is defensive only — no current path produces a negative
-array index — but it makes the failure mode of option (a) discoverable.
+No current path produces a negative array index, and the diagnostic is
+defensive only. Skipped to keep the PR focused; revisit if a real caller
+ever lands on the failure mode.
 
 ### 4. `WoofWare.PawPrint.Test/sourcesPure/RawDataArrayProjection.cs` (new)
 
-Focused regression test: construct an `int[]`, take a byref via
-`Unsafe.As<RawData>` + `+sizeof(nint)`, write/read element 0 through it,
-assert the value round-trips. Mirrors the test added in
-`castcache-sentinel-init` but for the projection itself rather than the
-sentinel allocation. (The CastCache flow exercises the same path
-end-to-end; the focused test is in case the BCL changes its
-implementation.)
+**Not landed.** The CastCache end-to-end flow already exercises the
+SZ-array projection through the existing `unimplemented`-track tests,
+and a focused unit test for the MD-array rejection path was added in
+`TestMethodTableProjection.fs` (`RawData data projection rejects
+multi-dimensional arrays`). A C# regression test could be added later
+if the BCL changes its `CastCache.TableData` implementation in a way
+that bypasses `Unsafe.As<RawData>`, but it isn't required today.
 
 ### 5. `WoofWare.PawPrint.Test/TestPureCases.fs`
 
-Remove `"NullDereferenceTest.cs"` from `unimplemented` — it should now
-pass. If other tests in the cluster (`CastClassInvalid.cs`,
-`CastclassFailures.cs`, `ComplexTryCatch.cs`, `ArraySortHelperDefaultInt.cs`,
-`GenericEdgeCases.cs`, `ThrowingCctorProperties.cs`) also pass with the
-combined fix, promote them too; otherwise refresh their comments to
-point at whatever the new blocker is.
+**Did not promote `NullDereferenceTest.cs`.** With both fixes in place,
+it advances past the `RawData::Data` blocker but immediately hits a new
+one: the unimplemented JIT intrinsic
+`System.Runtime.CompilerServices.Unsafe.AddByteOffset(&, System.IntPtr)`
+inside `CastCache.TableData`. The `unimplemented` comment at
+`TestPureCases.fs:26` was updated to point at that new blocker. The
+sibling tests listed in the original plan
+(`CastClassInvalid.cs`, `CastclassFailures.cs`, `ComplexTryCatch.cs`,
+`ArraySortHelperDefaultInt.cs`, `GenericEdgeCases.cs`,
+`ThrowingCctorProperties.cs`) all sit on pre-existing blockers further
+along the BCL call graph and were not affected by this change; their
+comments remain as-is.
 
 ### 6. `docs/runtime-initialised-statics.md`
 
@@ -243,12 +302,15 @@ correctness and doesn't change the runtime-initialised-statics surface.
   observable; shipping them together avoids leaving the tree in a state
   where the projection works but reads garbage.
 
-## Validation
+## Validation (as landed)
 
 1. Build + fantomas clean.
-2. Run focused test (step 4) — should pass.
-3. Run `NullDereferenceTest.cs` (step 5) — should pass.
-4. Run full suite: 687 (previous) + N (newly passing) tests should
-   pass with no regressions.
-5. Commit on branch `rawdata-array-projection` and request review per
-   `CLAUDE.md`.
+2. `TestMethodTableProjection`: existing SZ-array projection test still
+   passes; new MD-array rejection test (`RawData data projection rejects
+   multi-dimensional arrays`) asserts the `TODO`-flavoured failure.
+3. `NullDereferenceTest.cs` advances past the projection blocker but
+   stops at the next blocker (`Unsafe.AddByteOffset` JIT intrinsic);
+   it remains in `unimplemented` with an updated comment.
+4. Full `nix develop -c dotnet test` suite still passes with the new
+   commits — no regressions.
+5. Branch committed and reviewed per `CLAUDE.md`.
