@@ -128,6 +128,22 @@ module EvalStackValueComparisons =
             // never strictly greater.
             | NativeIntSource.GcHandlePtr _, NativeIntSource.Verbatim 0L -> true
             | NativeIntSource.Verbatim 0L, NativeIntSource.GcHandlePtr _ -> false
+            // `ManagedPointer Null` denotes the value 0 — it's the
+            // representation `cliTypeZeroOf` plants for `IntPtr.Zero` /
+            // `UIntPtr.Zero` (and any other zero-initialised nint slot). Under
+            // unsigned comparison 0 is the minimum, so `Null > v` is always
+            // false, and `v > Null` is just `v != 0` (which holds for both
+            // strictly positive and negative-reinterpreted-as-huge-unsigned
+            // values).
+            | NativeIntSource.ManagedPointer ManagedPointerSource.Null, NativeIntSource.Verbatim _ -> false
+            | NativeIntSource.Verbatim v, NativeIntSource.ManagedPointer ManagedPointerSource.Null -> v <> 0L
+            // A non-null managed pointer is a live address. We don't know its
+            // numeric value, but it's strictly non-zero (cf. the GcHandlePtr
+            // arms above): the comparison against `Verbatim 0L` is well-defined
+            // even though the symmetric comparison against arbitrary non-zero
+            // Verbatims is not.
+            | NativeIntSource.ManagedPointer _, NativeIntSource.Verbatim 0L -> true
+            | NativeIntSource.Verbatim 0L, NativeIntSource.ManagedPointer _ -> false
             | _ -> failwith $"TODO: cgt.un on non-Verbatim nativeints: %O{var1} vs %O{var2}"
         | EvalStackValue.NativeInt _, EvalStackValue.ManagedPointer var2 ->
             cgtUn var1 (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var2))
@@ -195,6 +211,13 @@ module EvalStackValueComparisons =
             // checks answer truthfully instead of crashing.
             | NativeIntSource.GcHandlePtr _, NativeIntSource.Verbatim 0L -> false
             | NativeIntSource.Verbatim 0L, NativeIntSource.GcHandlePtr _ -> true
+            // Mirror of the cgt.un arms: `ManagedPointer Null` is the value 0,
+            // so `Null < v` is `v != 0` (unsigned), `v < Null` is always false,
+            // and a non-null managed pointer is strictly greater than 0.
+            | NativeIntSource.ManagedPointer ManagedPointerSource.Null, NativeIntSource.Verbatim v -> v <> 0L
+            | NativeIntSource.Verbatim _, NativeIntSource.ManagedPointer ManagedPointerSource.Null -> false
+            | NativeIntSource.ManagedPointer _, NativeIntSource.Verbatim 0L -> false
+            | NativeIntSource.Verbatim 0L, NativeIntSource.ManagedPointer _ -> true
             | _, _ -> failwith $"TODO: clt.un on non-Verbatim nativeints: %O{var1} vs %O{var2}"
         | EvalStackValue.NativeInt _, EvalStackValue.ManagedPointer var2 ->
             cltUn var1 (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var2))
