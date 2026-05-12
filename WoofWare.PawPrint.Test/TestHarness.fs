@@ -49,6 +49,13 @@ module MockEnv =
                             |> Tuple.withRight WhatWeDid.Executed
                             |> ExecutionResult.Stepped
                     TryGetEnvironmentVariable = tryGetEnvironmentVariable
+                    // Surface FailFast as the abort outcome instead of raising
+                    // NotImplementedException from the generated mock; the test
+                    // harness then reports the guest-supplied diagnostic message,
+                    // which is far more useful than a generic "Unimplemented mock
+                    // function: FailFast" stack trace.
+                    FailFast =
+                        fun thread message _errorSource state -> ExecutionResult.FailFast (state, thread, message)
                 }
         }
 
