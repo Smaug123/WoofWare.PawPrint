@@ -102,13 +102,19 @@ module IlMachineManagedByref =
     /// contents share byte representation and `EvalStackValue.ofCliType`
     /// flattening behaviour.
     ///
-    /// **Asymmetric output shape.** Because this predicate is permissive about
-    /// wrapper depth, sites that `match` on it and return the stored cell
-    /// (`readLocalMemoryBytesAs`, `tryReadHeapValueFieldPrecise`) emit values
-    /// whose CLI shape may not match the requested template — fast-path
-    /// returns reflect the *storage* shape, while the byte-walk fallback
-    /// returns the *template* shape. Callers reconcile this with
-    /// `unwrapPrimitiveLikeDeep` or `EvalStackValue.ofCliType`.
+    /// **Asymmetric output shape, gated by byte-addressability.** Because
+    /// this predicate is permissive about wrapper depth, the sites that
+    /// `match` on it and would otherwise return the stored cell
+    /// (`readLocalMemoryBytesAs`, `tryReadHeapValueFieldPrecise`) further
+    /// gate the fast-path return on `CliType.ByteAddressability`: only
+    /// non-byte-addressable cells (tagged `NativeIntSource`, object refs,
+    /// runtime pointers) skip the byte-walk and propagate storage shape,
+    /// since those carry provenance the byte path cannot reconstruct.
+    /// Byte-addressable cells fall through to the byte-walk so the result
+    /// has the *template*'s exact CLI shape. Callers that pass a wrapped
+    /// template against a non-byte-addressable storage cell still see the
+    /// storage shape and must reconcile via `unwrapPrimitiveLikeDeep` or
+    /// `EvalStackValue.ofCliType`.
     ///
     /// **Do NOT use on the write side.** Installing a wrapper-vs-bare-shape
     /// `newValue` into a heap field whose recorded `Contents` has a different
@@ -274,19 +280,20 @@ module IlMachineManagedByref =
                             | ValueNone -> false
 
                     let preservesExistingShape =
-                        // The widened comparator treats a wrapper-vs-bare
-                        // `existing`/`updated` pair as same-shape, so a
-                        // byte-identical store of a wrapped primitive over a
-                        // bare-primitive cell (or vice versa) is treated as a
-                        // no-op rather than installed — keeping whichever
-                        // shape was already there preserves any tagged
-                        // `NativeIntSource` provenance the cell may carry.
-                        // The comparator is deliberately conservative for
-                        // unrelated structs, so byte-identical writes between
-                        // two non-primitive-like value types of the same size
-                        // still restamp (install through the else branch
-                        // below) rather than shortcut here.
-                        existingSize <> updatedSize || haveSameCliShape existing updated
+                        // Strict constructor check (no primitive-like
+                        // unwrap): a typed store whose `updated` shape
+                        // differs from the cell's `existing` shape, even by
+                        // only a wrapper layer, must restamp the cell rather
+                        // than short-circuit. Otherwise a `stind.i` writing
+                        // bare `NativeInt` followed by a byte-identical
+                        // `stobj IntPtr` would leave the cell bare, and the
+                        // next read through the wrapped template would
+                        // observe a shape it can't service. The strict
+                        // comparator also rejects unrelated structs of the
+                        // same size, so byte-identical writes between two
+                        // non-primitive-like value types of the same size
+                        // still restamp through the else branch below.
+                        existingSize <> updatedSize || sameCliConstructor existing updated
 
                     if isNoop && preservesExistingShape then
                         state
@@ -684,27 +691,46 @@ module IlMachineManagedByref =
         // gate matters because, e.g., an `Int32` cell and a `Float32` template
         // have the same size but distinct meanings — falling through here
         // forces a proper bit-reinterpret via the byte path.
-        match LocalMemoryPool.tryReadCell block byteOffset pool with
-        | Some cell when CliType.sizeOf cell = targetSize && haveSameCliShape cell targetTemplate -> cell
-        | _ ->
+        //
+        // The byte-addressability gate (symmetric with
+        // `tryReadHeapValueFieldPrecise`) is what justifies the widened
+        // `haveSameCliShape` here: when the stored cell is byte-addressable
+        // we still defer to the byte-walk, which reconstructs the value in
+        // the *template*'s exact CLI shape via `CliType.ofBytesLike`. So
+        // callers reading with a bare `UInt8` template against a byte-sized
+        // wrapped cell (or vice versa) get the requested shape back, while
+        // non-byte-addressable storage (tagged `NativeIntSource` etc.) keeps
+        // its storage shape so provenance survives.
+        let fastPath =
+            match LocalMemoryPool.tryReadCell block byteOffset pool with
+            | Some cell when CliType.sizeOf cell = targetSize && haveSameCliShape cell targetTemplate ->
+                match CliType.ByteAddressability cell with
+                | CliByteAddressability.Rejected _ -> Some cell
+                | CliByteAddressability.ByteAddressable -> None
+            | _ -> None
+
+        match fastPath with
+        | Some cell -> cell
+        | None ->
 
         let buf = LocalMemoryPool.readBytes block byteOffset targetSize pool
         CliType.ofBytesLike targetTemplate buf
 
     /// Read the byte range at `src` and rebuild a value of CLI shape compatible
     /// with `targetTemplate`. **Output shape is path-dependent for primitive-
-    /// like wrapper templates.** When a typed storage cell starts at the byref
-    /// and `haveSameCliShape` accepts it, the cell is returned as-is — so a
-    /// wrapped `IntPtr` template against a bare `Numeric (NativeInt ...)` cell
-    /// returns the bare cell with its tagged `NativeIntSource` provenance
-    /// intact (the byte-walk fallback in `LocalMemoryPool.readBytes` cannot
-    /// serialise tagged sources, so this fast path is load-bearing). When the
-    /// fast path is missed (no typed cell at the offset, or `Bytes`-overlay
-    /// storage), the byte-walk produces a value with the *template*'s exact
-    /// CLI shape. Callers must therefore not rely on the returned shape
-    /// matching the template exactly; downstream consumers typically reconcile
-    /// via `EvalStackValue.ofCliType` (which flattens primitive-like wrappers)
-    /// or an explicit `CliType.unwrapPrimitiveLikeDeep`.
+    /// like wrapper templates against non-byte-addressable storage.** When a
+    /// typed storage cell starts at the byref, `haveSameCliShape` accepts it,
+    /// and the cell is non-byte-addressable, the cell is returned as-is — so
+    /// a wrapped `IntPtr` template against a bare tagged `Numeric (NativeInt
+    /// FieldHandlePtr ...)` cell returns the bare cell with its provenance
+    /// intact (the byte-walk fallback cannot serialise tagged sources, so
+    /// this fast path is load-bearing). When the cell is byte-addressable,
+    /// the fast path defers to the byte-walk, which produces a value with
+    /// the *template*'s exact CLI shape. Callers reading with a primitive
+    /// template that may land on tagged-pointer storage must reconcile the
+    /// returned shape via `EvalStackValue.ofCliType` (which flattens
+    /// primitive-like wrappers) or an explicit
+    /// `CliType.unwrapPrimitiveLikeDeep`.
     let readManagedByrefBytesAs
         (state : IlMachineState)
         (src : ManagedPointerSource)
