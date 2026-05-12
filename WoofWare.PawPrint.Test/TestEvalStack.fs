@@ -285,6 +285,98 @@ module TestEvalStack =
             failwith "Expected ble.un to report a GcHandlePtr as not <= zero"
 
     [<Test>]
+    let ``unsigned comparisons treat ManagedPointer Null as zero against Verbatim`` () : unit =
+        // `IntPtr.Zero` / `UIntPtr.Zero` are `[Intrinsic]` static fields with no IL
+        // initialiser. `cliTypeZeroOf` populates their slots with
+        // `NativeIntSource.ManagedPointer ManagedPointerSource.Null`, which represents the
+        // value 0 but in a different shape from `Verbatim 0L`. The C# pattern
+        // `if (IntPtr.Zero != default(IntPtr))` lowers (in Debug mode) to
+        // `ldsfld; ldc.i4.0; conv.i; cgt.un`, so `cgtUn` must relate
+        // `ManagedPointer Null` and `Verbatim 0L` correctly. `clt.un` / `cge.un` / `cle.un`
+        // must answer symmetrically.
+        let nullPtr =
+            EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)
+
+        let verbatimZero = EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L)
+        let verbatimOne = EvalStackValue.NativeInt (NativeIntSource.Verbatim 1L)
+        // `-1L` reinterprets as `0xFFFF_FFFF_FFFF_FFFF`, the maximum uint64, so it
+        // exercises the wrap-around case that a naive signed implementation would
+        // get wrong.
+        let verbatimMaxU = EvalStackValue.NativeInt (NativeIntSource.Verbatim -1L)
+
+        if EvalStackValueComparisons.cgtUn nullPtr verbatimZero then
+            failwith "cgt.un should report ManagedPointer Null as not strictly greater than Verbatim 0L"
+
+        if EvalStackValueComparisons.cgtUn verbatimZero nullPtr then
+            failwith "cgt.un should report Verbatim 0L as not strictly greater than ManagedPointer Null"
+
+        if EvalStackValueComparisons.cltUn nullPtr verbatimZero then
+            failwith "clt.un should report ManagedPointer Null as not strictly less than Verbatim 0L"
+
+        if EvalStackValueComparisons.cltUn verbatimZero nullPtr then
+            failwith "clt.un should report Verbatim 0L as not strictly less than ManagedPointer Null"
+
+        // Non-zero Verbatim against Null: Null is "0", so the Verbatim side
+        // strictly dominates under unsigned comparison whenever it is non-zero.
+        if not (EvalStackValueComparisons.cgtUn verbatimOne nullPtr) then
+            failwith "cgt.un should report Verbatim 1L as strictly greater than ManagedPointer Null"
+
+        if EvalStackValueComparisons.cgtUn nullPtr verbatimOne then
+            failwith "cgt.un should report ManagedPointer Null as not strictly greater than Verbatim 1L"
+
+        if not (EvalStackValueComparisons.cltUn nullPtr verbatimOne) then
+            failwith "clt.un should report ManagedPointer Null as strictly less than Verbatim 1L"
+
+        if EvalStackValueComparisons.cltUn verbatimOne nullPtr then
+            failwith "clt.un should report Verbatim 1L as not strictly less than ManagedPointer Null"
+
+        // Signed-negative Verbatim reinterprets as the max unsigned value, so
+        // the relation is still "Null = 0 < max_uint64" even though signed `-1 < 0`.
+        if not (EvalStackValueComparisons.cgtUn verbatimMaxU nullPtr) then
+            failwith "cgt.un should report Verbatim -1L (max unsigned) as strictly greater than ManagedPointer Null"
+
+        if EvalStackValueComparisons.cgtUn nullPtr verbatimMaxU then
+            failwith "cgt.un should report ManagedPointer Null as not strictly greater than Verbatim -1L"
+
+        // bge.un / ble.un derived comparisons must agree.
+        if not (EvalStackValueComparisons.cgeUn nullPtr verbatimZero) then
+            failwith "bge.un should report ManagedPointer Null as >= Verbatim 0L"
+
+        if not (EvalStackValueComparisons.cleUn nullPtr verbatimZero) then
+            failwith "ble.un should report ManagedPointer Null as <= Verbatim 0L"
+
+    [<Test>]
+    let ``unsigned comparisons treat non-null ManagedPointer as strictly greater than Verbatim zero`` () : unit =
+        // A non-null managed pointer is some live address, which we model as an
+        // unknown but strictly non-zero value (cf. the GcHandlePtr arms). That
+        // makes the comparisons against `Verbatim 0L` well-defined: the pointer
+        // is greater. Comparisons against arbitrary non-zero Verbatims remain
+        // refused because the actual address is not known in our model.
+        let ptr =
+            EvalStackValue.NativeInt (
+                NativeIntSource.ManagedPointer (
+                    ManagedPointerSource.Byref (
+                        ByrefRoot.LocalVariable (ThreadId.ThreadId 0, FrameId.FrameId 0, 0us),
+                        []
+                    )
+                )
+            )
+
+        let verbatimZero = EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L)
+
+        if not (EvalStackValueComparisons.cgtUn ptr verbatimZero) then
+            failwith "cgt.un should report non-null ManagedPointer as strictly greater than Verbatim 0L"
+
+        if EvalStackValueComparisons.cgtUn verbatimZero ptr then
+            failwith "cgt.un should report Verbatim 0L as not strictly greater than a non-null ManagedPointer"
+
+        if EvalStackValueComparisons.cltUn ptr verbatimZero then
+            failwith "clt.un should report non-null ManagedPointer as not strictly less than Verbatim 0L"
+
+        if not (EvalStackValueComparisons.cltUn verbatimZero ptr) then
+            failwith "clt.un should report Verbatim 0L as strictly less than a non-null ManagedPointer"
+
+    [<Test>]
     let ``toCliTypeCoerced Int64 target preserves SyntheticCrossArrayOffset provenance`` () : unit =
         // Regression: Int64-target slots used to widen synthetic cross-array offsets to NativeInt,
         // erasing the Int64Source wrapper. The coercion must preserve the variant unchanged so the
