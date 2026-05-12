@@ -242,12 +242,14 @@ module NativeBuffer =
 
             let byteCount = byteCountOfArgument operation instruction.Arguments.[2]
 
-            // CoreCLR's FCall short-circuits `dst == src` and `byteCount == 0`
-            // (see comutilnative.cpp). The byte-wise copy already produces a
-            // no-op for the former; we guard explicitly on the latter to skip
-            // the loop and the byte-template lookup.
+            // CoreCLR's FCall short-circuits both `dst == src` and
+            // `byteCount == 0` (see comutilnative.cpp). We honour both
+            // explicitly: storage that contains object references is not
+            // byte-addressable in PawPrint, so a self-copy of such storage
+            // must not fall through to `copy` — `validateByteAddressableCell`
+            // would reject it.
             let state =
-                if byteCount = 0 then
+                if byteCount = 0 || dest = src then
                     state
                 else
                     copy ctx.BaseClassTypes state dest src byteCount
