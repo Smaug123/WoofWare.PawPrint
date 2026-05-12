@@ -1885,11 +1885,6 @@ module Intrinsics =
                 | EvalStackValue.ManagedPointer p -> p
                 | _ -> failwith $"TODO: Unsafe.AddByteOffset on non-ManagedPointer source byref: %O{src}"
 
-            let tConcrete =
-                match AllConcreteTypes.lookup t state.ConcreteTypes with
-                | Some c -> c
-                | None -> failwith $"Unsafe.AddByteOffset: T not concretised: %O{t}"
-
             // `addByteOffsetUnderReinterpret` anchors the byte cursor under `ReinterpretAs T`
             // before appending the offset, so it works regardless of whether the source byref
             // already carries a trailing byte-view tail. The trailing `ReinterpretAs T` is
@@ -1958,10 +1953,21 @@ module Intrinsics =
                         | _ -> None
                 | _ -> None
 
+            // Concretising T is only required for the byte-view fallback (which
+            // anchors a `ReinterpretAs T` tail). The typed shortcut never touches
+            // T, so structural concrete-type handles (array, pointer, function
+            // pointer) — which `AllConcreteTypes.lookup` doesn't store — can still
+            // resolve cleanly through the shortcut.
             let ptr =
                 match typedShortcut with
                 | Some p -> p
-                | None -> ManagedPointerSource.addByteOffsetUnderReinterpret normalisation tConcrete offset srcPtr
+                | None ->
+                    let tConcrete =
+                        match AllConcreteTypes.lookup t state.ConcreteTypes with
+                        | Some c -> c
+                        | None -> failwith $"Unsafe.AddByteOffset: T not concretised: %O{t}"
+
+                    ManagedPointerSource.addByteOffsetUnderReinterpret normalisation tConcrete offset srcPtr
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) currentThread

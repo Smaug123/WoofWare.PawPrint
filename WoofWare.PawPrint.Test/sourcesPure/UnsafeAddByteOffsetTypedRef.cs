@@ -50,6 +50,32 @@ public class TestUnsafeAddByteOffsetTypedRef
         return 0;
     }
 
+    // Structural T (here: an array type) must reach the shortcut without requiring
+    // the concrete-type registry to carry an array handle — `AllConcreteTypes.lookup`
+    // intentionally doesn't store array/pointer/function-pointer handles, so the
+    // shortcut must avoid that lookup for whole-cell moves.
+    public static int Test5()
+    {
+        int[][] a = { new[] { 1, 2 }, new[] { 3, 4 }, new[] { 5, 6 } };
+        ref int[] r0 = ref a[0];
+        ref int[] r1 = ref Unsafe.AddByteOffset(ref r0, (IntPtr)IntPtr.Size);
+        if (r1[0] != 3 || r1[1] != 4)
+            return 5;
+        return 0;
+    }
+
+    // Identity case for structural T: zero-byte AddByteOffset on a typed byref to
+    // an array element of array type must return the same byref shape.
+    public static int Test6()
+    {
+        int[][] a = { new[] { 7, 8 } };
+        ref int[] r0 = ref a[0];
+        ref int[] same = ref Unsafe.AddByteOffset(ref r0, (IntPtr)0);
+        if (same[0] != 7 || same[1] != 8)
+            return 6;
+        return 0;
+    }
+
     public static int Main(string[] argv)
     {
         int r = Test1();
@@ -59,6 +85,10 @@ public class TestUnsafeAddByteOffsetTypedRef
         r = Test3();
         if (r != 0) return r;
         r = Test4();
+        if (r != 0) return r;
+        r = Test5();
+        if (r != 0) return r;
+        r = Test6();
         if (r != 0) return r;
         return 0;
     }
