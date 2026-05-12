@@ -3117,6 +3117,35 @@ public unsafe struct PointerWrapper
                 $"Expected canonical +sizeof(nint) skip to collapse to a clean byte byref at &array[0], got %O{other}"
 
     [<Test>]
+    let ``RawData data projection rejects multi-dimensional arrays`` () : unit =
+        // CoreCLR places `2 * rank` int32 bounds entries between the length header and the
+        // first element of an MD array (`MethodTableProjection.baseSize` models this as
+        // `(3 + rank) * NATIVE_INT_SIZE`). The SZ-array projection's canonical
+        // `+sizeof(nint)` skip would therefore not land on element 0 for MD arrays, so the
+        // projection must refuse them rather than silently produce a byref to the bounds
+        // region. We fail loudly with a TODO that names the rank so a future caller knows
+        // exactly what needs modelling.
+        let state = state ()
+
+        let arrayType = ConcreteTypeHandle.Array (handleFor bct.Int32, 2)
+
+        let arrayAddr, state =
+            IlMachineState.allocateMultiDimArray
+                arrayType
+                (fun () -> CliType.Numeric (CliNumericType.Int32 0))
+                (ImmutableArray.Create<int> (2, 3))
+                state
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () ->
+                RuntimeFieldProjection.tryProjectFieldAddress bct (rawDataField "Data") arrayAddr state
+                |> ignore
+            )
+
+        ex.Message
+        |> shouldContainText "TODO: RawData::Data projection for multi-dimensional array (rank 2)"
+
+    [<Test>]
     let ``RawData data projects reference-type heap object as a byte-view byref`` () : unit =
         // EventSource initialisation reaches `obj.GetRawData()` over `OverrideEventProvider`
         // (a class), expecting a byref into the instance data so subsequent `Unsafe.AddByteOffset`
