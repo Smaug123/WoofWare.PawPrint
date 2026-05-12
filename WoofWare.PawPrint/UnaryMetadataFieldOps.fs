@@ -26,6 +26,28 @@ module internal UnaryMetadataFieldOps =
         && field.DeclaringType.Generics.IsEmpty
         && field.DeclaringType.Identity = baseClassTypes.String.Identity
 
+    /// `System.Runtime.CompilerServices.CastHelpers::s_table` is the BCL's managed
+    /// cast-cache backing array. In CoreCLR it is populated at native-EE startup by
+    /// `CastCache::Initialize` (`coreclr/vm/castcache.cpp`), invoked from
+    /// `SystemDomain::LoadBaseSystemClasses`, with a 2-entry sentinel cache. PawPrint
+    /// has no equivalent startup hook, so the field reads as null and the BCL's
+    /// `ldflda RawData::Data` against null inside `CastCache.TableData` throws a
+    /// spurious NRE the first time anything goes through the cache (notably during
+    /// resource-string lookup for the *first* genuine NRE, which then trips SR's
+    /// recursion guard and `FailFast`s). Detect the field at `ldsfld`/`ldsflda` time
+    /// and lazily install the sentinel cache, matching what CoreCLR's EE would have done.
+    /// See `docs/runtime-initialised-statics.md` for the full Category-B catalogue.
+    let private isCastHelpersTableField
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (field : FieldInfo<'typeGeneric, 'fieldGeneric>)
+        : bool
+        =
+        field.Name = "s_table"
+        && field.DeclaringType.Generics.IsEmpty
+        && field.DeclaringType.Namespace = "System.Runtime.CompilerServices"
+        && field.DeclaringType.Name = "CastHelpers"
+        && field.DeclaringType.Assembly.FullName = baseClassTypes.Corelib.Name.FullName
+
     let executeStfld (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
@@ -505,6 +527,18 @@ module internal UnaryMetadataFieldOps =
                     (ComparableFieldDefinitionHandle.Make field.Handle)
                     newVal
                     state
+            | None when isCastHelpersTableField baseClassTypes field ->
+                let addr, state =
+                    IlMachineState.internCastCacheSentinelTable loggerFactory baseClassTypes state
+
+                let newVal = CliType.ObjectRef (Some addr)
+
+                newVal,
+                IlMachineState.setStatic
+                    declaringTypeHandle
+                    (ComparableFieldDefinitionHandle.Make field.Handle)
+                    newVal
+                    state
             | None ->
                 let state, newVal, concreteTypeHandle =
                     IlMachineState.cliTypeZeroOf
@@ -593,6 +627,15 @@ module internal UnaryMetadataFieldOps =
                     // See `isSystemStringEmptyField` for why this is special-cased.
                     let addr, state =
                         IlMachineState.internCanonicalEmptyString loggerFactory baseClassTypes state
+
+                    IlMachineState.setStatic declaringTypeHandle fieldHandle (CliType.ObjectRef (Some addr)) state
+                | None when isCastHelpersTableField baseClassTypes field ->
+                    // See `isCastHelpersTableField` for why this is special-cased. The BCL
+                    // does not actually take the address of `s_table`, but installing the
+                    // sentinel symmetrically with `ldsfld` keeps the two arms consistent
+                    // and defends against future BCL changes.
+                    let addr, state =
+                        IlMachineState.internCastCacheSentinelTable loggerFactory baseClassTypes state
 
                     IlMachineState.setStatic declaringTypeHandle fieldHandle (CliType.ObjectRef (Some addr)) state
                 | None ->
