@@ -28,13 +28,13 @@ Following managed `CastCache.CreateCastCache(2)` and `TableData` (`CastCache.cs:
 
 - `CastCacheEntry` has sequential layout `{ uint _version; nuint _source; nuint _targetAndResult; }`. On 64-bit, `sizeof(CastCacheEntry) == 24` bytes (uint padded to 8 for the nuint alignment).
 - Array length in `int32` units = `(size + 1) * sizeof(CastCacheEntry) / sizeof(int32)` = `3 * 24 / 4` = **18 ints**.
-- `TableData(table)` skips the first `sizeof(nint)` bytes of `table`'s raw element storage, so on 64-bit the "table data" pointer lands at `&table[2]`.
-  - `table[2]` = `hashShift`
-  - `table[3]` = `tableMask`
-  - `table[4]` = `victimCounter` (treated as `uint`)
-  - `table[5..7]` = the rest of the aux-slot CastCacheEntry, must be zero
-  - `table[8..13]` = entry 0 (zero → `_version == 0`, immediate break in `TryGet`)
-  - `table[14..17]` = entry 1 (zero)
+- `TableData(table) = GetRawData(table) + sizeof(nint)`. `RuntimeHelpers.GetRawData` on an array returns a `ref byte` at the length field (`RawArrayData.Length`), so on 64-bit the 8-byte skip walks past `Length` (4 bytes) and the trailing padding (4 bytes) and the resulting pointer is `&table[0]`.
+  - `table[0]` = `hashShift`
+  - `table[1]` = `tableMask`
+  - `table[2]` = `victimCounter` (treated as `uint`)
+  - `table[3..5]` = the rest of the aux-slot CastCacheEntry, must be zero
+  - `table[6..11]` = entry 0 (zero → `_version == 0`, immediate break in `TryGet`)
+  - `table[12..17]` = entry 1 (zero)
 - `tableMask = size - 1 = 1`.
 - `hashShift = BitOperations.LeadingZeroCount((nuint)1)` — on a 64-bit guest, this is `63`. PawPrint targets 64-bit only, so we hard-code `63` and add a debug assert that `nuint.Size == 8` in the layout helper.
 
@@ -76,7 +76,7 @@ val internCastCacheSentinelTable :
     ManagedHeapAddress * IlMachineState
 ```
 
-Implementation: build a `ConcreteTypeHandle.Array (int32Handle, 1)` via the existing concretisation API, then call `IlMachineState.allocateArray` with `len = 18`, zero-init, and post-allocate-write the three aux ints at positions 2, 3, 4. Use `ManagedHeap.setArrayElement` (or the existing array-mutation seam — see what `Array.Copy` already uses) to set those three entries. Cache the result on `IlMachineState` similarly to `InternedStrings` if/when we need a second caller, but for now a one-shot allocation tied to the field's storage slot is fine.
+Implementation: build a `ConcreteTypeHandle.Array (int32Handle, 1)` via the existing concretisation API, then call `IlMachineState.allocateArray` with `len = 18`, zero-init, and post-allocate-write the three aux ints at positions 0, 1, 2. Use `ManagedHeap.setArrayElement` (or the existing array-mutation seam — see what `Array.Copy` already uses) to set those three entries. Cache the result on `IlMachineState` similarly to `InternedStrings` if/when we need a second caller, but for now a one-shot allocation tied to the field's storage slot is fine.
 
 ### Wiring into `ldsfld` / `ldsflda`
 
@@ -123,10 +123,10 @@ class Program
             return 2;
         }
 
-        // The aux header (tableMask) sits at element 3 and must be size - 1 = 1
+        // The aux header (tableMask) sits at element 1 and must be size - 1 = 1
         // for a 2-element sentinel; if tableMask were 0 or >=2 we'd see different
         // index arithmetic and a TrySet that doesn't take the sentinel early-return.
-        if (arr[3] != 1)
+        if (arr[1] != 1)
         {
             return 3;
         }
