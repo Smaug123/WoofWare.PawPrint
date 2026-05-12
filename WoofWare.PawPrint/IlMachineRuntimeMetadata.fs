@@ -563,8 +563,10 @@ module IlMachineRuntimeMetadata =
     ///   points at the length field) and then skips `sizeof(nint)` bytes, landing at the
     ///   first element. So the `HashShift`/`TableMask`/`VictimCounter` accessors in
     ///   `CastCache.cs:113-130` index from `array[0]`, putting the auxiliary header at
-    ///   element indices 0, 1, 2. The remaining ints are zero-initialised, which keeps
-    ///   every entry's `_version` = 0 and forces `TryGet` to break on the first probe.
+    ///   element indices 0, 1, 2. The remaining ints are zero-initialised — in particular
+    ///   indices 3..5 are the unused tail of the aux-slot `CastCacheEntry`, and indices
+    ///   6..17 are entries 0 and 1 (zero `_version` triggers the immediate `break` in
+    ///   `TryGet`).
     /// * `hashShift = BitOperations.LeadingZeroCount((nuint)1)` = 63 on 64-bit; PawPrint
     ///   targets 64-bit guests exclusively, so we hard-code 63. This bounds the initial
     ///   `KeyToBucket` index to {0, 1}, keeping `Element(tableData, k)` inside the
@@ -596,6 +598,10 @@ module IlMachineRuntimeMetadata =
 
         // Auxiliary header: hashShift = 63 (LeadingZeroCount((nuint)1) on 64-bit),
         // tableMask = size - 1 = 1, victimCounter = 0 (already zero, written for clarity).
+        // These live at element indices 0, 1, 2 because `CastCache.TableData` resolves
+        // `GetRawData(table) + sizeof(nint)` to the first int element — `GetRawData` on
+        // arrays returns a pointer at `RawArrayData.Length`, so the 8-byte skip walks past
+        // `Length` + 64-bit padding and lands at element 0.
         let state =
             state
             |> IlMachineThreadState.setArrayValue addr (CliType.Numeric (CliNumericType.Int32 63)) 0
