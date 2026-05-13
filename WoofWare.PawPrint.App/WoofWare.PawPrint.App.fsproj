@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <Compile Include="AssemblyInfo.fs"/>
+    <Compile Include="DebuggerRunUntil.fs"/>
     <Compile Include="DebuggerServer.fs"/>
     <Compile Include="Program.fs"/>
   </ItemGroup>
