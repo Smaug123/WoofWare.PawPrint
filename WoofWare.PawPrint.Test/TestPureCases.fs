@@ -24,7 +24,7 @@ module TestPureCases =
             "RuntimeTypeGetInterfacesInherited.cs" // exercises the QCall's inherited-base + transitive-interface walk; now blocked during the reflection-cache update by `validateByteAddressableCell` refusing to byte-view object-reference cells inside Buffer::BulkMoveWithWriteBarrierInternal
             "CrossAssemblyTypes.cs" // past MethodTable::ParentMethodTable projection; now blocked by unimplemented QCall EventPipeInternal_CreateProvider during static init of System.Diagnostics.Tracing.EventPipeInternal
             "InterfaceDispatch.cs" // past MetadataImport::GetCustomAttributeProps; now blocked by unimplemented InternalCall MetadataImport::GetParentToken
-            "NullDereferenceTest.cs" // past CastHelpers.s_table lazy-init and RawData::Data projection on arrays; now blocked by unimplemented JIT intrinsic System.Runtime.CompilerServices.Unsafe.AddByteOffset(&, System.IntPtr) inside CastCache.TableData
+            "NullDereferenceTest.cs" // past CastHelpers.s_table lazy-init, RawData::Data array projection, and Unsafe.AddByteOffset intrinsic; now blocked by `shl` on a widened native int (bit-twiddling on pointer bits) inside CastCache.TableData
             "CastClassInvalid.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
             "CastclassFailures.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
             "ComplexTryCatch.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
