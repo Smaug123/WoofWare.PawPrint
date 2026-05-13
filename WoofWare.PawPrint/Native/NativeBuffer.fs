@@ -199,3 +199,69 @@ module NativeBuffer =
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | _ -> None
+
+    /// Dispatches the InternalCall (FCall) variants of `System.Buffer` that
+    /// take byref `byte` endpoints rather than the QCall pointer endpoints.
+    ///
+    /// This handler wires `BulkMoveWithWriteBarrierInternal` into native
+    /// dispatch and implements CoreCLR's FCall short-circuits
+    /// (`dst != src && byteCount != 0`, see comutilnative.cpp); the actual
+    /// move reuses the byte-wise `copy` helper. That is sufficient for
+    /// byte-addressable endpoints, but the BCL's primary callers
+    /// (`Buffer.Memmove<T>` for `T` containing references, `Array.Copy` of
+    /// reference-typed arrays, the reflection-cache growth path, etc.) hand
+    /// in byrefs that land on object-reference cells, which are not
+    /// byte-addressable in PawPrint and so are rejected by
+    /// `validateByteAddressableCell` inside `copy`. Making those callers
+    /// pass requires a cell-aware copy path that reads and writes whole
+    /// object-reference cells when the byte offsets and `byteCount` align
+    /// to the cell boundary; that work is intentionally deferred to a
+    /// separate change so this PR stays a focused dispatch increment.
+    let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
+        let state = ctx.State
+        let instruction = ctx.Instruction
+
+        match
+            ctx.TargetAssembly.Name.Name,
+            ctx.TargetType.Namespace,
+            ctx.TargetType.Name,
+            instruction.ExecutingMethod.Name,
+            instruction.ExecutingMethod.Signature.ParameterTypes,
+            instruction.ExecutingMethod.Signature.ReturnType
+        with
+        | "System.Private.CoreLib",
+          "System",
+          "Buffer",
+          "BulkMoveWithWriteBarrierInternal",
+          [ ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
+            ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
+            ConcreteUIntPtr state.ConcreteTypes ],
+          MethodReturnType.Void ->
+            let operation = "Buffer_BulkMoveWithWriteBarrierInternal"
+
+            if instruction.Arguments.Length <> 3 then
+                failwith
+                    $"%s{operation}: expected three native arguments after matching signature, got %d{instruction.Arguments.Length}"
+
+            let dest =
+                NativeCall.managedPointerOfPointerArgument operation "dest" instruction.Arguments.[0]
+
+            let src =
+                NativeCall.managedPointerOfPointerArgument operation "src" instruction.Arguments.[1]
+
+            let byteCount = byteCountOfArgument operation instruction.Arguments.[2]
+
+            // CoreCLR's FCall short-circuits both `dst == src` and
+            // `byteCount == 0` (see comutilnative.cpp). We honour both
+            // explicitly: storage that contains object references is not
+            // byte-addressable in PawPrint, so a self-copy of such storage
+            // must not fall through to `copy` — `validateByteAddressableCell`
+            // would reject it.
+            let state =
+                if byteCount = 0 || dest = src then
+                    state
+                else
+                    copy ctx.BaseClassTypes state dest src byteCount
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | _ -> None
