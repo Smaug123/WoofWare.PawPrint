@@ -18,6 +18,7 @@ module TestPureCases =
     let unimplemented =
         [
             "AdvancedStructLayout.cs" // blocked after fixed-buffer pointer arithmetic by MarshalNative_SizeOfHelper for ByValTStr string marshalling
+            "MarshalSizeOfDateTime.cs" // a `System.DateTime` field inside a sequential struct trips the marshal walk's AutoLayout rejection (DateTime metadata is LayoutKind.Auto), but CoreCLR's `MarshalInfo` special-cases it as `MARSHAL_TYPE_DATE` (8 bytes). Needs DateTime recognised as a host-known primitive-like wrapper before the walk recurses into it.
             "LdtokenField.cs" // past InternalCall System.Buffer::BulkMoveWithWriteBarrierInternal; now blocked during reflection-cache update because Buffer's byte-wise copy refuses to byte-view object-reference array cells (`validateByteAddressableCell` rejects ObjectRef storage)
             "RuntimeFieldHandleGetUtf8Name.cs" // exercises RuntimeFieldHandle::GetUtf8NameInternal, RuntimeTypeHandle::GetInterfaces, and Volatile.Write of object refs successfully; now blocked at the next step in the reflection-cache copy by `validateByteAddressableCell` refusing to byte-view object-reference cells inside Buffer::BulkMoveWithWriteBarrierInternal
             "RuntimeTypeGetInterfacesInherited.cs" // exercises the QCall's inherited-base + transitive-interface walk; now blocked during the reflection-cache update by `validateByteAddressableCell` refusing to byte-view object-reference cells inside Buffer::BulkMoveWithWriteBarrierInternal
