@@ -1845,6 +1845,134 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack' ptr currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
+        | "System.Private.CoreLib", "Unsafe", "AddByteOffset" ->
+            // CoreCLR's managed body throws PlatformNotSupportedException; the JIT replaces
+            // the call with raw byref + native-int addition. Both overloads (IntPtr and
+            // UIntPtr) share the same semantics: advance the byref by `byteOffset` bytes,
+            // preserving the static `T` view.
+            // https://github.com/dotnet/runtime/blob/HEAD/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L661
+            let t =
+                match Seq.toList methodToCall.Generics with
+                | [ t ] -> t
+                | _ -> failwith "bad generics Unsafe.AddByteOffset"
+
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteByref tFromParam ; ConcreteIntPtr state.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteByref tFromRet)
+            | [ ConcreteByref tFromParam ; ConcreteUIntPtr state.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteByref tFromRet) when tFromParam = t && tFromRet = t -> ()
+            | _ ->
+                failwith
+                    $"TODO: Unsafe.AddByteOffset: only the (ref T, IntPtr) and (ref T, UIntPtr) overloads are implemented; got params %A{methodToCall.Signature.ParameterTypes}"
+
+            let offset, state = IlMachineState.popEvalStack currentThread state
+            let src, state = IlMachineState.popEvalStack currentThread state
+
+            let offset : int =
+                match offset with
+                | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) ->
+                    if i < int64<int> System.Int32.MinValue || i > int64<int> System.Int32.MaxValue then
+                        failwith $"TODO: Unsafe.AddByteOffset: native-int byte offset %d{i} does not fit in Int32"
+
+                    int32<int64> i
+                | EvalStackValue.Int32 i -> i
+                | _ ->
+                    failwith
+                        $"TODO: Unsafe.AddByteOffset: expected Verbatim NativeInt or Int32 byte offset, got %O{offset}"
+
+            let srcPtr =
+                match src with
+                | EvalStackValue.ManagedPointer p -> p
+                | _ -> failwith $"TODO: Unsafe.AddByteOffset on non-ManagedPointer source byref: %O{src}"
+
+            // `addByteOffsetUnderReinterpret` anchors the byte cursor under `ReinterpretAs T`
+            // before appending the offset, so it works regardless of whether the source byref
+            // already carries a trailing byte-view tail. The trailing `ReinterpretAs T` is
+            // address-preserving; the `appendProjection` collapse rules handle the common
+            // case where the source already has a `ReinterpretAs T` (idempotent) or a
+            // `[ReinterpretAs T; ByteOffset n]` tail whose `n` cancels the new offset (e.g.
+            // `RawData::Data` on an array followed by the canonical `+sizeof(nint)` skip).
+            //
+            // The byte-view path requires the reinterpret target's storage to be
+            // byte-addressable on read. Object references (and value types containing
+            // them) deliberately are not, so a naturally-typed byref to such cells
+            // must stay in its natural form. We short-circuit when (a) the source
+            // is itself naturally-typed (no trailing byte-view tail) and (b) the
+            // byte offset is a whole-cell multiple, so the result is still
+            // expressible without a reinterpret tail. The general byte-view path
+            // handles all other shapes.
+            let normalisation =
+                match srcPtr with
+                | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, _), _) ->
+                    let elementSize =
+                        let obj = state.ManagedHeap.Arrays.[arr]
+
+                        if obj.Length = 0 then
+                            0
+                        else
+                            CliType.sizeOf obj.Elements.[0]
+
+                    ByteOffsetNormalisationContext.withArrayElementSize arr elementSize
+                | _ -> ByteOffsetNormalisationContext.fixedStrideRootsOnly
+
+            let typedShortcut : ManagedPointerSource option =
+                match srcPtr with
+                | ManagedPointerSource.Byref (root, projs) ->
+                    let hasByteViewTail =
+                        match List.tryLast projs with
+                        | Some (ByrefProjection.ReinterpretAs _)
+                        | Some (ByrefProjection.ByteOffset _) -> true
+                        | _ -> false
+
+                    if hasByteViewTail then
+                        None
+                    elif offset = 0 then
+                        // Zero-byte advance on a naturally-typed byref is the identity;
+                        // returning the source preserves the typed view that the bytewise
+                        // path would otherwise destroy by appending a `ReinterpretAs T`.
+                        Some srcPtr
+                    else
+                        match root, projs with
+                        | ByrefRoot.ArrayElement (arr, i), [] ->
+                            let arrObj = state.ManagedHeap.Arrays.[arr]
+
+                            if arrObj.Length = 0 then
+                                None
+                            else
+                                let elementSize = CliType.sizeOf arrObj.Elements.[0]
+
+                                if elementSize > 0 && offset % elementSize = 0 then
+                                    Some (
+                                        ManagedPointerSource.Byref (
+                                            ByrefRoot.ArrayElement (arr, i + offset / elementSize),
+                                            []
+                                        )
+                                    )
+                                else
+                                    None
+                        | _ -> None
+                | _ -> None
+
+            // Concretising T is only required for the byte-view fallback (which
+            // anchors a `ReinterpretAs T` tail). The typed shortcut never touches
+            // T, so structural concrete-type handles (array, pointer, function
+            // pointer) — which `AllConcreteTypes.lookup` doesn't store — can still
+            // resolve cleanly through the shortcut.
+            let ptr =
+                match typedShortcut with
+                | Some p -> p
+                | None ->
+                    let tConcrete =
+                        match AllConcreteTypes.lookup t state.ConcreteTypes with
+                        | Some c -> c
+                        | None -> failwith $"Unsafe.AddByteOffset: T not concretised: %O{t}"
+
+                    ManagedPointerSource.addByteOffsetUnderReinterpret normalisation tConcrete offset srcPtr
+
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Some
         | "System.Private.CoreLib", "Unsafe", "ByteOffset" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L69
             // The source-level IL body throws PlatformNotSupportedException; the JIT replaces it with sub on two byrefs.
