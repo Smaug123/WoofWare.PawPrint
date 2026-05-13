@@ -202,12 +202,21 @@ module NativeBuffer =
 
     /// Dispatches the InternalCall (FCall) variants of `System.Buffer` that
     /// take byref `byte` endpoints rather than the QCall pointer endpoints.
-    /// `BulkMoveWithWriteBarrierInternal` is the BCL's primitive for moving
-    /// runs of bytes that may contain object references; the CLR uses GC
-    /// write barriers on the underlying raw memory, but PawPrint's managed
-    /// storage already preserves reference identity through byref writes,
-    /// so the operation reduces to the same byte-wise copy used by
-    /// `Buffer_MemMove`.
+    ///
+    /// This handler wires `BulkMoveWithWriteBarrierInternal` into native
+    /// dispatch and implements CoreCLR's FCall short-circuits
+    /// (`dst != src && byteCount != 0`, see comutilnative.cpp); the actual
+    /// move reuses the byte-wise `copy` helper. That is sufficient for
+    /// byte-addressable endpoints, but the BCL's primary callers
+    /// (`Buffer.Memmove<T>` for `T` containing references, `Array.Copy` of
+    /// reference-typed arrays, the reflection-cache growth path, etc.) hand
+    /// in byrefs that land on object-reference cells, which are not
+    /// byte-addressable in PawPrint and so are rejected by
+    /// `validateByteAddressableCell` inside `copy`. Making those callers
+    /// pass requires a cell-aware copy path that reads and writes whole
+    /// object-reference cells when the byte offsets and `byteCount` align
+    /// to the cell boundary; that work is intentionally deferred to a
+    /// separate change so this PR stays a focused dispatch increment.
     let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
