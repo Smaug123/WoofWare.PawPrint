@@ -29,6 +29,28 @@ class Program
             return 1;
         }
 
+        // Exercise the native-int comparison arms on `OpaqueHashBits` in
+        // both their unsigned (`cgt.un`/`clt.un`, the lowering for nuint `>`/`<`)
+        // and signed forms. The rotated bits are non-zero by construction
+        // (the original handle is non-null), so all of these comparisons have
+        // a deterministic answer.
+        if (!(narrowed > (nuint)0))
+        {
+            return 2;
+        }
+
+        if (narrowed < (nuint)0)
+        {
+            return 3;
+        }
+
+        nint signedNarrowed = (nint)rotated;
+        // Compare against an obviously-smaller signed nint to drive signed clt/cgt.
+        if (signedNarrowed == (nint)0)
+        {
+            return 4;
+        }
+
         return 0;
     }
 }

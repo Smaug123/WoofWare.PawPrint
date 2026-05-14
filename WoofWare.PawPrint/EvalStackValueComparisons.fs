@@ -105,6 +105,12 @@ module EvalStackValueComparisons =
         | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 ->
             match var1, var2 with
             | NativeIntSource.Verbatim var1, NativeIntSource.Verbatim var2 -> uint64 var1 > uint64 var2
+            // OpaqueHashBits carries an unambiguous int64 bit pattern; unsigned
+            // comparison against any other unambiguous bit-pattern source is
+            // well-defined. Mirrors the Int64 OpaqueHashBits cgt.un arms above.
+            | NativeIntSource.OpaqueHashBits var1, NativeIntSource.OpaqueHashBits var2 -> uint64 var1 > uint64 var2
+            | NativeIntSource.OpaqueHashBits var1, NativeIntSource.Verbatim var2
+            | NativeIntSource.Verbatim var1, NativeIntSource.OpaqueHashBits var2 -> uint64 var1 > uint64 var2
             | NativeIntSource.Verbatim var1, NativeIntSource.SyntheticCrossArrayOffset var2 ->
                 if var1 >= 0L then
                     SyntheticCrossArrayOffset.cltVerbatim var2 var1
@@ -200,6 +206,11 @@ module EvalStackValueComparisons =
         | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 ->
             match var1, var2 with
             | NativeIntSource.Verbatim var1, NativeIntSource.Verbatim var2 -> uint64 var1 < uint64 var2
+            // See cgt.un: OpaqueHashBits is bit-pattern unambiguous and can be
+            // compared unsigned against any other unambiguous nativeint source.
+            | NativeIntSource.OpaqueHashBits var1, NativeIntSource.OpaqueHashBits var2 -> uint64 var1 < uint64 var2
+            | NativeIntSource.OpaqueHashBits var1, NativeIntSource.Verbatim var2
+            | NativeIntSource.Verbatim var1, NativeIntSource.OpaqueHashBits var2 -> uint64 var1 < uint64 var2
             | NativeIntSource.Verbatim var1, NativeIntSource.SyntheticCrossArrayOffset var2 ->
                 if var1 >= 0L then
                     SyntheticCrossArrayOffset.cgtVerbatim var2 var1

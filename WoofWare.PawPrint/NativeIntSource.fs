@@ -276,7 +276,13 @@ module NativeIntSource =
         | NativeIntSource.Verbatim _, NativeIntSource.SyntheticCrossArrayOffset _ ->
             failwith "TODO: cross-array offsets hopefully aren't meaningfully compared with ints"
         | NativeIntSource.SyntheticCrossArrayOffset _, NativeIntSource.SyntheticCrossArrayOffset _ -> failwith "TODO"
-        | _, _ -> failwith "TODO"
+        // OpaqueHashBits carries an unambiguous int64 bit pattern, so signed
+        // comparison is well-defined against any other unambiguous bit-pattern
+        // source (mirrors `Int64Source.compareSigned`).
+        | NativeIntSource.OpaqueHashBits a, NativeIntSource.OpaqueHashBits b -> a < b
+        | NativeIntSource.OpaqueHashBits a, NativeIntSource.Verbatim b
+        | NativeIntSource.Verbatim a, NativeIntSource.OpaqueHashBits b -> a < b
+        | _, _ -> failwith $"TODO: NativeIntSource.isLess on non-Verbatim sources: %O{a} vs %O{b}"
 
 type CliRuntimePointer =
     | Verbatim of int64
