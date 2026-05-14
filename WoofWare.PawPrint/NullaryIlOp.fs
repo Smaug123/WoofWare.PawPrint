@@ -180,6 +180,12 @@ module NullaryIlOp =
         | ManagedPointerSource.Null
         | ManagedPointerSource.Byref _ -> false
 
+    let private isNativeMemoryPointer (src : ManagedPointerSource) : bool =
+        match src with
+        | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte _, _) -> true
+        | ManagedPointerSource.Null
+        | ManagedPointerSource.Byref _ -> false
+
     let private isTrailingByteViewPointer (src : ManagedPointerSource) : bool =
         match src with
         | ManagedPointerSource.Null -> false
@@ -398,7 +404,11 @@ module NullaryIlOp =
 
         let loadedValue =
             match popped with
-            | EvalStackValue.ManagedPointer src when isStackMemoryPointer src || isTrailingByteViewPointer src ->
+            | EvalStackValue.ManagedPointer src when
+                isStackMemoryPointer src
+                || isNativeMemoryPointer src
+                || isTrailingByteViewPointer src
+                ->
                 IlMachineState.readManagedByrefBytesAs state src targetCliType
             | EvalStackValue.ManagedPointer src -> IlMachineState.readManagedByref corelib state src
             | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer src) ->

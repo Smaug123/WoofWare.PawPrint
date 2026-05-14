@@ -618,6 +618,57 @@ module TestBinaryArithmetic =
         SyntheticCrossArrayOffset.sourceOffset forward |> shouldEqual 3L
 
     [<Test>]
+    let ``readManagedByrefBytesAs round-trips a typed cell through a native-memory byref`` () : unit =
+        // Regression for Codex P2: native-memory byrefs must route through the byte-backed
+        // read/write paths so that a stobj followed by an ldind via NativeMemoryByte
+        // reconstitutes the value via the byte view, not via `readRootValue`'s typed-cell
+        // fast path. Pre-fix, `executeLdind` and `Stobj`'s `writeAt` only special-cased
+        // `StackMemoryByte`, leaving `NativeMemoryByte` to fall through to
+        // `readManagedByref`/`writeManagedByrefWithBase`, which can't service byte-backed
+        // reinterpretation when no typed cell exists at the requested offset.
+        let ptr, state =
+            IlMachineState.allocateNativeMemory MemoryBlockInitialization.ZeroInitialized 4 (state ())
+
+        // Plain typed-cell round-trip at the base offset.
+        let state =
+            IlMachineState.writeManagedByrefBytesOrTypedCell
+                state
+                ptr
+                (CliType.Numeric (CliNumericType.Int32 0x11223344))
+
+        let roundTripped =
+            IlMachineState.readManagedByrefBytesAs state ptr (CliType.Numeric (CliNumericType.Int32 0))
+
+        roundTripped |> shouldEqual (CliType.Numeric (CliNumericType.Int32 0x11223344))
+
+    [<Test>]
+    let ``readManagedByrefBytesAs reinterprets raw native-memory bytes as a typed cell`` () : unit =
+        // Regression for Codex P2: the byte-backed read path must work for native-memory
+        // byrefs even when the underlying block has no typed cell at the requested offset.
+        // The pre-fix dispatch would have routed bare `NativeMemoryByte` reads through
+        // `readManagedByref` → `readRootValue`, which fails with "no typed cell here"
+        // instead of reading raw bytes.
+        let ptr, state =
+            IlMachineState.allocateNativeMemory MemoryBlockInitialization.ZeroInitialized 4 (state ())
+
+        let block =
+            match ptr with
+            | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, 0), []) -> block
+            | other -> failwith $"expected bare NativeMemoryByte byref, got %O{other}"
+
+        // Write raw bytes directly into the native-memory pool, bypassing typed-cell stores.
+        let pool =
+            NativeMemoryPool.writeBytes block 0 [| 0x44uy ; 0x33uy ; 0x22uy ; 0x11uy |] state.NativeMemoryPool
+
+        let state = IlMachineState.setNativeMemoryPool pool state
+
+        let readBack =
+            IlMachineState.readManagedByrefBytesAs state ptr (CliType.Numeric (CliNumericType.Int32 0))
+
+        // Little-endian assembly of the four bytes above gives 0x11223344.
+        readBack |> shouldEqual (CliType.Numeric (CliNumericType.Int32 0x11223344))
+
+    [<Test>]
     let ``array byref arithmetic rejects int32 index overflow`` () : unit =
         let state, arr = stateWithIntArray [ 1 ]
 
