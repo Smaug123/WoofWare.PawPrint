@@ -223,8 +223,8 @@ module TestNativeIntSource =
     [<Test>]
     let ``Int64Source.negate on a cross-storage offset returns the negated synthetic`` () : unit =
         let property (s : SyntheticCrossArrayOffset) : unit =
-            match Int64Source.negate (Int64Source.SyntheticCrossArrayOffset s) with
-            | Some (Int64Source.SyntheticCrossArrayOffset negated) ->
+            match Int64Source.negate "test" (Int64Source.SyntheticCrossArrayOffset s) PointerHashCounters.empty with
+            | Some (Int64Source.SyntheticCrossArrayOffset negated, _) ->
                 negated |> shouldEqual (SyntheticCrossArrayOffset.negate s)
             | other -> failwith $"expected negate to return Some (synthetic), got %O{other}"
 
@@ -235,12 +235,12 @@ module TestNativeIntSource =
         let property (s : SyntheticCrossArrayOffset) : unit =
             let original = Int64Source.SyntheticCrossArrayOffset s
 
-            match Int64Source.negate original with
+            match Int64Source.negate "test" original PointerHashCounters.empty with
             | None -> failwith "negate of synthetic returned None"
-            | Some onceNegated ->
-                match Int64Source.negate onceNegated with
+            | Some (onceNegated, counters) ->
+                match Int64Source.negate "test" onceNegated counters with
                 | None -> failwith "double-negate of synthetic returned None"
-                | Some twiceNegated -> twiceNegated |> shouldEqual original
+                | Some (twiceNegated, _) -> twiceNegated |> shouldEqual original
 
         Check.One (propertyConfig, Prop.forAll (Arb.fromGen genSyntheticCrossArrayOffset) property)
 

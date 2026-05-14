@@ -16,6 +16,7 @@
     <Compile Include="FieldId.fs" />
     <Compile Include="ManagedPointerSource.fs" />
     <Compile Include="NativeIntSource.fs" />
+    <Compile Include="PointerHashSynthesis.fs" />
     <Compile Include="CliNumericType.fs" />
     <Compile Include="CliType.fs" />
     <Compile Include="FieldIdentity.fs" />

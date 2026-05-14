@@ -308,6 +308,7 @@ module IlMachineThreadState =
                 LastPInvokeError = 0
                 LastSystemError = 0
                 NextEventPipeId = 1L
+                PointerHashCounters = PointerHashCounters.empty
             }
 
         state.WithLoadedAssembly assyName entryAssembly

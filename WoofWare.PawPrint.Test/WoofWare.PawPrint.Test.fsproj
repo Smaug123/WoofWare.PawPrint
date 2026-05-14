@@ -21,6 +21,7 @@
     <Compile Include="TestTypeIdentityProperties.fs" />
     <Compile Include="TestEvalStack.fs" />
     <Compile Include="TestNativeIntSource.fs" />
+    <Compile Include="TestPointerHashSynthesis.fs" />
     <Compile Include="TestCliTypeBytes.fs" />
     <Compile Include="TestManagedHeap.fs" />
     <Compile Include="TestBinaryArithmetic.fs" />
