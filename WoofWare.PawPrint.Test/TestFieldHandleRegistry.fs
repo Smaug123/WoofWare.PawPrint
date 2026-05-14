@@ -399,8 +399,13 @@ public class DerivedWithField : BaseWithField
 
         state, runtimeFieldHandleType, method
 
-    let private readInt32Pointer (state : IlMachineState) (ptr : ManagedPointerSource) : int =
-        match IlMachineState.readManagedByrefBytesAs state ptr (CliType.Numeric (CliNumericType.Int32 0)) with
+    let private readInt32Pointer
+        (bct : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (ptr : ManagedPointerSource)
+        : int
+        =
+        match IlMachineState.readManagedByrefBytesAs bct state ptr (CliType.Numeric (CliNumericType.Int32 0)) with
         | CliType.Numeric (CliNumericType.Int32 i) -> i
         | other -> failwith $"Expected Int32 pointer read, got %O{other}"
 
@@ -583,7 +588,7 @@ public class DerivedWithField : BaseWithField
             | EvalStackValue.Int32 1 -> true
             | other -> failwith $"Expected RuntimeTypeHandle_GetFields Interop.BOOL result, got %O{other}"
 
-        let count = readInt32Pointer state countPtr
+        let count = readInt32Pointer fixture.BaseClassTypes state countPtr
 
         let valuesToRead = if success then count else max 1 capacity
 
@@ -893,7 +898,7 @@ public static class HasRvaData
         ManagedPointerSource.tryStableAddressBits ptr
         |> shouldEqual (Some (int64 peByteRange.RelativeVirtualAddress))
 
-        IlMachineState.readManagedByrefBytesAs state ptr byteTemplate
+        IlMachineState.readManagedByrefBytesAs baseClassTypes state ptr byteTemplate
         |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 0x11uy))
 
         let offsetPtr =
@@ -903,7 +908,7 @@ public static class HasRvaData
         |> shouldEqual (Some (int64 peByteRange.RelativeVirtualAddress + 4L))
 
         offsetPtr
-        |> fun ptr -> IlMachineState.readManagedByrefBytesAs state ptr byteTemplate
+        |> fun ptr -> IlMachineState.readManagedByrefBytesAs baseClassTypes state ptr byteTemplate
         |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 0x55uy))
 
         let outOfBoundsPtr =
@@ -912,7 +917,7 @@ public static class HasRvaData
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->
-                IlMachineState.readManagedByrefBytesAs state outOfBoundsPtr byteTemplate
+                IlMachineState.readManagedByrefBytesAs baseClassTypes state outOfBoundsPtr byteTemplate
                 |> ignore
             )
 

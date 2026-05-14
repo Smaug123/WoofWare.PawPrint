@@ -16,8 +16,13 @@ module NativeBuffer =
         AllConcreteTypes.lookup handle state.ConcreteTypes
         |> Option.defaultWith (fun () -> failwith $"Buffer_MemMove: concrete System.Byte handle %O{handle} not found")
 
-    let private readByte (state : IlMachineState) (ptr : ManagedPointerSource) : byte =
-        match IlMachineState.readManagedByrefBytesAs state ptr byteTemplate with
+    let private readByte
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (ptr : ManagedPointerSource)
+        : byte
+        =
+        match IlMachineState.readManagedByrefBytesAs baseClassTypes state ptr byteTemplate with
         | CliType.Numeric (CliNumericType.UInt8 b) -> b
         | other -> failwith $"Buffer_MemMove: byte-view read returned non-byte value %O{other}"
 
@@ -131,7 +136,7 @@ module NativeBuffer =
                 let dest =
                     ManagedPointerByteView.addByteOffset baseClassTypes state byteConcreteType i dest
 
-                let value = readByte state src
+                let value = readByte baseClassTypes state src
                 state <- writeByte state dest value
         else
             for i = 0 to byteCount - 1 do
@@ -141,7 +146,7 @@ module NativeBuffer =
                 let dest =
                     ManagedPointerByteView.addByteOffset baseClassTypes state byteConcreteType i dest
 
-                let value = readByte state src
+                let value = readByte baseClassTypes state src
                 state <- writeByte state dest value
 
         state

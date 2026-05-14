@@ -1205,7 +1205,7 @@ module Intrinsics =
                     | EvalStackValue.NullObjectRef -> failwith "TODO: Unsafe.ReadUnaligned on null should throw NRE"
                     | _ -> failwith $"TODO: Unsafe.ReadUnaligned: expected ManagedPointer, got %O{ptr}"
 
-                let v = IlMachineState.readManagedByrefBytesAs state src tZero
+                let v = IlMachineState.readManagedByrefBytesAs baseClassTypes state src tZero
 
                 let state =
                     state
@@ -1226,7 +1226,7 @@ module Intrinsics =
 
                 let src = managedPointerOfPointerArgument "Unsafe.ReadUnaligned(void*)" ptr
 
-                let v = IlMachineState.readManagedByrefBytesAs state src tZero
+                let v = IlMachineState.readManagedByrefBytesAs baseClassTypes state src tZero
 
                 let state =
                     state

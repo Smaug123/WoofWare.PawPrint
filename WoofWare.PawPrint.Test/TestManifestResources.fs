@@ -246,12 +246,20 @@ public static class Entry
         | CliType.Numeric (CliNumericType.Int32 value) -> uint32 value
         | other -> failwith $"expected UInt32 out value, got %O{other}"
 
-    let private readByte (state : IlMachineState) (ptr : ManagedPointerSource) (byteOffset : int) : byte =
+    let private readByte
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (ptr : ManagedPointerSource)
+        (byteOffset : int)
+        : byte
+        =
         let ptr =
             ptr
             |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset byteOffset)
 
-        match IlMachineState.readManagedByrefBytesAs state ptr (CliType.Numeric (CliNumericType.UInt8 0uy)) with
+        match
+            IlMachineState.readManagedByrefBytesAs baseClassTypes state ptr (CliType.Numeric (CliNumericType.UInt8 0uy))
+        with
         | CliType.Numeric (CliNumericType.UInt8 value) -> value
         | other -> failwith $"expected byte read, got %O{other}"
 
@@ -274,7 +282,7 @@ public static class Entry
                 []
             |> CliType.ValueType
 
-        IlMachineState.readManagedByrefBytesAs state ptr zeroSizeTemplate
+        IlMachineState.readManagedByrefBytesAs baseClassTypes state ptr zeroSizeTemplate
         |> CliType.ToBytes
 
     let private invokeAssemblyNativeGetResourceWithArguments
@@ -787,7 +795,7 @@ public static class Entry
 
         let byteTemplate = CliType.Numeric (CliNumericType.UInt8 0uy)
 
-        IlMachineState.readManagedByrefBytesAs state ptr byteTemplate
+        IlMachineState.readManagedByrefBytesAs baseClassTypes state ptr byteTemplate
         |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 resourceBytes.[0]))
 
         let offsetPtr =
@@ -796,7 +804,7 @@ public static class Entry
         ManagedPointerSource.tryStableAddressBits offsetPtr
         |> shouldEqual (Some (int64 peByteRange.RelativeVirtualAddress + 3L))
 
-        IlMachineState.readManagedByrefBytesAs state offsetPtr byteTemplate
+        IlMachineState.readManagedByrefBytesAs baseClassTypes state offsetPtr byteTemplate
         |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 resourceBytes.[3]))
 
         let emptyPeByteRange =
@@ -875,7 +883,7 @@ public static class Entry
         match ret with
         | EvalStackValue.ManagedPointer ptr ->
             resourceBytes
-            |> Array.iteri (fun i expected -> readByte state ptr i |> shouldEqual expected)
+            |> Array.iteri (fun i expected -> readByte prepared.BaseClassTypes state ptr i |> shouldEqual expected)
         | other -> failwith $"expected managed resource pointer, got %O{other}"
 
     [<Test>]
