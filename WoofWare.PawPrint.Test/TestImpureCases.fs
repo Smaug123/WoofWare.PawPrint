@@ -17,6 +17,12 @@ module TestImpureCases =
 
     let unimplemented =
         [
+            // `Console.WriteLine("Hello, world!")` triggers lazy initialisation of `Console.Out`,
+            // which descends Console::get_Out → ConsolePal::OpenStandardOutput → Interop+Sys::Dup
+            // (a libSystem.Native P/Invoke). PawPrint deliberately avoids native execution, so this
+            // path needs a managed replacement for `SystemNative_Dup` (and likely several sibling
+            // file-descriptor primitives) wired through `ExternImplementations` before WriteLine
+            // can complete.
             {
                 FileName = "WriteLine.cs"
                 ExpectedReturnCode = 1
