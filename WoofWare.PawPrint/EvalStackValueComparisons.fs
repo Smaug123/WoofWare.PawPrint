@@ -92,6 +92,15 @@ module EvalStackValueComparisons =
         | EvalStackValue.Int32 _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
         | EvalStackValue.Int64 (Int64Source.Verbatim var1), EvalStackValue.Int64 (Int64Source.Verbatim var2) ->
             uint64 var1 > uint64 var2
+        // OpaqueHashBits carries an unambiguous int64 bit pattern, so unsigned
+        // comparison is well-defined against any other unambiguous bit-pattern
+        // source. The cast-cache bucket selection compares hashes/bucket indices
+        // exactly this way.
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits var1), EvalStackValue.Int64 (Int64Source.OpaqueHashBits var2) ->
+            uint64 var1 > uint64 var2
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits var1), EvalStackValue.Int64 (Int64Source.Verbatim var2)
+        | EvalStackValue.Int64 (Int64Source.Verbatim var1), EvalStackValue.Int64 (Int64Source.OpaqueHashBits var2) ->
+            uint64 var1 > uint64 var2
         | EvalStackValue.Int64 _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
         | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 ->
             match var1, var2 with
@@ -179,6 +188,13 @@ module EvalStackValueComparisons =
             failwith "TODO: comparison of unsigned int32 with nativeint"
         | EvalStackValue.Int32 _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
         | EvalStackValue.Int64 (Int64Source.Verbatim var1), EvalStackValue.Int64 (Int64Source.Verbatim var2) ->
+            uint64 var1 < uint64 var2
+        // See cgtUn: OpaqueHashBits is bit-pattern unambiguous and can be
+        // compared unsigned against any other unambiguous Int64 source.
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits var1), EvalStackValue.Int64 (Int64Source.OpaqueHashBits var2) ->
+            uint64 var1 < uint64 var2
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits var1), EvalStackValue.Int64 (Int64Source.Verbatim var2)
+        | EvalStackValue.Int64 (Int64Source.Verbatim var1), EvalStackValue.Int64 (Int64Source.OpaqueHashBits var2) ->
             uint64 var1 < uint64 var2
         | EvalStackValue.Int64 _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
         | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 ->
@@ -284,7 +300,34 @@ module EvalStackValueComparisons =
         | EvalStackValue.Int32 var1, EvalStackValue.Int32 var2 -> var1 = var2
         | EvalStackValue.Int32 var1, EvalStackValue.NativeInt var2 -> failwith "TODO: int32 CEQ nativeint"
         | EvalStackValue.Int32 _, _ -> failwith $"bad ceq: Int32 vs {var2}"
-        | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> var1 = var2
+        // WidenedNativeInt is the int64 bit-pattern of a NativeInt: route the
+        // comparison through the NativeInt arms so byref / function-pointer /
+        // type-handle identity comparisons land in the right place.
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)), _ -> ceq (EvalStackValue.NativeInt src) var2
+        | _, EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) -> ceq var1 (EvalStackValue.NativeInt src)
+        // Verbatim and OpaqueHashBits both carry unambiguous int64 bit patterns,
+        // so equality is bit-pattern equality regardless of how the bits were
+        // produced. Structural DU equality would incorrectly treat
+        // `Verbatim 0xABCD` and `OpaqueHashBits 0xABCD` as unequal.
+        | EvalStackValue.Int64 (Int64Source.Verbatim var1), EvalStackValue.Int64 (Int64Source.Verbatim var2) ->
+            var1 = var2
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits var1), EvalStackValue.Int64 (Int64Source.OpaqueHashBits var2) ->
+            var1 = var2
+        | EvalStackValue.Int64 (Int64Source.Verbatim var1), EvalStackValue.Int64 (Int64Source.OpaqueHashBits var2)
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits var1), EvalStackValue.Int64 (Int64Source.Verbatim var2) ->
+            var1 = var2
+        // SyntheticCrossArrayOffset values are equal iff they reference the
+        // same source/target roots at the same offsets — that's structural
+        // equality on the record. Cross-shape (offset vs verbatim/hash bits)
+        // can't sensibly equal: the offset is a marker for an unrepresentable
+        // address delta, not a number we can pin to a verbatim bit pattern.
+        | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset s1),
+          EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset s2) -> s1 = s2
+        | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _), EvalStackValue.Int64 (Int64Source.Verbatim _)
+        | EvalStackValue.Int64 (Int64Source.Verbatim _), EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) ->
+            false
+        | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 ->
+            failwith $"TODO: ceq on non-numeric Int64 sources: %O{var1} vs %O{var2}"
         | EvalStackValue.Int64 _, _ -> failwith $"bad ceq: Int64 vs {var2}"
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> var1 = var2
         | EvalStackValue.Float _, _ -> failwith $"bad ceq: Float vs {var2}"

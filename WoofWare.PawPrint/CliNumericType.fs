@@ -26,13 +26,15 @@ type Int64Source =
     | WidenedNativeInt of source : NativeIntSource * signed : bool
     /// Deterministic synthesised bits produced when a bit-mixing operation
     /// (`shl` / `shr` / `shrUn` / `bitAnd` / `bitOr` / `bitXor` / `bitNot` /
-    /// `negate` / `add`) fires on a `WidenedNativeInt` whose underlying source is a pointer
-    /// shape (`MethodTablePtr`, `TypeHandlePtr`, etc.). The hash bits derive
-    /// from the source's identity (see `materialiseHashBits`) and respect
-    /// the low-bit contract used elsewhere in the interpreter
-    /// (MethodTable* → low 2 bits clear; TypeDesc-shaped → low 2 bits set
-    /// to `0b10`). Once a value has this tag, further bit ops compute on
-    /// the bits directly and the result keeps the same tag.
+    /// `negate`) fires on a `WidenedNativeInt` whose underlying source is a
+    /// pointer shape (`MethodTablePtr`, `TypeHandlePtr`, etc.), or when an
+    /// arithmetic opcode (`Add`, `Mul`, …) runs through `BinaryArithmetic`
+    /// with at least one OpaqueHashBits operand. The hash bits derive from
+    /// the source's identity (see `materialiseHashBits`) and respect the
+    /// low-bit contract used elsewhere in the interpreter (MethodTable* →
+    /// low 2 bits clear; TypeDesc-shaped → low 2 bits set to `0b10`). Once
+    /// a value has this tag, further bit ops compute on the bits directly
+    /// and the result keeps the same tag.
     ///
     /// The tag's load-bearing job: an `OpaqueHashBits` value MUST NOT be
     /// converted back to a `NativeInt` (via `conv.u` / `conv.i`); doing so
@@ -73,6 +75,28 @@ module Int64Source =
             | ConcreteTypeHandle.OneDimArrayZero _
             | ConcreteTypeHandle.Array _ -> 0L
 
+    /// Deterministic FNV-1a hash on the `ToString` projection of a source.
+    /// `NativeIntSource.GetHashCode` uses `System.HashCode.Combine`, which
+    /// folds in a per-process randomised seed and therefore yields different
+    /// hash codes across PawPrint invocations. The interpreter's
+    /// determinism guarantee (deterministic replay, fuzzing over thread
+    /// schedules) requires that any guest-observable hash bits be derived
+    /// from process-stable identifiers instead. Each `NativeIntSource`
+    /// variant's `ToString` is structural in identifiers that are stable
+    /// within a process (e.g., `ConcreteTypeHandle.Concrete` carries an int
+    /// assigned in registration order), so FNV-1a of that string is a
+    /// stable surrogate that we can publish to the guest's bit-mixing
+    /// pipeline.
+    let private fnv1aHash (src : NativeIntSource) : int64 =
+        let mutable hash = 0xCBF29CE484222325UL
+        let s = src.ToString ()
+
+        for c in s do
+            hash <- hash ^^^ uint64 c
+            hash <- Operators.(*) hash 0x100000001B3UL
+
+        Operators.int64 hash
+
     /// Synthesise a deterministic 64-bit pattern from a pointer-shaped
     /// `NativeIntSource`. Used only when a bit-mixing operation fires on a
     /// `WidenedNativeInt`; the resulting bits get tagged as
@@ -80,27 +104,22 @@ module Int64Source =
     /// directly and the value cannot be round-tripped back to a real
     /// pointer.
     ///
-    /// Determinism: derives bits from `GetHashCode` on the structural DU
-    /// payload. PawPrint identity types use structural hashing, so two
-    /// processes loading the same assemblies produce identical hash bits
-    /// for the same `MethodTablePtr`/`TypeHandlePtr`. The cast-cache
-    /// hashing only needs determinism *within* a process anyway.
+    /// Determinism: derives bits via `fnv1aHash`, which folds the source's
+    /// `ToString` projection (stable within a process — see above). The
+    /// upper 16 bits aren't cleared so `RotateLeft(_, 32)` produces a
+    /// non-degenerate hash mix.
     ///
     /// Low-bit contract: matches `typeHandleLowAddressBitsForHash` so the
-    /// synthesised bits agree with the existing `and`-mask path. The
-    /// upper bits are shifted to ensure `RotateLeft(_, 32)` produces a
-    /// non-degenerate hash mix.
+    /// synthesised bits agree with the existing `and`-mask path
+    /// (`NullaryIlOp.typeHandleLowAddressBits`).
     let private materialiseHashBits (src : NativeIntSource) : int64 =
         match src with
         | NativeIntSource.Verbatim n -> n
         | NativeIntSource.ManagedPointer ManagedPointerSource.Null -> 0L
-        | NativeIntSource.MethodTablePtr _ ->
-            let h = int64 (hash src) <<< 16
-            h &&& ~~~3L
+        | NativeIntSource.MethodTablePtr _ -> fnv1aHash src &&& ~~~3L
         | NativeIntSource.TypeHandlePtr target ->
             let low = typeHandleLowAddressBitsForHash target
-            let h = int64 (hash src) <<< 16
-            (h &&& ~~~3L) ||| low
+            (fnv1aHash src &&& ~~~3L) ||| low
         | NativeIntSource.MethodTableAuxiliaryDataPtr _
         | NativeIntSource.FunctionPointer _
         | NativeIntSource.FieldHandlePtr _
@@ -110,9 +129,7 @@ module Int64Source =
         | NativeIntSource.EventPipeEventPtr _
         | NativeIntSource.AssemblyHandle _
         | NativeIntSource.ModuleHandle _
-        | NativeIntSource.MetadataImportHandle _ ->
-            let h = int64 (hash src) <<< 16
-            h &&& ~~~3L
+        | NativeIntSource.MetadataImportHandle _ -> fnv1aHash src &&& ~~~3L
         | NativeIntSource.ManagedPointer _ ->
             // Non-null managed pointers carry real provenance (byref roots,
             // heap addresses). Hashing them as plain bits would forget the
@@ -202,22 +219,6 @@ module Int64Source =
             bits <<< shift |> Int64Source.OpaqueHashBits
         | Int64Source.OpaqueHashBits bits -> bits <<< shift |> Int64Source.OpaqueHashBits
 
-    let add (i1 : Int64Source) (i2 : Int64Source) : Int64Source =
-        match i1, i2 with
-        | Int64Source.Verbatim i1, Int64Source.Verbatim i2 -> i1 + i2 |> Int64Source.Verbatim
-        | Int64Source.WidenedNativeInt (src, _), _
-        | _, Int64Source.WidenedNativeInt (src, _) ->
-            // Pointer-shaped int64 arithmetic is handled by BinaryArithmetic.execute
-            // (which dispatches on EvalStackValue pairs), not via this generic helper.
-            failwith $"TODO: Int64Source.add on widened native int %O{src} should be routed through BinaryArithmetic"
-        | Int64Source.OpaqueHashBits a, Int64Source.OpaqueHashBits b ->
-            // Adding two synthesised hash values is a bit-mixing operation,
-            // not pointer arithmetic — keep the tag and wrap on overflow.
-            (Operators.(+) a b) |> Int64Source.OpaqueHashBits
-        | Int64Source.OpaqueHashBits a, Int64Source.Verbatim b
-        | Int64Source.Verbatim b, Int64Source.OpaqueHashBits a -> (Operators.(+) a b) |> Int64Source.OpaqueHashBits
-        | _, _ -> failwith "TODO: SyntheticCrossArrayOffset"
-
     let bitNot (i : Int64Source) : Int64Source =
         match i with
         | Int64Source.Verbatim i -> Int64Source.Verbatim ~~~i
@@ -301,8 +302,8 @@ module Int64Source =
         match i1, i2 with
         | Int64Source.Verbatim a, Int64Source.Verbatim b -> compare a b
         | Int64Source.OpaqueHashBits a, Int64Source.OpaqueHashBits b -> compare a b
-        | Int64Source.OpaqueHashBits a, Int64Source.Verbatim b
-        | Int64Source.Verbatim b, Int64Source.OpaqueHashBits a -> compare a b
+        | Int64Source.OpaqueHashBits a, Int64Source.Verbatim b -> compare a b
+        | Int64Source.Verbatim a, Int64Source.OpaqueHashBits b -> compare a b
         | _, _ -> failwith $"TODO: refusing to compare Int64Source values numerically: %O{i1} vs %O{i2}"
 
 /// Defined in III.1.1.1

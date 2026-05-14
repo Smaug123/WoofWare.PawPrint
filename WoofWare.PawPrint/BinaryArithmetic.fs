@@ -737,6 +737,17 @@ module BinaryArithmetic =
         | EvalStackValue.Int32 _, EvalStackValue.NullObjectRef -> failwith ""
         | EvalStackValue.Int64 (Int64Source.Verbatim val1), EvalStackValue.Int64 (Int64Source.Verbatim val2) ->
             op.Int64Int64 val1 val2 |> Int64Source.Verbatim |> EvalStackValue.Int64
+        // Arithmetic on synthesised pointer-hash bits stays in the hash domain:
+        // the bits are not a real numeric quantity, but the bit-mixing pipeline
+        // (e.g. `hash * 11400714819323198485ul` in CastCache.KeyToBucket) needs
+        // arithmetic ops to combine them. Keep the OpaqueHashBits tag so the
+        // result can't round-trip back to a pointer via `conv.u`/`conv.i`.
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits val1), EvalStackValue.Int64 (Int64Source.OpaqueHashBits val2) ->
+            op.Int64Int64 val1 val2 |> Int64Source.OpaqueHashBits |> EvalStackValue.Int64
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits val1), EvalStackValue.Int64 (Int64Source.Verbatim val2) ->
+            op.Int64Int64 val1 val2 |> Int64Source.OpaqueHashBits |> EvalStackValue.Int64
+        | EvalStackValue.Int64 (Int64Source.Verbatim val1), EvalStackValue.Int64 (Int64Source.OpaqueHashBits val2) ->
+            op.Int64Int64 val1 val2 |> Int64Source.OpaqueHashBits |> EvalStackValue.Int64
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset val1),
           EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset val2) ->
             op.CrossArrayOffsets val1 val2 |> Int64Source.Verbatim |> EvalStackValue.Int64
