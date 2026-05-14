@@ -115,11 +115,19 @@ module IlMachineState =
 
     let setArgument = IlMachineThreadState.setArgument
 
-    let allocateLocalMemory = IlMachineThreadState.allocateLocalMemory
+    let allocateStackMemory = IlMachineThreadState.allocateStackMemory
 
-    let getLocalMemoryPool = IlMachineThreadState.getLocalMemoryPool
+    let getStackMemoryPool = IlMachineThreadState.getStackMemoryPool
 
-    let setLocalMemoryPool = IlMachineThreadState.setLocalMemoryPool
+    let setStackMemoryPool = IlMachineThreadState.setStackMemoryPool
+
+    let allocateNativeMemory = IlMachineThreadState.allocateNativeMemory
+
+    let freeNativeMemory = IlMachineThreadState.freeNativeMemory
+
+    let getNativeMemoryPool = IlMachineThreadState.getNativeMemoryPool
+
+    let setNativeMemoryPool = IlMachineThreadState.setNativeMemoryPool
 
     let setSyncBlock = IlMachineThreadState.setSyncBlock
 

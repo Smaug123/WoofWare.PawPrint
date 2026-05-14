@@ -77,11 +77,14 @@ module NativeBuffer =
         | ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange, projs) ->
             projectionByteOffset projs
             |> Option.map (fun byteOffset -> ByteStorageIdentity.PeByteRange peByteRange, byteOffset)
-        | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, rootByteOffset), projs) ->
+        | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, rootByteOffset), projs) ->
             projectionByteOffset projs
             |> Option.map (fun byteOffset ->
-                ByteStorageIdentity.LocalMemory (thread, frame, block), int64 rootByteOffset + byteOffset
+                ByteStorageIdentity.StackMemory (thread, frame, block), int64 rootByteOffset + byteOffset
             )
+        | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, rootByteOffset), projs) ->
+            projectionByteOffset projs
+            |> Option.map (fun byteOffset -> ByteStorageIdentity.NativeMemory block, int64 rootByteOffset + byteOffset)
         | ManagedPointerSource.Byref (ByrefRoot.LocalVariable (thread, frame, local), projs) ->
             projectionByteOffset projs
             |> Option.map (fun byteOffset -> ByteStorageIdentity.StackLocal (thread, frame, local), byteOffset)

@@ -183,7 +183,7 @@ module TestBinaryArithmetic =
 
     [<RequireQualifiedAccess>]
     type private NormalisableRootKind =
-        | LocalMemory
+        | StackMemory
         | Array
         | String
 
@@ -203,7 +203,7 @@ module TestBinaryArithmetic =
         [|
             "array", ByteStorageIdentity.Array (ManagedHeapAddress 101)
             "string", ByteStorageIdentity.String (ManagedHeapAddress 102)
-            "local-memory", ByteStorageIdentity.LocalMemory (ThreadId 0, FrameId 10, LocallocBlockId 0)
+            "local-memory", ByteStorageIdentity.StackMemory (ThreadId 0, FrameId 10, StackMemoryBlockId 0)
             "stack-local", ByteStorageIdentity.StackLocal (ThreadId 0, FrameId 11, 1us)
             "stack-argument", ByteStorageIdentity.StackArgument (ThreadId 0, FrameId 12, 2us)
         |]
@@ -270,7 +270,7 @@ module TestBinaryArithmetic =
             let! kind =
                 Gen.elements
                     [
-                        NormalisableRootKind.LocalMemory
+                        NormalisableRootKind.StackMemory
                         NormalisableRootKind.Array
                         NormalisableRootKind.String
                     ]
@@ -296,9 +296,9 @@ module TestBinaryArithmetic =
 
     let private pointerForNormalisationCase (case : ByteOffsetNormalisationCase) : ManagedPointerSource =
         match case.Kind with
-        | NormalisableRootKind.LocalMemory ->
+        | NormalisableRootKind.StackMemory ->
             ManagedPointerSource.Byref (
-                ByrefRoot.LocalMemoryByte (ThreadId 0, FrameId 0, LocallocBlockId 0, case.RootOffset),
+                ByrefRoot.StackMemoryByte (ThreadId 0, FrameId 0, StackMemoryBlockId 0, case.RootOffset),
                 []
             )
         | NormalisableRootKind.Array ->
@@ -309,7 +309,7 @@ module TestBinaryArithmetic =
     let private expectedNormalisedPointer (case : ByteOffsetNormalisationCase) : ManagedPointerSource =
         let cellSize =
             match case.Kind with
-            | NormalisableRootKind.LocalMemory -> 1
+            | NormalisableRootKind.StackMemory -> 1
             | NormalisableRootKind.Array -> case.ArrayCellSize
             | NormalisableRootKind.String -> 2
 
@@ -317,8 +317,8 @@ module TestBinaryArithmetic =
 
         let root =
             match case.Kind with
-            | NormalisableRootKind.LocalMemory ->
-                ByrefRoot.LocalMemoryByte (ThreadId 0, FrameId 0, LocallocBlockId 0, case.RootOffset + cellAdvance)
+            | NormalisableRootKind.StackMemory ->
+                ByrefRoot.StackMemoryByte (ThreadId 0, FrameId 0, StackMemoryBlockId 0, case.RootOffset + cellAdvance)
             | NormalisableRootKind.Array ->
                 ByrefRoot.ArrayElement (ManagedHeapAddress 123, case.RootOffset + cellAdvance)
             | NormalisableRootKind.String ->
@@ -337,7 +337,7 @@ module TestBinaryArithmetic =
 
     [<Test>]
     let ``byte offset helper normalises every byte-addressable root with generated offsets`` () : unit =
-        let mutable localMemoryCases = 0
+        let mutable stackMemoryCases = 0
         let mutable arrayCases = 0
         let mutable stringCases = 0
         let mutable negativeOffsets = 0
@@ -347,7 +347,7 @@ module TestBinaryArithmetic =
 
         let property (case : ByteOffsetNormalisationCase) : bool =
             match case.Kind with
-            | NormalisableRootKind.LocalMemory -> localMemoryCases <- localMemoryCases + 1
+            | NormalisableRootKind.StackMemory -> stackMemoryCases <- stackMemoryCases + 1
             | NormalisableRootKind.Array -> arrayCases <- arrayCases + 1
             | NormalisableRootKind.String -> stringCases <- stringCases + 1
 
@@ -362,7 +362,7 @@ module TestBinaryArithmetic =
                 match case.Kind with
                 | NormalisableRootKind.Array ->
                     ByteOffsetNormalisationContext.withArrayElementSize (ManagedHeapAddress 123) case.ArrayCellSize
-                | NormalisableRootKind.LocalMemory
+                | NormalisableRootKind.StackMemory
                 | NormalisableRootKind.String -> ByteOffsetNormalisationContext.nonArrayRootsOnly
 
             let ptr = pointerForNormalisationCase case
@@ -403,9 +403,9 @@ module TestBinaryArithmetic =
 
         Check.One (propertyConfig, Prop.forAll (Arb.fromGen genByteOffsetNormalisationCase) property)
 
-        if localMemoryCases = 0 || arrayCases = 0 || stringCases = 0 then
+        if stackMemoryCases = 0 || arrayCases = 0 || stringCases = 0 then
             failwith
-                $"generator missed normalisable roots: local-memory=%d{localMemoryCases}, array=%d{arrayCases}, string=%d{stringCases}"
+                $"generator missed normalisable roots: local-memory=%d{stackMemoryCases}, array=%d{arrayCases}, string=%d{stringCases}"
 
         if negativeOffsets = 0 || zeroOffsets = 0 || positiveOffsets = 0 then
             failwith
@@ -680,7 +680,7 @@ module TestBinaryArithmetic =
     let ``cross-storage byte offsets are generated anti-symmetric for all byte storage identities`` () : unit =
         let mutable arrayCases = 0
         let mutable stringCases = 0
-        let mutable localMemoryCases = 0
+        let mutable stackMemoryCases = 0
         let mutable stackLocalCases = 0
         let mutable stackArgumentCases = 0
 
@@ -695,7 +695,7 @@ module TestBinaryArithmetic =
                 stringCases <- stringCases + 1
 
             if touchesKind "local-memory" case then
-                localMemoryCases <- localMemoryCases + 1
+                stackMemoryCases <- stackMemoryCases + 1
 
             if touchesKind "stack-local" case then
                 stackLocalCases <- stackLocalCases + 1
@@ -733,12 +733,12 @@ module TestBinaryArithmetic =
         if
             arrayCases = 0
             || stringCases = 0
-            || localMemoryCases = 0
+            || stackMemoryCases = 0
             || stackLocalCases = 0
             || stackArgumentCases = 0
         then
             failwith
-                $"generator missed required storage identities: array=%d{arrayCases}, string=%d{stringCases}, local-memory=%d{localMemoryCases}, stack-local=%d{stackLocalCases}, stack-argument=%d{stackArgumentCases}"
+                $"generator missed required storage identities: array=%d{arrayCases}, string=%d{stringCases}, local-memory=%d{stackMemoryCases}, stack-local=%d{stackLocalCases}, stack-argument=%d{stackArgumentCases}"
 
     // The following tests cover the BCL's portable wraparound idiom from
     // UnmanagedMemoryStream.Initialize: `((byte*)((long)pointer + capacity)) < pointer`

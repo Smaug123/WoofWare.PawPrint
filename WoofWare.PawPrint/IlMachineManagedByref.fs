@@ -105,7 +105,7 @@ module IlMachineManagedByref =
     /// **Asymmetric output shape, gated by byte-addressability.** Because
     /// this predicate is permissive about wrapper depth, the sites that
     /// `match` on it and would otherwise return the stored cell
-    /// (`readLocalMemoryBytesAs`, `tryReadHeapValueFieldPrecise`) further
+    /// (`readStackMemoryBytesAs`, `tryReadHeapValueFieldPrecise`) further
     /// gate the fast-path return on `CliType.ByteAddressability`: only
     /// non-byte-addressable cells (tagged `NativeIntSource`, object refs,
     /// runtime pointers) skip the byte-walk and propagate storage shape,
@@ -164,31 +164,40 @@ module IlMachineManagedByref =
         | false, _ -> None
         | true, v -> Map.tryFind field v
 
-    let private tryReadInitializedLocalMemoryBytes
+    let private tryReadInitializedStackMemoryBytes
         (state : IlMachineState)
         (thread : ThreadId)
         (frame : FrameId)
-        (block : LocallocBlockId)
+        (block : StackMemoryBlockId)
         (byteOffset : int)
         (byteCount : int)
         : byte[] voption
         =
-        let pool = IlMachineThreadState.getLocalMemoryPool thread frame state
-        LocalMemoryPool.tryReadBytes block byteOffset byteCount pool
+        let pool = IlMachineThreadState.getStackMemoryPool thread frame state
+        StackMemoryPool.tryReadBytes block byteOffset byteCount pool
+
+    let private tryReadInitializedNativeMemoryBytes
+        (state : IlMachineState)
+        (block : NativeMemoryBlockId)
+        (byteOffset : int)
+        (byteCount : int)
+        : byte[] voption
+        =
+        NativeMemoryPool.tryReadBytes block byteOffset byteCount state.NativeMemoryPool
 
     let private readRootValue (state : IlMachineState) (root : ByrefRoot) : CliType =
         match root with
         | ByrefRoot.LocalVariable (t, f, v) -> (IlMachineThreadState.getFrame t f state).LocalVariables.[int<uint16> v]
         | ByrefRoot.Argument (t, f, v) -> (IlMachineThreadState.getFrame t f state).Arguments.[int<uint16> v]
-        | ByrefRoot.LocalMemoryByte (t, f, block, byteOffset) ->
-            // A bare LocalMemoryByte byref points at a typed cell starting at
+        | ByrefRoot.StackMemoryByte (t, f, block, byteOffset) ->
+            // A bare StackMemoryByte byref points at a typed cell starting at
             // `byteOffset`. If a cell starts there, return it as-is; we don't
             // synthesise a typed value from raw bytes here because we have no
             // target template — typed reads through a `ReinterpretAs` go via
             // `readManagedByrefBytesAs` instead.
-            let pool = IlMachineThreadState.getLocalMemoryPool t f state
+            let pool = IlMachineThreadState.getStackMemoryPool t f state
 
-            match LocalMemoryPool.tryFindCellCovering block byteOffset pool with
+            match StackMemoryPool.tryFindCellCovering block byteOffset pool with
             | Some (cellOffset, cell) when cellOffset = byteOffset -> cell
             | Some (cellOffset, cell) ->
                 failwith
@@ -196,6 +205,17 @@ module IlMachineManagedByref =
             | None ->
                 failwith
                     $"TODO: typed read of local memory %O{block} at byte offset %d{byteOffset} has no typed cell here; needs a byte-view byref shape"
+        | ByrefRoot.NativeMemoryByte (block, byteOffset) ->
+            // Mirror of the StackMemoryByte case. The native-heap pool is global on
+            // IlMachineState; use-after-free is caught inside NativeMemoryPool.
+            match NativeMemoryPool.tryFindCellCovering block byteOffset state.NativeMemoryPool with
+            | Some (cellOffset, cell) when cellOffset = byteOffset -> cell
+            | Some (cellOffset, cell) ->
+                failwith
+                    $"TODO: typed read of native-heap memory %O{block} at byte offset %d{byteOffset} lands inside cell starting at %d{cellOffset} (size %d{CliType.sizeOf cell}); needs a byte-view byref shape"
+            | None ->
+                failwith
+                    $"TODO: typed read of native-heap memory %O{block} at byte offset %d{byteOffset} has no typed cell here; needs a byte-view byref shape"
         | ByrefRoot.HeapValue addr -> CliType.ValueType (ManagedHeap.get addr state.ManagedHeap).Contents
         | ByrefRoot.HeapObjectField (addr, field) ->
             ManagedHeap.get addr state.ManagedHeap
@@ -243,8 +263,8 @@ module IlMachineManagedByref =
                 state
             else
                 state |> IlMachineThreadState.setArgument t f v updated
-        | ByrefRoot.LocalMemoryByte (t, f, block, byteOffset) ->
-            // A bare LocalMemoryByte byref points at a typed cell. The caller
+        | ByrefRoot.StackMemoryByte (t, f, block, byteOffset) ->
+            // A bare StackMemoryByte byref points at a typed cell. The caller
             // has already chosen the typed value to install; preserve any
             // provenance carried by the value (e.g. tagged native-int sources)
             // by storing it as a typed cell rather than flattening to bytes.
@@ -254,18 +274,18 @@ module IlMachineManagedByref =
             // existing cell. Fresh local memory still needs the typed cell to
             // be installed, even when its zero-filled byte view already matches
             // the write.
-            let pool = IlMachineThreadState.getLocalMemoryPool t f state
+            let pool = IlMachineThreadState.getStackMemoryPool t f state
 
             // Refuse a typed write that lands inside (but does not start at)
             // an existing cell: silently evicting the covering cell would lose
             // its provenance. Symmetric to the read-side check in
-            // `readRootValue` for `ByrefRoot.LocalMemoryByte`.
-            match LocalMemoryPool.tryFindCellCovering block byteOffset pool with
+            // `readRootValue` for `ByrefRoot.StackMemoryByte`.
+            match StackMemoryPool.tryFindCellCovering block byteOffset pool with
             | Some (cellOffset, cell) when cellOffset <> byteOffset ->
                 failwith
                     $"TODO: typed write of %O{updated} to local memory %O{block} at byte offset %d{byteOffset} lands inside cell starting at %d{cellOffset} (size %d{CliType.sizeOf cell}); needs a byte-view byref shape"
             | _ ->
-                match LocalMemoryPool.tryReadCell block byteOffset pool with
+                match StackMemoryPool.tryReadCell block byteOffset pool with
                 | Some existing when System.Object.ReferenceEquals (existing, updated) -> state
                 | Some existing ->
                     let existingSize = CliType.sizeOf existing
@@ -275,7 +295,7 @@ module IlMachineManagedByref =
                         match tryToBytesForNoopCheck updated with
                         | ValueNone -> false
                         | ValueSome updatedBytes ->
-                            match LocalMemoryPool.tryReadBytes block byteOffset updatedBytes.Length pool with
+                            match StackMemoryPool.tryReadBytes block byteOffset updatedBytes.Length pool with
                             | ValueSome existingBytes -> bytesEqual existingBytes updatedBytes
                             | ValueNone -> false
 
@@ -302,11 +322,51 @@ module IlMachineManagedByref =
                             failwith
                                 $"TODO: typed write of %O{updated} to local memory %O{block} at byte offset %d{byteOffset} would replace an existing cell of size %d{existingSize} with size %d{updatedSize}; use a byte-view byref shape"
 
-                        let pool = LocalMemoryPool.writeCell block byteOffset updated pool
-                        IlMachineThreadState.setLocalMemoryPool t f pool state
+                        let pool = StackMemoryPool.writeCell block byteOffset updated pool
+                        IlMachineThreadState.setStackMemoryPool t f pool state
                 | None ->
-                    let pool = LocalMemoryPool.writeCell block byteOffset updated pool
-                    IlMachineThreadState.setLocalMemoryPool t f pool state
+                    let pool = StackMemoryPool.writeCell block byteOffset updated pool
+                    IlMachineThreadState.setStackMemoryPool t f pool state
+        | ByrefRoot.NativeMemoryByte (block, byteOffset) ->
+            // Mirror of the StackMemoryByte write case but routed through the
+            // global NativeMemoryPool. Use-after-free is caught inside the pool
+            // when the block has been removed.
+            let pool = state.NativeMemoryPool
+
+            match NativeMemoryPool.tryFindCellCovering block byteOffset pool with
+            | Some (cellOffset, cell) when cellOffset <> byteOffset ->
+                failwith
+                    $"TODO: typed write of %O{updated} to native-heap memory %O{block} at byte offset %d{byteOffset} lands inside cell starting at %d{cellOffset} (size %d{CliType.sizeOf cell}); needs a byte-view byref shape"
+            | _ ->
+                match NativeMemoryPool.tryReadCell block byteOffset pool with
+                | Some existing when System.Object.ReferenceEquals (existing, updated) -> state
+                | Some existing ->
+                    let existingSize = CliType.sizeOf existing
+                    let updatedSize = CliType.sizeOf updated
+
+                    let isNoop =
+                        match tryToBytesForNoopCheck updated with
+                        | ValueNone -> false
+                        | ValueSome updatedBytes ->
+                            match NativeMemoryPool.tryReadBytes block byteOffset updatedBytes.Length pool with
+                            | ValueSome existingBytes -> bytesEqual existingBytes updatedBytes
+                            | ValueNone -> false
+
+                    let preservesExistingShape =
+                        existingSize <> updatedSize || sameCliConstructor existing updated
+
+                    if isNoop && preservesExistingShape then
+                        state
+                    else
+                        if existingSize <> updatedSize then
+                            failwith
+                                $"TODO: typed write of %O{updated} to native-heap memory %O{block} at byte offset %d{byteOffset} would replace an existing cell of size %d{existingSize} with size %d{updatedSize}; use a byte-view byref shape"
+
+                        let pool = NativeMemoryPool.writeCell block byteOffset updated pool
+                        IlMachineThreadState.setNativeMemoryPool pool state
+                | None ->
+                    let pool = NativeMemoryPool.writeCell block byteOffset updated pool
+                    IlMachineThreadState.setNativeMemoryPool pool state
         | ByrefRoot.HeapValue addr ->
             let contents =
                 match updated with
@@ -660,11 +720,11 @@ module IlMachineManagedByref =
         CliValueType.BytesAt byteOffset targetSize existing.Contents
         |> CliType.ofBytesLike targetTemplate
 
-    let private readLocalMemoryBytesAs
+    let private readStackMemoryBytesAs
         (state : IlMachineState)
         (thread : ThreadId)
         (frame : FrameId)
-        (block : LocallocBlockId)
+        (block : StackMemoryBlockId)
         (byteOffset : int)
         (targetTemplate : CliType)
         : CliType
@@ -675,8 +735,8 @@ module IlMachineManagedByref =
             failwith
                 $"local memory byte-view read at offset %d{byteOffset} in %O{block} is outside the block (negative offset)"
 
-        let pool = IlMachineThreadState.getLocalMemoryPool thread frame state
-        let blockData = LocalMemoryPool.getBlock block pool
+        let pool = IlMachineThreadState.getStackMemoryPool thread frame state
+        let blockData = StackMemoryPool.getBlock block pool
 
         if int64 byteOffset + int64 targetSize > int64 blockData.Size then
             failwith
@@ -702,7 +762,7 @@ module IlMachineManagedByref =
         // non-byte-addressable storage (tagged `NativeIntSource` etc.) keeps
         // its storage shape so provenance survives.
         let fastPath =
-            match LocalMemoryPool.tryReadCell block byteOffset pool with
+            match StackMemoryPool.tryReadCell block byteOffset pool with
             | Some cell when CliType.sizeOf cell = targetSize && haveSameCliShape cell targetTemplate ->
                 match CliType.ByteAddressability cell with
                 | CliByteAddressability.Rejected _ -> Some cell
@@ -713,7 +773,44 @@ module IlMachineManagedByref =
         | Some cell -> cell
         | None ->
 
-        let buf = LocalMemoryPool.readBytes block byteOffset targetSize pool
+        let buf = StackMemoryPool.readBytes block byteOffset targetSize pool
+        CliType.ofBytesLike targetTemplate buf
+
+    /// Mirror of `readStackMemoryBytesAs` for native-heap blocks. Use-after-free is
+    /// reported by `NativeMemoryPool.getBlock` if the block was freed.
+    let private readNativeMemoryBytesAs
+        (state : IlMachineState)
+        (block : NativeMemoryBlockId)
+        (byteOffset : int)
+        (targetTemplate : CliType)
+        : CliType
+        =
+        let targetSize = CliType.sizeOf targetTemplate
+
+        if byteOffset < 0 then
+            failwith
+                $"native-heap byte-view read at offset %d{byteOffset} in %O{block} is outside the block (negative offset)"
+
+        let pool = state.NativeMemoryPool
+        let blockData = NativeMemoryPool.getBlock block pool
+
+        if int64 byteOffset + int64 targetSize > int64 blockData.Size then
+            failwith
+                $"native-heap byte-view read at offset %d{byteOffset} for %d{targetSize} bytes is outside %O{block} of size %d{blockData.Size}"
+
+        let fastPath =
+            match NativeMemoryPool.tryReadCell block byteOffset pool with
+            | Some cell when CliType.sizeOf cell = targetSize && haveSameCliShape cell targetTemplate ->
+                match CliType.ByteAddressability cell with
+                | CliByteAddressability.Rejected _ -> Some cell
+                | CliByteAddressability.ByteAddressable -> None
+            | _ -> None
+
+        match fastPath with
+        | Some cell -> cell
+        | None ->
+
+        let buf = NativeMemoryPool.readBytes block byteOffset targetSize pool
         CliType.ofBytesLike targetTemplate buf
 
     /// Read the byte range at `src` and rebuild a value of CLI shape compatible
@@ -740,8 +837,10 @@ module IlMachineManagedByref =
         match src with
         | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
         | ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, []) -> readHeapValueBytesAs state addr 0 targetTemplate
-        | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset), []) ->
-            readLocalMemoryBytesAs state thread frame block byteOffset targetTemplate
+        | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset), []) ->
+            readStackMemoryBytesAs state thread frame block byteOffset targetTemplate
+        | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, byteOffset), []) ->
+            readNativeMemoryBytesAs state block byteOffset targetTemplate
         | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), []) ->
             readArrayBytesAs state arr index 0 targetTemplate
         | ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange, []) ->
@@ -750,8 +849,10 @@ module IlMachineManagedByref =
             readStringBytesAs state str charIndex 0 targetTemplate
         | ManagedPointerSource.Byref (outerRoot, outerProjs) ->
             match splitTrailingByteView src with
-            | ValueSome (ByrefRoot.LocalMemoryByte (thread, frame, block, rootByteOffset), [], byteOffset) ->
-                readLocalMemoryBytesAs state thread frame block (rootByteOffset + byteOffset) targetTemplate
+            | ValueSome (ByrefRoot.StackMemoryByte (thread, frame, block, rootByteOffset), [], byteOffset) ->
+                readStackMemoryBytesAs state thread frame block (rootByteOffset + byteOffset) targetTemplate
+            | ValueSome (ByrefRoot.NativeMemoryByte (block, rootByteOffset), [], byteOffset) ->
+                readNativeMemoryBytesAs state block (rootByteOffset + byteOffset) targetTemplate
             | ValueSome (ByrefRoot.ArrayElement (arr, index), [], byteOffset) ->
                 readArrayBytesAs state arr index byteOffset targetTemplate
             | ValueSome (ByrefRoot.PeByteRange peByteRange, [], byteOffset) ->
@@ -1051,11 +1152,11 @@ module IlMachineManagedByref =
 
         state
 
-    let private writeLocalMemoryBytesAt
+    let private writeStackMemoryBytesAt
         (state : IlMachineState)
         (thread : ThreadId)
         (frame : FrameId)
-        (block : LocallocBlockId)
+        (block : StackMemoryBlockId)
         (byteOffset : int)
         (bytes : byte[])
         : IlMachineState
@@ -1064,13 +1165,31 @@ module IlMachineManagedByref =
             state
         else
 
-        match tryReadInitializedLocalMemoryBytes state thread frame block byteOffset bytes.Length with
+        match tryReadInitializedStackMemoryBytes state thread frame block byteOffset bytes.Length with
         | ValueSome existing when bytesEqual existing bytes -> state
         | _ ->
 
-        let pool = IlMachineThreadState.getLocalMemoryPool thread frame state
-        let pool = LocalMemoryPool.writeBytes block byteOffset bytes pool
-        IlMachineThreadState.setLocalMemoryPool thread frame pool state
+        let pool = IlMachineThreadState.getStackMemoryPool thread frame state
+        let pool = StackMemoryPool.writeBytes block byteOffset bytes pool
+        IlMachineThreadState.setStackMemoryPool thread frame pool state
+
+    let private writeNativeMemoryBytesAt
+        (state : IlMachineState)
+        (block : NativeMemoryBlockId)
+        (byteOffset : int)
+        (bytes : byte[])
+        : IlMachineState
+        =
+        if bytes.Length = 0 then
+            state
+        else
+
+        match tryReadInitializedNativeMemoryBytes state block byteOffset bytes.Length with
+        | ValueSome existing when bytesEqual existing bytes -> state
+        | _ ->
+
+        let pool = NativeMemoryPool.writeBytes block byteOffset bytes state.NativeMemoryPool
+        IlMachineThreadState.setNativeMemoryPool pool state
 
     let private writeStringBytes
         (state : IlMachineState)
@@ -1137,14 +1256,14 @@ module IlMachineManagedByref =
                 ManagedHeap = ManagedHeap.set addr updated state.ManagedHeap
             }
 
-    let private localMemoryByteTypedWriteSafe
-        (pool : LocalMemoryPool)
-        (block : LocallocBlockId)
+    let private stackMemoryByteTypedWriteSafe
+        (pool : StackMemoryPool)
+        (block : StackMemoryBlockId)
         (byteOffset : int)
         (destSize : int)
         : bool
         =
-        match LocalMemoryPool.tryFindCellCovering block byteOffset pool with
+        match StackMemoryPool.tryFindCellCovering block byteOffset pool with
         | Some (cellOffset, cell) -> cellOffset = byteOffset && CliType.sizeOf cell = destSize
         | None ->
             let mutable safe = true
@@ -1152,7 +1271,28 @@ module IlMachineManagedByref =
             let endOffset = byteOffset + destSize
 
             while safe && i < endOffset do
-                match LocalMemoryPool.tryFindCellCovering block i pool with
+                match StackMemoryPool.tryFindCellCovering block i pool with
+                | Some _ -> safe <- false
+                | None -> i <- i + 1
+
+            safe
+
+    let private nativeMemoryByteTypedWriteSafe
+        (pool : NativeMemoryPool)
+        (block : NativeMemoryBlockId)
+        (byteOffset : int)
+        (destSize : int)
+        : bool
+        =
+        match NativeMemoryPool.tryFindCellCovering block byteOffset pool with
+        | Some (cellOffset, cell) -> cellOffset = byteOffset && CliType.sizeOf cell = destSize
+        | None ->
+            let mutable safe = true
+            let mutable i = byteOffset + 1
+            let endOffset = byteOffset + destSize
+
+            while safe && i < endOffset do
+                match NativeMemoryPool.tryFindCellCovering block i pool with
                 | Some _ -> safe <- false
                 | None -> i <- i + 1
 
@@ -1213,7 +1353,7 @@ module IlMachineManagedByref =
         (newValue : CliType)
         : IlMachineState
         =
-        // Fast path: a bare `LocalMemoryByte` byref whose destination range
+        // Fast path: a bare `StackMemoryByte` byref whose destination range
         // matches the layout of an existing cell (or covers no existing
         // cell) is semantically a typed-cell store, not a byte scatter.
         // Routing it through `writeRootValue` preserves the provenance of
@@ -1240,11 +1380,11 @@ module IlMachineManagedByref =
         // partial-cell semantics (`stind.i1` updating one byte of an
         // existing `Int32`) and correctly throws on unmodelled byte views
         // of non-byte-addressable cells (e.g. tagged-pointer cells).
-        let localMemoryByteTarget =
+        let stackMemoryByteTarget =
             match src with
-            | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset), []) ->
+            | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset), []) ->
                 ValueSome (thread, frame, block, byteOffset)
-            | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte _, _) ->
+            | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte _, _) ->
                 match CliType.ByteAddressability newValue with
                 | CliByteAddressability.ByteAddressable ->
                     // Byte-addressable byte-view writes follow the existing byte-scatter
@@ -1252,23 +1392,53 @@ module IlMachineManagedByref =
                     ValueNone
                 | CliByteAddressability.Rejected _ ->
                     match splitTrailingByteView src with
-                    | ValueSome (ByrefRoot.LocalMemoryByte (thread, frame, block, rootByteOffset), [], byteOffset) ->
+                    | ValueSome (ByrefRoot.StackMemoryByte (thread, frame, block, rootByteOffset), [], byteOffset) ->
                         ValueSome (thread, frame, block, rootByteOffset + byteOffset)
                     | _ -> ValueNone
             | _ -> ValueNone
 
-        match localMemoryByteTarget with
+        match stackMemoryByteTarget with
         | ValueSome (thread, frame, block, byteOffset) ->
-            let pool = IlMachineThreadState.getLocalMemoryPool thread frame state
+            let pool = IlMachineThreadState.getStackMemoryPool thread frame state
             let destSize = CliType.sizeOf newValue
 
-            let typedWriteSafe = localMemoryByteTypedWriteSafe pool block byteOffset destSize
+            let typedWriteSafe = stackMemoryByteTypedWriteSafe pool block byteOffset destSize
 
             if typedWriteSafe then
-                writeRootValue state (ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset)) newValue
+                writeRootValue state (ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset)) newValue
             else
                 let bytes = CliType.ToBytes newValue
-                writeLocalMemoryBytesAt state thread frame block byteOffset bytes
+                writeStackMemoryBytesAt state thread frame block byteOffset bytes
+        | ValueNone ->
+
+        // Same fast path for native-heap blocks. The pool is global on state, so we
+        // only need (block, byteOffset) here.
+        let nativeMemoryByteTarget =
+            match src with
+            | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, byteOffset), []) ->
+                ValueSome (block, byteOffset)
+            | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte _, _) ->
+                match CliType.ByteAddressability newValue with
+                | CliByteAddressability.ByteAddressable -> ValueNone
+                | CliByteAddressability.Rejected _ ->
+                    match splitTrailingByteView src with
+                    | ValueSome (ByrefRoot.NativeMemoryByte (block, rootByteOffset), [], byteOffset) ->
+                        ValueSome (block, rootByteOffset + byteOffset)
+                    | _ -> ValueNone
+            | _ -> ValueNone
+
+        match nativeMemoryByteTarget with
+        | ValueSome (block, byteOffset) ->
+            let pool = state.NativeMemoryPool
+            let destSize = CliType.sizeOf newValue
+
+            let typedWriteSafe = nativeMemoryByteTypedWriteSafe pool block byteOffset destSize
+
+            if typedWriteSafe then
+                writeRootValue state (ByrefRoot.NativeMemoryByte (block, byteOffset)) newValue
+            else
+                let bytes = CliType.ToBytes newValue
+                writeNativeMemoryBytesAt state block byteOffset bytes
         | ValueNone ->
 
         // Field-precise byte-view write into a heap object: when the destination is a
@@ -1297,9 +1467,12 @@ module IlMachineManagedByref =
         match src with
         | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
         | ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, []) -> writeHeapValueBytes state addr 0 bytes
-        | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte _, []) ->
-            // Already handled by the LocalMemoryByte typed-cell fast path above.
-            failwith "unreachable: bare LocalMemoryByte byref dispatched in fast path"
+        | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte _, []) ->
+            // Already handled by the StackMemoryByte typed-cell fast path above.
+            failwith "unreachable: bare StackMemoryByte byref dispatched in fast path"
+        | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte _, []) ->
+            // Already handled by the NativeMemoryByte typed-cell fast path above.
+            failwith "unreachable: bare NativeMemoryByte byref dispatched in fast path"
         | ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange, _) ->
             failwith
                 $"PE byte range is read-only; refusing byte-view write of %d{bytes.Length} bytes through %O{peByteRange}"
@@ -1309,13 +1482,17 @@ module IlMachineManagedByref =
             writeArrayBytes state arr index 0 bytes
         | ManagedPointerSource.Byref (outerRoot, outerProjs) ->
             match splitTrailingByteView src with
-            | ValueSome (ByrefRoot.LocalMemoryByte (thread, frame, block, rootByteOffset), [], byteOffset) ->
+            | ValueSome (ByrefRoot.StackMemoryByte (thread, frame, block, rootByteOffset), [], byteOffset) ->
                 // Byte-addressable byte-view writes through a localloc buffer
                 // intentionally fall through here (the typed-cell fast path
                 // above declines them so that the `Bytes` overlay
                 // representation is preserved for `stind.i1`-style partial
                 // updates).
-                writeLocalMemoryBytesAt state thread frame block (rootByteOffset + byteOffset) bytes
+                writeStackMemoryBytesAt state thread frame block (rootByteOffset + byteOffset) bytes
+            | ValueSome (ByrefRoot.NativeMemoryByte (block, rootByteOffset), [], byteOffset) ->
+                // Same reasoning as the StackMemoryByte case above, but routed
+                // through the global NativeMemoryPool.
+                writeNativeMemoryBytesAt state block (rootByteOffset + byteOffset) bytes
             | ValueSome (ByrefRoot.ArrayElement (arr, index), [], byteOffset) ->
                 writeArrayBytes state arr index byteOffset bytes
             | ValueSome (ByrefRoot.StringCharAt (str, charIndex), [], byteOffset) ->
@@ -1585,8 +1762,10 @@ module IlMachineManagedByref =
         =
         match src with
         | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
-        | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte _, _) ->
-            failwith "unreachable: LocalMemoryByte primitive stores are dispatched before exact-width typed store"
+        | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte _, _) ->
+            failwith "unreachable: StackMemoryByte primitive stores are dispatched before exact-width typed store"
+        | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte _, _) ->
+            failwith "unreachable: NativeMemoryByte primitive stores are dispatched before exact-width typed store"
         | ManagedPointerSource.Byref _ ->
             match splitTrailingByteView src with
             | ValueSome _ ->
@@ -1617,7 +1796,7 @@ module IlMachineManagedByref =
     /// width proves that byte scatter and whole-cell replacement have the same
     /// address range. This intentionally records the payload's primitive shape
     /// when it differs from the previous same-width primitive template: the
-    /// tag is part of the value being stored. Bare `LocalMemoryByte` byrefs use
+    /// tag is part of the value being stored. Bare `StackMemoryByte` byrefs use
     /// the same whole-cell test as `writeManagedByrefBytesOrTypedCell`. Same-width
     /// byte-renderable stores restamp the cell when the primitive shape differs,
     /// even if the bytes are identical; byte-identical differently-sized stores
@@ -1635,19 +1814,37 @@ module IlMachineManagedByref =
         : IlMachineState
         =
         match src with
-        | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset), []) ->
+        | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset), []) ->
             match byteAddressabilityRejection newValue with
             | Some rejection when isNumericProvenanceRejection rejection ->
-                let pool = IlMachineThreadState.getLocalMemoryPool thread frame state
+                let pool = IlMachineThreadState.getStackMemoryPool thread frame state
                 let destSize = CliType.sizeOf newValue
 
-                if localMemoryByteTypedWriteSafe pool block byteOffset destSize then
+                if stackMemoryByteTypedWriteSafe pool block byteOffset destSize then
                     writeManagedByrefBytesOrTypedCell state src newValue
                 else
                     failwith
                         $"TODO: primitive indirect store of %O{newValue} through byte-view byref %O{src} cannot preserve new value's %s{rejection.Description}"
             | _ -> writeManagedByrefBytesOrTypedCell state src newValue
-        | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte _, _) ->
+        | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte _, _) ->
+            match byteAddressabilityRejection newValue with
+            | Some rejection when isNumericProvenanceRejection rejection ->
+                failwith
+                    $"TODO: primitive indirect store of %O{newValue} through byte-view byref %O{src} cannot preserve new value's %s{rejection.Description}"
+            | _ -> writeManagedByrefBytesOrTypedCell state src newValue
+        | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, byteOffset), []) ->
+            match byteAddressabilityRejection newValue with
+            | Some rejection when isNumericProvenanceRejection rejection ->
+                let pool = state.NativeMemoryPool
+                let destSize = CliType.sizeOf newValue
+
+                if nativeMemoryByteTypedWriteSafe pool block byteOffset destSize then
+                    writeManagedByrefBytesOrTypedCell state src newValue
+                else
+                    failwith
+                        $"TODO: primitive indirect store of %O{newValue} through byte-view byref %O{src} cannot preserve new value's %s{rejection.Description}"
+            | _ -> writeManagedByrefBytesOrTypedCell state src newValue
+        | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte _, _) ->
             match byteAddressabilityRejection newValue with
             | Some rejection when isNumericProvenanceRejection rejection ->
                 failwith
