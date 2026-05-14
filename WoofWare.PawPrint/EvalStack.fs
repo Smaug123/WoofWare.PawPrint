@@ -421,6 +421,11 @@ module EvalStackValue =
             failwith $"Refusing to convert widened native int %O{src} to float"
         | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) ->
             failwith $"Refusing to convert synthesised pointer-hash bits 0x%x{bits} to float"
+        | EvalStackValue.NativeInt (NativeIntSource.OpaqueHashBits bits) ->
+            // Matches the Int64 OpaqueHashBits refusal above. The helper below
+            // would let these bits become a float, materialising synthesised
+            // pointer provenance into the float domain.
+            failwith $"Refusing to convert synthesised pointer-hash bits 0x%x{bits} (native int) to float"
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_R4" src |> convR4FromInt64 |> Some
         | EvalStackValue.Float f -> convR4FromFloat f |> Some
         | EvalStackValue.ManagedPointer _
@@ -438,6 +443,8 @@ module EvalStackValue =
             failwith $"Refusing to convert widened native int %O{src} to float"
         | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) ->
             failwith $"Refusing to convert synthesised pointer-hash bits 0x%x{bits} to float"
+        | EvalStackValue.NativeInt (NativeIntSource.OpaqueHashBits bits) ->
+            failwith $"Refusing to convert synthesised pointer-hash bits 0x%x{bits} (native int) to float"
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_R8" src |> convR8FromInt64 |> Some
         | EvalStackValue.Float f -> convR8FromFloat f |> Some
         | EvalStackValue.ManagedPointer _
@@ -455,6 +462,8 @@ module EvalStackValue =
             failwith $"Refusing to convert widened native int %O{src} to float"
         | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) ->
             failwith $"Refusing to convert synthesised pointer-hash bits 0x%x{bits} to float"
+        | EvalStackValue.NativeInt (NativeIntSource.OpaqueHashBits bits) ->
+            failwith $"Refusing to convert synthesised pointer-hash bits 0x%x{bits} (native int) to float"
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_R_Un" src |> convRUnFromInt64 |> Some
         | EvalStackValue.Float _ -> failwith "Conv_R_Un: refusing to convert an existing float as unsigned integer"
         | EvalStackValue.ManagedPointer _

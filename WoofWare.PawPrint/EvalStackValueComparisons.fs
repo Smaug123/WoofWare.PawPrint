@@ -458,12 +458,26 @@ module EvalStackValueComparisons =
             | _, NativeIntSource.EventPipeProviderPtr _
             | NativeIntSource.EventPipeEventPtr _, _
             | _, NativeIntSource.EventPipeEventPtr _
-            // Synthesised hash bits never alias real pointer shapes: the
-            // counter pipeline produces bit patterns chosen to be distinct
-            // from any verbatim pointer the interpreter can mint. Cross-tag
-            // comparisons here therefore reduce to false.
-            | NativeIntSource.OpaqueHashBits _, _
-            | _, NativeIntSource.OpaqueHashBits _ -> false
+            // OpaqueHashBits vs ManagedPointer: a synthesised hash bit
+            // pattern equals a byref iff both are null. Non-zero hash bits
+            // vs a non-null byref is genuinely ambiguous (we don't know the
+            // byref's numeric address), so fail loudly rather than silently
+            // returning a fixed answer. This mirrors the Verbatim ×
+            // ManagedPointer arm above. All other OpaqueHashBits pairings
+            // (vs Verbatim, vs OpaqueHashBits, vs SyntheticCrossArrayOffset,
+            // and vs the distinct opaque handle kinds) are handled
+            // explicitly earlier; this arm is the remaining case.
+            | NativeIntSource.OpaqueHashBits _, NativeIntSource.ManagedPointer _
+            | NativeIntSource.ManagedPointer _, NativeIntSource.OpaqueHashBits _ ->
+                let z1 = NativeIntSource.isZero var1
+                let z2 = NativeIntSource.isZero var2
+
+                if z1 && z2 then
+                    true
+                elif z1 <> z2 then
+                    false
+                else
+                    failwith $"TODO (CEQ): synthesised hash bits vs managed pointer, both non-null: {var1} vs {var2}"
         | EvalStackValue.NativeInt var1, EvalStackValue.Int32 var2 -> failwith $"TODO (CEQ): nativeint vs int32"
         | EvalStackValue.NativeInt var1, EvalStackValue.ManagedPointer var2 ->
             ceq (EvalStackValue.NativeInt var1) (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var2))
