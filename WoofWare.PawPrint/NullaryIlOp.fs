@@ -108,6 +108,28 @@ module NullaryIlOp =
         | NativeIntSource.MethodTablePtr _ -> NativeIntSource.Verbatim (0L &&& mask) |> EvalStackValue.NativeInt
         | other -> failwith $"can't do binary operation on non-verbatim native int %O{other}"
 
+    /// XOR of two `NativeIntSource` values in the native-int slot. Mirrors
+    /// `Int64Source.bitXor`: `Verbatim ^ Verbatim` stays in the `Verbatim`
+    /// domain; any other combination routes both operands through
+    /// `PointerHashSynthesis.materialiseHashBits` and tags the result with
+    /// `OpaqueHashBits` so the synthesised-bits contract propagates (the
+    /// result MUST NOT be used as a real pointer). `materialiseHashBits`
+    /// fails loudly on `ManagedPointer` (non-null) and
+    /// `SyntheticCrossArrayOffset`, preserving byref / cross-storage
+    /// provenance.
+    let private xorNativeIntSources
+        (i1 : NativeIntSource)
+        (i2 : NativeIntSource)
+        (counters : PointerHashCounters)
+        : NativeIntSource * PointerHashCounters
+        =
+        match i1, i2 with
+        | NativeIntSource.Verbatim a, NativeIntSource.Verbatim b -> NativeIntSource.Verbatim (a ^^^ b), counters
+        | _ ->
+            let a, counters = PointerHashSynthesis.materialiseHashBits "Xor" i1 counters
+            let b, counters = PointerHashSynthesis.materialiseHashBits "Xor" i2 counters
+            NativeIntSource.OpaqueHashBits (a ^^^ b), counters
+
     let private locallocSizeBytes (value : EvalStackValue) : int =
         let size =
             match value with
@@ -1155,13 +1177,13 @@ module NullaryIlOp =
                     v1 ^^^ int64<int32> v2 |> NativeIntSource.Verbatim |> EvalStackValue.NativeInt, state
                 | EvalStackValue.NativeInt _, EvalStackValue.Int32 _ ->
                     failwith $"can't do binary operation on non-verbatim native int {v1}"
-                | EvalStackValue.NativeInt (NativeIntSource.Verbatim v1),
-                  EvalStackValue.NativeInt (NativeIntSource.Verbatim v2) ->
-                    v1 ^^^ v2 |> NativeIntSource.Verbatim |> EvalStackValue.NativeInt, state
-                | EvalStackValue.NativeInt (NativeIntSource.Verbatim _), EvalStackValue.NativeInt _ ->
-                    failwith $"can't do binary operation on non-verbatim native int {v2}"
-                | EvalStackValue.NativeInt _, EvalStackValue.NativeInt (NativeIntSource.Verbatim _) ->
-                    failwith $"can't do binary operation on non-verbatim native int {v1}"
+                | EvalStackValue.NativeInt src1, EvalStackValue.NativeInt src2 ->
+                    let r, counters = xorNativeIntSources src1 src2 state.PointerHashCounters
+
+                    EvalStackValue.NativeInt r,
+                    { state with
+                        PointerHashCounters = counters
+                    }
                 | _, _ -> failwith $"refusing to do binary operation on {v1} and {v2}"
 
             let state =
