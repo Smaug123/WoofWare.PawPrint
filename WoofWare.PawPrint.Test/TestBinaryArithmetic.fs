@@ -551,6 +551,72 @@ module TestBinaryArithmetic =
         execute ArithmeticOperation.sub state (byteViewPointer arr 1 0) (byteViewPointer arr 0 0)
         |> expectNativeInt 4L
 
+    let private nativeMemoryPointer (block : int) (byteOffset : int) : EvalStackValue =
+        ManagedPointerSource.Byref (
+            ByrefRoot.NativeMemoryByte (NativeMemoryBlockId.NativeMemoryBlockId block, byteOffset),
+            []
+        )
+        |> EvalStackValue.ManagedPointer
+
+    let private expectNativeMemoryPointer
+        (expectedBlock : int)
+        (expectedByteOffset : int)
+        (actual : EvalStackValue)
+        : unit
+        =
+        match actual with
+        | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (NativeMemoryBlockId.NativeMemoryBlockId block,
+                                                                                                 byteOffset),
+                                                                     [])) ->
+            block |> shouldEqual expectedBlock
+            byteOffset |> shouldEqual expectedByteOffset
+        | other ->
+            failwith
+                $"expected native memory byref at block %d{expectedBlock} byte %d{expectedByteOffset}, got %O{other}"
+
+    [<Test>]
+    let ``add advances native-memory byrefs by byte offset`` () : unit =
+        let state = state ()
+
+        execute ArithmeticOperation.add state (nativeMemoryPointer 0 4) (EvalStackValue.Int32 6)
+        |> expectNativeMemoryPointer 0 10
+
+        execute ArithmeticOperation.add state (EvalStackValue.Int32 6) (nativeMemoryPointer 0 4)
+        |> expectNativeMemoryPointer 0 10
+
+    [<Test>]
+    let ``sub on native-memory byrefs in the same block returns byte delta`` () : unit =
+        let state = state ()
+
+        execute ArithmeticOperation.sub state (nativeMemoryPointer 0 10) (nativeMemoryPointer 0 4)
+        |> expectNativeInt 6L
+
+        execute ArithmeticOperation.sub state (nativeMemoryPointer 0 4) (nativeMemoryPointer 0 10)
+        |> expectNativeInt -6L
+
+    [<Test>]
+    let ``sub on native-memory byrefs in different blocks returns synthetic cross-storage offset`` () : unit =
+        let state = state ()
+
+        let forward =
+            execute ArithmeticOperation.sub state (nativeMemoryPointer 0 5) (nativeMemoryPointer 1 3)
+            |> expectSyntheticNativeIntValue
+
+        let backward =
+            execute ArithmeticOperation.sub state (nativeMemoryPointer 1 3) (nativeMemoryPointer 0 5)
+            |> expectSyntheticNativeIntValue
+
+        SyntheticCrossArrayOffset.negate forward |> shouldEqual backward
+
+        SyntheticCrossArrayOffset.targetRoot forward
+        |> shouldEqual (ByteStorageIdentity.NativeMemory (NativeMemoryBlockId.NativeMemoryBlockId 0))
+
+        SyntheticCrossArrayOffset.sourceRoot forward
+        |> shouldEqual (ByteStorageIdentity.NativeMemory (NativeMemoryBlockId.NativeMemoryBlockId 1))
+
+        SyntheticCrossArrayOffset.targetOffset forward |> shouldEqual 5L
+        SyntheticCrossArrayOffset.sourceOffset forward |> shouldEqual 3L
+
     [<Test>]
     let ``array byref arithmetic rejects int32 index overflow`` () : unit =
         let state, arr = stateWithIntArray [ 1 ]
