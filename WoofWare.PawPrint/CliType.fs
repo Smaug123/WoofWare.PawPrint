@@ -1144,6 +1144,73 @@ and CliValueType =
         | ConcreteTypeHandle.Pointer _
         | ConcreteTypeHandle.FunctionPointer _ -> false
 
+    /// True iff `vt`'s declared type is `System.DateTime`. CoreCLR's `MarshalInfo` short-circuits
+    /// a DateTime-typed field to `MARSHAL_TYPE_DATE` (8 bytes) at `mlinfo.cpp:1747`, BEFORE the
+    /// AutoLayout rejection in the same classifier — so a sequential struct can embed DateTime
+    /// even though `DateTime` itself is declared `[StructLayout(LayoutKind.Auto)]`. Callers use
+    /// this to honour the shortcut on the field walk and skip recursion into DateTime's storage.
+    static member private IsHostKnownDateTime
+        (concreteTypes : AllConcreteTypes)
+        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (vt : CliValueType)
+        : bool
+        =
+        match vt._Declared with
+        | ConcreteTypeHandle.Concrete _ ->
+            match AllConcreteTypes.lookup vt._Declared concreteTypes with
+            | None -> false
+            | Some concreteType ->
+                if
+                    concreteType.Assembly.FullName = corelib.Corelib.Name.FullName
+                    && concreteType.Generics.IsEmpty
+                then
+                    let typeDef =
+                        assemblies.[concreteType.Assembly.FullName].TypeDefs.[concreteType.Definition.Get]
+
+                    TypeInfo.NominallyEqual typeDef corelib.DateTime
+                else
+                    false
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ -> false
+
+    /// True iff `vt`'s declared type carries `LayoutKind.Auto` in its `TypeAttributes.LayoutMask`.
+    /// CoreCLR rejects top-level `Marshal.SizeOf<T>()` when `T` is AutoLayout (`fieldmarshaler.cpp:309`
+    /// — `IsStructMarshalable` returns false because `HasLayout()` is false for AutoLayout types),
+    /// regardless of whether the struct happens to be blittable in practice. We mirror that rejection
+    /// at the top-level marshal-size entry; field-level use is gated separately so host-known
+    /// AutoLayout types (DateTime) can still appear as fields via their dedicated shortcut.
+    /// Returns `false` for synthetic handles (arrays, byrefs, pointers, function pointers) and for
+    /// handles whose backing TypeInfo can't be found — those don't have a CLR `LayoutKind` to honour.
+    static member private IsAutoLayout
+        (concreteTypes : AllConcreteTypes)
+        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (vt : CliValueType)
+        : bool
+        =
+        match vt._Declared with
+        | ConcreteTypeHandle.Concrete _ ->
+            match AllConcreteTypes.lookup vt._Declared concreteTypes with
+            | None -> false
+            | Some concreteType ->
+                match assemblies.TryGetValue concreteType.Assembly.FullName with
+                | false, _ -> false
+                | true, assy ->
+                    match assy.TypeDefs.TryGetValue concreteType.Definition.Get with
+                    | false, _ -> false
+                    | true, typeDef ->
+                        // `LayoutMask = 0x18`; `AutoLayout = 0x00`, `SequentialLayout = 0x08`,
+                        // `ExplicitLayout = 0x10`. The zero-valued bits are AutoLayout by ECMA §II.10.1.2.
+                        (typeDef.TypeAttributes &&& TypeAttributes.LayoutMask) = TypeAttributes.AutoLayout
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ -> false
+
     /// Compute the unmanaged size of a single field, consulting `[MarshalAs(...)]` descriptors
     /// and the declaring type's `CharSet`. Without a descriptor, falls back to the managed
     /// layout size for byte-stable primitives, recurses into nested value types, and rejects
@@ -1201,7 +1268,15 @@ and CliValueType =
             // into `TryComputeMarshalSize` so nested marshalling annotations on the inner
             // struct's fields contribute correctly to the outer size.
             match contents with
-            | CliType.ValueType vt -> CliValueType.TryComputeMarshalSize concreteTypes assemblies corelib vt
+            | CliType.ValueType vt ->
+                if CliValueType.IsHostKnownDateTime concreteTypes assemblies corelib vt then
+                    Result.Ok
+                        {
+                            Size = 8
+                            Alignment = 8
+                        }
+                else
+                    CliValueType.TryComputeMarshalSize concreteTypes assemblies corelib vt
             | _ ->
                 Result.Error
                     "[MarshalAs(UnmanagedType.Struct)] is only valid on value-type fields, not reference or primitive contents"
@@ -1230,7 +1305,18 @@ and CliValueType =
             | CliType.Char _ ->
                 Result.Error "System.Char marshalling depends on CharSet and does not always match 2-byte CLI char"
             | CliType.ObjectRef _ -> Result.Error "object references require managed-to-unmanaged marshalling"
-            | CliType.ValueType vt -> CliValueType.TryComputeMarshalSize concreteTypes assemblies corelib vt
+            | CliType.ValueType vt ->
+                // Mirror CoreCLR's `MarshalInfo::MarshalInfo` (mlinfo.cpp:1747): a DateTime-typed
+                // field short-circuits to `MARSHAL_TYPE_DATE` (8 bytes, 8-byte aligned) without
+                // recursing into the struct, even though `System.DateTime` itself is AutoLayout.
+                if CliValueType.IsHostKnownDateTime concreteTypes assemblies corelib vt then
+                    Result.Ok
+                        {
+                            Size = 8
+                            Alignment = 8
+                        }
+                else
+                    CliValueType.TryComputeMarshalSize concreteTypes assemblies corelib vt
 
     /// Compute the unmanaged size of a value type as `Marshal.SizeOf` would. Lays fields out
     /// using the declaring type's `Layout` (sequential or explicit) and packing, but with each
@@ -1245,6 +1331,16 @@ and CliValueType =
         (vt : CliValueType)
         : Result<SizeofResult, string>
         =
+        // Mirror CoreCLR's `IsStructMarshalable` (fieldmarshaler.cpp:288): a type with
+        // `LayoutKind.Auto` reports `HasLayout() == false`, so `Marshal.SizeOf<T>()` throws an
+        // `ArgumentException`. The recursion from `TryFieldMarshalSize` reaches us here too —
+        // host-known AutoLayout fields (currently just `System.DateTime`) are intercepted in
+        // `TryFieldMarshalSize` before they recurse, so by the time we see an AutoLayout type
+        // it really is something we should reject.
+        if CliValueType.IsAutoLayout concreteTypes assemblies vt then
+            Result.Error "type has [StructLayout(LayoutKind.Auto)] and has no native layout"
+        else
+
         match vt._Storage with
         | CliValueTypeStorage.RawBytes bytes ->
             Result.Ok

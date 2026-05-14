@@ -113,6 +113,7 @@ module Corelib =
         let outOfMemoryException = findCorelibType corelib "System" "OutOfMemoryException"
         let argumentException = findCorelibType corelib "System" "ArgumentException"
         let argumentNullException = findCorelibType corelib "System" "ArgumentNullException"
+        let dateTime = findCorelibType corelib "System" "DateTime"
 
         {
             Corelib = corelib
@@ -164,6 +165,7 @@ module Corelib =
             OutOfMemoryException = outOfMemoryException
             ArgumentException = argumentException
             ArgumentNullException = argumentNullException
+            DateTime = dateTime
         }
 
     let concretizeAll
