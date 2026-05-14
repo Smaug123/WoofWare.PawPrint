@@ -111,6 +111,13 @@ module EvalStackValueComparisons =
             | NativeIntSource.OpaqueHashBits var1, NativeIntSource.OpaqueHashBits var2 -> uint64 var1 > uint64 var2
             | NativeIntSource.OpaqueHashBits var1, NativeIntSource.Verbatim var2
             | NativeIntSource.Verbatim var1, NativeIntSource.OpaqueHashBits var2 -> uint64 var1 > uint64 var2
+            // `ManagedPointer Null` is the value 0 (cf. the Verbatim-vs-Null
+            // arms below), so unsigned comparison against OpaqueHashBits
+            // reduces to `bits != 0` in the bits-on-the-left direction and
+            // `false` in the Null-on-the-left direction.
+            | NativeIntSource.OpaqueHashBits bits, NativeIntSource.ManagedPointer ManagedPointerSource.Null ->
+                bits <> 0L
+            | NativeIntSource.ManagedPointer ManagedPointerSource.Null, NativeIntSource.OpaqueHashBits _ -> false
             | NativeIntSource.Verbatim var1, NativeIntSource.SyntheticCrossArrayOffset var2 ->
                 if var1 >= 0L then
                     SyntheticCrossArrayOffset.cltVerbatim var2 var1
@@ -211,6 +218,12 @@ module EvalStackValueComparisons =
             | NativeIntSource.OpaqueHashBits var1, NativeIntSource.OpaqueHashBits var2 -> uint64 var1 < uint64 var2
             | NativeIntSource.OpaqueHashBits var1, NativeIntSource.Verbatim var2
             | NativeIntSource.Verbatim var1, NativeIntSource.OpaqueHashBits var2 -> uint64 var1 < uint64 var2
+            // See cgt.un: `ManagedPointer Null` is the value 0 under unsigned
+            // comparison, so `bits < Null` is always false and `Null < bits`
+            // is `bits != 0`.
+            | NativeIntSource.OpaqueHashBits _, NativeIntSource.ManagedPointer ManagedPointerSource.Null -> false
+            | NativeIntSource.ManagedPointer ManagedPointerSource.Null, NativeIntSource.OpaqueHashBits bits ->
+                bits <> 0L
             | NativeIntSource.Verbatim var1, NativeIntSource.SyntheticCrossArrayOffset var2 ->
                 if var1 >= 0L then
                     SyntheticCrossArrayOffset.cgtVerbatim var2 var1
