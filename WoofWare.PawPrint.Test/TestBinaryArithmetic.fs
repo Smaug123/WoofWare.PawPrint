@@ -45,7 +45,7 @@ module TestBinaryArithmetic =
         (val2 : EvalStackValue)
         : EvalStackValue
         =
-        BinaryArithmetic.execute baseClassTypes op state val1 val2
+        BinaryArithmetic.execute baseClassTypes op state val1 val2 |> fst
 
     let private concreteTypeFor
         (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)

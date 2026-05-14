@@ -88,6 +88,17 @@ nix develop -c dotnet run --project WoofWare.PawPrint.App/WoofWare.PawPrint.App.
   * For example, preserve the distinction between identity and view/projection. Prefer making walks total rather than adding projection helpers. If a traversal over runtime types fails at a structural/synthetic handle, teach the traversal how to step through the appropriate relationship; do not coerce the handle into a different identity just to reuse metadata code.
 * If callers use a classifier, guard, predicate, or DU case to justify a later operation, keep that classifier's contract truthful and load-bearing. Fixes should ensure the classifier/representation is reliable for its callers.
 
+When you find yourself making an architectural decision, please come up with at least two genuinely different options and choose explicitly between them.
+"Genuinely different" means structurally different approaches, not adjacent variants of the same idea.
+Consider not just correctness on the immediate use case but also blast radius if the choice turns out wrong, reversibility, and how much information each option preserves for downstream consumers.
+
+For non-trivial choices, write the option set down (in a plan doc or in chat) and confirm with the user before touching code.
+If you are unsure, stop and ask rather than guess.
+
+Example: bit-twiddling on provenance-tracked pointers in unsafe C# is a recurring instance of this kind of decision.
+Options range from synthesising a bit pattern eagerly (smallest implementation cost, largest loss of information), to maintaining an AST of the transformations performed on a logical set of bits (largest cost, most information preserved), to a middle ground that waits until the last moment before materialising bits.
+The right call depends on what downstream code does with the result.
+
 ### Development Workflow
 
 Use the `/implement-il-instruction` skill when adding support for a new IL opcode.

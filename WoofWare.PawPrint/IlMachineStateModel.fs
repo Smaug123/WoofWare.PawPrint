@@ -67,6 +67,11 @@ type IlMachineState =
         /// only need to be unique and non-zero (the BCL treats handle 0 as
         /// "create failed" and throws OOM).
         NextEventPipeId : int64
+        /// Deterministic counter-assignment state for synthesised pointer
+        /// hash bits. Each canonical pointer key gets a stable bit pattern
+        /// derived from its registration order; distinct keys produce
+        /// distinct bits with no collisions. See `PointerHashSynthesis`.
+        PointerHashCounters : PointerHashCounters
     }
 
     member this.WithTypeBeginInit (thread : ThreadId) (ty : ConcreteTypeHandle) =

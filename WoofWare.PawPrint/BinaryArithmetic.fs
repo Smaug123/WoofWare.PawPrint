@@ -658,13 +658,19 @@ module ArithmeticOperation =
 
 [<RequireQualifiedAccess>]
 module BinaryArithmetic =
+    /// Apply a binary arithmetic operation. Returns the result together with
+    /// the (possibly updated) machine state — the WidenedNativeInt arms that
+    /// materialise synthesised pointer-hash bits register new
+    /// `PointerHashCounters` entries on `state`; every other arm returns
+    /// `state` unchanged. Callers MUST use the returned state, not the input
+    /// state, when pushing the result.
     let execute
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (op : IArithmeticOperation)
         (state : IlMachineState)
         (val1 : EvalStackValue)
         (val2 : EvalStackValue)
-        : EvalStackValue
+        : EvalStackValue * IlMachineState
         =
         let managedPtrManagedPtr (ptr1 : ManagedPointerSource) (ptr2 : ManagedPointerSource) : EvalStackValue =
             match op.ManagedPtrManagedPtr baseClassTypes state ptr1 ptr2 with
@@ -714,11 +720,19 @@ module BinaryArithmetic =
                 EvalStackValue.Int64 (Int64Source.widenedNativeInt (NativeIntSource.ManagedPointer ptr) signed)
             | Choice2Of2 i -> EvalStackValue.Int64 (Int64Source.Verbatim (int64<int32> i))
 
+        let materialise (src : NativeIntSource) (counters : PointerHashCounters) : int64 * PointerHashCounters =
+            PointerHashSynthesis.materialiseHashBits $"BinaryArithmetic.%s{op.Name}" src counters
+
+        let withState (esv : EvalStackValue) : EvalStackValue * IlMachineState = esv, state
+
         // see table at https://learn.microsoft.com/en-us/dotnet/api/system.reflection.emit.opcodes.add?view=net-9.0
         match val1, val2 with
-        | EvalStackValue.Int32 val1, EvalStackValue.Int32 val2 -> op.Int32Int32 val1 val2 |> EvalStackValue.Int32
+        | EvalStackValue.Int32 val1, EvalStackValue.Int32 val2 ->
+            op.Int32Int32 val1 val2 |> EvalStackValue.Int32 |> withState
         | EvalStackValue.Int32 val1, EvalStackValue.NativeInt (NativeIntSource.ManagedPointer val2) ->
-            op.Int32ManagedPtr baseClassTypes state val1 val2 |> managedPtrChoiceAsNativeInt
+            op.Int32ManagedPtr baseClassTypes state val1 val2
+            |> managedPtrChoiceAsNativeInt
+            |> withState
         | EvalStackValue.Int32 val1, EvalStackValue.NativeInt val2 ->
             let val2 =
                 match val2 with
@@ -729,31 +743,132 @@ module BinaryArithmetic =
             |> int64<nativeint>
             |> NativeIntSource.Verbatim
             |> EvalStackValue.NativeInt
+            |> withState
         | EvalStackValue.Int32 val1, EvalStackValue.ManagedPointer val2 ->
             match op.Int32ManagedPtr baseClassTypes state val1 val2 with
-            | Choice1Of2 v -> EvalStackValue.ManagedPointer v
-            | Choice2Of2 i -> EvalStackValue.Int32 i
-        | EvalStackValue.Int32 val1, EvalStackValue.ObjectRef val2 -> failwith "" |> EvalStackValue.ObjectRef
+            | Choice1Of2 v -> EvalStackValue.ManagedPointer v |> withState
+            | Choice2Of2 i -> EvalStackValue.Int32 i |> withState
+        | EvalStackValue.Int32 val1, EvalStackValue.ObjectRef val2 ->
+            failwith "" |> EvalStackValue.ObjectRef |> withState
         | EvalStackValue.Int32 _, EvalStackValue.NullObjectRef -> failwith ""
         | EvalStackValue.Int64 (Int64Source.Verbatim val1), EvalStackValue.Int64 (Int64Source.Verbatim val2) ->
-            op.Int64Int64 val1 val2 |> Int64Source.Verbatim |> EvalStackValue.Int64
+            op.Int64Int64 val1 val2
+            |> Int64Source.Verbatim
+            |> EvalStackValue.Int64
+            |> withState
+        // Arithmetic on synthesised pointer-hash bits stays in the hash domain:
+        // the bits are not a real numeric quantity, but the bit-mixing pipeline
+        // (e.g. `hash * 11400714819323198485ul` in CastCache.KeyToBucket) needs
+        // arithmetic ops to combine them. Keep the OpaqueHashBits tag so the
+        // result can't round-trip back to a pointer via `conv.u`/`conv.i`.
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits val1), EvalStackValue.Int64 (Int64Source.OpaqueHashBits val2) ->
+            op.Int64Int64 val1 val2
+            |> Int64Source.OpaqueHashBits
+            |> EvalStackValue.Int64
+            |> withState
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits val1), EvalStackValue.Int64 (Int64Source.Verbatim val2) ->
+            op.Int64Int64 val1 val2
+            |> Int64Source.OpaqueHashBits
+            |> EvalStackValue.Int64
+            |> withState
+        | EvalStackValue.Int64 (Int64Source.Verbatim val1), EvalStackValue.Int64 (Int64Source.OpaqueHashBits val2) ->
+            op.Int64Int64 val1 val2
+            |> Int64Source.OpaqueHashBits
+            |> EvalStackValue.Int64
+            |> withState
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset val1),
           EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset val2) ->
-            op.CrossArrayOffsets val1 val2 |> Int64Source.Verbatim |> EvalStackValue.Int64
+            op.CrossArrayOffsets val1 val2
+            |> Int64Source.Verbatim
+            |> EvalStackValue.Int64
+            |> withState
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (NativeIntSource.ManagedPointer val1, signed)),
           EvalStackValue.Int64 (Int64Source.Verbatim val2) ->
             let val2 = widenedInt64OffsetForPointerArithmetic val2
 
             op.ManagedPtrInt32 baseClassTypes state val1 val2
             |> widenedManagedPtrChoiceAsInt64 signed
+            |> withState
         | EvalStackValue.Int64 (Int64Source.Verbatim val1),
           EvalStackValue.Int64 (Int64Source.WidenedNativeInt (NativeIntSource.ManagedPointer val2, signed)) ->
             let val1 = widenedInt64OffsetForPointerArithmetic val1
 
             op.Int32ManagedPtr baseClassTypes state val1 val2
             |> widenedManagedPtrChoiceAsInt64 signed
+            |> withState
+        // Arithmetic on a widened non-managed-pointer source materialises the
+        // synthesised hash bits up-front, so a pointer-hash expression starting
+        // with arithmetic (e.g. `(ulong)handle * C` for the CastCache golden-
+        // ratio mix) doesn't fall through to "invalid operation". The
+        // ManagedPointer arms above match first, so `src` here is always one
+        // of the non-managed pointer shapes that `materialiseHashBits`
+        // accepts (TypeHandlePtr, MethodTablePtr, function/method/field
+        // handles, etc.). Result is tagged OpaqueHashBits so it can't
+        // round-trip back to a pointer via `conv.u` / `conv.i`.
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)), EvalStackValue.Int64 (Int64Source.Verbatim val2) ->
+            let val1, counters = materialise src state.PointerHashCounters
+
+            let state =
+                { state with
+                    PointerHashCounters = counters
+                }
+
+            op.Int64Int64 val1 val2 |> Int64Source.OpaqueHashBits |> EvalStackValue.Int64, state
+        | EvalStackValue.Int64 (Int64Source.Verbatim val1), EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
+            let val2, counters = materialise src state.PointerHashCounters
+
+            let state =
+                { state with
+                    PointerHashCounters = counters
+                }
+
+            op.Int64Int64 val1 val2 |> Int64Source.OpaqueHashBits |> EvalStackValue.Int64, state
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)),
+          EvalStackValue.Int64 (Int64Source.OpaqueHashBits val2) ->
+            let val1, counters = materialise src state.PointerHashCounters
+
+            let state =
+                { state with
+                    PointerHashCounters = counters
+                }
+
+            op.Int64Int64 val1 val2 |> Int64Source.OpaqueHashBits |> EvalStackValue.Int64, state
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits val1),
+          EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
+            let val2, counters = materialise src state.PointerHashCounters
+
+            let state =
+                { state with
+                    PointerHashCounters = counters
+                }
+
+            op.Int64Int64 val1 val2 |> Int64Source.OpaqueHashBits |> EvalStackValue.Int64, state
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src1, _)),
+          EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src2, _)) ->
+            // Mixing managed-pointer arithmetic with non-pointer hash bits in
+            // the same op is unsupported — pointer × pointer arithmetic on
+            // bare nativeints is itself rare, and falls through to the
+            // existing "invalid operation" failwith if either side is a
+            // managed pointer.
+            match src1, src2 with
+            | NativeIntSource.ManagedPointer _, _
+            | _, NativeIntSource.ManagedPointer _ ->
+                failwith
+                    $"TODO: BinaryArithmetic %s{op.Name} on (WidenedNativeInt %O{src1}) and (WidenedNativeInt %O{src2}): one side is a managed pointer, the other isn't"
+            | _ ->
+                let val1, counters = materialise src1 state.PointerHashCounters
+                let val2, counters = materialise src2 counters
+
+                let state =
+                    { state with
+                        PointerHashCounters = counters
+                    }
+
+                op.Int64Int64 val1 val2 |> Int64Source.OpaqueHashBits |> EvalStackValue.Int64, state
         | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer val1), EvalStackValue.Int32 val2 ->
-            op.ManagedPtrInt32 baseClassTypes state val1 val2 |> managedPtrChoiceAsNativeInt
+            op.ManagedPtrInt32 baseClassTypes state val1 val2
+            |> managedPtrChoiceAsNativeInt
+            |> withState
         | EvalStackValue.NativeInt val1, EvalStackValue.Int32 val2 ->
             let val1 =
                 match val1 with
@@ -764,16 +879,24 @@ module BinaryArithmetic =
             |> int64<nativeint>
             |> NativeIntSource.Verbatim
             |> EvalStackValue.NativeInt
+            |> withState
         | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer val1),
           EvalStackValue.NativeInt (NativeIntSource.ManagedPointer val2) ->
             op.ManagedPtrManagedPtr baseClassTypes state val1 val2
             |> managedPtrManagedPtrAsNativeInt
+            |> withState
         | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer val1), EvalStackValue.NativeInt val2 ->
             let val2 = nativeIntOffsetForPointerArithmetic val2
-            op.ManagedPtrInt32 baseClassTypes state val1 val2 |> managedPtrChoiceAsNativeInt
+
+            op.ManagedPtrInt32 baseClassTypes state val1 val2
+            |> managedPtrChoiceAsNativeInt
+            |> withState
         | EvalStackValue.NativeInt val1, EvalStackValue.NativeInt (NativeIntSource.ManagedPointer val2) ->
             let val1 = nativeIntOffsetForPointerArithmetic val1
-            op.Int32ManagedPtr baseClassTypes state val1 val2 |> managedPtrChoiceAsNativeInt
+
+            op.Int32ManagedPtr baseClassTypes state val1 val2
+            |> managedPtrChoiceAsNativeInt
+            |> withState
         | EvalStackValue.NativeInt val1, EvalStackValue.NativeInt val2 ->
             match val1, val2 with
             | NativeIntSource.SyntheticCrossArrayOffset val1, NativeIntSource.SyntheticCrossArrayOffset val2 ->
@@ -781,6 +904,7 @@ module BinaryArithmetic =
                 op.CrossArrayOffsets val1 val2
                 |> NativeIntSource.Verbatim
                 |> EvalStackValue.NativeInt
+                |> withState
             | NativeIntSource.Verbatim val1, NativeIntSource.Verbatim val2 ->
                 let val1 = nativeint<int64> val1
                 let val2 = nativeint<int64> val2
@@ -789,37 +913,50 @@ module BinaryArithmetic =
                 |> int64<nativeint>
                 |> NativeIntSource.Verbatim
                 |> EvalStackValue.NativeInt
+                |> withState
             | val1, val2 -> failwith $"refusing to operate %s{op.Name} on non-verbatim native ints %O{val1}, %O{val2}"
 
         | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer val1), EvalStackValue.ManagedPointer val2 ->
             op.ManagedPtrManagedPtr baseClassTypes state val1 val2
             |> managedPtrManagedPtrAsNativeInt
+            |> withState
         | EvalStackValue.NativeInt val1, EvalStackValue.ManagedPointer val2 ->
             let val1 = nativeIntOffsetForPointerArithmetic val1
 
             match op.Int32ManagedPtr baseClassTypes state val1 val2 with
-            | Choice1Of2 v -> EvalStackValue.ManagedPointer v
-            | Choice2Of2 i -> EvalStackValue.NativeInt (NativeIntSource.Verbatim (int64<int32> i))
-        | EvalStackValue.NativeInt val1, EvalStackValue.ObjectRef val2 -> failwith "" |> EvalStackValue.ObjectRef
+            | Choice1Of2 v -> EvalStackValue.ManagedPointer v |> withState
+            | Choice2Of2 i ->
+                EvalStackValue.NativeInt (NativeIntSource.Verbatim (int64<int32> i))
+                |> withState
+        | EvalStackValue.NativeInt val1, EvalStackValue.ObjectRef val2 ->
+            failwith "" |> EvalStackValue.ObjectRef |> withState
         | EvalStackValue.NativeInt _, EvalStackValue.NullObjectRef -> failwith ""
-        | EvalStackValue.Float val1, EvalStackValue.Float val2 -> op.FloatFloat val1 val2 |> EvalStackValue.Float
+        | EvalStackValue.Float val1, EvalStackValue.Float val2 ->
+            op.FloatFloat val1 val2 |> EvalStackValue.Float |> withState
         | EvalStackValue.ManagedPointer val1, EvalStackValue.NativeInt (NativeIntSource.ManagedPointer val2) ->
             match op.ManagedPtrManagedPtr baseClassTypes state val1 val2 with
-            | Choice1Of2 result -> EvalStackValue.ManagedPointer result
-            | Choice2Of2 result -> EvalStackValue.NativeInt result
+            | Choice1Of2 result -> EvalStackValue.ManagedPointer result |> withState
+            | Choice2Of2 result -> EvalStackValue.NativeInt result |> withState
         | EvalStackValue.ManagedPointer val1, EvalStackValue.NativeInt val2 ->
             let val2 = nativeIntOffsetForPointerArithmetic val2
 
             match op.ManagedPtrInt32 baseClassTypes state val1 val2 with
-            | Choice1Of2 result -> EvalStackValue.ManagedPointer result
-            | Choice2Of2 result -> EvalStackValue.NativeInt (NativeIntSource.Verbatim (int64<int32> result))
-        | EvalStackValue.ObjectRef val1, EvalStackValue.NativeInt val2 -> failwith "" |> EvalStackValue.ObjectRef
+            | Choice1Of2 result -> EvalStackValue.ManagedPointer result |> withState
+            | Choice2Of2 result ->
+                EvalStackValue.NativeInt (NativeIntSource.Verbatim (int64<int32> result))
+                |> withState
+        | EvalStackValue.ObjectRef val1, EvalStackValue.NativeInt val2 ->
+            failwith "" |> EvalStackValue.ObjectRef |> withState
         | EvalStackValue.NullObjectRef, EvalStackValue.NativeInt _ -> failwith ""
         | EvalStackValue.ManagedPointer val1, EvalStackValue.Int32 val2 ->
             match op.ManagedPtrInt32 baseClassTypes state val1 val2 with
-            | Choice1Of2 result -> EvalStackValue.ManagedPointer result
-            | Choice2Of2 result -> EvalStackValue.NativeInt (NativeIntSource.Verbatim (int64<int32> result))
-        | EvalStackValue.ObjectRef val1, EvalStackValue.Int32 val2 -> failwith "" |> EvalStackValue.ObjectRef
+            | Choice1Of2 result -> EvalStackValue.ManagedPointer result |> withState
+            | Choice2Of2 result ->
+                EvalStackValue.NativeInt (NativeIntSource.Verbatim (int64<int32> result))
+                |> withState
+        | EvalStackValue.ObjectRef val1, EvalStackValue.Int32 val2 ->
+            failwith "" |> EvalStackValue.ObjectRef |> withState
         | EvalStackValue.NullObjectRef, EvalStackValue.Int32 _ -> failwith ""
-        | EvalStackValue.ManagedPointer val1, EvalStackValue.ManagedPointer val2 -> managedPtrManagedPtr val1 val2
+        | EvalStackValue.ManagedPointer val1, EvalStackValue.ManagedPointer val2 ->
+            managedPtrManagedPtr val1 val2 |> withState
         | val1, val2 -> failwith $"invalid %s{op.Name} operation: {val1} and {val2}"

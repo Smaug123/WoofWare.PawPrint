@@ -201,6 +201,9 @@ module EvalStackValue =
                 Some (UnsignedNativeIntSource.FromSyntheticCrossArrayStorage s)
             | NativeIntSource.Verbatim n -> Some (UnsignedNativeIntSource.Verbatim (uint64 n))
             | _ -> failwith $"TODO: Conv_U from widened native int with non-pointer source %O{src}"
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) ->
+            failwith
+                $"Conv_U from synthesised pointer-hash bits 0x%x{bits}: refusing to materialise a real native int from hashed pointer provenance"
         | EvalStackValue.NativeInt i ->
             match i with
             | NativeIntSource.Verbatim i -> uint64 i |> UnsignedNativeIntSource.Verbatim |> Some
@@ -251,6 +254,9 @@ module EvalStackValue =
             // the matching arm in `toUnsignedNativeInt` for the architecture
             // assumption.
             Some src
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) ->
+            failwith
+                $"Conv_I from synthesised pointer-hash bits 0x%x{bits}: refusing to materialise a real native int from hashed pointer provenance"
         | EvalStackValue.Int32 i -> i |> convIFromInt32 |> NativeIntSource.Verbatim |> Some
         | EvalStackValue.NativeInt src -> Some src
         | EvalStackValue.Float f -> f |> convIFromFloat |> NativeIntSource.Verbatim |> Some
@@ -266,6 +272,7 @@ module EvalStackValue =
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
             failwith $"TODO: Conv_I1 from widened native int %O{src} (truncating pointer-shaped int64 to int8)"
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) -> convI1FromInt64 bits |> Some
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_I1" src |> convI1FromInt64 |> Some
         | EvalStackValue.Float f -> convI1FromFloat f |> Some
         | EvalStackValue.ManagedPointer _
@@ -280,6 +287,7 @@ module EvalStackValue =
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
             failwith $"TODO: Conv_I2 from widened native int %O{src} (truncating pointer-shaped int64 to int16)"
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) -> convI2FromInt64 bits |> Some
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_I2" src |> convI2FromInt64 |> Some
         | EvalStackValue.Float f -> convI2FromFloat f |> Some
         | EvalStackValue.ManagedPointer _
@@ -294,6 +302,12 @@ module EvalStackValue =
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
             failwith $"TODO: Conv_I4 from widened native int %O{src} (truncating pointer-shaped int64 to int32)"
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) ->
+            // Truncating synthesised hash bits to int32 is the load-bearing
+            // path: `CastCache.KeyToBucket` ends in `(int)((hash * c) >> shift)`
+            // to produce an array index. The result has no provenance, but
+            // an array index doesn't need one.
+            convI4FromInt64 bits |> Some
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_I4" src |> convI4FromInt64 |> Some
         | EvalStackValue.Float f -> convI4FromFloat f |> Some
         | EvalStackValue.ManagedPointer _
@@ -345,6 +359,7 @@ module EvalStackValue =
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
             failwith $"TODO: Conv_U1 from widened native int %O{src} (truncating pointer-shaped int64 to uint8)"
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) -> convU1FromInt64 bits |> Some
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_U1" src |> convU1FromInt64 |> Some
         | EvalStackValue.Float f -> convU1FromFloat f |> Some
         | EvalStackValue.ManagedPointer _
@@ -360,6 +375,7 @@ module EvalStackValue =
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
             failwith $"TODO: Conv_U2 from widened native int %O{src} (truncating pointer-shaped int64 to uint16)"
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) -> convU2FromInt64 bits |> Some
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_U2" src |> convU2FromInt64 |> Some
         | EvalStackValue.Float f -> convU2FromFloat f |> Some
         | EvalStackValue.ManagedPointer _
@@ -375,6 +391,7 @@ module EvalStackValue =
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
             failwith $"TODO: Conv_U4 from widened native int %O{src} (truncating pointer-shaped int64 to uint32)"
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) -> convU4FromInt64 bits |> Some
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_U4" src |> convU4FromInt64 |> Some
         | EvalStackValue.Float f -> convU4FromFloat f |> Some
         | EvalStackValue.ManagedPointer _
@@ -390,6 +407,8 @@ module EvalStackValue =
             failwith "Refusing to convert byte offset to float"
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
             failwith $"Refusing to convert widened native int %O{src} to float"
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) ->
+            failwith $"Refusing to convert synthesised pointer-hash bits 0x%x{bits} to float"
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_R4" src |> convR4FromInt64 |> Some
         | EvalStackValue.Float f -> convR4FromFloat f |> Some
         | EvalStackValue.ManagedPointer _
@@ -405,6 +424,8 @@ module EvalStackValue =
             failwith "Refusing to convert byte offset to float"
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
             failwith $"Refusing to convert widened native int %O{src} to float"
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) ->
+            failwith $"Refusing to convert synthesised pointer-hash bits 0x%x{bits} to float"
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_R8" src |> convR8FromInt64 |> Some
         | EvalStackValue.Float f -> convR8FromFloat f |> Some
         | EvalStackValue.ManagedPointer _
@@ -420,6 +441,8 @@ module EvalStackValue =
             failwith "Refusing to convert byte offset to float"
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
             failwith $"Refusing to convert widened native int %O{src} to float"
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) ->
+            failwith $"Refusing to convert synthesised pointer-hash bits 0x%x{bits} to float"
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_R_Un" src |> convRUnFromInt64 |> Some
         | EvalStackValue.Float _ -> failwith "Conv_R_Un: refusing to convert an existing float as unsigned integer"
         | EvalStackValue.ManagedPointer _
@@ -539,6 +562,9 @@ module EvalStackValue =
                             // back to native int recovers the original source on
                             // 64-bit (the widening is bit-preserving).
                             CliType.Numeric (CliNumericType.NativeInt src)
+                        | Int64Source.OpaqueHashBits bits ->
+                            failwith
+                                $"refusing to coerce synthesised pointer-hash bits 0x%x{bits} into a native int (would forge pointer provenance)"
                     | CliType.RuntimePointer ptr ->
                         match ptr with
                         | CliRuntimePointer.Verbatim i ->

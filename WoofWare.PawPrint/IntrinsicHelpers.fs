@@ -542,6 +542,9 @@ module internal IntrinsicHelpers =
                 | Int64Source.WidenedNativeInt (src, _) ->
                     failwith
                         $"%s{operation}: byte count came from a widened native int %O{src}; refusing to interpret pointer-shaped int64 as byte count"
+                | Int64Source.OpaqueHashBits bits ->
+                    failwith
+                        $"%s{operation}: byte count came from synthesised pointer-hash bits 0x%x{bits}; refusing to interpret hashed pointer provenance as byte count"
                 | Int64Source.Verbatim count -> checkedByteCount operation count
             | _ -> failwith "unexpectedly got negative byte count"
         | EvalStackValue.Int32 count -> checkedByteCount operation (int64 count)
