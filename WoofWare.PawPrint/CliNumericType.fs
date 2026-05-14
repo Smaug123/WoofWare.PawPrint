@@ -75,21 +75,47 @@ module Int64Source =
             | ConcreteTypeHandle.OneDimArrayZero _
             | ConcreteTypeHandle.Array _ -> 0L
 
-    /// Deterministic FNV-1a hash on the `ToString` projection of a source.
+    /// Canonical string for hashing a `NativeIntSource`. The point of going
+    /// through a string is determinism (see `fnv1aHash` below); the point of
+    /// canonicalisation is alias preservation. CoreCLR exposes a
+    /// `MethodTable*` and the `TypeHandle` for the same Concrete/Array type
+    /// as the same address, and the existing `NativeInt` `ceq` arms in
+    /// `EvalStackValueComparisons` treat the two encodings as aliases for
+    /// Concrete/OneDimArrayZero/Array shapes. The hash-bit pipeline must
+    /// agree: `MethodTablePtr h` and `TypeHandlePtr (Closed h)` for those
+    /// concrete shapes must produce identical `OpaqueHashBits`, or guest
+    /// code that widens and bit-mixes the two aliases will see fake
+    /// inequality / different hash buckets for the same pointer. For
+    /// TypeDesc-shaped handles (Byref / Pointer / FunctionPointer) and for
+    /// non-Closed targets, the canonical form is just `ToString` — those
+    /// encodings are not aliases of any `MethodTablePtr`.
+    let private canonicalHashKey (src : NativeIntSource) : string =
+        match src with
+        | NativeIntSource.MethodTablePtr h -> $"<MethodTable %O{h}>"
+        | NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed h) ->
+            match h with
+            | ConcreteTypeHandle.Concrete _
+            | ConcreteTypeHandle.OneDimArrayZero _
+            | ConcreteTypeHandle.Array _ -> $"<MethodTable %O{h}>"
+            | ConcreteTypeHandle.Byref _
+            | ConcreteTypeHandle.Pointer _
+            | ConcreteTypeHandle.FunctionPointer _ -> src.ToString ()
+        | _ -> src.ToString ()
+
+    /// Deterministic FNV-1a hash on the canonical hash key.
     /// `NativeIntSource.GetHashCode` uses `System.HashCode.Combine`, which
     /// folds in a per-process randomised seed and therefore yields different
     /// hash codes across PawPrint invocations. The interpreter's
     /// determinism guarantee (deterministic replay, fuzzing over thread
     /// schedules) requires that any guest-observable hash bits be derived
-    /// from process-stable identifiers instead. Each `NativeIntSource`
-    /// variant's `ToString` is structural in identifiers that are stable
-    /// within a process (e.g., `ConcreteTypeHandle.Concrete` carries an int
-    /// assigned in registration order), so FNV-1a of that string is a
-    /// stable surrogate that we can publish to the guest's bit-mixing
-    /// pipeline.
+    /// from process-stable identifiers instead. `canonicalHashKey` projects
+    /// each `NativeIntSource` into a string that is (a) stable within a
+    /// process and (b) identical for aliasing encodings of the same
+    /// underlying pointer, so FNV-1a of that string is a stable surrogate
+    /// suitable for the guest's bit-mixing pipeline.
     let private fnv1aHash (src : NativeIntSource) : int64 =
         let mutable hash = 0xCBF29CE484222325UL
-        let s = src.ToString ()
+        let s = canonicalHashKey src
 
         for c in s do
             hash <- hash ^^^ uint64 c
@@ -105,14 +131,14 @@ module Int64Source =
     /// pointer.
     ///
     /// Determinism: derives bits via `fnv1aHash`, which folds the source's
-    /// `ToString` projection (stable within a process — see above). The
-    /// upper 16 bits aren't cleared so `RotateLeft(_, 32)` produces a
+    /// `canonicalHashKey` (stable within a process — see above). The upper
+    /// 16 bits aren't cleared so `RotateLeft(_, 32)` produces a
     /// non-degenerate hash mix.
     ///
     /// Low-bit contract: matches `typeHandleLowAddressBitsForHash` so the
     /// synthesised bits agree with the existing `and`-mask path
     /// (`NullaryIlOp.typeHandleLowAddressBits`).
-    let private materialiseHashBits (src : NativeIntSource) : int64 =
+    let materialiseHashBits (src : NativeIntSource) : int64 =
         match src with
         | NativeIntSource.Verbatim n -> n
         | NativeIntSource.ManagedPointer ManagedPointerSource.Null -> 0L

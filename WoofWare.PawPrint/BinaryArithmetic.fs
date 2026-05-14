@@ -763,6 +763,45 @@ module BinaryArithmetic =
 
             op.Int32ManagedPtr baseClassTypes state val1 val2
             |> widenedManagedPtrChoiceAsInt64 signed
+        // Arithmetic on a widened non-managed-pointer source materialises the
+        // synthesised hash bits up-front, so a pointer-hash expression starting
+        // with arithmetic (e.g. `(ulong)handle * C` for the CastCache golden-
+        // ratio mix) doesn't fall through to "invalid operation". The
+        // ManagedPointer arms above match first, so `src` here is always one
+        // of the non-managed pointer shapes that `materialiseHashBits`
+        // accepts (TypeHandlePtr, MethodTablePtr, function/method/field
+        // handles, etc.). Result is tagged OpaqueHashBits so it can't
+        // round-trip back to a pointer via `conv.u` / `conv.i`.
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)), EvalStackValue.Int64 (Int64Source.Verbatim val2) ->
+            let val1 = Int64Source.materialiseHashBits src
+            op.Int64Int64 val1 val2 |> Int64Source.OpaqueHashBits |> EvalStackValue.Int64
+        | EvalStackValue.Int64 (Int64Source.Verbatim val1), EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
+            let val2 = Int64Source.materialiseHashBits src
+            op.Int64Int64 val1 val2 |> Int64Source.OpaqueHashBits |> EvalStackValue.Int64
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)),
+          EvalStackValue.Int64 (Int64Source.OpaqueHashBits val2) ->
+            let val1 = Int64Source.materialiseHashBits src
+            op.Int64Int64 val1 val2 |> Int64Source.OpaqueHashBits |> EvalStackValue.Int64
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits val1),
+          EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
+            let val2 = Int64Source.materialiseHashBits src
+            op.Int64Int64 val1 val2 |> Int64Source.OpaqueHashBits |> EvalStackValue.Int64
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src1, _)),
+          EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src2, _)) ->
+            // Mixing managed-pointer arithmetic with non-pointer hash bits in
+            // the same op is unsupported — pointer × pointer arithmetic on
+            // bare nativeints is itself rare, and falls through to the
+            // existing "invalid operation" failwith if either side is a
+            // managed pointer.
+            match src1, src2 with
+            | NativeIntSource.ManagedPointer _, _
+            | _, NativeIntSource.ManagedPointer _ ->
+                failwith
+                    $"TODO: BinaryArithmetic %s{op.Name} on (WidenedNativeInt %O{src1}) and (WidenedNativeInt %O{src2}): one side is a managed pointer, the other isn't"
+            | _ ->
+                let val1 = Int64Source.materialiseHashBits src1
+                let val2 = Int64Source.materialiseHashBits src2
+                op.Int64Int64 val1 val2 |> Int64Source.OpaqueHashBits |> EvalStackValue.Int64
         | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer val1), EvalStackValue.Int32 val2 ->
             op.ManagedPtrInt32 baseClassTypes state val1 val2 |> managedPtrChoiceAsNativeInt
         | EvalStackValue.NativeInt val1, EvalStackValue.Int32 val2 ->
