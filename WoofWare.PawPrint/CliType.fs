@@ -75,9 +75,12 @@ module private ByteAddressabilityClassifier =
         | Int64Source.Verbatim _ -> CliByteAddressability.ByteAddressable
         // `WidenedNativeInt` is itself provenance: `CliNumericType.ToBytes`
         // refuses every widened value, even non-canonical wrappers around a
-        // byte-renderable native-int source.
+        // byte-renderable native-int source. `OpaqueHashBits` is a synthesised
+        // hash with no meaningful byte interpretation — spilling it to memory
+        // would imply it's a real numeric value, which it isn't.
         | Int64Source.SyntheticCrossArrayOffset _
-        | Int64Source.WidenedNativeInt _ ->
+        | Int64Source.WidenedNativeInt _
+        | Int64Source.OpaqueHashBits _ ->
             CliByteAddressability.Rejected (CliByteAddressabilityRejection.Int64SourceNotByteAddressable source)
 
     let numeric (numeric : CliNumericType) : CliByteAddressability =

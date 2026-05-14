@@ -117,6 +117,8 @@ module NullaryIlOp =
                 failwith "Localloc: refusing to use synthetic pointer delta as a byte count"
             | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
                 failwith $"Localloc: refusing to use widened native int %O{src} as a byte count"
+            | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) ->
+                failwith $"Localloc: refusing to use synthesised pointer-hash bits 0x%x{bits} as a byte count"
             | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) -> i
             | EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset _) ->
                 failwith "Localloc: refusing to use synthetic pointer delta as a byte count"
@@ -293,6 +295,13 @@ module NullaryIlOp =
             failwith "TODO: synthetic cross-array offset"
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
             failwith $"TODO: Conv_ovf_i4_un from widened native int %O{src}"
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) ->
+            // Synthesised hash bits truncated to int32 is conv.i4, not
+            // conv.ovf.i4.un. If the hash happens to fit in int32 anyway
+            // we could allow it, but the overflow contract on this path
+            // is a real CLR semantic that hash bits don't model; fail
+            // loudly until a call site demonstrates the need.
+            failwith $"TODO: Conv_ovf_i4_un from synthesised pointer-hash bits 0x%x{bits}"
         | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) -> fromUnsignedInt64 "unsigned native int" i
         | EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset i) ->
             failwith "TODO: synthetic cross-array offset"
@@ -944,11 +953,7 @@ module NullaryIlOp =
                 // See table III.6
                 match number with
                 | EvalStackValue.Int32 i -> uint32<int> i >>> shift |> int32<uint32> |> EvalStackValue.Int32
-                | EvalStackValue.Int64 (Int64Source.Verbatim i) ->
-                    uint64<int64> i >>> shift
-                    |> int64<uint64>
-                    |> Int64Source.Verbatim
-                    |> EvalStackValue.Int64
+                | EvalStackValue.Int64 i -> Int64Source.shrUn i shift |> EvalStackValue.Int64
                 | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) ->
                     (uint64<int64> i >>> shift |> int64<uint64>)
                     |> NativeIntSource.Verbatim

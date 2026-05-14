@@ -24,6 +24,23 @@ type Int64Source =
     /// pattern matches that assume `Verbatim` / `SyntheticCrossArrayOffset`
     /// cover all "purely numeric" int64 values.
     | WidenedNativeInt of source : NativeIntSource * signed : bool
+    /// Deterministic synthesised bits produced when a bit-mixing operation
+    /// (`shl` / `shr` / `shrUn` / `bitAnd` / `bitOr` / `bitXor` / `bitNot` /
+    /// `negate` / `add`) fires on a `WidenedNativeInt` whose underlying source is a pointer
+    /// shape (`MethodTablePtr`, `TypeHandlePtr`, etc.). The hash bits derive
+    /// from the source's identity (see `materialiseHashBits`) and respect
+    /// the low-bit contract used elsewhere in the interpreter
+    /// (MethodTable* → low 2 bits clear; TypeDesc-shaped → low 2 bits set
+    /// to `0b10`). Once a value has this tag, further bit ops compute on
+    /// the bits directly and the result keeps the same tag.
+    ///
+    /// The tag's load-bearing job: an `OpaqueHashBits` value MUST NOT be
+    /// converted back to a `NativeInt` (via `conv.u` / `conv.i`); doing so
+    /// would let a synthesised non-pointer be used as a real pointer and
+    /// silently dereferenced. `conv.i4` is allowed — that path is how the
+    /// cast-cache hash becomes an array index. See
+    /// `docs/plans/2026-05-13-castcache-synthetic-hash-bits.md`.
+    | OpaqueHashBits of int64
 
     override this.ToString () =
         match this with
@@ -32,9 +49,85 @@ type Int64Source =
         | Int64Source.WidenedNativeInt (src, signed) ->
             let conv = if signed then "conv.i8" else "conv.u8"
             $"<%s{conv} %O{src}>"
+        | Int64Source.OpaqueHashBits bits -> $"<opaque hash bits 0x%x{bits}>"
 
 [<RequireQualifiedAccess>]
 module Int64Source =
+
+    /// Low-bit contract for pointer-shaped handles. Mirrors
+    /// `NullaryIlOp.typeHandleLowAddressBits`, kept in sync so that
+    /// `materialiseHashBits` honours the same alignment / tagging convention
+    /// when synthesising bits for hashing. Centralising this would require
+    /// promoting types — for now the contract is small enough to duplicate.
+    let private typeHandleLowAddressBitsForHash (target : RuntimeTypeHandleTarget) : int64 =
+        match target with
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> 0L
+        | RuntimeTypeHandleTarget.GenericParameter _
+        | RuntimeTypeHandleTarget.MethodGenericParameter _ -> 2L
+        | RuntimeTypeHandleTarget.Closed typeHandle ->
+            match typeHandle with
+            | ConcreteTypeHandle.Byref _
+            | ConcreteTypeHandle.Pointer _
+            | ConcreteTypeHandle.FunctionPointer _ -> 2L
+            | ConcreteTypeHandle.Concrete _
+            | ConcreteTypeHandle.OneDimArrayZero _
+            | ConcreteTypeHandle.Array _ -> 0L
+
+    /// Synthesise a deterministic 64-bit pattern from a pointer-shaped
+    /// `NativeIntSource`. Used only when a bit-mixing operation fires on a
+    /// `WidenedNativeInt`; the resulting bits get tagged as
+    /// `Int64Source.OpaqueHashBits` so subsequent ops compute on the bits
+    /// directly and the value cannot be round-tripped back to a real
+    /// pointer.
+    ///
+    /// Determinism: derives bits from `GetHashCode` on the structural DU
+    /// payload. PawPrint identity types use structural hashing, so two
+    /// processes loading the same assemblies produce identical hash bits
+    /// for the same `MethodTablePtr`/`TypeHandlePtr`. The cast-cache
+    /// hashing only needs determinism *within* a process anyway.
+    ///
+    /// Low-bit contract: matches `typeHandleLowAddressBitsForHash` so the
+    /// synthesised bits agree with the existing `and`-mask path. The
+    /// upper bits are shifted to ensure `RotateLeft(_, 32)` produces a
+    /// non-degenerate hash mix.
+    let private materialiseHashBits (src : NativeIntSource) : int64 =
+        match src with
+        | NativeIntSource.Verbatim n -> n
+        | NativeIntSource.ManagedPointer ManagedPointerSource.Null -> 0L
+        | NativeIntSource.MethodTablePtr _ ->
+            let h = int64 (hash src) <<< 16
+            h &&& ~~~3L
+        | NativeIntSource.TypeHandlePtr target ->
+            let low = typeHandleLowAddressBitsForHash target
+            let h = int64 (hash src) <<< 16
+            (h &&& ~~~3L) ||| low
+        | NativeIntSource.MethodTableAuxiliaryDataPtr _
+        | NativeIntSource.FunctionPointer _
+        | NativeIntSource.FieldHandlePtr _
+        | NativeIntSource.MethodHandlePtr _
+        | NativeIntSource.GcHandlePtr _
+        | NativeIntSource.EventPipeProviderPtr _
+        | NativeIntSource.EventPipeEventPtr _
+        | NativeIntSource.AssemblyHandle _
+        | NativeIntSource.ModuleHandle _
+        | NativeIntSource.MetadataImportHandle _ ->
+            let h = int64 (hash src) <<< 16
+            h &&& ~~~3L
+        | NativeIntSource.ManagedPointer _ ->
+            // Non-null managed pointers carry real provenance (byref roots,
+            // heap addresses). Hashing them as plain bits would forget the
+            // root identity. Bit ops on a `WidenedNativeInt (ManagedPointer
+            // _, _)` should be routed via BinaryArithmetic (offset arithmetic),
+            // never through this helper.
+            failwith
+                $"materialiseHashBits: refusing to synthesise bits for managed pointer %O{src} (would erase byref provenance)"
+        | NativeIntSource.SyntheticCrossArrayOffset _ ->
+            // Cross-array offsets are explicitly non-numeric; the
+            // `widenedNativeInt` smart constructor normalises these into
+            // `Int64Source.SyntheticCrossArrayOffset`, so a
+            // `WidenedNativeInt (SyntheticCrossArrayOffset _, _)` shouldn't
+            // exist on the eval stack. Fail loudly if one ever does.
+            failwith $"materialiseHashBits: refusing to synthesise bits for synthetic cross-array offset %O{src}"
 
     /// Smart constructor for `Int64Source.WidenedNativeInt`. Normalises the
     /// `Verbatim` and `SyntheticCrossArrayOffset` cases of the underlying
@@ -53,6 +146,7 @@ module Int64Source =
         | Int64Source.Verbatim i -> i = 0L
         | Int64Source.SyntheticCrossArrayOffset _ -> failwith "TODO: is SyntheticCrossArrayOffset zero?"
         | Int64Source.WidenedNativeInt (src, _) -> NativeIntSource.isZero src
+        | Int64Source.OpaqueHashBits bits -> bits = 0L
 
     /// Returns None if the input was Int64.MinValue.
     let negate (i : Int64Source) : Int64Source option =
@@ -67,21 +161,46 @@ module Int64Source =
             |> Int64Source.SyntheticCrossArrayOffset
             |> Some
         | Int64Source.WidenedNativeInt (src, _) ->
-            failwith $"TODO: refusing to negate widened native int %O{src} (would lose provenance)"
+            let bits = materialiseHashBits src
+            // Wraparound at Int64.MinValue is acceptable here: hash bits
+            // are an intermediate in the bit-mixing pipeline, not a genuine
+            // signed-int value where overflow matters. Use unchecked
+            // subtraction explicitly (the file opens `Checked`).
+            Some (Operators.(-) 0L bits |> Int64Source.OpaqueHashBits)
+        | Int64Source.OpaqueHashBits bits -> Some (Operators.(-) 0L bits |> Int64Source.OpaqueHashBits)
 
     let shr (i : Int64Source) (shift : int) : Int64Source =
         match i with
         | Int64Source.Verbatim i -> i >>> shift |> Int64Source.Verbatim
         | Int64Source.SyntheticCrossArrayOffset _ -> failwith "TODO: SyntheticCrossArrayOffset"
         | Int64Source.WidenedNativeInt (src, _) ->
-            failwith $"TODO: refusing to shr widened native int %O{src} (bit-twiddling on pointer bits)"
+            let bits = materialiseHashBits src
+            bits >>> shift |> Int64Source.OpaqueHashBits
+        | Int64Source.OpaqueHashBits bits -> bits >>> shift |> Int64Source.OpaqueHashBits
+
+    let shrUn (i : Int64Source) (shift : int) : Int64Source =
+        // `open Checked` shadows `uint64` / `int64` with their overflow-checking
+        // versions; an unsigned right shift needs the unchecked tag-flip, since a
+        // negative int64 has the sign bit set and `Checked.uint64` rejects that.
+        let unsignedShift (bits : int64) : int64 =
+            Operators.uint64 bits >>> shift |> Operators.int64
+
+        match i with
+        | Int64Source.Verbatim i -> unsignedShift i |> Int64Source.Verbatim
+        | Int64Source.SyntheticCrossArrayOffset _ -> failwith "TODO: SyntheticCrossArrayOffset"
+        | Int64Source.WidenedNativeInt (src, _) ->
+            let bits = materialiseHashBits src
+            unsignedShift bits |> Int64Source.OpaqueHashBits
+        | Int64Source.OpaqueHashBits bits -> unsignedShift bits |> Int64Source.OpaqueHashBits
 
     let shl (i : Int64Source) (shift : int) : Int64Source =
         match i with
         | Int64Source.Verbatim i -> i <<< shift |> Int64Source.Verbatim
         | Int64Source.SyntheticCrossArrayOffset _ -> failwith "TODO: SyntheticCrossArrayOffset"
         | Int64Source.WidenedNativeInt (src, _) ->
-            failwith $"TODO: refusing to shl widened native int %O{src} (bit-twiddling on pointer bits)"
+            let bits = materialiseHashBits src
+            bits <<< shift |> Int64Source.OpaqueHashBits
+        | Int64Source.OpaqueHashBits bits -> bits <<< shift |> Int64Source.OpaqueHashBits
 
     let add (i1 : Int64Source) (i2 : Int64Source) : Int64Source =
         match i1, i2 with
@@ -91,37 +210,72 @@ module Int64Source =
             // Pointer-shaped int64 arithmetic is handled by BinaryArithmetic.execute
             // (which dispatches on EvalStackValue pairs), not via this generic helper.
             failwith $"TODO: Int64Source.add on widened native int %O{src} should be routed through BinaryArithmetic"
+        | Int64Source.OpaqueHashBits a, Int64Source.OpaqueHashBits b ->
+            // Adding two synthesised hash values is a bit-mixing operation,
+            // not pointer arithmetic — keep the tag and wrap on overflow.
+            (Operators.(+) a b) |> Int64Source.OpaqueHashBits
+        | Int64Source.OpaqueHashBits a, Int64Source.Verbatim b
+        | Int64Source.Verbatim b, Int64Source.OpaqueHashBits a -> (Operators.(+) a b) |> Int64Source.OpaqueHashBits
         | _, _ -> failwith "TODO: SyntheticCrossArrayOffset"
 
     let bitNot (i : Int64Source) : Int64Source =
         match i with
         | Int64Source.Verbatim i -> Int64Source.Verbatim ~~~i
         | Int64Source.WidenedNativeInt (src, _) ->
-            failwith $"TODO: refusing to bitNot widened native int %O{src} (bit-twiddling on pointer bits)"
+            let bits = materialiseHashBits src
+            ~~~bits |> Int64Source.OpaqueHashBits
+        | Int64Source.OpaqueHashBits bits -> ~~~bits |> Int64Source.OpaqueHashBits
         | _ -> failwith "TODO: SyntheticCrossArrayOffset"
 
     let bitAnd (i1 : Int64Source) (i2 : Int64Source) : Int64Source =
         match i1, i2 with
         | Int64Source.Verbatim i1, Int64Source.Verbatim i2 -> i1 &&& i2 |> Int64Source.Verbatim
-        | Int64Source.WidenedNativeInt (src, _), _
-        | _, Int64Source.WidenedNativeInt (src, _) ->
-            failwith $"TODO: refusing to bitAnd widened native int %O{src} (bit-twiddling on pointer bits)"
+        | Int64Source.WidenedNativeInt (src1, _), Int64Source.WidenedNativeInt (src2, _) ->
+            (materialiseHashBits src1) &&& (materialiseHashBits src2)
+            |> Int64Source.OpaqueHashBits
+        | Int64Source.WidenedNativeInt (src, _), Int64Source.Verbatim b
+        | Int64Source.Verbatim b, Int64Source.WidenedNativeInt (src, _) ->
+            (materialiseHashBits src) &&& b |> Int64Source.OpaqueHashBits
+        | Int64Source.OpaqueHashBits a, Int64Source.OpaqueHashBits b -> a &&& b |> Int64Source.OpaqueHashBits
+        | Int64Source.OpaqueHashBits a, Int64Source.Verbatim b
+        | Int64Source.Verbatim b, Int64Source.OpaqueHashBits a -> a &&& b |> Int64Source.OpaqueHashBits
+        | Int64Source.OpaqueHashBits a, Int64Source.WidenedNativeInt (src, _)
+        | Int64Source.WidenedNativeInt (src, _), Int64Source.OpaqueHashBits a ->
+            a &&& materialiseHashBits src |> Int64Source.OpaqueHashBits
         | _, _ -> failwith "TODO: SyntheticCrossArrayOffset"
 
     let bitOr (i1 : Int64Source) (i2 : Int64Source) : Int64Source =
         match i1, i2 with
         | Int64Source.Verbatim i1, Int64Source.Verbatim i2 -> i1 ||| i2 |> Int64Source.Verbatim
-        | Int64Source.WidenedNativeInt (src, _), _
-        | _, Int64Source.WidenedNativeInt (src, _) ->
-            failwith $"TODO: refusing to bitOr widened native int %O{src} (bit-twiddling on pointer bits)"
+        | Int64Source.WidenedNativeInt (src1, _), Int64Source.WidenedNativeInt (src2, _) ->
+            (materialiseHashBits src1) ||| (materialiseHashBits src2)
+            |> Int64Source.OpaqueHashBits
+        | Int64Source.WidenedNativeInt (src, _), Int64Source.Verbatim b
+        | Int64Source.Verbatim b, Int64Source.WidenedNativeInt (src, _) ->
+            (materialiseHashBits src) ||| b |> Int64Source.OpaqueHashBits
+        | Int64Source.OpaqueHashBits a, Int64Source.OpaqueHashBits b -> a ||| b |> Int64Source.OpaqueHashBits
+        | Int64Source.OpaqueHashBits a, Int64Source.Verbatim b
+        | Int64Source.Verbatim b, Int64Source.OpaqueHashBits a -> a ||| b |> Int64Source.OpaqueHashBits
+        | Int64Source.OpaqueHashBits a, Int64Source.WidenedNativeInt (src, _)
+        | Int64Source.WidenedNativeInt (src, _), Int64Source.OpaqueHashBits a ->
+            a ||| materialiseHashBits src |> Int64Source.OpaqueHashBits
         | _, _ -> failwith "TODO: SyntheticCrossArrayOffset"
 
     let bitXor (i1 : Int64Source) (i2 : Int64Source) : Int64Source =
         match i1, i2 with
         | Int64Source.Verbatim i1, Int64Source.Verbatim i2 -> i1 ^^^ i2 |> Int64Source.Verbatim
-        | Int64Source.WidenedNativeInt (src, _), _
-        | _, Int64Source.WidenedNativeInt (src, _) ->
-            failwith $"TODO: refusing to bitXor widened native int %O{src} (bit-twiddling on pointer bits)"
+        | Int64Source.WidenedNativeInt (src1, _), Int64Source.WidenedNativeInt (src2, _) ->
+            (materialiseHashBits src1) ^^^ (materialiseHashBits src2)
+            |> Int64Source.OpaqueHashBits
+        | Int64Source.WidenedNativeInt (src, _), Int64Source.Verbatim b
+        | Int64Source.Verbatim b, Int64Source.WidenedNativeInt (src, _) ->
+            (materialiseHashBits src) ^^^ b |> Int64Source.OpaqueHashBits
+        | Int64Source.OpaqueHashBits a, Int64Source.OpaqueHashBits b -> a ^^^ b |> Int64Source.OpaqueHashBits
+        | Int64Source.OpaqueHashBits a, Int64Source.Verbatim b
+        | Int64Source.Verbatim b, Int64Source.OpaqueHashBits a -> a ^^^ b |> Int64Source.OpaqueHashBits
+        | Int64Source.OpaqueHashBits a, Int64Source.WidenedNativeInt (src, _)
+        | Int64Source.WidenedNativeInt (src, _), Int64Source.OpaqueHashBits a ->
+            a ^^^ materialiseHashBits src |> Int64Source.OpaqueHashBits
         | _, _ -> failwith "TODO: SyntheticCrossArrayOffset"
 
     /// Returns None if we can't decide whether this number is nonnegative.
@@ -129,6 +283,7 @@ module Int64Source =
         match i with
         | Int64Source.Verbatim i -> Some (i >= 0L)
         | Int64Source.WidenedNativeInt (src, _) -> Some (NativeIntSource.isNonnegative src)
+        | Int64Source.OpaqueHashBits bits -> Some (bits >= 0L)
         | _ -> failwith "TODO: SyntheticCrossArrayOffset"
 
     /// Signed comparison of two `Int64Source` values, treating each as the
@@ -136,13 +291,18 @@ module Int64Source =
     /// `compare` convention. `Int64Source` no longer supports structural
     /// comparison (it now contains a `NativeIntSource`, which is
     /// `[<NoComparison>]`), so callers must funnel through this helper.
-    /// Non-`Verbatim` variants don't have a meaningful numeric ordering and
-    /// fail loudly — provenance-tracked offsets and widened pointer bits
-    /// shouldn't be compared as plain integers. For unsigned comparison see
-    /// the `cgt.un` / `clt.un` paths in `EvalStackValueComparisons`.
+    /// Non-`Verbatim` numeric variants (`OpaqueHashBits`) compare on their
+    /// synthesised bits; `WidenedNativeInt` and `SyntheticCrossArrayOffset`
+    /// don't have a meaningful numeric ordering and fail loudly — pointer
+    /// provenance and cross-storage offsets shouldn't be compared as plain
+    /// integers. For unsigned comparison see the `cgt.un` / `clt.un` paths
+    /// in `EvalStackValueComparisons`.
     let compareSigned (i1 : Int64Source) (i2 : Int64Source) : int =
         match i1, i2 with
         | Int64Source.Verbatim a, Int64Source.Verbatim b -> compare a b
+        | Int64Source.OpaqueHashBits a, Int64Source.OpaqueHashBits b -> compare a b
+        | Int64Source.OpaqueHashBits a, Int64Source.Verbatim b
+        | Int64Source.Verbatim b, Int64Source.OpaqueHashBits a -> compare a b
         | _, _ -> failwith $"TODO: refusing to compare Int64Source values numerically: %O{i1} vs %O{i2}"
 
 /// Defined in III.1.1.1
@@ -180,6 +340,8 @@ type CliNumericType =
             failwith "refusing to convert cross-array offset to bytes"
         | CliNumericType.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
             failwith $"refusing to convert widened native int %O{src} to bytes"
+        | CliNumericType.Int64 (Int64Source.OpaqueHashBits bits) ->
+            failwith $"refusing to convert synthesised pointer-hash bits 0x%x{bits} to bytes"
         | CliNumericType.NativeInt src ->
             match src with
             | NativeIntSource.Verbatim i -> BitConverter.GetBytes i
