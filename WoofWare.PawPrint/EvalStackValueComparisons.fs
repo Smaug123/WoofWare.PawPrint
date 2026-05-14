@@ -457,16 +457,18 @@ module EvalStackValueComparisons =
             | NativeIntSource.EventPipeProviderPtr _, _
             | _, NativeIntSource.EventPipeProviderPtr _
             | NativeIntSource.EventPipeEventPtr _, _
-            | _, NativeIntSource.EventPipeEventPtr _
-            // OpaqueHashBits vs ManagedPointer: a synthesised hash bit
-            // pattern equals a byref iff both are null. Non-zero hash bits
-            // vs a non-null byref is genuinely ambiguous (we don't know the
+            | _, NativeIntSource.EventPipeEventPtr _ -> false
+            // OpaqueHashBits vs ManagedPointer is the only OpaqueHashBits
+            // pairing not yet handled: vs Verbatim/OpaqueHashBits/Synthetic
+            // cross-array offset are matched explicitly above, and vs the
+            // distinct opaque handle kinds are absorbed by the catch-all
+            // immediately above (synthesised hash bits never alias a real
+            // handle pointer's address). The remaining case — hash bits vs
+            // byref — equals iff both are null; non-zero hash bits vs a
+            // non-null byref is genuinely ambiguous (we don't know the
             // byref's numeric address), so fail loudly rather than silently
-            // returning a fixed answer. This mirrors the Verbatim ×
-            // ManagedPointer arm above. All other OpaqueHashBits pairings
-            // (vs Verbatim, vs OpaqueHashBits, vs SyntheticCrossArrayOffset,
-            // and vs the distinct opaque handle kinds) are handled
-            // explicitly earlier; this arm is the remaining case.
+            // returning a fixed answer. Mirrors the Verbatim × ManagedPointer
+            // arm above.
             | NativeIntSource.OpaqueHashBits _, NativeIntSource.ManagedPointer _
             | NativeIntSource.ManagedPointer _, NativeIntSource.OpaqueHashBits _ ->
                 let z1 = NativeIntSource.isZero var1
