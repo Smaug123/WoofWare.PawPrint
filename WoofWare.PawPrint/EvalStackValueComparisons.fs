@@ -391,6 +391,42 @@ module EvalStackValueComparisons =
             | NativeIntSource.OpaqueHashBits _, NativeIntSource.SyntheticCrossArrayOffset _
             | NativeIntSource.SyntheticCrossArrayOffset _, NativeIntSource.OpaqueHashBits _ ->
                 failwith "TODO: ceq of synthesised hash bits against cross-array offset"
+            // OpaqueHashBits vs a real handle pointer is genuinely ambiguous:
+            // an identity bit op such as `((ulong)h) ^ 0UL` or `((ulong)h) | 0UL`
+            // round-trips the handle's materialised bits into an
+            // OpaqueHashBits carrier, so the answer depends on whether those
+            // bits equal the handle's synthesised address. Resolving correctly
+            // requires reading the `PointerHashCounters` map, which `ceq` does
+            // not thread today. Fail loudly rather than fall through to the
+            // handle-kind catch-all (which would return a fixed `false` even
+            // for the same handle). Mirrors the Int64
+            // WidenedNativeInt × OpaqueHashBits case above.
+            | NativeIntSource.OpaqueHashBits _, NativeIntSource.FunctionPointer _
+            | NativeIntSource.FunctionPointer _, NativeIntSource.OpaqueHashBits _
+            | NativeIntSource.OpaqueHashBits _, NativeIntSource.TypeHandlePtr _
+            | NativeIntSource.TypeHandlePtr _, NativeIntSource.OpaqueHashBits _
+            | NativeIntSource.OpaqueHashBits _, NativeIntSource.MethodTablePtr _
+            | NativeIntSource.MethodTablePtr _, NativeIntSource.OpaqueHashBits _
+            | NativeIntSource.OpaqueHashBits _, NativeIntSource.MethodTableAuxiliaryDataPtr _
+            | NativeIntSource.MethodTableAuxiliaryDataPtr _, NativeIntSource.OpaqueHashBits _
+            | NativeIntSource.OpaqueHashBits _, NativeIntSource.MethodHandlePtr _
+            | NativeIntSource.MethodHandlePtr _, NativeIntSource.OpaqueHashBits _
+            | NativeIntSource.OpaqueHashBits _, NativeIntSource.FieldHandlePtr _
+            | NativeIntSource.FieldHandlePtr _, NativeIntSource.OpaqueHashBits _
+            | NativeIntSource.OpaqueHashBits _, NativeIntSource.AssemblyHandle _
+            | NativeIntSource.AssemblyHandle _, NativeIntSource.OpaqueHashBits _
+            | NativeIntSource.OpaqueHashBits _, NativeIntSource.ModuleHandle _
+            | NativeIntSource.ModuleHandle _, NativeIntSource.OpaqueHashBits _
+            | NativeIntSource.OpaqueHashBits _, NativeIntSource.MetadataImportHandle _
+            | NativeIntSource.MetadataImportHandle _, NativeIntSource.OpaqueHashBits _
+            | NativeIntSource.OpaqueHashBits _, NativeIntSource.GcHandlePtr _
+            | NativeIntSource.GcHandlePtr _, NativeIntSource.OpaqueHashBits _
+            | NativeIntSource.OpaqueHashBits _, NativeIntSource.EventPipeProviderPtr _
+            | NativeIntSource.EventPipeProviderPtr _, NativeIntSource.OpaqueHashBits _
+            | NativeIntSource.OpaqueHashBits _, NativeIntSource.EventPipeEventPtr _
+            | NativeIntSource.EventPipeEventPtr _, NativeIntSource.OpaqueHashBits _ ->
+                failwith
+                    $"TODO (CEQ): synthesised hash bits vs handle pointer requires materialising the handle's bits through PointerHashCounters; got {var1} vs {var2}"
             // CoreCLR's TypeHandle wraps either a MethodTable* (when !IsTypeDesc) or a tagged
             // TypeDesc*; for non-TypeDesc handles the inner pointer IS the MethodTable address.
             // Patterns like `RuntimeHelpers.GetMethodTable(obj) == TypeHandleOf<T>().AsMethodTable()`
@@ -458,17 +494,14 @@ module EvalStackValueComparisons =
             | _, NativeIntSource.EventPipeProviderPtr _
             | NativeIntSource.EventPipeEventPtr _, _
             | _, NativeIntSource.EventPipeEventPtr _ -> false
-            // OpaqueHashBits vs ManagedPointer is the only OpaqueHashBits
-            // pairing not yet handled: vs Verbatim/OpaqueHashBits/Synthetic
-            // cross-array offset are matched explicitly above, and vs the
-            // distinct opaque handle kinds are absorbed by the catch-all
-            // immediately above (synthesised hash bits never alias a real
-            // handle pointer's address). The remaining case — hash bits vs
-            // byref — equals iff both are null; non-zero hash bits vs a
-            // non-null byref is genuinely ambiguous (we don't know the
-            // byref's numeric address), so fail loudly rather than silently
-            // returning a fixed answer. Mirrors the Verbatim × ManagedPointer
-            // arm above.
+            // OpaqueHashBits vs ManagedPointer: every other OpaqueHashBits
+            // pairing is handled above (vs Verbatim/OpaqueHashBits, vs
+            // SyntheticCrossArrayOffset, and vs the various handle kinds);
+            // this is the remaining case. Hash bits equal a byref iff both
+            // are null; non-zero hash bits vs a non-null byref is genuinely
+            // ambiguous (we don't know the byref's numeric address), so
+            // fail loudly rather than silently returning a fixed answer.
+            // Mirrors the Verbatim × ManagedPointer arm above.
             | NativeIntSource.OpaqueHashBits _, NativeIntSource.ManagedPointer _
             | NativeIntSource.ManagedPointer _, NativeIntSource.OpaqueHashBits _ ->
                 let z1 = NativeIntSource.isZero var1
