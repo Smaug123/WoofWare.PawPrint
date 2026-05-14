@@ -105,6 +105,19 @@ module EvalStackValueComparisons =
         | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 ->
             match var1, var2 with
             | NativeIntSource.Verbatim var1, NativeIntSource.Verbatim var2 -> uint64 var1 > uint64 var2
+            // OpaqueHashBits carries an unambiguous int64 bit pattern; unsigned
+            // comparison against any other unambiguous bit-pattern source is
+            // well-defined. Mirrors the Int64 OpaqueHashBits cgt.un arms above.
+            | NativeIntSource.OpaqueHashBits var1, NativeIntSource.OpaqueHashBits var2 -> uint64 var1 > uint64 var2
+            | NativeIntSource.OpaqueHashBits var1, NativeIntSource.Verbatim var2
+            | NativeIntSource.Verbatim var1, NativeIntSource.OpaqueHashBits var2 -> uint64 var1 > uint64 var2
+            // `ManagedPointer Null` is the value 0 (cf. the Verbatim-vs-Null
+            // arms below), so unsigned comparison against OpaqueHashBits
+            // reduces to `bits != 0` in the bits-on-the-left direction and
+            // `false` in the Null-on-the-left direction.
+            | NativeIntSource.OpaqueHashBits bits, NativeIntSource.ManagedPointer ManagedPointerSource.Null ->
+                bits <> 0L
+            | NativeIntSource.ManagedPointer ManagedPointerSource.Null, NativeIntSource.OpaqueHashBits _ -> false
             | NativeIntSource.Verbatim var1, NativeIntSource.SyntheticCrossArrayOffset var2 ->
                 if var1 >= 0L then
                     SyntheticCrossArrayOffset.cltVerbatim var2 var1
@@ -200,6 +213,17 @@ module EvalStackValueComparisons =
         | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 ->
             match var1, var2 with
             | NativeIntSource.Verbatim var1, NativeIntSource.Verbatim var2 -> uint64 var1 < uint64 var2
+            // See cgt.un: OpaqueHashBits is bit-pattern unambiguous and can be
+            // compared unsigned against any other unambiguous nativeint source.
+            | NativeIntSource.OpaqueHashBits var1, NativeIntSource.OpaqueHashBits var2 -> uint64 var1 < uint64 var2
+            | NativeIntSource.OpaqueHashBits var1, NativeIntSource.Verbatim var2
+            | NativeIntSource.Verbatim var1, NativeIntSource.OpaqueHashBits var2 -> uint64 var1 < uint64 var2
+            // See cgt.un: `ManagedPointer Null` is the value 0 under unsigned
+            // comparison, so `bits < Null` is always false and `Null < bits`
+            // is `bits != 0`.
+            | NativeIntSource.OpaqueHashBits _, NativeIntSource.ManagedPointer ManagedPointerSource.Null -> false
+            | NativeIntSource.ManagedPointer ManagedPointerSource.Null, NativeIntSource.OpaqueHashBits bits ->
+                bits <> 0L
             | NativeIntSource.Verbatim var1, NativeIntSource.SyntheticCrossArrayOffset var2 ->
                 if var1 >= 0L then
                     SyntheticCrossArrayOffset.cgtVerbatim var2 var1
@@ -382,6 +406,51 @@ module EvalStackValueComparisons =
             | NativeIntSource.SyntheticCrossArrayOffset _, NativeIntSource.SyntheticCrossArrayOffset _
             | NativeIntSource.Verbatim _, NativeIntSource.SyntheticCrossArrayOffset _
             | NativeIntSource.SyntheticCrossArrayOffset _, NativeIntSource.Verbatim _ -> failwith "TODO: ceq"
+            // Synthesised pointer-hash bits compare as raw int64 bit patterns:
+            // they're deterministic numeric content, so structural equality on
+            // the bits is correct. Across-tag (vs Verbatim) the same applies.
+            | NativeIntSource.OpaqueHashBits b1, NativeIntSource.OpaqueHashBits b2 -> b1 = b2
+            | NativeIntSource.OpaqueHashBits b, NativeIntSource.Verbatim v
+            | NativeIntSource.Verbatim v, NativeIntSource.OpaqueHashBits b -> b = v
+            | NativeIntSource.OpaqueHashBits _, NativeIntSource.SyntheticCrossArrayOffset _
+            | NativeIntSource.SyntheticCrossArrayOffset _, NativeIntSource.OpaqueHashBits _ ->
+                failwith "TODO: ceq of synthesised hash bits against cross-array offset"
+            // OpaqueHashBits vs a real handle pointer is genuinely ambiguous:
+            // an identity bit op such as `((ulong)h) ^ 0UL` or `((ulong)h) | 0UL`
+            // round-trips the handle's materialised bits into an
+            // OpaqueHashBits carrier, so the answer depends on whether those
+            // bits equal the handle's synthesised address. Resolving correctly
+            // requires reading the `PointerHashCounters` map, which `ceq` does
+            // not thread today. Fail loudly rather than fall through to the
+            // handle-kind catch-all (which would return a fixed `false` even
+            // for the same handle). Mirrors the Int64
+            // WidenedNativeInt × OpaqueHashBits case above.
+            | NativeIntSource.OpaqueHashBits _, NativeIntSource.FunctionPointer _
+            | NativeIntSource.FunctionPointer _, NativeIntSource.OpaqueHashBits _
+            | NativeIntSource.OpaqueHashBits _, NativeIntSource.TypeHandlePtr _
+            | NativeIntSource.TypeHandlePtr _, NativeIntSource.OpaqueHashBits _
+            | NativeIntSource.OpaqueHashBits _, NativeIntSource.MethodTablePtr _
+            | NativeIntSource.MethodTablePtr _, NativeIntSource.OpaqueHashBits _
+            | NativeIntSource.OpaqueHashBits _, NativeIntSource.MethodTableAuxiliaryDataPtr _
+            | NativeIntSource.MethodTableAuxiliaryDataPtr _, NativeIntSource.OpaqueHashBits _
+            | NativeIntSource.OpaqueHashBits _, NativeIntSource.MethodHandlePtr _
+            | NativeIntSource.MethodHandlePtr _, NativeIntSource.OpaqueHashBits _
+            | NativeIntSource.OpaqueHashBits _, NativeIntSource.FieldHandlePtr _
+            | NativeIntSource.FieldHandlePtr _, NativeIntSource.OpaqueHashBits _
+            | NativeIntSource.OpaqueHashBits _, NativeIntSource.AssemblyHandle _
+            | NativeIntSource.AssemblyHandle _, NativeIntSource.OpaqueHashBits _
+            | NativeIntSource.OpaqueHashBits _, NativeIntSource.ModuleHandle _
+            | NativeIntSource.ModuleHandle _, NativeIntSource.OpaqueHashBits _
+            | NativeIntSource.OpaqueHashBits _, NativeIntSource.MetadataImportHandle _
+            | NativeIntSource.MetadataImportHandle _, NativeIntSource.OpaqueHashBits _
+            | NativeIntSource.OpaqueHashBits _, NativeIntSource.GcHandlePtr _
+            | NativeIntSource.GcHandlePtr _, NativeIntSource.OpaqueHashBits _
+            | NativeIntSource.OpaqueHashBits _, NativeIntSource.EventPipeProviderPtr _
+            | NativeIntSource.EventPipeProviderPtr _, NativeIntSource.OpaqueHashBits _
+            | NativeIntSource.OpaqueHashBits _, NativeIntSource.EventPipeEventPtr _
+            | NativeIntSource.EventPipeEventPtr _, NativeIntSource.OpaqueHashBits _ ->
+                failwith
+                    $"TODO (CEQ): synthesised hash bits vs handle pointer requires materialising the handle's bits through PointerHashCounters; got {var1} vs {var2}"
             // CoreCLR's TypeHandle wraps either a MethodTable* (when !IsTypeDesc) or a tagged
             // TypeDesc*; for non-TypeDesc handles the inner pointer IS the MethodTable address.
             // Patterns like `RuntimeHelpers.GetMethodTable(obj) == TypeHandleOf<T>().AsMethodTable()`
@@ -449,6 +518,25 @@ module EvalStackValueComparisons =
             | _, NativeIntSource.EventPipeProviderPtr _
             | NativeIntSource.EventPipeEventPtr _, _
             | _, NativeIntSource.EventPipeEventPtr _ -> false
+            // OpaqueHashBits vs ManagedPointer: every other OpaqueHashBits
+            // pairing is handled above (vs Verbatim/OpaqueHashBits, vs
+            // SyntheticCrossArrayOffset, and vs the various handle kinds);
+            // this is the remaining case. Hash bits equal a byref iff both
+            // are null; non-zero hash bits vs a non-null byref is genuinely
+            // ambiguous (we don't know the byref's numeric address), so
+            // fail loudly rather than silently returning a fixed answer.
+            // Mirrors the Verbatim × ManagedPointer arm above.
+            | NativeIntSource.OpaqueHashBits _, NativeIntSource.ManagedPointer _
+            | NativeIntSource.ManagedPointer _, NativeIntSource.OpaqueHashBits _ ->
+                let z1 = NativeIntSource.isZero var1
+                let z2 = NativeIntSource.isZero var2
+
+                if z1 && z2 then
+                    true
+                elif z1 <> z2 then
+                    false
+                else
+                    failwith $"TODO (CEQ): synthesised hash bits vs managed pointer, both non-null: {var1} vs {var2}"
         | EvalStackValue.NativeInt var1, EvalStackValue.Int32 var2 -> failwith $"TODO (CEQ): nativeint vs int32"
         | EvalStackValue.NativeInt var1, EvalStackValue.ManagedPointer var2 ->
             ceq (EvalStackValue.NativeInt var1) (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var2))

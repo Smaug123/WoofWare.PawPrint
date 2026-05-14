@@ -59,6 +59,12 @@ module EvalStackValue =
             failwith $"%s{operation}: refusing to convert module handle %s{moduleName} to an integer"
         | NativeIntSource.MetadataImportHandle moduleName ->
             failwith $"%s{operation}: refusing to convert metadata import handle %s{moduleName} to an integer"
+        | NativeIntSource.OpaqueHashBits bits ->
+            // Synthesised pointer-hash bits are deterministic numeric content;
+            // narrowing them to int32 is exactly the cast-cache final step
+            // `(int)((hash * 0x...) >> hashShift)`. Width-narrowing keeps the
+            // bits in the int domain (no pointer escape).
+            bits
 
     let private failReferenceConversion (operation : string) (value : EvalStackValue) : 'a =
         match value with
@@ -202,8 +208,11 @@ module EvalStackValue =
             | NativeIntSource.Verbatim n -> Some (UnsignedNativeIntSource.Verbatim (uint64 n))
             | _ -> failwith $"TODO: Conv_U from widened native int with non-pointer source %O{src}"
         | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) ->
-            failwith
-                $"Conv_U from synthesised pointer-hash bits 0x%x{bits}: refusing to materialise a real native int from hashed pointer provenance"
+            // `conv.u` narrows synthesised hash bits from int64 width back to
+            // native-int width. Preserve the synthesis tag so downstream code
+            // (e.g. `BitOperations.RotateLeft`'s `(nuint)` cast) sees the same
+            // contract: deterministic numeric content, not a real pointer.
+            UnsignedNativeIntSource.FromOpaqueHashBits bits |> Some
         | EvalStackValue.NativeInt i ->
             match i with
             | NativeIntSource.Verbatim i -> uint64 i |> UnsignedNativeIntSource.Verbatim |> Some
@@ -235,6 +244,7 @@ module EvalStackValue =
                 failwith $"Conv_U: refusing to convert module handle %s{moduleName} to unsigned native int"
             | NativeIntSource.MetadataImportHandle moduleName ->
                 failwith $"Conv_U: refusing to convert metadata import handle %s{moduleName} to unsigned native int"
+            | NativeIntSource.OpaqueHashBits bits -> UnsignedNativeIntSource.FromOpaqueHashBits bits |> Some
         | EvalStackValue.Float f -> convUFromFloat f |> UnsignedNativeIntSource.Verbatim |> Some
         | EvalStackValue.ManagedPointer managedPointerSource ->
             UnsignedNativeIntSource.FromManagedPointer managedPointerSource |> Some
@@ -255,8 +265,10 @@ module EvalStackValue =
             // assumption.
             Some src
         | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) ->
-            failwith
-                $"Conv_I from synthesised pointer-hash bits 0x%x{bits}: refusing to materialise a real native int from hashed pointer provenance"
+            // `conv.i` narrows synthesised hash bits from int64 width back to
+            // native-int width. The tag is preserved so the bits remain
+            // distinguishable from real-pointer NativeInt sources.
+            NativeIntSource.OpaqueHashBits bits |> Some
         | EvalStackValue.Int32 i -> i |> convIFromInt32 |> NativeIntSource.Verbatim |> Some
         | EvalStackValue.NativeInt src -> Some src
         | EvalStackValue.Float f -> f |> convIFromFloat |> NativeIntSource.Verbatim |> Some
@@ -409,6 +421,11 @@ module EvalStackValue =
             failwith $"Refusing to convert widened native int %O{src} to float"
         | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) ->
             failwith $"Refusing to convert synthesised pointer-hash bits 0x%x{bits} to float"
+        | EvalStackValue.NativeInt (NativeIntSource.OpaqueHashBits bits) ->
+            // Matches the Int64 OpaqueHashBits refusal above. The helper below
+            // would let these bits become a float, materialising synthesised
+            // pointer provenance into the float domain.
+            failwith $"Refusing to convert synthesised pointer-hash bits 0x%x{bits} (native int) to float"
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_R4" src |> convR4FromInt64 |> Some
         | EvalStackValue.Float f -> convR4FromFloat f |> Some
         | EvalStackValue.ManagedPointer _
@@ -426,6 +443,8 @@ module EvalStackValue =
             failwith $"Refusing to convert widened native int %O{src} to float"
         | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) ->
             failwith $"Refusing to convert synthesised pointer-hash bits 0x%x{bits} to float"
+        | EvalStackValue.NativeInt (NativeIntSource.OpaqueHashBits bits) ->
+            failwith $"Refusing to convert synthesised pointer-hash bits 0x%x{bits} (native int) to float"
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_R8" src |> convR8FromInt64 |> Some
         | EvalStackValue.Float f -> convR8FromFloat f |> Some
         | EvalStackValue.ManagedPointer _
@@ -443,6 +462,8 @@ module EvalStackValue =
             failwith $"Refusing to convert widened native int %O{src} to float"
         | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) ->
             failwith $"Refusing to convert synthesised pointer-hash bits 0x%x{bits} to float"
+        | EvalStackValue.NativeInt (NativeIntSource.OpaqueHashBits bits) ->
+            failwith $"Refusing to convert synthesised pointer-hash bits 0x%x{bits} (native int) to float"
         | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_R_Un" src |> convRUnFromInt64 |> Some
         | EvalStackValue.Float _ -> failwith "Conv_R_Un: refusing to convert an existing float as unsigned integer"
         | EvalStackValue.ManagedPointer _
@@ -537,6 +558,10 @@ module EvalStackValue =
                     | NativeIntSource.ModuleHandle f -> failwith $"TODO: {f}"
                     | NativeIntSource.MetadataImportHandle f ->
                         failwith $"refusing to coerce metadata import handle %s{f} to int64"
+                    | NativeIntSource.OpaqueHashBits bits ->
+                        // Widening synthesised pointer-hash bits to an int64 slot
+                        // is the inverse of `conv.u` from `Int64Source.OpaqueHashBits`.
+                        CliType.Numeric (CliNumericType.Int64 (Int64Source.OpaqueHashBits bits))
                 // CliType.Numeric (CliNumericType.TypeHandlePtr f)
                 | i -> failwith $"TODO: %O{i}"
             | CliNumericType.NativeInt _ ->
@@ -640,6 +665,9 @@ module EvalStackValue =
                 | NativeIntSource.ModuleHandle _ -> failwith "refusing to interpret module handle as an object ref"
                 | NativeIntSource.MetadataImportHandle _ ->
                     failwith "refusing to interpret metadata import handle as an object ref"
+                | NativeIntSource.OpaqueHashBits bits ->
+                    failwith
+                        $"refusing to interpret synthesised pointer-hash bits 0x%x{bits} as an object ref (would forge a heap address)"
                 | NativeIntSource.ManagedPointer ptr ->
                     match ptr with
                     | ManagedPointerSource.Null -> CliType.ObjectRef None
@@ -693,6 +721,9 @@ module EvalStackValue =
                 | NativeIntSource.ModuleHandle _ -> failwith "todo: ModuleHandle into CliType.RuntimePointer"
                 | NativeIntSource.MetadataImportHandle _ ->
                     failwith "refusing to coerce metadata import handle to runtime pointer"
+                | NativeIntSource.OpaqueHashBits bits ->
+                    failwith
+                        $"refusing to coerce synthesised pointer-hash bits 0x%x{bits} to runtime pointer (would forge a dereferenceable address)"
             | EvalStackValue.NullObjectRef -> failwith "cannot coerce null object reference to runtime pointer"
             | EvalStackValue.ObjectRef addr -> failwith $"cannot coerce object reference %O{addr} to runtime pointer"
             | _ -> failwith $"TODO: %O{popped}"

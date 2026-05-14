@@ -136,6 +136,8 @@ module NullaryIlOp =
             | EvalStackValue.NativeInt (NativeIntSource.EventPipeProviderPtr _)
             | EvalStackValue.NativeInt (NativeIntSource.EventPipeEventPtr _) ->
                 failwith $"Localloc: refusing to use pointer-like value %O{value} as a byte count"
+            | EvalStackValue.NativeInt (NativeIntSource.OpaqueHashBits bits) ->
+                failwith $"Localloc: refusing to use synthesised pointer-hash bits 0x%x{bits} as a byte count"
             | EvalStackValue.ManagedPointer _
             | EvalStackValue.NullObjectRef
             | EvalStackValue.ObjectRef _
@@ -273,6 +275,14 @@ module NullaryIlOp =
             | NativeIntSource.EventPipeProviderPtr id ->
                 failwith $"Neg: refusing to negate EventPipe provider handle %d{id}"
             | NativeIntSource.EventPipeEventPtr id -> failwith $"Neg: refusing to negate EventPipe event handle %d{id}"
+            | NativeIntSource.OpaqueHashBits bits ->
+                // Negating synthesised hash bits is a bit-mixing operation
+                // that stays in the synthesis domain; the result keeps the
+                // OpaqueHashBits tag.
+                negInt64Unchecked bits
+                |> NativeIntSource.OpaqueHashBits
+                |> EvalStackValue.NativeInt,
+                counters
         | EvalStackValue.Float value -> -value |> EvalStackValue.Float, counters
         | EvalStackValue.ManagedPointer ptr -> failwith $"Neg: refusing to negate managed pointer %O{ptr}"
         | EvalStackValue.NullObjectRef -> failwith "Neg: refusing to negate null object reference"
@@ -469,6 +479,12 @@ module NullaryIlOp =
                 | NativeIntSource.ManagedPointer _ -> failwith "Refusing to treat a pointer as an array index"
                 | NativeIntSource.SyntheticCrossArrayOffset _ ->
                     failwith "Refusing to treat a synthetic cross-storage byte offset as an array index"
+                | NativeIntSource.OpaqueHashBits bits ->
+                    // Synthesised hash bits narrowing to an array index is the
+                    // exact cast-cache load path: `(int)((hash * ...) >> shift)`
+                    // yields a bucket index. Truncate via int32 the same way as
+                    // Verbatim.
+                    bits |> int32
                 | NativeIntSource.Verbatim i -> i |> int32
             | EvalStackValue.Int32 i -> i
             | _ -> failwith $"Invalid index: {index}"
@@ -515,6 +531,7 @@ module NullaryIlOp =
                 | NativeIntSource.ManagedPointer _ -> failwith "Refusing to treat a pointer as an array index"
                 | NativeIntSource.SyntheticCrossArrayOffset _ ->
                     failwith "Refusing to treat a synthetic cross-storage byte offset as an array index"
+                | NativeIntSource.OpaqueHashBits bits -> bits |> int32
                 | NativeIntSource.Verbatim i -> i |> int32
             | EvalStackValue.Int32 i -> i
             | _ -> failwith $"Invalid index: {index}"
@@ -1271,6 +1288,7 @@ module NullaryIlOp =
                         | UnsignedNativeIntSource.FromManagedPointer ptr -> NativeIntSource.ManagedPointer ptr
                         | UnsignedNativeIntSource.FromSyntheticCrossArrayStorage i ->
                             NativeIntSource.SyntheticCrossArrayOffset i
+                        | UnsignedNativeIntSource.FromOpaqueHashBits bits -> NativeIntSource.OpaqueHashBits bits
 
                     state
                     |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt conv) currentThread
