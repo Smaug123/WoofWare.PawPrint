@@ -340,6 +340,19 @@ module ManagedPointerSource =
     /// is established at construction by floor-division in
     /// `normaliseTrailingByteOffset`.
     let tryByteAddressDeltaSign (src1 : ManagedPointerSource) (src2 : ManagedPointerSource) : int option =
+        let splitTrailingByteCursor (projs : ByrefProjection list) : (ByrefProjection list * int64) option =
+            // Mirrors `tryByteOffsetWithinSameRoot.splitTrailingByteCursor`:
+            // returns (prefix, trailing byte cursor) when projections are a
+            // pure byte cursor under an optional final ReinterpretAs, and
+            // None when the projection chain ends in a Field or other shape
+            // we can't decompose into a single byte cursor.
+            match List.rev projs with
+            | ByrefProjection.ByteOffset n :: ByrefProjection.ReinterpretAs _ :: revRest ->
+                Some (List.rev revRest, int64 n)
+            | ByrefProjection.ReinterpretAs _ :: revRest -> Some (List.rev revRest, 0L)
+            | [] -> Some ([], 0L)
+            | _ -> None
+
         match tryByteOffsetWithinSameRoot src1 src2 with
         | Some n -> Some (compare n 0L)
         | None ->
@@ -357,6 +370,24 @@ module ManagedPointerSource =
                 validateByrefProjectionsAreCanonical src1 projs1
                 validateByrefProjectionsAreCanonical src2 projs2
                 Some (compare idx2 idx1)
+            // Same native-memory block, different root byte offsets:
+            // `tryByteOffsetWithinSameRoot` only catches identical roots,
+            // but `NativeMemoryByte (block, n)` produced by pointer
+            // arithmetic varies `n` while the block is fixed. The total
+            // byte address inside the block is `rootOffset + trailing
+            // cursor`, so once the prefix projections match (so the prefix
+            // contributes equally on both sides) the sign of
+            // `(rootOffset2 + cursor2) - (rootOffset1 + cursor1)` is the
+            // sign of the byte address delta. Cross-block comparisons stay
+            // None — those have no defensible ordering.
+            | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block1, rootOffset1), projs1),
+              ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block2, rootOffset2), projs2) when block1 = block2 ->
+                match splitTrailingByteCursor projs1, splitTrailingByteCursor projs2 with
+                | Some (prefix1, cursor1), Some (prefix2, cursor2) when prefix1 = prefix2 ->
+                    let addr1 = int64 rootOffset1 + cursor1
+                    let addr2 = int64 rootOffset2 + cursor2
+                    Some (compare addr2 addr1)
+                | _ -> None
             | _ -> None
 
     /// Returns deterministic low address bits for byrefs that have a stable
