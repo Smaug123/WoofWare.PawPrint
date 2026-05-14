@@ -95,9 +95,10 @@ module PointerHashSynthesis =
         | NativeIntSource.MetadataImportHandle name -> CanonicalPointerKey.MetadataImportHandle name
         | NativeIntSource.Verbatim _
         | NativeIntSource.ManagedPointer _
-        | NativeIntSource.SyntheticCrossArrayOffset _ ->
+        | NativeIntSource.SyntheticCrossArrayOffset _
+        | NativeIntSource.OpaqueHashBits _ ->
             failwith
-                $"PointerHashSynthesis.canonicalKey: %O{src} is not a canonicalisable pointer shape; verbatim / managed-pointer / cross-array values must be handled before reaching this function"
+                $"PointerHashSynthesis.canonicalKey: %O{src} is not a canonicalisable pointer shape; verbatim / managed-pointer / cross-array / already-synthesised values must be handled before reaching this function"
 
     /// Low-bit pattern required for a canonical key. Mirrors
     /// `NullaryIlOp.typeHandleLowAddressBits`: MethodTable* is aligned
@@ -166,6 +167,11 @@ module PointerHashSynthesis =
         | NativeIntSource.SyntheticCrossArrayOffset _ ->
             failwith
                 $"PointerHashSynthesis.materialiseHashBits (%s{reason}): refusing to synthesise bits for synthetic cross-array offset %O{src}"
+        | NativeIntSource.OpaqueHashBits bits ->
+            // Already-synthesised bits round-trip back as themselves; no new
+            // counter is assigned because the bits were produced by the same
+            // pipeline and stored in a native-int slot via `conv.u` / `conv.i`.
+            bits, counters
         | _ ->
             let key = canonicalKey src
 

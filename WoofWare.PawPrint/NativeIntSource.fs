@@ -78,6 +78,12 @@ type UnsignedNativeIntSource =
     | Verbatim of uint64
     | FromManagedPointer of ManagedPointerSource
     | FromSyntheticCrossArrayStorage of SyntheticCrossArrayOffset
+    /// Synthesised pointer-hash bits arriving from `Int64Source.OpaqueHashBits`
+    /// via `conv.u`. Round-trips back into a `NativeIntSource.OpaqueHashBits`
+    /// in `Conv_U`; that variant inherits the "this is not a real pointer"
+    /// contract — it must never be dereferenced. See
+    /// `docs/plans/2026-05-13-castcache-synthetic-hash-bits.md`.
+    | FromOpaqueHashBits of int64
 
 [<RequireQualifiedAccess>]
 [<CustomEquality>]
@@ -108,6 +114,18 @@ type NativeIntSource =
     /// Returned by `Unsafe.ByteOffset` or managed-pointer subtraction for two byrefs into distinct byte-addressed
     /// storage containers.
     | SyntheticCrossArrayOffset of SyntheticCrossArrayOffset
+    /// Synthesised pointer-hash bits living in a native-int slot. Produced
+    /// when `conv.u` / `conv.i` narrows an `Int64Source.OpaqueHashBits` back
+    /// to native-int width (e.g. `BitOperations.RotateLeft(nuint, int)`
+    /// inlines `(nuint)RotateLeft((ulong)value, offset)` — the final `(nuint)`
+    /// cast is exactly this round-trip). Carries the same load-bearing
+    /// contract as `Int64Source.OpaqueHashBits`: the bits are deterministic
+    /// and bit-mixing safe, but they must NOT be used as a real pointer —
+    /// `ldind` / `stind` / dereference must reject them, and the `conv.i8`
+    /// / `conv.u8` round-trip normalises back to `Int64Source.OpaqueHashBits`
+    /// via `Int64Source.widenedNativeInt`. See
+    /// `docs/plans/2026-05-13-castcache-synthetic-hash-bits.md`.
+    | OpaqueHashBits of int64
 
     override this.ToString () : string =
         match this with
@@ -127,6 +145,7 @@ type NativeIntSource =
         | NativeIntSource.EventPipeProviderPtr id -> $"<EventPipe provider #%i{id}>"
         | NativeIntSource.EventPipeEventPtr id -> $"<EventPipe event #%i{id}>"
         | NativeIntSource.SyntheticCrossArrayOffset _ -> "<synthetic cross-storage byte offset>"
+        | NativeIntSource.OpaqueHashBits bits -> $"<opaque hash bits (native int) 0x%x{bits}>"
 
     override this.Equals (other : obj) : bool =
         match other with
@@ -150,6 +169,7 @@ type NativeIntSource =
             | NativeIntSource.EventPipeEventPtr left, NativeIntSource.EventPipeEventPtr right -> left = right
             | NativeIntSource.SyntheticCrossArrayOffset left, NativeIntSource.SyntheticCrossArrayOffset right ->
                 left = right
+            | NativeIntSource.OpaqueHashBits left, NativeIntSource.OpaqueHashBits right -> left = right
             | NativeIntSource.Verbatim _, _
             | NativeIntSource.ManagedPointer _, _
             | NativeIntSource.FunctionPointer _, _
@@ -164,7 +184,8 @@ type NativeIntSource =
             | NativeIntSource.GcHandlePtr _, _
             | NativeIntSource.EventPipeProviderPtr _, _
             | NativeIntSource.EventPipeEventPtr _, _
-            | NativeIntSource.SyntheticCrossArrayOffset _, _ -> false
+            | NativeIntSource.SyntheticCrossArrayOffset _, _
+            | NativeIntSource.OpaqueHashBits _, _ -> false
         | _ -> false
 
     override this.GetHashCode () : int =
@@ -191,6 +212,7 @@ type NativeIntSource =
         | NativeIntSource.EventPipeProviderPtr id -> HashCode.Combine (12, id)
         | NativeIntSource.EventPipeEventPtr id -> HashCode.Combine (13, id)
         | NativeIntSource.SyntheticCrossArrayOffset s -> HashCode.Combine (14, hash s)
+        | NativeIntSource.OpaqueHashBits bits -> HashCode.Combine (15, bits)
 
 [<RequireQualifiedAccess>]
 module NativeIntSource =
@@ -219,6 +241,7 @@ module NativeIntSource =
         | NativeIntSource.AssemblyHandle _
         | NativeIntSource.MetadataImportHandle _
         | NativeIntSource.ModuleHandle _ -> false
+        | NativeIntSource.OpaqueHashBits bits -> bits = 0L
         | NativeIntSource.FunctionPointer _ -> failwith "TODO"
         | NativeIntSource.ManagedPointer src ->
             match src with
@@ -242,6 +265,7 @@ module NativeIntSource =
         | NativeIntSource.AssemblyHandle _
         | NativeIntSource.MetadataImportHandle _
         | NativeIntSource.ModuleHandle _ -> true
+        | NativeIntSource.OpaqueHashBits bits -> bits >= 0L
         | NativeIntSource.ManagedPointer _ -> true
 
     /// True if a < b.

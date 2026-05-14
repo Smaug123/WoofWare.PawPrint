@@ -66,6 +66,7 @@ module Int64Source =
         | NativeIntSource.Verbatim n -> Int64Source.Verbatim n
         | NativeIntSource.SyntheticCrossArrayOffset s -> Int64Source.SyntheticCrossArrayOffset s
         | NativeIntSource.ManagedPointer ManagedPointerSource.Null -> Int64Source.Verbatim 0L
+        | NativeIntSource.OpaqueHashBits bits -> Int64Source.OpaqueHashBits bits
         | _ -> Int64Source.WidenedNativeInt (src, signed)
 
     let isZero (i : Int64Source) : bool =
@@ -332,6 +333,8 @@ type CliNumericType =
             | NativeIntSource.AssemblyHandle _ -> failwith "refusing to express AssemblyHandle as bytes"
             | NativeIntSource.ModuleHandle _ -> failwith "refusing to express ModuleHandle as bytes"
             | NativeIntSource.MetadataImportHandle _ -> failwith "refusing to express MetadataImportHandle as bytes"
+            | NativeIntSource.OpaqueHashBits bits ->
+                failwith $"refusing to convert synthesised pointer-hash bits 0x%x{bits} (native int) to bytes"
         | CliNumericType.NativeFloat f -> BitConverter.GetBytes f
         // Overload resolution for sbyte/byte silently picks
         // `BitConverter.GetBytes(System.Half)` (2 bytes) in net8/net9; build

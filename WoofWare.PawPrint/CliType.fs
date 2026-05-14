@@ -67,7 +67,8 @@ module private ByteAddressabilityClassifier =
         | NativeIntSource.GcHandlePtr _
         | NativeIntSource.EventPipeProviderPtr _
         | NativeIntSource.EventPipeEventPtr _
-        | NativeIntSource.SyntheticCrossArrayOffset _ ->
+        | NativeIntSource.SyntheticCrossArrayOffset _
+        | NativeIntSource.OpaqueHashBits _ ->
             CliByteAddressability.Rejected (CliByteAddressabilityRejection.NativeIntSourceNotByteAddressable source)
 
     let int64Source (source : Int64Source) : CliByteAddressability =

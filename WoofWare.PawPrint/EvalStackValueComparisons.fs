@@ -382,6 +382,15 @@ module EvalStackValueComparisons =
             | NativeIntSource.SyntheticCrossArrayOffset _, NativeIntSource.SyntheticCrossArrayOffset _
             | NativeIntSource.Verbatim _, NativeIntSource.SyntheticCrossArrayOffset _
             | NativeIntSource.SyntheticCrossArrayOffset _, NativeIntSource.Verbatim _ -> failwith "TODO: ceq"
+            // Synthesised pointer-hash bits compare as raw int64 bit patterns:
+            // they're deterministic numeric content, so structural equality on
+            // the bits is correct. Across-tag (vs Verbatim) the same applies.
+            | NativeIntSource.OpaqueHashBits b1, NativeIntSource.OpaqueHashBits b2 -> b1 = b2
+            | NativeIntSource.OpaqueHashBits b, NativeIntSource.Verbatim v
+            | NativeIntSource.Verbatim v, NativeIntSource.OpaqueHashBits b -> b = v
+            | NativeIntSource.OpaqueHashBits _, NativeIntSource.SyntheticCrossArrayOffset _
+            | NativeIntSource.SyntheticCrossArrayOffset _, NativeIntSource.OpaqueHashBits _ ->
+                failwith "TODO: ceq of synthesised hash bits against cross-array offset"
             // CoreCLR's TypeHandle wraps either a MethodTable* (when !IsTypeDesc) or a tagged
             // TypeDesc*; for non-TypeDesc handles the inner pointer IS the MethodTable address.
             // Patterns like `RuntimeHelpers.GetMethodTable(obj) == TypeHandleOf<T>().AsMethodTable()`
@@ -448,7 +457,13 @@ module EvalStackValueComparisons =
             | NativeIntSource.EventPipeProviderPtr _, _
             | _, NativeIntSource.EventPipeProviderPtr _
             | NativeIntSource.EventPipeEventPtr _, _
-            | _, NativeIntSource.EventPipeEventPtr _ -> false
+            | _, NativeIntSource.EventPipeEventPtr _
+            // Synthesised hash bits never alias real pointer shapes: the
+            // counter pipeline produces bit patterns chosen to be distinct
+            // from any verbatim pointer the interpreter can mint. Cross-tag
+            // comparisons here therefore reduce to false.
+            | NativeIntSource.OpaqueHashBits _, _
+            | _, NativeIntSource.OpaqueHashBits _ -> false
         | EvalStackValue.NativeInt var1, EvalStackValue.Int32 var2 -> failwith $"TODO (CEQ): nativeint vs int32"
         | EvalStackValue.NativeInt var1, EvalStackValue.ManagedPointer var2 ->
             ceq (EvalStackValue.NativeInt var1) (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var2))
