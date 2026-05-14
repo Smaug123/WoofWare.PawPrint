@@ -356,10 +356,11 @@ module EvalStackValueComparisons =
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset s1),
           EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset s2) -> s1 = s2
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _), EvalStackValue.Int64 (Int64Source.Verbatim _)
-        | EvalStackValue.Int64 (Int64Source.Verbatim _), EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) ->
-            false
-        | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 ->
-            failwith $"TODO: ceq on non-numeric Int64 sources: %O{var1} vs %O{var2}"
+        | EvalStackValue.Int64 (Int64Source.Verbatim _), EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _)
+        | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _),
+          EvalStackValue.Int64 (Int64Source.OpaqueHashBits _)
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits _),
+          EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> false
         | EvalStackValue.Int64 _, _ -> failwith $"bad ceq: Int64 vs {var2}"
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> var1 = var2
         | EvalStackValue.Float _, _ -> failwith $"bad ceq: Float vs {var2}"

@@ -226,6 +226,28 @@ module TestEvalStack =
         exSym.Message |> shouldContainText "PointerHashCounters"
 
     [<Test>]
+    let ``ceq of SyntheticCrossArrayOffset vs OpaqueHashBits returns false (cross-shape)`` () : unit =
+        // SyntheticCrossArrayOffset is a delta between two distinct byte-storage roots;
+        // OpaqueHashBits is synthesised pointer hash bits. The two shapes are not
+        // comparable as numeric values — there is no bit pattern at which they could
+        // sensibly be considered equal — so ceq returns false rather than failing.
+        let offset =
+            SyntheticCrossArrayOffset.make
+                (ByteStorageIdentity.Array (ManagedHeapAddress 1))
+                0L
+                (ByteStorageIdentity.Array (ManagedHeapAddress 2))
+                0L
+
+        let offsetEsv = EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset offset)
+        let hashBits = EvalStackValue.Int64 (Int64Source.OpaqueHashBits 12L)
+
+        if EvalStackValueComparisons.ceq offsetEsv hashBits then
+            failwith "Expected ceq(SyntheticCrossArrayOffset, OpaqueHashBits) to be false"
+
+        if EvalStackValueComparisons.ceq hashBits offsetEsv then
+            failwith "Expected ceq(OpaqueHashBits, SyntheticCrossArrayOffset) to be false (symmetric)"
+
+    [<Test>]
     let ``ceq compares managed pointers with native-int pointer forms`` () : unit =
         let ptr =
             ManagedPointerSource.Byref (ByrefRoot.HeapValue (ManagedHeapAddress 707), [])
