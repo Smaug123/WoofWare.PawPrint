@@ -76,6 +76,22 @@ class Program
             return 8;
         }
 
+        // Signed comparison against `IntPtr.Zero` exercises
+        // `NativeIntSource.isLess` with OpaqueHashBits on one side and
+        // `ManagedPointer Null` on the other. The signed direction of the
+        // answer depends on the sign of the rotated bit pattern, which can
+        // legitimately be negative when interpreted as signed nint, so check
+        // a property both signs satisfy: the value is consistently ordered
+        // against IntPtr.Zero in opposing directions.
+        bool gtZero = signedNarrowed > IntPtr.Zero;
+        bool ltZero = signedNarrowed < IntPtr.Zero;
+        bool eqZero = signedNarrowed == IntPtr.Zero;
+        // Trichotomy: exactly one of (>, <, ==) zero must hold.
+        if ((gtZero ? 1 : 0) + (ltZero ? 1 : 0) + (eqZero ? 1 : 0) != 1)
+        {
+            return 9;
+        }
+
         return 0;
     }
 }

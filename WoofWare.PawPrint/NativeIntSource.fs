@@ -282,6 +282,11 @@ module NativeIntSource =
         | NativeIntSource.OpaqueHashBits a, NativeIntSource.OpaqueHashBits b -> a < b
         | NativeIntSource.OpaqueHashBits a, NativeIntSource.Verbatim b
         | NativeIntSource.Verbatim a, NativeIntSource.OpaqueHashBits b -> a < b
+        // `ManagedPointer Null` is the value 0 (cf. `cliTypeZeroOf` planting
+        // it for `IntPtr.Zero`/`UIntPtr.Zero`). Signed comparison against
+        // OpaqueHashBits therefore reduces to comparing the bits against 0L.
+        | NativeIntSource.OpaqueHashBits a, NativeIntSource.ManagedPointer ManagedPointerSource.Null -> a < 0L
+        | NativeIntSource.ManagedPointer ManagedPointerSource.Null, NativeIntSource.OpaqueHashBits b -> 0L < b
         | _, _ -> failwith $"TODO: NativeIntSource.isLess on non-Verbatim sources: %O{a} vs %O{b}"
 
 type CliRuntimePointer =
