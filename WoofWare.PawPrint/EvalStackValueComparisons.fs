@@ -300,11 +300,30 @@ module EvalStackValueComparisons =
         | EvalStackValue.Int32 var1, EvalStackValue.Int32 var2 -> var1 = var2
         | EvalStackValue.Int32 var1, EvalStackValue.NativeInt var2 -> failwith "TODO: int32 CEQ nativeint"
         | EvalStackValue.Int32 _, _ -> failwith $"bad ceq: Int32 vs {var2}"
-        // WidenedNativeInt is the int64 bit-pattern of a NativeInt: route the
-        // comparison through the NativeInt arms so byref / function-pointer /
-        // type-handle identity comparisons land in the right place.
-        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)), _ -> ceq (EvalStackValue.NativeInt src) var2
-        | _, EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) -> ceq var1 (EvalStackValue.NativeInt src)
+        // WidenedNativeInt × WidenedNativeInt: route both sides through the
+        // NativeInt arms so pointer-identity (TypeHandlePtr, MethodTablePtr,
+        // function-pointer, …) is decided structurally.
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src1, _)),
+          EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src2, _)) ->
+            ceq (EvalStackValue.NativeInt src1) (EvalStackValue.NativeInt src2)
+        // WidenedNativeInt × Verbatim n: the underlying source is a non-null
+        // pointer shape (Null is normalised to `Verbatim 0L` by the
+        // `widenedNativeInt` smart constructor), so it can't equal 0. For
+        // non-zero `n` we don't know the pointer's actual numeric address —
+        // the safe and previously-structurally-correct answer is still
+        // `false`, but we keep that arm explicit so we can revisit if a real
+        // need to compare against a known pointer value arises.
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt _), EvalStackValue.Int64 (Int64Source.Verbatim _)
+        | EvalStackValue.Int64 (Int64Source.Verbatim _), EvalStackValue.Int64 (Int64Source.WidenedNativeInt _) -> false
+        // WidenedNativeInt × OpaqueHashBits / SyntheticCrossArrayOffset: a
+        // real pointer can't equal synthesised hash bits or a cross-storage
+        // delta; matches prior structural-DU semantics.
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt _), EvalStackValue.Int64 (Int64Source.OpaqueHashBits _)
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits _), EvalStackValue.Int64 (Int64Source.WidenedNativeInt _)
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt _),
+          EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _)
+        | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _),
+          EvalStackValue.Int64 (Int64Source.WidenedNativeInt _) -> false
         // Verbatim and OpaqueHashBits both carry unambiguous int64 bit patterns,
         // so equality is bit-pattern equality regardless of how the bits were
         // produced. Structural DU equality would incorrectly treat
