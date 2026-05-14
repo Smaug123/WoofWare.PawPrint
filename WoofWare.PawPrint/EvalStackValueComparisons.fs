@@ -315,15 +315,28 @@ module EvalStackValueComparisons =
         // need to compare against a known pointer value arises.
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt _), EvalStackValue.Int64 (Int64Source.Verbatim _)
         | EvalStackValue.Int64 (Int64Source.Verbatim _), EvalStackValue.Int64 (Int64Source.WidenedNativeInt _) -> false
-        // WidenedNativeInt × OpaqueHashBits / SyntheticCrossArrayOffset: a
-        // real pointer can't equal synthesised hash bits or a cross-storage
-        // delta; matches prior structural-DU semantics.
-        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt _), EvalStackValue.Int64 (Int64Source.OpaqueHashBits _)
-        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits _), EvalStackValue.Int64 (Int64Source.WidenedNativeInt _)
+        // WidenedNativeInt × SyntheticCrossArrayOffset: a real pointer can't
+        // equal a cross-storage delta; cross-array offsets are synthetic
+        // markers for unrepresentable address deltas, not pointer values.
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt _),
           EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _)
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _),
           EvalStackValue.Int64 (Int64Source.WidenedNativeInt _) -> false
+        // WidenedNativeInt × OpaqueHashBits is genuinely ambiguous: under the
+        // counter-based synthesis scheme an identity bit op such as `x ^ 0UL`
+        // or `x & ulong.MaxValue` materialises the WidenedNativeInt's bits
+        // into an OpaqueHashBits carrier whose bit pattern is *exactly* what
+        // the WidenedNativeInt would synthesise to — so the answer here is
+        // "equal iff WidenedNativeInt's materialised bits equal the
+        // OpaqueHashBits value". Producing the right answer requires reading
+        // the `PointerHashCounters` map, which `ceq` does not thread today.
+        // Fail loudly rather than silently returning false (which would have
+        // been wrong under identity ops) or true (which would be wrong when
+        // bits genuinely differ).
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt _), EvalStackValue.Int64 (Int64Source.OpaqueHashBits _)
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits _), EvalStackValue.Int64 (Int64Source.WidenedNativeInt _) ->
+            failwith
+                $"TODO: ceq of WidenedNativeInt vs OpaqueHashBits requires looking up the pointer's materialised hash bits via PointerHashCounters; thread state through ceq to resolve. Got %O{var1} vs %O{var2}"
         // Verbatim and OpaqueHashBits both carry unambiguous int64 bit patterns,
         // so equality is bit-pattern equality regardless of how the bits were
         // produced. Structural DU equality would incorrectly treat

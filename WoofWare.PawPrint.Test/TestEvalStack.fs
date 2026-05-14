@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint.Test
 
+open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
 
@@ -195,6 +196,34 @@ module TestEvalStack =
 
         if EvalStackValueComparisons.ceq byrefMethodTable byrefRuntimeTypeHandle then
             failwith "Expected TypeDesc Byref handles to remain distinct from MethodTablePtr"
+
+    [<Test>]
+    let ``ceq of WidenedNativeInt vs OpaqueHashBits fails loudly rather than returning silently wrong`` () : unit =
+        // Under the counter-based pointer-hash scheme, an identity bit op such as `x ^ 0UL`
+        // materialises the WidenedNativeInt's bits into OpaqueHashBits. A subsequent
+        // `x == y` would then ask: do `WidenedNativeInt x`'s materialised bits equal `b`?
+        // Answering that requires the PointerHashCounters map which ceq does not currently
+        // thread; the silent-false answer that prior versions returned is wrong under
+        // identity ops, so this case fails loudly until ceq is taught to look it up.
+        let widened =
+            EvalStackValue.Int64 (
+                Int64Source.WidenedNativeInt (NativeIntSource.MethodTablePtr (ConcreteTypeHandle.Concrete 42), true)
+            )
+
+        let hashBits = EvalStackValue.Int64 (Int64Source.OpaqueHashBits 4L)
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () -> EvalStackValueComparisons.ceq widened hashBits |> ignore)
+
+        ex.Message |> shouldContainText "WidenedNativeInt"
+        ex.Message |> shouldContainText "OpaqueHashBits"
+        ex.Message |> shouldContainText "PointerHashCounters"
+
+        // And symmetrically the other direction.
+        let exSym =
+            Assert.Throws<System.Exception> (fun () -> EvalStackValueComparisons.ceq hashBits widened |> ignore)
+
+        exSym.Message |> shouldContainText "PointerHashCounters"
 
     [<Test>]
     let ``ceq compares managed pointers with native-int pointer forms`` () : unit =
