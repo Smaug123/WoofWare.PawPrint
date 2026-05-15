@@ -1934,8 +1934,33 @@ module IlMachineManagedByref =
                 | CliByteAddressability.ByteAddressable -> true
                 | CliByteAddressability.Rejected _ -> false
 
+            // Only fully byte-resolved prefixes (no `ReinterpretAs`) are safe to
+            // route through the bytes writer: `resolveCell` resolves the prefix
+            // via `readProjectedValue`, which does not interpret a residual
+            // `ReinterpretAs` over a non-host-shaped cell. Prefixes containing
+            // `ReinterpretAs` (e.g. `[ReinterpretAs Outer; Field I; Field X]`
+            // produced by `Volatile.Write(ref view.I.X, _)` on
+            // `Unsafe.As<int, Outer>(ref arr[0])`) must fall back to the
+            // structural writer, which handles non-trailing reinterprets via
+            // `splitFirstReinterpret`.
+            let prefixContainsReinterpret (prefixProjs : ByrefProjection list) : bool =
+                prefixProjs
+                |> List.exists (
+                    function
+                    | ByrefProjection.ReinterpretAs _ -> true
+                    | _ -> false
+                )
+
+            let useStructuralWriter () : IlMachineState =
+                let rootValue = readRootValue state root
+
+                match writeProjectedValueIfChanged baseClassTypes state rootValue projs newValue with
+                | None -> state
+                | Some updatedRoot -> writeRootValue state root updatedRoot
+
             match peeled, baseClassTypes, valueIsByteRenderable with
-            | ValueSome _, Some bct, true -> writeManagedByrefBytesOrTypedCell bct state src newValue
+            | ValueSome (prefixProjs, _), Some bct, true when not (prefixContainsReinterpret prefixProjs) ->
+                writeManagedByrefBytesOrTypedCell bct state src newValue
             | ValueSome ([], _), Some bct, false ->
                 // Non-byte-renderable empty-prefix peel: the bytes-or-typed-cell
                 // writer can precise-write for the byte-addressable storage
@@ -1950,12 +1975,7 @@ module IlMachineManagedByref =
                 | ByrefRoot.HeapObjectField _
                 | ByrefRoot.ArrayElement _
                 | ByrefRoot.StringCharAt _ -> writeManagedByrefBytesOrTypedCell bct state src newValue
-                | _ ->
-                    let rootValue = readRootValue state root
-
-                    match writeProjectedValueIfChanged baseClassTypes state rootValue projs newValue with
-                    | None -> state
-                    | Some updatedRoot -> writeRootValue state root updatedRoot
+                | _ -> useStructuralWriter ()
             | ValueSome _, None, _ ->
                 // Trailing-suffix-only byte view; legacy callers without BCT
                 // pass through here. Routing without BCT means the bytes path
@@ -1963,13 +1983,7 @@ module IlMachineManagedByref =
                 // splitTrailingByteView contract is preserved.
                 failwith
                     "writeManagedByref: byte-view byref encountered without BaseClassTypes; call writeManagedByrefWithBase instead"
-            | ValueSome (_ :: _, _), Some _, false
-            | ValueNone, _, _ ->
-                let rootValue = readRootValue state root
-
-                match writeProjectedValueIfChanged baseClassTypes state rootValue projs newValue with
-                | None -> state
-                | Some updatedRoot -> writeRootValue state root updatedRoot
+            | _ -> useStructuralWriter ()
 
     let writeManagedByref (state : IlMachineState) (src : ManagedPointerSource) (newValue : CliType) : IlMachineState =
         // Call sites that can supply BaseClassTypes should use writeManagedByrefWithBase so
