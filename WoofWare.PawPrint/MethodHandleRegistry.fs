@@ -194,6 +194,40 @@ module MethodHandleRegistry =
         else
             Map.tryFind id reg.IdToMethodHandle
 
+    /// Mint (or reuse) a registry id for the given fully-concretised method and return a
+    /// `RuntimeMethodHandleInternal` value type referencing it. Unlike `getOrAllocate`, this
+    /// does not also allocate a `RuntimeMethodInfoStub` on the managed heap: callers that
+    /// only need the bare `RuntimeMethodHandleInternal` (e.g. the `ModuleHandle.ResolveMethod`
+    /// QCall, whose C# wrapper allocates the stub itself) can avoid the unnecessary heap object.
+    let getOrAllocateConcreteInternalHandle
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (allConcreteTypes : AllConcreteTypes)
+        (method : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (reg : MethodHandleRegistry)
+        : CliValueType * MethodHandleRegistry
+        =
+        let handle = makeMethodHandle allConcreteTypes method
+
+        let registryId, reg =
+            match Map.tryFind handle reg.MethodHandleToId with
+            | Some existing -> existing, reg
+            | None ->
+                let newId = reg.NextHandle
+
+                let reg =
+                    { reg with
+                        MethodHandleToId = reg.MethodHandleToId |> Map.add handle newId
+                        IdToMethodHandle = reg.IdToMethodHandle |> Map.add newId handle
+                        NextHandle = reg.NextHandle + 1L
+                    }
+
+                newId, reg
+
+        let mHandle =
+            CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle registryId)
+
+        buildRuntimeMethodHandleInternal baseClassTypes allConcreteTypes mHandle, reg
+
     let rec private isReferenceShaped (typeDefn : TypeDefn) : bool =
         match typeDefn with
         | TypeDefn.PrimitiveType PrimitiveType.Object
