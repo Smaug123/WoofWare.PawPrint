@@ -834,112 +834,119 @@ module IlMachineStateExecution =
                     Some state
                 else
 
+                match tHandle with
+                | ConcreteTypeHandle.OneDimArrayZero _
+                | ConcreteTypeHandle.Array _ ->
+                    failwith $"TODO: Activator.CreateInstance<T>() for array type %O{tHandle} is not yet implemented"
+                | _ -> ()
+
+                let typeDef =
+                    match typeDefOpt with
+                    | Some typeDef -> typeDef
+                    | None -> failwith "Activator.CreateInstance<T>(): reference-type branch without typeDef"
+
+                // Validate T BEFORE running its cctor. CoreCLR rejects abstract types and types
+                // without a public parameterless ctor in `RuntimeType.CreateInstanceOfT` /
+                // ActivatorCache construction, before any class-init side effects are observable.
+                // Running `ensureTypeInitialised` first would let a throwing `.cctor` mask the
+                // `MissingMethodException` users actually expect — empirically verified against
+                // .NET 10.
+                if typeDef.TypeAttributes.HasFlag TypeAttributes.Abstract then
+                    // CoreCLR's MissingMethodException carries the message
+                    // "Cannot dynamically create an instance of type 'X'. Reason: Cannot create
+                    // an abstract class." (verified against .NET 10).
+                    failwith
+                        $"TODO: Activator.CreateInstance<T>() should throw MissingMethodException because T = %s{typeDef.Namespace}.%s{typeDef.Name} is abstract"
+
+                // CoreCLR's `CreateInstanceOfT` consults `ActivatorCache.CtorIsPublic` and throws
+                // `MissingMethodException` if the parameterless ctor is non-public — see
+                // RuntimeType.CoreCLR.cs:4034. Filter accordingly so an internal/private ctor is
+                // not silently invoked.
+                let isPublic (m : MethodInfo<_, _, _>) : bool =
+                    (m.MethodAttributes &&& MethodAttributes.MemberAccessMask) = MethodAttributes.Public
+
+                let ctor =
+                    typeDef.Methods
+                    |> List.tryFind (fun m -> m.Name = ".ctor" && not m.IsStatic && m.Parameters.IsEmpty && isPublic m)
+
+                match ctor with
+                | None ->
+                    // CoreCLR throws MissingMethodException here. We don't yet have a host helper
+                    // to raise that, so fail loudly with the precise condition.
+                    let hasNonPublicParameterless =
+                        typeDef.Methods
+                        |> List.exists (fun m ->
+                            m.Name = ".ctor" && not m.IsStatic && m.Parameters.IsEmpty && not (isPublic m)
+                        )
+
+                    let reason =
+                        if hasNonPublicParameterless then
+                            "its parameterless instance constructor is non-public"
+                        else
+                            "it has no parameterless instance constructor"
+
+                    failwith
+                        $"TODO: Activator.CreateInstance<T>() should throw MissingMethodException because T = %s{typeDef.Namespace}.%s{typeDef.Name} %s{reason}"
+                | Some ctor ->
+
+                let ct =
+                    AllConcreteTypes.lookup tHandle state.ConcreteTypes
+                    |> Option.defaultWith (fun () ->
+                        failwith
+                            $"Activator.CreateInstance<T>(): concrete type handle %O{tHandle} not found in AllConcreteTypes"
+                    )
+
                 let state, init =
                     ensureTypeInitialised loggerFactory baseClassTypes thread tHandle state
 
                 match init with
                 | WhatWeDid.Executed ->
-                    match tHandle with
-                    | ConcreteTypeHandle.OneDimArrayZero _
-                    | ConcreteTypeHandle.Array _ ->
-                        failwith
-                            $"TODO: Activator.CreateInstance<T>() for array type %O{tHandle} is not yet implemented"
-                    | _ -> ()
-
-                    let typeDef =
-                        match typeDefOpt with
-                        | Some typeDef -> typeDef
-                        | None -> failwith "Activator.CreateInstance<T>(): reference-type branch without typeDef"
-
-                    let ct =
-                        AllConcreteTypes.lookup tHandle state.ConcreteTypes
-                        |> Option.defaultWith (fun () ->
-                            failwith
-                                $"Activator.CreateInstance<T>(): concrete type handle %O{tHandle} not found in AllConcreteTypes"
-                        )
-
-                    // CoreCLR's `CreateInstanceOfT` consults `ActivatorCache.CtorIsPublic` and throws
-                    // `MissingMethodException` if the parameterless ctor is non-public — see
-                    // RuntimeType.CoreCLR.cs:4034. Filter accordingly so an internal/private ctor is
-                    // not silently invoked.
-                    let isPublic (m : MethodInfo<_, _, _>) : bool =
-                        (m.MethodAttributes &&& MethodAttributes.MemberAccessMask) = MethodAttributes.Public
-
-                    let ctor =
-                        typeDef.Methods
-                        |> List.tryFind (fun m ->
-                            m.Name = ".ctor" && not m.IsStatic && m.Parameters.IsEmpty && isPublic m
-                        )
-
-                    match ctor with
-                    | None ->
-                        // CoreCLR throws MissingMethodException here. We don't yet have a host helper
-                        // to raise that, so fail loudly with the precise condition.
-                        let hasNonPublicParameterless =
-                            typeDef.Methods
-                            |> List.exists (fun m ->
-                                m.Name = ".ctor" && not m.IsStatic && m.Parameters.IsEmpty && not (isPublic m)
-                            )
-
-                        let reason =
-                            if hasNonPublicParameterless then
-                                "its parameterless instance constructor is non-public"
-                            else
-                                "it has no parameterless instance constructor"
-
-                        failwith
-                            $"TODO: Activator.CreateInstance<T>() should throw MissingMethodException because T = %s{typeDef.Namespace}.%s{typeDef.Name} %s{reason}"
-                    | Some ctor ->
-                        let state, concretizedCtor, declaringTypeHandle =
-                            ExecutionConcretization.concretizeMethodWithAllGenerics
-                                loggerFactory
-                                baseClassTypes
-                                ct.Generics
-                                ctor
-                                ImmutableArray.Empty
-                                state
-
-                        let state, allFields =
-                            IlMachineState.collectAllInstanceFields
-                                loggerFactory
-                                baseClassTypes
-                                state
-                                declaringTypeHandle
-
-                        let fields =
-                            CliValueType.OfFields
-                                baseClassTypes
-                                state.ConcreteTypes
-                                declaringTypeHandle
-                                typeDef.Layout
-                                (CharSetMetadata.ofTypeAttributes typeDef.TypeAttributes)
-                                allFields
-
-                        let allocatedAddr, state =
-                            IlMachineState.allocateManagedObject declaringTypeHandle fields state
-
-                        let state =
-                            state
-                            |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some allocatedAddr)) thread
-
-                        let threadState = state.ThreadState.[thread]
-
-                        callMethod
+                    let state, concretizedCtor, declaringTypeHandle =
+                        ExecutionConcretization.concretizeMethodWithAllGenerics
                             loggerFactory
                             baseClassTypes
-                            None
-                            (Some allocatedAddr)
-                            false
-                            false
-                            advanceProgramCounterOfCaller
-                            concretizedCtor.Generics
-                            concretizedCtor
-                            thread
-                            threadState
-                            None
-                            false
+                            ct.Generics
+                            ctor
+                            ImmutableArray.Empty
                             state
-                        |> Some
+
+                    let state, allFields =
+                        IlMachineState.collectAllInstanceFields loggerFactory baseClassTypes state declaringTypeHandle
+
+                    let fields =
+                        CliValueType.OfFields
+                            baseClassTypes
+                            state.ConcreteTypes
+                            declaringTypeHandle
+                            typeDef.Layout
+                            (CharSetMetadata.ofTypeAttributes typeDef.TypeAttributes)
+                            allFields
+
+                    let allocatedAddr, state =
+                        IlMachineState.allocateManagedObject declaringTypeHandle fields state
+
+                    let state =
+                        state
+                        |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some allocatedAddr)) thread
+
+                    let threadState = state.ThreadState.[thread]
+
+                    callMethod
+                        loggerFactory
+                        baseClassTypes
+                        None
+                        (Some allocatedAddr)
+                        false
+                        false
+                        advanceProgramCounterOfCaller
+                        concretizedCtor.Generics
+                        concretizedCtor
+                        thread
+                        threadState
+                        None
+                        false
+                        state
+                    |> Some
                 | WhatWeDid.SuspendedForClassInit ->
                     // T's cctor was kicked off and is now running on top of the current frame.
                     // We need the activator call to be retried after the cctor returns. The
