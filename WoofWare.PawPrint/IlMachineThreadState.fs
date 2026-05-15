@@ -309,6 +309,7 @@ module IlMachineThreadState =
                 LastSystemError = 0
                 NextEventPipeId = 1L
                 PointerHashCounters = PointerHashCounters.empty
+                NativeMemoryPool = NativeMemoryPool.empty
             }
 
         state.WithLoadedAssembly assyName entryAssembly
@@ -570,9 +571,9 @@ module IlMachineThreadState =
                     )
         }
 
-    let allocateLocalMemory
+    let allocateStackMemory
         (thread : ThreadId)
-        (initialization : LocalMemoryInitialization)
+        (initialization : MemoryBlockInitialization)
         (byteCount : int)
         (state : IlMachineState)
         : ManagedPointerSource * IlMachineState
@@ -582,24 +583,24 @@ module IlMachineThreadState =
         let frame = ThreadState.getFrame frameId threadState
 
         let blockId, pool =
-            LocalMemoryPool.allocate initialization byteCount frame.LocalMemoryPool
+            StackMemoryPool.allocate initialization byteCount frame.StackMemoryPool
 
         let frame =
             { frame with
-                LocalMemoryPool = pool
+                StackMemoryPool = pool
             }
 
         let state = setFrame thread frameId frame state
 
-        ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frameId, blockId, 0), []), state
+        ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frameId, blockId, 0), []), state
 
-    let getLocalMemoryPool (thread : ThreadId) (frameId : FrameId) (state : IlMachineState) : LocalMemoryPool =
-        (getFrame thread frameId state).LocalMemoryPool
+    let getStackMemoryPool (thread : ThreadId) (frameId : FrameId) (state : IlMachineState) : StackMemoryPool =
+        (getFrame thread frameId state).StackMemoryPool
 
-    let setLocalMemoryPool
+    let setStackMemoryPool
         (thread : ThreadId)
         (frameId : FrameId)
-        (pool : LocalMemoryPool)
+        (pool : StackMemoryPool)
         (state : IlMachineState)
         : IlMachineState
         =
@@ -607,10 +608,44 @@ module IlMachineThreadState =
 
         let frame =
             { frame with
-                LocalMemoryPool = pool
+                StackMemoryPool = pool
             }
 
         setFrame thread frameId frame state
+
+    /// Allocate a block of native heap memory of the given size.  Returned as a
+    /// byref into byte 0 of the freshly-allocated block; callers that want a
+    /// `nativeint` pointer convert it via `NativeIntSource.ManagedPointer`.
+    let allocateNativeMemory
+        (initialization : MemoryBlockInitialization)
+        (byteCount : int)
+        (state : IlMachineState)
+        : ManagedPointerSource * IlMachineState
+        =
+        let blockId, pool =
+            NativeMemoryPool.allocate initialization byteCount state.NativeMemoryPool
+
+        let state =
+            { state with
+                NativeMemoryPool = pool
+            }
+
+        ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (blockId, 0), []), state
+
+    /// Free a previously-allocated native-heap block. Throws on double free.
+    /// Use-after-free is caught later by `NativeMemoryPool.getBlock` when any
+    /// retained byref into the block is dereferenced.
+    let freeNativeMemory (blockId : NativeMemoryBlockId) (state : IlMachineState) : IlMachineState =
+        { state with
+            NativeMemoryPool = NativeMemoryPool.free blockId state.NativeMemoryPool
+        }
+
+    let getNativeMemoryPool (state : IlMachineState) : NativeMemoryPool = state.NativeMemoryPool
+
+    let setNativeMemoryPool (pool : NativeMemoryPool) (state : IlMachineState) : IlMachineState =
+        { state with
+            NativeMemoryPool = pool
+        }
 
     let setSyncBlock
         (addr : ManagedHeapAddress)

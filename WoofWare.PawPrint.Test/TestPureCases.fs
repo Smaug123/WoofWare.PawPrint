@@ -17,7 +17,7 @@ module TestPureCases =
 
     let unimplemented =
         [
-            "AdvancedStructLayout.cs" // blocked after fixed-buffer pointer arithmetic by MarshalNative_SizeOfHelper for ByValTStr string marshalling
+            "AdvancedStructLayout.cs" // past MarshalNative_SizeOfHelper for ByValTStr; now blocked at libSystem.Native!SystemNative_Malloc called from Marshal.AllocHGlobal → NativeMemory.Alloc (needs native-heap representation, plus downstream MarshalNative_TryGetStructMarshalStub QCall and SystemNative_Free)
             "MarshalSizeOfAutoLayoutStruct.cs" // marshal walker correctly rejects `[StructLayout(LayoutKind.Auto)]` at top level (see CliValueType.IsAutoLayout), but `MarshalNative_SizeOfHelper` in `Native/NativeMarshal.fs` currently turns the `Result.Error` into a host `failwith` rather than raising a managed `ArgumentException`. Needs the QCall handler to translate marshal-size failures into a guest-side ArgumentException throw (CoreCLR `marshalnative.cpp:169` `COMPlusThrow(kArgumentException, IDS_CANNOT_MARSHAL, ...)`).
             "LdtokenField.cs" // past InternalCall System.Buffer::BulkMoveWithWriteBarrierInternal; now blocked during reflection-cache update because Buffer's byte-wise copy refuses to byte-view object-reference array cells (`validateByteAddressableCell` rejects ObjectRef storage)
             "RuntimeFieldHandleGetUtf8Name.cs" // exercises RuntimeFieldHandle::GetUtf8NameInternal, RuntimeTypeHandle::GetInterfaces, and Volatile.Write of object refs successfully; now blocked at the next step in the reflection-cache copy by `validateByteAddressableCell` refusing to byte-view object-reference cells inside Buffer::BulkMoveWithWriteBarrierInternal

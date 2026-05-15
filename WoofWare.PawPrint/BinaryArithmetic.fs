@@ -8,7 +8,8 @@ type private FieldContainer =
 
 type private ArithmeticTarget =
     | NullTarget
-    | LocalMemoryTarget of ThreadId * FrameId * LocallocBlockId * int
+    | StackMemoryTarget of ThreadId * FrameId * StackMemoryBlockId * int
+    | NativeMemoryTarget of NativeMemoryBlockId * int
     | ArrayTarget of ManagedHeapAddress * int
     | StringTarget of ManagedHeapAddress * int
     | FieldTarget of FieldContainer * FieldId
@@ -27,8 +28,10 @@ module private ArithmeticTarget =
     let decompose (ptr : ManagedPointerSource) : ArithmeticTarget =
         match ptr with
         | ManagedPointerSource.Null -> ArithmeticTarget.NullTarget
-        | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset), []) ->
-            ArithmeticTarget.LocalMemoryTarget (thread, frame, block, byteOffset)
+        | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset), []) ->
+            ArithmeticTarget.StackMemoryTarget (thread, frame, block, byteOffset)
+        | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, byteOffset), []) ->
+            ArithmeticTarget.NativeMemoryTarget (block, byteOffset)
         | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), []) ->
             ArithmeticTarget.ArrayTarget (arr, index)
         | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), []) ->
@@ -186,10 +189,15 @@ module ArithmeticOperation =
         =
         match ArithmeticTarget.decompose ptr with
         | ArithmeticTarget.NullTarget -> Choice2Of2 v
-        | ArithmeticTarget.LocalMemoryTarget (thread, frame, block, byteOffset) ->
+        | ArithmeticTarget.StackMemoryTarget (thread, frame, block, byteOffset) ->
             let byteOffset = checkedAddInt32 "localloc byte offset" byteOffset v
 
-            ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset), [])
+            ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset), [])
+            |> Choice1Of2
+        | ArithmeticTarget.NativeMemoryTarget (block, byteOffset) ->
+            let byteOffset = checkedAddInt32 "native memory byte offset" byteOffset v
+
+            ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, byteOffset), [])
             |> Choice1Of2
         | ArithmeticTarget.ArrayTarget (arr, index) ->
             let index = checkedAddInt32 "array index" index v
@@ -350,15 +358,26 @@ module ArithmeticOperation =
                     failwith $"refusing to operate on pointers to arguments: %O{ptr1} and %O{ptr2}"
                 | ManagedPointerSource.Byref _, ManagedPointerSource.Byref _ ->
                     match ArithmeticTarget.decompose ptr1, ArithmeticTarget.decompose ptr2 with
-                    | ArithmeticTarget.LocalMemoryTarget (thread1, frame1, block1, byteOffset1),
-                      ArithmeticTarget.LocalMemoryTarget (thread2, frame2, block2, byteOffset2) ->
+                    | ArithmeticTarget.StackMemoryTarget (thread1, frame1, block1, byteOffset1),
+                      ArithmeticTarget.StackMemoryTarget (thread2, frame2, block2, byteOffset2) ->
                         if thread1 = thread2 && frame1 = frame2 && block1 = block2 then
                             int64 byteOffset1 - int64 byteOffset2 |> verbatimInt64 |> Choice2Of2
                         else
                             NativeIntSource.syntheticCrossStorageByteOffset
-                                (ByteStorageIdentity.LocalMemory (thread2, frame2, block2))
+                                (ByteStorageIdentity.StackMemory (thread2, frame2, block2))
                                 (int64 byteOffset2)
-                                (ByteStorageIdentity.LocalMemory (thread1, frame1, block1))
+                                (ByteStorageIdentity.StackMemory (thread1, frame1, block1))
+                                (int64 byteOffset1)
+                            |> Choice2Of2
+                    | ArithmeticTarget.NativeMemoryTarget (block1, byteOffset1),
+                      ArithmeticTarget.NativeMemoryTarget (block2, byteOffset2) ->
+                        if block1 = block2 then
+                            int64 byteOffset1 - int64 byteOffset2 |> verbatimInt64 |> Choice2Of2
+                        else
+                            NativeIntSource.syntheticCrossStorageByteOffset
+                                (ByteStorageIdentity.NativeMemory block2)
+                                (int64 byteOffset2)
+                                (ByteStorageIdentity.NativeMemory block1)
                                 (int64 byteOffset1)
                             |> Choice2Of2
                     | ArithmeticTarget.ArrayTarget (arr1, index1), ArithmeticTarget.ArrayTarget (arr2, index2) ->
@@ -376,11 +395,11 @@ module ArithmeticOperation =
                         ->
                         subtractArrayByteLocations baseClassTypes state arr1 index1 offset1 arr2 index2 offset2
                         |> Choice2Of2
-                    | ArithmeticTarget.ByteViewTarget (ByrefRoot.LocalMemoryByte (thread1, frame1, block1, rootOffset1),
+                    | ArithmeticTarget.ByteViewTarget (ByrefRoot.StackMemoryByte (thread1, frame1, block1, rootOffset1),
                                                        prefix1,
                                                        _,
                                                        offset1),
-                      ArithmeticTarget.ByteViewTarget (ByrefRoot.LocalMemoryByte (thread2, frame2, block2, rootOffset2),
+                      ArithmeticTarget.ByteViewTarget (ByrefRoot.StackMemoryByte (thread2, frame2, block2, rootOffset2),
                                                        prefix2,
                                                        _,
                                                        offset2) when prefix1 = prefix2 ->
@@ -391,29 +410,29 @@ module ArithmeticOperation =
                             byteOffset1 - byteOffset2 |> verbatimInt64 |> Choice2Of2
                         else
                             NativeIntSource.syntheticCrossStorageByteOffset
-                                (ByteStorageIdentity.LocalMemory (thread2, frame2, block2))
+                                (ByteStorageIdentity.StackMemory (thread2, frame2, block2))
                                 byteOffset2
-                                (ByteStorageIdentity.LocalMemory (thread1, frame1, block1))
+                                (ByteStorageIdentity.StackMemory (thread1, frame1, block1))
                                 byteOffset1
                             |> Choice2Of2
-                    | ArithmeticTarget.ByteViewTarget (ByrefRoot.LocalMemoryByte (thread1, frame1, block1, rootOffset1),
+                    | ArithmeticTarget.ByteViewTarget (ByrefRoot.StackMemoryByte (thread1, frame1, block1, rootOffset1),
                                                        [],
                                                        _,
                                                        offset1),
-                      ArithmeticTarget.LocalMemoryTarget (thread2, frame2, block2, byteOffset2) ->
+                      ArithmeticTarget.StackMemoryTarget (thread2, frame2, block2, byteOffset2) ->
                         let byteOffset1 = int64 rootOffset1 + int64 offset1
 
                         if thread1 = thread2 && frame1 = frame2 && block1 = block2 then
                             byteOffset1 - int64 byteOffset2 |> verbatimInt64 |> Choice2Of2
                         else
                             NativeIntSource.syntheticCrossStorageByteOffset
-                                (ByteStorageIdentity.LocalMemory (thread2, frame2, block2))
+                                (ByteStorageIdentity.StackMemory (thread2, frame2, block2))
                                 (int64 byteOffset2)
-                                (ByteStorageIdentity.LocalMemory (thread1, frame1, block1))
+                                (ByteStorageIdentity.StackMemory (thread1, frame1, block1))
                                 byteOffset1
                             |> Choice2Of2
-                    | ArithmeticTarget.LocalMemoryTarget (thread1, frame1, block1, byteOffset1),
-                      ArithmeticTarget.ByteViewTarget (ByrefRoot.LocalMemoryByte (thread2, frame2, block2, rootOffset2),
+                    | ArithmeticTarget.StackMemoryTarget (thread1, frame1, block1, byteOffset1),
+                      ArithmeticTarget.ByteViewTarget (ByrefRoot.StackMemoryByte (thread2, frame2, block2, rootOffset2),
                                                        [],
                                                        _,
                                                        offset2) ->
@@ -423,9 +442,55 @@ module ArithmeticOperation =
                             int64 byteOffset1 - byteOffset2 |> verbatimInt64 |> Choice2Of2
                         else
                             NativeIntSource.syntheticCrossStorageByteOffset
-                                (ByteStorageIdentity.LocalMemory (thread2, frame2, block2))
+                                (ByteStorageIdentity.StackMemory (thread2, frame2, block2))
                                 byteOffset2
-                                (ByteStorageIdentity.LocalMemory (thread1, frame1, block1))
+                                (ByteStorageIdentity.StackMemory (thread1, frame1, block1))
+                                (int64 byteOffset1)
+                            |> Choice2Of2
+                    | ArithmeticTarget.ByteViewTarget (ByrefRoot.NativeMemoryByte (block1, rootOffset1),
+                                                       prefix1,
+                                                       _,
+                                                       offset1),
+                      ArithmeticTarget.ByteViewTarget (ByrefRoot.NativeMemoryByte (block2, rootOffset2),
+                                                       prefix2,
+                                                       _,
+                                                       offset2) when prefix1 = prefix2 ->
+                        let byteOffset1 = int64 rootOffset1 + int64 offset1
+                        let byteOffset2 = int64 rootOffset2 + int64 offset2
+
+                        if block1 = block2 then
+                            byteOffset1 - byteOffset2 |> verbatimInt64 |> Choice2Of2
+                        else
+                            NativeIntSource.syntheticCrossStorageByteOffset
+                                (ByteStorageIdentity.NativeMemory block2)
+                                byteOffset2
+                                (ByteStorageIdentity.NativeMemory block1)
+                                byteOffset1
+                            |> Choice2Of2
+                    | ArithmeticTarget.ByteViewTarget (ByrefRoot.NativeMemoryByte (block1, rootOffset1), [], _, offset1),
+                      ArithmeticTarget.NativeMemoryTarget (block2, byteOffset2) ->
+                        let byteOffset1 = int64 rootOffset1 + int64 offset1
+
+                        if block1 = block2 then
+                            byteOffset1 - int64 byteOffset2 |> verbatimInt64 |> Choice2Of2
+                        else
+                            NativeIntSource.syntheticCrossStorageByteOffset
+                                (ByteStorageIdentity.NativeMemory block2)
+                                (int64 byteOffset2)
+                                (ByteStorageIdentity.NativeMemory block1)
+                                byteOffset1
+                            |> Choice2Of2
+                    | ArithmeticTarget.NativeMemoryTarget (block1, byteOffset1),
+                      ArithmeticTarget.ByteViewTarget (ByrefRoot.NativeMemoryByte (block2, rootOffset2), [], _, offset2) ->
+                        let byteOffset2 = int64 rootOffset2 + int64 offset2
+
+                        if block1 = block2 then
+                            int64 byteOffset1 - byteOffset2 |> verbatimInt64 |> Choice2Of2
+                        else
+                            NativeIntSource.syntheticCrossStorageByteOffset
+                                (ByteStorageIdentity.NativeMemory block2)
+                                byteOffset2
+                                (ByteStorageIdentity.NativeMemory block1)
                                 (int64 byteOffset1)
                             |> Choice2Of2
                     | ArithmeticTarget.ByteViewTarget (ByrefRoot.StringCharAt (str1, index1), prefix1, _, offset1),
@@ -476,10 +541,14 @@ module ArithmeticOperation =
                         // delta regardless of which `ReinterpretAs` type was used
                         // on each side (the view is address-preserving).
                         int64 off1 - int64 off2 |> verbatimInt64 |> Choice2Of2
-                    | ArithmeticTarget.LocalMemoryTarget _, _
-                    | _, ArithmeticTarget.LocalMemoryTarget _ ->
+                    | ArithmeticTarget.StackMemoryTarget _, _
+                    | _, ArithmeticTarget.StackMemoryTarget _ ->
                         failwith
                             $"refusing to subtract localloc byte pointer from incompatible pointer: %O{ptr1} vs %O{ptr2}"
+                    | ArithmeticTarget.NativeMemoryTarget _, _
+                    | _, ArithmeticTarget.NativeMemoryTarget _ ->
+                        failwith
+                            $"refusing to subtract native memory byte pointer from incompatible pointer: %O{ptr1} vs %O{ptr2}"
                     | ArithmeticTarget.ArrayTarget _, _
                     | _, ArithmeticTarget.ArrayTarget _ ->
                         failwith

@@ -703,7 +703,7 @@ module IlMachineStateExecution =
             // TODO: throw guest System.Runtime.AmbiguousImplementationException here.
             |> failwithf "multiple most-specific default interface implementations matched this virtual slot: %s"
 
-    let callMethod
+    let rec callMethod
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (wasInitialising : ConcreteTypeHandle option)
@@ -761,8 +761,230 @@ module IlMachineStateExecution =
 
         let intrinsicKey = Intrinsics.methodKey state methodToCall
 
+        // `static T Activator.CreateInstance<T>()` is marked `[Intrinsic]` because the JIT inlines it
+        // to an allocate+ctor sequence. The managed IL bottoms out in InternalCalls
+        // (`RuntimeType.CreateInstanceOfT`, `CallDefaultStructConstructor`) we don't model, so we
+        // implement the high-level intrinsic semantics directly: for a value type T, push `default(T)`
+        // (skipping any explicit parameterless struct ctor for now — see TODO); for a reference type T,
+        // allocate the object and run its parameterless ctor by recursing through `callMethod`.
+        // See https://github.com/dotnet/runtime/blob/HEAD/src/coreclr/System.Private.CoreLib/src/System/Activator.RuntimeType.cs#L138
+        //
+        // Known divergences from CoreCLR not yet modelled here:
+        //  - When the recursed ctor throws, CoreCLR's `CreateInstanceOfT` wraps the exception in a
+        //    `TargetInvocationException`. We don't intercept the exception today; user code that
+        //    catches `TargetInvocationException` around `Activator.CreateInstance<T>()` will see the
+        //    raw guest exception instead. Wrapping requires installing a marker on the ctor frame
+        //    that the exception dispatcher consults, which is bigger than this change.
+        //  - For `BeforeFieldInit` reference types, CoreCLR defers the type initializer past the
+        //    Activator allocation/ctor pair: cctor only fires lazily on first static-field access.
+        //    PawPrint's `newobj` opcode (UnaryMetadataObjectOps.fs:240) eagerly runs cctor before
+        //    every instance creation regardless of BeforeFieldInit, so following its lead here keeps
+        //    Activator consistent with direct `new C()`. Fixing the laziness properly is a runtime-
+        //    wide concern (both newobj and this intrinsic, possibly inside `ensureTypeInitialised`)
+        //    and out of scope for this change. Until then, user code can observe static-initializer
+        //    side effects happening one Activator call earlier than the real runtime would emit them.
+        let tryHandleActivatorCreateInstance () : IlMachineState option =
+            if
+                intrinsicKey.AssemblyName = "System.Private.CoreLib"
+                && intrinsicKey.DeclaringTypeFullName = "System.Activator"
+                && intrinsicKey.MethodName = "CreateInstance"
+                && List.isEmpty intrinsicKey.ParameterShapes
+                && methodToCall.Generics.Length = 1
+            then
+                let tHandle = methodToCall.Generics.[0]
+
+                // Determine whether T is a value type BEFORE running its cctor: CoreCLR's
+                // `Activator.CreateInstance<T>()` for a value type without an explicit parameterless
+                // ctor returns `default(T)` and does NOT trigger T's static constructor. We must not
+                // observe cctor side effects on that path. The ref-type path picks up cctor naturally
+                // via the recursive `callMethod` for the .ctor.
+                let isValueType, typeDefOpt =
+                    match tHandle with
+                    | ConcreteTypeHandle.Byref _
+                    | ConcreteTypeHandle.Pointer _
+                    | ConcreteTypeHandle.FunctionPointer _ ->
+                        failwith
+                            $"Activator.CreateInstance<T>() requires T to satisfy `new()`, but T has handle %O{tHandle}"
+                    | ConcreteTypeHandle.OneDimArrayZero _
+                    | ConcreteTypeHandle.Array _ ->
+                        // Arrays are reference types but their construction is special; defer.
+                        false, None
+                    | ConcreteTypeHandle.Concrete _ ->
+                        match IlMachineState.tryGetConcreteTypeInfo state tHandle with
+                        | Some (_, typeInfo) ->
+                            DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo, Some typeInfo
+                        | None ->
+                            failwith
+                                $"Activator.CreateInstance<T>(): concrete type handle %O{tHandle} has no TypeDef row"
+
+                if isValueType then
+                    match typeDefOpt with
+                    | Some typeDef ->
+                        let hasExplicitParameterlessCtor =
+                            typeDef.Methods
+                            |> List.exists (fun m -> m.Name = ".ctor" && not m.IsStatic && m.Parameters.IsEmpty)
+
+                        if hasExplicitParameterlessCtor then
+                            failwith
+                                $"TODO: Activator.CreateInstance<T>() for value type %s{typeDef.Namespace}.%s{typeDef.Name} with an explicit parameterless ctor is not yet implemented (CoreCLR runs it via CallDefaultStructConstructor, including running the cctor)"
+                    | None -> failwith "Activator.CreateInstance<T>(): value-type branch without typeDef"
+
+                    let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes tHandle
+
+                    let state = state |> IlMachineState.pushToEvalStack zero thread
+
+                    let state =
+                        if advanceProgramCounterOfCaller then
+                            IlMachineState.advanceProgramCounter thread state
+                        else
+                            state
+
+                    Some state
+                else
+
+                match tHandle with
+                | ConcreteTypeHandle.OneDimArrayZero _
+                | ConcreteTypeHandle.Array _ ->
+                    failwith $"TODO: Activator.CreateInstance<T>() for array type %O{tHandle} is not yet implemented"
+                | _ -> ()
+
+                let typeDef =
+                    match typeDefOpt with
+                    | Some typeDef -> typeDef
+                    | None -> failwith "Activator.CreateInstance<T>(): reference-type branch without typeDef"
+
+                // Validate T BEFORE running its cctor. CoreCLR rejects abstract types and types
+                // without a public parameterless ctor in `RuntimeType.CreateInstanceOfT` /
+                // ActivatorCache construction, before any class-init side effects are observable.
+                // Running `ensureTypeInitialised` first would let a throwing `.cctor` mask the
+                // `MissingMethodException` users actually expect — empirically verified against
+                // .NET 10.
+                if typeDef.TypeAttributes.HasFlag TypeAttributes.Abstract then
+                    // CoreCLR's MissingMethodException carries the message
+                    // "Cannot dynamically create an instance of type 'X'. Reason: Cannot create
+                    // an abstract class." (verified against .NET 10).
+                    failwith
+                        $"TODO: Activator.CreateInstance<T>() should throw MissingMethodException because T = %s{typeDef.Namespace}.%s{typeDef.Name} is abstract"
+
+                // CoreCLR's `CreateInstanceOfT` consults `ActivatorCache.CtorIsPublic` and throws
+                // `MissingMethodException` if the parameterless ctor is non-public — see
+                // RuntimeType.CoreCLR.cs:4034. Filter accordingly so an internal/private ctor is
+                // not silently invoked.
+                let isPublic (m : MethodInfo<_, _, _>) : bool =
+                    (m.MethodAttributes &&& MethodAttributes.MemberAccessMask) = MethodAttributes.Public
+
+                let ctor =
+                    typeDef.Methods
+                    |> List.tryFind (fun m -> m.Name = ".ctor" && not m.IsStatic && m.Parameters.IsEmpty && isPublic m)
+
+                match ctor with
+                | None ->
+                    // CoreCLR throws MissingMethodException here. We don't yet have a host helper
+                    // to raise that, so fail loudly with the precise condition.
+                    let hasNonPublicParameterless =
+                        typeDef.Methods
+                        |> List.exists (fun m ->
+                            m.Name = ".ctor" && not m.IsStatic && m.Parameters.IsEmpty && not (isPublic m)
+                        )
+
+                    let reason =
+                        if hasNonPublicParameterless then
+                            "its parameterless instance constructor is non-public"
+                        else
+                            "it has no parameterless instance constructor"
+
+                    failwith
+                        $"TODO: Activator.CreateInstance<T>() should throw MissingMethodException because T = %s{typeDef.Namespace}.%s{typeDef.Name} %s{reason}"
+                | Some ctor ->
+
+                let ct =
+                    AllConcreteTypes.lookup tHandle state.ConcreteTypes
+                    |> Option.defaultWith (fun () ->
+                        failwith
+                            $"Activator.CreateInstance<T>(): concrete type handle %O{tHandle} not found in AllConcreteTypes"
+                    )
+
+                let state, init =
+                    ensureTypeInitialised loggerFactory baseClassTypes thread tHandle state
+
+                match init with
+                | WhatWeDid.Executed ->
+                    let state, concretizedCtor, declaringTypeHandle =
+                        ExecutionConcretization.concretizeMethodWithAllGenerics
+                            loggerFactory
+                            baseClassTypes
+                            ct.Generics
+                            ctor
+                            ImmutableArray.Empty
+                            state
+
+                    let state, allFields =
+                        IlMachineState.collectAllInstanceFields loggerFactory baseClassTypes state declaringTypeHandle
+
+                    let fields =
+                        CliValueType.OfFields
+                            baseClassTypes
+                            state.ConcreteTypes
+                            declaringTypeHandle
+                            typeDef.Layout
+                            (CharSetMetadata.ofTypeAttributes typeDef.TypeAttributes)
+                            allFields
+
+                    let allocatedAddr, state =
+                        IlMachineState.allocateManagedObject declaringTypeHandle fields state
+
+                    let state =
+                        state
+                        |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some allocatedAddr)) thread
+
+                    let threadState = state.ThreadState.[thread]
+
+                    callMethod
+                        loggerFactory
+                        baseClassTypes
+                        None
+                        (Some allocatedAddr)
+                        false
+                        false
+                        advanceProgramCounterOfCaller
+                        concretizedCtor.Generics
+                        concretizedCtor
+                        thread
+                        threadState
+                        None
+                        false
+                        state
+                    |> Some
+                | WhatWeDid.SuspendedForClassInit ->
+                    // T's cctor was kicked off and is now running on top of the current frame.
+                    // We need the activator call to be retried after the cctor returns. The
+                    // simplest signal to the engine for that today is: leave the state with the
+                    // cctor frame pushed, but the activator caller's PC must not have advanced,
+                    // because when control returns to it, we want it to re-execute the call
+                    // opcode and re-enter Activator.CreateInstance<T>().
+                    //
+                    // Caller-PC advancement happens later in `callMethod` (line ~961); by short-
+                    // circuiting here we never reach it, so the caller's PC stays put. Good.
+                    Some state
+                | WhatWeDid.BlockedOnClassInit _ ->
+                    failwith
+                        "TODO: cross-thread class init blocking inside Activator.CreateInstance<T>() is not yet handled"
+                | WhatWeDid.SuspendedForManagedCall ->
+                    failwith
+                        "logic error: ensureTypeInitialised inside Activator.CreateInstance<T>() cannot suspend for an arbitrary managed call"
+                | WhatWeDid.ThrowingTypeInitializationException ->
+                    // Exception dispatch is in flight; the in-flight exception handler will take
+                    // over from the caller, not us.
+                    Some state
+            else
+                None
+
         match
             if isIntrinsic && not (Intrinsics.isSafeIntrinsic intrinsicKey) then
+                match tryHandleActivatorCreateInstance () with
+                | Some result -> Some result
+                | None ->
+
                 match Intrinsics.call loggerFactory baseClassTypes wasConstructing methodToCall thread state with
                 | Some result -> Some result
                 | None ->
@@ -973,7 +1195,7 @@ module IlMachineStateExecution =
             ThreadState = state.ThreadState |> Map.add thread newThreadState
         }
 
-    let rec loadClass
+    and loadClass
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (ty : ConcreteTypeHandle)
@@ -1137,7 +1359,7 @@ module IlMachineStateExecution =
 
                 NothingToDo state
 
-    let ensureTypeInitialised
+    and ensureTypeInitialised
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (thread : ThreadId)

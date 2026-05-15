@@ -315,7 +315,7 @@ module TestCliTypeBytes =
 
     let private syntheticCrossStorageNativeIntSource () : NativeIntSource =
         NativeIntSource.syntheticCrossStorageByteOffset
-            (ByteStorageIdentity.LocalMemory (ThreadId 0, FrameId 0, LocallocBlockId 0))
+            (ByteStorageIdentity.StackMemory (ThreadId 0, FrameId 0, StackMemoryBlockId 0))
             0L
             (ByteStorageIdentity.StackLocal (ThreadId 0, FrameId 0, 0us))
             8L
@@ -328,7 +328,10 @@ module TestCliTypeBytes =
     let private nonByteRenderableNativeIntSources () : NativeIntSource list =
         [
             NativeIntSource.ManagedPointer (
-                ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (ThreadId 0, FrameId 0, LocallocBlockId 0, 0), [])
+                ManagedPointerSource.Byref (
+                    ByrefRoot.StackMemoryByte (ThreadId 0, FrameId 0, StackMemoryBlockId 0, 0),
+                    []
+                )
             )
             NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed int32Handle)
             NativeIntSource.MethodTablePtr int32Handle

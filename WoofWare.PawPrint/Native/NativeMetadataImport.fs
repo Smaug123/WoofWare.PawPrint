@@ -62,8 +62,8 @@ module NativeMetadataImport =
         | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, baseIndex), []) ->
             ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, baseIndex + index), [])
             |> Some
-        | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset), []) ->
-            ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset + (index * 4)), [])
+        | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset), []) ->
+            ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset + (index * 4)), [])
             |> Some
         | ManagedPointerSource.Null -> failwith $"%s{operation}: expected non-null Int32 result buffer"
         | ManagedPointerSource.Byref _ -> None

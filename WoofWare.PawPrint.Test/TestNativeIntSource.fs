@@ -14,7 +14,7 @@ module TestNativeIntSource =
         [|
             ByteStorageIdentity.Array (ManagedHeapAddress 301)
             ByteStorageIdentity.String (ManagedHeapAddress 302)
-            ByteStorageIdentity.LocalMemory (ThreadId 0, FrameId 30, LocallocBlockId 0)
+            ByteStorageIdentity.StackMemory (ThreadId 0, FrameId 30, StackMemoryBlockId 0)
             ByteStorageIdentity.StackLocal (ThreadId 0, FrameId 31, 1us)
             ByteStorageIdentity.StackArgument (ThreadId 0, FrameId 32, 2us)
         |]

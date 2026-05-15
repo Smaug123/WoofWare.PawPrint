@@ -450,3 +450,42 @@ module TestEvalStack =
             if actual <> synthetic then
                 failwith $"expected synthetic to round-trip unchanged, got %O{actual}"
         | other -> failwith $"expected Int64 target to preserve synthetic, got %O{other}"
+
+    [<Test>]
+    let ``unsigned comparisons order native-memory byrefs by byte offset within the same block`` () : unit =
+        let block = NativeMemoryBlockId.NativeMemoryBlockId 0
+
+        let pointerAt (byteOffset : int) : EvalStackValue =
+            EvalStackValue.NativeInt (
+                NativeIntSource.ManagedPointer (
+                    ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, byteOffset), [])
+                )
+            )
+
+        let lo = pointerAt 4
+        let hi = pointerAt 16
+
+        if not (EvalStackValueComparisons.cgtUn hi lo) then
+            failwith
+                "cgt.un should report higher native-memory offset as strictly greater than a lower one in the same block"
+
+        if EvalStackValueComparisons.cgtUn lo hi then
+            failwith
+                "cgt.un should report lower native-memory offset as not strictly greater than a higher one in the same block"
+
+        if not (EvalStackValueComparisons.cltUn lo hi) then
+            failwith
+                "clt.un should report lower native-memory offset as strictly less than a higher one in the same block"
+
+        if EvalStackValueComparisons.cltUn hi lo then
+            failwith
+                "clt.un should report higher native-memory offset as not strictly less than a lower one in the same block"
+
+        // Equality: same byte offset must not be reported as strictly ordered.
+        let alsoLo = pointerAt 4
+
+        if EvalStackValueComparisons.cgtUn lo alsoLo then
+            failwith "cgt.un should report equal native-memory offsets as not strictly ordered"
+
+        if EvalStackValueComparisons.cltUn lo alsoLo then
+            failwith "clt.un should report equal native-memory offsets as not strictly ordered"

@@ -36,7 +36,7 @@ module PrefixState =
 
 /// Whether a new `localloc` block should expose zeroed bytes immediately.
 [<RequireQualifiedAccess>]
-type LocalMemoryInitialization =
+type MemoryBlockInitialization =
     | ZeroInitialized
     | Uninitialized
 
@@ -54,10 +54,10 @@ type LocalMemoryInitialization =
 /// Pointers into a block are valid only while the owning method frame is live;
 /// if one escapes, later deref fails visibly because the frame-local pool is
 /// gone.
-type LocalMemoryBlock =
+type MemoryBlock =
     {
         Size : int
-        Initialization : LocalMemoryInitialization
+        Initialization : MemoryBlockInitialization
         /// Offset -> typed cell. Cells must not overlap each other; cell ranges
         /// are also disjoint from `Bytes` keys.
         Cells : Map<int, CliType>
@@ -65,17 +65,30 @@ type LocalMemoryBlock =
         Bytes : Map<int, byte>
     }
 
-type LocalMemoryPool =
+type StackMemoryPool =
     {
         NextBlockId : int
-        Blocks : Map<LocallocBlockId, LocalMemoryBlock>
+        Blocks : Map<StackMemoryBlockId, MemoryBlock>
     }
 
-/// A primitive byte read from a localloc block, classified by where the byte
+/// Native-heap-backed analogue of `StackMemoryPool`: an explicit free list of
+/// `MemoryBlock`s scoped to the whole machine state rather than a method frame.
+/// Allocations come from `Marshal.AllocHGlobal` / `NativeMemory.Alloc`; the
+/// caller is responsible for freeing them via `Marshal.FreeHGlobal` /
+/// `NativeMemory.Free`. Freeing deletes the block; subsequent dereferences of
+/// any retained byref fail loudly, matching the deterministic-simulator
+/// principle of catching use-after-free at the offending access.
+type NativeMemoryPool =
+    {
+        NextBlockId : int
+        Blocks : Map<NativeMemoryBlockId, MemoryBlock>
+    }
+
+/// A primitive byte read from a memory block, classified by where the byte
 /// came from. Callers walking byte ranges use the `Cell` arm to amortise per-
 /// cell processing; the byte arms describe a single byte each.
 [<RequireQualifiedAccess>]
-type LocalMemoryByteSource =
+type MemoryByteSource =
     /// Byte lies inside a typed cell. The cell starts at `cellOffset` and
     /// reading byte `n` of it requires the existing byte helpers
     /// (`CliType.BytesAt`); callers must respect the cell's byte
@@ -89,73 +102,39 @@ type LocalMemoryByteSource =
     /// fail visibly.
     | Uninitialized
 
+/// Block-level primitives shared by `StackMemoryPool` and `NativeMemoryPool`.
+/// Both pools wrap an identical `MemoryBlock` shape; the only difference is
+/// where the map lives and how blocks are added/removed. Keeping the cell-and-
+/// byte logic here means the two pools never drift.
 [<RequireQualifiedAccess>]
-module LocalMemoryPool =
-    let empty : LocalMemoryPool =
+module MemoryBlock =
+    let empty (initialization : MemoryBlockInitialization) (byteCount : int) : MemoryBlock =
         {
-            NextBlockId = 0
-            Blocks = Map.empty
+            Size = byteCount
+            Initialization = initialization
+            Cells = Map.empty
+            Bytes = Map.empty
         }
 
-    let private checkRange
+    let internal checkRange
         (operation : string)
-        (blockId : LocallocBlockId)
+        (containerDesc : string)
         (blockLength : int)
         (byteOffset : int)
         (byteCount : int)
         : unit
         =
         if byteOffset < 0 then
-            failwith $"%s{operation}: negative byte offset %d{byteOffset} in %O{blockId}"
+            failwith $"%s{operation}: negative byte offset %d{byteOffset} in %s{containerDesc}"
 
         if byteCount < 0 then
-            failwith $"%s{operation}: negative byte count %d{byteCount} in %O{blockId}"
+            failwith $"%s{operation}: negative byte count %d{byteCount} in %s{containerDesc}"
 
         let rangeEnd = int64 byteOffset + int64 byteCount
 
         if rangeEnd > int64 blockLength then
             failwith
-                $"%s{operation}: byte range [%d{byteOffset}, %d{rangeEnd}) is outside %O{blockId} of length %d{blockLength}"
-
-    let allocate
-        (initialization : LocalMemoryInitialization)
-        (byteCount : int)
-        (pool : LocalMemoryPool)
-        : LocallocBlockId * LocalMemoryPool
-        =
-        if byteCount < 0 then
-            failwith $"LocalMemoryPool.allocate: negative byte count %d{byteCount}"
-
-        let blockId = LocallocBlockId pool.NextBlockId
-
-        let block =
-            {
-                Size = byteCount
-                Initialization = initialization
-                Cells = Map.empty
-                Bytes = Map.empty
-            }
-
-        blockId,
-        { pool with
-            NextBlockId = pool.NextBlockId + 1
-            Blocks = pool.Blocks |> Map.add blockId block
-        }
-
-    let getBlock (blockId : LocallocBlockId) (pool : LocalMemoryPool) : LocalMemoryBlock =
-        match pool.Blocks |> Map.tryFind blockId with
-        | Some block -> block
-        | None -> failwith $"Local memory block %O{blockId} is not live in this method frame"
-
-    let private setBlock
-        (blockId : LocallocBlockId)
-        (block : LocalMemoryBlock)
-        (pool : LocalMemoryPool)
-        : LocalMemoryPool
-        =
-        { pool with
-            Blocks = pool.Blocks |> Map.add blockId block
-        }
+                $"%s{operation}: byte range [%d{byteOffset}, %d{rangeEnd}) is outside %s{containerDesc} of length %d{blockLength}"
 
     let private rangesIntersect (aOffset : int) (aSize : int) (bOffset : int) (bSize : int) : bool =
         aOffset < bOffset + bSize && bOffset < aOffset + aSize
@@ -164,7 +143,7 @@ module LocalMemoryPool =
     /// Cells don't overlap, so at most one matches. F# `Map` iterates entries
     /// in key order, so we can stop as soon as a cell starts past `offset`
     /// (no later cell can contain `offset`) or as soon as we find a cover.
-    let private tryFindCellCovering' (offset : int) (block : LocalMemoryBlock) : (int * CliType) option =
+    let private tryFindCellCoveringRaw (offset : int) (block : MemoryBlock) : (int * CliType) option =
         use enumerator =
             (block.Cells :> System.Collections.Generic.IEnumerable<_>).GetEnumerator ()
 
@@ -190,49 +169,34 @@ module LocalMemoryPool =
     /// Find the unique cell whose covered range contains `offset`, if any.
     /// Returns `None` for an in-range offset that no cell covers, and also for
     /// an out-of-range `offset` (consistent with the `try` prefix).
-    let tryFindCellCovering
-        (blockId : LocallocBlockId)
-        (offset : int)
-        (pool : LocalMemoryPool)
-        : (int * CliType) option
-        =
-        let block = getBlock blockId pool
-
+    let tryFindCellCovering (offset : int) (block : MemoryBlock) : (int * CliType) option =
         if offset < 0 || offset >= block.Size then
             None
         else
-            tryFindCellCovering' offset block
+            tryFindCellCoveringRaw offset block
 
     /// Return the cell that begins at exactly `offset`, if any.
-    let tryReadCell (blockId : LocallocBlockId) (offset : int) (pool : LocalMemoryPool) : CliType option =
-        let block = getBlock blockId pool
-        Map.tryFind offset block.Cells
+    let tryReadCell (offset : int) (block : MemoryBlock) : CliType option = Map.tryFind offset block.Cells
 
     /// Classify a single byte position. Callers walking byte ranges use the
     /// `Cell` arm to dispatch through the existing typed-cell byte helpers.
-    let private readByteSource
-        (blockId : LocallocBlockId)
-        (offset : int)
-        (pool : LocalMemoryPool)
-        : LocalMemoryByteSource
-        =
-        let block = getBlock blockId pool
-        checkRange "LocalMemoryPool.readByteSource" blockId block.Size offset 1
+    let private readByteSource (containerDesc : string) (offset : int) (block : MemoryBlock) : MemoryByteSource =
+        checkRange "MemoryBlock.readByteSource" containerDesc block.Size offset 1
 
-        match tryFindCellCovering' offset block with
-        | Some (cellOffset, cell) -> LocalMemoryByteSource.Cell (cellOffset, cell)
+        match tryFindCellCoveringRaw offset block with
+        | Some (cellOffset, cell) -> MemoryByteSource.Cell (cellOffset, cell)
         | None ->
             match Map.tryFind offset block.Bytes with
-            | Some b -> LocalMemoryByteSource.Overlay b
+            | Some b -> MemoryByteSource.Overlay b
             | None ->
                 match block.Initialization with
-                | LocalMemoryInitialization.ZeroInitialized -> LocalMemoryByteSource.DefaultZero
-                | LocalMemoryInitialization.Uninitialized -> LocalMemoryByteSource.Uninitialized
+                | MemoryBlockInitialization.ZeroInitialized -> MemoryByteSource.DefaultZero
+                | MemoryBlockInitialization.Uninitialized -> MemoryByteSource.Uninitialized
 
     /// Remove any cells or byte-overlay entries intersecting
     /// `[offset, offset + count)`. Cells are removed wholesale even if they
     /// only partially overlap the requested range.
-    let private evictRangeInBlock (offset : int) (count : int) (block : LocalMemoryBlock) : LocalMemoryBlock =
+    let private evictRange (offset : int) (count : int) (block : MemoryBlock) : MemoryBlock =
         if count <= 0 then
             block
         else
@@ -261,96 +225,70 @@ module LocalMemoryPool =
     /// intersects the new cell. The caller is responsible for ensuring the
     /// value is the intended typed view; provenance carried by the value
     /// (such as `NativeIntSource.FieldHandlePtr`) is preserved.
-    let writeCell
-        (blockId : LocallocBlockId)
-        (offset : int)
-        (value : CliType)
-        (pool : LocalMemoryPool)
-        : LocalMemoryPool
-        =
-        let block = getBlock blockId pool
+    let writeCell (containerDesc : string) (offset : int) (value : CliType) (block : MemoryBlock) : MemoryBlock =
         let size = CliType.sizeOf value
-        checkRange "LocalMemoryPool.writeCell" blockId block.Size offset size
+        checkRange "MemoryBlock.writeCell" containerDesc block.Size offset size
 
-        let evicted = evictRangeInBlock offset size block
+        let evicted = evictRange offset size block
 
-        let updated =
-            { evicted with
-                Cells = evicted.Cells |> Map.add offset value
-            }
+        { evicted with
+            Cells = evicted.Cells |> Map.add offset value
+        }
 
-        setBlock blockId updated pool
-
-    /// Replace an existing cell at `cellOffset` whose new size does not exceed
-    /// the prior size. Used by the byte-write path to install an updated cell
+    /// Replace an existing cell at `cellOffset` whose new size matches the
+    /// existing cell. Used by the byte-write path to install an updated cell
     /// produced by `CliType.WithBytesAtIfChanged`. Throws if no cell exists at
     /// `cellOffset` or the new value's size differs from the existing cell.
     let private replaceCell
-        (blockId : LocallocBlockId)
+        (containerDesc : string)
         (cellOffset : int)
         (updated : CliType)
-        (pool : LocalMemoryPool)
-        : LocalMemoryPool
+        (block : MemoryBlock)
+        : MemoryBlock
         =
-        let block = getBlock blockId pool
-
         match Map.tryFind cellOffset block.Cells with
         | None ->
             failwith
-                $"LocalMemoryPool.replaceCell: no cell at offset %d{cellOffset} in %O{blockId} (this is an interpreter bug)"
+                $"MemoryBlock.replaceCell: no cell at offset %d{cellOffset} in %s{containerDesc} (this is an interpreter bug)"
         | Some existing ->
             let existingSize = CliType.sizeOf existing
             let updatedSize = CliType.sizeOf updated
 
             if existingSize <> updatedSize then
                 failwith
-                    $"LocalMemoryPool.replaceCell: refusing to change cell size at offset %d{cellOffset} in %O{blockId} (was %d{existingSize}, would be %d{updatedSize})"
+                    $"MemoryBlock.replaceCell: refusing to change cell size at offset %d{cellOffset} in %s{containerDesc} (was %d{existingSize}, would be %d{updatedSize})"
 
-            let block =
-                { block with
-                    Cells = block.Cells |> Map.add cellOffset updated
-                }
-
-            setBlock blockId block pool
+            { block with
+                Cells = block.Cells |> Map.add cellOffset updated
+            }
 
     /// Write a single byte through the byte overlay. Caller must ensure
     /// `offset` does not lie inside any cell — typically by walking the cell
     /// covering check first and routing cell-resident writes through
     /// `replaceCell` instead.
     let private writeOverlayByte
-        (blockId : LocallocBlockId)
+        (containerDesc : string)
         (offset : int)
         (value : byte)
-        (pool : LocalMemoryPool)
-        : LocalMemoryPool
+        (block : MemoryBlock)
+        : MemoryBlock
         =
-        let block = getBlock blockId pool
-        checkRange "LocalMemoryPool.writeOverlayByte" blockId block.Size offset 1
+        checkRange "MemoryBlock.writeOverlayByte" containerDesc block.Size offset 1
 
-        match tryFindCellCovering' offset block with
+        match tryFindCellCoveringRaw offset block with
         | Some (cellOffset, _) ->
             failwith
-                $"LocalMemoryPool.writeOverlayByte: byte offset %d{offset} lies inside cell at %d{cellOffset} in %O{blockId} (this is an interpreter bug)"
+                $"MemoryBlock.writeOverlayByte: byte offset %d{offset} lies inside cell at %d{cellOffset} in %s{containerDesc} (this is an interpreter bug)"
         | None ->
-            let block =
-                { block with
-                    Bytes = block.Bytes |> Map.add offset value
-                }
-
-            setBlock blockId block pool
+            { block with
+                Bytes = block.Bytes |> Map.add offset value
+            }
 
     /// Read `count` bytes starting at `offset`, returning `ValueNone` when any
     /// byte in the range is uninitialised or lies inside a cell whose typed
     /// view is not byte-addressable. Used by writers that want to short-circuit
     /// a write when the bytes already match.
-    let tryReadBytes
-        (blockId : LocallocBlockId)
-        (offset : int)
-        (count : int)
-        (pool : LocalMemoryPool)
-        : byte[] voption
-        =
-        let block = getBlock blockId pool
+    let tryReadBytes (containerDesc : string) (offset : int) (count : int) (block : MemoryBlock) : byte[] voption =
         let rangeEnd = int64 offset + int64 count
 
         if offset < 0 || count < 0 || rangeEnd > int64 block.Size then
@@ -361,8 +299,8 @@ module LocalMemoryPool =
             let mutable i = 0
 
             while readable && i < count do
-                match readByteSource blockId (offset + i) pool with
-                | LocalMemoryByteSource.Cell (cellOffset, cell) ->
+                match readByteSource containerDesc (offset + i) block with
+                | MemoryByteSource.Cell (cellOffset, cell) ->
                     match CliType.ByteAddressability cell with
                     | CliByteAddressability.ByteAddressable ->
                         let inCellOffset = offset + i - cellOffset
@@ -372,22 +310,21 @@ module LocalMemoryPool =
                         Array.blit bytes 0 result i take
                         i <- i + take
                     | CliByteAddressability.Rejected _ -> readable <- false
-                | LocalMemoryByteSource.Overlay b ->
+                | MemoryByteSource.Overlay b ->
                     result.[i] <- b
                     i <- i + 1
-                | LocalMemoryByteSource.DefaultZero ->
+                | MemoryByteSource.DefaultZero ->
                     result.[i] <- 0uy
                     i <- i + 1
-                | LocalMemoryByteSource.Uninitialized -> readable <- false
+                | MemoryByteSource.Uninitialized -> readable <- false
 
             if readable then ValueSome result else ValueNone
 
     /// Read `count` bytes starting at `offset`. Throws if the range is out of
     /// bounds, contains uninitialised bytes, or crosses a cell whose typed
     /// view is not byte-addressable (a tagged-pointer cell, for instance).
-    let readBytes (blockId : LocallocBlockId) (offset : int) (count : int) (pool : LocalMemoryPool) : byte[] =
-        let block = getBlock blockId pool
-        checkRange "LocalMemoryPool.readBytes" blockId block.Size offset count
+    let readBytes (containerDesc : string) (offset : int) (count : int) (block : MemoryBlock) : byte[] =
+        checkRange "MemoryBlock.readBytes" containerDesc block.Size offset count
 
         let result = Array.zeroCreate<byte> count
         let mutable i = 0
@@ -395,8 +332,8 @@ module LocalMemoryPool =
         while i < count do
             let pos = offset + i
 
-            match readByteSource blockId pos pool with
-            | LocalMemoryByteSource.Cell (cellOffset, cell) ->
+            match readByteSource containerDesc pos block with
+            | MemoryByteSource.Cell (cellOffset, cell) ->
                 match CliType.ByteAddressability cell with
                 | CliByteAddressability.ByteAddressable ->
                     let inCellOffset = pos - cellOffset
@@ -407,15 +344,15 @@ module LocalMemoryPool =
                     i <- i + take
                 | CliByteAddressability.Rejected rejection ->
                     failwith
-                        $"LocalMemoryPool.readBytes: refusing byte view over %s{rejection.Description} at offset %d{cellOffset} in %O{blockId}"
-            | LocalMemoryByteSource.Overlay b ->
+                        $"MemoryBlock.readBytes: refusing byte view over %s{rejection.Description} at offset %d{cellOffset} in %s{containerDesc}"
+            | MemoryByteSource.Overlay b ->
                 result.[i] <- b
                 i <- i + 1
-            | LocalMemoryByteSource.DefaultZero ->
+            | MemoryByteSource.DefaultZero ->
                 result.[i] <- 0uy
                 i <- i + 1
-            | LocalMemoryByteSource.Uninitialized ->
-                failwith $"LocalMemoryPool.readBytes: byte at offset %d{pos} in %O{blockId} is uninitialised"
+            | MemoryByteSource.Uninitialized ->
+                failwith $"MemoryBlock.readBytes: byte at offset %d{pos} in %s{containerDesc} is uninitialised"
 
         result
 
@@ -425,23 +362,16 @@ module LocalMemoryPool =
     /// `replaceCell`. Bytes outside any cell are written through the byte
     /// overlay via `writeOverlayByte`. Throws if the range is out of bounds or
     /// crosses a non-byte-addressable cell.
-    let writeBytes
-        (blockId : LocallocBlockId)
-        (offset : int)
-        (bytes : byte[])
-        (pool : LocalMemoryPool)
-        : LocalMemoryPool
-        =
-        let block = getBlock blockId pool
-        checkRange "LocalMemoryPool.writeBytes" blockId block.Size offset bytes.Length
+    let writeBytes (containerDesc : string) (offset : int) (bytes : byte[]) (block : MemoryBlock) : MemoryBlock =
+        checkRange "MemoryBlock.writeBytes" containerDesc block.Size offset bytes.Length
 
-        let mutable pool = pool
+        let mutable block = block
         let mutable filled = 0
 
         while filled < bytes.Length do
             let pos = offset + filled
 
-            match tryFindCellCovering blockId pos pool with
+            match tryFindCellCovering pos block with
             | Some (cellOffset, cell) ->
                 match CliType.ByteAddressability cell with
                 | CliByteAddressability.ByteAddressable ->
@@ -453,17 +383,208 @@ module LocalMemoryPool =
 
                     match CliType.WithBytesAtIfChanged inCellOffset cellBytes cell with
                     | None -> ()
-                    | Some updatedCell -> pool <- replaceCell blockId cellOffset updatedCell pool
+                    | Some updatedCell -> block <- replaceCell containerDesc cellOffset updatedCell block
 
                     filled <- filled + take
                 | CliByteAddressability.Rejected rejection ->
                     failwith
-                        $"LocalMemoryPool.writeBytes: refusing byte view over %s{rejection.Description} at offset %d{cellOffset} in %O{blockId}"
+                        $"MemoryBlock.writeBytes: refusing byte view over %s{rejection.Description} at offset %d{cellOffset} in %s{containerDesc}"
             | None ->
-                pool <- writeOverlayByte blockId pos bytes.[filled] pool
+                block <- writeOverlayByte containerDesc pos bytes.[filled] block
                 filled <- filled + 1
 
-        pool
+        block
+
+[<RequireQualifiedAccess>]
+module StackMemoryPool =
+    let empty : StackMemoryPool =
+        {
+            NextBlockId = 0
+            Blocks = Map.empty
+        }
+
+    let allocate
+        (initialization : MemoryBlockInitialization)
+        (byteCount : int)
+        (pool : StackMemoryPool)
+        : StackMemoryBlockId * StackMemoryPool
+        =
+        if byteCount < 0 then
+            failwith $"StackMemoryPool.allocate: negative byte count %d{byteCount}"
+
+        let blockId = StackMemoryBlockId pool.NextBlockId
+
+        blockId,
+        { pool with
+            NextBlockId = pool.NextBlockId + 1
+            Blocks = pool.Blocks |> Map.add blockId (MemoryBlock.empty initialization byteCount)
+        }
+
+    let getBlock (blockId : StackMemoryBlockId) (pool : StackMemoryPool) : MemoryBlock =
+        match pool.Blocks |> Map.tryFind blockId with
+        | Some block -> block
+        | None -> failwith $"Local memory block %O{blockId} is not live in this method frame"
+
+    let private setBlock
+        (blockId : StackMemoryBlockId)
+        (block : MemoryBlock)
+        (pool : StackMemoryPool)
+        : StackMemoryPool
+        =
+        { pool with
+            Blocks = pool.Blocks |> Map.add blockId block
+        }
+
+    let tryFindCellCovering
+        (blockId : StackMemoryBlockId)
+        (offset : int)
+        (pool : StackMemoryPool)
+        : (int * CliType) option
+        =
+        MemoryBlock.tryFindCellCovering offset (getBlock blockId pool)
+
+    let tryReadCell (blockId : StackMemoryBlockId) (offset : int) (pool : StackMemoryPool) : CliType option =
+        MemoryBlock.tryReadCell offset (getBlock blockId pool)
+
+    let writeCell
+        (blockId : StackMemoryBlockId)
+        (offset : int)
+        (value : CliType)
+        (pool : StackMemoryPool)
+        : StackMemoryPool
+        =
+        let block = getBlock blockId pool
+        let updated = MemoryBlock.writeCell (string blockId) offset value block
+        setBlock blockId updated pool
+
+    let tryReadBytes
+        (blockId : StackMemoryBlockId)
+        (offset : int)
+        (count : int)
+        (pool : StackMemoryPool)
+        : byte[] voption
+        =
+        MemoryBlock.tryReadBytes (string blockId) offset count (getBlock blockId pool)
+
+    let readBytes (blockId : StackMemoryBlockId) (offset : int) (count : int) (pool : StackMemoryPool) : byte[] =
+        MemoryBlock.readBytes (string blockId) offset count (getBlock blockId pool)
+
+    let writeBytes
+        (blockId : StackMemoryBlockId)
+        (offset : int)
+        (bytes : byte[])
+        (pool : StackMemoryPool)
+        : StackMemoryPool
+        =
+        let block = getBlock blockId pool
+        let updated = MemoryBlock.writeBytes (string blockId) offset bytes block
+        setBlock blockId updated pool
+
+[<RequireQualifiedAccess>]
+module NativeMemoryPool =
+    let empty : NativeMemoryPool =
+        {
+            NextBlockId = 0
+            Blocks = Map.empty
+        }
+
+    let allocate
+        (initialization : MemoryBlockInitialization)
+        (byteCount : int)
+        (pool : NativeMemoryPool)
+        : NativeMemoryBlockId * NativeMemoryPool
+        =
+        if byteCount < 0 then
+            failwith $"NativeMemoryPool.allocate: negative byte count %d{byteCount}"
+
+        let blockId = NativeMemoryBlockId pool.NextBlockId
+
+        blockId,
+        { pool with
+            NextBlockId = pool.NextBlockId + 1
+            Blocks = pool.Blocks |> Map.add blockId (MemoryBlock.empty initialization byteCount)
+        }
+
+    /// Release a native-heap block. Subsequent reads or writes through any
+    /// retained byref will fail at `getBlock` with a use-after-free message.
+    /// Throws when `blockId` does not name a live block — that is either a
+    /// double-free or a free of an address PawPrint never allocated.
+    let free (blockId : NativeMemoryBlockId) (pool : NativeMemoryPool) : NativeMemoryPool =
+        if not (Map.containsKey blockId pool.Blocks) then
+            failwith
+                $"NativeMemoryPool.free: %O{blockId} is not a live native-heap block (double free, or free of an address PawPrint never allocated)"
+
+        { pool with
+            Blocks = pool.Blocks |> Map.remove blockId
+        }
+
+    let isLive (blockId : NativeMemoryBlockId) (pool : NativeMemoryPool) : bool = Map.containsKey blockId pool.Blocks
+
+    let getBlock (blockId : NativeMemoryBlockId) (pool : NativeMemoryPool) : MemoryBlock =
+        match pool.Blocks |> Map.tryFind blockId with
+        | Some block -> block
+        | None ->
+            failwith
+                $"Use-after-free: native-heap block %O{blockId} was accessed after `NativeMemory.Free` / `Marshal.FreeHGlobal`"
+
+    let private setBlock
+        (blockId : NativeMemoryBlockId)
+        (block : MemoryBlock)
+        (pool : NativeMemoryPool)
+        : NativeMemoryPool
+        =
+        if not (Map.containsKey blockId pool.Blocks) then
+            failwith
+                $"NativeMemoryPool.setBlock: %O{blockId} is not a live native-heap block (this is an interpreter bug; the caller should have called `getBlock` first)"
+
+        { pool with
+            Blocks = pool.Blocks |> Map.add blockId block
+        }
+
+    let tryFindCellCovering
+        (blockId : NativeMemoryBlockId)
+        (offset : int)
+        (pool : NativeMemoryPool)
+        : (int * CliType) option
+        =
+        MemoryBlock.tryFindCellCovering offset (getBlock blockId pool)
+
+    let tryReadCell (blockId : NativeMemoryBlockId) (offset : int) (pool : NativeMemoryPool) : CliType option =
+        MemoryBlock.tryReadCell offset (getBlock blockId pool)
+
+    let writeCell
+        (blockId : NativeMemoryBlockId)
+        (offset : int)
+        (value : CliType)
+        (pool : NativeMemoryPool)
+        : NativeMemoryPool
+        =
+        let block = getBlock blockId pool
+        let updated = MemoryBlock.writeCell (string blockId) offset value block
+        setBlock blockId updated pool
+
+    let tryReadBytes
+        (blockId : NativeMemoryBlockId)
+        (offset : int)
+        (count : int)
+        (pool : NativeMemoryPool)
+        : byte[] voption
+        =
+        MemoryBlock.tryReadBytes (string blockId) offset count (getBlock blockId pool)
+
+    let readBytes (blockId : NativeMemoryBlockId) (offset : int) (count : int) (pool : NativeMemoryPool) : byte[] =
+        MemoryBlock.readBytes (string blockId) offset count (getBlock blockId pool)
+
+    let writeBytes
+        (blockId : NativeMemoryBlockId)
+        (offset : int)
+        (bytes : byte[])
+        (pool : NativeMemoryPool)
+        : NativeMemoryPool
+        =
+        let block = getBlock blockId pool
+        let updated = MemoryBlock.writeBytes (string blockId) offset bytes block
+        setBlock blockId updated pool
 
 type MethodReturnState =
     {
@@ -492,7 +613,7 @@ and MethodState =
         EvaluationStack : EvalStack
         Arguments : CliType ImmutableArray
         ExecutingMethod : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
-        LocalMemoryPool : LocalMemoryPool
+        StackMemoryPool : StackMemoryPool
         /// On return, we restore this state. This should be Some almost always; an exception is the entry point.
         ReturnState : MethodReturnState option
         Generics : ImmutableArray<ConcreteTypeHandle>
@@ -721,7 +842,7 @@ and MethodState =
             _IlOpIndex = 0
             Arguments = args
             ExecutingMethod = method
-            LocalMemoryPool = LocalMemoryPool.empty
+            StackMemoryPool = StackMemoryPool.empty
             ReturnState = returnState
             Generics = methodGenerics
             ActiveExceptionRegions = activeRegions

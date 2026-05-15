@@ -2017,9 +2017,11 @@ module Intrinsics =
                     byteOff
 
                 match src with
-                | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset), projs) ->
-                    ByteStorageIdentity.LocalMemory (thread, frame, block),
+                | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset), projs) ->
+                    ByteStorageIdentity.StackMemory (thread, frame, block),
                     int64 byteOffset + projectionByteOffset projs
+                | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, byteOffset), projs) ->
+                    ByteStorageIdentity.NativeMemory block, int64 byteOffset + projectionByteOffset projs
                 | ManagedPointerSource.Byref (ByrefRoot.LocalVariable (thread, frame, local), projs) ->
                     ByteStorageIdentity.StackLocal (thread, frame, local), projectionByteOffset projs
                 | ManagedPointerSource.Byref (ByrefRoot.Argument (thread, frame, arg), projs) ->
