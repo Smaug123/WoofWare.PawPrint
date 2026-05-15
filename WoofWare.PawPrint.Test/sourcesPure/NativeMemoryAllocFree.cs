@@ -45,6 +45,25 @@ public unsafe class NativeMemoryAllocFreeTests
         return 0;
     }
 
+    public static int TestFreeAfterInteriorArithmetic()
+    {
+        // Materialise an interior pointer in a local, exercise reads/writes
+        // through it, then free using the original base. SystemNative_Free
+        // rejects interior pointers, so this guards that `basePtr` still
+        // resolves to the allocation base after the arithmetic.
+        byte* basePtr = (byte*)NativeMemory.Alloc((nuint)16);
+        if (basePtr == null) return 1;
+
+        byte* mid = basePtr + 8;
+        mid[0] = 0xEF;
+
+        if (mid[0] != 0xEF) return 2;
+        if (basePtr[8] != 0xEF) return 3;
+
+        NativeMemory.Free(basePtr);
+        return 0;
+    }
+
     public static int TestAllocHGlobalRoundTrip()
     {
         System.IntPtr handle = Marshal.AllocHGlobal(2);
@@ -77,8 +96,11 @@ class Program
         result = NativeMemoryAllocFreeTests.TestFreeNull();
         if (result != 0) return 3000 + result;
 
-        result = NativeMemoryAllocFreeTests.TestAllocHGlobalRoundTrip();
+        result = NativeMemoryAllocFreeTests.TestFreeAfterInteriorArithmetic();
         if (result != 0) return 4000 + result;
+
+        result = NativeMemoryAllocFreeTests.TestAllocHGlobalRoundTrip();
+        if (result != 0) return 5000 + result;
 
         return 0;
     }

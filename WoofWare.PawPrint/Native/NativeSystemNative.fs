@@ -114,6 +114,17 @@ module NativeSystemNative =
             let ptr =
                 NativeCall.managedPointerOfPointerArgument "SystemNative_Free" "ptr" instruction.Arguments.[0]
 
+            // C `free(x)` is undefined unless `x` is exactly a pointer returned
+            // by `malloc`/`calloc`/`realloc` (or null). Interior pointers like
+            // `base + 4` must be rejected — silently freeing the whole block
+            // would mask guest memory-corruption bugs.
+            let rec projectionByteOffset (acc : int) (ps : ByrefProjection list) : Result<int, ByrefProjection> =
+                match ps with
+                | [] -> Ok acc
+                | ByrefProjection.ReinterpretAs _ :: rest -> projectionByteOffset acc rest
+                | ByrefProjection.ByteOffset n :: rest -> projectionByteOffset (acc + n) rest
+                | (ByrefProjection.Field _ as field) :: _ -> Error field
+
             let state =
                 match ptr with
                 // C `free(NULL)` is documented as a no-op. CoreLib's
@@ -121,8 +132,15 @@ module NativeSystemNative =
                 // P/Invoke, but Marshal.FreeHGlobal does not, so honour the
                 // C semantics here too.
                 | ManagedPointerSource.Null -> state
-                | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, _), _) ->
-                    IlMachineState.freeNativeMemory block state
+                | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, rootByteOffset), projs) ->
+                    match projectionByteOffset rootByteOffset projs with
+                    | Ok 0 -> IlMachineState.freeNativeMemory block state
+                    | Ok offset ->
+                        failwith
+                            $"SystemNative_Free: refusing to free interior native-heap pointer at byte offset %d{offset} into %O{block} (only the allocation base address returned by SystemNative_Malloc/Calloc may be freed)"
+                    | Error field ->
+                        failwith
+                            $"SystemNative_Free: refusing to free native-heap pointer with non-byte projection %O{field} into %O{block} (only the allocation base address may be freed)"
                 | other ->
                     failwith
                         $"SystemNative_Free: expected null or native-heap pointer, got %O{other} (only pointers from SystemNative_Malloc/Calloc may be freed here)"
