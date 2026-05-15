@@ -89,6 +89,25 @@ class Program
         |> shouldEqual 0
 
     [<Test>]
+    let ``Default virtual hardware profile reports System.Numerics.Vector unavailable`` () : unit =
+        let source =
+            """
+using System.Numerics;
+
+class Program
+{
+    static int Main(string[] args)
+    {
+        return Vector.IsHardwareAccelerated ? 1 : 0;
+    }
+}
+"""
+
+        runSource "NumericsVectorIsHardwareAccelerated.cs" source
+        |> exitCodeOfRunOutcome
+        |> shouldEqual 0
+
+    [<Test>]
     let ``Scalar-only profile reports Arm Rdm unavailable`` () : unit =
         let source =
             """

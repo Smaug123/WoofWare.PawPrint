@@ -397,6 +397,11 @@ module internal IntrinsicHelpers =
         | "Vector128" -> profile.Vector128
         | "Vector256" -> profile.Vector256
         | "Vector512" -> profile.Vector512
+        // System.Numerics.Vector.IsHardwareAccelerated is the JIT capability query for the
+        // non-generic numerics helper (and is the value Vector<T>.IsHardwareAccelerated forwards
+        // to via its static interface impl). CoreCLR reports it true iff the JIT can accelerate
+        // at least 128-bit SIMD, so it shares the Vector128 bit on PawPrint's profile.
+        | "Vector" -> profile.Vector128
         | other -> failwith $"Unexpected vector intrinsic type name: %s{other}"
 
     // PawPrint emulates a deterministic scalar virtual CPU: every hardware-intrinsic
