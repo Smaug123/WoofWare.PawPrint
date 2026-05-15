@@ -775,6 +775,14 @@ module IlMachineStateExecution =
         //    catches `TargetInvocationException` around `Activator.CreateInstance<T>()` will see the
         //    raw guest exception instead. Wrapping requires installing a marker on the ctor frame
         //    that the exception dispatcher consults, which is bigger than this change.
+        //  - For `BeforeFieldInit` reference types, CoreCLR defers the type initializer past the
+        //    Activator allocation/ctor pair: cctor only fires lazily on first static-field access.
+        //    PawPrint's `newobj` opcode (UnaryMetadataObjectOps.fs:240) eagerly runs cctor before
+        //    every instance creation regardless of BeforeFieldInit, so following its lead here keeps
+        //    Activator consistent with direct `new C()`. Fixing the laziness properly is a runtime-
+        //    wide concern (both newobj and this intrinsic, possibly inside `ensureTypeInitialised`)
+        //    and out of scope for this change. Until then, user code can observe static-initializer
+        //    side effects happening one Activator call earlier than the real runtime would emit them.
         let tryHandleActivatorCreateInstance () : IlMachineState option =
             if
                 intrinsicKey.AssemblyName = "System.Private.CoreLib"
