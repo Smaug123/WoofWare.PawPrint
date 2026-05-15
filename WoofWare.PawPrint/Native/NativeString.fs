@@ -210,7 +210,13 @@ module NativeString =
                                     failwith
                                         $"%s{operation}: offsetManagedPointerByElements produced non-byref %O{other}"
 
-                            match IlMachineState.readManagedByrefBytesAs state elementSrc (CliType.ofChar (char 0)) with
+                            match
+                                IlMachineState.readManagedByrefBytesAs
+                                    ctx.BaseClassTypes
+                                    state
+                                    elementSrc
+                                    (CliType.ofChar (char 0))
+                            with
                             | CliType.Char (high, low) -> chars.[i] <- char (int high * 256 + int low)
                             | other -> failwith $"%s{operation}: char[%d{i}] read returned non-char value %O{other}"
 

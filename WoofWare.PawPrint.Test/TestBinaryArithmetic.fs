@@ -637,7 +637,7 @@ module TestBinaryArithmetic =
                 (CliType.Numeric (CliNumericType.Int32 0x11223344))
 
         let roundTripped =
-            IlMachineState.readManagedByrefBytesAs state ptr (CliType.Numeric (CliNumericType.Int32 0))
+            IlMachineState.readManagedByrefBytesAs baseClassTypes state ptr (CliType.Numeric (CliNumericType.Int32 0))
 
         roundTripped |> shouldEqual (CliType.Numeric (CliNumericType.Int32 0x11223344))
 
@@ -663,7 +663,7 @@ module TestBinaryArithmetic =
         let state = IlMachineState.setNativeMemoryPool pool state
 
         let readBack =
-            IlMachineState.readManagedByrefBytesAs state ptr (CliType.Numeric (CliNumericType.Int32 0))
+            IlMachineState.readManagedByrefBytesAs baseClassTypes state ptr (CliType.Numeric (CliNumericType.Int32 0))
 
         // Little-endian assembly of the four bytes above gives 0x11223344.
         readBack |> shouldEqual (CliType.Numeric (CliNumericType.Int32 0x11223344))

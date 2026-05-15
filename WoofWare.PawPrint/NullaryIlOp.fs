@@ -409,10 +409,10 @@ module NullaryIlOp =
                 || isNativeMemoryPointer src
                 || isTrailingByteViewPointer src
                 ->
-                IlMachineState.readManagedByrefBytesAs state src targetCliType
+                IlMachineState.readManagedByrefBytesAs corelib state src targetCliType
             | EvalStackValue.ManagedPointer src -> IlMachineState.readManagedByref corelib state src
             | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer src) ->
-                IlMachineState.readManagedByrefBytesAs state src targetCliType
+                IlMachineState.readManagedByrefBytesAs corelib state src targetCliType
             | EvalStackValue.NativeInt nativeIntSource ->
                 failwith $"TODO: Native int pointer dereferencing not implemented for {targetType}"
             | EvalStackValue.NullObjectRef -> failwith "unreachable: NullObjectRef handled above"

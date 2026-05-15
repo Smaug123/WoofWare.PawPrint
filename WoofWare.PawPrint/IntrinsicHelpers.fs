@@ -589,7 +589,7 @@ module internal IntrinsicHelpers =
         : byte
         =
         let readPrimitiveByteView () : byte =
-            match IlMachineState.readManagedByrefBytesAs state src byteTemplate with
+            match IlMachineState.readManagedByrefBytesAs baseClassTypes state src byteTemplate with
             | CliType.Numeric (CliNumericType.UInt8 b) -> b
             | other -> failwith $"%s{operation}: byte-view read returned non-byte value %O{other}"
 
@@ -1123,7 +1123,9 @@ module internal IntrinsicHelpers =
                     let dest =
                         ManagedPointerByteView.addByteOffset baseClassTypes state byteType i destPtr
 
-                    let value = IlMachineState.readManagedByrefBytesAs state src byteTemplate
+                    let value =
+                        IlMachineState.readManagedByrefBytesAs baseClassTypes state src byteTemplate
+
                     state <- IlMachineState.writeManagedByrefBytesOrTypedCell state dest value
 
                 state

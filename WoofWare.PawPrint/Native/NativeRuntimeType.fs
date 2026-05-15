@@ -32,8 +32,16 @@ module NativeRuntimeType =
     let private nativeIntSize : int =
         CliType.sizeOf (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
 
-    let private int32AtPointer (operation : string) (state : IlMachineState) (ptr : ManagedPointerSource) : int =
-        match IlMachineState.readManagedByrefBytesAs state ptr (CliType.Numeric (CliNumericType.Int32 0)) with
+    let private int32AtPointer
+        (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (ptr : ManagedPointerSource)
+        : int
+        =
+        match
+            IlMachineState.readManagedByrefBytesAs baseClassTypes state ptr (CliType.Numeric (CliNumericType.Int32 0))
+        with
         | CliType.Numeric (CliNumericType.Int32 i) -> i
         | other -> failwith $"%s{operation}: expected Int32 at pointer, got %O{other}"
 
@@ -2826,7 +2834,7 @@ module NativeRuntimeType =
             let countPtr =
                 NativeCall.managedPointerOfPointerArgument operation "usedCount" instruction.Arguments.[2]
 
-            let capacity = int32AtPointer operation state countPtr
+            let capacity = int32AtPointer operation ctx.BaseClassTypes state countPtr
 
             let state, fieldHandleIds =
                 match typeHandleTarget with
@@ -3124,7 +3132,7 @@ module NativeRuntimeType =
             let countPtr =
                 NativeCall.managedPointerOfPointerArgument operation "count pointer" instruction.Arguments.[2]
 
-            let capacity = int32AtPointer operation state countPtr
+            let capacity = int32AtPointer operation ctx.BaseClassTypes state countPtr
 
             let state, fieldHandleIds =
                 match typeHandleTarget with
