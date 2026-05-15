@@ -843,59 +843,79 @@ module IlMachineManagedByref =
         CliType.zeroOf state.ConcreteTypes state._LoadedAssemblies baseClassTypes handle
         |> fst
 
-    /// Collapse any trailing byte-view segment of the projection chain into an
-    /// accumulated byte offset. Once a `ReinterpretAs` appears the underlying
-    /// storage is being treated as raw bytes, so subsequent `ByteOffset`,
-    /// `Field` (resolved against the most recent `ReinterpretAs` target), and
-    /// chained `ReinterpretAs` projections are all bytewise; peeling them
-    /// exposes the residual structural prefix to the existing dispatchers.
-    /// Iterates until a non-byte-view trailing step is reached so chained
-    /// reinterprets like `Volatile.Read(ref entry._version)`
-    /// (`[..., ReinterpretAs CastCacheEntry, Field _version, ReinterpretAs VolatileUInt32]`)
-    /// reduce to the deepest reachable byte offset before
-    /// `readProjectedValue`/`resolveCell` interpret what's left.
+    /// Split a projection chain at the first `ReinterpretAs` and collapse
+    /// everything beyond that point into an accumulated byte offset. Once a
+    /// `ReinterpretAs` appears the underlying storage is being treated as raw
+    /// bytes, so subsequent `Field` (resolved against the most recent
+    /// `ReinterpretAs` target), `ByteOffset`, and chained `ReinterpretAs`
+    /// projections are all bytewise. Walking forward through them accumulates
+    /// the byte offset that the byte-view ultimately addresses, leaving the
+    /// structural prefix (everything before the first `ReinterpretAs`) for
+    /// the dispatcher.
     ///
-    /// Returns `ValueSome (residual, offset)` if any byte-view step was
-    /// peeled, else `ValueNone`. A trailing `ByteOffset n` without a
-    /// preceding `ReinterpretAs` is an interpreter bug and is raised here.
+    /// The forward walk is strictly more general than a right-to-left
+    /// per-pair peel: it handles `[ReinterpretAs Outer; Field I; Field Y]`
+    /// (e.g. `Volatile.Write(ref view.I.Y, _)` on
+    /// `Unsafe.As<int, Outer>(ref arr[0])`), where the second `Field` would
+    /// be unreachable from the right because its layout depends on the type
+    /// chosen by the preceding `Field`.
+    ///
+    /// Returns `ValueSome (structuralPrefix, offset)` when the chain contains
+    /// at least one `ReinterpretAs`, else `ValueNone`. The `structuralPrefix`
+    /// never contains a `ReinterpretAs` by construction. A non-trailing
+    /// `ByteOffset` (which the construction-site canonicaliser never
+    /// produces) is an interpreter bug and is raised here.
     let private peelTrailingByteView
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (projs : ByrefProjection list)
         : (ByrefProjection list * int) voption
         =
-        let rec loop
-            (projs : ByrefProjection list)
-            (offset : int)
-            (peeled : bool)
-            : (ByrefProjection list * int) voption
+        let rec findFirstReinterpret
+            (revPrefix : ByrefProjection list)
+            (remaining : ByrefProjection list)
+            : (ByrefProjection list * ConcreteType<ConcreteTypeHandle> * ByrefProjection list) option
             =
-            let len = List.length projs
+            match remaining with
+            | [] -> None
+            | ByrefProjection.ReinterpretAs reinTy :: rest -> Some (List.rev revPrefix, reinTy, rest)
+            | proj :: rest -> findFirstReinterpret (proj :: revPrefix) rest
 
-            if len = 0 then
-                if peeled then ValueSome ([], offset) else ValueNone
-            else
-                let last = List.item (len - 1) projs
-                let prev = if len >= 2 then Some (List.item (len - 2) projs) else None
+        match findFirstReinterpret [] projs with
+        | None -> ValueNone
+        | Some (structuralPrefix, firstReinTy, afterReinterpret) ->
+            // Walk forward through the byte-view suffix, accumulating byte
+            // offset. `currentTemplate` tracks the CliType of the storage we
+            // are currently navigating through: `Field` projections add the
+            // field's offset within that template; chained `ReinterpretAs`
+            // re-anchors the template to the new type; `ByteOffset` adds raw
+            // bytes and either terminates the walk or re-anchors via the
+            // immediately following `ReinterpretAs`. A `ByteOffset` followed
+            // by a `Field` would require navigating fields on a cursor with
+            // no type anchor and signals an interpreter bug at the
+            // construction site.
+            let rec walk (currentTemplate : CliType) (offset : int) (remaining : ByrefProjection list) : int =
+                match remaining with
+                | [] -> offset
+                | ByrefProjection.Field field :: rest ->
+                    let fieldOffset, _ = CliType.getFieldLayoutById field currentTemplate
+                    let fieldTemplate = CliType.getFieldById field currentTemplate
+                    walk fieldTemplate (offset + fieldOffset) rest
+                | ByrefProjection.ReinterpretAs newReinTy :: rest ->
+                    let newTemplate = zeroForConcreteType baseClassTypes state newReinTy
+                    walk newTemplate offset rest
+                | ByrefProjection.ByteOffset n :: rest ->
+                    match rest with
+                    | [] -> offset + n
+                    | ByrefProjection.ReinterpretAs _ :: _
+                    | ByrefProjection.ByteOffset _ :: _ -> walk currentTemplate (offset + n) rest
+                    | ByrefProjection.Field _ :: _ ->
+                        failwith
+                            $"ByteOffset %d{n} followed by Field navigation without an intervening ReinterpretAs in projection chain: %A{projs} (this is an interpreter bug)"
 
-                match last, prev with
-                | ByrefProjection.Field field, Some (ByrefProjection.ReinterpretAs structType) ->
-                    let template = zeroForConcreteType baseClassTypes state structType
-                    let fieldOffset, _ = CliType.getFieldLayoutById field template
-                    let rest = projs |> List.take (len - 2)
-                    loop rest (offset + fieldOffset) true
-                | ByrefProjection.ByteOffset n, Some (ByrefProjection.ReinterpretAs _) ->
-                    let rest = projs |> List.take (len - 2)
-                    loop rest (offset + n) true
-                | ByrefProjection.ByteOffset n, _ ->
-                    failwith
-                        $"ByteOffset %d{n} without a preceding ReinterpretAs in projection chain: %A{projs} (this is an interpreter bug)"
-                | ByrefProjection.ReinterpretAs _, _ ->
-                    let rest = projs |> List.take (len - 1)
-                    loop rest offset true
-                | _, _ -> if peeled then ValueSome (projs, offset) else ValueNone
-
-        loop projs 0 false
+            let firstReinTemplate = zeroForConcreteType baseClassTypes state firstReinTy
+            let totalOffset = walk firstReinTemplate 0 afterReinterpret
+            ValueSome (structuralPrefix, totalOffset)
 
     let readManagedByrefBytesAs
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -1934,23 +1954,11 @@ module IlMachineManagedByref =
                 | CliByteAddressability.ByteAddressable -> true
                 | CliByteAddressability.Rejected _ -> false
 
-            // Only fully byte-resolved prefixes (no `ReinterpretAs`) are safe to
-            // route through the bytes writer: `resolveCell` resolves the prefix
-            // via `readProjectedValue`, which does not interpret a residual
-            // `ReinterpretAs` over a non-host-shaped cell. Prefixes containing
-            // `ReinterpretAs` (e.g. `[ReinterpretAs Outer; Field I; Field X]`
-            // produced by `Volatile.Write(ref view.I.X, _)` on
-            // `Unsafe.As<int, Outer>(ref arr[0])`) must fall back to the
-            // structural writer, which handles non-trailing reinterprets via
-            // `splitFirstReinterpret`.
-            let prefixContainsReinterpret (prefixProjs : ByrefProjection list) : bool =
-                prefixProjs
-                |> List.exists (
-                    function
-                    | ByrefProjection.ReinterpretAs _ -> true
-                    | _ -> false
-                )
-
+            // The forward-walk peel guarantees the structural prefix never
+            // contains a `ReinterpretAs`, so the byte-scatter writer's
+            // `resolveCell` (which navigates the prefix via
+            // `readProjectedValue`) can safely take the byte-renderable path
+            // without re-checking the prefix shape.
             let useStructuralWriter () : IlMachineState =
                 let rootValue = readRootValue state root
 
@@ -1959,8 +1967,7 @@ module IlMachineManagedByref =
                 | Some updatedRoot -> writeRootValue state root updatedRoot
 
             match peeled, baseClassTypes, valueIsByteRenderable with
-            | ValueSome (prefixProjs, _), Some bct, true when not (prefixContainsReinterpret prefixProjs) ->
-                writeManagedByrefBytesOrTypedCell bct state src newValue
+            | ValueSome (_, _), Some bct, true -> writeManagedByrefBytesOrTypedCell bct state src newValue
             | ValueSome ([], _), Some bct, false ->
                 // Non-byte-renderable empty-prefix peel: the bytes-or-typed-cell
                 // writer can precise-write for the byte-addressable storage
