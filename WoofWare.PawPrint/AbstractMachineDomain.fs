@@ -50,3 +50,15 @@ type NativeMemoryBlockId =
     override this.ToString () =
         match this with
         | NativeMemoryBlockId.NativeMemoryBlockId i -> $"<native memory block #%i{i}>"
+
+/// Opaque handle for a `System.Threading.LowLevelMonitor` allocated by the
+/// `SystemNative_LowLevelMonitor_Create` QCall. Round-trips through guest code
+/// as an `IntPtr` (see `NativeIntSource.LowLevelMonitorPtr`). Globally scoped
+/// within the `IlMachineState`; never reused after Destroy so that
+/// use-after-free is caught at the use site.
+type LowLevelMonitorId =
+    | LowLevelMonitorId of int
+
+    override this.ToString () =
+        match this with
+        | LowLevelMonitorId.LowLevelMonitorId i -> $"<low-level monitor #%i{i}>"

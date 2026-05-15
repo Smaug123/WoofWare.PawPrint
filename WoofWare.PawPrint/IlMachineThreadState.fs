@@ -310,6 +310,8 @@ module IlMachineThreadState =
                 NextEventPipeId = 1L
                 PointerHashCounters = PointerHashCounters.empty
                 NativeMemoryPool = NativeMemoryPool.empty
+                LowLevelMonitors = Map.empty
+                NextLowLevelMonitorId = 1
             }
 
         state.WithLoadedAssembly assyName entryAssembly

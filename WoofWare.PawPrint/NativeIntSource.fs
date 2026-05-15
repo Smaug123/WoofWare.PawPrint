@@ -111,6 +111,14 @@ type NativeIntSource =
     /// as `EventPipeProviderPtr` but distinguished by tag so an event handle
     /// cannot be passed where a provider handle is expected.
     | EventPipeEventPtr of int64
+    /// Opaque handle returned by `SystemNative_LowLevelMonitor_Create`. The
+    /// guest stores it in `LowLevelMonitor._nativeMonitor` (an `IntPtr` slot)
+    /// and round-trips it through the other six `SystemNative_LowLevelMonitor_*`
+    /// QCalls. The handle is distinguished by tag so a foreign `IntPtr` cannot
+    /// be mistaken for a PawPrint-minted monitor, and never compares equal to
+    /// `Verbatim 0L` so the BCL's allocation-failure check (`if _nativeMonitor
+    /// == IntPtr.Zero throw new OutOfMemoryException()`) does not fire.
+    | LowLevelMonitorPtr of LowLevelMonitorId
     /// Returned by `Unsafe.ByteOffset` or managed-pointer subtraction for two byrefs into distinct byte-addressed
     /// storage containers.
     | SyntheticCrossArrayOffset of SyntheticCrossArrayOffset
@@ -144,6 +152,7 @@ type NativeIntSource =
         | NativeIntSource.GcHandlePtr handle -> $"<GC handle %O{handle}>"
         | NativeIntSource.EventPipeProviderPtr id -> $"<EventPipe provider #%i{id}>"
         | NativeIntSource.EventPipeEventPtr id -> $"<EventPipe event #%i{id}>"
+        | NativeIntSource.LowLevelMonitorPtr id -> $"%O{id}"
         | NativeIntSource.SyntheticCrossArrayOffset _ -> "<synthetic cross-storage byte offset>"
         | NativeIntSource.OpaqueHashBits bits -> $"<opaque hash bits (native int) 0x%x{bits}>"
 
@@ -167,6 +176,7 @@ type NativeIntSource =
             | NativeIntSource.GcHandlePtr left, NativeIntSource.GcHandlePtr right -> left = right
             | NativeIntSource.EventPipeProviderPtr left, NativeIntSource.EventPipeProviderPtr right -> left = right
             | NativeIntSource.EventPipeEventPtr left, NativeIntSource.EventPipeEventPtr right -> left = right
+            | NativeIntSource.LowLevelMonitorPtr left, NativeIntSource.LowLevelMonitorPtr right -> left = right
             | NativeIntSource.SyntheticCrossArrayOffset left, NativeIntSource.SyntheticCrossArrayOffset right ->
                 left = right
             | NativeIntSource.OpaqueHashBits left, NativeIntSource.OpaqueHashBits right -> left = right
@@ -184,6 +194,7 @@ type NativeIntSource =
             | NativeIntSource.GcHandlePtr _, _
             | NativeIntSource.EventPipeProviderPtr _, _
             | NativeIntSource.EventPipeEventPtr _, _
+            | NativeIntSource.LowLevelMonitorPtr _, _
             | NativeIntSource.SyntheticCrossArrayOffset _, _
             | NativeIntSource.OpaqueHashBits _, _ -> false
         | _ -> false
@@ -213,6 +224,7 @@ type NativeIntSource =
         | NativeIntSource.EventPipeEventPtr id -> HashCode.Combine (13, id)
         | NativeIntSource.SyntheticCrossArrayOffset s -> HashCode.Combine (14, hash s)
         | NativeIntSource.OpaqueHashBits bits -> HashCode.Combine (15, bits)
+        | NativeIntSource.LowLevelMonitorPtr id -> HashCode.Combine (16, id)
 
 [<RequireQualifiedAccess>]
 module NativeIntSource =
@@ -238,6 +250,7 @@ module NativeIntSource =
         | NativeIntSource.GcHandlePtr _
         | NativeIntSource.EventPipeProviderPtr _
         | NativeIntSource.EventPipeEventPtr _
+        | NativeIntSource.LowLevelMonitorPtr _
         | NativeIntSource.AssemblyHandle _
         | NativeIntSource.MetadataImportHandle _
         | NativeIntSource.ModuleHandle _ -> false
@@ -262,6 +275,7 @@ module NativeIntSource =
         | NativeIntSource.GcHandlePtr _
         | NativeIntSource.EventPipeProviderPtr _
         | NativeIntSource.EventPipeEventPtr _
+        | NativeIntSource.LowLevelMonitorPtr _
         | NativeIntSource.AssemblyHandle _
         | NativeIntSource.MetadataImportHandle _
         | NativeIntSource.ModuleHandle _ -> true

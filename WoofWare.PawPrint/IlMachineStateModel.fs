@@ -7,6 +7,49 @@ open System.Reflection.Metadata
 open Microsoft.Extensions.Logging
 open Microsoft.FSharp.Core
 
+/// Deterministic model of a single `System.Threading.LowLevelMonitor`, as
+/// minted by `SystemNative_LowLevelMonitor_Create`. CoreCLR backs this with a
+/// `pthread_mutex_t` + `pthread_cond_t` pair on Unix; PawPrint reproduces the
+/// observable semantics through three pieces of state owned by the
+/// `IlMachineState.LowLevelMonitors` registry:
+///
+///   - `Owner` is `Some t` iff thread `t` currently holds the monitor;
+///     mutual exclusion is just the invariant "at most one thread is the
+///     `Owner` at any time."
+///   - `AcquireQueue` is the FIFO list of threads parked in
+///     `BlockedOnMonitorAcquire`. The head is the next thread that will
+///     receive ownership when the current owner releases. FIFO order is
+///     load-bearing for `LowLevelLock` fairness; switching to LIFO or
+///     arbitrary order would change the program's observable interleaving.
+///   - `WaitQueue` is the FIFO list of threads parked in
+///     `BlockedOnMonitorWait`. `Signal_Release` moves the head of this queue
+///     onto the tail of `AcquireQueue` (it must re-contend for the monitor
+///     before its `Wait` call returns), atomically with releasing the owner.
+///
+/// The monitor is non-reentrant, matching CoreCLR's `LowLevelMonitor` — a
+/// thread that holds the monitor and calls `Acquire` again deadlocks.
+/// Reentrancy is supplied at a higher level by `LowLevelLock`.
+///
+/// Spurious wakeups are not generated today, but the model is shaped so
+/// they can be inserted later by moving a thread from `WaitQueue` to
+/// `AcquireQueue` from outside `Signal_Release`. Any guest code that
+/// depends on the absence of spurious wakeups is incorrect on real CoreCLR.
+type LowLevelMonitorState =
+    {
+        Owner : ThreadId option
+        AcquireQueue : ThreadId list
+        WaitQueue : ThreadId list
+    }
+
+[<RequireQualifiedAccess>]
+module LowLevelMonitorState =
+    let empty : LowLevelMonitorState =
+        {
+            Owner = None
+            AcquireQueue = []
+            WaitQueue = []
+        }
+
 type IlMachineState =
     {
         ConcreteTypes : AllConcreteTypes
@@ -80,6 +123,19 @@ type IlMachineState =
         /// frame and is reclaimed at frame exit), native-heap blocks outlive
         /// the frames that allocate them.
         NativeMemoryPool : NativeMemoryPool
+        /// Registry of `System.Threading.LowLevelMonitor` instances minted by
+        /// `SystemNative_LowLevelMonitor_Create`. The handle held by the
+        /// guest (as an `IntPtr` in `LowLevelMonitor._nativeMonitor`) is the
+        /// `LowLevelMonitorId` key; the value is the deterministic
+        /// owner / queue state. `Destroy` removes the entry so any retained
+        /// handle fails loudly at the next use rather than silently
+        /// referencing a recycled monitor.
+        LowLevelMonitors : Map<LowLevelMonitorId, LowLevelMonitorState>
+        /// Monotonic ID source for `LowLevelMonitorPtr`. Starts at 1 so the
+        /// guest's "create failed" check (`if _nativeMonitor == IntPtr.Zero`)
+        /// is never triggered for a successfully-minted monitor. IDs are
+        /// never reused; freeing a monitor leaves a gap.
+        NextLowLevelMonitorId : int
     }
 
     member this.WithTypeBeginInit (thread : ThreadId) (ty : ConcreteTypeHandle) =

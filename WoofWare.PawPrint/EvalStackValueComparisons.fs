@@ -402,6 +402,7 @@ module EvalStackValueComparisons =
             | NativeIntSource.GcHandlePtr f1, NativeIntSource.GcHandlePtr f2 -> f1 = f2
             | NativeIntSource.EventPipeProviderPtr f1, NativeIntSource.EventPipeProviderPtr f2 -> f1 = f2
             | NativeIntSource.EventPipeEventPtr f1, NativeIntSource.EventPipeEventPtr f2 -> f1 = f2
+            | NativeIntSource.LowLevelMonitorPtr f1, NativeIntSource.LowLevelMonitorPtr f2 -> f1 = f2
             | NativeIntSource.Verbatim f1, NativeIntSource.Verbatim f2 -> f1 = f2
             | NativeIntSource.SyntheticCrossArrayOffset _, NativeIntSource.SyntheticCrossArrayOffset _
             | NativeIntSource.Verbatim _, NativeIntSource.SyntheticCrossArrayOffset _
@@ -448,7 +449,9 @@ module EvalStackValueComparisons =
             | NativeIntSource.OpaqueHashBits _, NativeIntSource.EventPipeProviderPtr _
             | NativeIntSource.EventPipeProviderPtr _, NativeIntSource.OpaqueHashBits _
             | NativeIntSource.OpaqueHashBits _, NativeIntSource.EventPipeEventPtr _
-            | NativeIntSource.EventPipeEventPtr _, NativeIntSource.OpaqueHashBits _ ->
+            | NativeIntSource.EventPipeEventPtr _, NativeIntSource.OpaqueHashBits _
+            | NativeIntSource.OpaqueHashBits _, NativeIntSource.LowLevelMonitorPtr _
+            | NativeIntSource.LowLevelMonitorPtr _, NativeIntSource.OpaqueHashBits _ ->
                 failwith
                     $"TODO (CEQ): synthesised hash bits vs handle pointer requires materialising the handle's bits through PointerHashCounters; got {var1} vs {var2}"
             // CoreCLR's TypeHandle wraps either a MethodTable* (when !IsTypeDesc) or a tagged
@@ -517,7 +520,9 @@ module EvalStackValueComparisons =
             | NativeIntSource.EventPipeProviderPtr _, _
             | _, NativeIntSource.EventPipeProviderPtr _
             | NativeIntSource.EventPipeEventPtr _, _
-            | _, NativeIntSource.EventPipeEventPtr _ -> false
+            | _, NativeIntSource.EventPipeEventPtr _
+            | NativeIntSource.LowLevelMonitorPtr _, _
+            | _, NativeIntSource.LowLevelMonitorPtr _ -> false
             // OpaqueHashBits vs ManagedPointer: every other OpaqueHashBits
             // pairing is handled above (vs Verbatim/OpaqueHashBits, vs
             // SyntheticCrossArrayOffset, and vs the various handle kinds);

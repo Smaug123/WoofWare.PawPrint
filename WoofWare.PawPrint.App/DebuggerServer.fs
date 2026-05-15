@@ -84,6 +84,16 @@ module DebuggerServer =
             writer.WriteString ("kind", "blockedOnClassInit")
             writer.WriteNumber ("blockerThread", threadIdValue blocker)
             writer.WriteEndObject ()
+        | ThreadStatus.BlockedOnMonitorAcquire (LowLevelMonitorId monitor) ->
+            writer.WriteStartObject ()
+            writer.WriteString ("kind", "blockedOnMonitorAcquire")
+            writer.WriteNumber ("monitor", monitor)
+            writer.WriteEndObject ()
+        | ThreadStatus.BlockedOnMonitorWait (LowLevelMonitorId monitor) ->
+            writer.WriteStartObject ()
+            writer.WriteString ("kind", "blockedOnMonitorWait")
+            writer.WriteNumber ("monitor", monitor)
+            writer.WriteEndObject ()
         | ThreadStatus.Terminated -> writer.WriteStringValue "terminated"
 
     let private writeFrameProperties
