@@ -357,6 +357,57 @@ class Program
             )
 
     [<Test>]
+    let ``Kernel32 GetEnvironmentVariableW lookup is case-insensitive`` () =
+        // `kernel32!GetEnvironmentVariableW` is case-insensitive on Windows
+        // (the PEB env block is keyed by case-folded names). PawPrint stores
+        // the guest env as a plain F# `Map<string,string>`, so the QCall shim
+        // must walk it with an ordinal-ignore-case comparison instead of
+        // `Map.tryFind`; this test would have caught the eager `Map.tryFind`
+        // implementation that regressed Windows semantics.
+        let source =
+            """
+using System;
+
+class Program
+{
+    static int Main(string[] args)
+    {
+        if (Environment.GetEnvironmentVariable("pawprint_mixed_case_key") != "found")
+        {
+            return 1;
+        }
+
+        if (Environment.GetEnvironmentVariable("PAWPRINT_MIXED_CASE_KEY") != "found")
+        {
+            return 2;
+        }
+
+        return 0;
+    }
+}
+"""
+
+        runPawPrintSource
+            "MockEnvironmentCaseInsensitiveLookup.cs"
+            source
+            (MockEnv.make ())
+            ([ "PaWpRiNt_MiXeD_CaSe_KeY", "found" ] |> Map.ofList)
+            (fun _image pawPrintResult ->
+                match pawPrintResult with
+                | RunOutcome.NormalExit (terminalState, terminatingThread) ->
+                    match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
+                    | EvalStackValue.Int32 exitCode :: _ -> exitCode |> shouldEqual 0
+                    | [] -> failwith "expected program to return an int, but it returned void"
+                    | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
+                | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
+                | RunOutcome.FailFast (_, _, message) ->
+                    let m = message |> Option.defaultValue "<no message>"
+                    failwith $"expected normal exit, got Environment.FailFast: %s{m}"
+                | RunOutcome.GuestUnhandledException (_, _, exn) ->
+                    failwith $"guest threw unhandled exception: %O{exn.ExceptionObject}"
+            )
+
+    [<Test>]
     let ``Mock environment preserves missing variable last PInvoke error`` () =
         let source =
             """

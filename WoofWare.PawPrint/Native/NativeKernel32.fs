@@ -141,8 +141,20 @@ module NativeKernel32 =
             let name =
                 NativeCall.readNullTerminatedUtf16 operation ctx.BaseClassTypes state namePtr
 
-            let plan =
-                planGetEnvironmentVariableW bufferSize (Map.tryFind name state.Kernel.Environment)
+            // Real `kernel32!GetEnvironmentVariableW` is case-insensitive (Windows env
+            // names are stored in the PEB block keyed by case-folded names). The seeded
+            // `EmulatedKernel.Environment` is a plain F# `Map<string,string>`, so we walk
+            // it with an ordinal-ignore-case comparison rather than `Map.tryFind`.
+            let envValue =
+                state.Kernel.Environment
+                |> Map.tryPick (fun key value ->
+                    if System.String.Equals (key, name, System.StringComparison.OrdinalIgnoreCase) then
+                        Some value
+                    else
+                        None
+                )
+
+            let plan = planGetEnvironmentVariableW bufferSize envValue
 
             let state =
                 match plan.ValueToWrite with
