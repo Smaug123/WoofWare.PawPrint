@@ -9,7 +9,10 @@ namespace WoofWare.PawPrint
 #nowarn "44"
 
 open System
+open System.Collections.Generic
+open System.Collections.Immutable
 open System.Reflection
+open System.Reflection.Metadata
 
 /// <summary>
 /// Public-key state of a friend-assembly display name. Mirrors CoreCLR's
@@ -401,6 +404,39 @@ type FriendAssemblies =
         IgnoresAccessChecksTo : FriendAssemblyName array
     }
 
+/// <summary>
+/// Index tables needed by <c>FriendAssemblies.scan</c>. Projected out of
+/// <c>DumpedAssembly</c> so the scan logic has no dependency on the larger
+/// assembly record (which transitively depends on this type).
+/// </summary>
+type FriendAssembliesScanInput =
+    {
+        /// Index from parent metadata token to the raw int32 tokens of all
+        /// CustomAttribute rows applied to that parent.
+        CustomAttributesByParentToken : ImmutableDictionary<int, ImmutableArray<int>>
+        /// All parsed custom attributes in the assembly, keyed by handle.
+        Attributes : ImmutableDictionary<CustomAttributeHandle, WoofWare.PawPrint.CustomAttribute>
+        /// MemberReference rows, used to resolve the declaring type of a
+        /// custom-attribute constructor when the constructor token is a
+        /// <c>MemberReference</c>.
+        Members : IReadOnlyDictionary<MemberReferenceHandle, WoofWare.PawPrint.MemberReference<MetadataToken>>
+        /// TypeRef rows, used to recover the namespace/name when a member
+        /// reference's parent is a <c>TypeReference</c>.
+        TypeRefs : IReadOnlyDictionary<TypeReferenceHandle, WoofWare.PawPrint.TypeRef>
+        /// TypeDef rows, used to recover the namespace/name when a member
+        /// reference's parent is a <c>TypeDefinition</c> (i.e. the ctor lives
+        /// in this assembly).
+        TypeDefs :
+            IReadOnlyDictionary<TypeDefinitionHandle, WoofWare.PawPrint.TypeInfo<GenericParamFromMetadata, TypeDefn>>
+        /// MethodDef rows, used when the CA constructor is itself a method
+        /// definition in this assembly.
+        Methods :
+            IReadOnlyDictionary<
+                MethodDefinitionHandle,
+                WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>
+             >
+    }
+
 [<RequireQualifiedAccess>]
 module FriendAssemblies =
     let empty : FriendAssemblies =
@@ -411,27 +447,31 @@ module FriendAssemblies =
 
     /// Resolve a custom-attribute constructor token to the
     /// <c>(namespace, name)</c> of its declaring type, using only the
-    /// already-parsed indexes on a <c>DumpedAssembly</c>. Returns
-    /// <c>None</c> if the constructor lives in another assembly we
+    /// already-parsed indexes carried in <c>FriendAssembliesScanInput</c>.
+    /// Returns <c>None</c> if the constructor lives in another assembly we
     /// haven't loaded, or the metadata is malformed.
-    let private constructorTypeName (assembly : DumpedAssembly) (ctorToken : MetadataToken) : (string * string) option =
+    let private constructorTypeName
+        (input : FriendAssembliesScanInput)
+        (ctorToken : MetadataToken)
+        : (string * string) option
+        =
         match ctorToken with
         | MetadataToken.MemberReference handle ->
-            match assembly.Members.TryGetValue handle with
+            match input.Members.TryGetValue handle with
             | false, _ -> None
             | true, memberRef ->
                 match memberRef.Parent with
                 | MetadataToken.TypeReference typeRefHandle ->
-                    match assembly.TypeRefs.TryGetValue typeRefHandle with
+                    match input.TypeRefs.TryGetValue typeRefHandle with
                     | true, typeRef -> Some (typeRef.Namespace, typeRef.Name)
                     | false, _ -> None
                 | MetadataToken.TypeDefinition typeDefHandle ->
-                    match assembly.TypeDefs.TryGetValue typeDefHandle with
+                    match input.TypeDefs.TryGetValue typeDefHandle with
                     | true, typeDef -> Some (typeDef.Namespace, typeDef.Name)
                     | false, _ -> None
                 | _ -> None
         | MetadataToken.MethodDef methodHandle ->
-            match assembly.Methods.TryGetValue methodHandle with
+            match input.Methods.TryGetValue methodHandle with
             | false, _ -> None
             | true, methodInfo -> Some (methodInfo.DeclaringType.Namespace, methodInfo.DeclaringType.Name)
         | _ -> None
@@ -457,12 +497,12 @@ module FriendAssemblies =
     /// CoreCLR's friend-assembly restrictions. Returns <c>Error</c> if any
     /// such attribute carries a malformed display name or fails the
     /// restrictions check; CoreCLR would throw in that case.
-    let scan (assembly : DumpedAssembly) : Result<FriendAssemblies, string> =
+    let scan (input : FriendAssembliesScanInput) : Result<FriendAssemblies, string> =
         let ivts = ResizeArray<FriendAssemblyName> ()
         let subjects = ResizeArray<FriendAssemblyName> ()
         let mutable error : string option = None
 
-        match assembly.CustomAttributesByParentToken.TryGetValue AssemblyDefinitionToken with
+        match input.CustomAttributesByParentToken.TryGetValue AssemblyDefinitionToken with
         | false, _ -> ()
         | true, attrTokens ->
             for tokenInt in attrTokens do
@@ -471,10 +511,10 @@ module FriendAssemblies =
 
                     match token with
                     | MetadataToken.CustomAttribute handle ->
-                        match assembly.Attributes.TryGetValue handle with
+                        match input.Attributes.TryGetValue handle with
                         | false, _ -> ()
                         | true, attr ->
-                            match constructorTypeName assembly attr.Constructor with
+                            match constructorTypeName input attr.Constructor with
                             | None -> ()
                             | Some (ns, name) when ns = FriendAssemblyTypeNamespace ->
                                 let isIvt = name = FriendAssemblyTypeName
