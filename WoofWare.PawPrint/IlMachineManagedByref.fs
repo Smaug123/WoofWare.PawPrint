@@ -865,8 +865,20 @@ module IlMachineManagedByref =
     /// never contains a `ReinterpretAs` by construction. A non-trailing
     /// `ByteOffset` (which the construction-site canonicaliser never
     /// produces) is an interpreter bug and is raised here.
+    ///
+    /// `baseClassTypes` is required only when the byte-view suffix navigates
+    /// through a `Field` projection (Field layout is resolved against the
+    /// current type template, which requires metadata). Metadata-light
+    /// callers (the BCT-less `writeManagedByref` entry point used by
+    /// primitive/external boundaries that do not currently carry type
+    /// metadata) may pass `None`; their canonical chain shapes are
+    /// `[..., ReinterpretAs T]` and `[..., ReinterpretAs T; ByteOffset n]`,
+    /// whose suffixes contain no `Field` and therefore need no template. A
+    /// BCT-less call with a `Field` in the byte-view suffix is an interpreter
+    /// bug (the construction site that emitted such a chain ought to carry
+    /// BCT) and is raised here with a descriptive message.
     let private peelTrailingByteView
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly> option)
         (state : IlMachineState)
         (projs : ByrefProjection list)
         : (ByrefProjection list * int) voption
@@ -885,36 +897,44 @@ module IlMachineManagedByref =
         | None -> ValueNone
         | Some (structuralPrefix, firstReinTy, afterReinterpret) ->
             // Walk forward through the byte-view suffix, accumulating byte
-            // offset. `currentTemplate` tracks the CliType of the storage we
-            // are currently navigating through: `Field` projections add the
-            // field's offset within that template; chained `ReinterpretAs`
-            // re-anchors the template to the new type; `ByteOffset` adds raw
-            // bytes and either terminates the walk or re-anchors via the
-            // immediately following `ReinterpretAs`. A `ByteOffset` followed
-            // by a `Field` would require navigating fields on a cursor with
-            // no type anchor and signals an interpreter bug at the
-            // construction site.
-            let rec walk (currentTemplate : CliType) (offset : int) (remaining : ByrefProjection list) : int =
+            // offset. The template anchoring the cursor is computed lazily
+            // via `templateThunk`: only `Field` projections consume it.
+            // Chained `ReinterpretAs` re-anchors the thunk to the new type;
+            // `ByteOffset` adds raw bytes and either terminates the walk or
+            // re-anchors via the immediately following `ReinterpretAs`. A
+            // `ByteOffset` followed by a `Field` would require navigating
+            // fields on a cursor with no type anchor and signals an
+            // interpreter bug at the construction site. Lazy evaluation
+            // means BCT is only consulted when a `Field` actually appears
+            // in the byte-view suffix, so the metadata-light call shapes
+            // (`[ReinterpretAs T]`, `[ReinterpretAs T; ByteOffset n]`) work
+            // with `baseClassTypes = None`.
+            let templateFor (ty : ConcreteType<ConcreteTypeHandle>) : CliType =
+                match baseClassTypes with
+                | Some bct -> zeroForConcreteType bct state ty
+                | None ->
+                    failwith
+                        $"peelTrailingByteView: BaseClassTypes required to navigate `Field` projection after `ReinterpretAs` %s{ty.Namespace}.%s{ty.Name} in projection chain: %A{projs} (metadata-light entry points cannot resolve Field layout; pass BaseClassTypes via writeManagedByrefWithBase)"
+
+            let rec walk (templateThunk : unit -> CliType) (offset : int) (remaining : ByrefProjection list) : int =
                 match remaining with
                 | [] -> offset
                 | ByrefProjection.Field field :: rest ->
-                    let fieldOffset, _ = CliType.getFieldLayoutById field currentTemplate
-                    let fieldTemplate = CliType.getFieldById field currentTemplate
-                    walk fieldTemplate (offset + fieldOffset) rest
-                | ByrefProjection.ReinterpretAs newReinTy :: rest ->
-                    let newTemplate = zeroForConcreteType baseClassTypes state newReinTy
-                    walk newTemplate offset rest
+                    let template = templateThunk ()
+                    let fieldOffset, _ = CliType.getFieldLayoutById field template
+                    let fieldTemplate = CliType.getFieldById field template
+                    walk (fun () -> fieldTemplate) (offset + fieldOffset) rest
+                | ByrefProjection.ReinterpretAs newReinTy :: rest -> walk (fun () -> templateFor newReinTy) offset rest
                 | ByrefProjection.ByteOffset n :: rest ->
                     match rest with
                     | [] -> offset + n
                     | ByrefProjection.ReinterpretAs _ :: _
-                    | ByrefProjection.ByteOffset _ :: _ -> walk currentTemplate (offset + n) rest
+                    | ByrefProjection.ByteOffset _ :: _ -> walk templateThunk (offset + n) rest
                     | ByrefProjection.Field _ :: _ ->
                         failwith
                             $"ByteOffset %d{n} followed by Field navigation without an intervening ReinterpretAs in projection chain: %A{projs} (this is an interpreter bug)"
 
-            let firstReinTemplate = zeroForConcreteType baseClassTypes state firstReinTy
-            let totalOffset = walk firstReinTemplate 0 afterReinterpret
+            let totalOffset = walk (fun () -> templateFor firstReinTy) 0 afterReinterpret
             ValueSome (structuralPrefix, totalOffset)
 
     let readManagedByrefBytesAs
@@ -952,7 +972,7 @@ module IlMachineManagedByref =
             // then `Volatile.Read` wrapping the result in `VolatileUInt32`)
             // is the load-bearing example.
             let byteViewShape : (ByrefProjection list * int) voption =
-                peelTrailingByteView baseClassTypes state outerProjs
+                peelTrailingByteView (Some baseClassTypes) state outerProjs
 
             match byteViewShape with
             | ValueSome (prefixProjs, byteOffset) ->
@@ -1479,8 +1499,8 @@ module IlMachineManagedByref =
         | CliByteAddressability.ByteAddressable -> None
         | CliByteAddressability.Rejected _ -> IlMachineThreadState.setArrayValue arr newValue index state |> Some
 
-    let writeManagedByrefBytesOrTypedCell
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+    let private writeManagedByrefBytesOrTypedCellCore
+        (baseClassTypes : BaseClassTypes<DumpedAssembly> option)
         (state : IlMachineState)
         (src : ManagedPointerSource)
         (newValue : CliType)
@@ -1745,6 +1765,20 @@ module IlMachineManagedByref =
                     | None -> state
                     | Some updatedRoot -> writeRootValue state outerRoot updatedRoot
 
+    /// Public BCT-aware entry point. Delegates to `writeManagedByrefBytesOrTypedCellCore`
+    /// with `Some baseClassTypes`; the core body lazily consults the BCT only when a
+    /// `Field` projection appears in the byte-view suffix, so the metadata-light shapes
+    /// `[ReinterpretAs T]` and `[ReinterpretAs T; ByteOffset n]` flow through
+    /// `writeManagedByrefCore` with `None` without forcing BCT lookups.
+    let writeManagedByrefBytesOrTypedCell
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (src : ManagedPointerSource)
+        (newValue : CliType)
+        : IlMachineState
+        =
+        writeManagedByrefBytesOrTypedCellCore (Some baseClassTypes) state src newValue
+
     let private splitFirstReinterpret
         (projs : ByrefProjection list)
         : (ByrefProjection list * ConcreteType<ConcreteTypeHandle> * ByrefProjection list) option
@@ -1940,14 +1974,13 @@ module IlMachineManagedByref =
             //  * non-byte-renderable values: to the structural projection
             //    writer, which is the only one that can preserve identity for
             //    object references and tagged pointers over arbitrary roots.
-            //    Without BCT we lack the metadata to peel chained reinterprets;
-            //    legacy callers should use `writeManagedByrefWithBase`.
+            //
+            // Both writers now accept an optional `BaseClassTypes`: the peel
+            // and the bytes-or-typed-cell writer only consult BCT when a
+            // `Field` projection appears in the byte-view suffix, which
+            // metadata-light callers do not produce.
             let peeled : (ByrefProjection list * int) voption =
-                match baseClassTypes with
-                | Some bct -> peelTrailingByteView bct state projs
-                | None ->
-                    splitTrailingByteView src
-                    |> ValueOption.map (fun (_root, prefixProjs, offset) -> prefixProjs, offset)
+                peelTrailingByteView baseClassTypes state projs
 
             let valueIsByteRenderable =
                 match CliType.ByteAddressability newValue with
@@ -1966,9 +1999,16 @@ module IlMachineManagedByref =
                 | None -> state
                 | Some updatedRoot -> writeRootValue state root updatedRoot
 
-            match peeled, baseClassTypes, valueIsByteRenderable with
-            | ValueSome (_, _), Some bct, true -> writeManagedByrefBytesOrTypedCell bct state src newValue
-            | ValueSome ([], _), Some bct, false ->
+            match peeled, valueIsByteRenderable with
+            | ValueSome (_, _), true ->
+                // Byte-renderable values flow through the bytes-or-typed-cell
+                // writer regardless of BCT availability. The metadata-light
+                // shapes `[ReinterpretAs T]` and `[ReinterpretAs T; ByteOffset n]`
+                // (used by primitive/external boundaries that don't carry type
+                // metadata) work here because the core never consults BCT
+                // unless a `Field` appears in the byte-view suffix.
+                writeManagedByrefBytesOrTypedCellCore baseClassTypes state src newValue
+            | ValueSome ([], _), false ->
                 // Non-byte-renderable empty-prefix peel: the bytes-or-typed-cell
                 // writer can precise-write for the byte-addressable storage
                 // roots (StackMemoryByte, NativeMemoryByte, HeapValue,
@@ -1981,17 +2021,8 @@ module IlMachineManagedByref =
                 | ByrefRoot.HeapValue _
                 | ByrefRoot.HeapObjectField _
                 | ByrefRoot.ArrayElement _
-                | ByrefRoot.StringCharAt _ -> writeManagedByrefBytesOrTypedCell bct state src newValue
+                | ByrefRoot.StringCharAt _ -> writeManagedByrefBytesOrTypedCellCore baseClassTypes state src newValue
                 | _ -> useStructuralWriter ()
-            | ValueSome _, None, _ ->
-                // Metadata-light caller hit a trailing byte view but cannot
-                // supply BCT for the forward-walk peel. The structural writer
-                // accepts an `Option<BaseClassTypes>` and degrades gracefully
-                // for the simple chain shapes the legacy
-                // `splitTrailingByteView` is tuned for. Callers that need
-                // bytewise writes through arbitrary residual reinterprets
-                // should migrate to `writeManagedByrefWithBase`.
-                useStructuralWriter ()
             | _ -> useStructuralWriter ()
 
     let writeManagedByref (state : IlMachineState) (src : ManagedPointerSource) (newValue : CliType) : IlMachineState =

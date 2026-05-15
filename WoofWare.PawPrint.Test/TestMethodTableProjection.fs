@@ -3446,3 +3446,51 @@ public unsafe struct PointerWrapper
             )
 
         writeEx.Message |> shouldContainText "outside 8-byte boxed payload"
+
+    [<Test>]
+    let ``Metadata-light writeManagedByref accepts trailing ReinterpretAs byte view`` () : unit =
+        // Regression: `writeManagedByref` is the BCT-less entry point used by
+        // primitive/external boundaries that do not currently carry type
+        // metadata. Historically it accepted simple trailing byte-view shapes
+        // (`[ReinterpretAs T]` and `[..., ReinterpretAs T; ByteOffset n]`) over
+        // byte-addressable roots, routing through the byte-scatter path of
+        // `writeManagedByrefBytesOrTypedCell`. The forward-walk peel rewrite
+        // initially required BCT, which broke this metadata-light contract;
+        // this test pins the restored behaviour for both the bare reinterpret
+        // shape and the reinterpret-plus-byte-offset shape.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread =
+            stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Nop)
+
+        let ptr, state =
+            IlMachineState.allocateStackMemory thread MemoryBlockInitialization.ZeroInitialized 4 state
+
+        let byteReinterpret = concreteTypeFor bct.Byte
+
+        let bareReinterpretPtr =
+            ptr
+            |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs byteReinterpret)
+
+        let state =
+            IlMachineState.writeManagedByref state bareReinterpretPtr (CliType.Numeric (CliNumericType.UInt8 0xAAuy))
+
+        IlMachineState.readManagedByrefBytesAs bct state ptr (CliType.Numeric (CliNumericType.UInt8 0uy))
+        |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 0xAAuy))
+
+        let offsetReinterpretPtr =
+            bareReinterpretPtr
+            |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset 2)
+
+        let state =
+            IlMachineState.writeManagedByref state offsetReinterpretPtr (CliType.Numeric (CliNumericType.UInt8 0xBBuy))
+
+        let readAt (offset : int) : CliType =
+            let readPtr =
+                bareReinterpretPtr
+                |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset offset)
+
+            IlMachineState.readManagedByrefBytesAs bct state readPtr (CliType.Numeric (CliNumericType.UInt8 0uy))
+
+        readAt 0 |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 0xAAuy))
+        readAt 2 |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 0xBBuy))
