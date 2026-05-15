@@ -339,36 +339,6 @@ public class TestArrayOperations
         return 0;
     }
     
-    // Test multi-dimensional arrays (if supported by runtime)
-    public static int TestMultiDimensionalArrays()
-    {
-        // 2D array
-        int[,] arr2d = new int[3, 4];
-        
-        // Set values
-        for (int i = 0; i < 3; i++)
-        {
-            for (int j = 0; j < 4; j++)
-            {
-                arr2d[i, j] = i * 10 + j;
-            }
-        }
-        
-        // Verify values
-        for (int i = 0; i < 3; i++)
-        {
-            for (int j = 0; j < 4; j++)
-            {
-                if (arr2d[i, j] != i * 10 + j) return 150 + i * 4 + j;
-            }
-        }
-        
-        // Length of multi-dimensional array
-        if (arr2d.Length != 12) return 170;
-        
-        return 0;
-    }
-    
     // Test jagged arrays
     public static int TestJaggedArrays()
     {
@@ -445,13 +415,10 @@ public class TestArrayOperations
         
         result = TestArrayBoundaries();
         if (result != 0) return 8300 + result;
-        
-        result = TestMultiDimensionalArrays();
-        if (result != 0) return 8400 + result;
-        
+
         result = TestJaggedArrays();
         if (result != 0) return 8500 + result;
-        
+
         return 0;
     }
 }

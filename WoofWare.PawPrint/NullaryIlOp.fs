@@ -1921,6 +1921,7 @@ module NullaryIlOp =
                 match value with
                 | CliType.Numeric (CliNumericType.UInt16 i) -> int i
                 | CliType.Numeric (CliNumericType.Int16 i) -> int (uint16 i)
+                | CliType.Char (high, low) -> (int high <<< 8) ||| int low
                 | _ -> failwith $"expected two-byte integer in Ldelem.u2, got: %O{value}"
 
             let state =
