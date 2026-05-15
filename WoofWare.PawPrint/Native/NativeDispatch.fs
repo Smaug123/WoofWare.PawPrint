@@ -25,6 +25,7 @@ module NativeDispatch =
             NativeType.tryExecute
             NativeString.tryExecute
             NativeSystemNative.tryExecute
+            NativeLowLevelMonitor.tryExecute
             NativeDebugger.tryExecute
         ]
 

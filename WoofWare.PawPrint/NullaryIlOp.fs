@@ -156,7 +156,8 @@ module NullaryIlOp =
             | EvalStackValue.NativeInt (NativeIntSource.ModuleHandle _)
             | EvalStackValue.NativeInt (NativeIntSource.MetadataImportHandle _)
             | EvalStackValue.NativeInt (NativeIntSource.EventPipeProviderPtr _)
-            | EvalStackValue.NativeInt (NativeIntSource.EventPipeEventPtr _) ->
+            | EvalStackValue.NativeInt (NativeIntSource.EventPipeEventPtr _)
+            | EvalStackValue.NativeInt (NativeIntSource.LowLevelMonitorPtr _) ->
                 failwith $"Localloc: refusing to use pointer-like value %O{value} as a byte count"
             | EvalStackValue.NativeInt (NativeIntSource.OpaqueHashBits bits) ->
                 failwith $"Localloc: refusing to use synthesised pointer-hash bits 0x%x{bits} as a byte count"
@@ -303,6 +304,8 @@ module NullaryIlOp =
             | NativeIntSource.EventPipeProviderPtr id ->
                 failwith $"Neg: refusing to negate EventPipe provider handle %d{id}"
             | NativeIntSource.EventPipeEventPtr id -> failwith $"Neg: refusing to negate EventPipe event handle %d{id}"
+            | NativeIntSource.LowLevelMonitorPtr id ->
+                failwith $"Neg: refusing to negate low-level monitor handle %O{id}"
             | NativeIntSource.OpaqueHashBits bits ->
                 // Negating synthesised hash bits is a bit-mixing operation
                 // that stays in the synthesis domain; the result keeps the
@@ -508,6 +511,7 @@ module NullaryIlOp =
                 | NativeIntSource.MetadataImportHandle _
                 | NativeIntSource.EventPipeProviderPtr _
                 | NativeIntSource.EventPipeEventPtr _
+                | NativeIntSource.LowLevelMonitorPtr _
                 | NativeIntSource.ManagedPointer _ -> failwith "Refusing to treat a pointer as an array index"
                 | NativeIntSource.SyntheticCrossArrayOffset _ ->
                     failwith "Refusing to treat a synthetic cross-storage byte offset as an array index"
@@ -560,6 +564,7 @@ module NullaryIlOp =
                 | NativeIntSource.MetadataImportHandle _
                 | NativeIntSource.EventPipeProviderPtr _
                 | NativeIntSource.EventPipeEventPtr _
+                | NativeIntSource.LowLevelMonitorPtr _
                 | NativeIntSource.ManagedPointer _ -> failwith "Refusing to treat a pointer as an array index"
                 | NativeIntSource.SyntheticCrossArrayOffset _ ->
                     failwith "Refusing to treat a synthetic cross-storage byte offset as an array index"
