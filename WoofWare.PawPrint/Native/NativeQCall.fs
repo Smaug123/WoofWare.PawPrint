@@ -30,6 +30,7 @@ module NativeQCall =
             "MethodTable_CanCompareBitsOrUseFastGetHashCode",
             NativeRuntimeType.tryExecuteQCall "MethodTable_CanCompareBitsOrUseFastGetHashCode"
             "TypeHandle_GetCorElementType", NativeRuntimeType.tryExecuteQCall "TypeHandle_GetCorElementType"
+            "TypeHandle_CanCastTo_NoCacheLookup", NativeRuntimeType.tryExecuteQCall "TypeHandle_CanCastTo_NoCacheLookup"
             "ThreadNative_GetCurrentThread", NativeThreading.tryExecuteQCall "ThreadNative_GetCurrentThread"
             "ThreadNative_Initialize", NativeThreading.tryExecuteQCall "ThreadNative_Initialize"
             "ThreadNative_Join", NativeThreading.tryExecuteQCall "ThreadNative_Join"
