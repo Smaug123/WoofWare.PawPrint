@@ -536,35 +536,75 @@ module IlMachineManagedByref =
         if arrObj.Length = 0 then
             failwith $"TODO: byte-view read from empty array %O{arr} at index %d{index} offset %d{byteOffset}"
 
-        let firstCellSize =
-            byteAddressableCellSize $"array %O{arr} element 0" arrObj.Elements.[0]
-
+        // Compute cell size with `CliType.sizeOf` (not `byteAddressableCellSize`)
+        // so we can recognise whole-cell-aligned reads of cells that may
+        // carry non-byte-renderable provenance — e.g. an `IntPtr[]` slot
+        // that now holds a `TypeHandlePtr` after a typed store through a
+        // fixed-array pointer. For non-byte-addressable cells that match
+        // the target shape exactly, we short-circuit and return the typed
+        // cell directly, preserving provenance; for everything else we
+        // fall through to the byte-scatter loop, which validates byte
+        // addressability per cell as it gathers.
+        let firstCellSize = CliType.sizeOf arrObj.Elements.[0]
         let cellAdvance, inCellStart = floorDivRem byteOffset firstCellSize
-        let buf = Array.zeroCreate<byte> targetSize
-        let mutable filled = 0
-        let mutable cell = index + cellAdvance
-        let mutable inCellOffset = inCellStart
 
-        while filled < targetSize do
-            if cell < 0 || cell >= arrObj.Length then
-                failwith
-                    $"TODO: byte-view read past array bounds at cell %d{cell} of length %d{arrObj.Length} while gathering %d{targetSize} bytes"
+        let shortCircuitCell =
+            if inCellStart = 0 && targetSize = firstCellSize then
+                let targetCell = index + cellAdvance
 
-            let cellSize =
-                byteAddressableCellSize $"array %O{arr} element %d{cell}" arrObj.Elements.[cell]
+                if targetCell < 0 || targetCell >= arrObj.Length then
+                    failwith
+                        $"TODO: byte-view read past array bounds at cell %d{targetCell} of length %d{arrObj.Length}"
 
-            let canTake = cellSize - inCellOffset
-            let take = min canTake (targetSize - filled)
+                let cellValue = arrObj.Elements.[targetCell]
 
-            let bytes =
-                byteAddressableCellBytesAt $"array %O{arr} element %d{cell}" inCellOffset take arrObj.Elements.[cell]
+                // Mirror `readStackMemoryBytesAs` / `tryReadHeapValueFieldPrecise`:
+                // propagate the stored cell only when it (a) is non-byte-addressable
+                // (so the byte-scatter path can't service it without losing
+                // provenance) AND (b) shares the requested template's CLI shape.
+                // A same-size shape mismatch — e.g. reading an `IntPtr[]` cell
+                // through `Unsafe.ReadUnaligned<long>` — falls through to the
+                // byte-walk, which will surface a clear error for the
+                // non-byte-renderable cell rather than silently returning a
+                // wrongly-shaped value.
+                match CliType.ByteAddressability cellValue with
+                | CliByteAddressability.Rejected _ when haveSameCliShape cellValue targetTemplate -> ValueSome cellValue
+                | _ -> ValueNone
+            else
+                ValueNone
 
-            Array.blit bytes 0 buf filled take
-            filled <- filled + take
-            cell <- cell + 1
-            inCellOffset <- 0
+        match shortCircuitCell with
+        | ValueSome cellValue -> cellValue
+        | ValueNone ->
+            let buf = Array.zeroCreate<byte> targetSize
+            let mutable filled = 0
+            let mutable cell = index + cellAdvance
+            let mutable inCellOffset = inCellStart
 
-        CliType.ofBytesLike targetTemplate buf
+            while filled < targetSize do
+                if cell < 0 || cell >= arrObj.Length then
+                    failwith
+                        $"TODO: byte-view read past array bounds at cell %d{cell} of length %d{arrObj.Length} while gathering %d{targetSize} bytes"
+
+                let cellSize =
+                    byteAddressableCellSize $"array %O{arr} element %d{cell}" arrObj.Elements.[cell]
+
+                let canTake = cellSize - inCellOffset
+                let take = min canTake (targetSize - filled)
+
+                let bytes =
+                    byteAddressableCellBytesAt
+                        $"array %O{arr} element %d{cell}"
+                        inCellOffset
+                        take
+                        arrObj.Elements.[cell]
+
+                Array.blit bytes 0 buf filled take
+                filled <- filled + take
+                cell <- cell + 1
+                inCellOffset <- 0
+
+            CliType.ofBytesLike targetTemplate buf
 
     let private readPeByteRangeBytesAs
         (state : IlMachineState)
@@ -1226,8 +1266,14 @@ module IlMachineManagedByref =
         if arrObj.Length = 0 then
             failwith $"TODO: byte-view write to empty array %O{arr} at index %d{index} offset %d{byteOffset}"
 
-        let firstCellSize =
-            byteAddressableCellSize $"array %O{arr} element 0" arrObj.Elements.[0]
+        // Use `CliType.sizeOf` (not `byteAddressableCellSize`) for the stride.
+        // Mirrors `readArrayBytesAs`: deriving the cell stride doesn't require
+        // element 0 to be byte-renderable. Consider `fixed (IntPtr* p = arr)`
+        // where `p[0] = typeof(int).TypeHandle.Value` populates element 0 with
+        // non-byte-addressable provenance, then `p[1] = IntPtr.Zero` byte-
+        // scatters into element 1: only the cells the loop actually touches
+        // need to be byte-addressable, validated per iteration below.
+        let firstCellSize = CliType.sizeOf arrObj.Elements.[0]
 
         let cellAdvance, inCellStart = floorDivRem byteOffset firstCellSize
         let mutable state = state
@@ -1664,6 +1710,68 @@ module IlMachineManagedByref =
         | Some updatedState -> updatedState
         | None ->
 
+        // Typed-cell fast path for byte-view-anchored ArrayElement byrefs.
+        // The Conv_U/Conv_I anchor wraps a plain `ArrayElement` byref in a
+        // trailing `[ReinterpretAs T; ByteOffset 0]` so subsequent pointer
+        // arithmetic uses byte stride; for whole-cell-aligned `stobj` of a
+        // non-byte-renderable value (e.g. `*p = new HandleHolder { P = ... }`
+        // where the struct holds a `TypeHandlePtr`), the byte-scatter path
+        // below would fail at `CliType.ToBytes`. Route such writes through
+        // `setArrayValue` so the cell preserves the new value's provenance.
+        //
+        // Shape acceptance broadens the primitive-only `haveSameCliShape`
+        // (which intentionally rejects `ValueType, ValueType` pairs because
+        // two different structs could share a size) to also accept user
+        // structs whose declared `ConcreteTypeHandle` matches the cell's
+        // declared type — that handle is the canonical identifier for the
+        // struct's layout, so equality means same fields and same storage.
+        // Mirrors the typed-cell write in `writeIndirectPrimitiveStore`,
+        // extended for user-struct stobj. Use `CliType.sizeOf` (not
+        // `byteAddressableCellSize`) for stride derivation because element 0
+        // itself may already carry non-byte-renderable provenance from a
+        // prior typed store.
+        let cellShapeMatches (cell : CliType) (newValue : CliType) : bool =
+            if haveSameCliShape cell newValue then
+                true
+            else
+                match cell, newValue with
+                | CliType.ValueType cellVt, CliType.ValueType newVt -> cellVt.Declared = newVt.Declared
+                | _ -> false
+
+        let arrayElementTypedCellWrite =
+            match src with
+            | ManagedPointerSource.Byref (ByrefRoot.ArrayElement _, _) ->
+                match splitTrailingByteView src with
+                | ValueSome (ByrefRoot.ArrayElement (arr, index), [], byteOffset) ->
+                    let arrObj = state.ManagedHeap.Arrays.[arr]
+
+                    if arrObj.Length = 0 then
+                        None
+                    else
+                        let cellSize = CliType.sizeOf arrObj.Elements.[0]
+                        let cellAdvance, inCellStart = floorDivRem byteOffset cellSize
+                        let newSize = CliType.sizeOf newValue
+
+                        if
+                            inCellStart = 0
+                            && newSize = cellSize
+                            && cellShapeMatches arrObj.Elements.[0] newValue
+                        then
+                            let targetCell = index + cellAdvance
+
+                            if targetCell < 0 || targetCell >= arrObj.Length then
+                                None
+                            else
+                                Some (IlMachineThreadState.setArrayValue arr newValue targetCell state)
+                        else
+                            None
+                | _ -> None
+            | _ -> None
+
+        match arrayElementTypedCellWrite with
+        | Some updatedState -> updatedState
+        | None ->
+
         let bytes = CliType.ToBytes newValue
 
         match src with
@@ -2072,6 +2180,60 @@ module IlMachineManagedByref =
             failwith "unreachable: NativeMemoryByte primitive stores are dispatched before exact-width typed store"
         | ManagedPointerSource.Byref _ ->
             match splitTrailingByteView src with
+            | ValueSome (ByrefRoot.ArrayElement (arr, index), [], byteOffset) ->
+                // Byte-view-anchored array byref (set up by Conv_U/Conv_I on a
+                // plain ArrayElement so that subsequent native-pointer
+                // arithmetic uses byte stride). For a whole-cell-aligned
+                // single-cell write of matching width *and shape*, the byte
+                // view is a no-op label on top of a typed-cell store; route
+                // through `setArrayValue` so the cell preserves the new
+                // value's provenance (e.g. `TypeHandlePtr` from
+                // `typeof(int).TypeHandle.Value` into `IntPtr[]`).
+                //
+                // The shape comparator is `haveSameCliShape` (wrapper-peeling)
+                // rather than the stricter `sameCliConstructor`: array cells
+                // for primitive-like wrapped types (such as `IntPtr`) are not
+                // shape-contracted — both the bare `Numeric NativeInt` form
+                // and the wrapped `ValueType { ... }` form are legitimate
+                // storage shapes for the same logical element type, and
+                // existing code on the read path uses `unwrapPrimitiveLikeDeep`
+                // to reconcile them. This contrasts with heap fields, where
+                // the recorded `Contents` shape is a contract; for arrays the
+                // contract is the element type, not any specific cell
+                // representation. A truly different shape (e.g. writing a
+                // `NativeInt` payload into an `Int32` cell, which can have
+                // matching width on 32-bit) is still rejected — `Numeric
+                // Int32` and `Numeric NativeInt` differ at the unwrapped
+                // constructor level.
+                //
+                // Use `CliType.sizeOf` rather than `byteAddressableCellSize`
+                // because the cell itself may already carry non-byte-
+                // renderable provenance.
+                let arrObj = state.ManagedHeap.Arrays.[arr]
+
+                if arrObj.Length = 0 then
+                    failwith
+                        $"TODO: byte-view typed store into empty array %O{arr} at index %d{index} offset %d{byteOffset}"
+
+                let cellSize = CliType.sizeOf arrObj.Elements.[0]
+                let cellAdvance, inCellStart = floorDivRem byteOffset cellSize
+                let newSize = CliType.sizeOf newValue
+
+                if
+                    inCellStart = 0
+                    && newSize = cellSize
+                    && haveSameCliShape arrObj.Elements.[0] newValue
+                then
+                    let targetCell = index + cellAdvance
+
+                    if targetCell < 0 || targetCell >= arrObj.Length then
+                        failwith
+                            $"TODO: byte-view typed store past array bounds at cell %d{targetCell} of length %d{arrObj.Length}"
+
+                    IlMachineThreadState.setArrayValue arr newValue targetCell state
+                else
+                    failwith
+                        $"TODO: primitive indirect store of %O{newValue} through byte-view byref %O{src} cannot preserve %s{reason}: write size %d{newSize}, cell size %d{cellSize}, in-cell offset %d{inCellStart}, cell shape %O{arrObj.Elements.[0]}"
             | ValueSome _ ->
                 failwith
                     $"TODO: primitive indirect store of %O{newValue} through byte-view byref %O{src} cannot preserve %s{reason}"
@@ -2169,6 +2331,48 @@ module IlMachineManagedByref =
                     None
             | _ ->
                 match splitTrailingByteView src with
+                | ValueSome (ByrefRoot.ArrayElement (arr, index), [], byteOffset) ->
+                    // Symmetric to the `ValueNone` arm below for the
+                    // non-byte-view case: a byte-renderable payload still
+                    // needs the typed-store path when the *existing* array
+                    // cell carries non-byte-renderable numeric provenance.
+                    // Sequence like `*p = handle; *p = IntPtr.Zero;` over a
+                    // `fixed (IntPtr* p = arr)` lands here on the second
+                    // store — the new value is the byte-addressable zero
+                    // but the cell still holds a `TypeHandlePtr`, which the
+                    // byte-scatter path would refuse.
+                    let arrObj = state.ManagedHeap.Arrays.[arr]
+
+                    let typedCellOverride =
+                        if arrObj.Length = 0 then
+                            ValueNone
+                        else
+                            let cellSize = CliType.sizeOf arrObj.Elements.[0]
+                            let cellAdvance, inCellStart = floorDivRem byteOffset cellSize
+
+                            if inCellStart = 0 && CliType.sizeOf newValue = cellSize then
+                                let targetCell = index + cellAdvance
+
+                                if targetCell >= 0 && targetCell < arrObj.Length then
+                                    match byteAddressabilityRejection arrObj.Elements.[targetCell] with
+                                    | Some rejection when isNumericProvenanceRejection rejection ->
+                                        ValueSome (arrObj.Elements.[targetCell], rejection)
+                                    | _ -> ValueNone
+                                else
+                                    ValueNone
+                            else
+                                ValueNone
+
+                    match typedCellOverride with
+                    | ValueSome (existing, rejection) ->
+                        writeExactWidthPrimitiveTypedStore
+                            baseClassTypes
+                            state
+                            src
+                            newValue
+                            $"destination cell's existing %s{rejection.Description}"
+                            (Some existing)
+                    | ValueNone -> writeManagedByrefBytesOrTypedCell baseClassTypes state src newValue
                 | ValueSome _ -> writeManagedByrefBytesOrTypedCell baseClassTypes state src newValue
                 | ValueNone ->
                     // Even a byte-renderable payload may need a typed store
