@@ -1710,6 +1710,68 @@ module IlMachineManagedByref =
         | Some updatedState -> updatedState
         | None ->
 
+        // Typed-cell fast path for byte-view-anchored ArrayElement byrefs.
+        // The Conv_U/Conv_I anchor wraps a plain `ArrayElement` byref in a
+        // trailing `[ReinterpretAs T; ByteOffset 0]` so subsequent pointer
+        // arithmetic uses byte stride; for whole-cell-aligned `stobj` of a
+        // non-byte-renderable value (e.g. `*p = new HandleHolder { P = ... }`
+        // where the struct holds a `TypeHandlePtr`), the byte-scatter path
+        // below would fail at `CliType.ToBytes`. Route such writes through
+        // `setArrayValue` so the cell preserves the new value's provenance.
+        //
+        // Shape acceptance broadens the primitive-only `haveSameCliShape`
+        // (which intentionally rejects `ValueType, ValueType` pairs because
+        // two different structs could share a size) to also accept user
+        // structs whose declared `ConcreteTypeHandle` matches the cell's
+        // declared type — that handle is the canonical identifier for the
+        // struct's layout, so equality means same fields and same storage.
+        // Mirrors the typed-cell write in `writeIndirectPrimitiveStore`,
+        // extended for user-struct stobj. Use `CliType.sizeOf` (not
+        // `byteAddressableCellSize`) for stride derivation because element 0
+        // itself may already carry non-byte-renderable provenance from a
+        // prior typed store.
+        let cellShapeMatches (cell : CliType) (newValue : CliType) : bool =
+            if haveSameCliShape cell newValue then
+                true
+            else
+                match cell, newValue with
+                | CliType.ValueType cellVt, CliType.ValueType newVt -> cellVt.Declared = newVt.Declared
+                | _ -> false
+
+        let arrayElementTypedCellWrite =
+            match src with
+            | ManagedPointerSource.Byref (ByrefRoot.ArrayElement _, _) ->
+                match splitTrailingByteView src with
+                | ValueSome (ByrefRoot.ArrayElement (arr, index), [], byteOffset) ->
+                    let arrObj = state.ManagedHeap.Arrays.[arr]
+
+                    if arrObj.Length = 0 then
+                        None
+                    else
+                        let cellSize = CliType.sizeOf arrObj.Elements.[0]
+                        let cellAdvance, inCellStart = floorDivRem byteOffset cellSize
+                        let newSize = CliType.sizeOf newValue
+
+                        if
+                            inCellStart = 0
+                            && newSize = cellSize
+                            && cellShapeMatches arrObj.Elements.[0] newValue
+                        then
+                            let targetCell = index + cellAdvance
+
+                            if targetCell < 0 || targetCell >= arrObj.Length then
+                                None
+                            else
+                                Some (IlMachineThreadState.setArrayValue arr newValue targetCell state)
+                        else
+                            None
+                | _ -> None
+            | _ -> None
+
+        match arrayElementTypedCellWrite with
+        | Some updatedState -> updatedState
+        | None ->
+
         let bytes = CliType.ToBytes newValue
 
         match src with

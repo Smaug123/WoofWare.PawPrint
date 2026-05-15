@@ -173,6 +173,30 @@ public unsafe class FixedArrayPointerArithmetic
         return 0;
     }
 
+    // Whole-cell `stobj` of a struct that carries non-byte-renderable
+    // provenance through a byte-view-anchored fixed-array pointer must
+    // preserve the value, not try to byte-flatten it. The anchor turns
+    // `*p = new S { ... }` into a byte-view write; the dispatcher needs a
+    // typed-cell fast path for whole-cell-aligned, same-size writes whose
+    // payload cannot survive `CliType.ToBytes` (here a `TypeHandlePtr` in
+    // a struct field).
+    public struct HandleHolder
+    {
+        public IntPtr P;
+    }
+
+    public static int TestStructWithProvenanceFixedStore()
+    {
+        HandleHolder[] arr = new HandleHolder[1];
+        IntPtr handle = typeof(int).TypeHandle.Value;
+        fixed (HandleHolder* p = arr)
+        {
+            *p = new HandleHolder { P = handle };
+        }
+        if (arr[0].P != handle) return 90;
+        return 0;
+    }
+
     // `fixed (object* p = arr) { *p = value; }` over a reference-type array
     // must remain a typed `ArrayElement` store: `stind.ref` over the native
     // pointer cannot byte-flatten an `ObjectRef`. The Conv_U/Conv_I anchor
@@ -211,6 +235,8 @@ public unsafe class FixedArrayPointerArithmetic
         r = TestIntPtrArrayProvenanceOverwrite();
         if (r != 0) return r;
         r = TestIntPtrArrayProvenanceCrossElement();
+        if (r != 0) return r;
+        r = TestStructWithProvenanceFixedStore();
         if (r != 0) return r;
         r = TestObjectArrayFixedStore();
         if (r != 0) return r;
