@@ -50,6 +50,7 @@
     <Compile Include="TestGenericParamConstraints.fs" />
     <Compile Include="TestGcHandleRegistry.fs" />
     <Compile Include="TestFileDescriptorRegistry.fs" />
+    <Compile Include="TestNonCryptoRandom.fs" />
     <Compile Include="TestPrimitiveLikeStructRegistry.fs" />
     <Compile Include="TestEvalStackPrimitiveLikeBoundary.fs" />
     <Compile Include="TestCliValueTypeCoerceFrom.fs" />
