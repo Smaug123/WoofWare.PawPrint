@@ -120,16 +120,23 @@ module Program =
         //     the oracle aligned. Environment.Exit from a worker still propagates as
         //     ProcessExit (handled below) before Main has a chance to return.
 
-        // Apply the spurious-wakeup strategy at the current tick, then
+        // Apply the spurious-wakeup strategies at the current tick, then
         // advance the counter so the next iteration sees a fresh tick.
-        // For the default (`Disabled`) strategy this is a fold over the
-        // identity and a single integer add — bit-for-bit identical to
-        // pre-feature behaviour.
+        // For the default (`Disabled`) strategy each application is a fold
+        // over the identity and a single integer add — bit-for-bit
+        // identical to pre-feature behaviour. The two layers (LowLevel and
+        // SyncBlock) are independent waiters on disjoint primitive types,
+        // so the order between them at a given tick is not load-bearing;
+        // we apply LowLevel first for parity with the pre-SyncBlock
+        // codepath.
         let state =
             LowLevelMonitor.applySpuriousWakeups
                 prepared.State.Kernel.SpuriousWakeup
                 prepared.State.Kernel.StepCounter
                 prepared.State
+
+        let state =
+            SyncBlockMonitor.applySpuriousWakeups state.Kernel.SyncBlockSpuriousWakeup state.Kernel.StepCounter state
 
         let prepared =
             { prepared with
