@@ -1977,12 +1977,12 @@ module IlMachineManagedByref =
                 | ByrefRoot.StringCharAt _ -> writeManagedByrefBytesOrTypedCell bct state src newValue
                 | _ -> useStructuralWriter ()
             | ValueSome _, None, _ ->
-                // Trailing-suffix-only byte view; legacy callers without BCT
-                // pass through here. Routing without BCT means the bytes path
-                // cannot peel non-trailing reinterprets, but the old
-                // splitTrailingByteView contract is preserved.
-                failwith
-                    "writeManagedByref: byte-view byref encountered without BaseClassTypes; call writeManagedByrefWithBase instead"
+                // Metadata-light caller hit a trailing byte view but cannot
+                // supply BCT for the iterative peel. The structural writer is
+                // still safe: it accepts the option-typed BCT and only needs
+                // it for non-trailing `ReinterpretAs` chains, which the legacy
+                // `splitTrailingByteView` classifier never produces.
+                useStructuralWriter ()
             | _ -> useStructuralWriter ()
 
     let writeManagedByref (state : IlMachineState) (src : ManagedPointerSource) (newValue : CliType) : IlMachineState =
