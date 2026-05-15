@@ -95,32 +95,43 @@ module AppProgram =
 
             let drainStandardStreams (state : IlMachineState) : unit =
                 // The interpreter never writes to host stdout/stderr during
-                // execution; instead `SystemNative_Write` appends bytes to
-                // the kernel's `StdoutAppended` / `StderrAppended` logs (and
+                // execution; instead `SystemNative_Write` appends each call
+                // as an `OutputLogEntry` to `state.Kernel.OutputLog` (and
                 // emits a `StepEffect.WroteToFd` for any consumer that wants
-                // to stream). Here, at the end of the run, drain those logs
+                // to stream). Here, at the end of the run, drain that log
                 // to the host's real standard streams so a user invoking
-                // `WoofWare.PawPrint.App` sees the guest's output. Order
-                // matches the run: stdout is drained before stderr.
+                // `WoofWare.PawPrint.App` sees the guest's output in the
+                // exact write order the guest produced — including across
+                // stdout/stderr — so a `Write(2,…)` followed by a
+                // `Write(1,…)` is replayed as `err`-then-`out`, matching
+                // what a real shell sees under `2>&1`.
                 //
                 // Streaming during execution would couple the functional
                 // core to an imperative sink; leaving it until the end keeps
                 // the interpreter deterministic and replayable. Programs
-                // that crash partway will lose nothing because the buffer
-                // is what's drained regardless of which `RunOutcome`
+                // that crash partway will lose nothing because the log is
+                // what's drained regardless of which `RunOutcome`
                 // terminates the run.
-                let stdout = state.Kernel.StdoutAppended
+                let log = state.Kernel.OutputLog
 
-                if stdout.Length > 0 then
+                if log.Length > 0 then
                     use out = System.Console.OpenStandardOutput ()
-                    out.Write (stdout.AsSpan ())
-                    out.Flush ()
-
-                let stderr = state.Kernel.StderrAppended
-
-                if stderr.Length > 0 then
                     use err = System.Console.OpenStandardError ()
-                    err.Write (stderr.AsSpan ())
+
+                    for entry in log do
+                        match entry.Role with
+                        | FileDescriptorRole.StandardOutput -> out.Write (entry.Bytes.AsSpan ())
+                        | FileDescriptorRole.StandardError -> err.Write (entry.Bytes.AsSpan ())
+                        | FileDescriptorRole.StandardInput ->
+                            // Unreachable: `SystemNative_Write` rejects stdin
+                            // with EBADF before appending. Exhaustiveness is
+                            // load-bearing here — a future writable role
+                            // (e.g. a regular file) will fail to compile
+                            // until its drain destination is decided.
+                            failwith
+                                "drainStandardStreams: OutputLog contains StandardInput entry (this is an interpreter bug)"
+
+                    out.Flush ()
                     err.Flush ()
 
             match Program.run loggerFactory (Some dllPath) fileStream dotnetRuntimes impls args with

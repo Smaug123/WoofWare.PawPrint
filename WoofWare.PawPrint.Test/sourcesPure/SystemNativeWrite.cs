@@ -16,8 +16,8 @@ using System.Runtime.InteropServices;
 //     pointer (so passing IntPtr.Zero is safe)
 //
 // The success path with non-zero byte count is exercised separately by an
-// impure test that asserts on EmulatedKernel.StdoutAppended without ever
-// going through the real kernel.
+// impure test that asserts on EmulatedKernel.OutputLog without ever going
+// through the real kernel.
 class Program
 {
     [DllImport("libSystem.Native", EntryPoint = "SystemNative_Write")]
@@ -40,6 +40,14 @@ class Program
         // short-circuit (a real write(fd, NULL, 0) is well-defined on Linux
         // and Darwin and returns 0).
         if (SystemNative_Write((IntPtr)1, (byte*)0, 0) != 0) return 3;
+
+        // Zero-byte write to stdout with a non-null, non-managed bit
+        // pattern: same contract. write(2) does not dereference the
+        // buffer when count is zero, so the bit pattern is irrelevant.
+        // This guards against PawPrint regressing to eagerly decoding the
+        // pointer argument (which would crash on the verbatim 123) before
+        // checking bufferSize.
+        if (SystemNative_Write((IntPtr)1, (byte*)123, 0) != 0) return 4;
 
         return 0;
     }

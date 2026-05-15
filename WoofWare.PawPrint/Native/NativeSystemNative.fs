@@ -244,9 +244,6 @@ module NativeSystemNative =
 
             let fd = fdArgument operation instruction.Arguments.[0]
 
-            let buffer =
-                NativeCall.managedPointerOfPointerArgument operation "buffer" instruction.Arguments.[1]
-
             let bufferSize = NativeCall.int32Argument operation instruction.Arguments.[2]
 
             let setErrno (state : IlMachineState) (errno : int) : IlMachineState =
@@ -256,7 +253,16 @@ module NativeSystemNative =
                     }
                 )
 
-            let readBuffer (state : IlMachineState) : ImmutableArray<byte> =
+            // Decoding the `buffer` pointer is deferred until we are
+            // genuinely about to dereference it. `Common_Write` is
+            // documented (in `pal_io_common.h`) to perform no dereference
+            // for `bufferSize < 0` (ERANGE bail) or `bufferSize = 0`
+            // (no-op on every Unix we model), so a guest calling e.g.
+            // `SystemNative_Write((IntPtr)1, (byte*)123, 0)` must succeed
+            // on PawPrint as it does on the real CLR — eagerly decoding
+            // `buffer` would crash here in `managedPointerOfPointerArgument`
+            // for any non-managed pointer literal.
+            let readBuffer (buffer : ManagedPointerSource) (state : IlMachineState) : ImmutableArray<byte> =
                 // Drain `bufferSize` bytes from `buffer`. Called only after
                 // the bufferSize-> 0 and buffer-> non-null checks succeed.
                 let byteConcreteType =
@@ -315,40 +321,36 @@ module NativeSystemNative =
                                 // `bufferSize = 0` (it bails in
                                 // `Stream.Write`), but honour the C contract
                                 // so guests that DllImport directly behave
-                                // the same as on the host.
+                                // the same as on the host. Crucially, do
+                                // NOT touch `buffer` here: the pointer is
+                                // permitted to be any bit pattern (incl.
+                                // garbage) because it is not dereferenced.
                                 0, StepEffect.NoEffect, state
                             else
+                                let buffer =
+                                    NativeCall.managedPointerOfPointerArgument
+                                        operation
+                                        "buffer"
+                                        instruction.Arguments.[1]
+
                                 match buffer with
                                 | ManagedPointerSource.Null ->
                                     failwith
                                         $"%s{operation}: refused to read %d{bufferSize} bytes through null buffer pointer (CoreLib should not invoke this entry point with a null source for a non-zero length)"
                                 | _ ->
-                                    let bytes = readBuffer state
+                                    let bytes = readBuffer buffer state
+
+                                    let logEntry =
+                                        {
+                                            OutputLogEntry.Role = role
+                                            OutputLogEntry.Bytes = bytes
+                                        }
 
                                     let state =
                                         state.MapKernel (fun kernel ->
-                                            match role with
-                                            | FileDescriptorRole.StandardOutput ->
-                                                { kernel with
-                                                    StdoutAppended =
-                                                        kernel.StdoutAppended.AddRange (bytes : ImmutableArray<byte>)
-                                                }
-                                            | FileDescriptorRole.StandardError ->
-                                                { kernel with
-                                                    StderrAppended =
-                                                        kernel.StderrAppended.AddRange (bytes : ImmutableArray<byte>)
-                                                }
-                                            | FileDescriptorRole.StandardInput ->
-                                                // Unreachable: matched the
-                                                // EBADF arm above. Threading
-                                                // the case here keeps `role`
-                                                // exhaustive so a future
-                                                // writable role (e.g. a
-                                                // regular file) fails to
-                                                // compile until its buffer
-                                                // destination is wired up.
-                                                failwith
-                                                    $"%s{operation}: write to StandardInput reached append path (this is an interpreter bug)"
+                                            { kernel with
+                                                OutputLog = kernel.OutputLog.Add logEntry
+                                            }
                                         )
 
                                     bufferSize, StepEffect.WroteToFd (role, bytes), state

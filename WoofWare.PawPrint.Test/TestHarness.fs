@@ -69,8 +69,8 @@ type EndToEndTestCase =
         ExpectsUnhandledException : bool
         /// Optional assertion run against the final PawPrint state once the
         /// guest has exited. Used by impure tests that want to verify
-        /// interpreter-internal state (e.g. `state.Kernel.StdoutAppended`)
-        /// that isn't observable as an exit code. Pure tests, which run the
+        /// interpreter-internal state (e.g. `state.Kernel.OutputLog`) that
+        /// isn't observable as an exit code. Pure tests, which run the
         /// same source on the real CLR for cross-comparison, leave this
         /// `None` — the real runtime has no analogous state to assert
         /// against.

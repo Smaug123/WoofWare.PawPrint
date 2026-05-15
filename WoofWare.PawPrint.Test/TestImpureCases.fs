@@ -82,12 +82,12 @@ module TestImpureCases =
                 // bytes at stdout. The pure-source test only covers the
                 // error paths (negative size, bad fd, zero size); the
                 // success path is impure because it appends to the
-                // interpreter's `StdoutAppended` buffer and we want to
-                // assert directly on those bytes rather than try to capture
-                // the test runner's real stdout. The guest returns 0 on
-                // success (positive return from `Write`), so a regression
-                // in the handler's return value or pointer decoding also
-                // surfaces as a wrong exit code.
+                // interpreter's `OutputLog` and we want to assert directly
+                // on those bytes rather than try to capture the test
+                // runner's real stdout. The guest returns 0 on success
+                // (positive return from `Write`), so a regression in the
+                // handler's return value or pointer decoding also surfaces
+                // as a wrong exit code.
                 FileName = "SystemNativeWriteSuccess.cs"
                 ExpectedReturnCode = 0
                 ExpectsUnhandledException = false
@@ -97,11 +97,13 @@ module TestImpureCases =
                         // The guest writes the literal "hi\n" (3 bytes) to
                         // fd 1. If the handler decoded the pointer wrong,
                         // we'd see garbage or fewer bytes here.
-                        state.Kernel.StdoutAppended
+                        OutputLogEntry.bytesFor FileDescriptorRole.StandardOutput state.Kernel.OutputLog
                         |> Seq.toArray
                         |> shouldEqual [| 0x68uy ; 0x69uy ; 0x0Auy |]
 
-                        state.Kernel.StderrAppended.Length |> shouldEqual 0
+                        OutputLogEntry.bytesFor FileDescriptorRole.StandardError state.Kernel.OutputLog
+                        |> fun bytes -> bytes.Length
+                        |> shouldEqual 0
                     )
             }
         ]

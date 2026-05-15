@@ -123,6 +123,33 @@ type SyncBlockSpuriousWakeupStrategy =
     /// changes.
     | Scripted of wakeups : (int64 * ManagedHeapAddress * ThreadId) list
 
+/// One entry in `EmulatedKernel.OutputLog`: the role the guest targeted (a
+/// writable standard stream — stdout or stderr) and the byte payload of
+/// that single `SystemNative_Write` call. Chunks are not coalesced across
+/// calls because guest write boundaries matter for diagnostics (line
+/// boundaries, prompt boundaries) and for matching real-CLR observability.
+type OutputLogEntry =
+    {
+        Role : FileDescriptorRole
+        Bytes : ImmutableArray<byte>
+    }
+
+[<RequireQualifiedAccess>]
+module OutputLogEntry =
+    /// Concatenate every entry in `log` whose `Role` matches `role`,
+    /// preserving the original write order. Used by tests that want to
+    /// assert on the cumulative bytes the guest sent to a specific
+    /// standard stream (the equivalent of capturing one of host
+    /// stdout/stderr in isolation).
+    let bytesFor (role : FileDescriptorRole) (log : ImmutableArray<OutputLogEntry>) : ImmutableArray<byte> =
+        let builder = ImmutableArray.CreateBuilder<byte> ()
+
+        for entry in log do
+            if entry.Role = role then
+                builder.AddRange (entry.Bytes : ImmutableArray<byte>)
+
+        builder.ToImmutable ()
+
 /// Aggregates the slice of `IlMachineState` that models host-kernel /
 /// syscall-emulation state: process-wide last-error registers, the native
 /// heap pool backing `Marshal.AllocHGlobal`, the Unix file-descriptor table,
@@ -208,21 +235,25 @@ type EmulatedKernel =
         /// `Random()` ctor retries until it sees a non-zero seed, so a
         /// constant-zero substitute would hang at construction time.
         NonCryptoRandomState : uint64
-        /// Append-only log of every byte the guest has written to fd 1
-        /// (stdout) via `SystemNative_Write`. Acts as the canonical record
-        /// the driver's end-of-run host drain reads from, and is what
+        /// Ordered, append-only log of every write the guest has performed
+        /// against a writable standard stream via `SystemNative_Write`.
+        /// Each entry carries the destination `Role` and the exact byte
+        /// payload of that one call (chunks are not coalesced; ordering
+        /// across roles is preserved). Acts as the canonical record the
+        /// driver's end-of-run host drain reads from, and is what
         /// PawPrint-only tests assert on instead of trying to capture host
-        /// stdout. The buffer grows unboundedly: a guest that prints
+        /// stdout. The log grows unboundedly: a guest that prints
         /// gigabytes will pay the memory cost, but PawPrint is a slow
         /// deterministic interpreter and a guest of that scale is not in
         /// scope. Bound this with a streaming sink (consuming `StepEffect.
         /// WroteToFd` at each step) when a need arises.
-        StdoutAppended : ImmutableArray<byte>
-        /// Append-only log of every byte the guest has written to fd 2
-        /// (stderr) via `SystemNative_Write`. Same contract as
-        /// `StdoutAppended`; see that field for the unbounded-growth
-        /// caveat.
-        StderrAppended : ImmutableArray<byte>
+        ///
+        /// The single ordered log (rather than per-stream buffers)
+        /// preserves cross-stream ordering: a guest that writes
+        /// `err1, out1, err2` is replayed in that order under `2>&1`,
+        /// matching real-CLR behaviour. Per-stream views are derived in
+        /// `OutputLogEntry.bytesFor`.
+        OutputLog : ImmutableArray<OutputLogEntry>
     }
 
 /// Deterministic non-cryptographic PRNG that backs
@@ -299,6 +330,5 @@ module EmulatedKernel =
             SyncBlockSpuriousWakeup = SyncBlockSpuriousWakeupStrategy.Disabled
             StepCounter = 0L
             NonCryptoRandomState = NonCryptoRandom.initialState
-            StdoutAppended = ImmutableArray<byte>.Empty
-            StderrAppended = ImmutableArray<byte>.Empty
+            OutputLog = ImmutableArray<OutputLogEntry>.Empty
         }

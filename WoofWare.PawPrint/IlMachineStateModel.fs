@@ -213,16 +213,16 @@ type StepEffect =
     /// the type level.
     | NoEffect
     /// The step accepted `bytes` for the file descriptor backing `role`, and
-    /// the bytes have already been appended to the canonical
-    /// `EmulatedKernel.StdoutAppended` / `StderrAppended` log (so the state
-    /// alone is sufficient to reconstruct the full output). Drivers that
-    /// want to stream output as it is produced — instead of waiting until
-    /// the end of the run and reading the buffer — should consume this
-    /// variant. The `role` is one of the standard-stream roles; PawPrint
-    /// does not currently model any other writable fd. `bytes` carries
-    /// exactly the bytes appended in this step (it is not the cumulative
-    /// log); a driver that streams therefore does not need to track an
-    /// offset.
+    /// the bytes have already been appended as a single entry to the
+    /// canonical `EmulatedKernel.OutputLog` (so the state alone is
+    /// sufficient to reconstruct the full output, in cross-stream order).
+    /// Drivers that want to stream output as it is produced — instead of
+    /// waiting until the end of the run and reading the log — should
+    /// consume this variant. The `role` is one of the standard-stream
+    /// roles; PawPrint does not currently model any other writable fd.
+    /// `bytes` carries exactly the bytes appended in this step (it is
+    /// not the cumulative log); a driver that streams therefore does not
+    /// need to track an offset.
     | WroteToFd of role : FileDescriptorRole * bytes : ImmutableArray<byte>
 
 type ExecutionResult =
