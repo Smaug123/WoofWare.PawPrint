@@ -11,6 +11,7 @@
     <Compile Include="Assembly.fs" />
     <Compile Include="Roslyn.fs" />
     <Compile Include="TestAssemblyReadCache.fs" />
+    <Compile Include="TestCustomAttributeBlob.fs" />
     <Compile Include="RealRuntime.fs" />
     <Compile Include="TestHarness.fs"/>
     <Compile Include="CrossAssemblyHarness.fs" />
