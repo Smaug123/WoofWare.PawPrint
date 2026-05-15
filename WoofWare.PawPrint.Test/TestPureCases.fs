@@ -48,6 +48,7 @@ module TestPureCases =
             "GenericEdgeCases.cs" // past Unsafe.CopyBlockUnaligned JIT intrinsic; now blocked downstream by ResourceManager hitting infinite recursion looking up 'Arg_NullReferenceException' in System.Private.CoreLib, which the BCL escalates to Environment.FailFast (same blocker as ArraySortHelperDefaultInt.cs)
             "ActivatorCreateInstanceThrowingCtor.cs" // Activator.CreateInstance<T>() does not wrap the ctor's exception in TargetInvocationException. CoreCLR's RuntimeType.CreateInstanceOfT (RuntimeType.CoreCLR.cs:4045-4048) wraps; the PawPrint intrinsic in `tryHandleActivatorCreateInstance` just recurses into callMethod and lets the raw exception propagate. Fix needs a ctor-frame marker so the exception dispatcher can rethrow wrapped, plus a host helper to construct the TargetInvocationException.
             "IndirectMemoryOperations.cs" // TestIndirectNativeInt now passes (Conv_U/Conv_I anchor a ReinterpretAs T projection on plain array byrefs so subsequent pointer arithmetic is byte-stride per ECMA-335 §III.1.5); now blocked at TestIndirectInt8 by the pre-existing `Ldelem_i1` TODO at NullaryIlOp.fs (`arr[2]` access on `sbyte[]` after pinned-pointer writes)
+            "ArithmeticOperations.cs" // Add_ovf/Mul_ovf/Div now raise managed OverflowException via raiseRuntimeException; now blocked downstream by unimplemented QCall RuntimeMethodHandle::IsCAVisibleFromDecoratedType during custom-attribute filtering inside the OverflowException ctor / ResourceManager init path
         ]
         |> Set.ofList
 
