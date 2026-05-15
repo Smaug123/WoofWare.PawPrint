@@ -122,6 +122,26 @@ public unsafe class FixedArrayPointerArithmetic
         return 0;
     }
 
+    // `fixed (object* p = arr) { *p = value; }` over a reference-type array
+    // must remain a typed `ArrayElement` store: `stind.ref` over the native
+    // pointer cannot byte-flatten an `ObjectRef`. The Conv_U/Conv_I anchor
+    // must therefore skip reference-typed element arrays — byte-stride
+    // pointer arithmetic over object cells would have no useful semantics
+    // anyway, since reference cells aren't byte-addressable.
+    public static int TestObjectArrayFixedStore()
+    {
+        object obj1 = new object();
+        object obj2 = new object();
+        object[] arr = new object[] { obj1, obj1 };
+        fixed (object* p = arr)
+        {
+            *p = obj2;
+        }
+        if (!object.ReferenceEquals(arr[0], obj2)) return 60;
+        if (!object.ReferenceEquals(arr[1], obj1)) return 61;
+        return 0;
+    }
+
     public static int Main(string[] argv)
     {
         int r;
@@ -136,6 +156,8 @@ public unsafe class FixedArrayPointerArithmetic
         r = TestIntPointerArrayFixed();
         if (r != 0) return r;
         r = TestIntPtrArrayProvenanceStore();
+        if (r != 0) return r;
+        r = TestObjectArrayFixedStore();
         if (r != 0) return r;
         return 0;
     }

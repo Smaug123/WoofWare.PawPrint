@@ -558,9 +558,18 @@ module IlMachineManagedByref =
 
                 let cellValue = arrObj.Elements.[targetCell]
 
+                // Mirror `readStackMemoryBytesAs` / `tryReadHeapValueFieldPrecise`:
+                // propagate the stored cell only when it (a) is non-byte-addressable
+                // (so the byte-scatter path can't service it without losing
+                // provenance) AND (b) shares the requested template's CLI shape.
+                // A same-size shape mismatch — e.g. reading an `IntPtr[]` cell
+                // through `Unsafe.ReadUnaligned<long>` — falls through to the
+                // byte-walk, which will surface a clear error for the
+                // non-byte-renderable cell rather than silently returning a
+                // wrongly-shaped value.
                 match CliType.ByteAddressability cellValue with
-                | CliByteAddressability.Rejected _ -> ValueSome cellValue
-                | CliByteAddressability.ByteAddressable -> ValueNone
+                | CliByteAddressability.Rejected _ when haveSameCliShape cellValue targetTemplate -> ValueSome cellValue
+                | _ -> ValueNone
             else
                 ValueNone
 
@@ -2107,12 +2116,29 @@ module IlMachineManagedByref =
                 // Byte-view-anchored array byref (set up by Conv_U/Conv_I on a
                 // plain ArrayElement so that subsequent native-pointer
                 // arithmetic uses byte stride). For a whole-cell-aligned
-                // single-cell write of matching width, the byte view is a
-                // no-op label on top of a typed-cell store; route through
-                // `setArrayValue` so the cell preserves the new value's
-                // provenance (e.g. `TypeHandlePtr` from
-                // `typeof(int).TypeHandle.Value` into `IntPtr[]`). Use
-                // `CliType.sizeOf` rather than `byteAddressableCellSize`
+                // single-cell write of matching width *and shape*, the byte
+                // view is a no-op label on top of a typed-cell store; route
+                // through `setArrayValue` so the cell preserves the new
+                // value's provenance (e.g. `TypeHandlePtr` from
+                // `typeof(int).TypeHandle.Value` into `IntPtr[]`).
+                //
+                // The shape comparator is `haveSameCliShape` (wrapper-peeling)
+                // rather than the stricter `sameCliConstructor`: array cells
+                // for primitive-like wrapped types (such as `IntPtr`) are not
+                // shape-contracted — both the bare `Numeric NativeInt` form
+                // and the wrapped `ValueType { ... }` form are legitimate
+                // storage shapes for the same logical element type, and
+                // existing code on the read path uses `unwrapPrimitiveLikeDeep`
+                // to reconcile them. This contrasts with heap fields, where
+                // the recorded `Contents` shape is a contract; for arrays the
+                // contract is the element type, not any specific cell
+                // representation. A truly different shape (e.g. writing a
+                // `NativeInt` payload into an `Int32` cell, which can have
+                // matching width on 32-bit) is still rejected — `Numeric
+                // Int32` and `Numeric NativeInt` differ at the unwrapped
+                // constructor level.
+                //
+                // Use `CliType.sizeOf` rather than `byteAddressableCellSize`
                 // because the cell itself may already carry non-byte-
                 // renderable provenance.
                 let arrObj = state.ManagedHeap.Arrays.[arr]
@@ -2125,7 +2151,11 @@ module IlMachineManagedByref =
                 let cellAdvance, inCellStart = floorDivRem byteOffset cellSize
                 let newSize = CliType.sizeOf newValue
 
-                if inCellStart = 0 && newSize = cellSize then
+                if
+                    inCellStart = 0
+                    && newSize = cellSize
+                    && haveSameCliShape arrObj.Elements.[0] newValue
+                then
                     let targetCell = index + cellAdvance
 
                     if targetCell < 0 || targetCell >= arrObj.Length then
@@ -2135,7 +2165,7 @@ module IlMachineManagedByref =
                     IlMachineThreadState.setArrayValue arr newValue targetCell state
                 else
                     failwith
-                        $"TODO: primitive indirect store of %O{newValue} through byte-view byref %O{src} cannot preserve %s{reason}: write size %d{newSize} does not match cell-aligned slot (cell size %d{cellSize}, in-cell offset %d{inCellStart})"
+                        $"TODO: primitive indirect store of %O{newValue} through byte-view byref %O{src} cannot preserve %s{reason}: write size %d{newSize}, cell size %d{cellSize}, in-cell offset %d{inCellStart}, cell shape %O{arrObj.Elements.[0]}"
             | ValueSome _ ->
                 failwith
                     $"TODO: primitive indirect store of %O{newValue} through byte-view byref %O{src} cannot preserve %s{reason}"
