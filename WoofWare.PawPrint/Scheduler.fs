@@ -142,8 +142,8 @@ module Scheduler =
             state.ManagedHeap.NonArrayObjects
             |> Map.toSeq
             |> Seq.choose (fun (addr, obj) ->
-                match obj.SyncBlock with
-                | SyncBlock.Locked locked when locked.LockingThread = terminated -> Some (addr, locked)
+                match obj.SyncBlock.Lock with
+                | SyncBlockLock.Held locked when locked.LockingThread = terminated -> Some (addr, locked)
                 | _ -> None
             )
             |> Seq.toList

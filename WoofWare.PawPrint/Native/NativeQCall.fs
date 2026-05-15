@@ -35,6 +35,9 @@ module NativeQCall =
             "ThreadNative_GetCurrentThread", NativeThreading.tryExecuteQCall "ThreadNative_GetCurrentThread"
             "ThreadNative_Initialize", NativeThreading.tryExecuteQCall "ThreadNative_Initialize"
             "ThreadNative_Join", NativeThreading.tryExecuteQCall "ThreadNative_Join"
+            "Monitor_Wait", NativeMonitor.tryExecuteQCall "Monitor_Wait"
+            "Monitor_Pulse", NativeMonitor.tryExecuteQCall "Monitor_Pulse"
+            "Monitor_PulseAll", NativeMonitor.tryExecuteQCall "Monitor_PulseAll"
             "DebugDebugger_IsManagedDebuggerAttached",
             NativeDebugger.tryExecuteQCall "DebugDebugger_IsManagedDebuggerAttached"
             "EventPipeInternal_Enable", NativeEventPipe.tryExecuteQCall "EventPipeInternal_Enable"

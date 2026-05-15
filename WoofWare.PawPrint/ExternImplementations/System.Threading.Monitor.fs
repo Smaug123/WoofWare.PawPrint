@@ -17,27 +17,50 @@ module System_Threading_Monitor =
         |> IlMachineState.loadArgument currentThread argIndex
         |> IlMachineState.popEvalStack currentThread
 
-    /// Park `thread` at the FIFO tail of `addr`'s AcquireQueue and flip its status
-    /// to `BlockedOnSyncBlockAcquire`. Assumes `addr`'s SyncBlock is `Locked` by
-    /// some other thread (the caller has already checked self-vs-other). When the
-    /// owner's `Monitor.Exit` decrements the reentrancy count to zero, ownership
-    /// is handed directly to the FIFO head and the head flips back to `Runnable`
-    /// already holding the lock — mirroring `LowLevelMonitor`'s ownership-transfer
-    /// model so the IL after the `Enter` call site is correctly held.
+    /// Write back a SyncBlock whose `Lock` portion is freshly held by `owner`
+    /// at `depth`, preserving the existing `WaitQueue` and accepting a fresh
+    /// `AcquireQueue`. Used by the ownership-transfer paths in `Exit_FastPath`
+    /// (and re-used by `SyncBlockMonitor.pulse` indirectly via the same shape).
+    let private writeHeld
+        (addr : ManagedHeapAddress)
+        (waitQueue : (ThreadId * int) list)
+        (locked : LockedSyncBlock)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        IlMachineState.setSyncBlock
+            addr
+            {
+                Lock = SyncBlockLock.Held locked
+                WaitQueue = waitQueue
+            }
+            state
+
+    /// Park `thread` at the FIFO tail of `addr`'s AcquireQueue as a fresh entrant
+    /// (`None` snapshot — first `Enter` since `Free`, or a thread resumed from
+    /// `Monitor.Wait` would supply `Some prior-depth` via `SyncBlockMonitor.pulse`).
+    /// Flips status to `BlockedOnSyncBlockAcquire`. Assumes `addr`'s SyncBlock is
+    /// `Held` by some other thread (the caller has already checked self-vs-other).
+    /// When the owner's `Monitor.Exit` decrements the reentrancy count to zero,
+    /// ownership is handed directly to the FIFO head and the head flips back to
+    /// `Runnable` already holding the lock — mirroring `LowLevelMonitor`'s
+    /// ownership-transfer model so the IL after the `Enter` call site is correctly
+    /// held.
     let private parkOnAcquireQueue
         (addr : ManagedHeapAddress)
         (thread : ThreadId)
+        (block : SyncBlock)
         (locked : LockedSyncBlock)
         (state : IlMachineState)
         : IlMachineState
         =
         let locked =
             { locked with
-                AcquireQueue = locked.AcquireQueue @ [ thread ]
+                AcquireQueue = locked.AcquireQueue @ [ (thread, None) ]
             }
 
         state
-        |> IlMachineState.setSyncBlock addr (SyncBlock.Locked locked)
+        |> writeHeld addr block.WaitQueue locked
         |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnSyncBlockAcquire addr)
 
     /// .NET 10 InternalCall: Monitor.TryEnter_FastPath(obj) -> bool.
@@ -61,26 +84,26 @@ module System_Threading_Monitor =
             match IlMachineState.evalStackValueToObjectRef baseClassTypes state lockObj with
             | None -> failwith "TODO: Monitor.TryEnter_FastPath should throw ArgumentNullException for null obj"
             | Some addr ->
-                match IlMachineState.getSyncBlock addr state with
-                | SyncBlock.Free ->
-                    IlMachineState.setSyncBlock
-                        addr
-                        (SyncBlock.Locked
-                            {
-                                LockingThread = currentThread
-                                ReentrancyCount = 1
-                                AcquireQueue = []
-                            })
-                        state
-                | SyncBlock.Locked locked ->
+                let block = IlMachineState.getSyncBlock addr state
+
+                match block.Lock with
+                | SyncBlockLock.Free ->
+                    let locked =
+                        {
+                            LockingThread = currentThread
+                            ReentrancyCount = 1
+                            AcquireQueue = []
+                        }
+
+                    writeHeld addr block.WaitQueue locked state
+                | SyncBlockLock.Held locked ->
                     if locked.LockingThread = currentThread then
-                        IlMachineState.setSyncBlock
-                            addr
-                            (SyncBlock.Locked
-                                { locked with
-                                    ReentrancyCount = locked.ReentrancyCount + 1
-                                })
-                            state
+                        let locked =
+                            { locked with
+                                ReentrancyCount = locked.ReentrancyCount + 1
+                            }
+
+                        writeHeld addr block.WaitQueue locked state
                     else
                         // Locked by another thread: park at the FIFO tail of the AcquireQueue.
                         // When ownership is transferred to us by the owner's Exit, the resumed
@@ -88,7 +111,7 @@ module System_Threading_Monitor =
                         // BCL's `if (!TryEnter_FastPath(obj)) Enter_Slowpath(obj)` skips the
                         // Slowpath. This collapses Monitor.Enter's blocking semantics into the
                         // fast-path handler — PawPrint never needs the Enter_Slowpath QCall.
-                        parkOnAcquireQueue addr currentThread locked state
+                        parkOnAcquireQueue addr currentThread block locked state
 
         let state = IlMachineState.pushToEvalStack (CliType.ofBool true) currentThread state
 
@@ -124,31 +147,27 @@ module System_Threading_Monitor =
             | None ->
                 failwith "TODO: Monitor.TryEnter_FastPath_WithTimeout should throw ArgumentNullException for null obj"
             | Some addr ->
-                match IlMachineState.getSyncBlock addr state with
-                | SyncBlock.Free ->
-                    let state =
-                        IlMachineState.setSyncBlock
-                            addr
-                            (SyncBlock.Locked
-                                {
-                                    LockingThread = currentThread
-                                    ReentrancyCount = 1
-                                    AcquireQueue = []
-                                })
-                            state
+                let block = IlMachineState.getSyncBlock addr state
 
+                match block.Lock with
+                | SyncBlockLock.Free ->
+                    let locked =
+                        {
+                            LockingThread = currentThread
+                            ReentrancyCount = 1
+                            AcquireQueue = []
+                        }
+
+                    let state = writeHeld addr block.WaitQueue locked state
                     1, state
-                | SyncBlock.Locked locked ->
+                | SyncBlockLock.Held locked ->
                     if locked.LockingThread = currentThread then
-                        let state =
-                            IlMachineState.setSyncBlock
-                                addr
-                                (SyncBlock.Locked
-                                    { locked with
-                                        ReentrancyCount = locked.ReentrancyCount + 1
-                                    })
-                                state
+                        let locked =
+                            { locked with
+                                ReentrancyCount = locked.ReentrancyCount + 1
+                            }
 
+                        let state = writeHeld addr block.WaitQueue locked state
                         1, state
                     elif timeout = 0 then
                         // Non-blocking poll: report contention without waiting.
@@ -157,7 +176,7 @@ module System_Threading_Monitor =
                         // Blocking acquire: park at the FIFO tail and push "Entered" —
                         // when the scheduler resumes us, ownership has been transferred
                         // and the IL pointer is already past this call site.
-                        let state = parkOnAcquireQueue addr currentThread locked state
+                        let state = parkOnAcquireQueue addr currentThread block locked state
                         1, state
                     else
                         // Finite non-zero timeout would require a virtual clock to honour;
@@ -185,9 +204,9 @@ module System_Threading_Monitor =
             match IlMachineState.evalStackValueToObjectRef baseClassTypes state lockObj with
             | None -> failwith "TODO: Monitor.IsEnteredNative should throw ArgumentNullException for null obj"
             | Some addr ->
-                match IlMachineState.getSyncBlock addr state with
-                | SyncBlock.Free -> false
-                | SyncBlock.Locked locked -> locked.LockingThread = currentThread
+                match (IlMachineState.getSyncBlock addr state).Lock with
+                | SyncBlockLock.Free -> false
+                | SyncBlockLock.Held locked -> locked.LockingThread = currentThread
 
         let state =
             IlMachineState.pushToEvalStack (CliType.ofBool result) currentThread state
@@ -202,9 +221,13 @@ module System_Threading_Monitor =
     ///
     /// When the final `Exit` releases the lock and the `AcquireQueue` is non-empty, ownership
     /// is transferred directly to the FIFO head: that thread's status flips back to `Runnable`
-    /// already holding the lock with a fresh `ReentrancyCount = 1`. Mirrors `LowLevelMonitor`'s
-    /// ownership-transfer model — the woken thread's IL resumes past `Enter` already owning
-    /// the lock, which is what the BCL contract requires.
+    /// already holding the lock with `ReentrancyCount = 1` for fresh entrants (`None`
+    /// snapshot) or with its prior depth restored (`Some depth` snapshot, set when the head
+    /// was woken from `Monitor.Wait`). Mirrors `LowLevelMonitor`'s ownership-transfer model.
+    /// `WaitQueue` is preserved across every transition: waiters do not contend for the lock
+    /// until `Pulse` / `PulseAll` moves them onto `AcquireQueue`, and a fully-released lock
+    /// with a non-empty wait queue is a legitimate state (the SyncBlock stays present, just
+    /// with `Lock = Free`).
     let Exit_FastPath
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (currentThread : ThreadId)
@@ -217,36 +240,49 @@ module System_Threading_Monitor =
             match IlMachineState.evalStackValueToObjectRef baseClassTypes state lockObj with
             | None -> failwith "TODO: Monitor.Exit_FastPath should throw ArgumentNullException for null obj"
             | Some addr ->
-                match IlMachineState.getSyncBlock addr state with
-                | SyncBlock.Free ->
+                let block = IlMachineState.getSyncBlock addr state
+
+                match block.Lock with
+                | SyncBlockLock.Free ->
                     failwith "TODO: Monitor.Exit_FastPath on a Free SyncBlock should throw SynchronizationLockException"
-                | SyncBlock.Locked locked ->
+                | SyncBlockLock.Held locked ->
                     if locked.LockingThread <> currentThread then
                         failwith
                             "TODO: Monitor.Exit_FastPath by a non-owning thread should throw SynchronizationLockException"
                     elif locked.ReentrancyCount > 1 then
-                        IlMachineState.setSyncBlock
-                            addr
-                            (SyncBlock.Locked
-                                { locked with
-                                    ReentrancyCount = locked.ReentrancyCount - 1
-                                })
-                            state
+                        let locked =
+                            { locked with
+                                ReentrancyCount = locked.ReentrancyCount - 1
+                            }
+
+                        writeHeld addr block.WaitQueue locked state
                     else
-                        // Last release. If anyone is queued, ownership transfers atomically
-                        // to the FIFO head; otherwise the block returns to Free.
+                        // Last release. If anyone is queued for Enter, ownership transfers atomically
+                        // to the FIFO head; otherwise the lock becomes Free (but the SyncBlock
+                        // record persists so the WaitQueue is preserved across the transition).
                         match locked.AcquireQueue with
-                        | [] -> IlMachineState.setSyncBlock addr SyncBlock.Free state
-                        | nextOwner :: rest ->
-                            state
-                            |> IlMachineState.setSyncBlock
+                        | [] ->
+                            IlMachineState.setSyncBlock
                                 addr
-                                (SyncBlock.Locked
-                                    {
-                                        LockingThread = nextOwner
-                                        ReentrancyCount = 1
-                                        AcquireQueue = rest
-                                    })
+                                {
+                                    Lock = SyncBlockLock.Free
+                                    WaitQueue = block.WaitQueue
+                                }
+                                state
+                        | (nextOwner, snapshot) :: rest ->
+                            // `None` snapshot = fresh entrant from Monitor.Enter (ReentrancyCount = 1).
+                            // `Some depth` = waiter resumed from Monitor.Wait, restored to its prior depth.
+                            let restoredDepth = snapshot |> Option.defaultValue 1
+
+                            let nextLocked =
+                                {
+                                    LockingThread = nextOwner
+                                    ReentrancyCount = restoredDepth
+                                    AcquireQueue = rest
+                                }
+
+                            state
+                            |> writeHeld addr block.WaitQueue nextLocked
                             |> Scheduler.setThreadStatus nextOwner ThreadStatus.Runnable
 
         // LeaveHelperAction.None = 0 — caller's IL takes the early Ret branch.

@@ -78,6 +78,7 @@
     <Compile Include="ExternImplementations\NativeImpls.fs" />
     <Compile Include="Scheduler.fs" />
     <Compile Include="LowLevelMonitor.fs" />
+    <Compile Include="SyncBlockMonitor.fs" />
     <Compile Include="ExternImplementations\System.Threading.Monitor.fs" />
     <Compile Include="Native\NativeCall.fs" />
     <Compile Include="Native\NativeEnvironment.fs" />
