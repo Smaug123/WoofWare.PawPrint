@@ -90,16 +90,18 @@ module NativeSystemNative =
         | Some "SystemNative_GetErrNo",
           [],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
-            pushInt32 state.LastSystemError ctx |> Some
+            pushInt32 state.Kernel.LastSystemError ctx |> Some
         | Some "SystemNative_SetErrNo",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Void ->
             let error =
                 NativeCall.int32Argument "SystemNative_SetErrNo" instruction.Arguments.[0]
 
-            ({ state with
-                LastSystemError = error
-             },
+            (state.MapKernel (fun kernel ->
+                { kernel with
+                    LastSystemError = error
+                }
+             ),
              WhatWeDid.Executed)
             |> ExecutionResult.Stepped
             |> Some
@@ -165,17 +167,21 @@ module NativeSystemNative =
             let oldFd = fdArgument "SystemNative_Dup" instruction.Arguments.[0]
 
             let resultFd, state =
-                match FileDescriptorRegistry.dup oldFd state.FileDescriptors with
+                match FileDescriptorRegistry.dup oldFd state.Kernel.FileDescriptors with
                 | Ok (newFd, registry) ->
                     int64 newFd,
-                    { state with
-                        FileDescriptors = registry
-                    }
+                    state.MapKernel (fun kernel ->
+                        { kernel with
+                            FileDescriptors = registry
+                        }
+                    )
                 | Error FileDescriptorDupError.BadFd ->
                     -1L,
-                    { state with
-                        LastSystemError = 9
-                    }
+                    state.MapKernel (fun kernel ->
+                        { kernel with
+                            LastSystemError = 9
+                        }
+                    )
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.Verbatim resultFd)) ctx.Thread

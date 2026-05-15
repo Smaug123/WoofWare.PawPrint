@@ -57,7 +57,7 @@ module TestLowLevelMonitor =
     let private statusOf (thread : ThreadId) (state : IlMachineState) : ThreadStatus = state.ThreadState.[thread].Status
 
     let private monitorOf (id : LowLevelMonitorId) (state : IlMachineState) : LowLevelMonitorState =
-        Map.find id state.LowLevelMonitors
+        Map.find id state.Kernel.LowLevelMonitors
 
     let private acquired (outcome : LowLevelMonitor.AcquireOutcome) : IlMachineState =
         match outcome with
@@ -268,7 +268,7 @@ module TestLowLevelMonitor =
         let id, state = LowLevelMonitor.create state
         let state = LowLevelMonitor.destroy id state
 
-        Map.containsKey id state.LowLevelMonitors |> shouldEqual false
+        Map.containsKey id state.Kernel.LowLevelMonitors |> shouldEqual false
 
     [<Test>]
     let ``destroy fails loud when the monitor is still owned`` () : unit =
@@ -300,9 +300,11 @@ module TestLowLevelMonitor =
             }
 
         let state =
-            { state with
-                LowLevelMonitors = state.LowLevelMonitors |> Map.add id corrupt
-            }
+            state.MapKernel (fun kernel ->
+                { kernel with
+                    LowLevelMonitors = kernel.LowLevelMonitors |> Map.add id corrupt
+                }
+            )
 
         let exn =
             Assert.Throws<System.Exception> (fun () -> LowLevelMonitor.destroy id state |> ignore)

@@ -183,7 +183,7 @@ module IlMachineManagedByref =
         (byteCount : int)
         : byte[] voption
         =
-        NativeMemoryPool.tryReadBytes block byteOffset byteCount state.NativeMemoryPool
+        NativeMemoryPool.tryReadBytes block byteOffset byteCount state.Kernel.NativeMemoryPool
 
     let private readRootValue (state : IlMachineState) (root : ByrefRoot) : CliType =
         match root with
@@ -208,7 +208,7 @@ module IlMachineManagedByref =
         | ByrefRoot.NativeMemoryByte (block, byteOffset) ->
             // Mirror of the StackMemoryByte case. The native-heap pool is global on
             // IlMachineState; use-after-free is caught inside NativeMemoryPool.
-            match NativeMemoryPool.tryFindCellCovering block byteOffset state.NativeMemoryPool with
+            match NativeMemoryPool.tryFindCellCovering block byteOffset state.Kernel.NativeMemoryPool with
             | Some (cellOffset, cell) when cellOffset = byteOffset -> cell
             | Some (cellOffset, cell) ->
                 failwith
@@ -331,7 +331,7 @@ module IlMachineManagedByref =
             // Mirror of the StackMemoryByte write case but routed through the
             // global NativeMemoryPool. Use-after-free is caught inside the pool
             // when the block has been removed.
-            let pool = state.NativeMemoryPool
+            let pool = state.Kernel.NativeMemoryPool
 
             match NativeMemoryPool.tryFindCellCovering block byteOffset pool with
             | Some (cellOffset, cell) when cellOffset <> byteOffset ->
@@ -831,7 +831,7 @@ module IlMachineManagedByref =
             failwith
                 $"native-heap byte-view read at offset %d{byteOffset} in %O{block} is outside the block (negative offset)"
 
-        let pool = state.NativeMemoryPool
+        let pool = state.Kernel.NativeMemoryPool
         let blockData = NativeMemoryPool.getBlock block pool
 
         if int64 byteOffset + int64 targetSize > int64 blockData.Size then
@@ -1346,7 +1346,9 @@ module IlMachineManagedByref =
         | ValueSome existing when bytesEqual existing bytes -> state
         | _ ->
 
-        let pool = NativeMemoryPool.writeBytes block byteOffset bytes state.NativeMemoryPool
+        let pool =
+            NativeMemoryPool.writeBytes block byteOffset bytes state.Kernel.NativeMemoryPool
+
         IlMachineThreadState.setNativeMemoryPool pool state
 
     let private writeStringBytes
@@ -1639,7 +1641,7 @@ module IlMachineManagedByref =
 
         match nativeMemoryByteTarget with
         | ValueSome (block, byteOffset) ->
-            let pool = state.NativeMemoryPool
+            let pool = state.Kernel.NativeMemoryPool
             let destSize = CliType.sizeOf newValue
 
             let typedWriteSafe = nativeMemoryByteTypedWriteSafe pool block byteOffset destSize
@@ -2301,7 +2303,7 @@ module IlMachineManagedByref =
         | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, byteOffset), []) ->
             match byteAddressabilityRejection newValue with
             | Some rejection when isNumericProvenanceRejection rejection ->
-                let pool = state.NativeMemoryPool
+                let pool = state.Kernel.NativeMemoryPool
                 let destSize = CliType.sizeOf newValue
 
                 if nativeMemoryByteTypedWriteSafe pool block byteOffset destSize then

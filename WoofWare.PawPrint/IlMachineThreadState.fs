@@ -305,14 +305,8 @@ module IlMachineThreadState =
                 RuntimeModuleObjects = ImmutableDictionary.Empty
                 ManagedThreadObjects = Map.empty
                 NextManagedThreadId = 2
-                LastPInvokeError = 0
-                LastSystemError = 0
-                NextEventPipeId = 1L
                 PointerHashCounters = PointerHashCounters.empty
-                NativeMemoryPool = NativeMemoryPool.empty
-                LowLevelMonitors = Map.empty
-                NextLowLevelMonitorId = 1
-                FileDescriptors = FileDescriptorRegistry.initial
+                Kernel = EmulatedKernel.initial
             }
 
         state.WithLoadedAssembly assyName entryAssembly
@@ -626,12 +620,14 @@ module IlMachineThreadState =
         : ManagedPointerSource * IlMachineState
         =
         let blockId, pool =
-            NativeMemoryPool.allocate initialization byteCount state.NativeMemoryPool
+            NativeMemoryPool.allocate initialization byteCount state.Kernel.NativeMemoryPool
 
         let state =
-            { state with
-                NativeMemoryPool = pool
-            }
+            state.MapKernel (fun kernel ->
+                { kernel with
+                    NativeMemoryPool = pool
+                }
+            )
 
         ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (blockId, 0), []), state
 
@@ -639,16 +635,20 @@ module IlMachineThreadState =
     /// Use-after-free is caught later by `NativeMemoryPool.getBlock` when any
     /// retained byref into the block is dereferenced.
     let freeNativeMemory (blockId : NativeMemoryBlockId) (state : IlMachineState) : IlMachineState =
-        { state with
-            NativeMemoryPool = NativeMemoryPool.free blockId state.NativeMemoryPool
-        }
+        state.MapKernel (fun kernel ->
+            { kernel with
+                NativeMemoryPool = NativeMemoryPool.free blockId kernel.NativeMemoryPool
+            }
+        )
 
-    let getNativeMemoryPool (state : IlMachineState) : NativeMemoryPool = state.NativeMemoryPool
+    let getNativeMemoryPool (state : IlMachineState) : NativeMemoryPool = state.Kernel.NativeMemoryPool
 
     let setNativeMemoryPool (pool : NativeMemoryPool) (state : IlMachineState) : IlMachineState =
-        { state with
-            NativeMemoryPool = pool
-        }
+        state.MapKernel (fun kernel ->
+            { kernel with
+                NativeMemoryPool = pool
+            }
+        )
 
     let setSyncBlock
         (addr : ManagedHeapAddress)

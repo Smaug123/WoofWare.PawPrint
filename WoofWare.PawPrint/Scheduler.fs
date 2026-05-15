@@ -117,7 +117,7 @@ module Scheduler =
                 $"Thread {terminated} terminated while still the InProgress initializer of {orphanedInits.Length} type(s); the real CLR would raise TypeInitializationException into every waiter, which we don't yet synthesise."
 
         let orphanedMonitors =
-            state.LowLevelMonitors
+            state.Kernel.LowLevelMonitors
             |> Map.toSeq
             |> Seq.choose (fun (id, monitor) ->
                 match monitor.Owner with
