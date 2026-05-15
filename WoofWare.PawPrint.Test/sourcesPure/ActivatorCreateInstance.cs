@@ -27,6 +27,26 @@ public class Program
         public int N;
     }
 
+    // Tracker for the struct-cctor-must-not-run check. Holding the flag on a *separate*
+    // class means reading it does not itself trigger StructWithStaticCctor's cctor.
+    static class CctorTracker
+    {
+        public static bool StructCctorRan;
+    }
+
+    struct StructWithStaticCctor
+    {
+        public int X;
+        static StructWithStaticCctor()
+        {
+            // CoreCLR's `Activator.CreateInstance<T>()` for a value type with no explicit
+            // parameterless instance ctor returns `default(T)` and does NOT run this cctor,
+            // even though the explicit static ctor makes the type non-beforefieldinit.
+            // Verified empirically against .NET 10.
+            CctorTracker.StructCctorRan = true;
+        }
+    }
+
     public static int Main(string[] args)
     {
         // Reference type with an explicit parameterless ctor: ctor must run.
@@ -48,6 +68,11 @@ public class Program
         StructWithRefField d = Activator.CreateInstance<StructWithRefField>();
         if (d.S != null) return 7;
         if (d.N != 0) return 8;
+
+        // Value-type Activator path must NOT trigger T's static constructor.
+        StructWithStaticCctor e = Activator.CreateInstance<StructWithStaticCctor>();
+        if (e.X != 0) return 9;
+        if (CctorTracker.StructCctorRan) return 10;
 
         return 0;
     }
