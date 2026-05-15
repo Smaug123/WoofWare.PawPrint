@@ -78,6 +78,31 @@ public unsafe class FixedArrayPointerArithmetic
         return 0;
     }
 
+    // Pointer-to-pointer array: element type is structural (`ConcreteTypeHandle.Pointer Int32`),
+    // which is intentionally not registered in `AllConcreteTypes`. The Conv_U/Conv_I anchor
+    // must therefore tolerate structural element handles instead of failing the lookup.
+    public static int TestIntPointerArrayWalk()
+    {
+        int a = 7;
+        int b = 8;
+        int c = 9;
+        int*[] arr = new int*[] { &a, &b, &c };
+        fixed (int** arrPtr = arr)
+        {
+            if (*arrPtr[0] != 7) return 40;
+            if (*arrPtr[1] != 8) return 41;
+            if (*arrPtr[2] != 9) return 42;
+
+            int** p = arrPtr;
+            if (*(*p) != 7) return 43;
+            p++;
+            if (*(*p) != 8) return 44;
+            p += 1;
+            if (*(*p) != 9) return 45;
+        }
+        return 0;
+    }
+
     public static int Main(string[] argv)
     {
         int r;
@@ -88,6 +113,8 @@ public unsafe class FixedArrayPointerArithmetic
         r = TestLongArrayWalk();
         if (r != 0) return r;
         r = TestIntPtrArrayWalk();
+        if (r != 0) return r;
+        r = TestIntPointerArrayWalk();
         if (r != 0) return r;
         return 0;
     }

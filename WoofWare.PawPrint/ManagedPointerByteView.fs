@@ -28,19 +28,30 @@ module ManagedPointerByteView =
 
             CliType.sizeOf zero
 
-    /// The looked-up concrete element type of the given array.
+    /// The looked-up concrete element type of the given array, when the element
+    /// is a registered concrete type. Returns `None` when the element handle is
+    /// structural (`Pointer`, `Byref`, `OneDimArrayZero`, `Array`,
+    /// `FunctionPointer`) — those handles are intentionally not present in the
+    /// `AllConcreteTypes` index.
     let arrayElementConcreteType
         (state : IlMachineState)
         (arr : ManagedHeapAddress)
-        : ConcreteType<ConcreteTypeHandle>
+        : ConcreteType<ConcreteTypeHandle> option
         =
         let obj = state.ManagedHeap.Arrays.[arr]
         let handle = arrayElementHandle obj
+        AllConcreteTypes.lookup handle state.ConcreteTypes
+
+    let private byteConcreteType
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        : ConcreteType<ConcreteTypeHandle>
+        =
+        let handle =
+            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Byte
 
         AllConcreteTypes.lookup handle state.ConcreteTypes
-        |> Option.defaultWith (fun () ->
-            failwith $"array element concrete type %O{handle} was not registered for array %O{arr}"
-        )
+        |> Option.defaultWith (fun () -> failwith $"System.Byte concrete handle %O{handle} was not registered")
 
     let arrayBytePosition
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -108,6 +119,11 @@ module ManagedPointerByteView =
     /// byte arithmetic). Plain byrefs without this anchor keep element-stride
     /// semantics, matching `Unsafe.Add<T>` intrinsic behaviour. Apply at the
     /// byref-to-native-pointer transition (`Conv_U`, `Conv_I`).
+    ///
+    /// The anchor's `ReinterpretAs` `ty` is only used as a structural label for
+    /// the byte-view (byte stride comes from `arrayElementSize`), so when the
+    /// element handle is structural (e.g. `int*[]`, `delegate*<...>[]`) we fall
+    /// back to `System.Byte` rather than failing.
     let anchorByteViewIfPlainArrayByref
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -116,6 +132,9 @@ module ManagedPointerByteView =
         =
         match ptr with
         | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, _), []) ->
-            let elementType = arrayElementConcreteType state arr
+            let elementType =
+                arrayElementConcreteType state arr
+                |> Option.defaultWith (fun () -> byteConcreteType baseClassTypes state)
+
             addByteOffset baseClassTypes state elementType 0 ptr
         | _ -> ptr
