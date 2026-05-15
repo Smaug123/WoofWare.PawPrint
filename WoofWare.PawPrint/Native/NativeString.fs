@@ -173,7 +173,7 @@ module NativeString =
                 | other -> failwith $"%s{operation}: expected _reference to be a managed byref, got %O{other}"
 
             // Walk per-element via `offsetManagedPointerByElements` so byte-view
-            // byrefs (e.g. `stackalloc char[N]` rooted at `LocalMemoryByte`) advance
+            // byrefs (e.g. `stackalloc char[N]` rooted at `StackMemoryByte`) advance
             // through their canonical byte-view shape; gluing a fresh `ReinterpretAs`
             // on top would defeat the byte-view path in `readManagedByrefBytesAs`.
             let charType = spanGenerics.[0]
@@ -210,7 +210,13 @@ module NativeString =
                                     failwith
                                         $"%s{operation}: offsetManagedPointerByElements produced non-byref %O{other}"
 
-                            match IlMachineState.readManagedByrefBytesAs state elementSrc (CliType.ofChar (char 0)) with
+                            match
+                                IlMachineState.readManagedByrefBytesAs
+                                    ctx.BaseClassTypes
+                                    state
+                                    elementSrc
+                                    (CliType.ofChar (char 0))
+                            with
                             | CliType.Char (high, low) -> chars.[i] <- char (int high * 256 + int low)
                             | other -> failwith $"%s{operation}: char[%d{i}] read returned non-char value %O{other}"
 

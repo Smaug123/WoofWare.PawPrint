@@ -192,7 +192,7 @@ module TestNullaryIlOp =
         [|
             ByteStorageIdentity.Array (ManagedHeapAddress 201)
             ByteStorageIdentity.String (ManagedHeapAddress 202)
-            ByteStorageIdentity.LocalMemory (ThreadId 0, FrameId 20, LocallocBlockId 0)
+            ByteStorageIdentity.StackMemory (ThreadId 0, FrameId 20, StackMemoryBlockId 0)
             ByteStorageIdentity.StackLocal (ThreadId 0, FrameId 21, 1us)
             ByteStorageIdentity.StackArgument (ThreadId 0, FrameId 22, 2us)
         |]

@@ -16,8 +16,13 @@ module NativeBuffer =
         AllConcreteTypes.lookup handle state.ConcreteTypes
         |> Option.defaultWith (fun () -> failwith $"Buffer_MemMove: concrete System.Byte handle %O{handle} not found")
 
-    let private readByte (state : IlMachineState) (ptr : ManagedPointerSource) : byte =
-        match IlMachineState.readManagedByrefBytesAs state ptr byteTemplate with
+    let private readByte
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (ptr : ManagedPointerSource)
+        : byte
+        =
+        match IlMachineState.readManagedByrefBytesAs baseClassTypes state ptr byteTemplate with
         | CliType.Numeric (CliNumericType.UInt8 b) -> b
         | other -> failwith $"Buffer_MemMove: byte-view read returned non-byte value %O{other}"
 
@@ -77,11 +82,14 @@ module NativeBuffer =
         | ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange, projs) ->
             projectionByteOffset projs
             |> Option.map (fun byteOffset -> ByteStorageIdentity.PeByteRange peByteRange, byteOffset)
-        | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, rootByteOffset), projs) ->
+        | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, rootByteOffset), projs) ->
             projectionByteOffset projs
             |> Option.map (fun byteOffset ->
-                ByteStorageIdentity.LocalMemory (thread, frame, block), int64 rootByteOffset + byteOffset
+                ByteStorageIdentity.StackMemory (thread, frame, block), int64 rootByteOffset + byteOffset
             )
+        | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, rootByteOffset), projs) ->
+            projectionByteOffset projs
+            |> Option.map (fun byteOffset -> ByteStorageIdentity.NativeMemory block, int64 rootByteOffset + byteOffset)
         | ManagedPointerSource.Byref (ByrefRoot.LocalVariable (thread, frame, local), projs) ->
             projectionByteOffset projs
             |> Option.map (fun byteOffset -> ByteStorageIdentity.StackLocal (thread, frame, local), byteOffset)
@@ -131,7 +139,7 @@ module NativeBuffer =
                 let dest =
                     ManagedPointerByteView.addByteOffset baseClassTypes state byteConcreteType i dest
 
-                let value = readByte state src
+                let value = readByte baseClassTypes state src
                 state <- writeByte state dest value
         else
             for i = 0 to byteCount - 1 do
@@ -141,7 +149,7 @@ module NativeBuffer =
                 let dest =
                     ManagedPointerByteView.addByteOffset baseClassTypes state byteConcreteType i dest
 
-                let value = readByte state src
+                let value = readByte baseClassTypes state src
                 state <- writeByte state dest value
 
         state

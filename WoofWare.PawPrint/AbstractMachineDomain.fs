@@ -31,9 +31,22 @@ type FrameId =
         | FrameId.FrameId i -> $"<frame #%i{i}>"
 
 /// Opaque handle for a localloc block owned by a single method frame.
-type LocallocBlockId =
-    | LocallocBlockId of int
+type StackMemoryBlockId =
+    | StackMemoryBlockId of int
 
     override this.ToString () =
         match this with
-        | LocallocBlockId.LocallocBlockId i -> $"<localloc block #%i{i}>"
+        | StackMemoryBlockId.StackMemoryBlockId i -> $"<stack memory block #%i{i}>"
+
+/// Opaque handle for a native-heap block allocated by `Marshal.AllocHGlobal` /
+/// `NativeMemory.Alloc` and freed by `Marshal.FreeHGlobal` / `NativeMemory.Free`.
+/// Globally scoped within the IlMachineState (not frame-local). Freeing deletes
+/// the block from the pool so subsequent reads or writes through any retained
+/// byref fail loudly — the deterministic simulator catches use-after-free at the
+/// site that exercises the dangling pointer.
+type NativeMemoryBlockId =
+    | NativeMemoryBlockId of int
+
+    override this.ToString () =
+        match this with
+        | NativeMemoryBlockId.NativeMemoryBlockId i -> $"<native memory block #%i{i}>"

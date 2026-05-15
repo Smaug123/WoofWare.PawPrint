@@ -67,7 +67,12 @@ type ByrefRoot =
     /// Address of a method argument slot on the stack.
     | Argument of sourceThread : ThreadId * methodFrame : FrameId * whichVar : uint16
     /// Address of a byte in a localloc block owned by a method frame.
-    | LocalMemoryByte of sourceThread : ThreadId * methodFrame : FrameId * block : LocallocBlockId * byteOffset : int
+    | StackMemoryByte of sourceThread : ThreadId * methodFrame : FrameId * block : StackMemoryBlockId * byteOffset : int
+    /// Address of a byte in a native-heap block allocated by
+    /// `Marshal.AllocHGlobal` / `NativeMemory.Alloc`. Lifetime is explicitly
+    /// controlled by `NativeMemory.Free` / `Marshal.FreeHGlobal`; reads or
+    /// writes through this root after the block has been freed fail loudly.
+    | NativeMemoryByte of block : NativeMemoryBlockId * byteOffset : int
     /// Address of a whole value stored in heap-backed storage.
     /// Used for boxed value-type storage and constructor `this` for value types.
     | HeapValue of obj : ManagedHeapAddress
@@ -103,9 +108,10 @@ type ByteStorageIdentity =
     | String of ManagedHeapAddress
     | PeByteRange of PeByteRangePointer
     | StaticField of ConcreteTypeHandle * ComparableFieldDefinitionHandle
-    | LocalMemory of ThreadId * FrameId * LocallocBlockId
+    | StackMemory of ThreadId * FrameId * StackMemoryBlockId
     | StackLocal of ThreadId * FrameId * uint16
     | StackArgument of ThreadId * FrameId * uint16
+    | NativeMemory of NativeMemoryBlockId
 
 [<RequireQualifiedAccess>]
 module ByteStorageIdentity =
@@ -115,9 +121,10 @@ module ByteStorageIdentity =
         | ByteStorageIdentity.String _ -> 1
         | ByteStorageIdentity.PeByteRange _ -> 2
         | ByteStorageIdentity.StaticField _ -> 3
-        | ByteStorageIdentity.LocalMemory _ -> 4
+        | ByteStorageIdentity.StackMemory _ -> 4
         | ByteStorageIdentity.StackLocal _ -> 5
         | ByteStorageIdentity.StackArgument _ -> 6
+        | ByteStorageIdentity.NativeMemory _ -> 7
 
     let compare (left : ByteStorageIdentity) (right : ByteStorageIdentity) : int =
         match left, right with
@@ -126,8 +133,8 @@ module ByteStorageIdentity =
         | ByteStorageIdentity.PeByteRange left, ByteStorageIdentity.PeByteRange right -> Operators.compare left right
         | ByteStorageIdentity.StaticField (leftType, leftField), ByteStorageIdentity.StaticField (rightType, rightField) ->
             Operators.compare (leftType, leftField) (rightType, rightField)
-        | ByteStorageIdentity.LocalMemory (leftThread, leftFrame, leftBlock),
-          ByteStorageIdentity.LocalMemory (rightThread, rightFrame, rightBlock) ->
+        | ByteStorageIdentity.StackMemory (leftThread, leftFrame, leftBlock),
+          ByteStorageIdentity.StackMemory (rightThread, rightFrame, rightBlock) ->
             Operators.compare (leftThread, leftFrame, leftBlock) (rightThread, rightFrame, rightBlock)
         | ByteStorageIdentity.StackLocal (leftThread, leftFrame, leftLocal),
           ByteStorageIdentity.StackLocal (rightThread, rightFrame, rightLocal) ->
@@ -135,6 +142,7 @@ module ByteStorageIdentity =
         | ByteStorageIdentity.StackArgument (leftThread, leftFrame, leftArgument),
           ByteStorageIdentity.StackArgument (rightThread, rightFrame, rightArgument) ->
             Operators.compare (leftThread, leftFrame, leftArgument) (rightThread, rightFrame, rightArgument)
+        | ByteStorageIdentity.NativeMemory left, ByteStorageIdentity.NativeMemory right -> Operators.compare left right
         | _ -> Operators.compare (rank left) (rank right)
 
 /// A navigation step applied after reaching the byref root.
@@ -176,8 +184,9 @@ type ManagedPointerSource =
                     $"<variable %i{var} in method frame %O{method} of thread %O{source}>"
                 | ByrefRoot.Argument (source, method, var) ->
                     $"<argument %i{var} in method frame %O{method} of thread %O{source}>"
-                | ByrefRoot.LocalMemoryByte (source, method, block, byteOffset) ->
+                | ByrefRoot.StackMemoryByte (source, method, block, byteOffset) ->
                     $"<byte %d{byteOffset} of %O{block} in method frame %O{method} of thread %O{source}>"
+                | ByrefRoot.NativeMemoryByte (block, byteOffset) -> $"<byte %d{byteOffset} of %O{block}>"
                 | ByrefRoot.HeapValue addr -> $"<heap value %O{addr}>"
                 | ByrefRoot.HeapObjectField (addr, field) -> $"<field %O{field} of heap object %O{addr}>"
                 | ByrefRoot.ArrayElement (arr, index) -> $"<element %i{index} of array %O{arr}>"
@@ -331,6 +340,19 @@ module ManagedPointerSource =
     /// is established at construction by floor-division in
     /// `normaliseTrailingByteOffset`.
     let tryByteAddressDeltaSign (src1 : ManagedPointerSource) (src2 : ManagedPointerSource) : int option =
+        let splitTrailingByteCursor (projs : ByrefProjection list) : (ByrefProjection list * int64) option =
+            // Mirrors `tryByteOffsetWithinSameRoot.splitTrailingByteCursor`:
+            // returns (prefix, trailing byte cursor) when projections are a
+            // pure byte cursor under an optional final ReinterpretAs, and
+            // None when the projection chain ends in a Field or other shape
+            // we can't decompose into a single byte cursor.
+            match List.rev projs with
+            | ByrefProjection.ByteOffset n :: ByrefProjection.ReinterpretAs _ :: revRest ->
+                Some (List.rev revRest, int64 n)
+            | ByrefProjection.ReinterpretAs _ :: revRest -> Some (List.rev revRest, 0L)
+            | [] -> Some ([], 0L)
+            | _ -> None
+
         match tryByteOffsetWithinSameRoot src1 src2 with
         | Some n -> Some (compare n 0L)
         | None ->
@@ -348,6 +370,24 @@ module ManagedPointerSource =
                 validateByrefProjectionsAreCanonical src1 projs1
                 validateByrefProjectionsAreCanonical src2 projs2
                 Some (compare idx2 idx1)
+            // Same native-memory block, different root byte offsets:
+            // `tryByteOffsetWithinSameRoot` only catches identical roots,
+            // but `NativeMemoryByte (block, n)` produced by pointer
+            // arithmetic varies `n` while the block is fixed. The total
+            // byte address inside the block is `rootOffset + trailing
+            // cursor`, so once the prefix projections match (so the prefix
+            // contributes equally on both sides) the sign of
+            // `(rootOffset2 + cursor2) - (rootOffset1 + cursor1)` is the
+            // sign of the byte address delta. Cross-block comparisons stay
+            // None — those have no defensible ordering.
+            | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block1, rootOffset1), projs1),
+              ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block2, rootOffset2), projs2) when block1 = block2 ->
+                match splitTrailingByteCursor projs1, splitTrailingByteCursor projs2 with
+                | Some (prefix1, cursor1), Some (prefix2, cursor2) when prefix1 = prefix2 ->
+                    let addr1 = int64 rootOffset1 + cursor1
+                    let addr2 = int64 rootOffset2 + cursor2
+                    Some (compare addr2 addr1)
+                | _ -> None
             | _ -> None
 
     /// Returns deterministic low address bits for byrefs that have a stable
@@ -357,7 +397,19 @@ module ManagedPointerSource =
     let tryStableAddressBits (src : ManagedPointerSource) : int64 option =
         match src with
         | ManagedPointerSource.Null -> Some 0L
-        | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (_, _, _, rootByteOffset), projs) ->
+        | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (_, _, _, rootByteOffset), projs) ->
+            let rec loop (byteOffset : int) (projs : ByrefProjection list) : int64 option =
+                match projs with
+                | [] -> Some (int64 rootByteOffset + int64 byteOffset)
+                | ByrefProjection.ReinterpretAs _ :: rest -> loop byteOffset rest
+                | ByrefProjection.ByteOffset n :: rest -> loop (byteOffset + n) rest
+                | ByrefProjection.Field _ :: _ -> None
+
+            loop 0 projs
+        | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (_, rootByteOffset), projs) ->
+            // Native-heap blocks are modelled as being allocated at unknown
+            // (but well-aligned) base addresses; only the in-block byte offset
+            // contributes to the low bits visible to alignment masks.
             let rec loop (byteOffset : int) (projs : ByrefProjection list) : int64 option =
                 match projs with
                 | [] -> Some (int64 rootByteOffset + int64 byteOffset)
@@ -480,15 +532,29 @@ module ManagedPointerSource =
             src
 
     /// Fold byte offsets of a localloc byte byref into the root byte offset.
-    let private normaliseLocalMemoryByteOffset (src : ManagedPointerSource) : ManagedPointerSource =
+    let private normaliseStackMemoryByteOffset (src : ManagedPointerSource) : ManagedPointerSource =
         normaliseTrailingByteOffset
             (function
-            | ByrefRoot.LocalMemoryByte _ -> Some 1
+            | ByrefRoot.StackMemoryByte _ -> Some 1
             | _ -> None)
             (fun root cellAdvance ->
                 match root with
-                | ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset) ->
-                    Some (ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset + cellAdvance))
+                | ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset) ->
+                    Some (ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset + cellAdvance))
+                | _ -> None
+            )
+            src
+
+    /// Fold byte offsets of a native-heap byte byref into the root byte offset.
+    let private normaliseNativeMemoryByteOffset (src : ManagedPointerSource) : ManagedPointerSource =
+        normaliseTrailingByteOffset
+            (function
+            | ByrefRoot.NativeMemoryByte _ -> Some 1
+            | _ -> None)
+            (fun root cellAdvance ->
+                match root with
+                | ByrefRoot.NativeMemoryByte (block, byteOffset) ->
+                    Some (ByrefRoot.NativeMemoryByte (block, byteOffset + cellAdvance))
                 | _ -> None
             )
             src
@@ -501,7 +567,8 @@ module ManagedPointerSource =
         : ManagedPointerSource
         =
         src
-        |> normaliseLocalMemoryByteOffset
+        |> normaliseStackMemoryByteOffset
+        |> normaliseNativeMemoryByteOffset
         |> normaliseArrayByteOffset context
         |> normaliseStringByteOffset
 

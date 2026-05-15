@@ -341,15 +341,19 @@ module internal IntrinsicHelpers =
 
                     ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, i + offset), projs)
                     |> EvalStackValue.ManagedPointer
-            | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread,
+            | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread,
                                                                                                     frame,
                                                                                                     block,
                                                                                                     byteOffset),
                                                                          [])) ->
                 ManagedPointerSource.Byref (
-                    ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset + (tSize * offset)),
+                    ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset + (tSize * offset)),
                     []
                 )
+                |> EvalStackValue.ManagedPointer
+            | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, byteOffset),
+                                                                         [])) ->
+                ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, byteOffset + (tSize * offset)), [])
                 |> EvalStackValue.ManagedPointer
             | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (_, projs) as src) ->
                 let projectionsAreByteViewCompatible =
@@ -585,7 +589,7 @@ module internal IntrinsicHelpers =
         : byte
         =
         let readPrimitiveByteView () : byte =
-            match IlMachineState.readManagedByrefBytesAs state src byteTemplate with
+            match IlMachineState.readManagedByrefBytesAs baseClassTypes state src byteTemplate with
             | CliType.Numeric (CliNumericType.UInt8 b) -> b
             | other -> failwith $"%s{operation}: byte-view read returned non-byte value %O{other}"
 
@@ -596,7 +600,8 @@ module internal IntrinsicHelpers =
             | ValueSome (byteViewRoot, prefixProjs, byteOffset) ->
                 match byteViewRoot, prefixProjs with
                 | ByrefRoot.ArrayElement _, []
-                | ByrefRoot.LocalMemoryByte _, []
+                | ByrefRoot.StackMemoryByte _, []
+                | ByrefRoot.NativeMemoryByte _, []
                 | ByrefRoot.PeByteRange _, []
                 | ByrefRoot.StringCharAt _, [] -> readPrimitiveByteView ()
                 | _ ->
@@ -1118,7 +1123,9 @@ module internal IntrinsicHelpers =
                     let dest =
                         ManagedPointerByteView.addByteOffset baseClassTypes state byteType i destPtr
 
-                    let value = IlMachineState.readManagedByrefBytesAs state src byteTemplate
+                    let value =
+                        IlMachineState.readManagedByrefBytesAs baseClassTypes state src byteTemplate
+
                     state <- IlMachineState.writeManagedByrefBytesOrTypedCell state dest value
 
                 state

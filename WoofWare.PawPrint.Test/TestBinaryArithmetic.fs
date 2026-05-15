@@ -183,7 +183,7 @@ module TestBinaryArithmetic =
 
     [<RequireQualifiedAccess>]
     type private NormalisableRootKind =
-        | LocalMemory
+        | StackMemory
         | Array
         | String
 
@@ -203,7 +203,7 @@ module TestBinaryArithmetic =
         [|
             "array", ByteStorageIdentity.Array (ManagedHeapAddress 101)
             "string", ByteStorageIdentity.String (ManagedHeapAddress 102)
-            "local-memory", ByteStorageIdentity.LocalMemory (ThreadId 0, FrameId 10, LocallocBlockId 0)
+            "local-memory", ByteStorageIdentity.StackMemory (ThreadId 0, FrameId 10, StackMemoryBlockId 0)
             "stack-local", ByteStorageIdentity.StackLocal (ThreadId 0, FrameId 11, 1us)
             "stack-argument", ByteStorageIdentity.StackArgument (ThreadId 0, FrameId 12, 2us)
         |]
@@ -270,7 +270,7 @@ module TestBinaryArithmetic =
             let! kind =
                 Gen.elements
                     [
-                        NormalisableRootKind.LocalMemory
+                        NormalisableRootKind.StackMemory
                         NormalisableRootKind.Array
                         NormalisableRootKind.String
                     ]
@@ -296,9 +296,9 @@ module TestBinaryArithmetic =
 
     let private pointerForNormalisationCase (case : ByteOffsetNormalisationCase) : ManagedPointerSource =
         match case.Kind with
-        | NormalisableRootKind.LocalMemory ->
+        | NormalisableRootKind.StackMemory ->
             ManagedPointerSource.Byref (
-                ByrefRoot.LocalMemoryByte (ThreadId 0, FrameId 0, LocallocBlockId 0, case.RootOffset),
+                ByrefRoot.StackMemoryByte (ThreadId 0, FrameId 0, StackMemoryBlockId 0, case.RootOffset),
                 []
             )
         | NormalisableRootKind.Array ->
@@ -309,7 +309,7 @@ module TestBinaryArithmetic =
     let private expectedNormalisedPointer (case : ByteOffsetNormalisationCase) : ManagedPointerSource =
         let cellSize =
             match case.Kind with
-            | NormalisableRootKind.LocalMemory -> 1
+            | NormalisableRootKind.StackMemory -> 1
             | NormalisableRootKind.Array -> case.ArrayCellSize
             | NormalisableRootKind.String -> 2
 
@@ -317,8 +317,8 @@ module TestBinaryArithmetic =
 
         let root =
             match case.Kind with
-            | NormalisableRootKind.LocalMemory ->
-                ByrefRoot.LocalMemoryByte (ThreadId 0, FrameId 0, LocallocBlockId 0, case.RootOffset + cellAdvance)
+            | NormalisableRootKind.StackMemory ->
+                ByrefRoot.StackMemoryByte (ThreadId 0, FrameId 0, StackMemoryBlockId 0, case.RootOffset + cellAdvance)
             | NormalisableRootKind.Array ->
                 ByrefRoot.ArrayElement (ManagedHeapAddress 123, case.RootOffset + cellAdvance)
             | NormalisableRootKind.String ->
@@ -337,7 +337,7 @@ module TestBinaryArithmetic =
 
     [<Test>]
     let ``byte offset helper normalises every byte-addressable root with generated offsets`` () : unit =
-        let mutable localMemoryCases = 0
+        let mutable stackMemoryCases = 0
         let mutable arrayCases = 0
         let mutable stringCases = 0
         let mutable negativeOffsets = 0
@@ -347,7 +347,7 @@ module TestBinaryArithmetic =
 
         let property (case : ByteOffsetNormalisationCase) : bool =
             match case.Kind with
-            | NormalisableRootKind.LocalMemory -> localMemoryCases <- localMemoryCases + 1
+            | NormalisableRootKind.StackMemory -> stackMemoryCases <- stackMemoryCases + 1
             | NormalisableRootKind.Array -> arrayCases <- arrayCases + 1
             | NormalisableRootKind.String -> stringCases <- stringCases + 1
 
@@ -362,7 +362,7 @@ module TestBinaryArithmetic =
                 match case.Kind with
                 | NormalisableRootKind.Array ->
                     ByteOffsetNormalisationContext.withArrayElementSize (ManagedHeapAddress 123) case.ArrayCellSize
-                | NormalisableRootKind.LocalMemory
+                | NormalisableRootKind.StackMemory
                 | NormalisableRootKind.String -> ByteOffsetNormalisationContext.nonArrayRootsOnly
 
             let ptr = pointerForNormalisationCase case
@@ -403,9 +403,9 @@ module TestBinaryArithmetic =
 
         Check.One (propertyConfig, Prop.forAll (Arb.fromGen genByteOffsetNormalisationCase) property)
 
-        if localMemoryCases = 0 || arrayCases = 0 || stringCases = 0 then
+        if stackMemoryCases = 0 || arrayCases = 0 || stringCases = 0 then
             failwith
-                $"generator missed normalisable roots: local-memory=%d{localMemoryCases}, array=%d{arrayCases}, string=%d{stringCases}"
+                $"generator missed normalisable roots: local-memory=%d{stackMemoryCases}, array=%d{arrayCases}, string=%d{stringCases}"
 
         if negativeOffsets = 0 || zeroOffsets = 0 || positiveOffsets = 0 then
             failwith
@@ -551,6 +551,123 @@ module TestBinaryArithmetic =
         execute ArithmeticOperation.sub state (byteViewPointer arr 1 0) (byteViewPointer arr 0 0)
         |> expectNativeInt 4L
 
+    let private nativeMemoryPointer (block : int) (byteOffset : int) : EvalStackValue =
+        ManagedPointerSource.Byref (
+            ByrefRoot.NativeMemoryByte (NativeMemoryBlockId.NativeMemoryBlockId block, byteOffset),
+            []
+        )
+        |> EvalStackValue.ManagedPointer
+
+    let private expectNativeMemoryPointer
+        (expectedBlock : int)
+        (expectedByteOffset : int)
+        (actual : EvalStackValue)
+        : unit
+        =
+        match actual with
+        | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (NativeMemoryBlockId.NativeMemoryBlockId block,
+                                                                                                 byteOffset),
+                                                                     [])) ->
+            block |> shouldEqual expectedBlock
+            byteOffset |> shouldEqual expectedByteOffset
+        | other ->
+            failwith
+                $"expected native memory byref at block %d{expectedBlock} byte %d{expectedByteOffset}, got %O{other}"
+
+    [<Test>]
+    let ``add advances native-memory byrefs by byte offset`` () : unit =
+        let state = state ()
+
+        execute ArithmeticOperation.add state (nativeMemoryPointer 0 4) (EvalStackValue.Int32 6)
+        |> expectNativeMemoryPointer 0 10
+
+        execute ArithmeticOperation.add state (EvalStackValue.Int32 6) (nativeMemoryPointer 0 4)
+        |> expectNativeMemoryPointer 0 10
+
+    [<Test>]
+    let ``sub on native-memory byrefs in the same block returns byte delta`` () : unit =
+        let state = state ()
+
+        execute ArithmeticOperation.sub state (nativeMemoryPointer 0 10) (nativeMemoryPointer 0 4)
+        |> expectNativeInt 6L
+
+        execute ArithmeticOperation.sub state (nativeMemoryPointer 0 4) (nativeMemoryPointer 0 10)
+        |> expectNativeInt -6L
+
+    [<Test>]
+    let ``sub on native-memory byrefs in different blocks returns synthetic cross-storage offset`` () : unit =
+        let state = state ()
+
+        let forward =
+            execute ArithmeticOperation.sub state (nativeMemoryPointer 0 5) (nativeMemoryPointer 1 3)
+            |> expectSyntheticNativeIntValue
+
+        let backward =
+            execute ArithmeticOperation.sub state (nativeMemoryPointer 1 3) (nativeMemoryPointer 0 5)
+            |> expectSyntheticNativeIntValue
+
+        SyntheticCrossArrayOffset.negate forward |> shouldEqual backward
+
+        SyntheticCrossArrayOffset.targetRoot forward
+        |> shouldEqual (ByteStorageIdentity.NativeMemory (NativeMemoryBlockId.NativeMemoryBlockId 0))
+
+        SyntheticCrossArrayOffset.sourceRoot forward
+        |> shouldEqual (ByteStorageIdentity.NativeMemory (NativeMemoryBlockId.NativeMemoryBlockId 1))
+
+        SyntheticCrossArrayOffset.targetOffset forward |> shouldEqual 5L
+        SyntheticCrossArrayOffset.sourceOffset forward |> shouldEqual 3L
+
+    [<Test>]
+    let ``readManagedByrefBytesAs round-trips a typed cell through a native-memory byref`` () : unit =
+        // Regression for Codex P2: native-memory byrefs must route through the byte-backed
+        // read/write paths so that a stobj followed by an ldind via NativeMemoryByte
+        // reconstitutes the value via the byte view, not via `readRootValue`'s typed-cell
+        // fast path. Pre-fix, `executeLdind` and `Stobj`'s `writeAt` only special-cased
+        // `StackMemoryByte`, leaving `NativeMemoryByte` to fall through to
+        // `readManagedByref`/`writeManagedByrefWithBase`, which can't service byte-backed
+        // reinterpretation when no typed cell exists at the requested offset.
+        let ptr, state =
+            IlMachineState.allocateNativeMemory MemoryBlockInitialization.ZeroInitialized 4 (state ())
+
+        // Plain typed-cell round-trip at the base offset.
+        let state =
+            IlMachineState.writeManagedByrefBytesOrTypedCell
+                state
+                ptr
+                (CliType.Numeric (CliNumericType.Int32 0x11223344))
+
+        let roundTripped =
+            IlMachineState.readManagedByrefBytesAs baseClassTypes state ptr (CliType.Numeric (CliNumericType.Int32 0))
+
+        roundTripped |> shouldEqual (CliType.Numeric (CliNumericType.Int32 0x11223344))
+
+    [<Test>]
+    let ``readManagedByrefBytesAs reinterprets raw native-memory bytes as a typed cell`` () : unit =
+        // Regression for Codex P2: the byte-backed read path must work for native-memory
+        // byrefs even when the underlying block has no typed cell at the requested offset.
+        // The pre-fix dispatch would have routed bare `NativeMemoryByte` reads through
+        // `readManagedByref` → `readRootValue`, which fails with "no typed cell here"
+        // instead of reading raw bytes.
+        let ptr, state =
+            IlMachineState.allocateNativeMemory MemoryBlockInitialization.ZeroInitialized 4 (state ())
+
+        let block =
+            match ptr with
+            | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, 0), []) -> block
+            | other -> failwith $"expected bare NativeMemoryByte byref, got %O{other}"
+
+        // Write raw bytes directly into the native-memory pool, bypassing typed-cell stores.
+        let pool =
+            NativeMemoryPool.writeBytes block 0 [| 0x44uy ; 0x33uy ; 0x22uy ; 0x11uy |] state.NativeMemoryPool
+
+        let state = IlMachineState.setNativeMemoryPool pool state
+
+        let readBack =
+            IlMachineState.readManagedByrefBytesAs baseClassTypes state ptr (CliType.Numeric (CliNumericType.Int32 0))
+
+        // Little-endian assembly of the four bytes above gives 0x11223344.
+        readBack |> shouldEqual (CliType.Numeric (CliNumericType.Int32 0x11223344))
+
     [<Test>]
     let ``array byref arithmetic rejects int32 index overflow`` () : unit =
         let state, arr = stateWithIntArray [ 1 ]
@@ -680,7 +797,7 @@ module TestBinaryArithmetic =
     let ``cross-storage byte offsets are generated anti-symmetric for all byte storage identities`` () : unit =
         let mutable arrayCases = 0
         let mutable stringCases = 0
-        let mutable localMemoryCases = 0
+        let mutable stackMemoryCases = 0
         let mutable stackLocalCases = 0
         let mutable stackArgumentCases = 0
 
@@ -695,7 +812,7 @@ module TestBinaryArithmetic =
                 stringCases <- stringCases + 1
 
             if touchesKind "local-memory" case then
-                localMemoryCases <- localMemoryCases + 1
+                stackMemoryCases <- stackMemoryCases + 1
 
             if touchesKind "stack-local" case then
                 stackLocalCases <- stackLocalCases + 1
@@ -733,12 +850,12 @@ module TestBinaryArithmetic =
         if
             arrayCases = 0
             || stringCases = 0
-            || localMemoryCases = 0
+            || stackMemoryCases = 0
             || stackLocalCases = 0
             || stackArgumentCases = 0
         then
             failwith
-                $"generator missed required storage identities: array=%d{arrayCases}, string=%d{stringCases}, local-memory=%d{localMemoryCases}, stack-local=%d{stackLocalCases}, stack-argument=%d{stackArgumentCases}"
+                $"generator missed required storage identities: array=%d{arrayCases}, string=%d{stringCases}, local-memory=%d{stackMemoryCases}, stack-local=%d{stackLocalCases}, stack-argument=%d{stackArgumentCases}"
 
     // The following tests cover the BCL's portable wraparound idiom from
     // UnmanagedMemoryStream.Initialize: `((byte*)((long)pointer + capacity)) < pointer`

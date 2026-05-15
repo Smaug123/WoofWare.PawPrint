@@ -196,7 +196,7 @@ module NativeCall =
         let ptr =
             ManagedPointerByteView.addByteOffset baseClassTypes state charConcreteType (charIndex * 2) ptr
 
-        match IlMachineState.readManagedByrefBytesAs state ptr (CliType.ofChar (char 0)) with
+        match IlMachineState.readManagedByrefBytesAs baseClassTypes state ptr (CliType.ofChar (char 0)) with
         | CliType.Char (high, low) -> char (int high * 256 + int low)
         | other -> failwith $"%s{operation}: UTF-16 char read returned non-char value %O{other}"
 
@@ -254,7 +254,9 @@ module NativeCall =
         let ptr =
             ManagedPointerByteView.addByteOffset baseClassTypes state byteConcreteType byteIndex ptr
 
-        match IlMachineState.readManagedByrefBytesAs state ptr (CliType.Numeric (CliNumericType.UInt8 0uy)) with
+        match
+            IlMachineState.readManagedByrefBytesAs baseClassTypes state ptr (CliType.Numeric (CliNumericType.UInt8 0uy))
+        with
         | CliType.Numeric (CliNumericType.UInt8 b) -> b
         | other -> failwith $"%s{operation}: UTF-8 byte read returned non-byte value %O{other}"
 

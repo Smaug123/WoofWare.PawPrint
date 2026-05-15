@@ -32,8 +32,16 @@ module NativeRuntimeType =
     let private nativeIntSize : int =
         CliType.sizeOf (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
 
-    let private int32AtPointer (operation : string) (state : IlMachineState) (ptr : ManagedPointerSource) : int =
-        match IlMachineState.readManagedByrefBytesAs state ptr (CliType.Numeric (CliNumericType.Int32 0)) with
+    let private int32AtPointer
+        (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (ptr : ManagedPointerSource)
+        : int
+        =
+        match
+            IlMachineState.readManagedByrefBytesAs baseClassTypes state ptr (CliType.Numeric (CliNumericType.Int32 0))
+        with
         | CliType.Numeric (CliNumericType.Int32 i) -> i
         | other -> failwith $"%s{operation}: expected Int32 at pointer, got %O{other}"
 
@@ -55,9 +63,9 @@ module NativeRuntimeType =
         match buffer with
         | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, baseIndex), []) ->
             ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, baseIndex + index), [])
-        | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset), []) ->
+        | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset), []) ->
             ManagedPointerSource.Byref (
-                ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset + (index * nativeIntSize)),
+                ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset + (index * nativeIntSize)),
                 []
             )
         // Span<IntPtr> pinned over a `stackalloc IntPtr[N]` buffer: the Span(void*, int)
@@ -65,7 +73,7 @@ module NativeRuntimeType =
         // storing it into `_reference`, and the LibraryImport stub for the QCall pulls
         // that reference back out. The reinterpret is address-preserving, so striding
         // by nativeIntSize bytes and preserving the projection keeps the typed view.
-        | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset),
+        | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset),
                                       [ ByrefProjection.ReinterpretAs reinterpretTy as proj ]) ->
             // The QCall signature mandates `Span<IntPtr>`; any other reinterpret type would mean
             // the buffer was constructed from a different element type and `nativeIntSize` striding
@@ -75,7 +83,7 @@ module NativeRuntimeType =
                     $"%s{operation}: expected IntPtr-reinterpret on localloc buffer, got %s{reinterpretTy.Namespace}.%s{reinterpretTy.Name} in %O{buffer}"
 
             ManagedPointerSource.Byref (
-                ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset + (index * nativeIntSize)),
+                ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset + (index * nativeIntSize)),
                 [ proj ]
             )
         // The 1-arg overload of CreateInstanceForAnotherGenericParameter takes the
@@ -2826,7 +2834,7 @@ module NativeRuntimeType =
             let countPtr =
                 NativeCall.managedPointerOfPointerArgument operation "usedCount" instruction.Arguments.[2]
 
-            let capacity = int32AtPointer operation state countPtr
+            let capacity = int32AtPointer operation ctx.BaseClassTypes state countPtr
 
             let state, fieldHandleIds =
                 match typeHandleTarget with
@@ -3124,7 +3132,7 @@ module NativeRuntimeType =
             let countPtr =
                 NativeCall.managedPointerOfPointerArgument operation "count pointer" instruction.Arguments.[2]
 
-            let capacity = int32AtPointer operation state countPtr
+            let capacity = int32AtPointer operation ctx.BaseClassTypes state countPtr
 
             let state, fieldHandleIds =
                 match typeHandleTarget with

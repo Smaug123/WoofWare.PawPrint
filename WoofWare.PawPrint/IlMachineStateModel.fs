@@ -72,6 +72,14 @@ type IlMachineState =
         /// derived from its registration order; distinct keys produce
         /// distinct bits with no collisions. See `PointerHashSynthesis`.
         PointerHashCounters : PointerHashCounters
+        /// Globally-scoped pool of native-heap blocks allocated by
+        /// `Marshal.AllocHGlobal` / `NativeMemory.Alloc`. Freeing a block
+        /// deletes it from this pool, so any retained byref into the block
+        /// becomes a dangling reference that the simulator catches loudly at
+        /// the use site. Unlike `StackMemoryPool` (which lives on each method
+        /// frame and is reclaimed at frame exit), native-heap blocks outlive
+        /// the frames that allocate them.
+        NativeMemoryPool : NativeMemoryPool
     }
 
     member this.WithTypeBeginInit (thread : ThreadId) (ty : ConcreteTypeHandle) =

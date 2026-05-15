@@ -295,6 +295,7 @@ module NativeRuntimeAssembly =
                             // Read an IntPtr-sized native int from the cell.
                             let entry =
                                 IlMachineState.readManagedByrefBytesAs
+                                    ctx.BaseClassTypes
                                     state
                                     entryPtr
                                     (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
