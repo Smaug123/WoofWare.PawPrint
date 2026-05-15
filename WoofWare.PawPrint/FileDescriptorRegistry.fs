@@ -124,11 +124,12 @@ module FileDescriptorRegistry =
             )
 
     /// Remove an entry from the table. Mirrors `close(2)`: returns
-    /// `Error BadFd` (= `EBADF`) when `fd` is not currently live. The
-    /// SystemNative_Close handler isn't wired up yet; this is defined so
-    /// the registry contract is closed under the operations it will need,
-    /// and so property tests can drive close+dup cycles to exercise the
-    /// `lowestFree` invariant against the gap structure that close produces.
+    /// `Error BadFd` (= `EBADF`) when `fd` is not currently live. Wired
+    /// into the interpreter via the `SystemNative_Close` handler in
+    /// `NativeSystemNative.fs`; the in-house property tests drive
+    /// close+dup cycles directly against this function to exercise the
+    /// `lowestFree` invariant against the gap structure that close
+    /// produces.
     let close
         (fd : int)
         (registry : FileDescriptorRegistry)

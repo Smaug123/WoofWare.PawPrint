@@ -188,6 +188,40 @@ module NativeSystemNative =
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
             |> Some
+        | Some "SystemNative_Close",
+          [ ConcreteIntPtr state.ConcreteTypes ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            // `close(2)`: remove the fd from the per-process table and return 0.
+            // On EBADF (fd not currently live) return -1 and set errno=EBADF, so
+            // CoreLib's `Interop.CheckIo` raises an IOException, matching the
+            // libc behaviour `Interop.Sys.Close` is written against. The native
+            // shim silently retries EINTR (`pal_io.c` treats EINTR-on-close as
+            // success); PawPrint doesn't model signals, so EINTR is unreachable
+            // here. Per Unix convention, errno is left untouched on success.
+            let fd = fdArgument "SystemNative_Close" instruction.Arguments.[0]
+
+            let resultCode, state =
+                match FileDescriptorRegistry.close fd state.Kernel.FileDescriptors with
+                | Ok registry ->
+                    0,
+                    state.MapKernel (fun kernel ->
+                        { kernel with
+                            FileDescriptors = registry
+                        }
+                    )
+                | Error FileDescriptorCloseError.BadFd ->
+                    -1,
+                    state.MapKernel (fun kernel ->
+                        { kernel with
+                            LastSystemError = Errno.EBADF
+                        }
+                    )
+
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 resultCode) ctx.Thread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
+            |> Some
         | Some "SystemNative_Free", [ ConcretePointer _ ], MethodReturnType.Void ->
             let ptr =
                 NativeCall.managedPointerOfPointerArgument "SystemNative_Free" "ptr" instruction.Arguments.[0]
