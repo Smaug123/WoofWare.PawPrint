@@ -45,6 +45,7 @@ module TestPureCases =
             "InitializeArrayBoxedFieldHandle.cs" // past String::FastAllocateString(MethodTable*, nint); now blocked by unimplemented MethodTable field projection for ParentMethodTable
             "ArraySortHelperDefaultInt.cs" // past Environment_FailFast QCall (now wired up); now blocked downstream by ResourceManager hitting infinite recursion looking up 'Arg_NullReferenceException' in System.Private.CoreLib, which the BCL escalates to Environment.FailFast
             "GenericEdgeCases.cs" // past Unsafe.CopyBlockUnaligned JIT intrinsic; now blocked downstream by ResourceManager hitting infinite recursion looking up 'Arg_NullReferenceException' in System.Private.CoreLib, which the BCL escalates to Environment.FailFast (same blocker as ArraySortHelperDefaultInt.cs)
+            "ActivatorCreateInstanceThrowingCtor.cs" // Activator.CreateInstance<T>() does not wrap the ctor's exception in TargetInvocationException. CoreCLR's RuntimeType.CreateInstanceOfT (RuntimeType.CoreCLR.cs:4045-4048) wraps; the PawPrint intrinsic in `tryHandleActivatorCreateInstance` just recurses into callMethod and lets the raw exception propagate. Fix needs a ctor-frame marker so the exception dispatcher can rethrow wrapped, plus a host helper to construct the TargetInvocationException.
         ]
         |> Set.ofList
 
