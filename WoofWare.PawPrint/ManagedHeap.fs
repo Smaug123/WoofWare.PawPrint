@@ -2,9 +2,25 @@ namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
 
+/// State carried by a `Locked` SyncBlock. `AcquireQueue` is the FIFO list of
+/// threads parked in `BlockedOnSyncBlockAcquire` waiting for ownership to be
+/// transferred to them when `LockingThread` calls `Monitor.Exit`. FIFO order
+/// is load-bearing for fairness: switching to LIFO or arbitrary order would
+/// change the observable interleaving for guests that race multiple threads
+/// into the same `lock` block.
+///
+/// `ReentrancyCount` is the depth of nested `Monitor.Enter` calls by
+/// `LockingThread` and must reach exactly zero before ownership can transfer.
+type LockedSyncBlock =
+    {
+        LockingThread : ThreadId
+        ReentrancyCount : int
+        AcquireQueue : ThreadId list
+    }
+
 type SyncBlock =
     | Free
-    | Locked of lockingThread : ThreadId * reentrancyCount : int
+    | Locked of LockedSyncBlock
 
 type AllocatedNonArrayObject =
     {
