@@ -135,23 +135,44 @@ module TestCustomAttribValueLowering =
         | other -> failwithf "expected ObjectRef (Some _), got %A" other
 
     [<Test>]
-    let ``toCliType: String (Some "") allocates an empty string`` () : unit =
+    let ``toCliType: String (Some "") routes through canonical empty string`` () : unit =
+        // CoreCLR's StringObject::NewString(0) returns GetEmptyString(); we mirror that
+        // so attribute consumers comparing against `string.Empty` / `ldstr ""` get the
+        // expected reference identity. See CustomAttribValueLowering.toCliType docs.
         let loggerFactory, state = freshState ()
 
         let result, stateAfter =
             CustomAttribValueLowering.toCliType loggerFactory bct (CustomAttribFixedArg.String (Some "")) state
 
+        let canonicalAddr, _ =
+            IlMachineState.internCanonicalEmptyString loggerFactory bct stateAfter
+
         match result with
         | CliType.ObjectRef (Some addr) ->
             ManagedHeap.getStringContents addr stateAfter.ManagedHeap
             |> shouldEqual (Some "")
+
+            addr |> shouldEqual canonicalAddr
         | other -> failwithf "expected ObjectRef (Some _), got %A" other
 
     [<Test>]
-    let ``toCliType: String (Some _) allocates distinct objects on repeated calls`` () : unit =
-        // CustomAttribValueLowering is at the QCall boundary; nothing here interns,
-        // and the CLR also produces a fresh instance each time `GetDataFromBlob`
-        // unmarshals a SerString.
+    let ``toCliType: String (Some "") is identity-stable across repeated calls`` () : unit =
+        let loggerFactory, state = freshState ()
+
+        let r1, state =
+            CustomAttribValueLowering.toCliType loggerFactory bct (CustomAttribFixedArg.String (Some "")) state
+
+        let r2, _ =
+            CustomAttribValueLowering.toCliType loggerFactory bct (CustomAttribFixedArg.String (Some "")) state
+
+        match r1, r2 with
+        | CliType.ObjectRef (Some a1), CliType.ObjectRef (Some a2) -> a1 |> shouldEqual a2
+        | _ -> failwithf "expected two ObjectRef (Some _), got %A and %A" r1 r2
+
+    [<Test>]
+    let ``toCliType: String (Some non-empty) allocates distinct objects on repeated calls`` () : unit =
+        // Non-empty SerString values are not interned by CoreCLR's GetDataFromBlob;
+        // each call to StringObject::NewString(psz, cBytes) produces a fresh instance.
         let loggerFactory, state = freshState ()
 
         let r1, state =

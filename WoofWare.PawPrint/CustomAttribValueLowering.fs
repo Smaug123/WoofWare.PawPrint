@@ -54,6 +54,14 @@ module CustomAttribValueLowering =
     /// heap when the arg is a non-null <c>SerString</c>. For every other variant
     /// the state is returned unchanged.
     /// </summary>
+    /// <remarks>
+    /// The empty <c>SerString</c> routes through the canonical interned empty
+    /// string, mirroring CoreCLR's <c>GetDataFromBlob</c> for
+    /// <c>SERIALIZATION_TYPE_STRING</c>: <c>StringObject::NewString(0)</c>
+    /// (and the <c>(LPCUTF8, cBytes)</c> overload's <c>cBytes == 0</c> branch)
+    /// both return <c>GetEmptyString()</c>. Non-empty <c>SerString</c> values
+    /// allocate a fresh heap object on every call.
+    /// </remarks>
     let toCliType
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -62,6 +70,11 @@ module CustomAttribValueLowering =
         : CliType * IlMachineState
         =
         match arg with
+        | CustomAttribFixedArg.String (Some "") ->
+            let addr, state =
+                IlMachineState.internCanonicalEmptyString loggerFactory baseClassTypes state
+
+            CliType.ObjectRef (Some addr), state
         | CustomAttribFixedArg.String (Some s) ->
             let addr, state =
                 IlMachineState.allocateManagedString loggerFactory baseClassTypes s state
