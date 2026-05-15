@@ -408,6 +408,48 @@ class Program
             )
 
     [<Test>]
+    let ``Caller-supplied env overlay wins over seeded default under case-insensitive collision`` () =
+        // The seeded `EmulatedKernel.defaultEnvironment` carries
+        // `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1`. A caller that passes a
+        // lower-case overlay for the same logical name must replace the seed
+        // (Windows env-block semantics), not coexist with it — otherwise the
+        // case-insensitive `GetEnvironmentVariableW` would walk the map and
+        // could return either the seed or the overlay depending on Map
+        // ordering, which is not deterministic from the caller's perspective.
+        let source =
+            """
+using System;
+
+class Program
+{
+    static int Main(string[] args)
+    {
+        return Environment.GetEnvironmentVariable("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT") == "0" ? 0 : 1;
+    }
+}
+"""
+
+        runPawPrintSource
+            "MockEnvironmentCaseInsensitiveOverlayWins.cs"
+            source
+            (MockEnv.make ())
+            ([ "dotnet_system_globalization_invariant", "0" ] |> Map.ofList)
+            (fun _image pawPrintResult ->
+                match pawPrintResult with
+                | RunOutcome.NormalExit (terminalState, terminatingThread) ->
+                    match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
+                    | EvalStackValue.Int32 exitCode :: _ -> exitCode |> shouldEqual 0
+                    | [] -> failwith "expected program to return an int, but it returned void"
+                    | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
+                | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
+                | RunOutcome.FailFast (_, _, message) ->
+                    let m = message |> Option.defaultValue "<no message>"
+                    failwith $"expected normal exit, got Environment.FailFast: %s{m}"
+                | RunOutcome.GuestUnhandledException (_, _, exn) ->
+                    failwith $"guest threw unhandled exception: %O{exn.ExceptionObject}"
+            )
+
+    [<Test>]
     let ``Mock environment preserves missing variable last PInvoke error`` () =
         let source =
             """

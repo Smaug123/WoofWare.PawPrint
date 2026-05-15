@@ -357,11 +357,26 @@ module EmulatedKernel =
     /// existing `Environment` map. Used by `Program.run` / the CLI to layer
     /// host or test-supplied env vars on top of `defaultEnvironment` without
     /// losing the seeded invariant-globalization default for keys the
-    /// caller does not set.
+    /// caller does not set. Matches Windows env-block semantics: each
+    /// overlay key replaces any existing entry with the same name under
+    /// `OrdinalIgnoreCase`, preserving the overlay's casing for the
+    /// resulting key. Without this, an overlay like
+    /// `dotnet_system_globalization_invariant=0` would coexist with the
+    /// seeded uppercase entry, and the case-insensitive
+    /// `GetEnvironmentVariableW` lookup could still return the seeded
+    /// value.
     let withEnvironment (env : Map<string, string>) (kernel : EmulatedKernel) : EmulatedKernel =
         let merged =
             (kernel.Environment, env)
-            ||> Map.fold (fun acc key value -> Map.add key value acc)
+            ||> Map.fold (fun acc key value ->
+                let withoutCollisions =
+                    acc
+                    |> Map.filter (fun existing _ ->
+                        not (System.String.Equals (existing, key, System.StringComparison.OrdinalIgnoreCase))
+                    )
+
+                Map.add key value withoutCollisions
+            )
 
         { kernel with
             Environment = merged
