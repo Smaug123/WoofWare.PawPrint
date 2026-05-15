@@ -659,7 +659,7 @@ module TestBinaryArithmetic =
 
         // Write raw bytes directly into the native-memory pool, bypassing typed-cell stores.
         let pool =
-            NativeMemoryPool.writeBytes block 0 [| 0x44uy ; 0x33uy ; 0x22uy ; 0x11uy |] state.NativeMemoryPool
+            NativeMemoryPool.writeBytes block 0 [| 0x44uy ; 0x33uy ; 0x22uy ; 0x11uy |] state.Kernel.NativeMemoryPool
 
         let state = IlMachineState.setNativeMemoryPool pool state
 

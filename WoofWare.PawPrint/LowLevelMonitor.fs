@@ -55,7 +55,7 @@ module LowLevelMonitor =
     /// outlives `destroy` lands here so use-after-free shows up at the use
     /// site rather than as a confusing null-handle bug elsewhere.
     let private lookup (id : LowLevelMonitorId) (state : IlMachineState) : LowLevelMonitorState =
-        match Map.tryFind id state.LowLevelMonitors with
+        match Map.tryFind id state.Kernel.LowLevelMonitors with
         | Some monitor -> monitor
         | None ->
             failwith
@@ -67,21 +67,25 @@ module LowLevelMonitor =
         (state : IlMachineState)
         : IlMachineState
         =
-        { state with
-            LowLevelMonitors = state.LowLevelMonitors |> Map.add id monitor
-        }
+        state.MapKernel (fun kernel ->
+            { kernel with
+                LowLevelMonitors = kernel.LowLevelMonitors |> Map.add id monitor
+            }
+        )
 
     /// Allocate a fresh monitor. Returns the new handle alongside the
     /// updated state. The handle is non-zero (counters start at 1) so the
     /// guest's "create failed → throw OOM" check does not fire.
     let create (state : IlMachineState) : LowLevelMonitorId * IlMachineState =
-        let id = LowLevelMonitorId state.NextLowLevelMonitorId
+        let id = LowLevelMonitorId state.Kernel.NextLowLevelMonitorId
 
         let state =
-            { state with
-                LowLevelMonitors = state.LowLevelMonitors |> Map.add id LowLevelMonitorState.empty
-                NextLowLevelMonitorId = state.NextLowLevelMonitorId + 1
-            }
+            state.MapKernel (fun kernel ->
+                { kernel with
+                    LowLevelMonitors = kernel.LowLevelMonitors |> Map.add id LowLevelMonitorState.empty
+                    NextLowLevelMonitorId = kernel.NextLowLevelMonitorId + 1
+                }
+            )
 
         id, state
 
@@ -115,9 +119,11 @@ module LowLevelMonitor =
             failwith
                 $"LowLevelMonitor %O{id}: refusing to Destroy a monitor with %d{List.length waiters} thread(s) parked in BlockedOnMonitorWait (%A{waiters})"
 
-        { state with
-            LowLevelMonitors = state.LowLevelMonitors |> Map.remove id
-        }
+        state.MapKernel (fun kernel ->
+            { kernel with
+                LowLevelMonitors = kernel.LowLevelMonitors |> Map.remove id
+            }
+        )
 
     /// Try to acquire the monitor on behalf of `thread`.
     ///
