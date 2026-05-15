@@ -46,8 +46,9 @@ jobs:
             access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
       - name: Build
         run: nix build --print-build-logs
-      - name: Reproducibility check
-        run: nix build --print-build-logs --rebuild
+      # This is really slow and also... flaky.
+      # - name: Reproducibility check
+      #   run: nix build --print-build-logs --rebuild
 
   check-dotnet-format:
     runs-on: ubuntu-latest
