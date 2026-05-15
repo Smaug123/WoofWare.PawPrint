@@ -42,17 +42,6 @@ module ManagedPointerByteView =
         let handle = arrayElementHandle obj
         AllConcreteTypes.lookup handle state.ConcreteTypes
 
-    let private byteConcreteType
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        : ConcreteType<ConcreteTypeHandle>
-        =
-        let handle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Byte
-
-        AllConcreteTypes.lookup handle state.ConcreteTypes
-        |> Option.defaultWith (fun () -> failwith $"System.Byte concrete handle %O{handle} was not registered")
-
     let arrayBytePosition
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -120,10 +109,17 @@ module ManagedPointerByteView =
     /// semantics, matching `Unsafe.Add<T>` intrinsic behaviour. Apply at the
     /// byref-to-native-pointer transition (`Conv_U`, `Conv_I`).
     ///
-    /// The anchor's `ReinterpretAs` `ty` is only used as a structural label for
-    /// the byte-view (byte stride comes from `arrayElementSize`), so when the
-    /// element handle is structural (e.g. `int*[]`, `delegate*<...>[]`) we fall
-    /// back to `System.Byte` rather than failing.
+    /// When the array element handle is structural (e.g. `int*[]`,
+    /// `delegate*<...>[]`), the element type is not registered in
+    /// `AllConcreteTypes` and the cells themselves carry non-byte-addressable
+    /// pointer provenance, so the byte-view machinery cannot be safely
+    /// extended over them today. Leave such byrefs un-anchored: `Conv_U`
+    /// merely transports them onto the native-int eval stack, which is what
+    /// the Codex-flagged `ldelema ptr[int32]; conv.u` legal-IL shape needs,
+    /// without forcing the byte-addressability promise we cannot keep.
+    /// Subsequent pointer arithmetic on the structural-element byref will
+    /// still use element-stride semantics — extending byte-stride support to
+    /// pointer-element arrays is future work.
     let anchorByteViewIfPlainArrayByref
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -132,9 +128,7 @@ module ManagedPointerByteView =
         =
         match ptr with
         | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, _), []) ->
-            let elementType =
-                arrayElementConcreteType state arr
-                |> Option.defaultWith (fun () -> byteConcreteType baseClassTypes state)
-
-            addByteOffset baseClassTypes state elementType 0 ptr
+            match arrayElementConcreteType state arr with
+            | Some elementType -> addByteOffset baseClassTypes state elementType 0 ptr
+            | None -> ptr
         | _ -> ptr
