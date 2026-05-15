@@ -2930,17 +2930,39 @@ module NativeRuntimeType =
             let state, concretizedMethod =
                 match MetadataToken.ofInt methodToken with
                 | MetadataToken.MethodDef h ->
-                    let method =
-                        assembly.Methods.[h]
+                    // CoreCLR's ModuleHandle.ResolveMethod returns the metadata definition for
+                    // a MethodDef token without consulting the caller-supplied
+                    // type/method-instantiation arrays:
+                    //   MemberLoader::GetMethodDescFromMemberDefOrRefOrSpec
+                    //     -> GetMethodDescFromMethodDef (no SigTypeContext parameter)
+                    // (memberload.cpp). So `ResolveMethodHandle(token)` for a method like
+                    // `Generic<T>.M` returns the open `Generic<T>.M`, even if the caller
+                    // supplied `typeInst = [string]`. Our registry only stores fully concretised
+                    // methods; faithfully representing the open form is not yet supported.
+                    let method = assembly.Methods.[h]
+
+                    if method.DeclaringType.Generics.Length > 0 then
+                        failwith
+                            $"TODO: %s{operation}: MethodDef token 0x%08x{methodToken} declared on generic type %s{method.DeclaringType.Namespace}.%s{method.DeclaringType.Name} (%d{method.DeclaringType.Generics.Length} type generic parameter(s)); CoreCLR returns the open metadata definition without consuming the caller's typeInstantiation, but the MethodHandle registry only supports fully concretised methods."
+
+                    if method.Generics.Length > 0 then
+                        failwith
+                            $"TODO: %s{operation}: MethodDef token 0x%08x{methodToken} resolves to generic method %s{method.Name} (%d{method.Generics.Length} method generic parameter(s)); CoreCLR returns the open metadata definition without consuming the caller's methodInstantiation, but the MethodHandle registry only supports fully concretised methods."
+
+                    let methodMapped =
+                        method
                         |> MethodInfo.mapTypeGenerics (fun (par, _) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
 
+                    // Pass empty instantiation arrays: for MethodDef tokens, CoreCLR does not
+                    // consume the caller's type/method instantiation context, and after the
+                    // guards above the method has no generic parameters to substitute anyway.
                     let state, concretized, _ =
                         ExecutionConcretization.concretizeMethodWithAllGenerics
                             ctx.LoggerFactory
                             ctx.BaseClassTypes
-                            typeInstantiation
-                            method
-                            methodInstantiation
+                            ImmutableArray.Empty
+                            methodMapped
+                            ImmutableArray.Empty
                             state
 
                     state, concretized
