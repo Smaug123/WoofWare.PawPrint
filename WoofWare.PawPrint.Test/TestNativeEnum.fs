@@ -103,7 +103,16 @@ public static class Entry
 
         use peImage = new MemoryStream (image)
 
-        match Program.prepare loggerFactory (Some "NativeEnumTest.cs") peImage dotnetRuntimes (MockEnv.make ()) [] with
+        match
+            Program.prepare
+                loggerFactory
+                (Some "NativeEnumTest.cs")
+                peImage
+                dotnetRuntimes
+                (MockEnv.make ())
+                Map.empty
+                []
+        with
         | Program.ProgramStartResult.Ready prepared -> prepared
         | Program.ProgramStartResult.CompletedBeforeMain outcome ->
             failwith $"expected enum test program to be ready before Main, got %O{outcome}"

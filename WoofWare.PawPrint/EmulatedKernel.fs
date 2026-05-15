@@ -254,6 +254,15 @@ type EmulatedKernel =
         /// matching real-CLR behaviour. Per-stream views are derived in
         /// `OutputLogEntry.bytesFor`.
         OutputLog : ImmutableArray<OutputLogEntry>
+        /// Simulated process environment variable table. Consulted by
+        /// `Environment.GetEnvironmentVariable` and the Win32
+        /// `GetEnvironmentVariableW` shim. Seeded with
+        /// `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1` so guest BCL code that
+        /// reads it during startup gets the invariant-globalization mode
+        /// PawPrint requires; the CLI overlays the host process's env on top
+        /// of this default at startup, and tests can pass their own overlay
+        /// via `Program.run`.
+        Environment : Map<string, string>
     }
 
 /// Deterministic non-cryptographic PRNG that backs
@@ -317,6 +326,16 @@ module NonCryptoRandom =
 
 [<RequireQualifiedAccess>]
 module EmulatedKernel =
+    /// Default environment variables for a freshly-minted simulated process.
+    /// PawPrint only implements invariant-globalization today, so this seed
+    /// must always be applied: callers that supply a custom environment
+    /// overlay it on top of these defaults, which means the host (or a test)
+    /// can override `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT` if it really
+    /// needs to, while forgetting to set it keeps the runtime in the regime
+    /// it actually supports.
+    let defaultEnvironment : Map<string, string> =
+        Map.ofList [ "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT", "1" ]
+
     let initial : EmulatedKernel =
         {
             LastPInvokeError = 0
@@ -331,4 +350,19 @@ module EmulatedKernel =
             StepCounter = 0L
             NonCryptoRandomState = NonCryptoRandom.initialState
             OutputLog = ImmutableArray<OutputLogEntry>.Empty
+            Environment = defaultEnvironment
+        }
+
+    /// Overlay the supplied environment variables on top of the kernel's
+    /// existing `Environment` map. Used by `Program.run` / the CLI to layer
+    /// host or test-supplied env vars on top of `defaultEnvironment` without
+    /// losing the seeded invariant-globalization default for keys the
+    /// caller does not set.
+    let withEnvironment (env : Map<string, string>) (kernel : EmulatedKernel) : EmulatedKernel =
+        let merged =
+            (kernel.Environment, env)
+            ||> Map.fold (fun acc key value -> Map.add key value acc)
+
+        { kernel with
+            Environment = merged
         }

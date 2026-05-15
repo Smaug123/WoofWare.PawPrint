@@ -1,6 +1,5 @@
 namespace WoofWare.PawPrint
 
-open WoofWare.PawPrint.ExternImplementations
 
 [<RequireQualifiedAccess>]
 module NativeKernel32 =
@@ -142,10 +141,8 @@ module NativeKernel32 =
             let name =
                 NativeCall.readNullTerminatedUtf16 operation ctx.BaseClassTypes state namePtr
 
-            let env = ISystem_Environment_Env.get ctx.Implementations
-
             let plan =
-                planGetEnvironmentVariableW bufferSize (env.TryGetEnvironmentVariable name)
+                planGetEnvironmentVariableW bufferSize (Map.tryFind name state.Kernel.Environment)
 
             let state =
                 match plan.ValueToWrite with

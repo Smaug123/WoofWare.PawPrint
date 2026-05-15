@@ -74,6 +74,22 @@ module AppProgram =
 
         let logger = loggerFactory.CreateLogger "WoofWare.PawPrint.App"
 
+        // Snapshot the host process's environment once at startup. Layered on top
+        // of `EmulatedKernel.defaultEnvironment`, so any host-set value wins over
+        // the seeded `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1` default, while
+        // unset keys still get the default. This is the production analogue of
+        // tests passing an explicit env map to `Program.run`.
+        let hostEnvironment : Map<string, string> =
+            let dict = System.Environment.GetEnvironmentVariables ()
+
+            let mutable acc = Map.empty
+
+            for entry in dict do
+                let entry = entry :?> System.Collections.DictionaryEntry
+                acc <- Map.add (entry.Key :?> string) (entry.Value :?> string) acc
+
+            acc
+
         let runNormal (dllPath : string) (args : string list) : int =
             let dotnetRuntimes =
                 DotnetRuntime.SelectForDll dllPath |> ImmutableArray.CreateRange
@@ -134,7 +150,7 @@ module AppProgram =
                     out.Flush ()
                     err.Flush ()
 
-            match Program.run loggerFactory (Some dllPath) fileStream dotnetRuntimes impls args with
+            match Program.run loggerFactory (Some dllPath) fileStream dotnetRuntimes impls hostEnvironment args with
             | RunOutcome.NormalExit (state, thread)
             | RunOutcome.ProcessExit (state, thread) ->
                 drainStandardStreams state
@@ -177,7 +193,7 @@ module AppProgram =
 
             let impls = NativeImpls.PassThru ()
 
-            DebuggerServer.run loggerFactory dllPath dotnetRuntimes impls args
+            DebuggerServer.run loggerFactory dllPath dotnetRuntimes impls hostEnvironment args
 
         match mode with
         | AppMode.RunGuest (dllPath, args) -> runNormal dllPath args

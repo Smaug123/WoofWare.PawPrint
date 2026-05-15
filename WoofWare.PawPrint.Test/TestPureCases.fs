@@ -128,6 +128,7 @@ module TestPureCases =
         (sourceName : string)
         (source : string)
         (nativeImpls : NativeImpls)
+        (env : Map<string, string>)
         (assertResult : byte array -> RunOutcome -> unit)
         : unit
         =
@@ -145,7 +146,7 @@ module TestPureCases =
 
         try
             let pawPrintResult =
-                Program.run loggerFactory (Some sourceName) peImage dotnetRuntimes nativeImpls []
+                Program.run loggerFactory (Some sourceName) peImage dotnetRuntimes nativeImpls env []
 
             assertResult image pawPrintResult
         with _ ->
@@ -161,6 +162,7 @@ module TestPureCases =
             case.FileName
             source
             case.NativeImpls
+            case.Environment
             (fun image pawPrintResult ->
                 let realResult = RealRuntime.executeWithRealRuntime [||] image
 
@@ -247,6 +249,7 @@ class Program
             "RethrowStackTrace.cs"
             source
             (MockEnv.make ())
+            Map.empty
             (fun _image pawPrintResult ->
                 match pawPrintResult with
                 | RunOutcome.GuestUnhandledException (_, _, exn) ->
@@ -275,6 +278,7 @@ class Program
             "MockEnvironmentInvariantGlobalization.cs"
             source
             (MockEnv.make ())
+            Map.empty
             (fun _image pawPrintResult ->
                 match pawPrintResult with
                 | RunOutcome.NormalExit (terminalState, terminatingThread) ->
@@ -335,7 +339,8 @@ class Program
         runPawPrintSource
             "MockEnvironmentConfiguredVariables.cs"
             source
-            (MockEnv.makeWithEnvironment ([ "PAWPRINT_TEST_VARIABLE", "configured" ] |> Map.ofList))
+            (MockEnv.make ())
+            ([ "PAWPRINT_TEST_VARIABLE", "configured" ] |> Map.ofList)
             (fun _image pawPrintResult ->
                 match pawPrintResult with
                 | RunOutcome.NormalExit (terminalState, terminatingThread) ->
@@ -380,6 +385,7 @@ class Program
             "MockEnvironmentMissingVariableLastPInvokeError.cs"
             source
             (MockEnv.make ())
+            Map.empty
             (fun _image pawPrintResult ->
                 match pawPrintResult with
                 | RunOutcome.NormalExit (terminalState, terminatingThread) ->
@@ -422,6 +428,7 @@ class Program
             "EnvironmentFailFast.cs"
             source
             nativeImpls
+            Map.empty
             (fun _image pawPrintResult ->
                 match pawPrintResult with
                 | RunOutcome.FailFast (_, _, message) -> message |> shouldEqual (Some "boom")
@@ -437,6 +444,7 @@ class Program
             FileName = fileName
             ExpectedReturnCode = 0
             NativeImpls = MockEnv.make ()
+            Environment = Map.empty
             ExpectsUnhandledException = false
             AssertTerminalState = None
         }
@@ -451,6 +459,7 @@ class Program
             FileName = fileName
             ExpectedReturnCode = exitCode
             NativeImpls = MockEnv.make ()
+            Environment = Map.empty
             ExpectsUnhandledException = false
             AssertTerminalState = None
         }
@@ -462,6 +471,7 @@ class Program
             FileName = fileName
             ExpectedReturnCode = 0
             NativeImpls = mock
+            Environment = Map.empty
             ExpectsUnhandledException = false
             AssertTerminalState = None
         }
@@ -474,6 +484,7 @@ class Program
             FileName = fileName
             ExpectedReturnCode = 0 // not checked; both runtimes are expected to throw
             NativeImpls = MockEnv.make ()
+            Environment = Map.empty
             ExpectsUnhandledException = true
             AssertTerminalState = None
         }
@@ -499,6 +510,7 @@ class Program
             FileName = fileName
             ExpectedReturnCode = 0
             NativeImpls = MockEnv.make ()
+            Environment = Map.empty
             ExpectsUnhandledException = false
             AssertTerminalState = None
         }
@@ -523,6 +535,7 @@ class Program
             FileName = fileName
             ExpectedReturnCode = 0
             NativeImpls = mock
+            Environment = Map.empty
             ExpectsUnhandledException = false
             AssertTerminalState = None
         }

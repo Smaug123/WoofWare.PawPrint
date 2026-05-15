@@ -121,7 +121,7 @@ class Program
 
             let normalOutcome =
                 use stream = new MemoryStream (image)
-                Program.run normalLoggerFactory (Some "DebuggerProperty.cs") stream dotnetRuntimes impls []
+                Program.run normalLoggerFactory (Some "DebuggerProperty.cs") stream dotnetRuntimes impls Map.empty []
 
             let _, debuggerLoggerFactory = LoggerFactory.makeTest ()
             use _debuggerLoggerFactoryResource = debuggerLoggerFactory
@@ -131,7 +131,14 @@ class Program
                 use stream = new MemoryStream (image)
 
                 match
-                    Program.prepare debuggerLoggerFactory (Some "DebuggerProperty.cs") stream dotnetRuntimes impls []
+                    Program.prepare
+                        debuggerLoggerFactory
+                        (Some "DebuggerProperty.cs")
+                        stream
+                        dotnetRuntimes
+                        impls
+                        Map.empty
+                        []
                 with
                 | Program.ProgramStartResult.Ready prepared ->
                     stepToCompletion debuggerLoggerFactory logger impls prepared

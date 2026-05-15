@@ -19,18 +19,12 @@ type RunResult =
 
 [<RequireQualifiedAccess>]
 module MockEnv =
-    let private invariantGlobalizationEnv : Map<string, string> =
-        [ "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT", "1" ] |> Map.ofList
-
-    let makeWithEnvironment (environment : Map<string, string>) : NativeImpls =
-        let environment =
-            // Tests may intentionally override the invariant-globalization default
-            // when they need full control of the guest environment.
-            (invariantGlobalizationEnv, environment)
-            ||> Map.fold (fun acc variable value -> acc |> Map.add variable value)
-
-        let tryGetEnvironmentVariable (variable : string) : string option = environment |> Map.tryFind variable
-
+    /// Deterministic `NativeImpls` for tests: invariant-globalization is already
+    /// seeded by `EmulatedKernel.defaultEnvironment`, so this mock only needs to
+    /// cover the *behavioural* surface (processor count, managed thread id,
+    /// FailFast). Guest env vars beyond the invariant default are supplied via
+    /// the `env` argument to `Program.run` / `Program.prepare`, not here.
+    let make () : NativeImpls =
         {
             System_Environment =
                 { System_EnvironmentMock.Empty with
@@ -48,7 +42,6 @@ module MockEnv =
                                 thread
                             |> Tuple.withRight WhatWeDid.Executed
                             |> ExecutionResult.stepped
-                    TryGetEnvironmentVariable = tryGetEnvironmentVariable
                     // Surface FailFast as the abort outcome instead of raising
                     // NotImplementedException from the generated mock; the test
                     // harness then reports the guest-supplied diagnostic message,
@@ -59,13 +52,16 @@ module MockEnv =
                 }
         }
 
-    let make () : NativeImpls = makeWithEnvironment Map.empty
-
 type EndToEndTestCase =
     {
         FileName : string
         ExpectedReturnCode : int
         NativeImpls : NativeImpls
+        /// Guest environment overlay passed to `Program.run`. Layered on top
+        /// of `EmulatedKernel.defaultEnvironment` so the
+        /// invariant-globalization default is always present even when this
+        /// map is empty.
+        Environment : Map<string, string>
         ExpectsUnhandledException : bool
         /// Optional assertion run against the final PawPrint state once the
         /// guest has exited. Used by impure tests that want to verify

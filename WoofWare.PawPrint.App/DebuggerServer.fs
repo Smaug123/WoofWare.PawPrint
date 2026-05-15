@@ -268,12 +268,13 @@ module DebuggerServer =
         (dllPath : string)
         (dotnetRuntimeDirs : ImmutableArray<string>)
         (impls : NativeImpls)
+        (env : Map<string, string>)
         (argv : string list)
         : SessionState
         =
         use fileStream = new FileStream (dllPath, FileMode.Open, FileAccess.Read)
 
-        match Program.prepare loggerFactory (Some dllPath) fileStream dotnetRuntimeDirs impls argv with
+        match Program.prepare loggerFactory (Some dllPath) fileStream dotnetRuntimeDirs impls env argv with
         | Program.ProgramStartResult.Ready prepared -> SessionState.Running (prepared, 0L)
         | Program.ProgramStartResult.CompletedBeforeMain outcome -> SessionState.Finished (outcome, 0L)
 
@@ -883,6 +884,7 @@ module DebuggerServer =
         (dllPath : string)
         (dotnetRuntimeDirs : ImmutableArray<string>)
         (impls : NativeImpls)
+        (env : Map<string, string>)
         (argv : string list)
         (token : string)
         (configureWebHost : IWebHostBuilder -> unit)
@@ -891,7 +893,7 @@ module DebuggerServer =
         let logger = loggerFactory.CreateLogger "WoofWare.PawPrint.App.DebuggerServer"
 
         let mutable session =
-            prepareSession loggerFactory dllPath dotnetRuntimeDirs impls argv
+            prepareSession loggerFactory dllPath dotnetRuntimeDirs impls env argv
 
         let sessionLock = obj ()
         let stopStateLock = obj ()
@@ -1120,7 +1122,8 @@ module DebuggerServer =
                                             |> responseOnly
                                         | _ -> responseOnly (textResponse 400 $"Invalid heap address: %s{rawAddress}")
                                     | "POST", [ "reset" ] ->
-                                        session <- prepareSession loggerFactory dllPath dotnetRuntimeDirs impls argv
+                                        session <-
+                                            prepareSession loggerFactory dllPath dotnetRuntimeDirs impls env argv
 
                                         jsonResponse
                                             200
@@ -1163,13 +1166,14 @@ module DebuggerServer =
         (dllPath : string)
         (dotnetRuntimeDirs : ImmutableArray<string>)
         (impls : NativeImpls)
+        (env : Map<string, string>)
         (argv : string list)
         : int
         =
         let token = generateBearerToken ()
 
         let app, stopCts =
-            createApp loggerFactory dllPath dotnetRuntimeDirs impls argv token configureLoopbackEphemeralPort
+            createApp loggerFactory dllPath dotnetRuntimeDirs impls env argv token configureLoopbackEphemeralPort
 
         use _stopCts = stopCts
 
