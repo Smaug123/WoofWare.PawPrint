@@ -2846,6 +2846,230 @@ module NativeRuntimeType =
                     (CliType.ObjectRef (Some runtimeTypeAddr))
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "ModuleHandle_ResolveMethod",
+          "System.Private.CoreLib",
+          "System",
+          "ModuleHandle",
+          "ResolveMethod",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "QCallModule",
+                                              qCallModuleGenerics)
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr)
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr)
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                                      "System",
+                                                                      "RuntimeMethodHandleInternal",
+                                                                      returnGenerics)) when
+            qCallModuleGenerics.IsEmpty && returnGenerics.IsEmpty
+            ->
+            let operation = "ModuleHandle.ResolveMethod"
+
+            if instruction.Arguments.Length <> 6 then
+                failwith $"%s{operation}: expected six native arguments, got %d{instruction.Arguments.Length}"
+
+            let assemblyFullName =
+                NativeCall.qCallModuleToAssemblyFullName
+                    operation
+                    state
+                    (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
+
+            let methodToken = NativeCall.int32Argument operation instruction.Arguments.[1]
+
+            let typeInstArgsPtr =
+                NativeCall.managedPointerOfPointerArgument operation "typeInstArgs" instruction.Arguments.[2]
+
+            let typeInstCount = NativeCall.int32Argument operation instruction.Arguments.[3]
+
+            if typeInstCount < 0 then
+                failwith $"%s{operation}: typeInstCount must be non-negative, got %d{typeInstCount}"
+
+            let methodInstArgsPtr =
+                NativeCall.managedPointerOfPointerArgument operation "methodInstArgs" instruction.Arguments.[4]
+
+            let methodInstCount = NativeCall.int32Argument operation instruction.Arguments.[5]
+
+            if methodInstCount < 0 then
+                failwith $"%s{operation}: methodInstCount must be non-negative, got %d{methodInstCount}"
+
+            let assembly =
+                state.LoadedAssembly' assemblyFullName
+                |> Option.defaultWith (fun () ->
+                    failwith $"%s{operation}: module's assembly %s{assemblyFullName} is not loaded"
+                )
+
+            // Decode the caller-supplied substitution context up front. Mirrors CoreCLR's
+            // SigTypeContext(Instantiation(typeArgs, ...), Instantiation(methodArgs, ...)): the
+            // arrays are used to substitute any GenericTypeParameter / GenericMethodParameter
+            // references the token's signatures contain, and may be empty for tokens that don't
+            // need them.
+            let typeInstantiation =
+                ImmutableArray.CreateRange (
+                    seq {
+                        for index in 0 .. typeInstCount - 1 ->
+                            readTypeHandleInstantiationElement ctx.BaseClassTypes operation state typeInstArgsPtr index
+                    }
+                )
+
+            let methodInstantiation =
+                ImmutableArray.CreateRange (
+                    seq {
+                        for index in 0 .. methodInstCount - 1 ->
+                            readTypeHandleInstantiationElement
+                                ctx.BaseClassTypes
+                                operation
+                                state
+                                methodInstArgsPtr
+                                index
+                    }
+                )
+
+            let state, concretizedMethod =
+                match MetadataToken.ofInt methodToken with
+                | MetadataToken.MethodDef h ->
+                    // CoreCLR's ModuleHandle.ResolveMethod returns the metadata definition for
+                    // a MethodDef token without consulting the caller-supplied
+                    // type/method-instantiation arrays:
+                    //   MemberLoader::GetMethodDescFromMemberDefOrRefOrSpec
+                    //     -> GetMethodDescFromMethodDef (no SigTypeContext parameter)
+                    // (memberload.cpp). So `ResolveMethodHandle(token)` for a method like
+                    // `Generic<T>.M` returns the open `Generic<T>.M`, even if the caller
+                    // supplied `typeInst = [string]`. Our registry only stores fully concretised
+                    // methods; faithfully representing the open form is not yet supported.
+                    let method = assembly.Methods.[h]
+
+                    if method.DeclaringType.Generics.Length > 0 then
+                        failwith
+                            $"TODO: %s{operation}: MethodDef token 0x%08x{methodToken} declared on generic type %s{method.DeclaringType.Namespace}.%s{method.DeclaringType.Name} (%d{method.DeclaringType.Generics.Length} type generic parameter(s)); CoreCLR returns the open metadata definition without consuming the caller's typeInstantiation, but the MethodHandle registry only supports fully concretised methods."
+
+                    if method.Generics.Length > 0 then
+                        failwith
+                            $"TODO: %s{operation}: MethodDef token 0x%08x{methodToken} resolves to generic method %s{method.Name} (%d{method.Generics.Length} method generic parameter(s)); CoreCLR returns the open metadata definition without consuming the caller's methodInstantiation, but the MethodHandle registry only supports fully concretised methods."
+
+                    let methodMapped =
+                        method
+                        |> MethodInfo.mapTypeGenerics (fun (par, _) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
+
+                    // Pass empty instantiation arrays: for MethodDef tokens, CoreCLR does not
+                    // consume the caller's type/method instantiation context, and after the
+                    // guards above the method has no generic parameters to substitute anyway.
+                    let state, concretized, _ =
+                        ExecutionConcretization.concretizeMethodWithAllGenerics
+                            ctx.LoggerFactory
+                            ctx.BaseClassTypes
+                            ImmutableArray.Empty
+                            methodMapped
+                            ImmutableArray.Empty
+                            state
+
+                    state, concretized
+                | MetadataToken.MemberReference h ->
+                    // Surface typeInstantiation/methodInstantiation as TypeDefn arrays so the
+                    // MemberRef resolver can substitute any GenericTypeParameter /
+                    // GenericMethodParameter appearing in the TypeSpec parent or member
+                    // signature.
+                    let typeGenericsAsTypeDefn =
+                        typeInstantiation
+                        |> Seq.map (fun handle ->
+                            Concretization.concreteHandleToTypeDefn
+                                ctx.BaseClassTypes
+                                handle
+                                state.ConcreteTypes
+                                state._LoadedAssemblies
+                        )
+                        |> ImmutableArray.CreateRange
+
+                    let methodGenericsAsTypeDefn =
+                        methodInstantiation
+                        |> Seq.map (fun handle ->
+                            Concretization.concreteHandleToTypeDefn
+                                ctx.BaseClassTypes
+                                handle
+                                state.ConcreteTypes
+                                state._LoadedAssemblies
+                        )
+                        |> ImmutableArray.CreateRange
+
+                    let state, _, resolved, extractedTypeArgs =
+                        IlMachineState.resolveMemberWithGenerics
+                            ctx.LoggerFactory
+                            ctx.BaseClassTypes
+                            ctx.Thread
+                            assembly
+                            typeGenericsAsTypeDefn
+                            methodGenericsAsTypeDefn
+                            methodInstantiation
+                            h
+                            state
+
+                    let method =
+                        match resolved with
+                        | Choice1Of2 m -> m
+                        | Choice2Of2 _field ->
+                            failwith
+                                $"%s{operation}: MemberRef token 0x%08x{methodToken} resolved to a field, but ResolveMethod expects a method"
+
+                    // `extractedTypeArgs` are the TypeDefn args of the parent TypeSpec, already
+                    // substituted via the caller-supplied type/method instantiation context
+                    // above. They are therefore closed and can be concretized with an empty
+                    // substitution context.
+                    let state, declaringTypeGenerics =
+                        ((state, ImmutableArray.CreateBuilder ()), extractedTypeArgs)
+                        ||> Seq.fold (fun (state, acc) ty ->
+                            let state, handle =
+                                IlMachineState.concretizeType
+                                    ctx.LoggerFactory
+                                    ctx.BaseClassTypes
+                                    state
+                                    method.DeclaringType.Assembly
+                                    ImmutableArray.Empty
+                                    ImmutableArray.Empty
+                                    ty
+
+                            acc.Add handle
+                            state, acc
+                        )
+                        |> Tuple.rmap (fun b -> b.ToImmutable ())
+
+                    let state, concretized, _ =
+                        ExecutionConcretization.concretizeMethodWithAllGenerics
+                            ctx.LoggerFactory
+                            ctx.BaseClassTypes
+                            declaringTypeGenerics
+                            method
+                            methodInstantiation
+                            state
+
+                    state, concretized
+                | MetadataToken.MethodSpecification _ ->
+                    // MethodSpec encodes its method-generic instantiation in the spec itself
+                    // rather than via the caller-supplied methodInstantiation buffer, so this
+                    // case needs a separate concretization path. Leave unimplemented until a
+                    // test exercises it.
+                    failwith $"TODO: %s{operation} does not yet handle MethodSpec tokens (token 0x%08x{methodToken})"
+                | other ->
+                    failwith
+                        $"%s{operation}: unexpected metadata token kind %O{other} from token 0x%08x{methodToken}; the managed wrapper should only forward MethodDef/MemberReference/MethodSpec"
+
+            let handleValue, reg =
+                MethodHandleRegistry.getOrAllocateConcreteInternalHandle
+                    ctx.BaseClassTypes
+                    state.ConcreteTypes
+                    concretizedMethod
+                    state.MethodHandles
+
+            let state =
+                { state with
+                    MethodHandles = reg
+                }
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.ValueType handleValue) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | "RuntimeTypeHandle_GetFields",
           "System.Private.CoreLib",
           "System",
