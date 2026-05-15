@@ -928,6 +928,32 @@ module Intrinsics =
                 // The float/double overloads are not yet intrinsified, matching the
                 // CompareExchange precedent above. Add a dedicated arm when first needed.
                 None
+        | "System.Private.CoreLib", "Thread", "FastPollGC" ->
+            // [Intrinsic] internal static void Thread.FastPollGC() => Thread.FastPollGC();
+            // The managed IL body is an infinite self-recursive call; the JIT replaces
+            // every call site with an inline fast GC poll. PawPrint has no GC, so the
+            // intrinsic is a pure no-op. This cannot live in safeIntrinsics because
+            // executing the IL would loop forever.
+            // https://github.com/dotnet/runtime/blob/HEAD/src/libraries/System.Private.CoreLib/src/System/Threading/Thread.cs#L389-L392
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [], MethodReturnType.Void -> ()
+            | _ -> failwith $"Thread.FastPollGC: unexpected signature %A{methodToCall.Signature}"
+
+            state |> IlMachineState.advanceProgramCounter currentThread |> Some
+        | "System.Private.CoreLib", "Volatile", ("ReadBarrier" | "WriteBarrier") ->
+            // [Intrinsic] public static void Volatile.{Read,Write}Barrier() => Volatile.{Read,Write}Barrier();
+            // Same shape as Thread.FastPollGC: the managed body is infinite self-recursion
+            // and the JIT replaces the call with the appropriate processor fence. PawPrint
+            // does not model memory-ordering effects across threads, and even if it did the
+            // single-stepping interpreter has no instruction reordering to fence against,
+            // so the no-op is correct. Cannot live in safeIntrinsics because the IL would
+            // loop forever.
+            // https://github.com/dotnet/runtime/blob/HEAD/src/libraries/System.Private.CoreLib/src/System/Threading/Volatile.cs#L236-L245
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [], MethodReturnType.Void -> ()
+            | _ -> failwith $"Volatile.%s{methodToCall.Name}: unexpected signature %A{methodToCall.Signature}"
+
+            state |> IlMachineState.advanceProgramCounter currentThread |> Some
         | "System.Private.CoreLib", "BitConverter", "SingleToInt32Bits" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteSingle state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) -> ()
@@ -1275,7 +1301,8 @@ module Intrinsics =
                     failwith
                         $"Unsafe.WriteUnaligned: coerced value has size %d{valueSize}, expected %d{tSize} for %O{valueAsCli}"
 
-                let state = IlMachineState.writeManagedByrefBytesOrTypedCell state src valueAsCli
+                let state =
+                    IlMachineState.writeManagedByrefBytesOrTypedCell baseClassTypes state src valueAsCli
 
                 let state = state |> IlMachineState.advanceProgramCounter currentThread
                 Some state
@@ -1304,7 +1331,8 @@ module Intrinsics =
                     failwith
                         $"Unsafe.WriteUnaligned(void*): coerced value has size %d{valueSize}, expected %d{tSize} for %O{valueAsCli}"
 
-                let state = IlMachineState.writeManagedByrefBytesOrTypedCell state src valueAsCli
+                let state =
+                    IlMachineState.writeManagedByrefBytesOrTypedCell baseClassTypes state src valueAsCli
 
                 let state = state |> IlMachineState.advanceProgramCounter currentThread
                 Some state

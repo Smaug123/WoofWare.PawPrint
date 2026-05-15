@@ -21,7 +21,7 @@ module NativeMarshal =
           [],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
             state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 state.LastPInvokeError) ctx.Thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 state.Kernel.LastPInvokeError) ctx.Thread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
             |> Some
@@ -32,7 +32,7 @@ module NativeMarshal =
           [],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
             state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 state.LastSystemError) ctx.Thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 state.Kernel.LastSystemError) ctx.Thread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
             |> Some
@@ -45,9 +45,11 @@ module NativeMarshal =
             let error =
                 NativeCall.int32Argument "Marshal.SetLastPInvokeError" instruction.Arguments.[0]
 
-            ({ state with
-                LastPInvokeError = error
-             },
+            (state.MapKernel (fun kernel ->
+                { kernel with
+                    LastPInvokeError = error
+                }
+             ),
              WhatWeDid.Executed)
             |> ExecutionResult.Stepped
             |> Some
@@ -60,9 +62,11 @@ module NativeMarshal =
             let error =
                 NativeCall.int32Argument "Marshal.SetLastSystemError" instruction.Arguments.[0]
 
-            ({ state with
-                LastSystemError = error
-             },
+            (state.MapKernel (fun kernel ->
+                { kernel with
+                    LastSystemError = error
+                }
+             ),
              WhatWeDid.Executed)
             |> ExecutionResult.Stepped
             |> Some

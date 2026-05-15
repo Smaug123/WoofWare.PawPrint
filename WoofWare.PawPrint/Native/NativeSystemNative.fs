@@ -13,6 +13,29 @@ module NativeSystemNative =
         |> Tuple.withRight WhatWeDid.Executed
         |> ExecutionResult.Stepped
 
+    /// Decode an `nint`-shaped Unix file-descriptor argument. CoreLib passes
+    /// fds across the SystemNative boundary as plain `IntPtr` values (the low
+    /// 32 bits of `SafeFileHandle.handle`); PawPrint represents these as
+    /// `NativeIntSource.Verbatim`. Refuses non-verbatim sources because their
+    /// provenance encodes something other than an fd integer, which the
+    /// FileDescriptorRegistry has no way to interpret.
+    let private fdArgument (operation : string) (arg : CliType) : int =
+        match CliType.unwrapPrimitiveLikeDeep arg with
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim value)) ->
+            if value < int64 System.Int32.MinValue || value > int64 System.Int32.MaxValue then
+                // fds are int32-bounded on every Unix kernel we model. A
+                // value outside that range cannot correspond to a live fd in
+                // the registry; return a sentinel that will miss the table
+                // and produce EBADF, rather than silently truncating to a
+                // potentially-live fd.
+                System.Int32.MinValue
+            else
+                int value
+        | CliType.Numeric (CliNumericType.NativeInt source) ->
+            failwith
+                $"%s{operation}: expected verbatim IntPtr file descriptor, got tagged native-int source %O{source} (fd integers should arrive as plain numeric values across the SystemNative boundary)"
+        | other -> failwith $"%s{operation}: expected IntPtr file descriptor, got %O{other}"
+
     /// Decode an `nuint`-shaped allocation size argument to an `int` byte count.
     /// Returns `ValueNone` for values that a real `malloc`/`calloc` would treat
     /// as unsatisfiable (negative-as-nuint, or larger than the interpreter's
@@ -67,16 +90,18 @@ module NativeSystemNative =
         | Some "SystemNative_GetErrNo",
           [],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
-            pushInt32 state.LastSystemError ctx |> Some
+            pushInt32 state.Kernel.LastSystemError ctx |> Some
         | Some "SystemNative_SetErrNo",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Void ->
             let error =
                 NativeCall.int32Argument "SystemNative_SetErrNo" instruction.Arguments.[0]
 
-            ({ state with
-                LastSystemError = error
-             },
+            (state.MapKernel (fun kernel ->
+                { kernel with
+                    LastSystemError = error
+                }
+             ),
              WhatWeDid.Executed)
             |> ExecutionResult.Stepped
             |> Some
@@ -129,6 +154,148 @@ module NativeSystemNative =
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
             |> Some
+        | Some "SystemNative_Dup",
+          [ ConcreteIntPtr state.ConcreteTypes ],
+          MethodReturnType.Returns (ConcreteIntPtr state.ConcreteTypes) ->
+            // `dup(2)`: allocate the lowest non-negative fd not in use, sharing
+            // the OFD of `oldFd`. On EBADF we return -1 and set errno=EBADF so
+            // CoreLib's `Interop.CheckIo` raises an IOException, matching the
+            // libc behaviour `Interop.Sys.Dup` is written against. `LastSystemError`
+            // holds the raw kernel errno; the BCL converts it to the
+            // `Interop.Error` PAL enum via `SystemNative_ConvertErrorPlatformToPal`
+            // before `CheckIo` switches on it.
+            let oldFd = fdArgument "SystemNative_Dup" instruction.Arguments.[0]
+
+            let resultFd, state =
+                match FileDescriptorRegistry.dup oldFd state.Kernel.FileDescriptors with
+                | Ok (newFd, registry) ->
+                    int64 newFd,
+                    state.MapKernel (fun kernel ->
+                        { kernel with
+                            FileDescriptors = registry
+                        }
+                    )
+                | Error FileDescriptorDupError.BadFd ->
+                    -1L,
+                    state.MapKernel (fun kernel ->
+                        { kernel with
+                            LastSystemError = Errno.EBADF
+                        }
+                    )
+
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.Verbatim resultFd)) ctx.Thread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
+            |> Some
+        | Some "SystemNative_Close",
+          [ ConcreteIntPtr state.ConcreteTypes ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            // `close(2)`: remove the fd from the per-process table and return 0.
+            // On EBADF (fd not currently live) return -1 and set errno=EBADF, so
+            // CoreLib's `Interop.CheckIo` raises an IOException, matching the
+            // libc behaviour `Interop.Sys.Close` is written against. The native
+            // shim silently retries EINTR (`pal_io.c` treats EINTR-on-close as
+            // success); PawPrint doesn't model signals, so EINTR is unreachable
+            // here. Per Unix convention, errno is left untouched on success.
+            let fd = fdArgument "SystemNative_Close" instruction.Arguments.[0]
+
+            let resultCode, state =
+                match FileDescriptorRegistry.close fd state.Kernel.FileDescriptors with
+                | Ok registry ->
+                    0,
+                    state.MapKernel (fun kernel ->
+                        { kernel with
+                            FileDescriptors = registry
+                        }
+                    )
+                | Error FileDescriptorCloseError.BadFd ->
+                    -1,
+                    state.MapKernel (fun kernel ->
+                        { kernel with
+                            LastSystemError = Errno.EBADF
+                        }
+                    )
+
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 resultCode) ctx.Thread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
+            |> Some
+        | Some "SystemNative_GetNonCryptographicallySecureRandomBytes",
+          [ ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Void ->
+            // CoreCLR fills this buffer from the host's non-crypto PRNG
+            // (`arc4random_buf` on BSD/macOS, BCrypt on Windows,
+            // `/dev/urandom` XOR'd with `lrand48()` on Linux — see
+            // minipal/random.c). PawPrint refuses host entropy because the
+            // whole runtime is built around bit-for-bit reproducibility,
+            // so we substitute a seeded splitmix64 step kept in
+            // `EmulatedKernel.NonCryptoRandomState`. That is *strictly*
+            // more deterministic than the real CLR (where each Random
+            // ctor, Guid.NewGuid, Marvin seed, and HashCode seed is
+            // unreproducible) and is what enables time-travel
+            // debugging across runs that touch any of those paths.
+            //
+            // Returning a constant (e.g. all zeros) is not viable: the
+            // BCL's Random ctor at Random.Xoshiro{128,256}StarStarImpl
+            // explicitly retries until the buffer is non-zero, so a
+            // constant-zero substitute hangs at `new Random()`.
+            let operation = "SystemNative_GetNonCryptographicallySecureRandomBytes"
+
+            let buffer =
+                NativeCall.managedPointerOfPointerArgument operation "buffer" instruction.Arguments.[0]
+
+            let length = NativeCall.int32Argument operation instruction.Arguments.[1]
+
+            if length < 0 then
+                // CoreCLR's `pal_random.c` does not validate `bufferLength`;
+                // a negative value would underflow `(size_t)bufferLength` in
+                // the C call. CoreLib callers never pass negative lengths,
+                // so seeing one here means a guest bug we want to surface
+                // rather than a silently truncated buffer.
+                failwith $"%s{operation}: bufferLength %d{length} is negative"
+
+            let state =
+                if length = 0 then
+                    // Match the C behaviour of `arc4random_buf(buf, 0)` /
+                    // `read(fd, buf, 0)`: no-op, do not even dereference
+                    // `buffer` (which CoreLib may pass as a null pointer
+                    // for an empty span).
+                    state
+                else
+                    match buffer with
+                    | ManagedPointerSource.Null ->
+                        failwith
+                            $"%s{operation}: refused to fill %d{length} bytes through null buffer pointer (CoreLib should not invoke this entry point with a null destination for a non-zero length)"
+                    | _ ->
+                        let bytes, newPrngState =
+                            NonCryptoRandom.drawBytes length state.Kernel.NonCryptoRandomState
+
+                        let byteConcreteType =
+                            NativeCall.requiredByteConcreteType operation ctx.BaseClassTypes state
+
+                        let mutable state = state
+
+                        for i = 0 to length - 1 do
+                            let dest =
+                                ManagedPointerByteView.addByteOffset ctx.BaseClassTypes state byteConcreteType i buffer
+
+                            state <-
+                                IlMachineState.writeManagedByrefBytesOrTypedCell
+                                    ctx.BaseClassTypes
+                                    state
+                                    dest
+                                    (CliType.Numeric (CliNumericType.UInt8 bytes.[i]))
+
+                        state.MapKernel (fun kernel ->
+                            { kernel with
+                                NonCryptoRandomState = newPrngState
+                            }
+                        )
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | Some "SystemNative_Free", [ ConcretePointer _ ], MethodReturnType.Void ->
             let ptr =
                 NativeCall.managedPointerOfPointerArgument "SystemNative_Free" "ptr" instruction.Arguments.[0]

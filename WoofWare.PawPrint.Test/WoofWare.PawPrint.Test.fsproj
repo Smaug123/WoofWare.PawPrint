@@ -50,6 +50,8 @@
     <Compile Include="TestFunctionPointerConcretization.fs" />
     <Compile Include="TestGenericParamConstraints.fs" />
     <Compile Include="TestGcHandleRegistry.fs" />
+    <Compile Include="TestFileDescriptorRegistry.fs" />
+    <Compile Include="TestNonCryptoRandom.fs" />
     <Compile Include="TestPrimitiveLikeStructRegistry.fs" />
     <Compile Include="TestEvalStackPrimitiveLikeBoundary.fs" />
     <Compile Include="TestCliValueTypeCoerceFrom.fs" />
@@ -61,6 +63,7 @@
     <Compile Include="TestProgramDebugger.fs" />
     <Compile Include="TestDebuggerServer.fs" />
     <Compile Include="TestBclIntrinsicStaticFields.fs" />
+    <Compile Include="TestLowLevelMonitor.fs" />
     <Compile Include="TestPureCases.fs" />
     <Compile Include="TestImpureCases.fs" />
   </ItemGroup>

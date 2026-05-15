@@ -6,12 +6,14 @@ module NativeEventPipe =
     /// these are not stored anywhere — they only need to be unique and non-zero (the BCL treats
     /// IntPtr.Zero from `CreateProvider`/`DefineEvent` as "create failed" and throws OOM).
     let private mintEventPipeId (state : IlMachineState) : int64 * IlMachineState =
-        let id = state.NextEventPipeId
+        let id = state.Kernel.NextEventPipeId
 
         let state =
-            { state with
-                NextEventPipeId = state.NextEventPipeId + 1L
-            }
+            state.MapKernel (fun kernel ->
+                { kernel with
+                    NextEventPipeId = kernel.NextEventPipeId + 1L
+                }
+            )
 
         id, state
 
@@ -221,7 +223,9 @@ module NativeEventPipe =
                 let zeroGuid, state =
                     IlMachineState.cliTypeZeroOfHandle state ctx.BaseClassTypes guidPtrHandle
 
-                let state = IlMachineState.writeManagedByref state activityIdPtr zeroGuid
+                let state =
+                    IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state activityIdPtr zeroGuid
+
                 state |> pushInt32 0 ctx.Thread |> Some
             | 2u ->
                 failwith

@@ -229,7 +229,7 @@ module NativeCall =
 
             loop 0 []
 
-    let private requiredByteConcreteType
+    let requiredByteConcreteType
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)

@@ -40,9 +40,11 @@ module NativeKernel32 =
     let private withKernel32LastSystemError (error : int) (state : IlMachineState) : IlMachineState =
         // CoreLib's generated P/Invoke wrapper clears and reads this
         // GetLastError slot, then writes LastPInvokeError itself.
-        { state with
-            LastSystemError = error
-        }
+        state.MapKernel (fun kernel ->
+            { kernel with
+                LastSystemError = error
+            }
+        )
 
     let private writeUtf16Char
         (operation : string)
@@ -57,7 +59,7 @@ module NativeKernel32 =
         let ptr =
             ManagedPointerByteView.addByteOffset baseClassTypes state charConcreteType (charIndex * 2) ptr
 
-        IlMachineState.writeManagedByrefBytesOrTypedCell state ptr (CliType.ofChar value)
+        IlMachineState.writeManagedByrefBytesOrTypedCell baseClassTypes state ptr (CliType.ofChar value)
 
     let private writeNullTerminatedUtf16
         (operation : string)

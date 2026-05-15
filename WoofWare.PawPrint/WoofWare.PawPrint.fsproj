@@ -21,6 +21,8 @@
     <Compile Include="CliType.fs" />
     <Compile Include="FieldIdentity.fs" />
     <Compile Include="GcHandleRegistry.fs" />
+    <Compile Include="Errno.fs" />
+    <Compile Include="FileDescriptorRegistry.fs" />
     <Compile Include="TypeHandleRegistry.fs" />
     <Compile Include="FieldHandleRegistry.fs" />
     <Compile Include="MethodHandleRegistry.fs" />
@@ -34,6 +36,7 @@
     <Compile Include="TypeResolution.fs" />
     <Compile Include="HardwareIntrinsicsProfile.fs" />
     <Compile Include="DebuggerState.fs" />
+    <Compile Include="EmulatedKernel.fs" />
     <Compile Include="IlMachineStateModel.fs" />
     <Compile Include="IlMachineTypeResolution.fs" />
     <Compile Include="IlMachineThreadState.fs" />
@@ -75,6 +78,7 @@
     <Compile Include="ExternImplementations\System.Threading.Monitor.fs" />
     <Compile Include="ExternImplementations\NativeImpls.fs" />
     <Compile Include="Scheduler.fs" />
+    <Compile Include="LowLevelMonitor.fs" />
     <Compile Include="Native\NativeCall.fs" />
     <Compile Include="Native\NativeEnvironment.fs" />
     <Compile Include="Native\NativeMonitor.fs" />
@@ -101,6 +105,7 @@
     <Compile Include="Native\NativeType.fs" />
     <Compile Include="Native\NativeString.fs" />
     <Compile Include="Native\NativeSystemNative.fs" />
+    <Compile Include="Native\NativeLowLevelMonitor.fs" />
     <Compile Include="Native\NativeDispatch.fs" />
     <Compile Include="AbstractMachine.fs" />
     <Compile Include="Program.fs" />

@@ -119,6 +119,28 @@ module Program =
         //     for foreground workers, so matching that behaviour keeps PawPrint and
         //     the oracle aligned. Environment.Exit from a worker still propagates as
         //     ProcessExit (handled below) before Main has a chance to return.
+
+        // Apply the spurious-wakeup strategy at the current tick, then
+        // advance the counter so the next iteration sees a fresh tick.
+        // For the default (`Disabled`) strategy this is a fold over the
+        // identity and a single integer add — bit-for-bit identical to
+        // pre-feature behaviour.
+        let state =
+            LowLevelMonitor.applySpuriousWakeups
+                prepared.State.Kernel.SpuriousWakeup
+                prepared.State.Kernel.StepCounter
+                prepared.State
+
+        let prepared =
+            { prepared with
+                State =
+                    state.MapKernel (fun kernel ->
+                        { kernel with
+                            StepCounter = kernel.StepCounter + 1L
+                        }
+                    )
+            }
+
         match Scheduler.chooseNext prepared.LastRan prepared.State with
         | None ->
             // No Runnable threads and the entry thread didn't hit its ret. Every

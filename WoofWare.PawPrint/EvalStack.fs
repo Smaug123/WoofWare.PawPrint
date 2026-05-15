@@ -53,6 +53,8 @@ module EvalStackValue =
             failwith $"%s{operation}: refusing to convert EventPipe provider handle #%d{id} to an integer"
         | NativeIntSource.EventPipeEventPtr id ->
             failwith $"%s{operation}: refusing to convert EventPipe event handle #%d{id} to an integer"
+        | NativeIntSource.LowLevelMonitorPtr id ->
+            failwith $"%s{operation}: refusing to convert low-level monitor handle %O{id} to an integer"
         | NativeIntSource.AssemblyHandle assemblyName ->
             failwith $"%s{operation}: refusing to convert assembly handle %s{assemblyName} to an integer"
         | NativeIntSource.ModuleHandle moduleName ->
@@ -238,6 +240,8 @@ module EvalStackValue =
                 failwith $"Conv_U: refusing to convert EventPipe provider handle #%d{id} to unsigned native int"
             | NativeIntSource.EventPipeEventPtr id ->
                 failwith $"Conv_U: refusing to convert EventPipe event handle #%d{id} to unsigned native int"
+            | NativeIntSource.LowLevelMonitorPtr id ->
+                failwith $"Conv_U: refusing to convert low-level monitor handle %O{id} to unsigned native int"
             | NativeIntSource.AssemblyHandle assemblyName ->
                 failwith $"Conv_U: refusing to convert assembly handle %s{assemblyName} to unsigned native int"
             | NativeIntSource.ModuleHandle moduleName ->
@@ -554,6 +558,8 @@ module EvalStackValue =
                         failwith $"refusing to coerce EventPipe provider handle #%d{id} to int64"
                     | NativeIntSource.EventPipeEventPtr id ->
                         failwith $"refusing to coerce EventPipe event handle #%d{id} to int64"
+                    | NativeIntSource.LowLevelMonitorPtr id ->
+                        failwith $"refusing to coerce low-level monitor handle %O{id} to int64"
                     | NativeIntSource.AssemblyHandle f -> failwith $"TODO: {f}"
                     | NativeIntSource.ModuleHandle f -> failwith $"TODO: {f}"
                     | NativeIntSource.MetadataImportHandle f ->
@@ -661,6 +667,8 @@ module EvalStackValue =
                     failwith "refusing to interpret EventPipe provider handle as an object ref"
                 | NativeIntSource.EventPipeEventPtr _ ->
                     failwith "refusing to interpret EventPipe event handle as an object ref"
+                | NativeIntSource.LowLevelMonitorPtr _ ->
+                    failwith "refusing to interpret low-level monitor handle as an object ref"
                 | NativeIntSource.AssemblyHandle _ -> failwith "refusing to interpret assembly handle as an object ref"
                 | NativeIntSource.ModuleHandle _ -> failwith "refusing to interpret module handle as an object ref"
                 | NativeIntSource.MetadataImportHandle _ ->
@@ -717,6 +725,9 @@ module EvalStackValue =
                 | NativeIntSource.EventPipeEventPtr id ->
                     failwith
                         $"refusing to coerce EventPipe event handle #%d{id} to runtime pointer: tracing handles are opaque, not addresses"
+                | NativeIntSource.LowLevelMonitorPtr id ->
+                    failwith
+                        $"refusing to coerce low-level monitor handle %O{id} to runtime pointer: monitor handles are opaque, not addresses"
                 | NativeIntSource.AssemblyHandle _ -> failwith "todo: AssemblyHandle into CliType.RuntimePointer"
                 | NativeIntSource.ModuleHandle _ -> failwith "todo: ModuleHandle into CliType.RuntimePointer"
                 | NativeIntSource.MetadataImportHandle _ ->

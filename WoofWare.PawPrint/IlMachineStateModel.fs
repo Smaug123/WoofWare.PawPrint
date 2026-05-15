@@ -52,35 +52,28 @@ type IlMachineState =
         /// threads.  Starts at 2 because ID 0 is the CLR's "no managed thread" sentinel and
         /// ID 1 is reserved for the main thread (ThreadId 0).
         NextManagedThreadId : int
-        /// Last error reported by a modelled P/Invoke with SetLastError=true.
-        /// This is currently process-wide; model it per-thread when a guest
-        /// depends on thread-local last-error state.
-        LastPInvokeError : int
-        /// Last system error tracked separately from LastPInvokeError because
-        /// CoreLib wrappers can read this and then write LastPInvokeError.
-        /// This is currently process-wide; model it per-thread when a guest
-        /// depends on thread-local GetLastError or errno state.
-        LastSystemError : int
-        /// Monotonic ID source for opaque EventPipe provider/event handles
-        /// minted by the `EventPipeInternal_*` QCalls. PawPrint never opens a
-        /// tracing session, so the IDs are not stored in any registry; they
-        /// only need to be unique and non-zero (the BCL treats handle 0 as
-        /// "create failed" and throws OOM).
-        NextEventPipeId : int64
         /// Deterministic counter-assignment state for synthesised pointer
         /// hash bits. Each canonical pointer key gets a stable bit pattern
         /// derived from its registration order; distinct keys produce
         /// distinct bits with no collisions. See `PointerHashSynthesis`.
         PointerHashCounters : PointerHashCounters
-        /// Globally-scoped pool of native-heap blocks allocated by
-        /// `Marshal.AllocHGlobal` / `NativeMemory.Alloc`. Freeing a block
-        /// deletes it from this pool, so any retained byref into the block
-        /// becomes a dangling reference that the simulator catches loudly at
-        /// the use site. Unlike `StackMemoryPool` (which lives on each method
-        /// frame and is reclaimed at frame exit), native-heap blocks outlive
-        /// the frames that allocate them.
-        NativeMemoryPool : NativeMemoryPool
+        /// Host-kernel / syscall-emulation state: last-error registers, native
+        /// heap pool, file-descriptor table, `LowLevelMonitor` registry, and
+        /// monotonic ID counters for opaque kernel handles. Bundled into a
+        /// sub-record because the rest of `IlMachineState` models the CIL
+        /// execution layer, not the kernel surface PawPrint refuses to use.
+        Kernel : EmulatedKernel
     }
+
+    member this.WithKernel (kernel : EmulatedKernel) : IlMachineState =
+        { this with
+            Kernel = kernel
+        }
+
+    member this.MapKernel (f : EmulatedKernel -> EmulatedKernel) : IlMachineState =
+        { this with
+            Kernel = f this.Kernel
+        }
 
     member this.WithTypeBeginInit (thread : ThreadId) (ty : ConcreteTypeHandle) =
         let concreteType = AllConcreteTypes.lookup ty this.ConcreteTypes |> Option.get

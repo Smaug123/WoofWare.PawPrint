@@ -156,7 +156,8 @@ module NullaryIlOp =
             | EvalStackValue.NativeInt (NativeIntSource.ModuleHandle _)
             | EvalStackValue.NativeInt (NativeIntSource.MetadataImportHandle _)
             | EvalStackValue.NativeInt (NativeIntSource.EventPipeProviderPtr _)
-            | EvalStackValue.NativeInt (NativeIntSource.EventPipeEventPtr _) ->
+            | EvalStackValue.NativeInt (NativeIntSource.EventPipeEventPtr _)
+            | EvalStackValue.NativeInt (NativeIntSource.LowLevelMonitorPtr _) ->
                 failwith $"Localloc: refusing to use pointer-like value %O{value} as a byte count"
             | EvalStackValue.NativeInt (NativeIntSource.OpaqueHashBits bits) ->
                 failwith $"Localloc: refusing to use synthesised pointer-hash bits 0x%x{bits} as a byte count"
@@ -303,6 +304,8 @@ module NullaryIlOp =
             | NativeIntSource.EventPipeProviderPtr id ->
                 failwith $"Neg: refusing to negate EventPipe provider handle %d{id}"
             | NativeIntSource.EventPipeEventPtr id -> failwith $"Neg: refusing to negate EventPipe event handle %d{id}"
+            | NativeIntSource.LowLevelMonitorPtr id ->
+                failwith $"Neg: refusing to negate low-level monitor handle %O{id}"
             | NativeIntSource.OpaqueHashBits bits ->
                 // Negating synthesised hash bits is a bit-mixing operation
                 // that stays in the synthesis domain; the result keeps the
@@ -508,6 +511,7 @@ module NullaryIlOp =
                 | NativeIntSource.MetadataImportHandle _
                 | NativeIntSource.EventPipeProviderPtr _
                 | NativeIntSource.EventPipeEventPtr _
+                | NativeIntSource.LowLevelMonitorPtr _
                 | NativeIntSource.ManagedPointer _ -> failwith "Refusing to treat a pointer as an array index"
                 | NativeIntSource.SyntheticCrossArrayOffset _ ->
                     failwith "Refusing to treat a synthetic cross-storage byte offset as an array index"
@@ -560,6 +564,7 @@ module NullaryIlOp =
                 | NativeIntSource.MetadataImportHandle _
                 | NativeIntSource.EventPipeProviderPtr _
                 | NativeIntSource.EventPipeEventPtr _
+                | NativeIntSource.LowLevelMonitorPtr _
                 | NativeIntSource.ManagedPointer _ -> failwith "Refusing to treat a pointer as an array index"
                 | NativeIntSource.SyntheticCrossArrayOffset _ ->
                     failwith "Refusing to treat a synthetic cross-storage byte offset as an array index"
@@ -864,22 +869,27 @@ module NullaryIlOp =
             let val2, state = IlMachineState.popEvalStack currentThread state
             let val1, state = IlMachineState.popEvalStack currentThread state
 
-            let result =
+            match
                 try
                     BinaryArithmetic.execute corelib ArithmeticOperation.addOvf state val1 val2
                     |> Ok
                 with :? OverflowException as e ->
                     Error e
-
-            let state =
-                match result with
-                | Ok (result, state) -> state |> IlMachineState.pushToEvalStack' result currentThread
-                | Error excToThrow -> failwith "TODO: throw OverflowException"
-
-            state
-            |> IlMachineState.advanceProgramCounter currentThread
-            |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            with
+            | Ok (result, state) ->
+                state
+                |> IlMachineState.pushToEvalStack' result currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Tuple.withRight WhatWeDid.Executed
+                |> ExecutionResult.Stepped
+            | Error _ ->
+                IlMachineStateExecution.raiseRuntimeException
+                    loggerFactory
+                    corelib
+                    corelib.OverflowException
+                    currentThread
+                    state
+                |> ExecutionResult.Stepped
         | Add_ovf_un -> failwith "TODO: Add_ovf_un unimplemented"
         | Mul ->
             let val2, state = IlMachineState.popEvalStack currentThread state
@@ -897,22 +907,27 @@ module NullaryIlOp =
             let val2, state = IlMachineState.popEvalStack currentThread state
             let val1, state = IlMachineState.popEvalStack currentThread state
 
-            let result =
+            match
                 try
                     BinaryArithmetic.execute corelib ArithmeticOperation.mulOvf state val1 val2
                     |> Ok
                 with :? OverflowException as e ->
                     Error e
-
-            let state =
-                match result with
-                | Ok (result, state) -> state |> IlMachineState.pushToEvalStack' result currentThread
-                | Error excToThrow -> failwith "TODO: throw OverflowException"
-
-            state
-            |> IlMachineState.advanceProgramCounter currentThread
-            |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            with
+            | Ok (result, state) ->
+                state
+                |> IlMachineState.pushToEvalStack' result currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Tuple.withRight WhatWeDid.Executed
+                |> ExecutionResult.Stepped
+            | Error _ ->
+                IlMachineStateExecution.raiseRuntimeException
+                    loggerFactory
+                    corelib
+                    corelib.OverflowException
+                    currentThread
+                    state
+                |> ExecutionResult.Stepped
         | Mul_ovf_un ->
             let val2, state = IlMachineState.popEvalStack currentThread state
             let val1, state = IlMachineState.popEvalStack currentThread state
@@ -942,21 +957,26 @@ module NullaryIlOp =
             let val2, state = IlMachineState.popEvalStack currentThread state
             let val1, state = IlMachineState.popEvalStack currentThread state
 
-            let result =
+            match
                 try
                     BinaryArithmetic.execute corelib ArithmeticOperation.div state val1 val2 |> Ok
                 with :? OverflowException as e ->
                     Error e
-
-            let state =
-                match result with
-                | Ok (result, state) -> state |> IlMachineState.pushToEvalStack' result currentThread
-                | Error excToThrow -> failwith "TODO: throw OverflowException"
-
-            state
-            |> IlMachineState.advanceProgramCounter currentThread
-            |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            with
+            | Ok (result, state) ->
+                state
+                |> IlMachineState.pushToEvalStack' result currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Tuple.withRight WhatWeDid.Executed
+                |> ExecutionResult.Stepped
+            | Error _ ->
+                IlMachineStateExecution.raiseRuntimeException
+                    loggerFactory
+                    corelib
+                    corelib.OverflowException
+                    currentThread
+                    state
+                |> ExecutionResult.Stepped
         | Div_un ->
             let v2, state = IlMachineState.popEvalStack currentThread state
             let v1, state = IlMachineState.popEvalStack currentThread state
@@ -1210,6 +1230,18 @@ module NullaryIlOp =
                 match converted with
                 | None -> failwith "TODO: Conv_I conversion failure unimplemented"
                 | Some conv ->
+                    // Crossing from byref-world to native-pointer-world: subsequent
+                    // pointer arithmetic must be byte-stride per ECMA-335 §III.1.5,
+                    // so anchor a `ReinterpretAs T` projection on plain array
+                    // byrefs. Plain byrefs (no anchor) keep element-stride
+                    // arithmetic to match `Unsafe.Add<T>`.
+                    let conv =
+                        match conv with
+                        | NativeIntSource.ManagedPointer ptr ->
+                            ManagedPointerByteView.anchorByteViewIfPlainArrayByref corelib state ptr
+                            |> NativeIntSource.ManagedPointer
+                        | other -> other
+
                     state
                     |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt conv) currentThread
 
@@ -1317,7 +1349,14 @@ module NullaryIlOp =
                     let conv =
                         match conv with
                         | UnsignedNativeIntSource.Verbatim conv -> int64 conv |> NativeIntSource.Verbatim
-                        | UnsignedNativeIntSource.FromManagedPointer ptr -> NativeIntSource.ManagedPointer ptr
+                        | UnsignedNativeIntSource.FromManagedPointer ptr ->
+                            // Crossing from byref-world to native-pointer-world: subsequent
+                            // pointer arithmetic must be byte-stride per ECMA-335 §III.1.5,
+                            // so anchor a `ReinterpretAs T` projection on plain array
+                            // byrefs. Plain byrefs (no anchor) keep element-stride
+                            // arithmetic to match `Unsafe.Add<T>`.
+                            ManagedPointerByteView.anchorByteViewIfPlainArrayByref corelib state ptr
+                            |> NativeIntSource.ManagedPointer
                         | UnsignedNativeIntSource.FromSyntheticCrossArrayStorage i ->
                             NativeIntSource.SyntheticCrossArrayOffset i
                         | UnsignedNativeIntSource.FromOpaqueHashBits bits -> NativeIntSource.OpaqueHashBits bits
