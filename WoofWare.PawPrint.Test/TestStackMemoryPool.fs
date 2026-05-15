@@ -8,7 +8,7 @@ open WoofWare.PawPrint
 
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
-module TestLocalMemoryPool =
+module TestStackMemoryPool =
 
     type private WriteCase =
         {
@@ -28,11 +28,19 @@ module TestLocalMemoryPool =
 
     let private config : Config = Config.QuickThrowOnFailure.WithMaxTest 500
 
-    let private allocateZeroInitialized (byteCount : int) (pool : LocalMemoryPool) : LocallocBlockId * LocalMemoryPool =
-        LocalMemoryPool.allocate LocalMemoryInitialization.ZeroInitialized byteCount pool
+    let private allocateZeroInitialized
+        (byteCount : int)
+        (pool : StackMemoryPool)
+        : StackMemoryBlockId * StackMemoryPool
+        =
+        StackMemoryPool.allocate MemoryBlockInitialization.ZeroInitialized byteCount pool
 
-    let private allocateUninitialized (byteCount : int) (pool : LocalMemoryPool) : LocallocBlockId * LocalMemoryPool =
-        LocalMemoryPool.allocate LocalMemoryInitialization.Uninitialized byteCount pool
+    let private allocateUninitialized
+        (byteCount : int)
+        (pool : StackMemoryPool)
+        : StackMemoryBlockId * StackMemoryPool
+        =
+        StackMemoryPool.allocate MemoryBlockInitialization.Uninitialized byteCount pool
 
     let private genWriteCase : Gen<WriteCase> =
         gen {
@@ -129,7 +137,7 @@ module TestLocalMemoryPool =
 
     [<Test>]
     let ``Allocated local memory block ids are unique`` () : unit =
-        let block1, pool = allocateZeroInitialized 0 LocalMemoryPool.empty
+        let block1, pool = allocateZeroInitialized 0 StackMemoryPool.empty
         let block2, pool = allocateZeroInitialized 0 pool
         let block3, _ = allocateZeroInitialized 0 pool
 
@@ -141,8 +149,8 @@ module TestLocalMemoryPool =
     let ``Allocated local memory is zero initialized`` () : unit =
         let property (NonNegativeInt blockLength) : unit =
             let blockLength = blockLength % 129
-            let block, pool = allocateZeroInitialized blockLength LocalMemoryPool.empty
-            let actual = LocalMemoryPool.readBytes block 0 blockLength pool
+            let block, pool = allocateZeroInitialized blockLength StackMemoryPool.empty
+            let actual = StackMemoryPool.readBytes block 0 blockLength pool
             actual |> shouldEqual (Array.zeroCreate<byte> blockLength)
 
         Check.One (config, property)
@@ -151,9 +159,9 @@ module TestLocalMemoryPool =
     let ``Uninitialized local memory cannot be read before write`` () : unit =
         let property (PositiveInt blockLength) : unit =
             let blockLength = (blockLength % 128) + 1
-            let block, pool = allocateUninitialized blockLength LocalMemoryPool.empty
+            let block, pool = allocateUninitialized blockLength StackMemoryPool.empty
 
-            Assert.Throws<System.Exception> (fun () -> LocalMemoryPool.readBytes block 0 blockLength pool |> ignore)
+            Assert.Throws<System.Exception> (fun () -> StackMemoryPool.readBytes block 0 blockLength pool |> ignore)
             |> ignore
 
         Check.One (config, property)
@@ -165,31 +173,31 @@ module TestLocalMemoryPool =
         let mutable coversWholeBlock = 0
 
         let property (case : WriteCase) : unit =
-            let block, pool = allocateUninitialized case.BlockLength LocalMemoryPool.empty
-            let pool = LocalMemoryPool.writeBytes block case.Offset case.Bytes pool
+            let block, pool = allocateUninitialized case.BlockLength StackMemoryPool.empty
+            let pool = StackMemoryPool.writeBytes block case.Offset case.Bytes pool
             let writtenEnd = case.Offset + case.Bytes.Length
 
-            LocalMemoryPool.readBytes block case.Offset case.Bytes.Length pool
+            StackMemoryPool.readBytes block case.Offset case.Bytes.Length pool
             |> shouldEqual case.Bytes
 
             if case.Offset = 0 && writtenEnd = case.BlockLength then
                 coversWholeBlock <- coversWholeBlock + 1
 
-                LocalMemoryPool.readBytes block 0 case.BlockLength pool
+                StackMemoryPool.readBytes block 0 case.BlockLength pool
                 |> shouldEqual case.Bytes
 
             if case.Offset > 0 then
                 hasPrefixGap <- hasPrefixGap + 1
 
                 Assert.Throws<System.Exception> (fun () ->
-                    LocalMemoryPool.readBytes block (case.Offset - 1) 1 pool |> ignore
+                    StackMemoryPool.readBytes block (case.Offset - 1) 1 pool |> ignore
                 )
                 |> ignore
 
             if writtenEnd < case.BlockLength then
                 hasSuffixGap <- hasSuffixGap + 1
 
-                Assert.Throws<System.Exception> (fun () -> LocalMemoryPool.readBytes block writtenEnd 1 pool |> ignore)
+                Assert.Throws<System.Exception> (fun () -> StackMemoryPool.readBytes block writtenEnd 1 pool |> ignore)
                 |> ignore
 
         Check.One (config, Prop.forAll (Arb.fromGen genUninitializedWriteCase) property)
@@ -217,9 +225,9 @@ module TestLocalMemoryPool =
             if case.Bytes.Length > 1 then
                 multiByteWrites <- multiByteWrites + 1
 
-            let block, pool = allocateZeroInitialized case.BlockLength LocalMemoryPool.empty
-            let pool = LocalMemoryPool.writeBytes block case.Offset case.Bytes pool
-            let actual = LocalMemoryPool.readBytes block case.Offset case.Bytes.Length pool
+            let block, pool = allocateZeroInitialized case.BlockLength StackMemoryPool.empty
+            let pool = StackMemoryPool.writeBytes block case.Offset case.Bytes pool
+            let actual = StackMemoryPool.readBytes block case.Offset case.Bytes.Length pool
 
             actual |> shouldEqual case.Bytes
 
@@ -243,16 +251,16 @@ module TestLocalMemoryPool =
             else
                 nonOverlappingWrites <- nonOverlappingWrites + 1
 
-            let block, pool = allocateZeroInitialized case.BlockLength LocalMemoryPool.empty
+            let block, pool = allocateZeroInitialized case.BlockLength StackMemoryPool.empty
 
-            let pool = LocalMemoryPool.writeBytes block case.FirstOffset case.FirstBytes pool
-            let pool = LocalMemoryPool.writeBytes block case.SecondOffset case.SecondBytes pool
+            let pool = StackMemoryPool.writeBytes block case.FirstOffset case.FirstBytes pool
+            let pool = StackMemoryPool.writeBytes block case.SecondOffset case.SecondBytes pool
 
             let expected = Array.zeroCreate<byte> case.BlockLength
             Array.blit case.FirstBytes 0 expected case.FirstOffset case.FirstBytes.Length
             Array.blit case.SecondBytes 0 expected case.SecondOffset case.SecondBytes.Length
 
-            LocalMemoryPool.readBytes block 0 case.BlockLength pool |> shouldEqual expected
+            StackMemoryPool.readBytes block 0 case.BlockLength pool |> shouldEqual expected
 
         Check.One (config, Prop.forAll (Arb.fromGen genTwoWriteCase) property)
 
@@ -262,153 +270,153 @@ module TestLocalMemoryPool =
 
     [<Test>]
     let ``Blocks in the same pool are isolated`` () : unit =
-        let block1, pool = allocateZeroInitialized 4 LocalMemoryPool.empty
+        let block1, pool = allocateZeroInitialized 4 StackMemoryPool.empty
         let block2, pool = allocateZeroInitialized 4 pool
 
-        let pool = LocalMemoryPool.writeBytes block1 1 [| 1uy ; 2uy |] pool
+        let pool = StackMemoryPool.writeBytes block1 1 [| 1uy ; 2uy |] pool
 
-        LocalMemoryPool.readBytes block1 0 4 pool
+        StackMemoryPool.readBytes block1 0 4 pool
         |> shouldEqual [| 0uy ; 1uy ; 2uy ; 0uy |]
 
-        LocalMemoryPool.readBytes block2 0 4 pool
+        StackMemoryPool.readBytes block2 0 4 pool
         |> shouldEqual [| 0uy ; 0uy ; 0uy ; 0uy |]
 
     [<Test>]
     let ``Out of range reads and writes fail visibly`` () : unit =
-        let block, pool = allocateZeroInitialized 4 LocalMemoryPool.empty
+        let block, pool = allocateZeroInitialized 4 StackMemoryPool.empty
 
-        Assert.Throws<System.Exception> (fun () -> LocalMemoryPool.readBytes block -1 1 pool |> ignore)
+        Assert.Throws<System.Exception> (fun () -> StackMemoryPool.readBytes block -1 1 pool |> ignore)
         |> ignore
 
-        Assert.Throws<System.Exception> (fun () -> LocalMemoryPool.readBytes block 4 1 pool |> ignore)
+        Assert.Throws<System.Exception> (fun () -> StackMemoryPool.readBytes block 4 1 pool |> ignore)
         |> ignore
 
-        Assert.Throws<System.Exception> (fun () -> LocalMemoryPool.writeBytes block 3 [| 1uy ; 2uy |] pool |> ignore)
+        Assert.Throws<System.Exception> (fun () -> StackMemoryPool.writeBytes block 3 [| 1uy ; 2uy |] pool |> ignore)
         |> ignore
 
-        Assert.Throws<System.Exception> (fun () -> LocalMemoryPool.readBytes block 0 -1 pool |> ignore)
+        Assert.Throws<System.Exception> (fun () -> StackMemoryPool.readBytes block 0 -1 pool |> ignore)
         |> ignore
 
     [<Test>]
     let ``Zero sized blocks support zero byte reads`` () : unit =
-        let block, pool = allocateUninitialized 0 LocalMemoryPool.empty
-        LocalMemoryPool.readBytes block 0 0 pool |> shouldEqual [||]
+        let block, pool = allocateUninitialized 0 StackMemoryPool.empty
+        StackMemoryPool.readBytes block 0 0 pool |> shouldEqual [||]
 
-        Assert.Throws<System.Exception> (fun () -> LocalMemoryPool.writeBytes block 0 [| 1uy |] pool |> ignore)
+        Assert.Throws<System.Exception> (fun () -> StackMemoryPool.writeBytes block 0 [| 1uy |] pool |> ignore)
         |> ignore
 
     [<Test>]
     let ``Negative sized allocations fail visibly`` () : unit =
-        Assert.Throws<System.Exception> (fun () -> allocateZeroInitialized -1 LocalMemoryPool.empty |> ignore)
+        Assert.Throws<System.Exception> (fun () -> allocateZeroInitialized -1 StackMemoryPool.empty |> ignore)
         |> ignore
 
     [<Test>]
     let ``writeCell makes the cell readable via tryReadCell`` () : unit =
-        let block, pool = allocateZeroInitialized 16 LocalMemoryPool.empty
+        let block, pool = allocateZeroInitialized 16 StackMemoryPool.empty
         let cell = CliType.Numeric (CliNumericType.Int32 0x11223344)
-        let pool = LocalMemoryPool.writeCell block 4 cell pool
+        let pool = StackMemoryPool.writeCell block 4 cell pool
 
-        LocalMemoryPool.tryReadCell block 4 pool |> shouldEqual (Some cell)
-        LocalMemoryPool.tryReadCell block 0 pool |> shouldEqual None
-        LocalMemoryPool.tryReadCell block 8 pool |> shouldEqual None
+        StackMemoryPool.tryReadCell block 4 pool |> shouldEqual (Some cell)
+        StackMemoryPool.tryReadCell block 0 pool |> shouldEqual None
+        StackMemoryPool.tryReadCell block 8 pool |> shouldEqual None
 
     [<Test>]
     let ``tryFindCellCovering returns the cell covering the offset`` () : unit =
-        let block, pool = allocateZeroInitialized 16 LocalMemoryPool.empty
+        let block, pool = allocateZeroInitialized 16 StackMemoryPool.empty
         let cell = CliType.Numeric (CliNumericType.Int32 0x11223344)
-        let pool = LocalMemoryPool.writeCell block 4 cell pool
+        let pool = StackMemoryPool.writeCell block 4 cell pool
 
-        LocalMemoryPool.tryFindCellCovering block 4 pool |> shouldEqual (Some (4, cell))
+        StackMemoryPool.tryFindCellCovering block 4 pool |> shouldEqual (Some (4, cell))
 
-        LocalMemoryPool.tryFindCellCovering block 5 pool |> shouldEqual (Some (4, cell))
+        StackMemoryPool.tryFindCellCovering block 5 pool |> shouldEqual (Some (4, cell))
 
-        LocalMemoryPool.tryFindCellCovering block 7 pool |> shouldEqual (Some (4, cell))
+        StackMemoryPool.tryFindCellCovering block 7 pool |> shouldEqual (Some (4, cell))
 
-        LocalMemoryPool.tryFindCellCovering block 3 pool |> shouldEqual None
-        LocalMemoryPool.tryFindCellCovering block 8 pool |> shouldEqual None
+        StackMemoryPool.tryFindCellCovering block 3 pool |> shouldEqual None
+        StackMemoryPool.tryFindCellCovering block 8 pool |> shouldEqual None
 
     [<Test>]
     let ``tryFindCellCovering returns None for out-of-range offsets`` () : unit =
-        let block, pool = allocateZeroInitialized 4 LocalMemoryPool.empty
+        let block, pool = allocateZeroInitialized 4 StackMemoryPool.empty
 
-        LocalMemoryPool.tryFindCellCovering block -1 pool |> shouldEqual None
-        LocalMemoryPool.tryFindCellCovering block 4 pool |> shouldEqual None
-        LocalMemoryPool.tryFindCellCovering block 100 pool |> shouldEqual None
+        StackMemoryPool.tryFindCellCovering block -1 pool |> shouldEqual None
+        StackMemoryPool.tryFindCellCovering block 4 pool |> shouldEqual None
+        StackMemoryPool.tryFindCellCovering block 100 pool |> shouldEqual None
 
     [<Test>]
     let ``writeCell evicts overlapping cells and bytes`` () : unit =
-        let block, pool = allocateZeroInitialized 16 LocalMemoryPool.empty
+        let block, pool = allocateZeroInitialized 16 StackMemoryPool.empty
         let firstCell = CliType.Numeric (CliNumericType.Int32 0x11223344)
-        let pool = LocalMemoryPool.writeCell block 0 firstCell pool
+        let pool = StackMemoryPool.writeCell block 0 firstCell pool
 
-        let pool = LocalMemoryPool.writeBytes block 4 [| 0xAAuy |] pool
+        let pool = StackMemoryPool.writeBytes block 4 [| 0xAAuy |] pool
 
         let secondCell =
             CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0x55667788_99AABBCCL))
 
-        let pool = LocalMemoryPool.writeCell block 0 secondCell pool
+        let pool = StackMemoryPool.writeCell block 0 secondCell pool
 
-        LocalMemoryPool.tryReadCell block 0 pool |> shouldEqual (Some secondCell)
-        LocalMemoryPool.tryReadCell block 4 pool |> shouldEqual None
+        StackMemoryPool.tryReadCell block 0 pool |> shouldEqual (Some secondCell)
+        StackMemoryPool.tryReadCell block 4 pool |> shouldEqual None
 
     [<Test>]
     let ``writeCell preserves provenance for tagged native-int sources`` () : unit =
-        let block, pool = allocateZeroInitialized 16 LocalMemoryPool.empty
+        let block, pool = allocateZeroInitialized 16 StackMemoryPool.empty
 
         let cell =
             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr 1234L))
 
-        let pool = LocalMemoryPool.writeCell block 0 cell pool
+        let pool = StackMemoryPool.writeCell block 0 cell pool
 
-        LocalMemoryPool.tryReadCell block 0 pool |> shouldEqual (Some cell)
+        StackMemoryPool.tryReadCell block 0 pool |> shouldEqual (Some cell)
 
     [<Test>]
     let ``readBytes refuses to render tagged pointer cells`` () : unit =
-        let block, pool = allocateZeroInitialized 16 LocalMemoryPool.empty
+        let block, pool = allocateZeroInitialized 16 StackMemoryPool.empty
 
         let cell =
             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr 1234L))
 
-        let pool = LocalMemoryPool.writeCell block 0 cell pool
+        let pool = StackMemoryPool.writeCell block 0 cell pool
 
-        Assert.Throws<System.Exception> (fun () -> LocalMemoryPool.readBytes block 0 8 pool |> ignore)
+        Assert.Throws<System.Exception> (fun () -> StackMemoryPool.readBytes block 0 8 pool |> ignore)
         |> ignore
 
     [<Test>]
     let ``writeCell accepts replacing an existing cell at the same offset`` () : unit =
-        let block, pool = allocateZeroInitialized 8 LocalMemoryPool.empty
+        let block, pool = allocateZeroInitialized 8 StackMemoryPool.empty
         let firstCell = CliType.Numeric (CliNumericType.Int32 0x11111111)
-        let pool = LocalMemoryPool.writeCell block 0 firstCell pool
+        let pool = StackMemoryPool.writeCell block 0 firstCell pool
 
         let secondCell = CliType.Numeric (CliNumericType.Int32 0x22222222)
-        let pool = LocalMemoryPool.writeCell block 0 secondCell pool
+        let pool = StackMemoryPool.writeCell block 0 secondCell pool
 
-        LocalMemoryPool.tryReadCell block 0 pool |> shouldEqual (Some secondCell)
+        StackMemoryPool.tryReadCell block 0 pool |> shouldEqual (Some secondCell)
 
     [<Test>]
     let ``Byte writes covering a primitive cell update the cell payload`` () : unit =
-        let block, pool = allocateZeroInitialized 8 LocalMemoryPool.empty
+        let block, pool = allocateZeroInitialized 8 StackMemoryPool.empty
         let cell = CliType.Numeric (CliNumericType.Int32 0)
-        let pool = LocalMemoryPool.writeCell block 0 cell pool
+        let pool = StackMemoryPool.writeCell block 0 cell pool
 
         // 0x40490FDB = bit pattern for ~3.14159f. After writing those bytes
         // into the Int32 cell, the cell should hold that bit pattern as Int32.
         let bytes = [| 0xDBuy ; 0x0Fuy ; 0x49uy ; 0x40uy |]
-        let pool = LocalMemoryPool.writeBytes block 0 bytes pool
+        let pool = StackMemoryPool.writeBytes block 0 bytes pool
 
-        LocalMemoryPool.tryReadCell block 0 pool
+        StackMemoryPool.tryReadCell block 0 pool
         |> shouldEqual (Some (CliType.Numeric (CliNumericType.Int32 0x40490FDB)))
 
     [<Test>]
     let ``writeBytes refuses to scatter through tagged pointer cells`` () : unit =
-        let block, pool = allocateZeroInitialized 16 LocalMemoryPool.empty
+        let block, pool = allocateZeroInitialized 16 StackMemoryPool.empty
 
         let cell =
             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr 1234L))
 
-        let pool = LocalMemoryPool.writeCell block 0 cell pool
+        let pool = StackMemoryPool.writeCell block 0 cell pool
 
         Assert.Throws<System.Exception> (fun () ->
-            LocalMemoryPool.writeBytes block 0 [| 1uy ; 2uy ; 3uy ; 4uy |] pool |> ignore
+            StackMemoryPool.writeBytes block 0 [| 1uy ; 2uy ; 3uy ; 4uy |] pool |> ignore
         )
         |> ignore

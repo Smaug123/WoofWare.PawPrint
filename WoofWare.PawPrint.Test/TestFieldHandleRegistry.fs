@@ -471,9 +471,9 @@ public class DerivedWithField : BaseWithField
             match ptr with
             | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, baseIndex), []) ->
                 ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, baseIndex + index), [])
-            | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset), []) ->
+            | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset), []) ->
                 ManagedPointerSource.Byref (
-                    ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset + (index * nativeIntSize)),
+                    ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset + (index * nativeIntSize)),
                     []
                 )
             | _ when index = 0 -> ptr

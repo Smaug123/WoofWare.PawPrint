@@ -174,9 +174,15 @@ module NullaryIlOp =
 
         int size
 
-    let private isLocalMemoryPointer (src : ManagedPointerSource) : bool =
+    let private isStackMemoryPointer (src : ManagedPointerSource) : bool =
         match src with
-        | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte _, _) -> true
+        | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte _, _) -> true
+        | ManagedPointerSource.Null
+        | ManagedPointerSource.Byref _ -> false
+
+    let private isNativeMemoryPointer (src : ManagedPointerSource) : bool =
+        match src with
+        | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte _, _) -> true
         | ManagedPointerSource.Null
         | ManagedPointerSource.Byref _ -> false
 
@@ -398,7 +404,11 @@ module NullaryIlOp =
 
         let loadedValue =
             match popped with
-            | EvalStackValue.ManagedPointer src when isLocalMemoryPointer src || isTrailingByteViewPointer src ->
+            | EvalStackValue.ManagedPointer src when
+                isStackMemoryPointer src
+                || isNativeMemoryPointer src
+                || isTrailingByteViewPointer src
+                ->
                 IlMachineState.readManagedByrefBytesAs corelib state src targetCliType
             | EvalStackValue.ManagedPointer src -> IlMachineState.readManagedByref corelib state src
             | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer src) ->
@@ -1609,7 +1619,7 @@ module NullaryIlOp =
         | Localloc ->
             let currentMethodState = state.ThreadState.[currentThread].MethodState
 
-            let localMemoryInitialization =
+            let stackMemoryInitialization =
                 match MethodInfo.tryIlBody currentMethodState.ExecutingMethod with
                 | None ->
                     failwith
@@ -1622,9 +1632,9 @@ module NullaryIlOp =
                         $"Invalid CIL: Localloc at IL offset %d{currentMethodState.IlOpIndex} of %s{currentMethodState.ExecutingMethod.Name} is inside an exception handler or filter"
                 | Some instructions ->
                     if instructions.LocalsInit then
-                        LocalMemoryInitialization.ZeroInitialized
+                        MemoryBlockInitialization.ZeroInitialized
                     else
-                        LocalMemoryInitialization.Uninitialized
+                        MemoryBlockInitialization.Uninitialized
 
             let sizeValue, state = IlMachineState.popEvalStack currentThread state
 
@@ -1638,7 +1648,7 @@ module NullaryIlOp =
             let size = locallocSizeBytes sizeValue
 
             let ptr, state =
-                IlMachineState.allocateLocalMemory currentThread localMemoryInitialization size state
+                IlMachineState.allocateStackMemory currentThread stackMemoryInitialization size state
 
             state
             |> IlMachineState.pushToEvalStack'
