@@ -731,7 +731,77 @@ module IlMachineManagedByref =
     /// returned shape via `EvalStackValue.ofCliType` (which flattens
     /// primitive-like wrappers) or an explicit
     /// `CliType.unwrapPrimitiveLikeDeep`.
+    let private zeroForConcreteType
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (ty : ConcreteType<ConcreteTypeHandle>)
+        : CliType
+        =
+        let handle =
+            AllConcreteTypes.findExistingConcreteType state.ConcreteTypes ty.Identity ty.Generics
+            |> Option.defaultWith (fun () ->
+                failwith $"ReinterpretAs target %O{ty} is not present in the concrete-type registry"
+            )
+
+        CliType.zeroOf state.ConcreteTypes state._LoadedAssemblies baseClassTypes handle
+        |> fst
+
+    /// Collapse any trailing byte-view segment of the projection chain into an
+    /// accumulated byte offset. Once a `ReinterpretAs` appears the underlying
+    /// storage is being treated as raw bytes, so subsequent `ByteOffset`,
+    /// `Field` (resolved against the most recent `ReinterpretAs` target), and
+    /// chained `ReinterpretAs` projections are all bytewise; peeling them
+    /// exposes the residual structural prefix to the existing dispatchers.
+    /// Iterates until a non-byte-view trailing step is reached so chained
+    /// reinterprets like `Volatile.Read(ref entry._version)`
+    /// (`[..., ReinterpretAs CastCacheEntry, Field _version, ReinterpretAs VolatileUInt32]`)
+    /// reduce to the deepest reachable byte offset before
+    /// `readProjectedValue`/`resolveCell` interpret what's left.
+    ///
+    /// Returns `ValueSome (residual, offset)` if any byte-view step was
+    /// peeled, else `ValueNone`. A trailing `ByteOffset n` without a
+    /// preceding `ReinterpretAs` is an interpreter bug and is raised here.
+    let private peelTrailingByteView
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (projs : ByrefProjection list)
+        : (ByrefProjection list * int) voption
+        =
+        let rec loop
+            (projs : ByrefProjection list)
+            (offset : int)
+            (peeled : bool)
+            : (ByrefProjection list * int) voption
+            =
+            let len = List.length projs
+
+            if len = 0 then
+                if peeled then ValueSome ([], offset) else ValueNone
+            else
+                let last = List.item (len - 1) projs
+                let prev = if len >= 2 then Some (List.item (len - 2) projs) else None
+
+                match last, prev with
+                | ByrefProjection.Field field, Some (ByrefProjection.ReinterpretAs structType) ->
+                    let template = zeroForConcreteType baseClassTypes state structType
+                    let fieldOffset, _ = CliType.getFieldLayoutById field template
+                    let rest = projs |> List.take (len - 2)
+                    loop rest (offset + fieldOffset) true
+                | ByrefProjection.ByteOffset n, Some (ByrefProjection.ReinterpretAs _) ->
+                    let rest = projs |> List.take (len - 2)
+                    loop rest (offset + n) true
+                | ByrefProjection.ByteOffset n, _ ->
+                    failwith
+                        $"ByteOffset %d{n} without a preceding ReinterpretAs in projection chain: %A{projs} (this is an interpreter bug)"
+                | ByrefProjection.ReinterpretAs _, _ ->
+                    let rest = projs |> List.take (len - 1)
+                    loop rest offset true
+                | _, _ -> if peeled then ValueSome (projs, offset) else ValueNone
+
+        loop projs 0 false
+
     let readManagedByrefBytesAs
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (src : ManagedPointerSource)
         (targetTemplate : CliType)
@@ -749,52 +819,69 @@ module IlMachineManagedByref =
         | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), []) ->
             readStringBytesAs state str charIndex 0 targetTemplate
         | ManagedPointerSource.Byref (outerRoot, outerProjs) ->
-            match splitTrailingByteView src with
-            | ValueSome (ByrefRoot.LocalMemoryByte (thread, frame, block, rootByteOffset), [], byteOffset) ->
-                readLocalMemoryBytesAs state thread frame block (rootByteOffset + byteOffset) targetTemplate
-            | ValueSome (ByrefRoot.ArrayElement (arr, index), [], byteOffset) ->
-                readArrayBytesAs state arr index byteOffset targetTemplate
-            | ValueSome (ByrefRoot.PeByteRange peByteRange, [], byteOffset) ->
-                readPeByteRangeBytesAs state peByteRange byteOffset targetTemplate
-            | ValueSome (ByrefRoot.PeByteRange peByteRange, prefixProjs, _) ->
-                failwith $"TODO: PE byte-view read with non-empty prefix projections %O{prefixProjs}: %O{peByteRange}"
-            | ValueSome (ByrefRoot.StringCharAt (str, charIndex), [], byteOffset) ->
-                readStringBytesAs state str charIndex byteOffset targetTemplate
-            | ValueSome (ByrefRoot.HeapValue addr, [], byteOffset) ->
-                readHeapValueBytesAs state addr byteOffset targetTemplate
-            | ValueSome (byteViewRoot, prefixProjs, byteOffset) ->
-                let rootValue = readRootValue state byteViewRoot
-                let targetSize = CliType.sizeOf targetTemplate
+            // Collapse any trailing byte-view segment of the projection
+            // chain into an accumulated byte offset. Once a `ReinterpretAs`
+            // appears the underlying storage is being treated as raw bytes,
+            // so subsequent `ByteOffset`, `Field` (resolved against the
+            // most recent `ReinterpretAs` target), and chained `ReinterpretAs`
+            // projections are all bytewise. Peeling them exposes the
+            // residual structural prefix to the existing dispatchers so
+            // the bytewise read can route through the appropriate root
+            // reader (or, when the prefix navigates into a host-shaped
+            // cell, through `resolveCell`). The BCL's cast-cache walk
+            // (`Unsafe.As<byte, CastCacheEntry>(...)` then `entry._version`
+            // then `Volatile.Read` wrapping the result in `VolatileUInt32`)
+            // is the load-bearing example.
+            let byteViewShape : (ByrefProjection list * int) voption =
+                peelTrailingByteView baseClassTypes state outerProjs
 
-                // CLR pointer arithmetic on a managed pointer to a struct
-                // field is allowed to cross into sibling fields of the parent
-                // (e.g. `Unsafe.Add(ref guid._a, 1)` reaches `_b`/`_c`). When
-                // the byte read overflows the immediate cell, lift back
-                // through trailing `Field` projections, accumulating each
-                // field's offset within its parent until the read fits.
-                let rec resolveCell (projs : ByrefProjection list) (offset : int) : CliType * int =
-                    let cell = readProjectedValue rootValue projs
-                    let cellSize = byteAddressableCellSize $"single-cell byref %O{src}" cell
+            match byteViewShape with
+            | ValueSome (prefixProjs, byteOffset) ->
+                match outerRoot, prefixProjs with
+                | ByrefRoot.LocalMemoryByte (thread, frame, block, rootByteOffset), [] ->
+                    readLocalMemoryBytesAs state thread frame block (rootByteOffset + byteOffset) targetTemplate
+                | ByrefRoot.ArrayElement (arr, index), [] -> readArrayBytesAs state arr index byteOffset targetTemplate
+                | ByrefRoot.PeByteRange peByteRange, [] ->
+                    readPeByteRangeBytesAs state peByteRange byteOffset targetTemplate
+                | ByrefRoot.PeByteRange peByteRange, prefixProjs ->
+                    failwith
+                        $"TODO: PE byte-view read with non-empty prefix projections %O{prefixProjs}: %O{peByteRange}"
+                | ByrefRoot.StringCharAt (str, charIndex), [] ->
+                    readStringBytesAs state str charIndex byteOffset targetTemplate
+                | ByrefRoot.HeapValue addr, [] -> readHeapValueBytesAs state addr byteOffset targetTemplate
+                | _, prefixProjs ->
+                    let rootValue = readRootValue state outerRoot
+                    let targetSize = CliType.sizeOf targetTemplate
 
-                    if offset >= 0 && targetSize <= cellSize - offset then
-                        cell, offset
-                    else
-                        match List.tryLast projs with
-                        | Some (ByrefProjection.Field field) ->
-                            let parentProjs = projs |> List.take (List.length projs - 1)
-                            let parentValue = readProjectedValue rootValue parentProjs
-                            let fieldOffset, _ = CliType.getFieldLayoutById field parentValue
-                            resolveCell parentProjs (offset + fieldOffset)
-                        | _ ->
-                            failwith
-                                $"TODO: byte-view read at offset %d{offset} for %d{targetSize} bytes does not fit in single primitive cell of size %d{cellSize}: %O{src}"
+                    // CLR pointer arithmetic on a managed pointer to a struct
+                    // field is allowed to cross into sibling fields of the parent
+                    // (e.g. `Unsafe.Add(ref guid._a, 1)` reaches `_b`/`_c`). When
+                    // the byte read overflows the immediate cell, lift back
+                    // through trailing `Field` projections, accumulating each
+                    // field's offset within its parent until the read fits.
+                    let rec resolveCell (projs : ByrefProjection list) (offset : int) : CliType * int =
+                        let cell = readProjectedValue rootValue projs
+                        let cellSize = byteAddressableCellSize $"single-cell byref %O{src}" cell
 
-                let cell, finalOffset = resolveCell prefixProjs byteOffset
+                        if offset >= 0 && targetSize <= cellSize - offset then
+                            cell, offset
+                        else
+                            match List.tryLast projs with
+                            | Some (ByrefProjection.Field field) ->
+                                let parentProjs = projs |> List.take (List.length projs - 1)
+                                let parentValue = readProjectedValue rootValue parentProjs
+                                let fieldOffset, _ = CliType.getFieldLayoutById field parentValue
+                                resolveCell parentProjs (offset + fieldOffset)
+                            | _ ->
+                                failwith
+                                    $"TODO: byte-view read at offset %d{offset} for %d{targetSize} bytes does not fit in single primitive cell of size %d{cellSize}: %O{src}"
 
-                let bytes =
-                    byteAddressableCellBytesAt $"single-cell byref %O{src}" finalOffset targetSize cell
+                    let cell, finalOffset = resolveCell prefixProjs byteOffset
 
-                CliType.ofBytesLike targetTemplate bytes
+                    let bytes =
+                        byteAddressableCellBytesAt $"single-cell byref %O{src}" finalOffset targetSize cell
+
+                    CliType.ofBytesLike targetTemplate bytes
             | ValueNone ->
                 let raw = readProjectedValue (readRootValue state outerRoot) outerProjs
                 let rawSize = byteAddressableCellSize $"plain byref %O{src}" raw
@@ -806,21 +893,6 @@ module IlMachineManagedByref =
 
                 byteAddressableCellBytesAt $"plain byref %O{src}" 0 targetSize raw
                 |> CliType.ofBytesLike targetTemplate
-
-    let private zeroForConcreteType
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        (ty : ConcreteType<ConcreteTypeHandle>)
-        : CliType
-        =
-        let handle =
-            AllConcreteTypes.findExistingConcreteType state.ConcreteTypes ty.Identity ty.Generics
-            |> Option.defaultWith (fun () ->
-                failwith $"ReinterpretAs target %O{ty} is not present in the concrete-type registry"
-            )
-
-        CliType.zeroOf state.ConcreteTypes state._LoadedAssemblies baseClassTypes handle
-        |> fst
 
     let readManagedByref
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -835,7 +907,7 @@ module IlMachineManagedByref =
             | ByrefProjection.ByteOffset _ :: ByrefProjection.ReinterpretAs ty :: _
             | ByrefProjection.ReinterpretAs ty :: _ ->
                 let targetTemplate = zeroForConcreteType baseClassTypes state ty
-                readManagedByrefBytesAs state src targetTemplate
+                readManagedByrefBytesAs baseClassTypes state src targetTemplate
             | ByrefProjection.ByteOffset n :: _ ->
                 failwith
                     $"ByteOffset %d{n} without a preceding ReinterpretAs in projection chain: %O{src} (this is an interpreter bug)"
@@ -948,7 +1020,7 @@ module IlMachineManagedByref =
                 else
                     ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset fieldOffset) src
 
-            readManagedByrefBytesAs state fieldPtr fieldTemplate
+            readManagedByrefBytesAs baseClassTypes state fieldPtr fieldTemplate
 
     let readManagedByrefField
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
