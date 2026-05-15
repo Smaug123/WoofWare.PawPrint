@@ -152,7 +152,7 @@ module TestLowLevelMonitor =
         statusOf t0 state |> shouldEqual ThreadStatus.Runnable
 
     [<Test>]
-    let ``release with waiters wakes FIFO head only`` () : unit =
+    let ``release with waiters transfers ownership to FIFO head`` () : unit =
         let state = baseState () |> withThreads [ t0 ; t1 ; t2 ]
         let id, state = LowLevelMonitor.create state
         let state = LowLevelMonitor.acquire t0 id state |> acquired
@@ -161,15 +161,12 @@ module TestLowLevelMonitor =
         let state = LowLevelMonitor.release t0 id state
 
         let monitor = monitorOf id state
-        monitor.Owner |> shouldEqual None
-        // t1 stays at the head of the queue (wake/take split keeps it
-        // there so a concurrently-arriving acquire joins the tail
-        // rather than stealing the lock). t1's status is Runnable —
-        // when it re-runs Acquire it will pop itself off via the
-        // head-of-queue fast path.
-        monitor.AcquireQueue |> shouldEqual [ t1 ; t2 ]
+        // Ownership was transferred directly to t1; t1 is Runnable and
+        // will resume past its `Acquire` call site already holding the
+        // monitor. t2 remains parked behind t1.
+        monitor.Owner |> shouldEqual (Some t1)
+        monitor.AcquireQueue |> shouldEqual [ t2 ]
         statusOf t1 state |> shouldEqual ThreadStatus.Runnable
-        // t2 stays parked behind t1.
         statusOf t2 state |> shouldEqual (ThreadStatus.BlockedOnMonitorAcquire id)
 
     [<Test>]
@@ -186,7 +183,7 @@ module TestLowLevelMonitor =
         statusOf t0 state |> shouldEqual (ThreadStatus.BlockedOnMonitorWait id)
 
     [<Test>]
-    let ``wait while AcquireQueue is non-empty wakes the head as part of release`` () : unit =
+    let ``wait while AcquireQueue is non-empty transfers ownership to the head`` () : unit =
         let state = baseState () |> withThreads [ t0 ; t1 ; t2 ]
         let id, state = LowLevelMonitor.create state
         let state = LowLevelMonitor.acquire t0 id state |> acquired
@@ -195,39 +192,36 @@ module TestLowLevelMonitor =
         let state = LowLevelMonitor.wait t0 id state
 
         let monitor = monitorOf id state
-        monitor.Owner |> shouldEqual None
-        // t1 stays at the head of the AcquireQueue (wake/take split);
-        // it will pop itself off on its next Acquire.
-        monitor.AcquireQueue |> shouldEqual [ t1 ; t2 ]
+        // Wait's release path transferred ownership to the
+        // AcquireQueue head (t1); t0 parked on the WaitQueue.
+        monitor.Owner |> shouldEqual (Some t1)
+        monitor.AcquireQueue |> shouldEqual [ t2 ]
         monitor.WaitQueue |> shouldEqual [ t0 ]
-        // The acquire-queue head was woken atomically as part of Wait's release.
         statusOf t1 state |> shouldEqual ThreadStatus.Runnable
         statusOf t2 state |> shouldEqual (ThreadStatus.BlockedOnMonitorAcquire id)
         statusOf t0 state |> shouldEqual (ThreadStatus.BlockedOnMonitorWait id)
 
     [<Test>]
-    let ``signalRelease moves wait-queue head to acquire-queue tail and wakes the new head`` () : unit =
+    let ``signalRelease promotes wait-queue head to owner via the release path`` () : unit =
         let state = baseState () |> withThreads [ t0 ; t1 ; t2 ]
         let id, state = LowLevelMonitor.create state
         let state = LowLevelMonitor.acquire t0 id state |> acquired
-        // t1 has called Wait and is parked in the wait queue.
+        // Park t1 in the wait queue: contended acquire, then release
+        // transfers ownership to t1, then t1 calls Wait.
         let state = LowLevelMonitor.acquire t1 id state |> blocked
         let state = LowLevelMonitor.release t0 id state
-        // t1 was woken by release; emulate it re-running its Acquire and then Wait.
-        let state = LowLevelMonitor.acquire t1 id state |> acquired
         let state = LowLevelMonitor.wait t1 id state
-        // Now another thread acquires and signal-releases.
+        // Another thread acquires and signal-releases.
         let state = LowLevelMonitor.acquire t2 id state |> acquired
         let state = LowLevelMonitor.signalRelease t2 id state
 
         let monitor = monitorOf id state
-        // Owner is now None: signalRelease delegates to release after moving
-        // the woken waiter onto the acquire queue, and the acquire-queue head
-        // (t1, just promoted) was woken to Runnable as part of that release.
-        // t1 stays in the queue at the head until it re-runs Acquire.
-        monitor.Owner |> shouldEqual None
+        // Signal_Release moved t1 from WaitQueue onto the (empty)
+        // AcquireQueue, then the release path transferred ownership to
+        // the new head — which is t1.
+        monitor.Owner |> shouldEqual (Some t1)
         monitor.WaitQueue |> shouldEqual []
-        monitor.AcquireQueue |> shouldEqual [ t1 ]
+        monitor.AcquireQueue |> shouldEqual []
         statusOf t1 state |> shouldEqual ThreadStatus.Runnable
         statusOf t2 state |> shouldEqual ThreadStatus.Runnable
 
@@ -235,22 +229,20 @@ module TestLowLevelMonitor =
     let ``signalRelease with non-empty acquire queue keeps waiter behind earlier acquires`` () : unit =
         let state = baseState () |> withThreads [ t0 ; t1 ; t2 ; t3 ]
         let id, state = LowLevelMonitor.create state
-        let state = LowLevelMonitor.acquire t0 id state |> acquired
         // Park t1 in the wait queue: acquire then wait.
-        let state = LowLevelMonitor.release t0 id state
         let state = LowLevelMonitor.acquire t1 id state |> acquired
         let state = LowLevelMonitor.wait t1 id state
-        // Park t2 in the acquire queue while t1 is in the wait queue.
+        // t3 acquires uncontended; t2 then parks in the acquire queue.
         let state = LowLevelMonitor.acquire t3 id state |> acquired
         let state = LowLevelMonitor.acquire t2 id state |> blocked
         // Signal_Release from t3: t1 moves to the acquire queue tail behind t2;
-        // release wakes the new acquire-queue head (t2). t2 stays at the head
-        // of the queue until it re-runs Acquire.
+        // release then transfers ownership to the new head (t2). t1 stays
+        // BlockedOnMonitorAcquire until a subsequent release reaches it.
         let state = LowLevelMonitor.signalRelease t3 id state
 
         let monitor = monitorOf id state
-        monitor.Owner |> shouldEqual None
-        monitor.AcquireQueue |> shouldEqual [ t2 ; t1 ]
+        monitor.Owner |> shouldEqual (Some t2)
+        monitor.AcquireQueue |> shouldEqual [ t1 ]
         monitor.WaitQueue |> shouldEqual []
         statusOf t2 state |> shouldEqual ThreadStatus.Runnable
         statusOf t1 state |> shouldEqual (ThreadStatus.BlockedOnMonitorAcquire id)
@@ -264,9 +256,10 @@ module TestLowLevelMonitor =
         let state = LowLevelMonitor.signalRelease t0 id state
 
         let monitor = monitorOf id state
-        monitor.Owner |> shouldEqual None
-        // t1 stays at the head of the queue (wake/take split).
-        monitor.AcquireQueue |> shouldEqual [ t1 ]
+        // With no waiter to signal, signalRelease is plain release —
+        // ownership is transferred to the AcquireQueue head (t1).
+        monitor.Owner |> shouldEqual (Some t1)
+        monitor.AcquireQueue |> shouldEqual []
         statusOf t1 state |> shouldEqual ThreadStatus.Runnable
 
     [<Test>]
@@ -289,17 +282,27 @@ module TestLowLevelMonitor =
         exn.Message |> shouldContainText "still held"
 
     [<Test>]
-    let ``destroy fails loud with parked acquirers`` () : unit =
-        let state = baseState () |> withThreads [ t0 ; t1 ; t2 ]
+    let ``destroy asserts the Owner/AcquireQueue invariant defensively`` () : unit =
+        // The standard transitions all preserve the invariant
+        // (Owner = None iff AcquireQueue = []), so to exercise the
+        // defensive check we splice a corrupt monitor into the registry
+        // directly. This guards against future regressions in
+        // release/wait/signalRelease that might leave the queue
+        // non-empty with no owner.
+        let state = baseState () |> withThreads [ t1 ]
         let id, state = LowLevelMonitor.create state
-        let state = LowLevelMonitor.acquire t0 id state |> acquired
-        let state = LowLevelMonitor.acquire t1 id state |> blocked
-        let state = LowLevelMonitor.acquire t2 id state |> blocked
-        // Release wakes the head (t1) but it stays in the queue with
-        // Runnable status; t2 is still BlockedOnMonitorAcquire behind
-        // it. Owner is now None but the AcquireQueue is non-empty, so
-        // destroy must refuse.
-        let state = LowLevelMonitor.release t0 id state
+
+        let corrupt : LowLevelMonitorState =
+            {
+                Owner = None
+                AcquireQueue = [ t1 ]
+                WaitQueue = []
+            }
+
+        let state =
+            { state with
+                LowLevelMonitors = state.LowLevelMonitors |> Map.add id corrupt
+            }
 
         let exn =
             Assert.Throws<System.Exception> (fun () -> LowLevelMonitor.destroy id state |> ignore)
@@ -384,13 +387,14 @@ module TestLowLevelMonitor =
         exn.Message |> shouldContainText "owned by"
 
     /// FIFO fairness oracle. For any sequence of contended acquirers that
-    /// park behind a single owner, releasing the monitor once per parked
-    /// thread must wake them in registration order. This is the
-    /// load-bearing property for `LowLevelLock` fairness — moving to LIFO
-    /// or arbitrary order would change the observable interleaving of any
-    /// guest-level lock built on top.
+    /// park behind a single owner, releasing the monitor once per current
+    /// owner must transfer ownership through the parked threads in
+    /// registration order. This is the load-bearing property for
+    /// `LowLevelLock` fairness — moving to LIFO or arbitrary order would
+    /// change the observable interleaving of any guest-level lock built
+    /// on top.
     [<Test>]
-    let ``Property: acquire/release wakes parked threads in FIFO order`` () : unit =
+    let ``Property: release transfers ownership through parked threads in FIFO order`` () : unit =
         let property (PositiveInt waiterCount) : bool =
             // Cap waiter count so the test stays fast and threads have
             // distinct stable IDs.
@@ -409,35 +413,27 @@ module TestLowLevelMonitor =
                 |> List.fold (fun s w -> LowLevelMonitor.acquire w id s |> blocked) state
 
             // Snapshot the queue order before any releases run.
-            let expectedWakeOrder = (monitorOf id state).AcquireQueue
+            let expectedTransferOrder = (monitorOf id state).AcquireQueue
 
-            // Roll through releases: each release wakes the FIFO head,
-            // who then re-runs Acquire (popping itself off the head) on
-            // its next scheduler step. The dispatch loop does this; we
-            // simulate it by reading the queue head, asserting it is
-            // Runnable, then calling acquire on it.
+            // Each release transfers ownership to the FIFO head; the new
+            // owner is now Runnable. We then release on its behalf.
             let mutable currentOwner = owner
             let mutable state = state
-            let mutable wokenOrder = []
+            let mutable observedOrder = []
 
             for _ in 1..n do
                 state <- LowLevelMonitor.release currentOwner id state
 
-                let woken =
-                    match (monitorOf id state).Owner, (monitorOf id state).AcquireQueue with
-                    | None, head :: _ when statusOf head state = ThreadStatus.Runnable -> head
-                    | None, head :: _ ->
-                        failwith $"release did not wake the head: %O{head} status is %O{statusOf head state}"
-                    | None, [] -> failwith "release did not leave a head to wake"
-                    | Some owner, _ -> failwith $"release left owner %O{owner}"
+                let next =
+                    match (monitorOf id state).Owner with
+                    | Some next when statusOf next state = ThreadStatus.Runnable -> next
+                    | Some next -> failwith $"release transferred to %O{next} but status is %O{statusOf next state}"
+                    | None -> failwith "release did not transfer ownership"
 
-                // The woken thread re-runs Acquire and takes ownership;
-                // the head-of-queue branch pops it off.
-                state <- LowLevelMonitor.acquire woken id state |> acquired
-                currentOwner <- woken
-                wokenOrder <- wokenOrder @ [ woken ]
+                currentOwner <- next
+                observedOrder <- observedOrder @ [ next ]
 
-            wokenOrder = expectedWakeOrder
+            observedOrder = expectedTransferOrder
 
         Check.One (config, property)
 

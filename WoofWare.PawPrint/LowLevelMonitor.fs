@@ -1,8 +1,8 @@
 namespace WoofWare.PawPrint
 
 /// Deterministic state-machine for the seven `SystemNative_LowLevelMonitor_*`
-/// QCalls that back `System.Threading.LowLevelMonitor`. The CoreCLR shape is a
-/// `pthread_mutex_t` + `pthread_cond_t` pair; we reproduce the observable
+/// P/Invokes that back `System.Threading.LowLevelMonitor`. The CoreCLR shape
+/// is a `pthread_mutex_t` + `pthread_cond_t` pair; we reproduce the observable
 /// semantics through `LowLevelMonitorState` (registry value) and three
 /// `ThreadStatus` cases (`Runnable`, `BlockedOnMonitorAcquire`,
 /// `BlockedOnMonitorWait`).
@@ -14,6 +14,21 @@ namespace WoofWare.PawPrint
 /// fairness: deviating from FIFO changes the observable interleaving and is
 /// not a refactor.
 ///
+/// Ownership transfer model: when `release`, `wait`, or `signalRelease` give
+/// up the monitor and the AcquireQueue is non-empty, ownership is handed
+/// directly from the releaser to the FIFO head — the head's status flips to
+/// `Runnable` already holding the monitor. This mirrors pthread
+/// `cond_wait`'s contract (the call returns owning the mutex) and matches
+/// the native handler's posture: the IL `Acquire`/`Wait` call site advances
+/// to its successor regardless of whether the thread blocked, so when the
+/// scheduler later picks the woken thread, it resumes past the call site
+/// and must already own the monitor for subsequent guest code to be sound.
+///
+/// Invariant: `Owner = None` iff `AcquireQueue = []`. A non-empty queue with
+/// no owner would mean the head is "next in line" but holds nothing, leaving
+/// `Release` to fire as unowned when the resumed thread eventually runs.
+/// Every transition below preserves this invariant; `destroy` asserts it.
+///
 /// Reentrancy: a monitor is non-reentrant, matching CoreCLR. A thread that
 /// already owns the monitor and calls `acquire` again is deadlocking guest
 /// code — we fail loudly rather than spin, so the bug surfaces here instead
@@ -24,7 +39,7 @@ namespace WoofWare.PawPrint
 /// Timeouts: `TimedWait` is not implemented today. PawPrint has no virtual
 /// clock yet, and silently treating "wait N ms" as "wait forever" would
 /// turn flaky guest code into deterministic deadlock without obvious blame.
-/// Calls to `timedWait` therefore fail loud; see the QCall handler in
+/// Calls to `timedWait` therefore fail loud; see the P/Invoke handler in
 /// `NativeLowLevelMonitor.fs` for the failure site.
 ///
 /// Spurious wakeups: not generated. Guest code that depends on the absence
@@ -75,6 +90,12 @@ module LowLevelMonitor =
     /// waiting — i.e. the monitor is fully quiescent. We enforce that contract
     /// loudly: destroying a monitor with an owner or a non-empty queue is a
     /// guest bug that would otherwise present as a use-after-free later.
+    ///
+    /// The AcquireQueue check is also a defensive assertion of the
+    /// owner/queue invariant (`Owner = None` iff `AcquireQueue = []`): a
+    /// non-empty queue with no owner means a transition somewhere violated
+    /// the invariant, and surfacing that here is cheaper than chasing it
+    /// from a downstream symptom.
     let destroy (id : LowLevelMonitorId) (state : IlMachineState) : IlMachineState =
         let monitor = lookup id state
 
@@ -86,7 +107,7 @@ module LowLevelMonitor =
         | [] -> ()
         | waiters ->
             failwith
-                $"LowLevelMonitor %O{id}: refusing to Destroy a monitor with %d{List.length waiters} thread(s) parked in BlockedOnMonitorAcquire (%A{waiters})"
+                $"LowLevelMonitor %O{id}: refusing to Destroy a monitor with %d{List.length waiters} thread(s) parked in BlockedOnMonitorAcquire (%A{waiters}); this also indicates a broken Owner/AcquireQueue invariant."
 
         match monitor.WaitQueue with
         | [] -> ()
@@ -98,18 +119,17 @@ module LowLevelMonitor =
             LowLevelMonitors = state.LowLevelMonitors |> Map.remove id
         }
 
-    /// Try to acquire the monitor on behalf of `thread`. Returns `Acquired`
-    /// if the call returns to the guest in the same step; the callsite
-    /// should advance the program counter and stay Runnable. Returns
-    /// `Blocked` if the thread must park: the callsite must NOT advance the
-    /// program counter (the `Acquire` instruction is re-executed when the
-    /// thread is woken — its second execution will see the thread at the
-    /// head of `AcquireQueue` with the monitor unowned, and will fall
-    /// through the `Acquired` branch).
+    /// Try to acquire the monitor on behalf of `thread`.
     ///
-    /// The thread's status is flipped to `BlockedOnMonitorAcquire` on the
-    /// `Blocked` path. Fast-path acquisition (uncontended monitor) does NOT
-    /// touch the thread's status; it stays `Runnable`.
+    /// Returns `Acquired` if the call returns to the guest with the monitor
+    /// held: the IL `Acquire` site advances and the thread stays Runnable.
+    ///
+    /// Returns `Blocked` if the thread was parked. The IL site still
+    /// advances (the native handler returns `WhatWeDid.Executed` in both
+    /// cases) — when the thread is later woken via `release`/`wait`'s
+    /// release path/`signalRelease`, ownership has already been transferred
+    /// to it, so resuming past the `Acquire` call is correct without
+    /// re-executing the acquire transition.
     [<RequireQualifiedAccess>]
     type AcquireOutcome =
         | Acquired of IlMachineState
@@ -119,47 +139,15 @@ module LowLevelMonitor =
         let monitor = lookup id state
 
         match monitor.Owner with
-        | None when List.isEmpty monitor.AcquireQueue ->
-            // Uncontended fast path: take ownership now, return to the guest.
-            let monitor =
-                { monitor with
-                    Owner = Some thread
-                }
-
-            state |> writeMonitor id monitor |> AcquireOutcome.Acquired
-
-        | None when List.head monitor.AcquireQueue = thread ->
-            // The caller is the just-woken head of the queue, re-running
-            // the IL `Acquire` site after being roused by `release` or
-            // `signalRelease`. Pop self from the head and take ownership;
-            // any remaining tail threads stay parked until the chain of
-            // releases reaches them. We keep the head in the queue across
-            // the wake/take split (rather than removing it on wake) so
-            // that a contemporaneous Acquire by a third thread sees the
-            // woken thread still ahead of it and joins the tail, instead
-            // of stealing the lock and starving the woken thread.
-            let monitor =
-                { monitor with
-                    Owner = Some thread
-                    AcquireQueue = List.tail monitor.AcquireQueue
-                }
-
-            state |> writeMonitor id monitor |> AcquireOutcome.Acquired
-
         | None ->
-            // Owner is None but the AcquireQueue is non-empty AND we are
-            // not the head: a different thread is already at the head and
-            // we must queue behind it. Joining the tail preserves FIFO
-            // ordering.
+            // Uncontended fast path. By the Owner/AcquireQueue invariant,
+            // AcquireQueue is empty here; we just take ownership.
             let monitor =
                 { monitor with
-                    AcquireQueue = monitor.AcquireQueue @ [ thread ]
+                    Owner = Some thread
                 }
 
-            state
-            |> writeMonitor id monitor
-            |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnMonitorAcquire id)
-            |> AcquireOutcome.Blocked
+            state |> writeMonitor id monitor |> AcquireOutcome.Acquired
 
         | Some owner when owner = thread ->
             // CoreCLR's LowLevelMonitor is non-reentrant; recursive acquire
@@ -171,6 +159,8 @@ module LowLevelMonitor =
 
         | Some _ ->
             // Contended path: park the thread at the tail of the queue.
+            // Ownership will be handed to us atomically when our
+            // predecessor releases (or signal-releases) the monitor.
             let monitor =
                 { monitor with
                     AcquireQueue = monitor.AcquireQueue @ [ thread ]
@@ -181,15 +171,14 @@ module LowLevelMonitor =
             |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnMonitorAcquire id)
             |> AcquireOutcome.Blocked
 
-    /// Release the monitor held by `thread`. Wakes the FIFO head of the
-    /// `AcquireQueue` (if any) by setting its status back to `Runnable`;
-    /// the woken thread stays in the queue at the head and will take
-    /// ownership when it re-runs its IL `Acquire` site (the head-of-queue
-    /// fast path in `acquire`). Keeping the woken thread in the queue
-    /// during the wake/take split prevents a concurrently-arriving
-    /// Acquire from a third thread from stealing the lock and starving
-    /// the woken thread — the third thread sees a non-empty queue and
-    /// joins the tail, preserving FIFO fairness.
+    /// Release the monitor held by `thread`. If the AcquireQueue is
+    /// non-empty, ownership is transferred to the FIFO head — the head's
+    /// status flips to `Runnable` and the head is popped from the queue.
+    /// The released thread does NOT briefly observe an unowned monitor
+    /// with a non-empty queue: that intermediate state would violate the
+    /// Owner/AcquireQueue invariant, and (more importantly) would mean the
+    /// woken thread resumes past its `Acquire` site without owning the
+    /// monitor, so its subsequent `Release` would fail as unowned.
     let release (thread : ThreadId) (id : LowLevelMonitorId) (state : IlMachineState) : IlMachineState =
         let monitor = lookup id state
 
@@ -209,13 +198,14 @@ module LowLevelMonitor =
 
             state |> writeMonitor id monitor
 
-        | head :: _ ->
-            // Wake the FIFO head but leave it in the queue. The woken
-            // thread reacquires through `acquire`'s head-of-queue branch
-            // on its next scheduler step, popping itself off as it does.
+        | head :: rest ->
+            // Hand ownership directly to the FIFO head and wake them. The
+            // woken thread will resume past its `Acquire` call site
+            // already holding the monitor.
             let monitor =
                 { monitor with
-                    Owner = None
+                    Owner = Some head
+                    AcquireQueue = rest
                 }
 
             state
@@ -229,16 +219,17 @@ module LowLevelMonitor =
     /// scheduler can observe:
     ///
     ///   1. `wait` here: the caller (must be the current `Owner`) is moved
-    ///      to `WaitQueue`, the monitor is released, and the caller's
-    ///      status becomes `BlockedOnMonitorWait`. If the `AcquireQueue` is
-    ///      non-empty at the moment of release, its head is woken via the
-    ///      same path as `release`.
+    ///      to `WaitQueue`, the monitor is released (transferring
+    ///      ownership to the AcquireQueue head if any, otherwise clearing
+    ///      Owner), and the caller's status becomes
+    ///      `BlockedOnMonitorWait`.
     ///
     ///   2. The wake-up step is driven by `signalRelease` (below): it
-    ///      flips the head of the wait queue into `BlockedOnMonitorAcquire`
-    ///      and enqueues it on the `AcquireQueue`. The thread reacquires
-    ///      through the normal `Runnable → Acquired` transition when its
-    ///      turn comes up.
+    ///      moves the head of the wait queue onto the AcquireQueue (FIFO
+    ///      tail) and then runs the same release path, so the new
+    ///      AcquireQueue head ends up owning the monitor. When that
+    ///      head's turn comes up, it resumes past its original `Wait`
+    ///      call site already holding the monitor.
     ///
     /// This preserves the atomicity contract from the guest's perspective:
     /// the guest cannot observe a state in which it has released the
@@ -253,9 +244,9 @@ module LowLevelMonitor =
             failwith $"LowLevelMonitor %O{id}: thread %O{thread} called Wait but the monitor is owned by %O{owner}"
         | None -> failwith $"LowLevelMonitor %O{id}: thread %O{thread} called Wait but the monitor is unowned"
 
-        // Atomically: release the monitor and park the caller in the wait
-        // queue. We must NOT push the caller onto the AcquireQueue — Wait
-        // does not contend for the monitor until Signal_Release rouses it.
+        // Atomically: park the caller in the wait queue and release the
+        // monitor. The caller must NOT join the AcquireQueue — Wait does
+        // not contend for the monitor until Signal_Release rouses it.
         match monitor.AcquireQueue with
         | [] ->
             let monitor =
@@ -268,15 +259,13 @@ module LowLevelMonitor =
             |> writeMonitor id monitor
             |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnMonitorWait id)
 
-        | head :: _ ->
-            // Acquire-queue head gets woken as part of the release; the
-            // caller goes onto the wait queue with the monitor released.
-            // The woken head stays in the AcquireQueue (head-of-queue
-            // wake/take split — see `release`); it will pop itself off
-            // when it re-runs its IL `Acquire` site.
+        | head :: rest ->
+            // Transfer ownership to the AcquireQueue head and park the
+            // caller on the WaitQueue.
             let monitor =
                 { monitor with
-                    Owner = None
+                    Owner = Some head
+                    AcquireQueue = rest
                     WaitQueue = monitor.WaitQueue @ [ thread ]
                 }
 
@@ -290,11 +279,9 @@ module LowLevelMonitor =
     /// from the wait queue (FIFO) and releases the monitor. The woken
     /// thread is moved from the wait queue to the tail of the acquire
     /// queue and its status flips from `BlockedOnMonitorWait` to
-    /// `BlockedOnMonitorAcquire` — it must contend for the monitor again
-    /// before its original `Wait` call returns. (CoreCLR's
-    /// `LowLevelMonitor::Signal_Release` is documented as "signal a single
-    /// waiter and release the lock"; our split into "wake + queue" matches
-    /// the observable semantics.)
+    /// `BlockedOnMonitorAcquire` — it must then be reached as a normal
+    /// AcquireQueue entry. The subsequent release picks the new head and
+    /// transfers ownership to them.
     ///
     /// If the wait queue is empty, `Signal_Release` degenerates into a
     /// plain `release`: the guest is allowed to call it speculatively
@@ -312,18 +299,15 @@ module LowLevelMonitor =
 
         match monitor.WaitQueue with
         | [] ->
-            // No waiter to signal: this is equivalent to a plain Release.
+            // No waiter to signal: equivalent to a plain Release.
             release thread id state
         | waiter :: restWait ->
             // Move the woken waiter to the acquire queue (FIFO tail) and
-            // release the monitor.
-            //
-            // Subtle: the woken waiter is BlockedOnMonitorAcquire, not
-            // Runnable, even though the AcquireQueue head may also be empty.
-            // Whoever ends up at the head of the AcquireQueue is woken by
-            // `release` below. The waiter we just moved is at the tail,
-            // unless the prior AcquireQueue was empty, in which case it's
-            // at the head and gets woken immediately.
+            // delegate to release. The release path transfers ownership
+            // to whichever thread now sits at the AcquireQueue head — if
+            // the queue was empty before the move, that's the waiter
+            // itself; otherwise it's an earlier acquirer and the waiter
+            // stays parked behind them.
             let monitor =
                 { monitor with
                     WaitQueue = restWait
@@ -335,6 +319,4 @@ module LowLevelMonitor =
                 |> writeMonitor id monitor
                 |> Scheduler.setThreadStatus waiter (ThreadStatus.BlockedOnMonitorAcquire id)
 
-            // Now release on behalf of the caller. This will wake the head
-            // of the (newly-updated) acquire queue.
             release thread id state
