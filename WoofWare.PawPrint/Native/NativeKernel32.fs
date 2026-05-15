@@ -141,20 +141,16 @@ module NativeKernel32 =
             let name =
                 NativeCall.readNullTerminatedUtf16 operation ctx.BaseClassTypes state namePtr
 
-            // Real `kernel32!GetEnvironmentVariableW` is case-insensitive (Windows env
-            // names are stored in the PEB block keyed by case-folded names). The seeded
-            // `EmulatedKernel.Environment` is a plain F# `Map<string,string>`, so we walk
-            // it with an ordinal-ignore-case comparison rather than `Map.tryFind`.
-            let envValue =
-                state.Kernel.Environment
-                |> Map.tryPick (fun key value ->
-                    if System.String.Equals (key, name, System.StringComparison.OrdinalIgnoreCase) then
-                        Some value
-                    else
-                        None
-                )
-
-            let plan = planGetEnvironmentVariableW bufferSize envValue
+            // The "kernel32!GetEnvironmentVariableW" QCall is a CoreCLR PAL entry on
+            // Unix hosts, where the PAL implementation matches env-var names exactly
+            // (see CoreCLR pal/src/misc/environ.cpp `FindEnvVarValue`). On Windows
+            // the real kernel32 entry would be case-insensitive, but PawPrint is
+            // baselined against the host runtime — which is the Unix PAL on the
+            // macOS/Linux hosts this project actually runs on — so an exact
+            // `Map.tryFind` is the semantics that keeps PawPrint in step with the
+            // real runtime.
+            let plan =
+                planGetEnvironmentVariableW bufferSize (Map.tryFind name state.Kernel.Environment)
 
             let state =
                 match plan.ValueToWrite with

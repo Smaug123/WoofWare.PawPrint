@@ -357,13 +357,13 @@ class Program
             )
 
     [<Test>]
-    let ``Kernel32 GetEnvironmentVariableW lookup is case-insensitive`` () =
-        // `kernel32!GetEnvironmentVariableW` is case-insensitive on Windows
-        // (the PEB env block is keyed by case-folded names). PawPrint stores
-        // the guest env as a plain F# `Map<string,string>`, so the QCall shim
-        // must walk it with an ordinal-ignore-case comparison instead of
-        // `Map.tryFind`; this test would have caught the eager `Map.tryFind`
-        // implementation that regressed Windows semantics.
+    let ``GetEnvironmentVariableW lookup is case-sensitive`` () =
+        // CoreCLR's Unix PAL implements the `kernel32!GetEnvironmentVariableW`
+        // import with exact name comparison (see pal/src/misc/environ.cpp
+        // `FindEnvVarValue`), so the QCall shim must do exact-string lookup
+        // against the kernel env map even though the *Windows* kernel32 entry
+        // would be case-insensitive: PawPrint is baselined against the host
+        // runtime, which is the Unix PAL on the hosts this repo runs on.
         let source =
             """
 using System;
@@ -372,14 +372,19 @@ class Program
 {
     static int Main(string[] args)
     {
-        if (Environment.GetEnvironmentVariable("pawprint_mixed_case_key") != "found")
+        if (Environment.GetEnvironmentVariable("PaWpRiNt_MiXeD_CaSe_KeY") != "found")
         {
             return 1;
         }
 
-        if (Environment.GetEnvironmentVariable("PAWPRINT_MIXED_CASE_KEY") != "found")
+        if (Environment.GetEnvironmentVariable("pawprint_mixed_case_key") != null)
         {
             return 2;
+        }
+
+        if (Environment.GetEnvironmentVariable("PAWPRINT_MIXED_CASE_KEY") != null)
+        {
+            return 3;
         }
 
         return 0;
@@ -388,52 +393,10 @@ class Program
 """
 
         runPawPrintSource
-            "MockEnvironmentCaseInsensitiveLookup.cs"
+            "MockEnvironmentCaseSensitiveLookup.cs"
             source
             (MockEnv.make ())
             ([ "PaWpRiNt_MiXeD_CaSe_KeY", "found" ] |> Map.ofList)
-            (fun _image pawPrintResult ->
-                match pawPrintResult with
-                | RunOutcome.NormalExit (terminalState, terminatingThread) ->
-                    match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-                    | EvalStackValue.Int32 exitCode :: _ -> exitCode |> shouldEqual 0
-                    | [] -> failwith "expected program to return an int, but it returned void"
-                    | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
-                | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
-                | RunOutcome.FailFast (_, _, message) ->
-                    let m = message |> Option.defaultValue "<no message>"
-                    failwith $"expected normal exit, got Environment.FailFast: %s{m}"
-                | RunOutcome.GuestUnhandledException (_, _, exn) ->
-                    failwith $"guest threw unhandled exception: %O{exn.ExceptionObject}"
-            )
-
-    [<Test>]
-    let ``Caller-supplied env overlay wins over seeded default under case-insensitive collision`` () =
-        // The seeded `EmulatedKernel.defaultEnvironment` carries
-        // `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1`. A caller that passes a
-        // lower-case overlay for the same logical name must replace the seed
-        // (Windows env-block semantics), not coexist with it — otherwise the
-        // case-insensitive `GetEnvironmentVariableW` would walk the map and
-        // could return either the seed or the overlay depending on Map
-        // ordering, which is not deterministic from the caller's perspective.
-        let source =
-            """
-using System;
-
-class Program
-{
-    static int Main(string[] args)
-    {
-        return Environment.GetEnvironmentVariable("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT") == "0" ? 0 : 1;
-    }
-}
-"""
-
-        runPawPrintSource
-            "MockEnvironmentCaseInsensitiveOverlayWins.cs"
-            source
-            (MockEnv.make ())
-            ([ "dotnet_system_globalization_invariant", "0" ] |> Map.ofList)
             (fun _image pawPrintResult ->
                 match pawPrintResult with
                 | RunOutcome.NormalExit (terminalState, terminatingThread) ->
