@@ -2263,6 +2263,48 @@ module IlMachineManagedByref =
                     None
             | _ ->
                 match splitTrailingByteView src with
+                | ValueSome (ByrefRoot.ArrayElement (arr, index), [], byteOffset) ->
+                    // Symmetric to the `ValueNone` arm below for the
+                    // non-byte-view case: a byte-renderable payload still
+                    // needs the typed-store path when the *existing* array
+                    // cell carries non-byte-renderable numeric provenance.
+                    // Sequence like `*p = handle; *p = IntPtr.Zero;` over a
+                    // `fixed (IntPtr* p = arr)` lands here on the second
+                    // store — the new value is the byte-addressable zero
+                    // but the cell still holds a `TypeHandlePtr`, which the
+                    // byte-scatter path would refuse.
+                    let arrObj = state.ManagedHeap.Arrays.[arr]
+
+                    let typedCellOverride =
+                        if arrObj.Length = 0 then
+                            ValueNone
+                        else
+                            let cellSize = CliType.sizeOf arrObj.Elements.[0]
+                            let cellAdvance, inCellStart = floorDivRem byteOffset cellSize
+
+                            if inCellStart = 0 && CliType.sizeOf newValue = cellSize then
+                                let targetCell = index + cellAdvance
+
+                                if targetCell >= 0 && targetCell < arrObj.Length then
+                                    match byteAddressabilityRejection arrObj.Elements.[targetCell] with
+                                    | Some rejection when isNumericProvenanceRejection rejection ->
+                                        ValueSome (arrObj.Elements.[targetCell], rejection)
+                                    | _ -> ValueNone
+                                else
+                                    ValueNone
+                            else
+                                ValueNone
+
+                    match typedCellOverride with
+                    | ValueSome (existing, rejection) ->
+                        writeExactWidthPrimitiveTypedStore
+                            baseClassTypes
+                            state
+                            src
+                            newValue
+                            $"destination cell's existing %s{rejection.Description}"
+                            (Some existing)
+                    | ValueNone -> writeManagedByrefBytesOrTypedCell baseClassTypes state src newValue
                 | ValueSome _ -> writeManagedByrefBytesOrTypedCell baseClassTypes state src newValue
                 | ValueNone ->
                     // Even a byte-renderable payload may need a typed store

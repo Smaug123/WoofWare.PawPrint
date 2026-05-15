@@ -122,6 +122,28 @@ public unsafe class FixedArrayPointerArithmetic
         return 0;
     }
 
+    // After a cell has been populated with a provenance-bearing handle, a
+    // subsequent plain numeric store through the same fixed pointer must
+    // also succeed. The new value (`IntPtr.Zero`) is byte-addressable, but
+    // the *existing* cell is not — so the byte-view write dispatcher must
+    // notice the destination's provenance and route through the typed-cell
+    // path rather than the byte-scatter path.
+    public static int TestIntPtrArrayProvenanceOverwrite()
+    {
+        IntPtr[] arr = new IntPtr[2];
+        IntPtr handle = typeof(int).TypeHandle.Value;
+        fixed (IntPtr* p = arr)
+        {
+            *p = handle;
+            *p = IntPtr.Zero;
+            p[1] = handle;
+            p[1] = new IntPtr(7);
+        }
+        if (arr[0] != IntPtr.Zero) return 70;
+        if (arr[1] != new IntPtr(7)) return 71;
+        return 0;
+    }
+
     // `fixed (object* p = arr) { *p = value; }` over a reference-type array
     // must remain a typed `ArrayElement` store: `stind.ref` over the native
     // pointer cannot byte-flatten an `ObjectRef`. The Conv_U/Conv_I anchor
@@ -156,6 +178,8 @@ public unsafe class FixedArrayPointerArithmetic
         r = TestIntPointerArrayFixed();
         if (r != 0) return r;
         r = TestIntPtrArrayProvenanceStore();
+        if (r != 0) return r;
+        r = TestIntPtrArrayProvenanceOverwrite();
         if (r != 0) return r;
         r = TestObjectArrayFixedStore();
         if (r != 0) return r;
