@@ -222,6 +222,80 @@ module NativeSystemNative =
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
             |> Some
+        | Some "SystemNative_GetNonCryptographicallySecureRandomBytes",
+          [ ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Void ->
+            // CoreCLR fills this buffer from the host's non-crypto PRNG
+            // (`arc4random_buf` on BSD/macOS, BCrypt on Windows,
+            // `/dev/urandom` XOR'd with `lrand48()` on Linux — see
+            // minipal/random.c). PawPrint refuses host entropy because the
+            // whole runtime is built around bit-for-bit reproducibility,
+            // so we substitute a seeded splitmix64 step kept in
+            // `EmulatedKernel.NonCryptoRandomState`. That is *strictly*
+            // more deterministic than the real CLR (where each Random
+            // ctor, Guid.NewGuid, Marvin seed, and HashCode seed is
+            // unreproducible) and is what enables time-travel
+            // debugging across runs that touch any of those paths.
+            //
+            // Returning a constant (e.g. all zeros) is not viable: the
+            // BCL's Random ctor at Random.Xoshiro{128,256}StarStarImpl
+            // explicitly retries until the buffer is non-zero, so a
+            // constant-zero substitute hangs at `new Random()`.
+            let operation = "SystemNative_GetNonCryptographicallySecureRandomBytes"
+
+            let buffer =
+                NativeCall.managedPointerOfPointerArgument operation "buffer" instruction.Arguments.[0]
+
+            let length = NativeCall.int32Argument operation instruction.Arguments.[1]
+
+            if length < 0 then
+                // CoreCLR's `pal_random.c` does not validate `bufferLength`;
+                // a negative value would underflow `(size_t)bufferLength` in
+                // the C call. CoreLib callers never pass negative lengths,
+                // so seeing one here means a guest bug we want to surface
+                // rather than a silently truncated buffer.
+                failwith $"%s{operation}: bufferLength %d{length} is negative"
+
+            let state =
+                if length = 0 then
+                    // Match the C behaviour of `arc4random_buf(buf, 0)` /
+                    // `read(fd, buf, 0)`: no-op, do not even dereference
+                    // `buffer` (which CoreLib may pass as a null pointer
+                    // for an empty span).
+                    state
+                else
+                    match buffer with
+                    | ManagedPointerSource.Null ->
+                        failwith
+                            $"%s{operation}: refused to fill %d{length} bytes through null buffer pointer (CoreLib should not invoke this entry point with a null destination for a non-zero length)"
+                    | _ ->
+                        let bytes, newPrngState =
+                            NonCryptoRandom.drawBytes length state.Kernel.NonCryptoRandomState
+
+                        let byteConcreteType =
+                            NativeCall.requiredByteConcreteType operation ctx.BaseClassTypes state
+
+                        let mutable state = state
+
+                        for i = 0 to length - 1 do
+                            let dest =
+                                ManagedPointerByteView.addByteOffset ctx.BaseClassTypes state byteConcreteType i buffer
+
+                            state <-
+                                IlMachineState.writeManagedByrefBytesOrTypedCell
+                                    ctx.BaseClassTypes
+                                    state
+                                    dest
+                                    (CliType.Numeric (CliNumericType.UInt8 bytes.[i]))
+
+                        state.MapKernel (fun kernel ->
+                            { kernel with
+                                NonCryptoRandomState = newPrngState
+                            }
+                        )
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | Some "SystemNative_Free", [ ConcretePointer _ ], MethodReturnType.Void ->
             let ptr =
                 NativeCall.managedPointerOfPointerArgument "SystemNative_Free" "ptr" instruction.Arguments.[0]

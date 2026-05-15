@@ -153,7 +153,76 @@ type EmulatedKernel =
         /// pure model self-contained and means tests can drive the strategy
         /// without spinning up a real driver.
         StepCounter : int64
+        /// Deterministic state for the splitmix64 PRNG that backs
+        /// `SystemNative_GetNonCryptographicallySecureRandomBytes`. Real
+        /// CoreCLR fills this buffer from `arc4random_buf` /
+        /// `BCryptGenRandom` / `/dev/urandom`; PawPrint refuses host
+        /// entropy because the whole point of the runtime is bit-for-bit
+        /// reproducibility. A seeded PRNG is the closest deterministic
+        /// substitute that still survives downstream consumers: the BCL's
+        /// `Random()` ctor retries until it sees a non-zero seed, so a
+        /// constant-zero substitute would hang at construction time.
+        NonCryptoRandomState : uint64
     }
+
+/// Deterministic non-cryptographic PRNG that backs
+/// `SystemNative_GetNonCryptographicallySecureRandomBytes`. This is the
+/// `splitmix64` step from Vigna's reference at
+/// <http://prng.di.unimi.it/splitmix64.c>: stateful, full-period over the
+/// 2^64 64-bit states, and famously fine for *seeding* other PRNGs (which
+/// is exactly what the BCL does here — it feeds the buffer into
+/// `Random.XoshiroImpl`, `Marvin.DefaultSeed`, `HashCode`'s seed, etc.).
+///
+/// Quality is intentionally non-cryptographic; that matches the entry-point
+/// name. The state being non-zero is preserved across the step (splitmix64
+/// has no fixed points other than `0 -> 0x9E3779B97F4A7C15`-style transient
+/// behaviour from a zero start, which is why `initial` seeds with the
+/// golden-ratio constant rather than zero).
+[<RequireQualifiedAccess>]
+module NonCryptoRandom =
+    /// `floor(2^64 / phi)`, the same constant the reference splitmix64 uses
+    /// as its weyl increment. Picked as the default initial state so a
+    /// fresh interpreter doesn't start from zero (which would still produce
+    /// a non-zero output after one step, but is the documented degenerate
+    /// input for splitmix64-style mixers).
+    let initialState : uint64 = 0x9E3779B97F4A7C15UL
+
+    /// Advance the splitmix64 state by one step and return the 64-bit
+    /// output drawn from the new state. Reference implementation:
+    /// <http://prng.di.unimi.it/splitmix64.c>. Pure: same input state
+    /// produces the same `(output, newState)` pair on every call.
+    let step (state : uint64) : uint64 * uint64 =
+        let newState = state + 0x9E3779B97F4A7C15UL
+        let mutable z = newState
+        z <- (z ^^^ (z >>> 30)) * 0xBF58476D1CE4E5B9UL
+        z <- (z ^^^ (z >>> 27)) * 0x94D049BB133111EBUL
+        z <- z ^^^ (z >>> 31)
+        z, newState
+
+    /// Draw `count` pseudo-random bytes from the splitmix64 state. Returns
+    /// the bytes in little-endian unpack order from each 64-bit step, plus
+    /// the new state. `count` must be non-negative; a negative count is a
+    /// caller bug and the function will fail loudly.
+    let drawBytes (count : int) (state : uint64) : byte[] * uint64 =
+        if count < 0 then
+            failwith $"NonCryptoRandom.drawBytes: byte count %d{count} is negative"
+
+        let buffer = Array.zeroCreate<byte> count
+        let mutable state = state
+        let mutable i = 0
+
+        while i < count do
+            let output, newState = step state
+            state <- newState
+            let remaining = count - i
+            let chunk = if remaining > 8 then 8 else remaining
+
+            for j = 0 to chunk - 1 do
+                buffer.[i + j] <- byte (output >>> (8 * j))
+
+            i <- i + chunk
+
+        buffer, state
 
 [<RequireQualifiedAccess>]
 module EmulatedKernel =
@@ -168,4 +237,5 @@ module EmulatedKernel =
             NextEventPipeId = 1L
             SpuriousWakeup = SpuriousWakeupStrategy.Disabled
             StepCounter = 0L
+            NonCryptoRandomState = NonCryptoRandom.initialState
         }
