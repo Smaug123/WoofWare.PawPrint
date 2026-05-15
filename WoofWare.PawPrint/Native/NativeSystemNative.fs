@@ -160,10 +160,10 @@ module NativeSystemNative =
             // `dup(2)`: allocate the lowest non-negative fd not in use, sharing
             // the OFD of `oldFd`. On EBADF we return -1 and set errno=EBADF so
             // CoreLib's `Interop.CheckIo` raises an IOException, matching the
-            // libc behaviour `Interop.Sys.Dup` is written against. errno 9 is
-            // EBADF on every Unix kernel we model; tracked in GH issue #529
-            // for replacing with a proper `Interop.Error.EBADF` lookup once
-            // the BCL's Interop.Errors enum is wired through.
+            // libc behaviour `Interop.Sys.Dup` is written against. `LastSystemError`
+            // holds the raw kernel errno; the BCL converts it to the
+            // `Interop.Error` PAL enum via `SystemNative_ConvertErrorPlatformToPal`
+            // before `CheckIo` switches on it.
             let oldFd = fdArgument "SystemNative_Dup" instruction.Arguments.[0]
 
             let resultFd, state =
@@ -179,7 +179,7 @@ module NativeSystemNative =
                     -1L,
                     state.MapKernel (fun kernel ->
                         { kernel with
-                            LastSystemError = 9
+                            LastSystemError = Errno.EBADF
                         }
                     )
 
