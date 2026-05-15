@@ -13,6 +13,29 @@ module NativeSystemNative =
         |> Tuple.withRight WhatWeDid.Executed
         |> ExecutionResult.Stepped
 
+    /// Decode an `nint`-shaped Unix file-descriptor argument. CoreLib passes
+    /// fds across the SystemNative boundary as plain `IntPtr` values (the low
+    /// 32 bits of `SafeFileHandle.handle`); PawPrint represents these as
+    /// `NativeIntSource.Verbatim`. Refuses non-verbatim sources because their
+    /// provenance encodes something other than an fd integer, which the
+    /// FileDescriptorRegistry has no way to interpret.
+    let private fdArgument (operation : string) (arg : CliType) : int =
+        match CliType.unwrapPrimitiveLikeDeep arg with
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim value)) ->
+            if value < int64 System.Int32.MinValue || value > int64 System.Int32.MaxValue then
+                // fds are int32-bounded on every Unix kernel we model. A
+                // value outside that range cannot correspond to a live fd in
+                // the registry; return a sentinel that will miss the table
+                // and produce EBADF, rather than silently truncating to a
+                // potentially-live fd.
+                System.Int32.MinValue
+            else
+                int value
+        | CliType.Numeric (CliNumericType.NativeInt source) ->
+            failwith
+                $"%s{operation}: expected verbatim IntPtr file descriptor, got tagged native-int source %O{source} (fd integers should arrive as plain numeric values across the SystemNative boundary)"
+        | other -> failwith $"%s{operation}: expected IntPtr file descriptor, got %O{other}"
+
     /// Decode an `nuint`-shaped allocation size argument to an `int` byte count.
     /// Returns `ValueNone` for values that a real `malloc`/`calloc` would treat
     /// as unsatisfiable (negative-as-nuint, or larger than the interpreter's
@@ -126,6 +149,36 @@ module NativeSystemNative =
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptrSrc) ctx.Thread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
+            |> Some
+        | Some "SystemNative_Dup",
+          [ ConcreteIntPtr state.ConcreteTypes ],
+          MethodReturnType.Returns (ConcreteIntPtr state.ConcreteTypes) ->
+            // `dup(2)`: allocate the lowest non-negative fd not in use, sharing
+            // the OFD of `oldFd`. On EBADF we return -1 and set errno=EBADF so
+            // CoreLib's `Interop.CheckIo` raises an IOException, matching the
+            // libc behaviour `Interop.Sys.Dup` is written against. errno 9 is
+            // EBADF on every Unix kernel we model; tracked in GH issue #529
+            // for replacing with a proper `Interop.Error.EBADF` lookup once
+            // the BCL's Interop.Errors enum is wired through.
+            let oldFd = fdArgument "SystemNative_Dup" instruction.Arguments.[0]
+
+            let resultFd, state =
+                match FileDescriptorRegistry.dup oldFd state.FileDescriptors with
+                | Ok (newFd, registry) ->
+                    int64 newFd,
+                    { state with
+                        FileDescriptors = registry
+                    }
+                | Error FileDescriptorDupError.BadFd ->
+                    -1L,
+                    { state with
+                        LastSystemError = 9
+                    }
+
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.Verbatim resultFd)) ctx.Thread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.Stepped
             |> Some

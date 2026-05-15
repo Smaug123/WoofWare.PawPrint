@@ -136,6 +136,12 @@ type IlMachineState =
         /// is never triggered for a successfully-minted monitor. IDs are
         /// never reused; freeing a monitor leaves a gap.
         NextLowLevelMonitorId : int
+        /// In-memory model of the simulated process's Unix file descriptor
+        /// table. Pre-seeded at startup with stdin (0), stdout (1), stderr
+        /// (2), matching the kernel's behaviour of populating these slots
+        /// at `exec` time. SystemNative_Dup / Close / Read / Write etc.
+        /// route through this table; the host's real fds are never used.
+        FileDescriptors : FileDescriptorRegistry
     }
 
     member this.WithTypeBeginInit (thread : ThreadId) (ty : ConcreteTypeHandle) =

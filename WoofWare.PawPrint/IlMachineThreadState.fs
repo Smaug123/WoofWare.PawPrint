@@ -312,6 +312,7 @@ module IlMachineThreadState =
                 NativeMemoryPool = NativeMemoryPool.empty
                 LowLevelMonitors = Map.empty
                 NextLowLevelMonitorId = 1
+                FileDescriptors = FileDescriptorRegistry.initial
             }
 
         state.WithLoadedAssembly assyName entryAssembly
