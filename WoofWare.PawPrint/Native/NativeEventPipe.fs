@@ -44,35 +44,35 @@ module NativeEventPipe =
         state
         |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L)) thread
         |> Tuple.withRight WhatWeDid.Executed
-        |> ExecutionResult.Stepped
+        |> ExecutionResult.stepped
 
     let private pushProviderHandle (id : int64) (thread : ThreadId) (state : IlMachineState) : ExecutionResult =
         state
         |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.EventPipeProviderPtr id)) thread
         |> Tuple.withRight WhatWeDid.Executed
-        |> ExecutionResult.Stepped
+        |> ExecutionResult.stepped
 
     let private pushEventHandle (id : int64) (thread : ThreadId) (state : IlMachineState) : ExecutionResult =
         state
         |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.EventPipeEventPtr id)) thread
         |> Tuple.withRight WhatWeDid.Executed
-        |> ExecutionResult.Stepped
+        |> ExecutionResult.stepped
 
     let private pushUInt64Zero (thread : ThreadId) (state : IlMachineState) : ExecutionResult =
         // The CLI evaluation stack stores UInt64 in the same Int64 cell, two's-complement.
         state
         |> IlMachineState.pushToEvalStack' (EvalStackValue.Int64 (Int64Source.Verbatim 0L)) thread
         |> Tuple.withRight WhatWeDid.Executed
-        |> ExecutionResult.Stepped
+        |> ExecutionResult.stepped
 
     let private pushInt32 (value : int32) (thread : ThreadId) (state : IlMachineState) : ExecutionResult =
         state
         |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 value) thread
         |> Tuple.withRight WhatWeDid.Executed
-        |> ExecutionResult.Stepped
+        |> ExecutionResult.stepped
 
     let private justStep (state : IlMachineState) : ExecutionResult =
-        (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+        (state, WhatWeDid.Executed) |> ExecutionResult.stepped
 
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : ExecutionResult option =
         let state = ctx.State

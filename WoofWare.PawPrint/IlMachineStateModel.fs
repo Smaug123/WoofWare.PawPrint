@@ -191,6 +191,28 @@ type WhatWeDid =
     /// The state has already been updated with exception dispatch (handler search and frame unwinding).
     | ThrowingTypeInitializationException
 
+/// An externally-observable side-effect that a single interpreter step requests
+/// from the driver (the imperative shell around the functional core). The
+/// interpreter never performs host I/O directly; it emits a data description
+/// of the effect alongside the new machine state, and the shell decides what
+/// (if anything) to do with it.
+///
+/// `StepEffect` is orthogonal to `WhatWeDid`: `WhatWeDid` answers "did this
+/// step make progress, suspend, or block?" — i.e. it's input to the
+/// scheduler. `StepEffect` answers "did this step want to talk to the outside
+/// world?" — i.e. it's input to the driver. A single step can do both (e.g.
+/// emit a `WroteToFd` effect *and* report `WhatWeDid.Executed`).
+///
+/// Today the only variant is `NoEffect`; widening the contract up front lets
+/// us add `WroteToFd`, `ReadFromFd`, etc. in subsequent PRs without retouching
+/// the construction sites that don't emit effects.
+type StepEffect =
+    /// The step had no externally-observable I/O effect. The overwhelming
+    /// majority of IL steps land here; the variant exists so that effect-
+    /// emitting handlers (`SystemNative_Write`, etc.) are distinguishable at
+    /// the type level.
+    | NoEffect
+
 type ExecutionResult =
     /// A single thread finished (its top frame hit `ret`). For the entry thread this means
     /// the whole program exits; for a worker it just means that thread is done.
@@ -212,7 +234,7 @@ type ExecutionResult =
     /// and so callers can surface the abort to the host (logs, non-zero exit) rather than
     /// reporting a clean exit.
     | FailFast of IlMachineState * abortingThread : ThreadId * message : string option
-    | Stepped of IlMachineState * WhatWeDid
+    | Stepped of IlMachineState * WhatWeDid * StepEffect
     | UnhandledException of
         IlMachineState *
         terminatingThread : ThreadId *
@@ -259,3 +281,19 @@ type StateLoadResult =
     | FirstLoadThis of IlMachineState
     /// The type's .cctor previously failed. A TypeInitializationException has been dispatched into the guest.
     | ThrowingTypeInitializationException of IlMachineState
+
+[<RequireQualifiedAccess>]
+module ExecutionResult =
+    /// Construct a `Stepped` result that emits no externally-observable effect.
+    /// Use this for the overwhelming majority of step outcomes; reserve
+    /// `steppedWith` for handlers that genuinely want the driver to do
+    /// something (e.g. `SystemNative_Write` emitting `StepEffect.WroteToFd`
+    /// once that variant exists).
+    let stepped ((state, whatWeDid) : IlMachineState * WhatWeDid) : ExecutionResult =
+        ExecutionResult.Stepped (state, whatWeDid, StepEffect.NoEffect)
+
+    /// Construct a `Stepped` result that emits the supplied effect. Argument
+    /// order matches `stepped` so existing pipelines can swap one for the
+    /// other by inserting `|> steppedWith effect` in place of `|> stepped`.
+    let steppedWith (effect : StepEffect) ((state, whatWeDid) : IlMachineState * WhatWeDid) : ExecutionResult =
+        ExecutionResult.Stepped (state, whatWeDid, effect)

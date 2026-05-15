@@ -28,7 +28,7 @@ module System_Environment =
                     currentThread
                     state
                 |> Tuple.withRight WhatWeDid.Executed
-                |> ExecutionResult.Stepped
+                |> ExecutionResult.stepped
 
             member _.GetCurrentManagedThreadId currentThread state =
                 IlMachineState.pushToEvalStack'
@@ -36,7 +36,7 @@ module System_Environment =
                     currentThread
                     state
                 |> Tuple.withRight WhatWeDid.Executed
-                |> ExecutionResult.Stepped
+                |> ExecutionResult.stepped
 
             member _.TryGetEnvironmentVariable variable =
                 // The production pass-through reflects the host process. Tests

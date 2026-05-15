@@ -221,7 +221,7 @@ module NativeSignature =
                     "_sig"
                     state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | _ -> None
 
     let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
@@ -306,5 +306,5 @@ module NativeSignature =
                     "m_sig"
                     state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | _ -> None

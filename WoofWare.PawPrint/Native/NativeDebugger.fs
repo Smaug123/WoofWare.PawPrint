@@ -29,7 +29,7 @@ module NativeDebugger =
             let state =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 isAttached)) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | _ -> None
 
     let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
@@ -57,5 +57,5 @@ module NativeDebugger =
             let state =
                 IlMachineState.pushToEvalStack (CliType.ofBool isAttached) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | _ -> None

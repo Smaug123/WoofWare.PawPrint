@@ -75,7 +75,7 @@ module NativeString =
 
             state
             |> allocateAndPushBlankString ctx length
-            |> fun state -> (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+            |> fun state -> (state, WhatWeDid.Executed) |> ExecutionResult.stepped
             |> Some
         | "System.Private.CoreLib",
           "System",
@@ -112,7 +112,7 @@ module NativeString =
 
             state
             |> allocateAndPushBlankString ctx length
-            |> fun state -> (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+            |> fun state -> (state, WhatWeDid.Executed) |> ExecutionResult.stepped
             |> Some
         | "System.Private.CoreLib",
           "System",
@@ -245,7 +245,7 @@ module NativeString =
             // the placeholder allocated by executeNewobj is left as garbage.
             state
             |> IlMachineState.withReplacedConstructedObject newAddr ctx.Thread
-            |> fun state -> (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+            |> fun state -> (state, WhatWeDid.Executed) |> ExecutionResult.stepped
             |> Some
         | "System.Private.CoreLib",
           "System",
@@ -295,6 +295,6 @@ module NativeString =
             // the placeholder allocated by executeNewobj is left as garbage.
             state
             |> IlMachineState.withReplacedConstructedObject newAddr ctx.Thread
-            |> fun state -> (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+            |> fun state -> (state, WhatWeDid.Executed) |> ExecutionResult.stepped
             |> Some
         | _ -> None

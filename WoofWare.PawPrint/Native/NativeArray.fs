@@ -140,5 +140,5 @@ module NativeArray =
                     retArray
                     (CliType.ObjectRef (Some arrayAddr))
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | _ -> None

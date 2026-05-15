@@ -169,7 +169,7 @@ module Program =
                 ProgramStepOutcome.Completed (RunOutcome.FailFast (state, abortingThread, message))
             | ExecutionResult.UnhandledException (state, terminatingThread, exn) ->
                 ProgramStepOutcome.Completed (RunOutcome.GuestUnhandledException (state, terminatingThread, exn))
-            | ExecutionResult.Stepped (state, whatWeDid) ->
+            | ExecutionResult.Stepped (state, whatWeDid, _) ->
                 logStepOutcome logger state nextThread whatWeDid
 
                 let state = Scheduler.onStepOutcome nextThread whatWeDid state

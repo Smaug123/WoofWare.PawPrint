@@ -358,7 +358,7 @@ module TestNullaryIlOp =
         let state, thread = stateWithNullary loggerFactory NullaryIlOp.Neg input
 
         match NullaryIlOp.execute loggerFactory baseClassTypes state thread NullaryIlOp.Neg with
-        | ExecutionResult.Stepped (state, whatWeDid) ->
+        | ExecutionResult.Stepped (state, whatWeDid, _) ->
             whatWeDid |> shouldEqual WhatWeDid.Executed
 
             let methodState = state.ThreadState.[thread].MethodState

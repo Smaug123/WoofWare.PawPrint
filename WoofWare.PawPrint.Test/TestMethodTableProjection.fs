@@ -2373,7 +2373,7 @@ public unsafe struct PointerWrapper
 
         let state =
             match NullaryIlOp.execute loggerFactory bct state thread NullaryIlOp.Stind_I1 with
-            | ExecutionResult.Stepped (state, WhatWeDid.Executed) -> state
+            | ExecutionResult.Stepped (state, WhatWeDid.Executed, _) -> state
             | other -> failwith $"Expected Stind_I1 to step, got %O{other}"
 
         IlMachineState.readManagedByrefBytesAs bct state ptr (CliType.Numeric (CliNumericType.Int32 0))
@@ -2406,7 +2406,7 @@ public unsafe struct PointerWrapper
 
         let state =
             match NullaryIlOp.execute loggerFactory bct state thread NullaryIlOp.Stind_I1 with
-            | ExecutionResult.Stepped (state, WhatWeDid.Executed) -> state
+            | ExecutionResult.Stepped (state, WhatWeDid.Executed, _) -> state
             | other -> failwith $"Expected Stind_I1 to step, got %O{other}"
 
         IlMachineState.getArrayValue arrayAddr 0 state
@@ -2443,7 +2443,7 @@ public unsafe struct PointerWrapper
 
         let state =
             match NullaryIlOp.execute loggerFactory bct state thread NullaryIlOp.Stind_I with
-            | ExecutionResult.Stepped (state, WhatWeDid.Executed) -> state
+            | ExecutionResult.Stepped (state, WhatWeDid.Executed, _) -> state
             | other -> failwith $"Expected Stind_I to step, got %O{other}"
 
         IlMachineState.readManagedByref bct state ptr
@@ -2496,7 +2496,7 @@ public unsafe struct PointerWrapper
 
             let state =
                 match NullaryIlOp.execute loggerFactory bct state thread NullaryIlOp.Stind_I with
-                | ExecutionResult.Stepped (state, WhatWeDid.Executed) -> state
+                | ExecutionResult.Stepped (state, WhatWeDid.Executed, _) -> state
                 | other -> failwith $"Expected Stind_I to step, got %O{other}"
 
             IlMachineState.readManagedByref bct state ptr
@@ -2759,7 +2759,7 @@ public unsafe struct PointerWrapper
 
             let state =
                 match NullaryIlOp.execute loggerFactory bct state thread NullaryIlOp.Stind_I8 with
-                | ExecutionResult.Stepped (state, WhatWeDid.Executed) -> state
+                | ExecutionResult.Stepped (state, WhatWeDid.Executed, _) -> state
                 | other -> failwith $"Expected Stind_I8 to step, got %O{other}"
 
             IlMachineState.readManagedByref bct state ptr
@@ -2796,7 +2796,7 @@ public unsafe struct PointerWrapper
 
         let nativeIntState =
             match NullaryIlOp.execute nativeIntLoggerFactory bct nativeIntState nativeIntThread NullaryIlOp.Stind_I with
-            | ExecutionResult.Stepped (state, WhatWeDid.Executed) -> state
+            | ExecutionResult.Stepped (state, WhatWeDid.Executed, _) -> state
             | other -> failwith $"Expected Stind_I to step, got %O{other}"
 
         IlMachineState.getArrayValue int64ArrayAddr 0 nativeIntState
@@ -2829,7 +2829,7 @@ public unsafe struct PointerWrapper
 
         let int64State =
             match NullaryIlOp.execute int64LoggerFactory bct int64State int64Thread NullaryIlOp.Stind_I8 with
-            | ExecutionResult.Stepped (state, WhatWeDid.Executed) -> state
+            | ExecutionResult.Stepped (state, WhatWeDid.Executed, _) -> state
             | other -> failwith $"Expected Stind_I8 to step, got %O{other}"
 
         IlMachineState.getArrayValue nativeIntArrayAddr 0 int64State
@@ -2877,7 +2877,7 @@ public unsafe struct PointerWrapper
             |> IlMachineState.pushToEvalStack' EvalStackValue.NullObjectRef thread
 
         match NullaryIlOp.execute loggerFactory bct state thread NullaryIlOp.Stind_ref with
-        | ExecutionResult.Stepped (state, WhatWeDid.Executed) ->
+        | ExecutionResult.Stepped (state, WhatWeDid.Executed, _) ->
             let activeFrame = state.ThreadState.[thread].ActiveMethodState
             let frame = IlMachineThreadState.getFrame thread activeFrame state
 
@@ -2957,7 +2957,7 @@ public unsafe struct PointerWrapper
 
             let state =
                 match NullaryIlOp.execute loggerFactory bct state thread NullaryIlOp.Stind_ref with
-                | ExecutionResult.Stepped (state, WhatWeDid.Executed) -> state
+                | ExecutionResult.Stepped (state, WhatWeDid.Executed, _) -> state
                 | other -> failwith $"Expected Stind_ref to step for %s{caseName}, got %O{other}"
 
             IlMachineState.getArrayValue arrayAddr 0 state

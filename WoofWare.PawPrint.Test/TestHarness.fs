@@ -39,7 +39,7 @@ module MockEnv =
                             state
                             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) thread
                             |> Tuple.withRight WhatWeDid.Executed
-                            |> ExecutionResult.Stepped
+                            |> ExecutionResult.stepped
                     GetCurrentManagedThreadId =
                         fun thread state ->
                             state
@@ -47,7 +47,7 @@ module MockEnv =
                                 (EvalStackValue.Int32 (IlMachineState.getCurrentManagedThreadId thread state))
                                 thread
                             |> Tuple.withRight WhatWeDid.Executed
-                            |> ExecutionResult.Stepped
+                            |> ExecutionResult.stepped
                     TryGetEnvironmentVariable = tryGetEnvironmentVariable
                     // Surface FailFast as the abort outcome instead of raising
                     // NotImplementedException from the generated mock; the test

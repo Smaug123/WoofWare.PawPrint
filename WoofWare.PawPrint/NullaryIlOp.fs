@@ -400,7 +400,7 @@ module NullaryIlOp =
                 corelib.NullReferenceException
                 currentThread
                 state
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | _ ->
 
         let targetCliType = getTargetLdindCliType targetType
@@ -432,7 +432,7 @@ module NullaryIlOp =
             |> IlMachineState.pushToEvalStack coercedValue currentThread
             |> IlMachineState.advanceProgramCounter currentThread
 
-        (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+        (state, WhatWeDid.Executed) |> ExecutionResult.stepped
 
     let private stind
         (loggerFactory : ILoggerFactory)
@@ -455,7 +455,7 @@ module NullaryIlOp =
                 corelib.NullReferenceException
                 currentThread
                 state
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | _ ->
 
         let state =
@@ -486,7 +486,7 @@ module NullaryIlOp =
         state
         |> IlMachineState.advanceProgramCounter currentThread
         |> Tuple.withRight WhatWeDid.Executed
-        |> ExecutionResult.Stepped
+        |> ExecutionResult.stepped
 
     let internal getArrayElt
         (index : EvalStackValue)
@@ -590,7 +590,7 @@ module NullaryIlOp =
             |> IlMachineState.setArrayValue arrAddr (EvalStackValue.toCliTypeCoerced targetCliTypeZero value) index
             |> IlMachineState.advanceProgramCounter currentThread
 
-        ExecutionResult.Stepped (state, WhatWeDid.Executed)
+        ExecutionResult.stepped (state, WhatWeDid.Executed)
 
     let internal execute
         (loggerFactory : ILoggerFactory)
@@ -603,31 +603,31 @@ module NullaryIlOp =
         match op with
         | Nop ->
             (IlMachineState.advanceProgramCounter currentThread state, WhatWeDid.Executed)
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | LdArg0 ->
             state
             |> IlMachineState.loadArgument currentThread 0
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | LdArg1 ->
             state
             |> IlMachineState.loadArgument currentThread 1
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | LdArg2 ->
             state
             |> IlMachineState.loadArgument currentThread 2
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | LdArg3 ->
             state
             |> IlMachineState.loadArgument currentThread 3
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | Ldloc_0 ->
             let localVar = state.ThreadState.[currentThread].MethodState.LocalVariables.[0]
 
@@ -635,7 +635,7 @@ module NullaryIlOp =
             |> IlMachineState.pushToEvalStack localVar currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | Ldloc_1 ->
             let localVar = state.ThreadState.[currentThread].MethodState.LocalVariables.[1]
 
@@ -643,7 +643,7 @@ module NullaryIlOp =
             |> IlMachineState.pushToEvalStack localVar currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | Ldloc_2 ->
             let localVar = state.ThreadState.[currentThread].MethodState.LocalVariables.[2]
 
@@ -651,7 +651,7 @@ module NullaryIlOp =
             |> IlMachineState.pushToEvalStack localVar currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | Ldloc_3 ->
             let localVar = state.ThreadState.[currentThread].MethodState.LocalVariables.[3]
 
@@ -659,13 +659,13 @@ module NullaryIlOp =
             |> IlMachineState.pushToEvalStack localVar currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | Pop ->
             IlMachineState.popEvalStack currentThread state
             |> snd
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | Dup ->
             let topValue =
                 match IlMachineState.peekEvalStack currentThread state with
@@ -676,11 +676,11 @@ module NullaryIlOp =
             |> IlMachineState.pushToEvalStack' topValue currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | Ret ->
             match IlMachineState.returnStackFrame loggerFactory corelib currentThread state with
             | ReturnFrameResult.NoFrameToReturn -> ExecutionResult.Terminated (state, currentThread)
-            | ReturnFrameResult.NormalReturn state -> (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+            | ReturnFrameResult.NormalReturn state -> (state, WhatWeDid.Executed) |> ExecutionResult.stepped
             | ReturnFrameResult.DispatchException (state, exnAddr, exnType) ->
                 // The ctor has run; now overwrite _HResult with the CLR's mapped value,
                 // matching EEException::CreateThrowable's SetHResult(GetHR()) post-ctor step.
@@ -690,7 +690,7 @@ module NullaryIlOp =
                 match
                     ExceptionDispatching.throwExceptionObject loggerFactory corelib state currentThread exnAddr exnType
                 with
-                | ExceptionDispatchResult.HandlerFound state -> (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                | ExceptionDispatchResult.HandlerFound state -> (state, WhatWeDid.Executed) |> ExecutionResult.stepped
                 | ExceptionDispatchResult.ExceptionUnhandled (state, exn) ->
                     ExecutionResult.UnhandledException (state, currentThread, exn)
         | LdcI4_0 ->
@@ -698,68 +698,68 @@ module NullaryIlOp =
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 0)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | LdcI4_1 ->
             state
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 1)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | LdcI4_2 ->
             state
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 2)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | LdcI4_3 ->
             state
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 3)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | LdcI4_4 ->
             state
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 4)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | LdcI4_5 ->
             state
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 5)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | LdcI4_6 ->
             state
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 6)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | LdcI4_7 ->
             state
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 7)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | LdcI4_8 ->
             state
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 8)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | LdcI4_m1 ->
             state
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 -1)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | LdNull ->
             let state =
                 state
                 |> IlMachineState.pushToEvalStack' EvalStackValue.NullObjectRef currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Ceq ->
             let var2, state = state |> IlMachineState.popEvalStack currentThread
             let var1, state = state |> IlMachineState.popEvalStack currentThread
@@ -770,7 +770,7 @@ module NullaryIlOp =
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 comparisonResult) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | Cgt ->
             let var2, state = state |> IlMachineState.popEvalStack currentThread
             let var1, state = state |> IlMachineState.popEvalStack currentThread
@@ -781,7 +781,7 @@ module NullaryIlOp =
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 comparisonResult) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | Cgt_un ->
             let var2, state = state |> IlMachineState.popEvalStack currentThread
             let var1, state = state |> IlMachineState.popEvalStack currentThread
@@ -792,7 +792,7 @@ module NullaryIlOp =
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 comparisonResult) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | Clt ->
             let var2, state = state |> IlMachineState.popEvalStack currentThread
             let var1, state = state |> IlMachineState.popEvalStack currentThread
@@ -803,7 +803,7 @@ module NullaryIlOp =
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 comparisonResult) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | Clt_un ->
             let var2, state = state |> IlMachineState.popEvalStack currentThread
             let var1, state = state |> IlMachineState.popEvalStack currentThread
@@ -814,31 +814,31 @@ module NullaryIlOp =
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 comparisonResult) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | Stloc_0 ->
             state
             |> IlMachineState.popFromStackToLocalVariable currentThread 0
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | Stloc_1 ->
             state
             |> IlMachineState.popFromStackToLocalVariable currentThread 1
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | Stloc_2 ->
             state
             |> IlMachineState.popFromStackToLocalVariable currentThread 2
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | Stloc_3 ->
             state
             |> IlMachineState.popFromStackToLocalVariable currentThread 3
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | Sub ->
             let val2, state = IlMachineState.popEvalStack currentThread state
             let val1, state = IlMachineState.popEvalStack currentThread state
@@ -850,7 +850,7 @@ module NullaryIlOp =
             |> IlMachineState.pushToEvalStack' result currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | Sub_ovf -> failwith "TODO: Sub_ovf unimplemented"
         | Sub_ovf_un -> failwith "TODO: Sub_ovf_un unimplemented"
         | Add ->
@@ -864,7 +864,7 @@ module NullaryIlOp =
             |> IlMachineState.pushToEvalStack' result currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | Add_ovf ->
             let val2, state = IlMachineState.popEvalStack currentThread state
             let val1, state = IlMachineState.popEvalStack currentThread state
@@ -881,7 +881,7 @@ module NullaryIlOp =
                 |> IlMachineState.pushToEvalStack' result currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
                 |> Tuple.withRight WhatWeDid.Executed
-                |> ExecutionResult.Stepped
+                |> ExecutionResult.stepped
             | Error _ ->
                 IlMachineStateExecution.raiseRuntimeException
                     loggerFactory
@@ -889,7 +889,7 @@ module NullaryIlOp =
                     corelib.OverflowException
                     currentThread
                     state
-                |> ExecutionResult.Stepped
+                |> ExecutionResult.stepped
         | Add_ovf_un -> failwith "TODO: Add_ovf_un unimplemented"
         | Mul ->
             let val2, state = IlMachineState.popEvalStack currentThread state
@@ -902,7 +902,7 @@ module NullaryIlOp =
             |> IlMachineState.pushToEvalStack' result currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | Mul_ovf ->
             let val2, state = IlMachineState.popEvalStack currentThread state
             let val1, state = IlMachineState.popEvalStack currentThread state
@@ -919,7 +919,7 @@ module NullaryIlOp =
                 |> IlMachineState.pushToEvalStack' result currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
                 |> Tuple.withRight WhatWeDid.Executed
-                |> ExecutionResult.Stepped
+                |> ExecutionResult.stepped
             | Error _ ->
                 IlMachineStateExecution.raiseRuntimeException
                     loggerFactory
@@ -927,7 +927,7 @@ module NullaryIlOp =
                     corelib.OverflowException
                     currentThread
                     state
-                |> ExecutionResult.Stepped
+                |> ExecutionResult.stepped
         | Mul_ovf_un ->
             let val2, state = IlMachineState.popEvalStack currentThread state
             let val1, state = IlMachineState.popEvalStack currentThread state
@@ -944,7 +944,7 @@ module NullaryIlOp =
                 |> IlMachineState.pushToEvalStack' result currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
                 |> Tuple.withRight WhatWeDid.Executed
-                |> ExecutionResult.Stepped
+                |> ExecutionResult.stepped
             | Error _ ->
                 IlMachineStateExecution.raiseRuntimeException
                     loggerFactory
@@ -952,7 +952,7 @@ module NullaryIlOp =
                     corelib.OverflowException
                     currentThread
                     state
-                |> ExecutionResult.Stepped
+                |> ExecutionResult.stepped
         | Div ->
             let val2, state = IlMachineState.popEvalStack currentThread state
             let val1, state = IlMachineState.popEvalStack currentThread state
@@ -968,7 +968,7 @@ module NullaryIlOp =
                 |> IlMachineState.pushToEvalStack' result currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
                 |> Tuple.withRight WhatWeDid.Executed
-                |> ExecutionResult.Stepped
+                |> ExecutionResult.stepped
             | Error _ ->
                 IlMachineStateExecution.raiseRuntimeException
                     loggerFactory
@@ -976,7 +976,7 @@ module NullaryIlOp =
                     corelib.OverflowException
                     currentThread
                     state
-                |> ExecutionResult.Stepped
+                |> ExecutionResult.stepped
         | Div_un ->
             let v2, state = IlMachineState.popEvalStack currentThread state
             let v1, state = IlMachineState.popEvalStack currentThread state
@@ -987,7 +987,7 @@ module NullaryIlOp =
             |> IlMachineState.pushToEvalStack' result currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | Shr ->
             let shift, state = IlMachineState.popEvalStack currentThread state
             let number, state = IlMachineState.popEvalStack currentThread state
@@ -1018,7 +1018,7 @@ module NullaryIlOp =
                 |> IlMachineState.pushToEvalStack' result currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Shr_un ->
             let shift, state = IlMachineState.popEvalStack currentThread state
             let number, state = IlMachineState.popEvalStack currentThread state
@@ -1052,7 +1052,7 @@ module NullaryIlOp =
                 |> IlMachineState.pushToEvalStack' result currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Shl ->
             let shift, state = IlMachineState.popEvalStack currentThread state
             let number, state = IlMachineState.popEvalStack currentThread state
@@ -1083,7 +1083,7 @@ module NullaryIlOp =
                 |> IlMachineState.pushToEvalStack' result currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | And ->
             let v2, state = IlMachineState.popEvalStack currentThread state
             let v1, state = IlMachineState.popEvalStack currentThread state
@@ -1147,7 +1147,7 @@ module NullaryIlOp =
                 |> IlMachineState.pushToEvalStack' result currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Or ->
             let v2, state = IlMachineState.popEvalStack currentThread state
             let v1, state = IlMachineState.popEvalStack currentThread state
@@ -1184,7 +1184,7 @@ module NullaryIlOp =
                 |> IlMachineState.pushToEvalStack' result currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Xor ->
             let v2, state = IlMachineState.popEvalStack currentThread state
             let v1, state = IlMachineState.popEvalStack currentThread state
@@ -1221,7 +1221,7 @@ module NullaryIlOp =
                 |> IlMachineState.pushToEvalStack' result currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Conv_I ->
             let popped, state = IlMachineState.popEvalStack currentThread state
             let converted = EvalStackValue.toNativeInt popped
@@ -1247,7 +1247,7 @@ module NullaryIlOp =
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Conv_I1 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
             let converted = EvalStackValue.convToInt8 popped
@@ -1261,7 +1261,7 @@ module NullaryIlOp =
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Conv_I2 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
             let converted = EvalStackValue.convToInt16 popped
@@ -1275,7 +1275,7 @@ module NullaryIlOp =
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Conv_I4 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
             let converted = EvalStackValue.convToInt32 popped
@@ -1289,7 +1289,7 @@ module NullaryIlOp =
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Conv_I8 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
             let converted = EvalStackValue.convToInt64 popped
@@ -1303,7 +1303,7 @@ module NullaryIlOp =
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Conv_R4 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
             let converted = EvalStackValue.convToFloat32 popped
@@ -1317,7 +1317,7 @@ module NullaryIlOp =
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Conv_R8 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
             let converted = EvalStackValue.convToFloat64 popped
@@ -1331,7 +1331,7 @@ module NullaryIlOp =
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Conv_U ->
             let popped, state = IlMachineState.popEvalStack currentThread state
             let converted = EvalStackValue.toUnsignedNativeInt popped
@@ -1366,7 +1366,7 @@ module NullaryIlOp =
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Conv_U1 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
             let converted = EvalStackValue.convToUInt8 popped
@@ -1380,7 +1380,7 @@ module NullaryIlOp =
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Conv_U2 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
             let converted = EvalStackValue.convToUInt16 popped
@@ -1394,7 +1394,7 @@ module NullaryIlOp =
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Conv_U4 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
             let converted = EvalStackValue.convToUInt32 popped
@@ -1408,7 +1408,7 @@ module NullaryIlOp =
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Conv_U8 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
             let converted = EvalStackValue.convToUInt64 popped
@@ -1422,7 +1422,7 @@ module NullaryIlOp =
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | LdLen ->
             let popped, state = IlMachineState.popEvalStack currentThread state
 
@@ -1437,7 +1437,7 @@ module NullaryIlOp =
             IlMachineState.pushToEvalStack' (EvalStackValue.Int32 popped.Length) currentThread state
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | Endfilter ->
             let filterResult, state = IlMachineState.popEvalStack currentThread state
             let filterAccepted = endfilterAccepts filterResult
@@ -1478,7 +1478,7 @@ module NullaryIlOp =
                         continuation.CurrentFilter.HandlerOffset
                         continuation.CliException
                     |> Tuple.withRight WhatWeDid.Executed
-                    |> ExecutionResult.Stepped
+                    |> ExecutionResult.stepped
                 else
                     let newMethodState = methodStateWithoutFilter |> MethodState.clearEvalStack
 
@@ -1507,7 +1507,7 @@ module NullaryIlOp =
                             skippedFilters
                     with
                     | ExceptionDispatchResult.HandlerFound state ->
-                        (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                        (state, WhatWeDid.Executed) |> ExecutionResult.stepped
                     | ExceptionDispatchResult.ExceptionUnhandled (state, exn) ->
                         ExecutionResult.UnhandledException (state, currentThread, exn)
             | Some frame, _ ->
@@ -1530,7 +1530,7 @@ module NullaryIlOp =
                 state
                 |> IlMachineState.advanceProgramCounter currentThread
                 |> Tuple.withRight WhatWeDid.Executed
-                |> ExecutionResult.Stepped
+                |> ExecutionResult.stepped
             | Some {
                        Scope = ExceptionContinuationScope.FinallyHandler _
                        Continuation = ExceptionContinuation.ResumeAfterFinally targetPC
@@ -1547,7 +1547,7 @@ module NullaryIlOp =
                     ThreadState = state.ThreadState |> Map.add currentThread newThreadState
                 }
                 |> Tuple.withRight WhatWeDid.Executed
-                |> ExecutionResult.Stepped
+                |> ExecutionResult.stepped
             | Some {
                        Scope = scope
                        Continuation = ExceptionContinuation.PropagatingException exn
@@ -1577,7 +1577,7 @@ module NullaryIlOp =
                         exn
                         heapObject.ConcreteType
                 with
-                | ExceptionDispatchResult.HandlerFound state -> (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                | ExceptionDispatchResult.HandlerFound state -> (state, WhatWeDid.Executed) |> ExecutionResult.stepped
                 | ExceptionDispatchResult.ExceptionUnhandled (state, exn) ->
                     ExecutionResult.UnhandledException (state, currentThread, exn)
             | Some {
@@ -1611,7 +1611,7 @@ module NullaryIlOp =
                         cliException
                         exceptionType
                 with
-                | ExceptionDispatchResult.HandlerFound state -> (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                | ExceptionDispatchResult.HandlerFound state -> (state, WhatWeDid.Executed) |> ExecutionResult.stepped
                 | ExceptionDispatchResult.ExceptionUnhandled (state, exn) ->
                     ExecutionResult.UnhandledException (state, currentThread, exn)
         | Throw ->
@@ -1627,7 +1627,7 @@ module NullaryIlOp =
                     corelib.NullReferenceException
                     currentThread
                     state
-                |> ExecutionResult.Stepped
+                |> ExecutionResult.stepped
             | _ ->
 
             let addr =
@@ -1651,7 +1651,7 @@ module NullaryIlOp =
                     addr
                     heapObject.ConcreteType
             with
-            | ExceptionDispatchResult.HandlerFound state -> (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+            | ExceptionDispatchResult.HandlerFound state -> (state, WhatWeDid.Executed) |> ExecutionResult.stepped
             | ExceptionDispatchResult.ExceptionUnhandled (state, exn) ->
                 ExecutionResult.UnhandledException (state, currentThread, exn)
 
@@ -1695,7 +1695,7 @@ module NullaryIlOp =
                 currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | Stind_I ->
             stind
                 loggerFactory
@@ -1737,7 +1737,7 @@ module NullaryIlOp =
             |> IlMachineState.pushToEvalStack' result currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | Rem_un ->
             let val2, state = IlMachineState.popEvalStack currentThread state
             let val1, state = IlMachineState.popEvalStack currentThread state
@@ -1749,7 +1749,7 @@ module NullaryIlOp =
             |> IlMachineState.pushToEvalStack' result currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | Volatile ->
             // `volatile.` constrains host memory reordering. PawPrint's
             // deterministic execution model has no host reordering to model,
@@ -1757,7 +1757,7 @@ module NullaryIlOp =
             state
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | Tail -> failwith "TODO: Tail unimplemented"
         | Conv_ovf_i_un -> failwith "TODO: Conv_ovf_i_un unimplemented"
         | Conv_ovf_u_un -> failwith "TODO: Conv_ovf_u_un unimplemented"
@@ -1773,7 +1773,7 @@ module NullaryIlOp =
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 converted) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | Conv_ovf_u4_un -> failwith "TODO: Conv_ovf_u4_un unimplemented"
         | Conv_ovf_i8_un -> failwith "TODO: Conv_ovf_i8_un unimplemented"
         | Conv_ovf_u8_un -> failwith "TODO: Conv_ovf_u8_un unimplemented"
@@ -1792,7 +1792,7 @@ module NullaryIlOp =
             |> IlMachineState.pushToEvalStack' result currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | Not ->
             let val1, state = IlMachineState.popEvalStack currentThread state
 
@@ -1815,7 +1815,7 @@ module NullaryIlOp =
             |> IlMachineState.pushToEvalStack' result currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | Ldind_ref ->
             let addr, state = IlMachineState.popEvalStack currentThread state
 
@@ -1829,7 +1829,7 @@ module NullaryIlOp =
                     corelib.NullReferenceException
                     currentThread
                     state
-                |> ExecutionResult.Stepped
+                |> ExecutionResult.stepped
             | _ ->
 
             let referenced =
@@ -1847,7 +1847,7 @@ module NullaryIlOp =
                 | _ -> failwith $"Unexpected non-reference {referenced}"
                 |> IlMachineState.advanceProgramCounter currentThread
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Stind_ref ->
             let value, state = IlMachineState.popEvalStack currentThread state
             let addr, state = IlMachineState.popEvalStack currentThread state
@@ -1862,7 +1862,7 @@ module NullaryIlOp =
                     corelib.NullReferenceException
                     currentThread
                     state
-                |> ExecutionResult.Stepped
+                |> ExecutionResult.stepped
             | _ ->
 
             let state =
@@ -1879,7 +1879,7 @@ module NullaryIlOp =
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Ldelem_i ->
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
@@ -1895,7 +1895,7 @@ module NullaryIlOp =
                 |> IlMachineState.pushToEvalStack value currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
 
-            ExecutionResult.Stepped (state, WhatWeDid.Executed)
+            ExecutionResult.stepped (state, WhatWeDid.Executed)
         | Ldelem_i1 ->
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
@@ -1913,7 +1913,7 @@ module NullaryIlOp =
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 value) currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
 
-            ExecutionResult.Stepped (state, WhatWeDid.Executed)
+            ExecutionResult.stepped (state, WhatWeDid.Executed)
         | Ldelem_u1 ->
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
@@ -1931,7 +1931,7 @@ module NullaryIlOp =
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 value) currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
 
-            ExecutionResult.Stepped (state, WhatWeDid.Executed)
+            ExecutionResult.stepped (state, WhatWeDid.Executed)
         | Ldelem_i2 ->
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
@@ -1949,7 +1949,7 @@ module NullaryIlOp =
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 value) currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
 
-            ExecutionResult.Stepped (state, WhatWeDid.Executed)
+            ExecutionResult.stepped (state, WhatWeDid.Executed)
         | Ldelem_u2 ->
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
@@ -1968,7 +1968,7 @@ module NullaryIlOp =
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 value) currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
 
-            ExecutionResult.Stepped (state, WhatWeDid.Executed)
+            ExecutionResult.stepped (state, WhatWeDid.Executed)
         | Ldelem_i4 ->
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
@@ -1984,7 +1984,7 @@ module NullaryIlOp =
                 |> IlMachineState.pushToEvalStack value currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
 
-            ExecutionResult.Stepped (state, WhatWeDid.Executed)
+            ExecutionResult.stepped (state, WhatWeDid.Executed)
         | Ldelem_u4 ->
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
@@ -2000,7 +2000,7 @@ module NullaryIlOp =
                 |> IlMachineState.pushToEvalStack value currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
 
-            ExecutionResult.Stepped (state, WhatWeDid.Executed)
+            ExecutionResult.stepped (state, WhatWeDid.Executed)
         | Ldelem_i8 ->
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
@@ -2016,7 +2016,7 @@ module NullaryIlOp =
                 |> IlMachineState.pushToEvalStack value currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
 
-            ExecutionResult.Stepped (state, WhatWeDid.Executed)
+            ExecutionResult.stepped (state, WhatWeDid.Executed)
         | Ldelem_u8 -> failwith "TODO: Ldelem_u8 unimplemented"
         | Ldelem_r4 ->
             let index, state = IlMachineState.popEvalStack currentThread state
@@ -2033,7 +2033,7 @@ module NullaryIlOp =
                 |> IlMachineState.pushToEvalStack value currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
 
-            ExecutionResult.Stepped (state, WhatWeDid.Executed)
+            ExecutionResult.stepped (state, WhatWeDid.Executed)
         | Ldelem_r8 ->
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
@@ -2049,7 +2049,7 @@ module NullaryIlOp =
                 |> IlMachineState.pushToEvalStack value currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
 
-            ExecutionResult.Stepped (state, WhatWeDid.Executed)
+            ExecutionResult.stepped (state, WhatWeDid.Executed)
         | Ldelem_ref ->
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
@@ -2066,7 +2066,7 @@ module NullaryIlOp =
                 |> IlMachineState.pushToEvalStack value currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
 
-            ExecutionResult.Stepped (state, WhatWeDid.Executed)
+            ExecutionResult.stepped (state, WhatWeDid.Executed)
         | Stelem_i ->
             let value, state = IlMachineState.popEvalStack currentThread state
             let index, state = IlMachineState.popEvalStack currentThread state
@@ -2149,7 +2149,7 @@ module NullaryIlOp =
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Arglist -> failwith "TODO: Arglist unimplemented"
         | Ckfinite -> failwith "TODO: Ckfinite unimplemented"
         | Readonly ->
@@ -2174,5 +2174,5 @@ module NullaryIlOp =
                 )
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
         | Refanytype -> failwith "TODO: Refanytype unimplemented"

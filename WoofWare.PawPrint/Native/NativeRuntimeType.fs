@@ -1805,7 +1805,7 @@ module NativeRuntimeType =
                     retString
                     (CliType.ObjectRef (Some nameAddr))
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "TypeHandle_GetCorElementType",
           "System.Private.CoreLib",
           "System.Runtime.CompilerServices",
@@ -1828,7 +1828,7 @@ module NativeRuntimeType =
             let state =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 elementType)) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "TypeHandle_CanCastTo_NoCacheLookup",
           "System.Private.CoreLib",
           "System.Runtime.CompilerServices",
@@ -1892,7 +1892,7 @@ module NativeRuntimeType =
                 let ret = if isAssignable then 1 else 0
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 ret)) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "MethodTable_CanCompareBitsOrUseFastGetHashCode",
           "System.Private.CoreLib",
           "System",
@@ -1924,7 +1924,7 @@ module NativeRuntimeType =
 
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 ret)) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "RuntimeTypeHandle_Instantiate",
           "System.Private.CoreLib",
           "System",
@@ -2002,7 +2002,7 @@ module NativeRuntimeType =
                         ctx.Thread
                         state
 
-                ExecutionResult.Stepped (state, WhatWeDid.SuspendedForManagedCall) |> Some
+                ExecutionResult.stepped (state, WhatWeDid.SuspendedForManagedCall) |> Some
             | None ->
 
             let instantiatedHandle, state =
@@ -2028,7 +2028,7 @@ module NativeRuntimeType =
                     retType
                     (CliType.ObjectRef (Some runtimeTypeAddr))
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "RuntimeTypeHandle_GetInstantiation",
           "System.Private.CoreLib",
           "System",
@@ -2112,7 +2112,7 @@ module NativeRuntimeType =
             // Empty: leave the caller's local null. RuntimeType.GetGenericArguments handles
             // null via `?? EmptyTypes`, matching native CopyRuntimeTypeHandles for 0 args.
             if genericArgumentTargets.IsEmpty then
-                (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+                (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
             else
                 let elementTypeName = if asRuntimeTypeArray then "RuntimeType" else "Type"
 
@@ -2150,7 +2150,7 @@ module NativeRuntimeType =
                         retTypes
                         (CliType.ObjectRef (Some arrayAddr))
 
-                (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+                (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "RuntimeTypeHandle_GetConstraints",
           "System.Private.CoreLib",
           "System",
@@ -2295,7 +2295,7 @@ module NativeRuntimeType =
                     // CopyRuntimeTypeHandles writes NULL when count = 0; the managed wrapper turns
                     // the resulting null into Type.EmptyTypes via `?? EmptyTypes`. Leave the
                     // caller's local null untouched.
-                    (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+                    (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
                 else
                     // CopyRuntimeTypeHandles allocates Type[] (CLASS__TYPE) — not RuntimeType[].
                     let state, _, typeHandle =
@@ -2332,7 +2332,7 @@ module NativeRuntimeType =
                             retTypes
                             (CliType.ObjectRef (Some arrayAddr))
 
-                    (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+                    (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
 
             | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
                 failwith
@@ -2400,7 +2400,7 @@ module NativeRuntimeType =
                         outHandle
                         (CliType.ObjectRef (Some addr))
 
-                (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+                (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
             | [] ->
                 let typeHandleTarget =
                     NativeCall.qCallTypeHandleToRuntimeTypeHandleTarget
@@ -2441,11 +2441,11 @@ module NativeRuntimeType =
 
                 match typeInit with
                 | WhatWeDid.SuspendedForClassInit ->
-                    ExecutionResult.Stepped (state, WhatWeDid.SuspendedForClassInit) |> Some
+                    ExecutionResult.stepped (state, WhatWeDid.SuspendedForClassInit) |> Some
                 | WhatWeDid.BlockedOnClassInit blockedBy ->
-                    ExecutionResult.Stepped (state, WhatWeDid.BlockedOnClassInit blockedBy) |> Some
+                    ExecutionResult.stepped (state, WhatWeDid.BlockedOnClassInit blockedBy) |> Some
                 | WhatWeDid.ThrowingTypeInitializationException ->
-                    ExecutionResult.Stepped (state, WhatWeDid.ThrowingTypeInitializationException)
+                    ExecutionResult.stepped (state, WhatWeDid.ThrowingTypeInitializationException)
                     |> Some
                 | WhatWeDid.SuspendedForManagedCall ->
                     failwith "logic error: ensureTypeInitialised cannot suspend for an arbitrary managed call"
@@ -2530,7 +2530,7 @@ module NativeRuntimeType =
                         false
                         state
 
-                ExecutionResult.Stepped (state, WhatWeDid.SuspendedForManagedCall) |> Some
+                ExecutionResult.stepped (state, WhatWeDid.SuspendedForManagedCall) |> Some
             | other ->
                 failwith
                     $"%s{operation}: expected at most one re-entry marker on the eval stack, got %d{other.Length} value(s): %A{other}"
@@ -2616,7 +2616,7 @@ module NativeRuntimeType =
             let state =
                 IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt returnSource) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "RuntimeTypeHandle_GetDeclaringTypeHandleForGenericVariable",
           "System.Private.CoreLib",
           "System",
@@ -2691,7 +2691,7 @@ module NativeRuntimeType =
                     ctx.Thread
                     state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "ModuleHandle_ResolveType",
           "System.Private.CoreLib",
           "System",
@@ -2845,7 +2845,7 @@ module NativeRuntimeType =
                     retType
                     (CliType.ObjectRef (Some runtimeTypeAddr))
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "ModuleHandle_ResolveMethod",
           "System.Private.CoreLib",
           "System",
@@ -3069,7 +3069,7 @@ module NativeRuntimeType =
             let state =
                 IlMachineState.pushToEvalStack (CliType.ValueType handleValue) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "RuntimeTypeHandle_GetFields",
           "System.Private.CoreLib",
           "System",
@@ -3164,7 +3164,7 @@ module NativeRuntimeType =
             let state =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 result)) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "RuntimeTypeHandle_GetInterfaces",
           "System.Private.CoreLib",
           "System",
@@ -3297,7 +3297,7 @@ module NativeRuntimeType =
 
             if List.isEmpty interfaceHandles then
                 // Mirror CoreCLR: skip the allocation and leave the caller's `[]` local intact.
-                (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+                (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
             else
                 let state, _, runtimeTypeElementHandle =
                     concretizeNonGenericCorelibType ctx.LoggerFactory ctx.BaseClassTypes state "System" "RuntimeType"
@@ -3337,7 +3337,7 @@ module NativeRuntimeType =
                         retArray
                         (CliType.ObjectRef (Some arrayAddr))
 
-                (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+                (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | _ -> None
 
     let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
@@ -3369,7 +3369,7 @@ module NativeRuntimeType =
             let state =
                 IlMachineState.pushToEvalStack (NativeCall.cliUInt32 bytes) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "System.Private.CoreLib",
           "System.Runtime.CompilerServices",
           "MethodTable",
@@ -3392,7 +3392,7 @@ module NativeRuntimeType =
             let state =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 elementType)) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "System.Private.CoreLib",
           "System",
           "RuntimeTypeHandle",
@@ -3455,7 +3455,7 @@ module NativeRuntimeType =
             let state =
                 IlMachineState.pushToEvalStack (CliType.ofBool (count <= capacity)) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "System.Private.CoreLib",
           "System",
           "RuntimeTypeHandle",
@@ -3483,7 +3483,7 @@ module NativeRuntimeType =
             let state =
                 IlMachineState.pushToEvalStack (CliType.ObjectRef (Some arrayAddr)) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "System.Private.CoreLib",
           "System",
           "RuntimeTypeHandle",
@@ -3507,7 +3507,7 @@ module NativeRuntimeType =
             let state =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 elementType)) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "System.Private.CoreLib",
           "System",
           "RuntimeTypeHandle",
@@ -3529,7 +3529,7 @@ module NativeRuntimeType =
             let state =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 token)) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "System.Private.CoreLib",
           "System",
           "RuntimeTypeHandle",
@@ -3555,7 +3555,7 @@ module NativeRuntimeType =
             let state =
                 IlMachineState.pushToEvalStack (CliType.ofBool isGenericVariable) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "System.Private.CoreLib",
           "System",
           "RuntimeTypeHandle",
@@ -3587,7 +3587,7 @@ module NativeRuntimeType =
             let state =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 index)) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "System.Private.CoreLib",
           "System",
           "RuntimeTypeHandle",
@@ -3615,7 +3615,7 @@ module NativeRuntimeType =
             | RuntimeTypeHandleTarget.Closed _ ->
                 // Type-level generic parameters and non-parameter targets return null.
                 let state = NativeCall.pushObjectTarget None ctx.Thread state
-                (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+                (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
             | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
                 failwith
                     $"TODO: %s{operation} for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}; need to allocate/return IRuntimeMethodInfo"
@@ -3642,7 +3642,7 @@ module NativeRuntimeType =
 
             let state = NativeCall.pushObjectTarget declaringTypeAddr ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "System.Private.CoreLib",
           "System",
           "RuntimeTypeHandle",
@@ -3662,7 +3662,7 @@ module NativeRuntimeType =
 
             let state = IlMachineState.pushToEvalStack (CliType.ofBool result) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "System.Private.CoreLib",
           "System",
           "RuntimeTypeHandle",
@@ -3686,7 +3686,7 @@ module NativeRuntimeType =
 
             let state = NativeCall.pushObjectTarget baseTypeAddr ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "System.Private.CoreLib",
           "System",
           "RuntimeTypeHandle",
@@ -3710,7 +3710,7 @@ module NativeRuntimeType =
 
             let state = NativeCall.pushObjectTarget elementTypeAddr ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "System.Private.CoreLib",
           "System",
           "RuntimeTypeHandle",
@@ -3738,7 +3738,7 @@ module NativeRuntimeType =
             let state =
                 IlMachineState.pushToEvalStack (CliType.ObjectRef (Some addr)) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "System.Private.CoreLib",
           "System",
           "RuntimeTypeHandle",
@@ -3766,7 +3766,7 @@ module NativeRuntimeType =
             let state =
                 IlMachineState.pushToEvalStack (CliType.ObjectRef (Some addr)) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "System.Private.CoreLib",
           "System",
           "RuntimeTypeHandle",
@@ -3797,7 +3797,7 @@ module NativeRuntimeType =
             let state =
                 IlMachineState.pushToEvalStack (CliType.ObjectRef (Some addr)) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "System.Private.CoreLib",
           "System",
           "RuntimeTypeHandle",
@@ -3826,7 +3826,7 @@ module NativeRuntimeType =
             let state =
                 IlMachineState.pushToEvalStack (CliType.ObjectRef (Some addr)) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "System.Private.CoreLib",
           "System",
           "RuntimeTypeHandle",
@@ -3863,7 +3863,7 @@ module NativeRuntimeType =
             let state =
                 IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt elementTypeSource) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "System.Private.CoreLib",
           "System",
           "RuntimeTypeHandle",
@@ -3950,7 +3950,7 @@ module NativeRuntimeType =
             let state =
                 IlMachineState.pushToEvalStack (CliType.ofBool isAssignable) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "System.Private.CoreLib",
           "System",
           "RuntimeTypeHandle",
@@ -4025,7 +4025,7 @@ module NativeRuntimeType =
             let state =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 attributes)) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "System.Private.CoreLib",
           "System",
           "RuntimeTypeHandle",
@@ -4053,7 +4053,7 @@ module NativeRuntimeType =
             let state =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 count)) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "System.Private.CoreLib",
           "System",
           "RuntimeTypeHandle",
@@ -4120,7 +4120,7 @@ module NativeRuntimeType =
             let state =
                 IlMachineState.pushToEvalStack (CliType.ValueType returnValue) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "System.Private.CoreLib",
           "System",
           "RuntimeTypeHandle",
@@ -4215,5 +4215,5 @@ module NativeRuntimeType =
                     methodPtr
                     (CliType.ValueType nextValue)
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | _ -> None

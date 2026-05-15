@@ -50,7 +50,7 @@ module TestImpureCases =
                                         let state =
                                             state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) thread
 
-                                        (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                                        (state, WhatWeDid.Executed) |> ExecutionResult.stepped
                                 GetCurrentManagedThreadId = env.GetCurrentManagedThreadId
                                 TryGetEnvironmentVariable = env.TryGetEnvironmentVariable
                                 _Exit =

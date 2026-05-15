@@ -314,7 +314,7 @@ public static class Entry
 
         let state =
             match NativeQCall.tryExecute ctx with
-            | Some (ExecutionResult.Stepped (state, WhatWeDid.Executed)) -> state
+            | Some (ExecutionResult.Stepped (state, WhatWeDid.Executed, _)) -> state
             | Some result -> failwith $"unexpected Enum_GetValuesAndNames execution result: %O{result}"
             | None -> failwith "Enum_GetValuesAndNames QCall did not match"
 

@@ -101,7 +101,7 @@ module NativeRuntimeFieldHandle =
             let state =
                 IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer namePtr) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "System.Private.CoreLib",
           "System",
           "RuntimeFieldHandle",
@@ -129,7 +129,7 @@ module NativeRuntimeFieldHandle =
                     ctx.Thread
                     state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | _ -> None
 
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : ExecutionResult option =
@@ -197,5 +197,5 @@ module NativeRuntimeFieldHandle =
 
                             state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) ctx.Thread
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | _ -> None

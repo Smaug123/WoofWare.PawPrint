@@ -23,7 +23,7 @@ module NativeMarshal =
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 state.Kernel.LastPInvokeError) ctx.Thread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
             |> Some
         | "System.Private.CoreLib",
           "System.Runtime.InteropServices",
@@ -34,7 +34,7 @@ module NativeMarshal =
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 state.Kernel.LastSystemError) ctx.Thread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
             |> Some
         | "System.Private.CoreLib",
           "System.Runtime.InteropServices",
@@ -51,7 +51,7 @@ module NativeMarshal =
                 }
              ),
              WhatWeDid.Executed)
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
             |> Some
         | "System.Private.CoreLib",
           "System.Runtime.InteropServices",
@@ -68,7 +68,7 @@ module NativeMarshal =
                 }
              ),
              WhatWeDid.Executed)
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
             |> Some
         | _ -> None
 
@@ -119,5 +119,5 @@ module NativeMarshal =
                 let state =
                     IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 size.Size)) ctx.Thread state
 
-                (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+                (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | _ -> None
