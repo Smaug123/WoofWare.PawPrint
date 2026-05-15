@@ -404,7 +404,7 @@ public sealed class GenericFieldHost<T>
 
         let state =
             match NativeSignature.tryExecuteQCall "Signature_Init" ctx with
-            | Some (ExecutionResult.Stepped (state, WhatWeDid.Executed)) -> state
+            | Some (ExecutionResult.Stepped (state, WhatWeDid.Executed, _)) -> state
             | Some result -> failwith $"unexpected Signature_Init execution result: %O{result}"
             | None -> failwith "Signature_Init did not match"
 

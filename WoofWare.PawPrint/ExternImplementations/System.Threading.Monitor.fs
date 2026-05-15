@@ -92,7 +92,7 @@ module System_Threading_Monitor =
 
         let state = IlMachineState.pushToEvalStack (CliType.ofBool true) currentThread state
 
-        (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+        (state, WhatWeDid.Executed) |> ExecutionResult.stepped
 
     /// .NET 10 InternalCall: Monitor.TryEnter_FastPath_WithTimeout(obj, int32) -> EnterHelperResult.
     /// Caller treats the result as: 0 (Contention) → return false; 1 (Entered) → return true;
@@ -169,7 +169,7 @@ module System_Threading_Monitor =
         let state =
             IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 result)) currentThread state
 
-        (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+        (state, WhatWeDid.Executed) |> ExecutionResult.stepped
 
     /// .NET 10 InternalCall: Monitor.IsEnteredNative(obj) -> bool.
     /// Returns true if the SyncBlock for `obj` is held by the current thread.
@@ -192,7 +192,7 @@ module System_Threading_Monitor =
         let state =
             IlMachineState.pushToEvalStack (CliType.ofBool result) currentThread state
 
-        (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+        (state, WhatWeDid.Executed) |> ExecutionResult.stepped
 
     /// .NET 10 InternalCall: Monitor.Exit_FastPath(obj) -> LeaveHelperAction.
     /// LeaveHelperAction.None (0) means the unlock fully succeeded and IL skips the slowpath;
@@ -253,4 +253,4 @@ module System_Threading_Monitor =
         let state =
             IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 0)) currentThread state
 
-        (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+        (state, WhatWeDid.Executed) |> ExecutionResult.stepped

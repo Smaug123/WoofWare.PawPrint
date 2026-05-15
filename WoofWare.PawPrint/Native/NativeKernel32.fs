@@ -109,7 +109,7 @@ module NativeKernel32 =
         state
         |> IlMachineState.pushToEvalStack (NativeCall.cliUInt32 value) thread
         |> Tuple.withRight WhatWeDid.Executed
-        |> ExecutionResult.Stepped
+        |> ExecutionResult.stepped
 
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : ExecutionResult option =
         let state = ctx.State

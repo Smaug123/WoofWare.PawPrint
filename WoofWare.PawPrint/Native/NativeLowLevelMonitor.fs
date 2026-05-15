@@ -50,7 +50,7 @@ module NativeLowLevelMonitor =
                 (EvalStackValue.NativeInt (NativeIntSource.LowLevelMonitorPtr id))
                 ctx.Thread
             |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
             |> Some
 
         | Some "SystemNative_LowLevelMonitor_Destroy",
@@ -59,7 +59,7 @@ module NativeLowLevelMonitor =
             let operation = "SystemNative_LowLevelMonitor_Destroy"
             let id = monitorOfArgument operation instruction.Arguments.[0]
             let state = LowLevelMonitor.destroy id state
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
 
         | Some "SystemNative_LowLevelMonitor_Acquire",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
@@ -78,7 +78,7 @@ module NativeLowLevelMonitor =
                 | LowLevelMonitor.AcquireOutcome.Acquired state
                 | LowLevelMonitor.AcquireOutcome.Blocked state -> state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
 
         | Some "SystemNative_LowLevelMonitor_Release",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
@@ -86,7 +86,7 @@ module NativeLowLevelMonitor =
             let operation = "SystemNative_LowLevelMonitor_Release"
             let id = monitorOfArgument operation instruction.Arguments.[0]
             let state = LowLevelMonitor.release ctx.Thread id state
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
 
         | Some "SystemNative_LowLevelMonitor_Wait",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
@@ -94,7 +94,7 @@ module NativeLowLevelMonitor =
             let operation = "SystemNative_LowLevelMonitor_Wait"
             let id = monitorOfArgument operation instruction.Arguments.[0]
             let state = LowLevelMonitor.wait ctx.Thread id state
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
 
         | Some "SystemNative_LowLevelMonitor_TimedWait",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
@@ -121,6 +121,6 @@ module NativeLowLevelMonitor =
             let operation = "SystemNative_LowLevelMonitor_Signal_Release"
             let id = monitorOfArgument operation instruction.Arguments.[0]
             let state = LowLevelMonitor.signalRelease ctx.Thread id state
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
 
         | _ -> None

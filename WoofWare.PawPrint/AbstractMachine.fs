@@ -51,26 +51,26 @@ module AbstractMachine =
             | ExecutionResult.ProcessExit _ -> outcome
             | ExecutionResult.FailFast _ -> outcome
             | ExecutionResult.UnhandledException _ -> outcome
-            | ExecutionResult.Stepped (state, WhatWeDid.SuspendedForClassInit) ->
+            | ExecutionResult.Stepped (state, WhatWeDid.SuspendedForClassInit, effect) ->
                 // A cctor was pushed; the native frame must stay on the stack so the dispatch loop
                 // runs the cctor first, then re-enters this native method on the next step.
-                ExecutionResult.Stepped (state, WhatWeDid.SuspendedForClassInit)
-            | ExecutionResult.Stepped (state, WhatWeDid.SuspendedForManagedCall) ->
+                ExecutionResult.Stepped (state, WhatWeDid.SuspendedForClassInit, effect)
+            | ExecutionResult.Stepped (state, WhatWeDid.SuspendedForManagedCall, effect) ->
                 // The native handler pushed a managed callee on top of itself; the native frame
                 // must stay on the stack so the dispatch loop runs the callee, then re-enters this
                 // native method on the next step.
-                ExecutionResult.Stepped (state, WhatWeDid.SuspendedForManagedCall)
-            | ExecutionResult.Stepped (state, WhatWeDid.ThrowingTypeInitializationException) ->
+                ExecutionResult.Stepped (state, WhatWeDid.SuspendedForManagedCall, effect)
+            | ExecutionResult.Stepped (state, WhatWeDid.ThrowingTypeInitializationException, effect) ->
                 // Exception dispatch has already unwound past this native frame to the matching
                 // handler, so returnStackFrame would pop the wrong frame.
-                ExecutionResult.Stepped (state, WhatWeDid.ThrowingTypeInitializationException)
-            | ExecutionResult.Stepped (state, WhatWeDid.BlockedOnClassInit blockedBy) ->
+                ExecutionResult.Stepped (state, WhatWeDid.ThrowingTypeInitializationException, effect)
+            | ExecutionResult.Stepped (state, WhatWeDid.BlockedOnClassInit blockedBy, effect) ->
                 // Another thread owns this type's .cctor lock; the native frame must persist
                 // until that thread finishes, then we re-enter.
-                ExecutionResult.Stepped (state, WhatWeDid.BlockedOnClassInit blockedBy)
-            | ExecutionResult.Stepped (state, whatWeDid) ->
+                ExecutionResult.Stepped (state, WhatWeDid.BlockedOnClassInit blockedBy, effect)
+            | ExecutionResult.Stepped (state, whatWeDid, effect) ->
                 match IlMachineState.returnStackFrame loggerFactory baseClassTypes thread state with
-                | ReturnFrameResult.NormalReturn state -> ExecutionResult.Stepped (state, whatWeDid)
+                | ReturnFrameResult.NormalReturn state -> ExecutionResult.Stepped (state, whatWeDid, effect)
                 | result -> failwith $"unexpected ReturnFrameResult from extern method return: %A{result}"
 
         let dispatchDelegateCtor () =
@@ -78,7 +78,7 @@ module AbstractMachine =
             // can't advance the program counter here - there's no IL instructions executing!
             |> IlMachineState.returnStackFrame loggerFactory baseClassTypes thread
             |> function
-                | ReturnFrameResult.NormalReturn state -> (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                | ReturnFrameResult.NormalReturn state -> (state, WhatWeDid.Executed) |> ExecutionResult.stepped
                 | result -> failwith $"unexpected ReturnFrameResult from delegate constructor: %A{result}"
 
         let dispatchDelegateInvoke () =
@@ -168,7 +168,7 @@ module AbstractMachine =
                     false
                     state
 
-            ExecutionResult.Stepped (state, WhatWeDid.Executed)
+            ExecutionResult.stepped (state, WhatWeDid.Executed)
 
         match instruction.ExecutingMethod.Body with
         | MethodBody.RuntimeProvided RuntimeBehaviour.DelegateCtor -> dispatchDelegateCtor ()
@@ -217,11 +217,11 @@ module AbstractMachine =
         match instructions.Locations.[instruction.IlOpIndex] with
         | IlOp.Nullary op -> NullaryIlOp.execute loggerFactory baseClassTypes state thread op
         | IlOp.UnaryConst unaryConstIlOp ->
-            UnaryConstIlOp.execute state thread unaryConstIlOp |> ExecutionResult.Stepped
+            UnaryConstIlOp.execute state thread unaryConstIlOp |> ExecutionResult.stepped
         | IlOp.UnaryMetadataToken (unaryMetadataTokenIlOp, bytes) ->
             UnaryMetadataIlOp.execute loggerFactory baseClassTypes unaryMetadataTokenIlOp bytes state thread
-            |> ExecutionResult.Stepped
-        | IlOp.Switch immutableArray -> SwitchIlOp.execute state thread immutableArray |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped
+        | IlOp.Switch immutableArray -> SwitchIlOp.execute state thread immutableArray |> ExecutionResult.stepped
         | IlOp.UnaryStringToken (unaryStringTokenIlOp, stringHandle) ->
             UnaryStringTokenIlOp.execute loggerFactory baseClassTypes unaryStringTokenIlOp stringHandle state thread
-            |> ExecutionResult.Stepped
+            |> ExecutionResult.stepped

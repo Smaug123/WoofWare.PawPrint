@@ -410,7 +410,7 @@ module NativeMetadataImport =
                     ctx.Thread
                     state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "System.Private.CoreLib",
           "System.Reflection",
           "MetadataImport",
@@ -482,7 +482,7 @@ module NativeMetadataImport =
 
             let state = writeInt32AtPointer ctx.BaseClassTypes state lengthOut values.Length
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "System.Private.CoreLib",
           "System.Reflection",
           "MetadataImport",
@@ -517,7 +517,7 @@ module NativeMetadataImport =
             let state =
                 IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "System.Private.CoreLib",
           "System.Reflection",
           "MetadataImport",
@@ -549,7 +549,7 @@ module NativeMetadataImport =
             let state =
                 IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "System.Private.CoreLib",
           "System.Reflection",
           "MetadataImport",
@@ -608,7 +608,7 @@ module NativeMetadataImport =
             let state =
                 IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "System.Private.CoreLib",
           "System.Reflection",
           "MetadataImport",
@@ -661,7 +661,7 @@ module NativeMetadataImport =
             let state =
                 IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "System.Private.CoreLib",
           "System.Reflection",
           "MetadataImport",
@@ -801,7 +801,7 @@ module NativeMetadataImport =
             let state =
                 IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "System.Private.CoreLib",
           "System.Reflection",
           "MetadataImport",
@@ -837,5 +837,5 @@ module NativeMetadataImport =
             let state =
                 IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | _ -> None

@@ -64,5 +64,5 @@ module NativeException =
                     retString
                     (CliType.ObjectRef (Some messageAddr))
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | _ -> None

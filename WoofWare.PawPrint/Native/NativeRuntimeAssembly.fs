@@ -85,7 +85,7 @@ module NativeRuntimeAssembly =
             let state =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 mdAssemblyToken)) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "System.Private.CoreLib",
           "System.Reflection",
           "RuntimeAssembly",
@@ -117,7 +117,7 @@ module NativeRuntimeAssembly =
             let state =
                 IlMachineState.pushToEvalStack (CliType.ObjectRef (Some runtimeModuleAddr)) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | _ -> None
 
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : ExecutionResult option =
@@ -203,7 +203,7 @@ module NativeRuntimeAssembly =
                     failwith
                         $"TODO: %s{operation} does not support assembly-forwarded manifest resource %s{actualResourceName} in %s{assemblyFullName} forwarded to %s{assemblyReference.Name.FullName}"
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "AssemblyNative_GetTypeCore",
           "System.Private.CoreLib",
           "System.Reflection",
@@ -344,7 +344,7 @@ module NativeRuntimeAssembly =
 
                 // Caller's local was preinitialized to null (Type? type = null);
                 // leaving retType untouched preserves that.
-                (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+                (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
             | Some typeInfo ->
                 let runtimeTypeAddr, state =
                     if typeInfo.Generics.IsEmpty then
@@ -371,5 +371,5 @@ module NativeRuntimeAssembly =
                         retType
                         (CliType.ObjectRef (Some runtimeTypeAddr))
 
-                (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+                (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | _ -> None

@@ -319,7 +319,7 @@ public static class Entry
 
         let state =
             match NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetResource" ctx with
-            | Some (ExecutionResult.Stepped (state, WhatWeDid.Executed)) -> state
+            | Some (ExecutionResult.Stepped (state, WhatWeDid.Executed, _)) -> state
             | Some result -> failwith $"unexpected AssemblyNative_GetResource execution result: %O{result}"
             | None -> failwith "AssemblyNative_GetResource QCall did not match"
 

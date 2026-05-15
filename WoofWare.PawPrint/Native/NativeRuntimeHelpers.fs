@@ -47,7 +47,7 @@ module NativeRuntimeHelpers =
                 | ConcreteTypeHandle.Array _ ->
                     // Pointer, byref, fnptr, and array type descriptors have no .cctor;
                     // CoreCLR treats this as a no-op. Return immediately.
-                    (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+                    (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
                 | ConcreteTypeHandle.Concrete _ ->
                     let state, typeInit =
                         IlMachineStateExecution.ensureTypeInitialised
@@ -58,7 +58,7 @@ module NativeRuntimeHelpers =
                             state
 
                     match typeInit with
-                    | WhatWeDid.Executed -> (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+                    | WhatWeDid.Executed -> (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
                     | WhatWeDid.SuspendedForClassInit ->
                         // The cctor was pushed as a new frame. We must NOT go through the normal
                         // returnStackFrame path (which would pop the cctor frame we just pushed).
@@ -66,17 +66,17 @@ module NativeRuntimeHelpers =
                         // When the cctor finishes, returnStackFrame pops it, bringing us back to
                         // this native method frame. executeOneStep re-enters here and
                         // ensureTypeInitialised will return Executed.
-                        ExecutionResult.Stepped (state, WhatWeDid.SuspendedForClassInit) |> Some
+                        ExecutionResult.stepped (state, WhatWeDid.SuspendedForClassInit) |> Some
                     | WhatWeDid.SuspendedForManagedCall ->
                         failwith "logic error: ensureTypeInitialised cannot suspend for an arbitrary managed call"
                     | WhatWeDid.ThrowingTypeInitializationException ->
                         (state, WhatWeDid.ThrowingTypeInitializationException)
-                        |> ExecutionResult.Stepped
+                        |> ExecutionResult.stepped
                         |> Some
                     | WhatWeDid.BlockedOnClassInit blockedBy ->
                         // Another thread owns this type's .cctor lock. Yield so the scheduler
                         // can run that thread to completion before re-entering.
-                        ExecutionResult.Stepped (state, WhatWeDid.BlockedOnClassInit blockedBy) |> Some
+                        ExecutionResult.stepped (state, WhatWeDid.BlockedOnClassInit blockedBy) |> Some
         | _ -> None
 
     /// Identity hash for a managed object reference. Heap addresses are positive and
@@ -115,7 +115,7 @@ module NativeRuntimeHelpers =
             let state =
                 IlMachineState.pushToEvalStack' (EvalStackValue.Int32 hash) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "System.Private.CoreLib",
           "System.Runtime.CompilerServices",
           "RuntimeHelpers",
@@ -138,5 +138,5 @@ module NativeRuntimeHelpers =
             let state =
                 IlMachineState.pushToEvalStack' (EvalStackValue.Int32 hash) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | _ -> None

@@ -215,7 +215,7 @@ module NativeBuffer =
                 else
                     copy ctx.BaseClassTypes state dest src byteCount
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | _ -> None
 
     /// Dispatches the InternalCall (FCall) variants of `System.Buffer` that
@@ -281,5 +281,5 @@ module NativeBuffer =
                 else
                     copy ctx.BaseClassTypes state dest src byteCount
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | _ -> None
