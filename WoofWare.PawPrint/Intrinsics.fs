@@ -110,10 +110,17 @@ module Intrinsics =
             isSpanHelpersByteSequenceEqual state methodToCall
             ->
             spanHelpersSequenceEqual baseClassTypes currentThread methodToCall state |> Some
-        | "System.Private.CoreLib", ("Vector128" | "Vector256" | "Vector512"), "get_IsHardwareAccelerated" ->
-            // System.Runtime.Intrinsics.Vector{128,256,512}.IsHardwareAccelerated are JIT
-            // intrinsic capability queries. PawPrint models a deterministic virtual CPU profile;
-            // the default scalar-only profile reports them unavailable without consulting the host.
+        | "System.Private.CoreLib", ("Vector128" | "Vector256" | "Vector512"), "get_IsHardwareAccelerated"
+        | "System.Private.CoreLib", "Vector", "get_IsHardwareAccelerated" when
+            // System.Runtime.Intrinsics.Vector{128,256,512}.IsHardwareAccelerated and
+            // System.Numerics.Vector.IsHardwareAccelerated are JIT intrinsic capability queries
+            // whose IL bodies are recursive self-calls the JIT replaces with a constant. PawPrint
+            // models a deterministic virtual CPU profile; the default scalar-only profile reports
+            // them unavailable without consulting the host. The fully-qualified-name guard on the
+            // "Vector" arm rejects any unrelated CoreLib type that happens to share the short name.
+            methodToCall.DeclaringType.Name <> "Vector"
+            || intrinsicKey.DeclaringTypeFullName = "System.Numerics.Vector"
+            ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
             | _ ->

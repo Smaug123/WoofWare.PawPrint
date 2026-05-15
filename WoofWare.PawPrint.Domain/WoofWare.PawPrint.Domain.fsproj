@@ -34,6 +34,7 @@
         <Compile Include="TypeSpec.fs" />
         <Compile Include="Assembly.fs" />
         <Compile Include="FriendAssemblies.fs" />
+        <Compile Include="AccessCheck.fs" />
         <Compile Include="IlFormatting.fs" />
         <Compile Include="TypeConcretisation.fs" />
     </ItemGroup>

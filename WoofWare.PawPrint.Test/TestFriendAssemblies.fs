@@ -416,6 +416,362 @@ module TestFriendAssemblies =
 
         FriendAssemblyName.checkFriendRestrictions fan |> shouldEqual (Ok ())
 
+    let private makeDef
+        (name : string)
+        (publicKey : byte[] option)
+        (version : Version option)
+        (culture : string option)
+        : AssemblyName
+        =
+        let an = AssemblyName ()
+        an.Name <- name
+
+        match publicKey with
+        | Some k -> an.SetPublicKey k
+        | None -> ()
+
+        match version with
+        | Some v -> an.Version <- v
+        | None -> ()
+
+        match culture with
+        | Some c -> an.CultureName <- c
+        | None -> ()
+
+        an
+
+    let private withRetargetable (an : AssemblyName) : AssemblyName =
+        an.Flags <- an.Flags ||| AssemblyNameFlags.Retargetable
+        an
+
+    let private withContentType (ct : AssemblyContentType) (an : AssemblyName) : AssemblyName =
+        an.ContentType <- ct
+        an
+
+    let private baseRef =
+        {
+            Name = "FriendAsm"
+            PublicKey = FriendPublicKey.NotStrongNamed
+            Version = None
+            Culture = None
+            HasProcessorArchitecture = false
+            HasRetargetable = false
+            ContentType = AssemblyContentType.Default
+        }
+
+    [<Test>]
+    let ``matchesDef: non-strong-named ref matches by name only (case-insensitive)`` () : unit =
+        let ref =
+            {
+                Name = "FriendAsm"
+                PublicKey = FriendPublicKey.NotStrongNamed
+                Version = None
+                Culture = None
+                HasProcessorArchitecture = false
+                HasRetargetable = false
+                ContentType = AssemblyContentType.Default
+            }
+
+        let def = makeDef "friendasm" None None None
+
+        FriendAssemblyName.matchesDef ref def |> shouldEqual true
+
+    [<Test>]
+    let ``matchesDef: non-strong-named ref with wrong name fails`` () : unit =
+        let ref =
+            {
+                Name = "FriendAsm"
+                PublicKey = FriendPublicKey.NotStrongNamed
+                Version = None
+                Culture = None
+                HasProcessorArchitecture = false
+                HasRetargetable = false
+                ContentType = AssemblyContentType.Default
+            }
+
+        let def = makeDef "Other" None None None
+
+        FriendAssemblyName.matchesDef ref def |> shouldEqual false
+
+    [<Test>]
+    let ``matchesDef: non-strong-named ref matches even strong-named def`` () : unit =
+        let ref =
+            {
+                Name = "FriendAsm"
+                PublicKey = FriendPublicKey.NotStrongNamed
+                Version = None
+                Culture = None
+                HasProcessorArchitecture = false
+                HasRetargetable = false
+                ContentType = AssemblyContentType.Default
+            }
+
+        let def = makeDef "FriendAsm" (Some fakePublicKey) None None
+
+        FriendAssemblyName.matchesDef ref def |> shouldEqual true
+
+    [<Test>]
+    let ``matchesDef: strong-named ref against non-strong-named def fails`` () : unit =
+        let ref =
+            {
+                Name = "FriendAsm"
+                PublicKey = FriendPublicKey.FullPublicKey fakePublicKey
+                Version = None
+                Culture = None
+                HasProcessorArchitecture = false
+                HasRetargetable = false
+                ContentType = AssemblyContentType.Default
+            }
+
+        let def = makeDef "FriendAsm" None None None
+
+        FriendAssemblyName.matchesDef ref def |> shouldEqual false
+
+    [<Test>]
+    let ``matchesDef: strong-named ref with matching full key matches def`` () : unit =
+        let ref =
+            {
+                Name = "FriendAsm"
+                PublicKey = FriendPublicKey.FullPublicKey fakePublicKey
+                Version = None
+                Culture = None
+                HasProcessorArchitecture = false
+                HasRetargetable = false
+                ContentType = AssemblyContentType.Default
+            }
+
+        let def = makeDef "FriendAsm" (Some fakePublicKey) None None
+
+        FriendAssemblyName.matchesDef ref def |> shouldEqual true
+
+    [<Test>]
+    let ``matchesDef: strong-named ref with full key does not match token-only def`` () : unit =
+        // CoreCLR's RefMatchesDef branches on the ref. When the ref carries a
+        // full key it calls CompareRefToDef directly, which compares
+        // m_pbPublicKeyOrToken bytes by length+memcmp; a token-only def has
+        // shorter bytes than a full key, so the comparison fails. We must
+        // NOT shortcut by deriving the ref's token: that would falsely grant
+        // friend access to an identity that never supplied the full key.
+        let ref =
+            {
+                Name = "FriendAsm"
+                PublicKey = FriendPublicKey.FullPublicKey fakePublicKey
+                Version = None
+                Culture = None
+                HasProcessorArchitecture = false
+                HasRetargetable = false
+                ContentType = AssemblyContentType.Default
+            }
+
+        let def = AssemblyName ()
+        def.Name <- "FriendAsm"
+        def.SetPublicKeyToken fakePublicKeyToken
+
+        FriendAssemblyName.matchesDef ref def |> shouldEqual false
+
+    [<Test>]
+    let ``matchesDef: strong-named ref with wrong key fails`` () : unit =
+        let otherKey =
+            let k = Array.copy fakePublicKey
+            k.[0] <- k.[0] ^^^ 0xFFuy
+            k
+
+        let ref =
+            {
+                Name = "FriendAsm"
+                PublicKey = FriendPublicKey.FullPublicKey fakePublicKey
+                Version = None
+                Culture = None
+                HasProcessorArchitecture = false
+                HasRetargetable = false
+                ContentType = AssemblyContentType.Default
+            }
+
+        let def = makeDef "FriendAsm" (Some otherKey) None None
+
+        FriendAssemblyName.matchesDef ref def |> shouldEqual false
+
+    [<Test>]
+    let ``matchesDef: full-key ref does not match def with cleared PublicKey flag`` () : unit =
+        // CoreCLR's CompareRefToDef includes afPublicKey in its masked-flags
+        // strict-equality check, so a def whose bytes equal the ref's full
+        // key but whose PublicKey flag is clear must NOT match. AssemblyName
+        // exposes a mutable Flags property, so this inconsistent state is
+        // constructible by a caller.
+        let ref =
+            {
+                Name = "FriendAsm"
+                PublicKey = FriendPublicKey.FullPublicKey fakePublicKey
+                Version = None
+                Culture = None
+                HasProcessorArchitecture = false
+                HasRetargetable = false
+                ContentType = AssemblyContentType.Default
+            }
+
+        let def = AssemblyName ()
+        def.Name <- "FriendAsm"
+        def.SetPublicKey fakePublicKey
+        def.Flags <- def.Flags &&& (~~~AssemblyNameFlags.PublicKey)
+
+        FriendAssemblyName.matchesDef ref def |> shouldEqual false
+
+    [<Test>]
+    let ``matchesDef: ref version unspecified accepts any def version`` () : unit =
+        let ref =
+            {
+                Name = "FriendAsm"
+                PublicKey = FriendPublicKey.NotStrongNamed
+                Version = None
+                Culture = None
+                HasProcessorArchitecture = false
+                HasRetargetable = false
+                ContentType = AssemblyContentType.Default
+            }
+
+        let def = makeDef "FriendAsm" None (Some (Version (9, 9, 9, 9))) None
+
+        FriendAssemblyName.matchesDef ref def |> shouldEqual true
+
+    [<Test>]
+    let ``matchesDef: ref version exact match`` () : unit =
+        // Need strong-named for version comparison to be visible
+        // (with non-strong-named ref, RefMatchesDef short-circuits on name only)
+        let ref =
+            {
+                Name = "FriendAsm"
+                PublicKey = FriendPublicKey.FullPublicKey fakePublicKey
+                Version = Some (Version (1, 2, 3, 4))
+                Culture = None
+                HasProcessorArchitecture = false
+                HasRetargetable = false
+                ContentType = AssemblyContentType.Default
+            }
+
+        let def =
+            makeDef "FriendAsm" (Some fakePublicKey) (Some (Version (1, 2, 3, 4))) None
+
+        FriendAssemblyName.matchesDef ref def |> shouldEqual true
+
+    [<Test>]
+    let ``matchesDef: ref version mismatch fails`` () : unit =
+        let ref =
+            {
+                Name = "FriendAsm"
+                PublicKey = FriendPublicKey.FullPublicKey fakePublicKey
+                Version = Some (Version (1, 2, 3, 4))
+                Culture = None
+                HasProcessorArchitecture = false
+                HasRetargetable = false
+                ContentType = AssemblyContentType.Default
+            }
+
+        let def =
+            makeDef "FriendAsm" (Some fakePublicKey) (Some (Version (1, 2, 3, 5))) None
+
+        FriendAssemblyName.matchesDef ref def |> shouldEqual false
+
+    // Retargetable and ContentType only participate in matching when the ref is
+    // strong-named: CoreCLR's RefMatchesDef short-circuits non-strong-named refs
+    // on name alone.
+
+    let private strongRef =
+        { baseRef with
+            PublicKey = FriendPublicKey.FullPublicKey fakePublicKey
+        }
+
+    [<Test>]
+    let ``matchesDef: retargetable ref matches retargetable def`` () : unit =
+        let ref =
+            { strongRef with
+                HasRetargetable = true
+            }
+
+        let def = makeDef "FriendAsm" (Some fakePublicKey) None None |> withRetargetable
+
+        FriendAssemblyName.matchesDef ref def |> shouldEqual true
+
+    [<Test>]
+    let ``matchesDef: retargetable ref does not match non-retargetable def`` () : unit =
+        let ref =
+            { strongRef with
+                HasRetargetable = true
+            }
+
+        let def = makeDef "FriendAsm" (Some fakePublicKey) None None
+        FriendAssemblyName.matchesDef ref def |> shouldEqual false
+
+    [<Test>]
+    let ``matchesDef: non-retargetable ref does not match retargetable def`` () : unit =
+        // CoreCLR's masked-flags strict equality: Retargetable must agree.
+        let ref = strongRef
+
+        let def = makeDef "FriendAsm" (Some fakePublicKey) None None |> withRetargetable
+
+        FriendAssemblyName.matchesDef ref def |> shouldEqual false
+
+    [<Test>]
+    let ``matchesDef: ContentType=Default ref matches def with any ContentType`` () : unit =
+        // Optional in ref: Default means "do not constrain def's ContentType".
+        let ref = strongRef
+
+        let def =
+            makeDef "FriendAsm" (Some fakePublicKey) None None
+            |> withContentType AssemblyContentType.WindowsRuntime
+
+        FriendAssemblyName.matchesDef ref def |> shouldEqual true
+
+    [<Test>]
+    let ``matchesDef: ContentType=WindowsRuntime ref requires matching def`` () : unit =
+        let ref =
+            { strongRef with
+                ContentType = AssemblyContentType.WindowsRuntime
+            }
+
+        let defMatch =
+            makeDef "FriendAsm" (Some fakePublicKey) None None
+            |> withContentType AssemblyContentType.WindowsRuntime
+
+        let defDefault = makeDef "FriendAsm" (Some fakePublicKey) None None
+        FriendAssemblyName.matchesDef ref defMatch |> shouldEqual true
+        FriendAssemblyName.matchesDef ref defDefault |> shouldEqual false
+
+    [<Test>]
+    let ``matchesDef: full-key ref with malformed bytes matches def with same malformed bytes`` () : unit =
+        // CoreCLR's CompareRefToDef does a length+memcmp on the raw key
+        // blob; the bytes are not validated. The host BCL's
+        // GetPublicKeyToken() does try to derive a token from a full key
+        // and throws SecurityException on a malformed blob, but matchesDef
+        // must not call it on the full-key path.
+        let malformed = [| 0x00uy ; 0x11uy |]
+
+        let ref =
+            { baseRef with
+                PublicKey = FriendPublicKey.FullPublicKey malformed
+            }
+
+        let def = AssemblyName ()
+        def.Name <- "FriendAsm"
+        def.SetPublicKey malformed
+
+        FriendAssemblyName.matchesDef ref def |> shouldEqual true
+
+    [<Test>]
+    let ``matchesDef: full-key ref with malformed bytes does not match def with different bytes`` () : unit =
+        let malformed = [| 0x00uy ; 0x11uy |]
+        let other = [| 0x22uy ; 0x33uy |]
+
+        let ref =
+            { baseRef with
+                PublicKey = FriendPublicKey.FullPublicKey malformed
+            }
+
+        let def = AssemblyName ()
+        def.Name <- "FriendAsm"
+        def.SetPublicKey other
+
+        FriendAssemblyName.matchesDef ref def |> shouldEqual false
+
     [<Test>]
     let ``scan: assembly with no IVT returns empty`` () : unit =
         let source =
