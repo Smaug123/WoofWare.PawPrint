@@ -218,4 +218,44 @@ module NativeRuntimeMethodHandle =
                 IlMachineState.pushToEvalStack (CliType.ValueType returnValue) ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeMethodHandle",
+          "GetLoaderAllocatorInternal",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System",
+                                              "RuntimeMethodHandleInternal",
+                                              handleGenerics) ],
+          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                                      "System.Reflection",
+                                                                      "LoaderAllocator",
+                                                                      retGenerics)) when
+            handleGenerics.IsEmpty && retGenerics.IsEmpty
+            ->
+            // CoreCLR runtimehandles.cpp:2148 returns
+            //   pMethod->GetLoaderAllocator()->GetExposedObject()
+            // and `GetExposedObject` (loaderallocator.inl:11) reads
+            // `m_hLoaderAllocatorObjectHandle`, which is only populated by
+            // `LoaderAllocator::SetupManagedTracking`. That function is only invoked
+            // from `Assembly::Create` and `AssemblyNative::CreateAssemblyLoadContext`
+            // for *collectible* loader allocators (assembly.cpp:468). Non-collectible
+            // assemblies — i.e. everything PawPrint currently loads — leave the handle
+            // null, so the FCall returns null and the BCL takes the static-cache path
+            // (e.g. `RuntimeType.RuntimeTypeCache.GetGenericMethodInfo` switches to
+            // `s_methodInstantiations`). Allocating a fresh `LoaderAllocator` here would
+            // route those caches into a per-call object and silently break
+            // canonicalization of reflected generic methods.
+            //
+            // When collectible AssemblyLoadContexts get modelled, this arm should look
+            // up the method's LoaderAllocator identity and return the corresponding
+            // exposed object.
+            let operation = "RuntimeMethodHandle.GetLoaderAllocatorInternal"
+
+            // CoreCLR asserts non-null on the FCall entry; surface the same precondition.
+            let _ : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> =
+                resolveMethodInfoFromHandleArg operation state instruction.Arguments.[0]
+
+            let state = IlMachineState.pushToEvalStack (CliType.ObjectRef None) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | _ -> None
