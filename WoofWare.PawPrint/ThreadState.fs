@@ -13,6 +13,19 @@ type ThreadStatus =
     /// thread. Per ECMA-335 II.10.5.3.3 it must wait for that thread to finish initialising
     /// the type before it can proceed.
     | BlockedOnClassInit of blocker : ThreadId
+    /// This thread called `SystemNative_LowLevelMonitor_Acquire` (or transitioned out
+    /// of `BlockedOnMonitorWait` and is now waiting to reacquire) on a monitor whose
+    /// owner is another thread. The scheduler unblocks at most one such thread when
+    /// the owner calls `Release` (or `Signal_Release`); FIFO order over the acquire
+    /// queue is load-bearing for fairness of higher-level locks built on top of this
+    /// primitive (e.g. `LowLevelLock`).
+    | BlockedOnMonitorAcquire of monitor : LowLevelMonitorId
+    /// This thread called `SystemNative_LowLevelMonitor_Wait` and is sitting on the
+    /// monitor's wait queue with the monitor temporarily released. A subsequent
+    /// `Signal_Release` from another thread transitions the head of the wait queue
+    /// to `BlockedOnMonitorAcquire`; reacquisition then runs through the normal
+    /// acquire path.
+    | BlockedOnMonitorWait of monitor : LowLevelMonitorId
     /// This thread has executed its final `ret`; it will never run again. Its state is kept
     /// only so other threads can observe termination (e.g. to satisfy Join).
     | Terminated

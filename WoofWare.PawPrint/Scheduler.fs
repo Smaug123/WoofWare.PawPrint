@@ -45,6 +45,28 @@ module Scheduler =
             |> List.tryFind (fun (ThreadId i) -> i > lastRanId)
             |> Option.orElse (List.tryHead runnable)
 
+    /// Set `thread`'s status. Used by the LowLevelMonitor state machine, which
+    /// owns the registry-side bookkeeping (queues, owner) but routes every
+    /// ThreadStatus flip through here so the scheduler stays the single place
+    /// that mutates `ThreadStatus`.
+    ///
+    /// Not exposed for general use: every external caller should reach for a
+    /// purpose-built helper (`blockOnJoin`, `blockOnMonitorAcquire`, etc.) so
+    /// that the set of legal transitions stays enumerable in this module. Kept
+    /// internal to the assembly so it does become a back door.
+    let internal setThreadStatus (thread : ThreadId) (status : ThreadStatus) (state : IlMachineState) : IlMachineState =
+        { state with
+            ThreadState =
+                state.ThreadState
+                |> Map.change
+                    thread
+                    (Option.map (fun s ->
+                        { s with
+                            Status = status
+                        }
+                    ))
+        }
+
     /// Transition `blocked` from Runnable to BlockedOnJoin target. Called from the
     /// Thread.Join intrinsic in AbstractMachine; exposed here so the set of places
     /// that mutate ThreadStatus stays small and auditable.
@@ -68,6 +90,12 @@ module Scheduler =
     ///   type, because every thread waiting on that init would be stuck on a dead
     ///   blocker — a silent liveness bug. The real CLR wraps the dying cctor in a
     ///   TypeInitializationException; we don't synthesise one yet, so crash clearly.
+    /// - Fails loudly if `terminated` was still the Owner of any LowLevelMonitor,
+    ///   for the same reason: any thread parked in BlockedOnMonitorAcquire on that
+    ///   monitor would be permanently stuck on a dead owner. CoreCLR's
+    ///   `LowLevelMonitor` predicates "thread does not die holding the monitor" on
+    ///   higher-level discipline (RAII in `LowLevelMonitorHelper`); we mirror that
+    ///   contract with a loud failure rather than a silent deadlock.
     let onThreadTerminated (terminated : ThreadId) (state : IlMachineState) : IlMachineState =
         let orphanedInits =
             state.TypeInitTable
@@ -87,6 +115,22 @@ module Scheduler =
             // is far from the actual bug. Fail here so the blame is obvious.
             failwith
                 $"Thread {terminated} terminated while still the InProgress initializer of {orphanedInits.Length} type(s); the real CLR would raise TypeInitializationException into every waiter, which we don't yet synthesise."
+
+        let orphanedMonitors =
+            state.LowLevelMonitors
+            |> Map.toSeq
+            |> Seq.choose (fun (id, monitor) ->
+                match monitor.Owner with
+                | Some owner when owner = terminated -> Some id
+                | _ -> None
+            )
+            |> Seq.toList
+
+        match orphanedMonitors with
+        | [] -> ()
+        | _ ->
+            failwith
+                $"Thread {terminated} terminated while still owning {orphanedMonitors.Length} LowLevelMonitor(s) (%A{orphanedMonitors}); any thread parked in BlockedOnMonitorAcquire on those monitors would deadlock on a dead owner. The guest must Release before terminating."
 
         let threadState =
             state.ThreadState

@@ -59,6 +59,7 @@
     <Compile Include="TestProgramDebugger.fs" />
     <Compile Include="TestDebuggerServer.fs" />
     <Compile Include="TestBclIntrinsicStaticFields.fs" />
+    <Compile Include="TestLowLevelMonitor.fs" />
     <Compile Include="TestPureCases.fs" />
     <Compile Include="TestImpureCases.fs" />
   </ItemGroup>
