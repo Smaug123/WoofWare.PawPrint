@@ -187,6 +187,203 @@ module FriendAssemblyName =
             | FriendPublicKey.NotStrongNamed
             | FriendPublicKey.FullPublicKey _ -> Ok ()
 
+    let private bytesEqual (a : byte[]) (b : byte[]) : bool =
+        if isNull a || isNull b then
+            isNull a && isNull b
+        elif a.Length <> b.Length then
+            false
+        else
+            let mutable eq = true
+            let mutable i = 0
+
+            while eq && i < a.Length do
+                if a.[i] <> b.[i] then
+                    eq <- false
+
+                i <- i + 1
+
+            eq
+
+    /// Compute the eight-byte public key token from a full public key blob,
+    /// delegating to the host BCL's <c>AssemblyName.GetPublicKeyToken</c>.
+    /// Per ECMA-335 II.6.3 this is the low eight bytes of SHA-1 of the key,
+    /// reversed. The computation is pure (input bytes -> output bytes) so
+    /// the host's BCL agrees with what the guest's BCL would compute.
+    let private computeTokenFromPublicKey (publicKey : byte[]) : byte[] =
+        let an = AssemblyName ()
+        an.SetPublicKey publicKey
+        an.GetPublicKeyToken ()
+
+    let private namesEqual (a : string) (b : string) : bool =
+        if isNull a || isNull b then
+            isNull a && isNull b
+        else
+            String.Equals (a, b, StringComparison.OrdinalIgnoreCase)
+
+    /// Faithful port of CoreCLR's <c>BaseAssemblySpec::RefMatchesDef</c>
+    /// composed with <c>CompareRefToDef</c>. Treats the
+    /// <c>FriendAssemblyName</c> as the ref and the supplied
+    /// <c>AssemblyName</c> as the def.
+    let matchesDef (ref : FriendAssemblyName) (def : AssemblyName) : bool =
+        // RefMatchesDef: if ref is not strong-named, only compare names.
+        match ref.PublicKey with
+        | FriendPublicKey.NotStrongNamed -> namesEqual ref.Name def.Name
+        | _ ->
+
+        // Strong-named ref: def must also be strong-named. Inspect the
+        // AssemblyName fields directly rather than calling
+        // GetPublicKeyToken(), which derives the token (and throws
+        // SecurityException on a structurally malformed full-key blob)
+        // when the def carries a key but no explicit token. We use
+        // AssemblyNameFlags.PublicKey to distinguish: when the flag is set
+        // the def has a full key (GetPublicKeyToken would derive on
+        // demand); when clear, GetPublicKeyToken returns the literal
+        // stored token bytes (no derivation, no validation).
+        let defKey = def.GetPublicKey ()
+        let defHasFullKey = not (isNull defKey) && defKey.Length > 0
+
+        let defHasFullKeyFlag =
+            (def.Flags &&& AssemblyNameFlags.PublicKey) <> AssemblyNameFlags.None
+
+        let defStoredToken : byte[] =
+            if defHasFullKeyFlag then
+                // Stored-token field is unused when the full-key flag is
+                // set; defer the derivation to the token-ref branch
+                // below, which is the only branch that needs the token.
+                Array.empty
+            else
+                let t = def.GetPublicKeyToken ()
+                if isNull t then Array.empty else t
+
+        let defIsStrongNamed = defHasFullKey || defStoredToken.Length > 0
+
+        if not defIsStrongNamed then
+            false
+        else if
+
+            // CompareRefToDef name comparison.
+            not (namesEqual ref.Name def.Name)
+        then
+            false
+        else
+
+        // CompareRefToDef public key / token comparison.
+        // CoreCLR stores a single m_pbPublicKeyOrToken blob per spec and a
+        // flag that says whether it's a full key or a token; CompareRefToDef
+        // is a length+memcmp on those bytes. RefMatchesDef branches on the
+        // ref:
+        //   - Full-key ref: CompareRefToDef runs directly. If the def
+        //     carries only a token (smaller bytes), the length mismatch
+        //     fails the comparison; checkFriendRestrictions has already
+        //     guaranteed no Friend ref is token-only, but a def populated
+        //     from a token-only display name is possible. Model this
+        //     faithfully by requiring def to expose a full key. CoreCLR
+        //     additionally compares the afPublicKey flag in its
+        //     masked-flags strict-equality check, so we also require the
+        //     def's PublicKey flag bit to be set; otherwise a manually
+        //     constructed def with bytes set via SetPublicKey but the
+        //     flag cleared (the AssemblyName.Flags setter is mutable)
+        //     would spuriously match. The comparison is over raw bytes,
+        //     so a structurally malformed full-key blob is fine —
+        //     CoreCLR does not validate the blob during the comparison
+        //     either.
+        //   - Token-only ref: CoreCLR copies the def and calls
+        //     ConvertPublicKeyToToken before CompareRefToDef, so a full-key
+        //     def is reduced to its token first. We derive the token here
+        //     when needed.
+        let keysMatch =
+            match ref.PublicKey with
+            | FriendPublicKey.NotStrongNamed -> false
+            | FriendPublicKey.FullPublicKey k ->
+                if defHasFullKey && defHasFullKeyFlag then
+                    bytesEqual k defKey
+                else
+                    false
+            | FriendPublicKey.PublicKeyToken t ->
+                let defTokenMaterialised =
+                    if defStoredToken.Length > 0 then defStoredToken
+                    elif defHasFullKey then computeTokenFromPublicKey defKey
+                    else Array.empty
+
+                bytesEqual t defTokenMaterialised
+
+        if not keysMatch then
+            false
+        else
+
+        // CompareRefToDef Retargetable comparison. CoreCLR includes
+        // Retargetable in the masked-flags strict-equality check, so the
+        // ref's flag must equal the def's. (ProcessorArchitecture is masked
+        // out and ignored; ContentType is handled separately below.)
+        let defIsRetargetable =
+            (def.Flags &&& AssemblyNameFlags.Retargetable) <> AssemblyNameFlags.None
+
+        if ref.HasRetargetable <> defIsRetargetable then
+            false
+        else
+
+        // CompareRefToDef ContentType comparison. Optional in the ref: if
+        // the ref's content type is Default, the def's is unconstrained;
+        // otherwise it must equal the def's exactly.
+        let contentTypeMatch =
+            ref.ContentType = AssemblyContentType.Default
+            || ref.ContentType = def.ContentType
+
+        if not contentTypeMatch then
+            false
+        else
+
+        // CompareRefToDef cascading version comparison; -1 in any component
+        // means "unspecified, do not constrain lower components". The
+        // AssemblyName surface uses Version objects so we approximate by
+        // looking at the structured fields.
+        let versionMatch =
+            match ref.Version with
+            | None -> true
+            | Some refV ->
+                let defV = def.Version
+
+                if isNull defV then
+                    false
+                else
+                    let cmp (refField : int) (defField : int) (lower : (unit -> bool) option) : bool =
+                        if refField < 0 then
+                            true
+                        elif refField <> defField then
+                            false
+                        else
+                            match lower with
+                            | None -> true
+                            | Some f -> f ()
+
+                    cmp
+                        refV.Major
+                        defV.Major
+                        (Some (fun () ->
+                            cmp
+                                refV.Minor
+                                defV.Minor
+                                (Some (fun () ->
+                                    cmp refV.Build defV.Build (Some (fun () -> cmp refV.Revision defV.Revision None))
+                                ))
+                        ))
+
+        if not versionMatch then
+            false
+        else
+
+        // CompareRefToDef locale comparison. CoreCLR uses strcmp, i.e.
+        // case-sensitive ordinal.
+        match ref.Culture with
+        | None -> true
+        | Some refCulture ->
+            let defCulture =
+                let c = def.CultureName
+
+                if isNull c then "" else c
+
+            String.Equals (refCulture, defCulture, StringComparison.Ordinal)
+
 /// <summary>
 /// The set of friend assemblies declared on a given assembly. Friend access
 /// is granted through <c>InternalsVisibleToAttribute</c> (callers may see
