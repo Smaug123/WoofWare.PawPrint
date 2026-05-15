@@ -28,6 +28,7 @@ module TestImpureCases =
                 FileName = "WriteLine.cs"
                 ExpectedReturnCode = 1
                 NativeImpls = NativeImpls.PassThru ()
+                Environment = Map.empty
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -38,6 +39,7 @@ module TestImpureCases =
             {
                 FileName = "InstaQuit.cs"
                 ExpectedReturnCode = 1
+                Environment = Map.empty
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
                 NativeImpls =
@@ -54,7 +56,6 @@ module TestImpureCases =
 
                                         (state, WhatWeDid.Executed) |> ExecutionResult.stepped
                                 GetCurrentManagedThreadId = env.GetCurrentManagedThreadId
-                                TryGetEnvironmentVariable = env.TryGetEnvironmentVariable
                                 _Exit =
                                     fun thread state ->
                                         let state = state |> IlMachineState.loadArgument thread 0
@@ -67,6 +68,7 @@ module TestImpureCases =
                 // must terminate with the worker's exit code, not just that worker thread.
                 FileName = "ExitFromWorker.cs"
                 ExpectedReturnCode = 7
+                Environment = Map.empty
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
                 NativeImpls =
@@ -90,6 +92,7 @@ module TestImpureCases =
                 // as a wrong exit code.
                 FileName = "SystemNativeWriteSuccess.cs"
                 ExpectedReturnCode = 0
+                Environment = Map.empty
                 ExpectsUnhandledException = false
                 NativeImpls = NativeImpls.PassThru ()
                 AssertTerminalState =
@@ -124,7 +127,16 @@ module TestImpureCases =
 
         try
             let terminalState, terminatingThread =
-                match Program.run loggerFactory (Some case.FileName) peImage dotnetRuntimes case.NativeImpls [] with
+                match
+                    Program.run
+                        loggerFactory
+                        (Some case.FileName)
+                        peImage
+                        dotnetRuntimes
+                        case.NativeImpls
+                        case.Environment
+                        []
+                with
                 | RunOutcome.GuestUnhandledException (_, _, exn) ->
                     failwith $"Guest threw unhandled exception: %O{exn.ExceptionObject}"
                 | RunOutcome.FailFast (_, _, message) ->

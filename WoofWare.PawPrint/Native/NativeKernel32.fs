@@ -1,6 +1,5 @@
 namespace WoofWare.PawPrint
 
-open WoofWare.PawPrint.ExternImplementations
 
 [<RequireQualifiedAccess>]
 module NativeKernel32 =
@@ -142,10 +141,16 @@ module NativeKernel32 =
             let name =
                 NativeCall.readNullTerminatedUtf16 operation ctx.BaseClassTypes state namePtr
 
-            let env = ISystem_Environment_Env.get ctx.Implementations
-
+            // The "kernel32!GetEnvironmentVariableW" QCall is a CoreCLR PAL entry on
+            // Unix hosts, where the PAL implementation matches env-var names exactly
+            // (see CoreCLR pal/src/misc/environ.cpp `FindEnvVarValue`). On Windows
+            // the real kernel32 entry would be case-insensitive, but PawPrint is
+            // baselined against the host runtime — which is the Unix PAL on the
+            // macOS/Linux hosts this project actually runs on — so an exact
+            // `Map.tryFind` is the semantics that keeps PawPrint in step with the
+            // real runtime.
             let plan =
-                planGetEnvironmentVariableW bufferSize (env.TryGetEnvironmentVariable name)
+                planGetEnvironmentVariableW bufferSize (Map.tryFind name state.Kernel.Environment)
 
             let state =
                 match plan.ValueToWrite with

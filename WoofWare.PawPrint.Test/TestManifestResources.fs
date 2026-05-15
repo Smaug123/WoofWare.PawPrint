@@ -80,7 +80,7 @@ public static class Entry
 
         use peImage = new MemoryStream (image)
 
-        match Program.prepare loggerFactory (Some sourceName) peImage dotnetRuntimes implementations [] with
+        match Program.prepare loggerFactory (Some sourceName) peImage dotnetRuntimes implementations Map.empty [] with
         | Program.ProgramStartResult.Ready prepared -> prepared
         | Program.ProgramStartResult.CompletedBeforeMain outcome ->
             failwith $"expected program to be ready before Main, but got %O{outcome}"

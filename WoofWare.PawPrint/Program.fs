@@ -224,12 +224,18 @@ module Program =
         pumpPrepared loggerFactory logger impls prepared
 
     /// Reads the guest assembly and performs the one-time setup needed before Main is ready to schedule.
+    ///
+    /// `env` is overlaid on top of `EmulatedKernel.defaultEnvironment`, so callers that pass
+    /// `Map.empty` still get the seeded `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1` default.
+    /// Keys present in `env` win over the default — that's how the CLI lets the host process
+    /// override the seed if it really needs to.
     let prepare
         (loggerFactory : ILoggerFactory)
         (originalPath : string option)
         (fileStream : Stream)
         (dotnetRuntimeDirs : ImmutableArray<string>)
         impls
+        (env : Map<string, string>)
         (argv : string list)
         : ProgramStartResult
         =
@@ -247,7 +253,9 @@ module Program =
         if mainMethodFromMetadata.Signature.GenericParameterCount > 0 then
             failwith "Refusing to execute generic main method"
 
-        let state = IlMachineState.initial loggerFactory dotnetRuntimeDirs dumped
+        let state =
+            IlMachineState.initial loggerFactory dotnetRuntimeDirs dumped
+            |> fun s -> s.MapKernel (EmulatedKernel.withEnvironment env)
 
         // Find the core library by traversing the type hierarchy of the main method's declaring type
         // until we reach System.Object
@@ -517,11 +525,12 @@ module Program =
         (fileStream : Stream)
         (dotnetRuntimeDirs : ImmutableArray<string>)
         impls
+        (env : Map<string, string>)
         (argv : string list)
         : RunOutcome
         =
         let logger = loggerFactory.CreateLogger "Program"
 
-        match prepare loggerFactory originalPath fileStream dotnetRuntimeDirs impls argv with
+        match prepare loggerFactory originalPath fileStream dotnetRuntimeDirs impls env argv with
         | ProgramStartResult.CompletedBeforeMain outcome -> outcome
         | ProgramStartResult.Ready prepared -> pumpPrepared loggerFactory logger impls prepared
