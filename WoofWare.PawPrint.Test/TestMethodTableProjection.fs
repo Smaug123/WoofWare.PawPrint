@@ -341,6 +341,7 @@ public interface IOpenInterface<T>
         let writeEx =
             Assert.Throws<System.Exception> (fun () ->
                 IlMachineState.writeManagedByrefBytesOrTypedCell
+                    bct
                     state
                     ptr
                     (CliType.Numeric (CliNumericType.UInt8 0xAAuy))
@@ -1375,6 +1376,7 @@ public unsafe struct PointerWrapper
 
         let state =
             IlMachineState.writeManagedByrefBytesOrTypedCell
+                bct
                 state
                 ptrAtOffset
                 (CliType.Numeric (CliNumericType.UInt16 0xBEEFus))
@@ -1417,6 +1419,7 @@ public unsafe struct PointerWrapper
 
             let state =
                 IlMachineState.writeManagedByrefBytesOrTypedCell
+                    bct
                     state
                     ptrAtOffset
                     (CliType.Numeric (CliNumericType.UInt16 sample.Payload))
@@ -1443,6 +1446,7 @@ public unsafe struct PointerWrapper
 
             let state =
                 IlMachineState.writeManagedByrefBytesOrTypedCell
+                    bct
                     state
                     ptr
                     (CliType.Numeric (CliNumericType.UInt16 payload))
@@ -1585,12 +1589,18 @@ public unsafe struct PointerWrapper
                 |> ignore
             )
 
-        ex.Message |> shouldContainText "byte-unaddressable storage (object reference)"
-        ex.Message |> shouldContainText "write through `ReinterpretAs`"
-        ex.Message |> shouldContainText "CLI value byte layout:"
+        // The iterative byte-view peel collapses `[ReinterpretAs FourBytes, Field _]` over an
+        // `object[]` element to a byte write at offset 0 of the element. The array-element byte
+        // writer then refuses the byte view because the element holds an object reference whose
+        // bytes are not part of the model. We still get a clear failure attributing to the storage
+        // shape; the message just no longer attributes through `ReinterpretAs` because the peel
+        // produced a residual offset-only chain, not a residual reinterpret.
+        ex.Message |> shouldContainText "refusing byte view over object reference"
 
         ex.Message
         |> shouldContainText "byte-addressability: rejected: object reference"
+
+        ex.Message |> shouldContainText "Value layout:"
 
     [<Test>]
     let ``Reinterpreted write over runtime-pointer value-type storage reports unsupported storage shape`` () : unit =
@@ -1615,13 +1625,15 @@ public unsafe struct PointerWrapper
                 |> ignore
             )
 
+        // The iterative byte-view peel collapses `[ReinterpretAs FourBytes, Field _]` over an
+        // array element whose declared type is a runtime-pointer-bearing value type to a byte
+        // write at offset 0 of the element. The array-element byte writer refuses because the
+        // element's value type contains runtime pointers whose bytes are not part of the model.
+        // We still get a clear failure attributing to the storage shape.
         ex.Message
-        |> shouldContainText "byte-unaddressable storage (value type containing runtime pointers)"
+        |> shouldContainText "refusing byte view over value type containing runtime pointers"
 
-        ex.Message |> shouldContainText "write through `ReinterpretAs`"
-        ex.Message |> shouldContainText "value type byte layout:"
-        ex.Message |> shouldContainText "declared type:"
-        ex.Message |> shouldContainText "Ptr: range=[0, 8), size=8"
+        ex.Message |> shouldContainText "Value layout:"
 
         ex.Message
         |> shouldContainText "byte-addressability: rejected: value type containing runtime pointers"
@@ -1648,6 +1660,7 @@ public unsafe struct PointerWrapper
 
         let state =
             IlMachineState.writeManagedByrefBytesOrTypedCell
+                bct
                 state
                 ptr
                 (CliType.Numeric (CliNumericType.Int32 replacement))
@@ -1680,6 +1693,7 @@ public unsafe struct PointerWrapper
 
             let state =
                 IlMachineState.writeManagedByrefBytesOrTypedCell
+                    bct
                     state
                     ptr
                     (CliType.Numeric (CliNumericType.UInt16 payload))
@@ -1709,6 +1723,7 @@ public unsafe struct PointerWrapper
 
             let stateAfterPlain =
                 IlMachineState.writeManagedByrefBytesOrTypedCell
+                    bct
                     state
                     plainPtr
                     (CliType.Numeric (CliNumericType.UInt16 plainPayload))
@@ -1727,6 +1742,7 @@ public unsafe struct PointerWrapper
 
             let stateAfterByteView =
                 IlMachineState.writeManagedByrefBytesOrTypedCell
+                    bct
                     state
                     byteViewPtr
                     (CliType.Numeric (CliNumericType.UInt8 initialBytes.[sample.Offset]))
@@ -1747,7 +1763,7 @@ public unsafe struct PointerWrapper
         let arrayBefore = state.ManagedHeap.Arrays.[arrayAddr]
         let ptr = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), [])
 
-        let state = IlMachineState.writeManagedByrefBytesOrTypedCell state ptr nan
+        let state = IlMachineState.writeManagedByrefBytesOrTypedCell bct state ptr nan
         let arrayAfter = state.ManagedHeap.Arrays.[arrayAddr]
 
         System.Object.ReferenceEquals (arrayAfter, arrayBefore) |> shouldEqual true
@@ -1802,7 +1818,7 @@ public unsafe struct PointerWrapper
             )
 
         let ptr = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), [])
-        let state = IlMachineState.writeManagedByrefBytesOrTypedCell state ptr written
+        let state = IlMachineState.writeManagedByrefBytesOrTypedCell bct state ptr written
         let arrayAfter = state.ManagedHeap.Arrays.[arrayAddr]
 
         System.Object.ReferenceEquals (arrayAfter, arrayBefore) |> shouldEqual true
@@ -1830,7 +1846,7 @@ public unsafe struct PointerWrapper
                 IlMachineState.allocateArray doubleArrayHandle (fun () -> initial) 1 state
 
             let ptr = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), [])
-            let state = IlMachineState.writeManagedByrefBytesOrTypedCell state ptr written
+            let state = IlMachineState.writeManagedByrefBytesOrTypedCell bct state ptr written
 
             let actual =
                 IlMachineState.readManagedByrefBytesAs bct state ptr (CliType.Numeric (CliNumericType.Float64 0.0))
@@ -1854,7 +1870,7 @@ public unsafe struct PointerWrapper
         let ptr = ManagedPointerSource.Byref (ByrefRoot.StringCharAt (stringAddr, 0), [])
 
         let stateAfter =
-            IlMachineState.writeManagedByrefBytesOrTypedCell state ptr (CliType.ofChar 'A')
+            IlMachineState.writeManagedByrefBytesOrTypedCell bct state ptr (CliType.ofChar 'A')
 
         System.Object.ReferenceEquals (stateAfter, state) |> shouldEqual true
 
@@ -1876,7 +1892,7 @@ public unsafe struct PointerWrapper
             | other -> failwith $"Expected local-memory root pointer, got %O{other}"
 
         let initial = CliType.Numeric (CliNumericType.Int32 0x11223344)
-        let state = IlMachineState.writeManagedByrefBytesOrTypedCell state ptr initial
+        let state = IlMachineState.writeManagedByrefBytesOrTypedCell bct state ptr initial
 
         let bareBytePtr =
             ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, 0), [])
@@ -1887,7 +1903,7 @@ public unsafe struct PointerWrapper
         System.Object.ReferenceEquals (stateAfterBare, state) |> shouldEqual true
 
         let stateAfterWide =
-            IlMachineState.writeManagedByrefBytesOrTypedCell state ptr initial
+            IlMachineState.writeManagedByrefBytesOrTypedCell bct state ptr initial
 
         System.Object.ReferenceEquals (stateAfterWide, state) |> shouldEqual true
 
@@ -1933,12 +1949,14 @@ public unsafe struct PointerWrapper
 
         let state =
             IlMachineState.writeManagedByrefBytesOrTypedCell
+                bct
                 state
                 (byteViewAt 1)
                 (CliType.Numeric (CliNumericType.UInt8 0xAAuy))
 
         let state =
             IlMachineState.writeManagedByrefBytesOrTypedCell
+                bct
                 state
                 (byteViewAt 2)
                 (CliType.Numeric (CliNumericType.UInt8 0xBBuy))
@@ -1948,7 +1966,7 @@ public unsafe struct PointerWrapper
         Map.count blockBeforeTypedWrite.Bytes |> shouldEqual 2
 
         let updated = CliType.Numeric (CliNumericType.Int32 0x11223344)
-        let state = IlMachineState.writeManagedByrefBytesOrTypedCell state ptr updated
+        let state = IlMachineState.writeManagedByrefBytesOrTypedCell bct state ptr updated
 
         let pool = IlMachineState.getStackMemoryPool thread frame state
         let blockAfterTypedWrite = StackMemoryPool.getBlock block pool
@@ -2121,7 +2139,8 @@ public unsafe struct PointerWrapper
         let handle =
             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr 9876L))
 
-        let stateAfter = IlMachineState.writeManagedByrefBytesOrTypedCell state ptr handle
+        let stateAfter =
+            IlMachineState.writeManagedByrefBytesOrTypedCell bct state ptr handle
 
         IlMachineState.readManagedByref bct stateAfter ptr |> shouldEqual handle
 
@@ -2147,8 +2166,11 @@ public unsafe struct PointerWrapper
         let secondHandle =
             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr 2L))
 
-        let state = IlMachineState.writeManagedByrefBytesOrTypedCell state ptr firstHandle
-        let state = IlMachineState.writeManagedByrefBytesOrTypedCell state ptr secondHandle
+        let state =
+            IlMachineState.writeManagedByrefBytesOrTypedCell bct state ptr firstHandle
+
+        let state =
+            IlMachineState.writeManagedByrefBytesOrTypedCell bct state ptr secondHandle
 
         IlMachineState.readManagedByref bct state ptr |> shouldEqual secondHandle
 
@@ -2170,10 +2192,10 @@ public unsafe struct PointerWrapper
         let handle =
             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr 0xDEADL))
 
-        let state = IlMachineState.writeManagedByrefBytesOrTypedCell state ptr handle
+        let state = IlMachineState.writeManagedByrefBytesOrTypedCell bct state ptr handle
 
         Assert.Throws<System.Exception> (fun () ->
-            IlMachineState.writeManagedByrefBytesOrTypedCell state ptr (CliType.Numeric (CliNumericType.Int32 42))
+            IlMachineState.writeManagedByrefBytesOrTypedCell bct state ptr (CliType.Numeric (CliNumericType.Int32 42))
             |> ignore
         )
         |> ignore
@@ -2255,6 +2277,7 @@ public unsafe struct PointerWrapper
 
         let state =
             IlMachineState.writeManagedByrefBytesOrTypedCell
+                bct
                 state
                 midCellPtr
                 (CliType.Numeric (CliNumericType.UInt8 0xAAuy))
@@ -2285,7 +2308,7 @@ public unsafe struct PointerWrapper
 
         let zero = CliType.Numeric (CliNumericType.Int32 0)
 
-        let stateAfter = IlMachineState.writeManagedByrefBytesOrTypedCell state ptr zero
+        let stateAfter = IlMachineState.writeManagedByrefBytesOrTypedCell bct state ptr zero
 
         IlMachineState.readManagedByref bct stateAfter ptr |> shouldEqual zero
 
@@ -2307,12 +2330,12 @@ public unsafe struct PointerWrapper
         let handle =
             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr 1234L))
 
-        let state = IlMachineState.writeManagedByrefBytesOrTypedCell state ptr handle
+        let state = IlMachineState.writeManagedByrefBytesOrTypedCell bct state ptr handle
 
         let verbatim =
             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 5678L))
 
-        let state = IlMachineState.writeManagedByrefBytesOrTypedCell state ptr verbatim
+        let state = IlMachineState.writeManagedByrefBytesOrTypedCell bct state ptr verbatim
 
         IlMachineState.readManagedByref bct state ptr |> shouldEqual verbatim
 
@@ -2687,7 +2710,7 @@ public unsafe struct PointerWrapper
         let heapPtr = ManagedPointerSource.Byref (ByrefRoot.HeapValue boxedAddr, [])
 
         Assert.Throws<System.Exception> (fun () ->
-            IlMachineState.writeManagedByrefBytesOrTypedCell state heapPtr wrappedIntPtrNewValue
+            IlMachineState.writeManagedByrefBytesOrTypedCell bct state heapPtr wrappedIntPtrNewValue
             |> ignore
         )
         |> ignore
@@ -3197,7 +3220,7 @@ public unsafe struct PointerWrapper
             |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset 0)
 
         let state =
-            IlMachineState.writeManagedByrefBytesOrTypedCell state ptr (CliType.ObjectRef (Some replacementAddr))
+            IlMachineState.writeManagedByrefBytesOrTypedCell bct state ptr (CliType.ObjectRef (Some replacementAddr))
 
         IlMachineState.readManagedByrefBytesAs bct state ptr (CliType.ObjectRef None)
         |> shouldEqual (CliType.ObjectRef (Some replacementAddr))
@@ -3219,7 +3242,7 @@ public unsafe struct PointerWrapper
             |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset 0)
 
         let state =
-            IlMachineState.writeManagedByrefBytesOrTypedCell state ptr (CliType.ObjectRef None)
+            IlMachineState.writeManagedByrefBytesOrTypedCell bct state ptr (CliType.ObjectRef None)
 
         IlMachineState.readManagedByrefBytesAs bct state ptr (CliType.ObjectRef None)
         |> shouldEqual (CliType.ObjectRef None)
@@ -3345,6 +3368,7 @@ public unsafe struct PointerWrapper
 
         let state =
             IlMachineState.writeManagedByrefBytesOrTypedCell
+                bct
                 state
                 writePtr
                 (CliType.Numeric (CliNumericType.Int16 0xCAFEs))
@@ -3402,6 +3426,7 @@ public unsafe struct PointerWrapper
         let negativeWriteEx =
             Assert.Throws<System.Exception> (fun () ->
                 IlMachineState.writeManagedByrefBytesOrTypedCell
+                    bct
                     state
                     negativePtr
                     (CliType.Numeric (CliNumericType.UInt16 0xBEEFus))
@@ -3413,6 +3438,7 @@ public unsafe struct PointerWrapper
         let writeEx =
             Assert.Throws<System.Exception> (fun () ->
                 IlMachineState.writeManagedByrefBytesOrTypedCell
+                    bct
                     state
                     ptrAtOffset
                     (CliType.Numeric (CliNumericType.UInt16 0xBEEFus))
@@ -3420,3 +3446,51 @@ public unsafe struct PointerWrapper
             )
 
         writeEx.Message |> shouldContainText "outside 8-byte boxed payload"
+
+    [<Test>]
+    let ``Metadata-light writeManagedByref accepts trailing ReinterpretAs byte view`` () : unit =
+        // Regression: `writeManagedByref` is the BCT-less entry point used by
+        // primitive/external boundaries that do not currently carry type
+        // metadata. Historically it accepted simple trailing byte-view shapes
+        // (`[ReinterpretAs T]` and `[..., ReinterpretAs T; ByteOffset n]`) over
+        // byte-addressable roots, routing through the byte-scatter path of
+        // `writeManagedByrefBytesOrTypedCell`. The forward-walk peel rewrite
+        // initially required BCT, which broke this metadata-light contract;
+        // this test pins the restored behaviour for both the bare reinterpret
+        // shape and the reinterpret-plus-byte-offset shape.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread =
+            stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Nop)
+
+        let ptr, state =
+            IlMachineState.allocateStackMemory thread MemoryBlockInitialization.ZeroInitialized 4 state
+
+        let byteReinterpret = concreteTypeFor bct.Byte
+
+        let bareReinterpretPtr =
+            ptr
+            |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs byteReinterpret)
+
+        let state =
+            IlMachineState.writeManagedByref state bareReinterpretPtr (CliType.Numeric (CliNumericType.UInt8 0xAAuy))
+
+        IlMachineState.readManagedByrefBytesAs bct state ptr (CliType.Numeric (CliNumericType.UInt8 0uy))
+        |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 0xAAuy))
+
+        let offsetReinterpretPtr =
+            bareReinterpretPtr
+            |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset 2)
+
+        let state =
+            IlMachineState.writeManagedByref state offsetReinterpretPtr (CliType.Numeric (CliNumericType.UInt8 0xBBuy))
+
+        let readAt (offset : int) : CliType =
+            let readPtr =
+                bareReinterpretPtr
+                |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset offset)
+
+            IlMachineState.readManagedByrefBytesAs bct state readPtr (CliType.Numeric (CliNumericType.UInt8 0uy))
+
+        readAt 0 |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 0xAAuy))
+        readAt 2 |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 0xBBuy))

@@ -26,8 +26,18 @@ module NativeBuffer =
         | CliType.Numeric (CliNumericType.UInt8 b) -> b
         | other -> failwith $"Buffer_MemMove: byte-view read returned non-byte value %O{other}"
 
-    let private writeByte (state : IlMachineState) (ptr : ManagedPointerSource) (value : byte) : IlMachineState =
-        IlMachineState.writeManagedByrefBytesOrTypedCell state ptr (CliType.Numeric (CliNumericType.UInt8 value))
+    let private writeByte
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (ptr : ManagedPointerSource)
+        (value : byte)
+        : IlMachineState
+        =
+        IlMachineState.writeManagedByrefBytesOrTypedCell
+            baseClassTypes
+            state
+            ptr
+            (CliType.Numeric (CliNumericType.UInt8 value))
 
     let private checkedByteCount (operation : string) (count : int64) : int =
         if count < 0L then
@@ -140,7 +150,7 @@ module NativeBuffer =
                     ManagedPointerByteView.addByteOffset baseClassTypes state byteConcreteType i dest
 
                 let value = readByte baseClassTypes state src
-                state <- writeByte state dest value
+                state <- writeByte baseClassTypes state dest value
         else
             for i = 0 to byteCount - 1 do
                 let src =
@@ -150,7 +160,7 @@ module NativeBuffer =
                     ManagedPointerByteView.addByteOffset baseClassTypes state byteConcreteType i dest
 
                 let value = readByte baseClassTypes state src
-                state <- writeByte state dest value
+                state <- writeByte baseClassTypes state dest value
 
         state
 

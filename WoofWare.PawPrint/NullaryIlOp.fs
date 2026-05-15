@@ -1215,6 +1215,18 @@ module NullaryIlOp =
                 match converted with
                 | None -> failwith "TODO: Conv_I conversion failure unimplemented"
                 | Some conv ->
+                    // Crossing from byref-world to native-pointer-world: subsequent
+                    // pointer arithmetic must be byte-stride per ECMA-335 §III.1.5,
+                    // so anchor a `ReinterpretAs T` projection on plain array
+                    // byrefs. Plain byrefs (no anchor) keep element-stride
+                    // arithmetic to match `Unsafe.Add<T>`.
+                    let conv =
+                        match conv with
+                        | NativeIntSource.ManagedPointer ptr ->
+                            ManagedPointerByteView.anchorByteViewIfPlainArrayByref corelib state ptr
+                            |> NativeIntSource.ManagedPointer
+                        | other -> other
+
                     state
                     |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt conv) currentThread
 
@@ -1322,7 +1334,14 @@ module NullaryIlOp =
                     let conv =
                         match conv with
                         | UnsignedNativeIntSource.Verbatim conv -> int64 conv |> NativeIntSource.Verbatim
-                        | UnsignedNativeIntSource.FromManagedPointer ptr -> NativeIntSource.ManagedPointer ptr
+                        | UnsignedNativeIntSource.FromManagedPointer ptr ->
+                            // Crossing from byref-world to native-pointer-world: subsequent
+                            // pointer arithmetic must be byte-stride per ECMA-335 §III.1.5,
+                            // so anchor a `ReinterpretAs T` projection on plain array
+                            // byrefs. Plain byrefs (no anchor) keep element-stride
+                            // arithmetic to match `Unsafe.Add<T>`.
+                            ManagedPointerByteView.anchorByteViewIfPlainArrayByref corelib state ptr
+                            |> NativeIntSource.ManagedPointer
                         | UnsignedNativeIntSource.FromSyntheticCrossArrayStorage i ->
                             NativeIntSource.SyntheticCrossArrayOffset i
                         | UnsignedNativeIntSource.FromOpaqueHashBits bits -> NativeIntSource.OpaqueHashBits bits
