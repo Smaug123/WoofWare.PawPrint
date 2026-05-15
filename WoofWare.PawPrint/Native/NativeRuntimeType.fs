@@ -1829,6 +1829,70 @@ module NativeRuntimeType =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 elementType)) ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+        | "TypeHandle_CanCastTo_NoCacheLookup",
+          "System.Private.CoreLib",
+          "System.Runtime.CompilerServices",
+          "TypeHandle",
+          _,
+          [ ConcretePointer (ConcreteVoid state.ConcreteTypes) ; ConcretePointer (ConcreteVoid state.ConcreteTypes) ],
+          returnType ->
+            // The managed wrapper short-circuits identity, the "ref-type → TypeDesc" rejection,
+            // and the reflection-only Nullable<T> ⇆ T rule *before* invoking this QCall. By the
+            // time we get here, the only remaining job is the uncached cast walk that PawPrint's
+            // existing oracle already implements for the IL `castclass`/`isinst`/`stelem.ref`
+            // opcodes. We delegate to it directly.
+            let operation = "TypeHandle.CanCastTo_NoCacheLookup"
+
+            match returnType with
+            | MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                                          "",
+                                                                          "BOOL",
+                                                                          boolGenerics)) when boolGenerics.IsEmpty -> ()
+            | other -> failwith $"%s{operation}: unexpected QCall stub return type %O{other}"
+
+            if instruction.Arguments.Length <> 2 then
+                failwith $"%s{operation}: expected two native arguments, got %d{instruction.Arguments.Length}"
+
+            let fromTarget =
+                NativeCall.runtimeTypeHandleTargetOfEvalStackValue
+                    operation
+                    (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
+
+            let toTarget =
+                NativeCall.runtimeTypeHandleTargetOfEvalStackValue
+                    operation
+                    (instruction.Arguments.[1] |> EvalStackValue.ofCliType)
+
+            // Non-Closed handles correspond to CoreCLR TypeDescs (generic parameters, open
+            // generic definitions). The full cast oracle for those involves variance/identity
+            // rules that PawPrint does not yet model; fail loudly so the missing case surfaces
+            // rather than silently returning a wrong answer.
+            let toConcreteHandle (label : string) (target : RuntimeTypeHandleTarget) : ConcreteTypeHandle =
+                match target with
+                | RuntimeTypeHandleTarget.Closed handle -> handle
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+                    failwith
+                        $"TODO: %s{operation} for open generic %s{label} type definition %O{identity}; need to model variance/identity rules"
+                | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
+                    failwith
+                        $"TODO: %s{operation} for generic parameter %s{label} #%i{position} of %O{declaringType.TypeDefinition.Get}"
+                | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+                    failwith
+                        $"TODO: %s{operation} for method generic parameter %s{label} #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
+
+            let fromHandle = toConcreteHandle "from" fromTarget
+            let toHandle = toConcreteHandle "to" toTarget
+
+            let state, isAssignable =
+                IlMachineState.isConcreteTypeAssignableTo ctx.LoggerFactory ctx.BaseClassTypes state fromHandle toHandle
+
+            // Interop.BOOL is int-backed with FALSE = 0 and TRUE = 1, so a raw Int32 is the
+            // correct representation on the eval stack.
+            let state =
+                let ret = if isAssignable then 1 else 0
+                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 ret)) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | "MethodTable_CanCompareBitsOrUseFastGetHashCode",
           "System.Private.CoreLib",
           "System",
