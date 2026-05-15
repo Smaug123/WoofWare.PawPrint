@@ -57,7 +57,7 @@ module NativeKernel32 =
         let ptr =
             ManagedPointerByteView.addByteOffset baseClassTypes state charConcreteType (charIndex * 2) ptr
 
-        IlMachineState.writeManagedByrefBytesOrTypedCell state ptr (CliType.ofChar value)
+        IlMachineState.writeManagedByrefBytesOrTypedCell baseClassTypes state ptr (CliType.ofChar value)
 
     let private writeNullTerminatedUtf16
         (operation : string)

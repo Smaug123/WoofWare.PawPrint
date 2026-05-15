@@ -632,6 +632,7 @@ module TestBinaryArithmetic =
         // Plain typed-cell round-trip at the base offset.
         let state =
             IlMachineState.writeManagedByrefBytesOrTypedCell
+                baseClassTypes
                 state
                 ptr
                 (CliType.Numeric (CliNumericType.Int32 0x11223344))

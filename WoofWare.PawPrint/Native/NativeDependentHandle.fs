@@ -121,7 +121,11 @@ module NativeDependentHandle =
                 | other -> failwith $"%s{operation}: handle %O{handle} is %O{other}, not Dependent"
 
             let state =
-                IlMachineState.writeManagedByref state dependentOut (CliType.ObjectRef dependent)
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    dependentOut
+                    (CliType.ObjectRef dependent)
 
             let state = NativeCall.pushObjectTarget target ctx.Thread state
 

@@ -1126,7 +1126,7 @@ module internal IntrinsicHelpers =
                     let value =
                         IlMachineState.readManagedByrefBytesAs baseClassTypes state src byteTemplate
 
-                    state <- IlMachineState.writeManagedByrefBytesOrTypedCell state dest value
+                    state <- IlMachineState.writeManagedByrefBytesOrTypedCell baseClassTypes state dest value
 
                 state
 

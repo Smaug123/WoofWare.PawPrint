@@ -221,7 +221,9 @@ module NativeEventPipe =
                 let zeroGuid, state =
                     IlMachineState.cliTypeZeroOfHandle state ctx.BaseClassTypes guidPtrHandle
 
-                let state = IlMachineState.writeManagedByref state activityIdPtr zeroGuid
+                let state =
+                    IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state activityIdPtr zeroGuid
+
                 state |> pushInt32 0 ctx.Thread |> Some
             | 2u ->
                 failwith

@@ -843,59 +843,99 @@ module IlMachineManagedByref =
         CliType.zeroOf state.ConcreteTypes state._LoadedAssemblies baseClassTypes handle
         |> fst
 
-    /// Collapse any trailing byte-view segment of the projection chain into an
-    /// accumulated byte offset. Once a `ReinterpretAs` appears the underlying
-    /// storage is being treated as raw bytes, so subsequent `ByteOffset`,
-    /// `Field` (resolved against the most recent `ReinterpretAs` target), and
-    /// chained `ReinterpretAs` projections are all bytewise; peeling them
-    /// exposes the residual structural prefix to the existing dispatchers.
-    /// Iterates until a non-byte-view trailing step is reached so chained
-    /// reinterprets like `Volatile.Read(ref entry._version)`
-    /// (`[..., ReinterpretAs CastCacheEntry, Field _version, ReinterpretAs VolatileUInt32]`)
-    /// reduce to the deepest reachable byte offset before
-    /// `readProjectedValue`/`resolveCell` interpret what's left.
+    /// Split a projection chain at the first `ReinterpretAs` and collapse
+    /// everything beyond that point into an accumulated byte offset. Once a
+    /// `ReinterpretAs` appears the underlying storage is being treated as raw
+    /// bytes, so subsequent `Field` (resolved against the most recent
+    /// `ReinterpretAs` target), `ByteOffset`, and chained `ReinterpretAs`
+    /// projections are all bytewise. Walking forward through them accumulates
+    /// the byte offset that the byte-view ultimately addresses, leaving the
+    /// structural prefix (everything before the first `ReinterpretAs`) for
+    /// the dispatcher.
     ///
-    /// Returns `ValueSome (residual, offset)` if any byte-view step was
-    /// peeled, else `ValueNone`. A trailing `ByteOffset n` without a
-    /// preceding `ReinterpretAs` is an interpreter bug and is raised here.
+    /// The forward walk is strictly more general than a right-to-left
+    /// per-pair peel: it handles `[ReinterpretAs Outer; Field I; Field Y]`
+    /// (e.g. `Volatile.Write(ref view.I.Y, _)` on
+    /// `Unsafe.As<int, Outer>(ref arr[0])`), where the second `Field` would
+    /// be unreachable from the right because its layout depends on the type
+    /// chosen by the preceding `Field`.
+    ///
+    /// Returns `ValueSome (structuralPrefix, offset)` when the chain contains
+    /// at least one `ReinterpretAs`, else `ValueNone`. The `structuralPrefix`
+    /// never contains a `ReinterpretAs` by construction. A non-trailing
+    /// `ByteOffset` (which the construction-site canonicaliser never
+    /// produces) is an interpreter bug and is raised here.
+    ///
+    /// `baseClassTypes` is required only when the byte-view suffix navigates
+    /// through a `Field` projection (Field layout is resolved against the
+    /// current type template, which requires metadata). Metadata-light
+    /// callers (the BCT-less `writeManagedByref` entry point used by
+    /// primitive/external boundaries that do not currently carry type
+    /// metadata) may pass `None`; their canonical chain shapes are
+    /// `[..., ReinterpretAs T]` and `[..., ReinterpretAs T; ByteOffset n]`,
+    /// whose suffixes contain no `Field` and therefore need no template. A
+    /// BCT-less call with a `Field` in the byte-view suffix is an interpreter
+    /// bug (the construction site that emitted such a chain ought to carry
+    /// BCT) and is raised here with a descriptive message.
     let private peelTrailingByteView
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly> option)
         (state : IlMachineState)
         (projs : ByrefProjection list)
         : (ByrefProjection list * int) voption
         =
-        let rec loop
-            (projs : ByrefProjection list)
-            (offset : int)
-            (peeled : bool)
-            : (ByrefProjection list * int) voption
+        let rec findFirstReinterpret
+            (revPrefix : ByrefProjection list)
+            (remaining : ByrefProjection list)
+            : (ByrefProjection list * ConcreteType<ConcreteTypeHandle> * ByrefProjection list) option
             =
-            let len = List.length projs
+            match remaining with
+            | [] -> None
+            | ByrefProjection.ReinterpretAs reinTy :: rest -> Some (List.rev revPrefix, reinTy, rest)
+            | proj :: rest -> findFirstReinterpret (proj :: revPrefix) rest
 
-            if len = 0 then
-                if peeled then ValueSome ([], offset) else ValueNone
-            else
-                let last = List.item (len - 1) projs
-                let prev = if len >= 2 then Some (List.item (len - 2) projs) else None
-
-                match last, prev with
-                | ByrefProjection.Field field, Some (ByrefProjection.ReinterpretAs structType) ->
-                    let template = zeroForConcreteType baseClassTypes state structType
-                    let fieldOffset, _ = CliType.getFieldLayoutById field template
-                    let rest = projs |> List.take (len - 2)
-                    loop rest (offset + fieldOffset) true
-                | ByrefProjection.ByteOffset n, Some (ByrefProjection.ReinterpretAs _) ->
-                    let rest = projs |> List.take (len - 2)
-                    loop rest (offset + n) true
-                | ByrefProjection.ByteOffset n, _ ->
+        match findFirstReinterpret [] projs with
+        | None -> ValueNone
+        | Some (structuralPrefix, firstReinTy, afterReinterpret) ->
+            // Walk forward through the byte-view suffix, accumulating byte
+            // offset. The template anchoring the cursor is computed lazily
+            // via `templateThunk`: only `Field` projections consume it.
+            // Chained `ReinterpretAs` re-anchors the thunk to the new type;
+            // `ByteOffset` adds raw bytes and either terminates the walk or
+            // re-anchors via the immediately following `ReinterpretAs`. A
+            // `ByteOffset` followed by a `Field` would require navigating
+            // fields on a cursor with no type anchor and signals an
+            // interpreter bug at the construction site. Lazy evaluation
+            // means BCT is only consulted when a `Field` actually appears
+            // in the byte-view suffix, so the metadata-light call shapes
+            // (`[ReinterpretAs T]`, `[ReinterpretAs T; ByteOffset n]`) work
+            // with `baseClassTypes = None`.
+            let templateFor (ty : ConcreteType<ConcreteTypeHandle>) : CliType =
+                match baseClassTypes with
+                | Some bct -> zeroForConcreteType bct state ty
+                | None ->
                     failwith
-                        $"ByteOffset %d{n} without a preceding ReinterpretAs in projection chain: %A{projs} (this is an interpreter bug)"
-                | ByrefProjection.ReinterpretAs _, _ ->
-                    let rest = projs |> List.take (len - 1)
-                    loop rest offset true
-                | _, _ -> if peeled then ValueSome (projs, offset) else ValueNone
+                        $"peelTrailingByteView: BaseClassTypes required to navigate `Field` projection after `ReinterpretAs` %s{ty.Namespace}.%s{ty.Name} in projection chain: %A{projs} (metadata-light entry points cannot resolve Field layout; pass BaseClassTypes via writeManagedByrefWithBase)"
 
-        loop projs 0 false
+            let rec walk (templateThunk : unit -> CliType) (offset : int) (remaining : ByrefProjection list) : int =
+                match remaining with
+                | [] -> offset
+                | ByrefProjection.Field field :: rest ->
+                    let template = templateThunk ()
+                    let fieldOffset, _ = CliType.getFieldLayoutById field template
+                    let fieldTemplate = CliType.getFieldById field template
+                    walk (fun () -> fieldTemplate) (offset + fieldOffset) rest
+                | ByrefProjection.ReinterpretAs newReinTy :: rest -> walk (fun () -> templateFor newReinTy) offset rest
+                | ByrefProjection.ByteOffset n :: rest ->
+                    match rest with
+                    | [] -> offset + n
+                    | ByrefProjection.ReinterpretAs _ :: _
+                    | ByrefProjection.ByteOffset _ :: _ -> walk templateThunk (offset + n) rest
+                    | ByrefProjection.Field _ :: _ ->
+                        failwith
+                            $"ByteOffset %d{n} followed by Field navigation without an intervening ReinterpretAs in projection chain: %A{projs} (this is an interpreter bug)"
+
+            let totalOffset = walk (fun () -> templateFor firstReinTy) 0 afterReinterpret
+            ValueSome (structuralPrefix, totalOffset)
 
     let readManagedByrefBytesAs
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -932,7 +972,7 @@ module IlMachineManagedByref =
             // then `Volatile.Read` wrapping the result in `VolatileUInt32`)
             // is the load-bearing example.
             let byteViewShape : (ByrefProjection list * int) voption =
-                peelTrailingByteView baseClassTypes state outerProjs
+                peelTrailingByteView (Some baseClassTypes) state outerProjs
 
             match byteViewShape with
             | ValueSome (prefixProjs, byteOffset) ->
@@ -1419,7 +1459,48 @@ module IlMachineManagedByref =
                 |> Some
         | _ -> None
 
-    let writeManagedByrefBytesOrTypedCell
+    /// Element-precise byte-view write for an array element: when the destination cell
+    /// is non-byte-addressable (object reference, runtime pointer) and the new value is
+    /// the same CLI constructor of the same size at exactly `byteOffset = 0`, update the
+    /// element directly. This is the array-element analogue of `tryWriteHeapValueFieldPrecise`
+    /// and exists for the same reason: the byte-scatter path
+    /// (`writeArrayBytes` → `withByteAddressableCellBytesAtIfChanged`) refuses
+    /// non-byte-addressable cells, but the typed-cell write preserves their identity.
+    /// The motivating case is `Volatile.Write(ref keys[index], key)`, whose lowering
+    /// builds a byref over the reference-typed array element with a trailing
+    /// `[ReinterpretAs VolatileObject; Field Value]` view.
+    let private tryWriteArrayElementPrecise
+        (state : IlMachineState)
+        (arr : ManagedHeapAddress)
+        (index : int)
+        (byteOffset : int)
+        (newValue : CliType)
+        : IlMachineState option
+        =
+        if byteOffset <> 0 then
+            None
+        else
+
+        let arrObj = state.ManagedHeap.Arrays.[arr]
+
+        if index < 0 || index >= arrObj.Length then
+            None
+        else
+
+        let existing = arrObj.Elements.[index]
+
+        if CliType.sizeOf existing <> CliType.sizeOf newValue then
+            None
+        else if not (sameCliConstructor existing newValue) then
+            None
+        else
+
+        match CliType.ByteAddressability existing with
+        | CliByteAddressability.ByteAddressable -> None
+        | CliByteAddressability.Rejected _ -> IlMachineThreadState.setArrayValue arr newValue index state |> Some
+
+    let private writeManagedByrefBytesOrTypedCellCore
+        (baseClassTypes : BaseClassTypes<DumpedAssembly> option)
         (state : IlMachineState)
         (src : ManagedPointerSource)
         (newValue : CliType)
@@ -1434,16 +1515,18 @@ module IlMachineManagedByref =
         // NullaryIlOp.fs's `stind` dispatcher and `Localloc`, which pushes
         // `EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ...)`).
         // The same fast path also accepts a trailing byte view
-        // (`[ReinterpretAs ty]` / `[ReinterpretAs ty; ByteOffset n]`) when
-        // the value being written cannot be flattened to bytes; otherwise
-        // byte-view writes must continue to land in the `Bytes` overlay so
-        // that partial-cell semantics (`stind.i1` updating one byte of a
-        // wider cell, byte-by-byte initialisation of a stackalloc buffer)
-        // are preserved. The Span<IntPtr> pinning path that feeds
-        // RuntimeTypeHandle.GetFields produces a byte-view shape over
-        // localloc memory and writes `FieldHandlePtr`-tagged native ints
-        // through it; those are not byte-addressable, so the typed-cell
-        // path is the only one that can preserve them.
+        // (`[ReinterpretAs ty]` / `[ReinterpretAs ty; ByteOffset n]`,
+        // or a chained reinterpret followed by `Field`/`ByteOffset`
+        // segments that `peelTrailingByteView` collapses into a single
+        // byte offset) when the value being written cannot be flattened
+        // to bytes; otherwise byte-view writes must continue to land in
+        // the `Bytes` overlay so that partial-cell semantics (`stind.i1`
+        // updating one byte of a wider cell, byte-by-byte initialisation
+        // of a stackalloc buffer) are preserved. The Span<IntPtr> pinning
+        // path that feeds RuntimeTypeHandle.GetFields produces a byte-view
+        // shape over localloc memory and writes `FieldHandlePtr`-tagged
+        // native ints through it; those are not byte-addressable, so the
+        // typed-cell path is the only one that can preserve them.
         // We restrict the fast path to writes that are observably equivalent
         // to byte scatter: the new value must replace at most one existing
         // cell that starts exactly at `byteOffset` and has the same size as
@@ -1456,16 +1539,22 @@ module IlMachineManagedByref =
             match src with
             | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset), []) ->
                 ValueSome (thread, frame, block, byteOffset)
-            | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte _, _) ->
+            | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, rootByteOffset), projs) ->
                 match CliType.ByteAddressability newValue with
                 | CliByteAddressability.ByteAddressable ->
                     // Byte-addressable byte-view writes follow the existing byte-scatter
                     // path below to preserve the `Bytes` overlay representation.
                     ValueNone
                 | CliByteAddressability.Rejected _ ->
-                    match splitTrailingByteView src with
-                    | ValueSome (ByrefRoot.StackMemoryByte (thread, frame, block, rootByteOffset), [], byteOffset) ->
-                        ValueSome (thread, frame, block, rootByteOffset + byteOffset)
+                    // Iterative peel mirrors the read side: a chained
+                    // byte-view (e.g. `[ReinterpretAs S, Field f, ReinterpretAs
+                    // T]`) reduces to a single byte offset over the
+                    // StackMemoryByte root, so the typed-cell fast path can
+                    // preserve the provenance of `newValue` rather than
+                    // hitting byte scatter (which would reject the
+                    // non-byte-addressable payload).
+                    match peelTrailingByteView baseClassTypes state projs with
+                    | ValueSome ([], byteOffset) -> ValueSome (thread, frame, block, rootByteOffset + byteOffset)
                     | _ -> ValueNone
             | _ -> ValueNone
 
@@ -1484,18 +1573,21 @@ module IlMachineManagedByref =
         | ValueNone ->
 
         // Same fast path for native-heap blocks. The pool is global on state, so we
-        // only need (block, byteOffset) here.
+        // only need (block, byteOffset) here. The iterative-peel mirror of the
+        // StackMemoryByte case above: chained byte-view shapes
+        // (`[ReinterpretAs S, Field f, ReinterpretAs T]` and similar) reduce to a
+        // single byte offset over the NativeMemoryByte root, allowing the typed-cell
+        // fast path to preserve `newValue`'s provenance.
         let nativeMemoryByteTarget =
             match src with
             | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, byteOffset), []) ->
                 ValueSome (block, byteOffset)
-            | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte _, _) ->
+            | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, rootByteOffset), projs) ->
                 match CliType.ByteAddressability newValue with
                 | CliByteAddressability.ByteAddressable -> ValueNone
                 | CliByteAddressability.Rejected _ ->
-                    match splitTrailingByteView src with
-                    | ValueSome (ByrefRoot.NativeMemoryByte (block, rootByteOffset), [], byteOffset) ->
-                        ValueSome (block, rootByteOffset + byteOffset)
+                    match peelTrailingByteView baseClassTypes state projs with
+                    | ValueSome ([], byteOffset) -> ValueSome (block, rootByteOffset + byteOffset)
                     | _ -> ValueNone
             | _ -> ValueNone
 
@@ -1518,16 +1610,54 @@ module IlMachineManagedByref =
         // field cell rather than the byte-scatter path. This preserves identity for
         // object-reference and runtime-pointer fields, whose `CliType.ToBytes` is not
         // defined and which `writeHeapValueBytes` would refuse via byte addressability.
-        // Mirrors `tryReadHeapValueFieldPrecise` on the read path.
+        // Mirrors `tryReadHeapValueFieldPrecise` on the read path; uses the iterative
+        // peel for symmetry with the read-side classifier so a chained byte-view that
+        // lands on a precise field (e.g. `Volatile.Write` lowering of an object-typed
+        // field through an `Unsafe.As` view) still routes to the typed write.
+        //
+        // For non-byte-renderable values, `writeManagedByrefCore` routes chains whose
+        // peel result has a non-empty structural prefix through the structural
+        // projection writer (`writeProjectedValueIfChanged`), so this dispatcher
+        // typically only needs to handle the empty-prefix case. Direct callers of
+        // `writeManagedByrefBytesOrTypedCell` (e.g. property tests) may still pass a
+        // non-empty prefix for byte-renderable values; in that case the typed-cell
+        // fast path declines and the byte-scatter fallback below handles the chain.
         let heapFieldPreciseWrite =
             match src with
             | ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, []) ->
                 tryWriteHeapValueFieldPrecise state addr 0 newValue
-            | ManagedPointerSource.Byref (ByrefRoot.HeapValue _, _) ->
-                match splitTrailingByteView src with
-                | ValueSome (ByrefRoot.HeapValue addr, [], byteOffset) ->
-                    tryWriteHeapValueFieldPrecise state addr byteOffset newValue
-                | _ -> None
+            | ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, projs) ->
+                match peelTrailingByteView baseClassTypes state projs with
+                | ValueSome ([], byteOffset) -> tryWriteHeapValueFieldPrecise state addr byteOffset newValue
+                | ValueSome (_ :: _, _)
+                | ValueNone -> None
+            | ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (addr, field), projs) ->
+                match peelTrailingByteView baseClassTypes state projs with
+                | ValueSome ([], byteOffset) ->
+                    // The named field's offset is the starting point inside the heap
+                    // object; the peel result lands at `byteOffset` beyond that. For an
+                    // exact whole-field overlap (`byteOffset = 0` matches the typed-cell
+                    // matcher's same-size predicate), the typed write preserves
+                    // identity for object-reference and runtime-pointer cells.
+                    let obj = ManagedHeap.get addr state.ManagedHeap
+                    let fieldOffset, _ = CliValueType.GetFieldLayoutById field obj.Contents
+                    tryWriteHeapValueFieldPrecise state addr (fieldOffset + byteOffset) newValue
+                | ValueSome (_ :: _, _)
+                | ValueNone -> None
+            | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), []) ->
+                tryWriteArrayElementPrecise state arr index 0 newValue
+            | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), projs) ->
+                match peelTrailingByteView baseClassTypes state projs with
+                | ValueSome ([], byteOffset) ->
+                    // `Volatile.Write(ref array[i], obj)` lowers to a byref over the
+                    // array element with a trailing `[ReinterpretAs VolatileObject;
+                    // Field Value]` view, which peels to `([], 0)`. Route to the
+                    // element-precise typed-cell write so that the destination
+                    // ObjectRef cell is preserved rather than scattered through the
+                    // byte-write path (which refuses non-byte-addressable cells).
+                    tryWriteArrayElementPrecise state arr index byteOffset newValue
+                | ValueSome (_ :: _, _)
+                | ValueNone -> None
             | _ -> None
 
         match heapFieldPreciseWrite with
@@ -1553,59 +1683,72 @@ module IlMachineManagedByref =
         | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), []) ->
             writeArrayBytes state arr index 0 bytes
         | ManagedPointerSource.Byref (outerRoot, outerProjs) ->
-            match splitTrailingByteView src with
-            | ValueSome (ByrefRoot.StackMemoryByte (thread, frame, block, rootByteOffset), [], byteOffset) ->
-                // Byte-addressable byte-view writes through a localloc buffer
-                // intentionally fall through here (the typed-cell fast path
-                // above declines them so that the `Bytes` overlay
-                // representation is preserved for `stind.i1`-style partial
-                // updates).
-                writeStackMemoryBytesAt state thread frame block (rootByteOffset + byteOffset) bytes
-            | ValueSome (ByrefRoot.NativeMemoryByte (block, rootByteOffset), [], byteOffset) ->
-                // Same reasoning as the StackMemoryByte case above, but routed
-                // through the global NativeMemoryPool.
-                writeNativeMemoryBytesAt state block (rootByteOffset + byteOffset) bytes
-            | ValueSome (ByrefRoot.ArrayElement (arr, index), [], byteOffset) ->
-                writeArrayBytes state arr index byteOffset bytes
-            | ValueSome (ByrefRoot.StringCharAt (str, charIndex), [], byteOffset) ->
-                writeStringBytes state str charIndex byteOffset bytes
-            | ValueSome (ByrefRoot.HeapValue addr, [], byteOffset) -> writeHeapValueBytes state addr byteOffset bytes
-            | ValueSome (byteViewRoot, prefixProjs, byteOffset) ->
-                let rootValue = readRootValue state byteViewRoot
+            // Collapse any trailing byte-view segment of the projection
+            // chain into an accumulated byte offset. Mirrors
+            // `readManagedByrefBytesAs`: once a `ReinterpretAs` appears
+            // the underlying storage is being treated as raw bytes, so
+            // subsequent `ByteOffset`, `Field` (resolved against the most
+            // recent `ReinterpretAs` target), and chained `ReinterpretAs`
+            // projections are all bytewise. Peeling them exposes the
+            // residual structural prefix to the existing dispatchers.
+            let byteViewShape : (ByrefProjection list * int) voption =
+                peelTrailingByteView baseClassTypes state outerProjs
 
-                // Symmetric to the read path: when the byte write overflows
-                // the immediate cell, lift back through trailing `Field`
-                // projections so a write through e.g. `Unsafe.Add(ref s.A, 1)`
-                // updates the parent struct's sibling field.
-                let rec resolveCell
-                    (projs : ByrefProjection list)
-                    (offset : int)
-                    : ByrefProjection list * int * CliType
-                    =
-                    let cell = readProjectedValue rootValue projs
-                    let cellSize = byteAddressableCellSize $"single-cell byref %O{src}" cell
+            match byteViewShape with
+            | ValueSome (prefixProjs, byteOffset) ->
+                match outerRoot, prefixProjs with
+                | ByrefRoot.StackMemoryByte (thread, frame, block, rootByteOffset), [] ->
+                    // Byte-addressable byte-view writes through a localloc buffer
+                    // intentionally fall through here (the typed-cell fast path
+                    // above declines them so that the `Bytes` overlay
+                    // representation is preserved for `stind.i1`-style partial
+                    // updates).
+                    writeStackMemoryBytesAt state thread frame block (rootByteOffset + byteOffset) bytes
+                | ByrefRoot.NativeMemoryByte (block, rootByteOffset), [] ->
+                    // Same reasoning as the StackMemoryByte case above, but
+                    // routed through the global NativeMemoryPool.
+                    writeNativeMemoryBytesAt state block (rootByteOffset + byteOffset) bytes
+                | ByrefRoot.ArrayElement (arr, index), [] -> writeArrayBytes state arr index byteOffset bytes
+                | ByrefRoot.StringCharAt (str, charIndex), [] -> writeStringBytes state str charIndex byteOffset bytes
+                | ByrefRoot.HeapValue addr, [] -> writeHeapValueBytes state addr byteOffset bytes
+                | _, prefixProjs ->
+                    let rootValue = readRootValue state outerRoot
 
-                    if offset >= 0 && bytes.Length <= cellSize - offset then
-                        projs, offset, cell
-                    else
-                        match List.tryLast projs with
-                        | Some (ByrefProjection.Field field) ->
-                            let parentProjs = projs |> List.take (List.length projs - 1)
-                            let parentValue = readProjectedValue rootValue parentProjs
-                            let fieldOffset, _ = CliType.getFieldLayoutById field parentValue
-                            resolveCell parentProjs (offset + fieldOffset)
-                        | _ ->
-                            failwith
-                                $"TODO: byte-view write at offset %d{offset} for %d{bytes.Length} bytes does not fit in single primitive cell of size %d{cellSize}: %O{src}"
+                    // Symmetric to the read path: when the byte write overflows
+                    // the immediate cell, lift back through trailing `Field`
+                    // projections so a write through e.g. `Unsafe.Add(ref s.A, 1)`
+                    // updates the parent struct's sibling field.
+                    let rec resolveCell
+                        (projs : ByrefProjection list)
+                        (offset : int)
+                        : ByrefProjection list * int * CliType
+                        =
+                        let cell = readProjectedValue rootValue projs
+                        let cellSize = byteAddressableCellSize $"single-cell byref %O{src}" cell
 
-                let liftedProjs, finalOffset, cell = resolveCell prefixProjs byteOffset
+                        if offset >= 0 && bytes.Length <= cellSize - offset then
+                            projs, offset, cell
+                        else
+                            match List.tryLast projs with
+                            | Some (ByrefProjection.Field field) ->
+                                let parentProjs = projs |> List.take (List.length projs - 1)
+                                let parentValue = readProjectedValue rootValue parentProjs
+                                let fieldOffset, _ = CliType.getFieldLayoutById field parentValue
+                                resolveCell parentProjs (offset + fieldOffset)
+                            | _ ->
+                                failwith
+                                    $"TODO: byte-view write at offset %d{offset} for %d{bytes.Length} bytes does not fit in single primitive cell of size %d{cellSize}: %O{src}"
 
-                match withByteAddressableCellBytesAtIfChanged $"single-cell byref %O{src}" finalOffset bytes cell with
-                | None -> state
-                | Some updatedCell ->
-                    match applyProjectionsForWriteIfChanged rootValue liftedProjs updatedCell with
+                    let liftedProjs, finalOffset, cell = resolveCell prefixProjs byteOffset
+
+                    match
+                        withByteAddressableCellBytesAtIfChanged $"single-cell byref %O{src}" finalOffset bytes cell
+                    with
                     | None -> state
-                    | Some updatedRoot -> writeRootValue state byteViewRoot updatedRoot
+                    | Some updatedCell ->
+                        match applyProjectionsForWriteIfChanged rootValue liftedProjs updatedCell with
+                        | None -> state
+                        | Some updatedRoot -> writeRootValue state outerRoot updatedRoot
             | ValueNone ->
                 let rootValue = readRootValue state outerRoot
                 let cell = readProjectedValue rootValue outerProjs
@@ -1621,6 +1764,20 @@ module IlMachineManagedByref =
                     match applyProjectionsForWriteIfChanged rootValue outerProjs updatedCell with
                     | None -> state
                     | Some updatedRoot -> writeRootValue state outerRoot updatedRoot
+
+    /// Public BCT-aware entry point. Delegates to `writeManagedByrefBytesOrTypedCellCore`
+    /// with `Some baseClassTypes`; the core body lazily consults the BCT only when a
+    /// `Field` projection appears in the byte-view suffix, so the metadata-light shapes
+    /// `[ReinterpretAs T]` and `[ReinterpretAs T; ByteOffset n]` flow through
+    /// `writeManagedByrefCore` with `None` without forcing BCT lookups.
+    let writeManagedByrefBytesOrTypedCell
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (src : ManagedPointerSource)
+        (newValue : CliType)
+        : IlMachineState
+        =
+        writeManagedByrefBytesOrTypedCellCore (Some baseClassTypes) state src newValue
 
     let private splitFirstReinterpret
         (projs : ByrefProjection list)
@@ -1784,14 +1941,89 @@ module IlMachineManagedByref =
         | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
         | ManagedPointerSource.Byref (root, []) -> writeRootValue state root newValue
         | ManagedPointerSource.Byref (root, projs) ->
-            match splitTrailingByteView src with
-            | ValueSome _ -> writeManagedByrefBytesOrTypedCell state src newValue
-            | ValueNone ->
+            // Mirror the read-side dispatch: when we have BaseClassTypes,
+            // use the iterative peel so chained byte views like
+            // `[ReinterpretAs S, Field f, ReinterpretAs T, Field g]`
+            // (e.g. `Volatile.Write` on a field of an `Unsafe.As`-projected
+            // struct view) route to the bytes-or-typed-cell writer. Without
+            // BCT, fall back to the trailing-suffix-only classifier.
+            //
+            // Dispatch the byte-view byref through one of two writers:
+            //
+            //  - `writeManagedByrefBytesOrTypedCell` handles byte-scatter writes
+            //    (`stind.i1` updating one byte of a wider cell, partial cell
+            //    writes via `Unsafe.Add`) and a few precise typed-cell fast
+            //    paths for storage that supports byte-level addressability
+            //    (StackMemoryByte, NativeMemoryByte, HeapValue, HeapObjectField,
+            //    ArrayElement, StringCharAt). When it cannot precise-write, it falls back
+            //    through `CliType.ToBytes newValue`, which refuses
+            //    non-byte-renderable values (object references, runtime
+            //    pointers).
+            //  - `writeProjectedValueIfChanged` handles structural writes via
+            //    `writeReinterpretedStorageIfChanged`, including the
+            //    transparent-wrapper fast path that lets ref↔ref writes
+            //    through a `VolatileObject<T>`-style wrapper succeed for any
+            //    root (locals, arguments, statics included).
+            //
+            // The dispatcher routes:
+            //  * byte-renderable values: to the bytes-or-typed-cell writer.
+            //    For empty prefix the writer's typed-cell fast path can
+            //    preserve identity; for non-empty prefix the byte-scatter
+            //    fallback's `resolveCell` lifts back through trailing `Field`
+            //    projections to handle `Unsafe.Add`-style cross-cell writes.
+            //  * non-byte-renderable values: to the structural projection
+            //    writer, which is the only one that can preserve identity for
+            //    object references and tagged pointers over arbitrary roots.
+            //
+            // Both writers now accept an optional `BaseClassTypes`: the peel
+            // and the bytes-or-typed-cell writer only consult BCT when a
+            // `Field` projection appears in the byte-view suffix, which
+            // metadata-light callers do not produce.
+            let peeled : (ByrefProjection list * int) voption =
+                peelTrailingByteView baseClassTypes state projs
+
+            let valueIsByteRenderable =
+                match CliType.ByteAddressability newValue with
+                | CliByteAddressability.ByteAddressable -> true
+                | CliByteAddressability.Rejected _ -> false
+
+            // The forward-walk peel guarantees the structural prefix never
+            // contains a `ReinterpretAs`, so the byte-scatter writer's
+            // `resolveCell` (which navigates the prefix via
+            // `readProjectedValue`) can safely take the byte-renderable path
+            // without re-checking the prefix shape.
+            let useStructuralWriter () : IlMachineState =
                 let rootValue = readRootValue state root
 
                 match writeProjectedValueIfChanged baseClassTypes state rootValue projs newValue with
                 | None -> state
                 | Some updatedRoot -> writeRootValue state root updatedRoot
+
+            match peeled, valueIsByteRenderable with
+            | ValueSome (_, _), true ->
+                // Byte-renderable values flow through the bytes-or-typed-cell
+                // writer regardless of BCT availability. The metadata-light
+                // shapes `[ReinterpretAs T]` and `[ReinterpretAs T; ByteOffset n]`
+                // (used by primitive/external boundaries that don't carry type
+                // metadata) work here because the core never consults BCT
+                // unless a `Field` appears in the byte-view suffix.
+                writeManagedByrefBytesOrTypedCellCore baseClassTypes state src newValue
+            | ValueSome ([], _), false ->
+                // Non-byte-renderable empty-prefix peel: the bytes-or-typed-cell
+                // writer can precise-write for the byte-addressable storage
+                // roots (StackMemoryByte, NativeMemoryByte, HeapValue,
+                // HeapObjectField, ArrayElement, StringCharAt). For other roots
+                // its fallback hits `CliType.ToBytes`; route those through the
+                // structural path instead.
+                match root with
+                | ByrefRoot.StackMemoryByte _
+                | ByrefRoot.NativeMemoryByte _
+                | ByrefRoot.HeapValue _
+                | ByrefRoot.HeapObjectField _
+                | ByrefRoot.ArrayElement _
+                | ByrefRoot.StringCharAt _ -> writeManagedByrefBytesOrTypedCellCore baseClassTypes state src newValue
+                | _ -> useStructuralWriter ()
+            | _ -> useStructuralWriter ()
 
     let writeManagedByref (state : IlMachineState) (src : ManagedPointerSource) (newValue : CliType) : IlMachineState =
         // Call sites that can supply BaseClassTypes should use writeManagedByrefWithBase so
@@ -1893,17 +2125,17 @@ module IlMachineManagedByref =
                 let destSize = CliType.sizeOf newValue
 
                 if stackMemoryByteTypedWriteSafe pool block byteOffset destSize then
-                    writeManagedByrefBytesOrTypedCell state src newValue
+                    writeManagedByrefBytesOrTypedCell baseClassTypes state src newValue
                 else
                     failwith
                         $"TODO: primitive indirect store of %O{newValue} through byte-view byref %O{src} cannot preserve new value's %s{rejection.Description}"
-            | _ -> writeManagedByrefBytesOrTypedCell state src newValue
+            | _ -> writeManagedByrefBytesOrTypedCell baseClassTypes state src newValue
         | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte _, _) ->
             match byteAddressabilityRejection newValue with
             | Some rejection when isNumericProvenanceRejection rejection ->
                 failwith
                     $"TODO: primitive indirect store of %O{newValue} through byte-view byref %O{src} cannot preserve new value's %s{rejection.Description}"
-            | _ -> writeManagedByrefBytesOrTypedCell state src newValue
+            | _ -> writeManagedByrefBytesOrTypedCell baseClassTypes state src newValue
         | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, byteOffset), []) ->
             match byteAddressabilityRejection newValue with
             | Some rejection when isNumericProvenanceRejection rejection ->
@@ -1911,17 +2143,17 @@ module IlMachineManagedByref =
                 let destSize = CliType.sizeOf newValue
 
                 if nativeMemoryByteTypedWriteSafe pool block byteOffset destSize then
-                    writeManagedByrefBytesOrTypedCell state src newValue
+                    writeManagedByrefBytesOrTypedCell baseClassTypes state src newValue
                 else
                     failwith
                         $"TODO: primitive indirect store of %O{newValue} through byte-view byref %O{src} cannot preserve new value's %s{rejection.Description}"
-            | _ -> writeManagedByrefBytesOrTypedCell state src newValue
+            | _ -> writeManagedByrefBytesOrTypedCell baseClassTypes state src newValue
         | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte _, _) ->
             match byteAddressabilityRejection newValue with
             | Some rejection when isNumericProvenanceRejection rejection ->
                 failwith
                     $"TODO: primitive indirect store of %O{newValue} through byte-view byref %O{src} cannot preserve new value's %s{rejection.Description}"
-            | _ -> writeManagedByrefBytesOrTypedCell state src newValue
+            | _ -> writeManagedByrefBytesOrTypedCell baseClassTypes state src newValue
         | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
         | ManagedPointerSource.Byref _ ->
             let sourceRejection = byteAddressabilityRejection newValue
@@ -1937,7 +2169,7 @@ module IlMachineManagedByref =
                     None
             | _ ->
                 match splitTrailingByteView src with
-                | ValueSome _ -> writeManagedByrefBytesOrTypedCell state src newValue
+                | ValueSome _ -> writeManagedByrefBytesOrTypedCell baseClassTypes state src newValue
                 | ValueNone ->
                     // Even a byte-renderable payload may need a typed store
                     // when the destination cell carries non-byte-renderable
@@ -1953,4 +2185,4 @@ module IlMachineManagedByref =
                             newValue
                             $"destination's existing %s{rejection.Description}"
                             (Some existing)
-                    | _ -> writeManagedByrefBytesOrTypedCell state src newValue
+                    | _ -> writeManagedByrefBytesOrTypedCell baseClassTypes state src newValue
