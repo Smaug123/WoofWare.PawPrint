@@ -1266,8 +1266,14 @@ module IlMachineManagedByref =
         if arrObj.Length = 0 then
             failwith $"TODO: byte-view write to empty array %O{arr} at index %d{index} offset %d{byteOffset}"
 
-        let firstCellSize =
-            byteAddressableCellSize $"array %O{arr} element 0" arrObj.Elements.[0]
+        // Use `CliType.sizeOf` (not `byteAddressableCellSize`) for the stride.
+        // Mirrors `readArrayBytesAs`: deriving the cell stride doesn't require
+        // element 0 to be byte-renderable. Consider `fixed (IntPtr* p = arr)`
+        // where `p[0] = typeof(int).TypeHandle.Value` populates element 0 with
+        // non-byte-addressable provenance, then `p[1] = IntPtr.Zero` byte-
+        // scatters into element 1: only the cells the loop actually touches
+        // need to be byte-addressable, validated per iteration below.
+        let firstCellSize = CliType.sizeOf arrObj.Elements.[0]
 
         let cellAdvance, inCellStart = floorDivRem byteOffset firstCellSize
         let mutable state = state

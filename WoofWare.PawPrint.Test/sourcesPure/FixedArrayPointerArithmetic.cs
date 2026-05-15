@@ -144,6 +144,35 @@ public unsafe class FixedArrayPointerArithmetic
         return 0;
     }
 
+    // Cross-element provenance: once one cell carries non-byte-renderable
+    // provenance, a plain numeric store to a *different* cell through the
+    // same fixed pointer must still succeed. The byte-scatter path computes
+    // its cell stride from element 0 — if that derivation rejected non-byte-
+    // addressable cells, the second store would fail before the writer ever
+    // touched the (clean) target cell. Stride derivation must therefore not
+    // validate unrelated cells.
+    //
+    // The array is initialised through `Stelem_i` (via the literal form) so
+    // each cell is a bare `Numeric NativeInt`; `new IntPtr[3]` would leave
+    // cells wrapped in a `ValueType` for the IntPtr struct, which `Ldelem_i`
+    // does not currently unwrap and is orthogonal to the stride bug under
+    // test.
+    public static int TestIntPtrArrayProvenanceCrossElement()
+    {
+        IntPtr[] arr = new IntPtr[] { IntPtr.Zero, IntPtr.Zero, IntPtr.Zero };
+        IntPtr handle = typeof(int).TypeHandle.Value;
+        fixed (IntPtr* p = arr)
+        {
+            *p = handle;
+            p[1] = IntPtr.Zero;
+            p[2] = new IntPtr(9);
+        }
+        if (arr[0] != handle) return 80;
+        if (arr[1] != IntPtr.Zero) return 81;
+        if (arr[2] != new IntPtr(9)) return 82;
+        return 0;
+    }
+
     // `fixed (object* p = arr) { *p = value; }` over a reference-type array
     // must remain a typed `ArrayElement` store: `stind.ref` over the native
     // pointer cannot byte-flatten an `ObjectRef`. The Conv_U/Conv_I anchor
@@ -180,6 +209,8 @@ public unsafe class FixedArrayPointerArithmetic
         r = TestIntPtrArrayProvenanceStore();
         if (r != 0) return r;
         r = TestIntPtrArrayProvenanceOverwrite();
+        if (r != 0) return r;
+        r = TestIntPtrArrayProvenanceCrossElement();
         if (r != 0) return r;
         r = TestObjectArrayFixedStore();
         if (r != 0) return r;
