@@ -12,6 +12,7 @@
     <Compile Include="Roslyn.fs" />
     <Compile Include="TestAssemblyReadCache.fs" />
     <Compile Include="TestCustomAttributeBlob.fs" />
+    <Compile Include="TestCustomAttribValueLowering.fs" />
     <Compile Include="TestFriendAssemblies.fs" />
     <Compile Include="TestAccessCheck.fs" />
     <Compile Include="RealRuntime.fs" />
