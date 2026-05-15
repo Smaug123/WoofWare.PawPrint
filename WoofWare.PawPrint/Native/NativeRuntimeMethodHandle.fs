@@ -39,18 +39,34 @@ module NativeRuntimeMethodHandle =
 
         methodInfo
 
-    /// Resolve a <c>QCallTypeHandle</c>-encoded type to its <c>TypeInfo</c>
-    /// definition and concrete-handle, refusing the non-closed cases that
-    /// <c>RuntimeMethodHandle_IsCAVisibleFromDecoratedType</c>'s CoreCLR sibling
-    /// rejects with <c>Arg_InvalidHandle</c> (open generic definitions and
-    /// generic parameters correspond to CoreCLR <c>TypeDesc</c>s).
-    let private closedTypeFromTarget
+    /// Resolve a <c>QCallTypeHandle</c>-encoded type to its
+    /// <c>(DumpedAssembly, TypeInfo)</c>, accepting the MethodTable-backed
+    /// cases (closed concrete instantiations and open generic type
+    /// definitions) and refusing the TypeDesc-backed cases that
+    /// <c>RuntimeMethodHandle_IsCAVisibleFromDecoratedType</c>'s CoreCLR
+    /// sibling rejects with <c>Arg_InvalidHandle</c>
+    /// (arrays/byrefs/pointers/fnptrs and generic parameters). Note that
+    /// <c>typeof(G&lt;&gt;)</c> reaches this QCall as the decorated source
+    /// when reflection walks custom attributes on a generic type definition,
+    /// so accepting <c>OpenGenericTypeDefinition</c> is load-bearing for
+    /// ordinary CA filtering on open generics.
+    let private resolveMethodTableType
         (operation : string)
         (label : string)
         (state : IlMachineState)
         (target : RuntimeTypeHandleTarget)
-        : DumpedAssembly * TypeInfo<GenericParamFromMetadata, TypeDefn> * ConcreteTypeHandle
+        : DumpedAssembly * TypeInfo<GenericParamFromMetadata, TypeDefn>
         =
+        let fromIdentity (identity : ResolvedTypeIdentity) =
+            let assembly =
+                state.LoadedAssembly identity.Assembly
+                |> Option.defaultWith (fun () ->
+                    failwith $"%s{operation}: assembly %s{identity.AssemblyFullName} for %s{label} is not loaded"
+                )
+
+            let typeInfo = assembly.TypeDefs.[identity.TypeDefinition.Get]
+            assembly, typeInfo
+
         match target with
         | RuntimeTypeHandleTarget.Closed handle ->
             match handle with
@@ -66,7 +82,7 @@ module NativeRuntimeMethodHandle =
                         )
 
                     let typeInfo = assembly.TypeDefs.[concreteType.Definition.Get]
-                    assembly, typeInfo, handle
+                    assembly, typeInfo
             | ConcreteTypeHandle.Byref _
             | ConcreteTypeHandle.Pointer _
             | ConcreteTypeHandle.FunctionPointer _
@@ -81,8 +97,12 @@ module NativeRuntimeMethodHandle =
                 failwith
                     $"TODO: %s{operation}: %s{label} is a structural type (%O{handle}); CoreCLR throws ArgumentNullException(\"Arg_InvalidHandle\") for TypeDesc handles here"
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
-            failwith
-                $"TODO: %s{operation}: %s{label} is an open generic definition (%O{identity}); CoreCLR throws ArgumentNullException(\"Arg_InvalidHandle\") for TypeDesc handles here"
+            // typeof(G<>) is a MethodTable in CoreCLR (the "typical
+            // instantiation"); reflection passes it here when filtering CAs on
+            // a generic type definition. The MethodTable carries the same
+            // TypeAttributes and nesting chain as any other instantiation, so
+            // an access check using the TypeDef's own attributes is correct.
+            fromIdentity identity
         | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
             failwith
                 $"TODO: %s{operation}: %s{label} is a generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}; CoreCLR throws ArgumentNullException(\"Arg_InvalidHandle\") for TypeDesc handles here"
@@ -181,8 +201,8 @@ module NativeRuntimeMethodHandle =
             let attrTarget =
                 NativeCall.qCallTypeHandleToRuntimeTypeHandleTarget operation state attrTypeArg
 
-            let attrAssembly, attrTypeInfo, _ =
-                closedTypeFromTarget operation "attribute type" state attrTarget
+            let attrAssembly, attrTypeInfo =
+                resolveMethodTableType operation "attribute type" state attrTarget
 
             // CoreCLR: if pCACtor is NULL, look up the default ctor of the target
             // type. If that lookup fails and the target is not a value type, throw
@@ -251,8 +271,8 @@ module NativeRuntimeMethodHandle =
                     // it will fail loudly rather than silently using a default.
                     []
                 | Some target ->
-                    let _, sourceTypeInfo, _ =
-                        closedTypeFromTarget operation "decorated type" state target
+                    let _, sourceTypeInfo =
+                        resolveMethodTableType operation "decorated type" state target
 
                     buildAccessLevelChain operation sourceAssembly sourceTypeInfo
 
