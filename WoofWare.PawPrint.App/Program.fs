@@ -93,13 +93,46 @@ module AppProgram =
                 | [] -> failwith "Exiting thread returned void; expected an int32 exit code"
                 | other :: _ -> failwith $"Exiting thread had unexpected eval-stack top %O{other}; expected int32"
 
+            let drainStandardStreams (state : IlMachineState) : unit =
+                // The interpreter never writes to host stdout/stderr during
+                // execution; instead `SystemNative_Write` appends bytes to
+                // the kernel's `StdoutAppended` / `StderrAppended` logs (and
+                // emits a `StepEffect.WroteToFd` for any consumer that wants
+                // to stream). Here, at the end of the run, drain those logs
+                // to the host's real standard streams so a user invoking
+                // `WoofWare.PawPrint.App` sees the guest's output. Order
+                // matches the run: stdout is drained before stderr.
+                //
+                // Streaming during execution would couple the functional
+                // core to an imperative sink; leaving it until the end keeps
+                // the interpreter deterministic and replayable. Programs
+                // that crash partway will lose nothing because the buffer
+                // is what's drained regardless of which `RunOutcome`
+                // terminates the run.
+                let stdout = state.Kernel.StdoutAppended
+
+                if stdout.Length > 0 then
+                    use out = System.Console.OpenStandardOutput ()
+                    out.Write (stdout.AsSpan ())
+                    out.Flush ()
+
+                let stderr = state.Kernel.StderrAppended
+
+                if stderr.Length > 0 then
+                    use err = System.Console.OpenStandardError ()
+                    err.Write (stderr.AsSpan ())
+                    err.Flush ()
+
             match Program.run loggerFactory (Some dllPath) fileStream dotnetRuntimes impls args with
             | RunOutcome.NormalExit (state, thread)
-            | RunOutcome.ProcessExit (state, thread) -> exitCodeFromStack state thread
-            | RunOutcome.FailFast (_state, _thread, message) ->
+            | RunOutcome.ProcessExit (state, thread) ->
+                drainStandardStreams state
+                exitCodeFromStack state thread
+            | RunOutcome.FailFast (state, _thread, message) ->
                 // CoreCLR's Environment_FailFast calls HandleFatalError(COR_E_FAILFAST)
                 // and on Windows terminates with 0x80131623; on Unix it aborts via
                 // SIGABRT (exit code 128 + 6 = 134).
+                drainStandardStreams state
                 let msg = message |> Option.defaultValue "<no message>"
                 logger.LogCritical ("Guest called Environment.FailFast: {FailFastMessage}", msg)
 
@@ -108,6 +141,8 @@ module AppProgram =
                 else
                     134
             | RunOutcome.GuestUnhandledException (state, _thread, exn) ->
+                drainStandardStreams state
+
                 let exceptionTypeName =
                     match state.ManagedHeap.NonArrayObjects |> Map.tryFind exn.ExceptionObject with
                     | Some obj ->

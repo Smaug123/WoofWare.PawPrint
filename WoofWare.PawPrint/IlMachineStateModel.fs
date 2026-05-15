@@ -203,8 +203,8 @@ type WhatWeDid =
 /// world?" — i.e. it's input to the driver. A single step can do both (e.g.
 /// emit a `WroteToFd` effect *and* report `WhatWeDid.Executed`).
 ///
-/// Today the only variant is `NoEffect`; widening the contract up front lets
-/// us add `WroteToFd`, `ReadFromFd`, etc. in subsequent PRs without retouching
+/// Today the variants are `NoEffect` and `WroteToFd`; widening the contract
+/// up front lets us add `ReadFromFd` etc. in subsequent PRs without retouching
 /// the construction sites that don't emit effects.
 type StepEffect =
     /// The step had no externally-observable I/O effect. The overwhelming
@@ -212,6 +212,18 @@ type StepEffect =
     /// emitting handlers (`SystemNative_Write`, etc.) are distinguishable at
     /// the type level.
     | NoEffect
+    /// The step accepted `bytes` for the file descriptor backing `role`, and
+    /// the bytes have already been appended to the canonical
+    /// `EmulatedKernel.StdoutAppended` / `StderrAppended` log (so the state
+    /// alone is sufficient to reconstruct the full output). Drivers that
+    /// want to stream output as it is produced — instead of waiting until
+    /// the end of the run and reading the buffer — should consume this
+    /// variant. The `role` is one of the standard-stream roles; PawPrint
+    /// does not currently model any other writable fd. `bytes` carries
+    /// exactly the bytes appended in this step (it is not the cumulative
+    /// log); a driver that streams therefore does not need to track an
+    /// offset.
+    | WroteToFd of role : FileDescriptorRole * bytes : ImmutableArray<byte>
 
 type ExecutionResult =
     /// A single thread finished (its top frame hit `ret`). For the entry thread this means

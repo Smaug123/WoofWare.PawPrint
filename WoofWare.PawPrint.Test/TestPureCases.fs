@@ -438,6 +438,7 @@ class Program
             ExpectedReturnCode = 0
             NativeImpls = MockEnv.make ()
             ExpectsUnhandledException = false
+            AssertTerminalState = None
         }
         |> runTest
 
@@ -451,6 +452,7 @@ class Program
             ExpectedReturnCode = exitCode
             NativeImpls = MockEnv.make ()
             ExpectsUnhandledException = false
+            AssertTerminalState = None
         }
         |> runTest
 
@@ -461,6 +463,7 @@ class Program
             ExpectedReturnCode = 0
             NativeImpls = mock
             ExpectsUnhandledException = false
+            AssertTerminalState = None
         }
         |> runTest
 
@@ -472,6 +475,7 @@ class Program
             ExpectedReturnCode = 0 // not checked; both runtimes are expected to throw
             NativeImpls = MockEnv.make ()
             ExpectsUnhandledException = true
+            AssertTerminalState = None
         }
         |> runTest
 
@@ -496,6 +500,7 @@ class Program
             ExpectedReturnCode = 0
             NativeImpls = MockEnv.make ()
             ExpectsUnhandledException = false
+            AssertTerminalState = None
         }
         |> runTest
 
@@ -519,5 +524,6 @@ class Program
             ExpectedReturnCode = 0
             NativeImpls = mock
             ExpectsUnhandledException = false
+            AssertTerminalState = None
         }
         |> runTest

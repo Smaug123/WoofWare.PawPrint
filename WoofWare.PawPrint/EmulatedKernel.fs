@@ -1,5 +1,7 @@
 namespace WoofWare.PawPrint
 
+open System.Collections.Immutable
+
 /// Deterministic model of a single `System.Threading.LowLevelMonitor`, as
 /// minted by `SystemNative_LowLevelMonitor_Create`. CoreCLR backs this with a
 /// `pthread_mutex_t` + `pthread_cond_t` pair on Unix; PawPrint reproduces the
@@ -206,6 +208,21 @@ type EmulatedKernel =
         /// `Random()` ctor retries until it sees a non-zero seed, so a
         /// constant-zero substitute would hang at construction time.
         NonCryptoRandomState : uint64
+        /// Append-only log of every byte the guest has written to fd 1
+        /// (stdout) via `SystemNative_Write`. Acts as the canonical record
+        /// the driver's end-of-run host drain reads from, and is what
+        /// PawPrint-only tests assert on instead of trying to capture host
+        /// stdout. The buffer grows unboundedly: a guest that prints
+        /// gigabytes will pay the memory cost, but PawPrint is a slow
+        /// deterministic interpreter and a guest of that scale is not in
+        /// scope. Bound this with a streaming sink (consuming `StepEffect.
+        /// WroteToFd` at each step) when a need arises.
+        StdoutAppended : ImmutableArray<byte>
+        /// Append-only log of every byte the guest has written to fd 2
+        /// (stderr) via `SystemNative_Write`. Same contract as
+        /// `StdoutAppended`; see that field for the unbounded-growth
+        /// caveat.
+        StderrAppended : ImmutableArray<byte>
     }
 
 /// Deterministic non-cryptographic PRNG that backs
@@ -282,4 +299,6 @@ module EmulatedKernel =
             SyncBlockSpuriousWakeup = SyncBlockSpuriousWakeupStrategy.Disabled
             StepCounter = 0L
             NonCryptoRandomState = NonCryptoRandom.initialState
+            StdoutAppended = ImmutableArray<byte>.Empty
+            StderrAppended = ImmutableArray<byte>.Empty
         }

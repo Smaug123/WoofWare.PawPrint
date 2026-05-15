@@ -19,16 +19,17 @@ module TestImpureCases =
         [
             // `Console.WriteLine("Hello, world!")` triggers lazy initialisation of `Console.Out`,
             // which descends Console::get_Out → ConsolePal::OpenStandardOutput → Interop+Sys::Dup.
-            // PawPrint now intercepts SystemNative_Dup via FileDescriptorRegistry, so the std-stream
-            // open path completes; the WriteLine flow now blocks downstream on the unimplemented
-            // libSystem.Globalization.Native P/Invoke `GlobalizationNative_LoadICU` during
-            // CultureInfo initialisation. Subsequent SystemNative_Write (the actual byte-emitting
-            // call) is also still unimplemented.
+            // PawPrint now intercepts SystemNative_Dup via FileDescriptorRegistry and
+            // SystemNative_Write via the same handler family, so both the std-stream open path and
+            // the actual byte-emitting call are implemented; the WriteLine flow now blocks
+            // downstream on the unimplemented libSystem.Globalization.Native P/Invoke
+            // `GlobalizationNative_LoadICU` during CultureInfo initialisation.
             {
                 FileName = "WriteLine.cs"
                 ExpectedReturnCode = 1
                 NativeImpls = NativeImpls.PassThru ()
                 ExpectsUnhandledException = false
+                AssertTerminalState = None
             }
         ]
 
@@ -38,6 +39,7 @@ module TestImpureCases =
                 FileName = "InstaQuit.cs"
                 ExpectedReturnCode = 1
                 ExpectsUnhandledException = false
+                AssertTerminalState = None
                 NativeImpls =
                     let mock = MockEnv.make ()
                     let env = mock.System_Environment
@@ -66,12 +68,41 @@ module TestImpureCases =
                 FileName = "ExitFromWorker.cs"
                 ExpectedReturnCode = 7
                 ExpectsUnhandledException = false
+                AssertTerminalState = None
                 NativeImpls =
                     let mock = MockEnv.make ()
 
                     { mock with
                         System_Environment = System_Environment.passThru
                     }
+            }
+            {
+                // Exercises the SystemNative_Write success path: a guest that
+                // DllImports SystemNative_Write directly and pushes a few
+                // bytes at stdout. The pure-source test only covers the
+                // error paths (negative size, bad fd, zero size); the
+                // success path is impure because it appends to the
+                // interpreter's `StdoutAppended` buffer and we want to
+                // assert directly on those bytes rather than try to capture
+                // the test runner's real stdout. The guest returns 0 on
+                // success (positive return from `Write`), so a regression
+                // in the handler's return value or pointer decoding also
+                // surfaces as a wrong exit code.
+                FileName = "SystemNativeWriteSuccess.cs"
+                ExpectedReturnCode = 0
+                ExpectsUnhandledException = false
+                NativeImpls = NativeImpls.PassThru ()
+                AssertTerminalState =
+                    Some (fun state ->
+                        // The guest writes the literal "hi\n" (3 bytes) to
+                        // fd 1. If the handler decoded the pointer wrong,
+                        // we'd see garbage or fewer bytes here.
+                        state.Kernel.StdoutAppended
+                        |> Seq.toArray
+                        |> shouldEqual [| 0x68uy ; 0x69uy ; 0x0Auy |]
+
+                        state.Kernel.StderrAppended.Length |> shouldEqual 0
+                    )
             }
         ]
 
@@ -109,6 +140,10 @@ module TestImpureCases =
                     | ret -> failwith $"expected program to return an int, but it returned %O{ret}"
 
             exitCode |> shouldEqual case.ExpectedReturnCode
+
+            match case.AssertTerminalState with
+            | None -> ()
+            | Some assertion -> assertion terminalState
         with _ ->
             for message in messages () do
                 System.Console.Error.WriteLine $"{message}"

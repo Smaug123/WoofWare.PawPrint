@@ -18,3 +18,11 @@ module Errno =
     /// `EBADF` — Bad file descriptor. Returned by `dup`, `close`, `read`,
     /// `write`, etc. when the supplied fd is not currently open.
     let EBADF : int = 9
+
+    /// `ERANGE` — Result too large / out of range. Used by PawPrint's
+    /// `SystemNative_Write` / `SystemNative_Read` shims when the caller
+    /// supplies a negative `bufferSize`, matching the behaviour of
+    /// `Common_Write` / `Common_Read` in `pal_io_common.h` (which set
+    /// `errno = ERANGE` and return -1 for negative sizes before the real
+    /// `read(2)` / `write(2)` is invoked).
+    let ERANGE : int = 34

@@ -1,5 +1,7 @@
 namespace WoofWare.PawPrint
 
+open System.Collections.Immutable
+
 [<RequireQualifiedAccess>]
 module NativeSystemNative =
     let private trySystemNativeEntryPoint (ctx : NativeCallContext) : string option =
@@ -221,6 +223,140 @@ module NativeSystemNative =
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 resultCode) ctx.Thread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.stepped
+            |> Some
+        | Some "SystemNative_Write",
+          [ ConcreteIntPtr state.ConcreteTypes
+            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            // `int32_t SystemNative_Write(intptr_t fd, const void* buffer, int32_t bufferSize)`
+            // delegates to `Common_Write` in `pal_io_common.h`. The C path:
+            //   * negative `bufferSize`            -> errno = ERANGE, return -1
+            //   * otherwise call real `write(2)`   -> may return short, may EINTR (retried)
+            // PawPrint models only the writable standard streams (fds 1 and
+            // 2) and never returns short, never returns EINTR, and never
+            // blocks: there is no kernel that could push back on our
+            // simulated process. A guest depending on EAGAIN / partial
+            // writes from a non-blocking socket would need new
+            // FileDescriptorRole entries; we'll add those when that need
+            // arises rather than guessing at the contract now.
+            let operation = "SystemNative_Write"
+
+            let fd = fdArgument operation instruction.Arguments.[0]
+
+            let buffer =
+                NativeCall.managedPointerOfPointerArgument operation "buffer" instruction.Arguments.[1]
+
+            let bufferSize = NativeCall.int32Argument operation instruction.Arguments.[2]
+
+            let setErrno (state : IlMachineState) (errno : int) : IlMachineState =
+                state.MapKernel (fun kernel ->
+                    { kernel with
+                        LastSystemError = errno
+                    }
+                )
+
+            let readBuffer (state : IlMachineState) : ImmutableArray<byte> =
+                // Drain `bufferSize` bytes from `buffer`. Called only after
+                // the bufferSize-> 0 and buffer-> non-null checks succeed.
+                let byteConcreteType =
+                    NativeCall.requiredByteConcreteType operation ctx.BaseClassTypes state
+
+                let builder = ImmutableArray.CreateBuilder<byte> bufferSize
+
+                for i = 0 to bufferSize - 1 do
+                    let src =
+                        ManagedPointerByteView.addByteOffset ctx.BaseClassTypes state byteConcreteType i buffer
+
+                    let cell =
+                        IlMachineState.readManagedByrefBytesAs
+                            ctx.BaseClassTypes
+                            state
+                            src
+                            (CliType.Numeric (CliNumericType.UInt8 0uy))
+
+                    match cell with
+                    | CliType.Numeric (CliNumericType.UInt8 b) -> builder.Add b
+                    | other ->
+                        failwith
+                            $"%s{operation}: byte read at offset %d{i} returned non-UInt8 cell %O{other} (this is an interpreter bug)"
+
+                builder.MoveToImmutable ()
+
+            let result, effect, state =
+                if bufferSize < 0 then
+                    // Matches `Common_Write`: refuse the call before any
+                    // dereference of `buffer`. CoreLib callers (`Interop.Sys.
+                    // Write`) never pass negative sizes, so this is a guest
+                    // misuse path; surface it through errno rather than
+                    // crashing so the guest's own error reporting runs.
+                    -1, StepEffect.NoEffect, setErrno state Errno.ERANGE
+                else
+                    match FileDescriptorRegistry.tryFind fd state.Kernel.FileDescriptors with
+                    | None ->
+                        // Unknown fd: report EBADF the same way `write(2)`
+                        // would.
+                        -1, StepEffect.NoEffect, setErrno state Errno.EBADF
+                    | Some entry ->
+                        match entry.Role with
+                        | FileDescriptorRole.StandardInput ->
+                            // `write(2)` on a read-only fd returns -1 + EBADF
+                            // on Linux (the fd's access mode is wrong for the
+                            // operation). Real stdin is opened O_RDONLY by
+                            // the shell, so this matches what guests would
+                            // observe on the host.
+                            -1, StepEffect.NoEffect, setErrno state Errno.EBADF
+                        | (FileDescriptorRole.StandardOutput | FileDescriptorRole.StandardError) as role ->
+                            if bufferSize = 0 then
+                                // `write(fd, _, 0)` is a no-op on every Unix
+                                // we model — no errno, no buffer
+                                // dereference, no observable effect. CoreLib
+                                // in principle never calls with
+                                // `bufferSize = 0` (it bails in
+                                // `Stream.Write`), but honour the C contract
+                                // so guests that DllImport directly behave
+                                // the same as on the host.
+                                0, StepEffect.NoEffect, state
+                            else
+                                match buffer with
+                                | ManagedPointerSource.Null ->
+                                    failwith
+                                        $"%s{operation}: refused to read %d{bufferSize} bytes through null buffer pointer (CoreLib should not invoke this entry point with a null source for a non-zero length)"
+                                | _ ->
+                                    let bytes = readBuffer state
+
+                                    let state =
+                                        state.MapKernel (fun kernel ->
+                                            match role with
+                                            | FileDescriptorRole.StandardOutput ->
+                                                { kernel with
+                                                    StdoutAppended =
+                                                        kernel.StdoutAppended.AddRange (bytes : ImmutableArray<byte>)
+                                                }
+                                            | FileDescriptorRole.StandardError ->
+                                                { kernel with
+                                                    StderrAppended =
+                                                        kernel.StderrAppended.AddRange (bytes : ImmutableArray<byte>)
+                                                }
+                                            | FileDescriptorRole.StandardInput ->
+                                                // Unreachable: matched the
+                                                // EBADF arm above. Threading
+                                                // the case here keeps `role`
+                                                // exhaustive so a future
+                                                // writable role (e.g. a
+                                                // regular file) fails to
+                                                // compile until its buffer
+                                                // destination is wired up.
+                                                failwith
+                                                    $"%s{operation}: write to StandardInput reached append path (this is an interpreter bug)"
+                                        )
+
+                                    bufferSize, StepEffect.WroteToFd (role, bytes), state
+
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 result) ctx.Thread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.steppedWith effect
             |> Some
         | Some "SystemNative_GetNonCryptographicallySecureRandomBytes",
           [ ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
