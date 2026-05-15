@@ -49,6 +49,15 @@ class Program
         // checking bufferSize.
         if (SystemNative_Write((IntPtr)1, (byte*)123, 0) != 0) return 4;
 
+        // Non-zero write to stdout with a NULL buffer: real write(2)
+        // returns -1 with errno = EFAULT and does not perform any I/O
+        // (POSIX guarantees the failure precedes any data emission, so
+        // this is safe to run on the real CLR without polluting test
+        // runner stdout). PawPrint must surface the same syscall
+        // failure rather than crashing the interpreter on a direct
+        // P/Invoke that bypasses the BCL's null guard in Stream.Write.
+        if (SystemNative_Write((IntPtr)1, (byte*)0, 5) != -1) return 5;
+
         return 0;
     }
 }

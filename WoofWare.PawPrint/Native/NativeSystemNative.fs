@@ -327,17 +327,38 @@ module NativeSystemNative =
                                 // garbage) because it is not dereferenced.
                                 0, StepEffect.NoEffect, state
                             else
-                                let buffer =
-                                    NativeCall.managedPointerOfPointerArgument
-                                        operation
-                                        "buffer"
-                                        instruction.Arguments.[1]
+                                // Try to decode `buffer` as a managed
+                                // pointer. Real `write(2)` returns -1 +
+                                // EFAULT for any non-dereferenceable
+                                // address (including NULL and unmapped
+                                // verbatim bit patterns); collapse both
+                                // those cases to EFAULT here rather than
+                                // crashing PawPrint, so a direct P/Invoke
+                                // that the BCL would never produce
+                                // (`Stream.Write` short-circuits null
+                                // upstream) observes the same syscall
+                                // failure it would on the host.
+                                let dereferenceableBuffer : ManagedPointerSource option =
+                                    match CliType.unwrapPrimitiveLikeDeep instruction.Arguments.[1] with
+                                    | CliType.RuntimePointer (CliRuntimePointer.Managed ptr) -> Some ptr
+                                    | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ptr)) ->
+                                        Some ptr
+                                    | CliType.RuntimePointer (CliRuntimePointer.Verbatim _) ->
+                                        // 0L is null; non-zero is a raw
+                                        // unmapped address. Either way the
+                                        // kernel cannot read from it.
+                                        None
+                                    | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim _)) -> None
+                                    | other ->
+                                        failwith
+                                            $"%s{operation}: expected buffer to be a managed pointer, raw verbatim address, or null literal, got %O{other} (this is an interpreter bug)"
 
-                                match buffer with
-                                | ManagedPointerSource.Null ->
-                                    failwith
-                                        $"%s{operation}: refused to read %d{bufferSize} bytes through null buffer pointer (CoreLib should not invoke this entry point with a null source for a non-zero length)"
-                                | _ ->
+                                match dereferenceableBuffer with
+                                | None ->
+                                    // EFAULT: bad address. Real kernels
+                                    // perform no I/O on this path.
+                                    -1, StepEffect.NoEffect, setErrno state Errno.EFAULT
+                                | Some buffer ->
                                     let bytes = readBuffer buffer state
 
                                     let logEntry =
