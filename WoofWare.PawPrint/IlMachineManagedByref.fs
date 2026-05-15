@@ -1985,10 +1985,12 @@ module IlMachineManagedByref =
                 | _ -> useStructuralWriter ()
             | ValueSome _, None, _ ->
                 // Metadata-light caller hit a trailing byte view but cannot
-                // supply BCT for the iterative peel. The structural writer is
-                // still safe: it accepts the option-typed BCT and only needs
-                // it for non-trailing `ReinterpretAs` chains, which the legacy
-                // `splitTrailingByteView` classifier never produces.
+                // supply BCT for the forward-walk peel. The structural writer
+                // accepts an `Option<BaseClassTypes>` and degrades gracefully
+                // for the simple chain shapes the legacy
+                // `splitTrailingByteView` is tuned for. Callers that need
+                // bytewise writes through arbitrary residual reinterprets
+                // should migrate to `writeManagedByrefWithBase`.
                 useStructuralWriter ()
             | _ -> useStructuralWriter ()
 
