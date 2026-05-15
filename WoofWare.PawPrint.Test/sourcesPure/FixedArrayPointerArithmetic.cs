@@ -96,6 +96,32 @@ public unsafe class FixedArrayPointerArithmetic
         return 0;
     }
 
+    // Storing a provenance-bearing native int (here a RuntimeTypeHandle's
+    // TypeHandlePtr value) through a `fixed` array pointer must preserve
+    // the value's provenance. The Conv_U/Conv_I byte-view anchor must not
+    // force these stores through the byte-scatter path, which refuses
+    // non-byte-renderable native ints. Reads back through `arr[i]` then
+    // recover the typed cell.
+    public static int TestIntPtrArrayProvenanceStore()
+    {
+        IntPtr[] arr = new IntPtr[3];
+        IntPtr handle0 = typeof(int).TypeHandle.Value;
+        IntPtr handle1 = typeof(long).TypeHandle.Value;
+        fixed (IntPtr* p = arr)
+        {
+            *p = handle0;
+            p[1] = handle1;
+            // Read back through the same fixed pointer: the read path must
+            // surface the typed cell rather than slicing bytes, since the
+            // cells now carry non-byte-renderable handle provenance.
+            if (*p != handle0) return 50;
+            if (p[1] != handle1) return 51;
+        }
+        if (arr[0] != handle0) return 52;
+        if (arr[1] != handle1) return 53;
+        return 0;
+    }
+
     public static int Main(string[] argv)
     {
         int r;
@@ -108,6 +134,8 @@ public unsafe class FixedArrayPointerArithmetic
         r = TestIntPtrArrayWalk();
         if (r != 0) return r;
         r = TestIntPointerArrayFixed();
+        if (r != 0) return r;
+        r = TestIntPtrArrayProvenanceStore();
         if (r != 0) return r;
         return 0;
     }
