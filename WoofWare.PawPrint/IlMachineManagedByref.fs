@@ -1894,17 +1894,20 @@ module IlMachineManagedByref =
             // struct view) route to the bytes-or-typed-cell writer. Without
             // BCT, fall back to the trailing-suffix-only classifier.
             //
-            // The bytes-or-typed-cell writer assumes it can target the cell at
-            // an absolute byte offset within the root: it works directly for
-            // chains whose peeled prefix is empty (bare StackMemoryByte /
-            // NativeMemoryByte / HeapValue / HeapObjectField roots). When peel collapses only a
-            // suffix and leaves a structural `Field` prefix, the typed-cell
-            // path can no longer reach the destination cell from the root
-            // alone; the structural projection writer (`writeProjectedValueIfChanged`)
-            // is the right path because it threads the write through
-            // `splitFirstReinterpret` / `writeReinterpretedStorageIfChanged`,
-            // which already handles the same byte-view tail and additionally
-            // walks the structural prefix.
+            // When peel collapses the whole tail (`prefix = []`), the
+            // bytes-or-typed-cell writer can target an absolute byte offset
+            // within the root directly. When peel leaves a residual structural
+            // prefix (e.g. `[Field f]`) and the value being written is not
+            // byte-renderable (object reference, runtime pointer), the
+            // bytes-or-typed-cell writer would attempt a byte scatter that
+            // refuses non-byte-addressable payloads; route those through the
+            // structural projection writer (`writeProjectedValueIfChanged`),
+            // which threads through `writeReinterpretedStorageIfChanged` and
+            // applies the transparent-wrapper fast path for ref↔ref writes.
+            // Byte-renderable writes with a residual prefix stay on the
+            // bytes-or-typed-cell path so the existing `resolveCell` byte
+            // scatter (which lifts back through trailing `Field` projections
+            // for `Unsafe.Add`-style cross-cell writes) keeps working.
             let peeled : (ByrefProjection list * int) voption =
                 match baseClassTypes with
                 | Some bct -> peelTrailingByteView bct state projs
@@ -1912,8 +1915,15 @@ module IlMachineManagedByref =
                     splitTrailingByteView src
                     |> ValueOption.map (fun (_root, prefixProjs, offset) -> prefixProjs, offset)
 
+            let valueIsByteRenderable =
+                match CliType.ByteAddressability newValue with
+                | CliByteAddressability.ByteAddressable -> true
+                | CliByteAddressability.Rejected _ -> false
+
             match peeled, baseClassTypes with
             | ValueSome ([], _), Some bct -> writeManagedByrefBytesOrTypedCell bct state src newValue
+            | ValueSome (_ :: _, _), Some bct when valueIsByteRenderable ->
+                writeManagedByrefBytesOrTypedCell bct state src newValue
             | ValueSome _, None ->
                 // Trailing-suffix-only byte view; legacy callers without BCT
                 // pass through here. Routing without BCT means the bytes path
@@ -1921,7 +1931,7 @@ module IlMachineManagedByref =
                 // splitTrailingByteView contract is preserved.
                 failwith
                     "writeManagedByref: byte-view byref encountered without BaseClassTypes; call writeManagedByrefWithBase instead"
-            | ValueSome (_ :: _, _), _
+            | ValueSome (_ :: _, _), Some _
             | ValueNone, _ ->
                 let rootValue = readRootValue state root
 
