@@ -114,6 +114,7 @@ module Corelib =
         let argumentException = findCorelibType corelib "System" "ArgumentException"
         let argumentNullException = findCorelibType corelib "System" "ArgumentNullException"
         let dateTime = findCorelibType corelib "System" "DateTime"
+        let loaderAllocator = findCorelibType corelib "System.Reflection" "LoaderAllocator"
 
         {
             Corelib = corelib
@@ -166,6 +167,7 @@ module Corelib =
             ArgumentException = argumentException
             ArgumentNullException = argumentNullException
             DateTime = dateTime
+            LoaderAllocator = loaderAllocator
         }
 
     let concretizeAll

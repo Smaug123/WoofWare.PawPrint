@@ -234,6 +234,11 @@ type BaseClassTypes<'corelib> =
         /// DateTime field to `MARSHAL_TYPE_DATE` (8 bytes) before the AutoLayout rejection
         /// triggers; reproducing that requires identifying DateTime nominally at marshal time.
         DateTime : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        /// `System.Reflection.LoaderAllocator`. CoreCLR's `RuntimeMethodHandle.GetLoaderAllocator`
+        /// returns an instance of this type to act as a GC keepalive for `RuntimeMethodInfoStub`.
+        /// We model that as a single instance per `IlMachineState`-scope allocation: managed code
+        /// only stores the reference, never reads it.
+        LoaderAllocator : TypeInfo<GenericParamFromMetadata, TypeDefn>
     }
 
 [<RequireQualifiedAccess>]
