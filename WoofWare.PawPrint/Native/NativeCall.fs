@@ -58,6 +58,32 @@ module NativeCall =
             | other -> failwith $"%s{operation}: expected TypeHandlePtr in QCallTypeHandle._handle, got %O{other}"
         | other -> failwith $"%s{operation}: expected QCallTypeHandle value type, got %O{other}"
 
+    /// Like <c>qCallTypeHandleToRuntimeTypeHandleTarget</c>, but tolerates the
+    /// null-handle case that CoreCLR represents as <c>_handle = IntPtr.Zero</c>
+    /// (the encoding produced by passing <c>default(RuntimeTypeHandle)</c> through
+    /// the <c>QCallTypeHandle</c> ctor, e.g. when CoreCLR's
+    /// <c>RuntimeMethodHandle.IsCAVisibleFromDecoratedType</c> is called without
+    /// a decorated source type). Returns <c>None</c> in that case.
+    let qCallTypeHandleToRuntimeTypeHandleTargetOption
+        (operation : string)
+        (state : IlMachineState)
+        (arg : EvalStackValue)
+        : RuntimeTypeHandleTarget option
+        =
+        match arg with
+        | EvalStackValue.UserDefinedValueType vt ->
+            let handleField =
+                IlMachineState.requiredOwnInstanceFieldId state vt.Declared "_handle"
+
+            match CliValueType.DereferenceFieldById handleField vt |> CliType.unwrapPrimitiveLike with
+            | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr target)) -> Some target
+            | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) -> None
+            | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)) ->
+                None
+            | other ->
+                failwith $"%s{operation}: expected TypeHandlePtr or null in QCallTypeHandle._handle, got %O{other}"
+        | other -> failwith $"%s{operation}: expected QCallTypeHandle value type, got %O{other}"
+
     /// Decode a `QCallModule` value-type argument to the assembly full name of the wrapped
     /// `RuntimeModule`. CoreCLR's `QCallModule` carries `(_ptr, _module)` where `_module` is
     /// the result of `RuntimeModule.GetUnderlyingNativeHandle()` — i.e. `m_pData`, which we
@@ -157,8 +183,10 @@ module NativeCall =
         match CliType.unwrapPrimitiveLikeDeep arg with
         | CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle id) -> Some id
         | CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L) -> None
+        | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null) -> None
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.MethodHandlePtr id)) -> Some id
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) -> None
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)) -> None
         | other ->
             failwith
                 $"%s{operation}: expected RuntimeMethodHandleInternal containing a method-registry handle, got %O{other}"

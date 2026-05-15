@@ -8,6 +8,8 @@ module NativeQCall =
             NativeRuntimeHelpers.tryExecuteQCall "ReflectionInvocation_RunClassConstructor"
             "RuntimeFieldHandle_GetRVAFieldInfo",
             NativeRuntimeFieldHandle.tryExecuteQCall "RuntimeFieldHandle_GetRVAFieldInfo"
+            "RuntimeMethodHandle_IsCAVisibleFromDecoratedType",
+            NativeRuntimeMethodHandle.tryExecuteQCall "RuntimeMethodHandle_IsCAVisibleFromDecoratedType"
             "QCall_GetGCHandleForTypeHandle", NativeGcHandle.tryExecuteQCall "QCall_GetGCHandleForTypeHandle"
             "QCall_FreeGCHandleForTypeHandle", NativeGcHandle.tryExecuteQCall "QCall_FreeGCHandleForTypeHandle"
             "MarshalNative_SizeOfHelper", NativeMarshal.tryExecuteQCall "MarshalNative_SizeOfHelper"

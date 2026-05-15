@@ -196,6 +196,15 @@ type DumpedAssembly =
         /// Internal lookup for nested exported types by parent export and simple name.
         /// </summary>
         _NestedExportedTypesLookup : ImmutableDictionary<ExportedTypeHandle * string, WoofWare.PawPrint.ExportedType>
+
+        /// <summary>
+        /// Friend-assembly declarations parsed from assembly-level
+        /// <c>InternalsVisibleTo</c> and <c>IgnoresAccessChecksTo</c> custom
+        /// attributes on this assembly. Cached eagerly so visibility checks
+        /// (e.g. CA filtering via <c>IsCAVisibleFromDecoratedType</c>) do not
+        /// re-walk the assembly-level attribute list per call.
+        /// </summary>
+        Friends : FriendAssemblies
     }
 
     static member internal BuildTopLevelTypeDefsLookup
@@ -519,6 +528,21 @@ module Assembly =
 
         let logger = loggerFactory.CreateLogger assy.Name.Name
 
+        let friends =
+            let input : FriendAssembliesScanInput =
+                {
+                    CustomAttributesByParentToken = customAttributesByParentToken
+                    Attributes = attrs
+                    Members = memberReferences
+                    TypeRefs = typeRefs
+                    TypeDefs = typeDefs
+                    Methods = methods
+                }
+
+            match FriendAssemblies.scan input with
+            | Ok f -> f
+            | Error e -> failwithf "FriendAssemblies.scan failed on %s: %s" assy.Name.Name e
+
         {
             Logger = logger
             OriginalPath = originalPath
@@ -546,6 +570,7 @@ module Assembly =
                 DumpedAssembly.BuildTopLevelExportedTypesLookup logger assy.Name exportedTypes.Values
             _NestedExportedTypesLookup =
                 DumpedAssembly.BuildNestedExportedTypesLookup logger assy.Name exportedTypes.Values
+            Friends = friends
         }
 
     let private fileCacheKey (path : string) : AssemblyFileCacheKey =

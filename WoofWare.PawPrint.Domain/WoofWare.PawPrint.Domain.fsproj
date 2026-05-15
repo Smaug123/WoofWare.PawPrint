@@ -32,8 +32,8 @@
         <Compile Include="Namespace.fs" />
         <Compile Include="ExportedType.fs" />
         <Compile Include="TypeSpec.fs" />
-        <Compile Include="Assembly.fs" />
         <Compile Include="FriendAssemblies.fs" />
+        <Compile Include="Assembly.fs" />
         <Compile Include="AccessCheck.fs" />
         <Compile Include="IlFormatting.fs" />
         <Compile Include="TypeConcretisation.fs" />

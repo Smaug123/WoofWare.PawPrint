@@ -780,12 +780,9 @@ public class C { public static int F() => 1; }
 """
 
         let assembly = loadAssembly "ScanNoIvtTestAssembly" source
-
-        match FriendAssemblies.scan assembly with
-        | Ok friends ->
-            friends.InternalsVisibleTo.Length |> shouldEqual 0
-            friends.IgnoresAccessChecksTo.Length |> shouldEqual 0
-        | Error e -> Assert.Fail (sprintf "expected Ok, got Error %s" e)
+        let friends = assembly.Friends
+        friends.InternalsVisibleTo.Length |> shouldEqual 0
+        friends.IgnoresAccessChecksTo.Length |> shouldEqual 0
 
     [<Test>]
     let ``scan: assembly with single IVT captures it`` () : unit =
@@ -797,13 +794,10 @@ public class C { public static int F() => 1; }
 """
 
         let assembly = loadAssembly "ScanSingleIvtTestAssembly" source
-
-        match FriendAssemblies.scan assembly with
-        | Ok friends ->
-            friends.InternalsVisibleTo.Length |> shouldEqual 1
-            friends.InternalsVisibleTo.[0].Name |> shouldEqual "FriendAsm"
-            friends.IgnoresAccessChecksTo.Length |> shouldEqual 0
-        | Error e -> Assert.Fail (sprintf "expected Ok, got Error %s" e)
+        let friends = assembly.Friends
+        friends.InternalsVisibleTo.Length |> shouldEqual 1
+        friends.InternalsVisibleTo.[0].Name |> shouldEqual "FriendAsm"
+        friends.IgnoresAccessChecksTo.Length |> shouldEqual 0
 
     [<Test>]
     let ``scan: assembly with multiple IVTs captures all`` () : unit =
@@ -817,12 +811,11 @@ public class C { public static int F() => 1; }
 """
 
         let assembly = loadAssembly "ScanMultipleIvtTestAssembly" source
+        let friends = assembly.Friends
 
-        match FriendAssemblies.scan assembly with
-        | Ok friends ->
-            let names = friends.InternalsVisibleTo |> Array.map (fun f -> f.Name) |> Array.sort
-            names |> shouldEqual [| "FriendA" ; "FriendB" ; "FriendC" |]
-        | Error e -> Assert.Fail (sprintf "expected Ok, got Error %s" e)
+        let names = friends.InternalsVisibleTo |> Array.map (fun f -> f.Name) |> Array.sort
+
+        names |> shouldEqual [| "FriendA" ; "FriendB" ; "FriendC" |]
 
     [<Test>]
     let ``scan: assembly with IgnoresAccessChecksTo captures it in subjects`` () : unit =
@@ -847,10 +840,7 @@ public class C { public static int F() => 1; }
 """
 
         let assembly = loadAssembly "ScanIgnoresAccessTestAssembly" source
-
-        match FriendAssemblies.scan assembly with
-        | Ok friends ->
-            friends.InternalsVisibleTo.Length |> shouldEqual 0
-            friends.IgnoresAccessChecksTo.Length |> shouldEqual 1
-            friends.IgnoresAccessChecksTo.[0].Name |> shouldEqual "Target"
-        | Error e -> Assert.Fail (sprintf "expected Ok, got Error %s" e)
+        let friends = assembly.Friends
+        friends.InternalsVisibleTo.Length |> shouldEqual 0
+        friends.IgnoresAccessChecksTo.Length |> shouldEqual 1
+        friends.IgnoresAccessChecksTo.[0].Name |> shouldEqual "Target"
