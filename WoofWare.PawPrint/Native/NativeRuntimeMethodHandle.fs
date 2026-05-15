@@ -1,7 +1,5 @@
 namespace WoofWare.PawPrint
 
-open System.Collections.Immutable
-
 [<RequireQualifiedAccess>]
 module NativeRuntimeMethodHandle =
     let private resolveMethodInfoFromHandleArg
@@ -234,53 +232,30 @@ module NativeRuntimeMethodHandle =
                                                                       retGenerics)) when
             handleGenerics.IsEmpty && retGenerics.IsEmpty
             ->
-            // CoreCLR runtimehandles.cpp:2148: returns
+            // CoreCLR runtimehandles.cpp:2148 returns
             //   pMethod->GetLoaderAllocator()->GetExposedObject()
-            // The managed `LoaderAllocator` object exists solely as a GC keepalive: the
-            // sole consumer is `RuntimeMethodInfoStub.m_keepalive`, a write-only field.
-            // No managed code ever reads the object's state back through that reference,
-            // so per-call allocation of a fresh `LoaderAllocator` preserves the contract.
-            // We skip running the type's parameterless constructor since the side
-            // effects (allocating `LoaderAllocatorScout` and an `object[5]`) only matter
-            // for the unmanaged-finalizer dance, which we don't model. If we ever add
-            // AssemblyLoadContext modelling, this allocation moves to per-ALC identity.
+            // and `GetExposedObject` (loaderallocator.inl:11) reads
+            // `m_hLoaderAllocatorObjectHandle`, which is only populated by
+            // `LoaderAllocator::SetupManagedTracking`. That function is only invoked
+            // from `Assembly::Create` and `AssemblyNative::CreateAssemblyLoadContext`
+            // for *collectible* loader allocators (assembly.cpp:468). Non-collectible
+            // assemblies — i.e. everything PawPrint currently loads — leave the handle
+            // null, so the FCall returns null and the BCL takes the static-cache path
+            // (e.g. `RuntimeType.RuntimeTypeCache.GetGenericMethodInfo` switches to
+            // `s_methodInstantiations`). Allocating a fresh `LoaderAllocator` here would
+            // route those caches into a per-call object and silently break
+            // canonicalization of reflected generic methods.
+            //
+            // When collectible AssemblyLoadContexts get modelled, this arm should look
+            // up the method's LoaderAllocator identity and return the corresponding
+            // exposed object.
             let operation = "RuntimeMethodHandle.GetLoaderAllocatorInternal"
 
             // CoreCLR asserts non-null on the FCall entry; surface the same precondition.
             let _ : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> =
                 resolveMethodInfoFromHandleArg operation state instruction.Arguments.[0]
 
-            let typeInfo = ctx.BaseClassTypes.LoaderAllocator
-
-            let stk =
-                DumpedAssembly.signatureTypeKind ctx.BaseClassTypes state._LoadedAssemblies typeInfo
-
-            let state, typeHandle =
-                IlMachineState.concretizeType
-                    ctx.LoggerFactory
-                    ctx.BaseClassTypes
-                    state
-                    ctx.BaseClassTypes.Corelib.Name
-                    ImmutableArray.Empty
-                    ImmutableArray.Empty
-                    (TypeDefn.FromDefinition (typeInfo.Identity, stk))
-
-            let state, allFields =
-                IlMachineState.collectAllInstanceFields ctx.LoggerFactory ctx.BaseClassTypes state typeHandle
-
-            let fields =
-                CliValueType.OfFields
-                    ctx.BaseClassTypes
-                    state.ConcreteTypes
-                    typeHandle
-                    typeInfo.Layout
-                    (CharSetMetadata.ofTypeAttributes typeInfo.TypeAttributes)
-                    allFields
-
-            let addr, state = IlMachineState.allocateManagedObject typeHandle fields state
-
-            let state =
-                IlMachineState.pushToEvalStack (CliType.ObjectRef (Some addr)) ctx.Thread state
+            let state = IlMachineState.pushToEvalStack (CliType.ObjectRef None) ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | _ -> None
