@@ -93,6 +93,7 @@ module TestPureCases =
             "MonitorEnterRefBool.cs", 1
             "ContendedMonitorEnter.cs", 99
             "MonitorPulseWait.cs", 42
+            "MonitorWaitReentrant.cs", 7
             "ExceptionWithNoOpFinally.cs", 3
             "ExceptionWithNoOpCatch.cs", 10
             "Threads.cs", 3
