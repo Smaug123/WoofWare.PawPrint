@@ -339,10 +339,24 @@ module NativeSystemNative =
                                 // upstream) observes the same syscall
                                 // failure it would on the host.
                                 let dereferenceableBuffer : ManagedPointerSource option =
+                                    // `ManagedPointerSource.Null` is *also*
+                                    // non-dereferenceable — it can arrive
+                                    // wrapped in `CliRuntimePointer.Managed`
+                                    // when the guest passes e.g.
+                                    // `IntPtr.Zero` after a managed
+                                    // conversion, in addition to the
+                                    // verbatim-0 path. Collapse both kinds
+                                    // of null to EFAULT before `readBuffer`
+                                    // is asked to project from them.
+                                    let classifyManaged (ptr : ManagedPointerSource) =
+                                        match ptr with
+                                        | ManagedPointerSource.Null -> None
+                                        | _ -> Some ptr
+
                                     match CliType.unwrapPrimitiveLikeDeep instruction.Arguments.[1] with
-                                    | CliType.RuntimePointer (CliRuntimePointer.Managed ptr) -> Some ptr
+                                    | CliType.RuntimePointer (CliRuntimePointer.Managed ptr) -> classifyManaged ptr
                                     | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ptr)) ->
-                                        Some ptr
+                                        classifyManaged ptr
                                     | CliType.RuntimePointer (CliRuntimePointer.Verbatim _) ->
                                         // 0L is null; non-zero is a raw
                                         // unmapped address. Either way the
