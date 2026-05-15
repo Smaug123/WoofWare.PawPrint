@@ -13,6 +13,31 @@ module NativeSystemNative =
         |> Tuple.withRight WhatWeDid.Executed
         |> ExecutionResult.Stepped
 
+    /// Decode an `nuint`-shaped allocation size argument to an `int` byte count,
+    /// failing fast on negative or synthetic (cross-storage subtraction) values
+    /// which can never represent a valid C `size_t`.
+    let private allocationSizeArgument (operation : string) (arg : CliType) : int =
+        let checkedCount (count : int64) : int =
+            if count < 0L then
+                failwith $"%s{operation}: allocation size %d{count} is negative"
+
+            if count > int64 System.Int32.MaxValue then
+                failwith $"%s{operation}: allocation size %d{count} exceeds the interpreter Int32 byte-offset model"
+
+            int count
+
+        match CliType.unwrapPrimitiveLikeDeep arg with
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim count)) -> checkedCount count
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.SyntheticCrossArrayOffset count)) ->
+            failwith
+                $"%s{operation}: allocation size came from synthetic cross-storage pointer subtraction %O{count}, which is not a valid UIntPtr length"
+        | CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim count)) -> checkedCount count
+        | CliType.Numeric (CliNumericType.Int64 (Int64Source.SyntheticCrossArrayOffset count)) ->
+            failwith
+                $"%s{operation}: allocation size came from synthetic cross-storage pointer subtraction %O{count}, which is not a valid UIntPtr length"
+        | CliType.Numeric (CliNumericType.Int32 count) -> checkedCount (int64 count)
+        | other -> failwith $"%s{operation}: expected UIntPtr allocation size, got %O{other}"
+
     let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
@@ -44,4 +69,63 @@ module NativeSystemNative =
              WhatWeDid.Executed)
             |> ExecutionResult.Stepped
             |> Some
+        | Some "SystemNative_Malloc",
+          [ ConcreteUIntPtr state.ConcreteTypes ],
+          MethodReturnType.Returns (ConcretePointer _) ->
+            // C malloc returns an uninitialised block; mirror that here so guest
+            // code that reads before writing is caught by the use-of-uninit
+            // detector rather than silently observing zeros.
+            let size = allocationSizeArgument "SystemNative_Malloc" instruction.Arguments.[0]
+
+            let ptrSrc, state =
+                IlMachineState.allocateNativeMemory MemoryBlockInitialization.Uninitialized size state
+
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptrSrc) ctx.Thread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
+            |> Some
+        | Some "SystemNative_Calloc",
+          [ ConcreteUIntPtr state.ConcreteTypes ; ConcreteUIntPtr state.ConcreteTypes ],
+          MethodReturnType.Returns (ConcretePointer _) ->
+            let count =
+                allocationSizeArgument "SystemNative_Calloc (num)" instruction.Arguments.[0]
+
+            let elementSize =
+                allocationSizeArgument "SystemNative_Calloc (size)" instruction.Arguments.[1]
+
+            // C calloc multiplies and zero-fills; we mirror the multiplication
+            // here in int64 and reject overflow rather than truncating silently.
+            let total = int64 count * int64 elementSize
+
+            if total > int64 System.Int32.MaxValue then
+                failwith
+                    $"SystemNative_Calloc: allocation %d{count} * %d{elementSize} = %d{total} exceeds the interpreter Int32 byte-offset model"
+
+            let ptrSrc, state =
+                IlMachineState.allocateNativeMemory MemoryBlockInitialization.ZeroInitialized (int total) state
+
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptrSrc) ctx.Thread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.Stepped
+            |> Some
+        | Some "SystemNative_Free", [ ConcretePointer _ ], MethodReturnType.Void ->
+            let ptr =
+                NativeCall.managedPointerOfPointerArgument "SystemNative_Free" "ptr" instruction.Arguments.[0]
+
+            let state =
+                match ptr with
+                // C `free(NULL)` is documented as a no-op. CoreLib's
+                // NativeMemory.Free already filters null before reaching the
+                // P/Invoke, but Marshal.FreeHGlobal does not, so honour the
+                // C semantics here too.
+                | ManagedPointerSource.Null -> state
+                | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, _), _) ->
+                    IlMachineState.freeNativeMemory block state
+                | other ->
+                    failwith
+                        $"SystemNative_Free: expected null or native-heap pointer, got %O{other} (only pointers from SystemNative_Malloc/Calloc may be freed here)"
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
         | _ -> None
