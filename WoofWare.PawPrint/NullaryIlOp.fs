@@ -864,22 +864,27 @@ module NullaryIlOp =
             let val2, state = IlMachineState.popEvalStack currentThread state
             let val1, state = IlMachineState.popEvalStack currentThread state
 
-            let result =
+            match
                 try
                     BinaryArithmetic.execute corelib ArithmeticOperation.addOvf state val1 val2
                     |> Ok
                 with :? OverflowException as e ->
                     Error e
-
-            let state =
-                match result with
-                | Ok (result, state) -> state |> IlMachineState.pushToEvalStack' result currentThread
-                | Error excToThrow -> failwith "TODO: throw OverflowException"
-
-            state
-            |> IlMachineState.advanceProgramCounter currentThread
-            |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            with
+            | Ok (result, state) ->
+                state
+                |> IlMachineState.pushToEvalStack' result currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Tuple.withRight WhatWeDid.Executed
+                |> ExecutionResult.Stepped
+            | Error _ ->
+                IlMachineStateExecution.raiseRuntimeException
+                    loggerFactory
+                    corelib
+                    corelib.OverflowException
+                    currentThread
+                    state
+                |> ExecutionResult.Stepped
         | Add_ovf_un -> failwith "TODO: Add_ovf_un unimplemented"
         | Mul ->
             let val2, state = IlMachineState.popEvalStack currentThread state
@@ -897,22 +902,27 @@ module NullaryIlOp =
             let val2, state = IlMachineState.popEvalStack currentThread state
             let val1, state = IlMachineState.popEvalStack currentThread state
 
-            let result =
+            match
                 try
                     BinaryArithmetic.execute corelib ArithmeticOperation.mulOvf state val1 val2
                     |> Ok
                 with :? OverflowException as e ->
                     Error e
-
-            let state =
-                match result with
-                | Ok (result, state) -> state |> IlMachineState.pushToEvalStack' result currentThread
-                | Error excToThrow -> failwith "TODO: throw OverflowException"
-
-            state
-            |> IlMachineState.advanceProgramCounter currentThread
-            |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            with
+            | Ok (result, state) ->
+                state
+                |> IlMachineState.pushToEvalStack' result currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Tuple.withRight WhatWeDid.Executed
+                |> ExecutionResult.Stepped
+            | Error _ ->
+                IlMachineStateExecution.raiseRuntimeException
+                    loggerFactory
+                    corelib
+                    corelib.OverflowException
+                    currentThread
+                    state
+                |> ExecutionResult.Stepped
         | Mul_ovf_un ->
             let val2, state = IlMachineState.popEvalStack currentThread state
             let val1, state = IlMachineState.popEvalStack currentThread state
@@ -942,21 +952,26 @@ module NullaryIlOp =
             let val2, state = IlMachineState.popEvalStack currentThread state
             let val1, state = IlMachineState.popEvalStack currentThread state
 
-            let result =
+            match
                 try
                     BinaryArithmetic.execute corelib ArithmeticOperation.div state val1 val2 |> Ok
                 with :? OverflowException as e ->
                     Error e
-
-            let state =
-                match result with
-                | Ok (result, state) -> state |> IlMachineState.pushToEvalStack' result currentThread
-                | Error excToThrow -> failwith "TODO: throw OverflowException"
-
-            state
-            |> IlMachineState.advanceProgramCounter currentThread
-            |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.Stepped
+            with
+            | Ok (result, state) ->
+                state
+                |> IlMachineState.pushToEvalStack' result currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Tuple.withRight WhatWeDid.Executed
+                |> ExecutionResult.Stepped
+            | Error _ ->
+                IlMachineStateExecution.raiseRuntimeException
+                    loggerFactory
+                    corelib
+                    corelib.OverflowException
+                    currentThread
+                    state
+                |> ExecutionResult.Stepped
         | Div_un ->
             let v2, state = IlMachineState.popEvalStack currentThread state
             let v1, state = IlMachineState.popEvalStack currentThread state
