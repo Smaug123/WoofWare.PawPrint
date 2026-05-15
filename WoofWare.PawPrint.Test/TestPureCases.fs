@@ -91,6 +91,7 @@ module TestPureCases =
             "NoOp.cs", 1
             "BasicLock.cs", 1
             "MonitorEnterRefBool.cs", 1
+            "ContendedMonitorEnter.cs", 99
             "ExceptionWithNoOpFinally.cs", 3
             "ExceptionWithNoOpCatch.cs", 10
             "Threads.cs", 3

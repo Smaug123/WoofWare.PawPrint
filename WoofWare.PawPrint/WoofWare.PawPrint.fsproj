@@ -75,10 +75,10 @@
         <ISystem_Environment>GenerateMock(false)</ISystem_Environment>
       </MyriadParams>
     </Compile>
-    <Compile Include="ExternImplementations\System.Threading.Monitor.fs" />
     <Compile Include="ExternImplementations\NativeImpls.fs" />
     <Compile Include="Scheduler.fs" />
     <Compile Include="LowLevelMonitor.fs" />
+    <Compile Include="ExternImplementations\System.Threading.Monitor.fs" />
     <Compile Include="Native\NativeCall.fs" />
     <Compile Include="Native\NativeEnvironment.fs" />
     <Compile Include="Native\NativeMonitor.fs" />

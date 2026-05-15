@@ -132,6 +132,28 @@ module Scheduler =
             failwith
                 $"Thread {terminated} terminated while still owning {orphanedMonitors.Length} LowLevelMonitor(s) (%A{orphanedMonitors}); any thread parked in BlockedOnMonitorAcquire on those monitors would deadlock on a dead owner. The guest must Release before terminating."
 
+        // Same contract for managed SyncBlocks (Monitor.Enter / `lock`): a terminating
+        // thread must not still hold any SyncBlock, because any thread parked in
+        // BlockedOnSyncBlockAcquire on that object would wait forever for ownership
+        // transfer from a dead owner. Mirrors the LowLevelMonitor check above —
+        // RAII-style release is the guest's responsibility, and a loud failure is far
+        // easier to diagnose than a silent deadlock.
+        let orphanedSyncBlocks =
+            state.ManagedHeap.NonArrayObjects
+            |> Map.toSeq
+            |> Seq.choose (fun (addr, obj) ->
+                match obj.SyncBlock with
+                | SyncBlock.Locked locked when locked.LockingThread = terminated -> Some (addr, locked)
+                | _ -> None
+            )
+            |> Seq.toList
+
+        match orphanedSyncBlocks with
+        | [] -> ()
+        | _ ->
+            failwith
+                $"Thread {terminated} terminated while still holding {orphanedSyncBlocks.Length} SyncBlock(s) (%A{orphanedSyncBlocks}); any thread parked in BlockedOnSyncBlockAcquire on those objects would deadlock on a dead owner. The guest must Monitor.Exit before terminating."
+
         let threadState =
             state.ThreadState
             |> Map.change
