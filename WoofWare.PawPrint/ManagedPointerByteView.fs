@@ -28,6 +28,20 @@ module ManagedPointerByteView =
 
             CliType.sizeOf zero
 
+    /// The looked-up concrete element type of the given array.
+    let arrayElementConcreteType
+        (state : IlMachineState)
+        (arr : ManagedHeapAddress)
+        : ConcreteType<ConcreteTypeHandle>
+        =
+        let obj = state.ManagedHeap.Arrays.[arr]
+        let handle = arrayElementHandle obj
+
+        AllConcreteTypes.lookup handle state.ConcreteTypes
+        |> Option.defaultWith (fun () ->
+            failwith $"array element concrete type %O{handle} was not registered for array %O{arr}"
+        )
+
     let arrayBytePosition
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -88,3 +102,20 @@ module ManagedPointerByteView =
         let normalisation = normalisationContextForPointer baseClassTypes state ptr
 
         ManagedPointerSource.addByteOffsetToByteView normalisation byteOffset ptr
+
+    /// Anchor a byte-view on a plain `ArrayElement` byref so subsequent pointer
+    /// arithmetic uses byte stride (ECMA-335 §III.1.5: native-pointer +/- int is
+    /// byte arithmetic). Plain byrefs without this anchor keep element-stride
+    /// semantics, matching `Unsafe.Add<T>` intrinsic behaviour. Apply at the
+    /// byref-to-native-pointer transition (`Conv_U`, `Conv_I`).
+    let anchorByteViewIfPlainArrayByref
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (ptr : ManagedPointerSource)
+        : ManagedPointerSource
+        =
+        match ptr with
+        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, _), []) ->
+            let elementType = arrayElementConcreteType state arr
+            addByteOffset baseClassTypes state elementType 0 ptr
+        | _ -> ptr
