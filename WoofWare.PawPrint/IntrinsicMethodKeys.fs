@@ -426,8 +426,6 @@ module IntrinsicMethodKeys =
                 "System.Threading.Volatile"
                 "Write"
                 [ IntrinsicParameterPattern.Byref ; IntrinsicParameterPattern.Any ]
-            pattern "System.Private.CoreLib" "System.Threading.Volatile" "ReadBarrier" []
-            pattern "System.Private.CoreLib" "System.Threading.Volatile" "WriteBarrier" []
         ]
 
     let isSafeIntrinsic (key : IntrinsicMethodKey) : bool =
