@@ -470,3 +470,298 @@ module TestLowLevelMonitor =
             && threads |> List.forall (fun t -> statusOf t state = ThreadStatus.Runnable)
 
         Check.One (config, property)
+
+    // -------------------------------------------------------------------
+    // Spurious-wakeup injection
+    // -------------------------------------------------------------------
+
+    /// Helper: drive `thread` through Acquire+Wait on `id`, leaving it in
+    /// `WaitQueue` and the monitor unowned (provided no later thread
+    /// claims it). Caller is responsible for the ordering invariant —
+    /// callers that drive multiple threads must do so sequentially so
+    /// each Wait observes the monitor as currently owned.
+    let private parkInWait (thread : ThreadId) (id : LowLevelMonitorId) (state : IlMachineState) : IlMachineState =
+        let state = LowLevelMonitor.acquire thread id state |> acquired
+        LowLevelMonitor.wait thread id state
+
+    [<Test>]
+    let ``spuriousWake on free monitor grants ownership to the woken thread`` () : unit =
+        let state = baseState () |> withThreads [ t0 ]
+        let id, state = LowLevelMonitor.create state
+        let state = state |> parkInWait t0 id
+
+        // Pre: t0 parked, monitor unowned.
+        (monitorOf id state).Owner |> shouldEqual None
+        (monitorOf id state).WaitQueue |> shouldEqual [ t0 ]
+
+        let state = LowLevelMonitor.spuriousWake id t0 state
+
+        let m = monitorOf id state
+        m.Owner |> shouldEqual (Some t0)
+        m.AcquireQueue |> shouldEqual []
+        m.WaitQueue |> shouldEqual []
+        statusOf t0 state |> shouldEqual ThreadStatus.Runnable
+
+    [<Test>]
+    let ``spuriousWake on held monitor parks the waiter at the AcquireQueue tail`` () : unit =
+        // t0 waits, t1 then owns; spurious-waking t0 must queue it behind
+        // t1, not steal the monitor.
+        let state = baseState () |> withThreads [ t0 ; t1 ]
+        let id, state = LowLevelMonitor.create state
+        let state = state |> parkInWait t0 id
+        let state = LowLevelMonitor.acquire t1 id state |> acquired
+
+        let state = LowLevelMonitor.spuriousWake id t0 state
+
+        let m = monitorOf id state
+        m.Owner |> shouldEqual (Some t1)
+        m.AcquireQueue |> shouldEqual [ t0 ]
+        m.WaitQueue |> shouldEqual []
+        statusOf t0 state |> shouldEqual (ThreadStatus.BlockedOnMonitorAcquire id)
+        statusOf t1 state |> shouldEqual ThreadStatus.Runnable
+
+    [<Test>]
+    let ``spuriousWake fails loud when the thread is not in WaitQueue`` () : unit =
+        let state = baseState () |> withThreads [ t0 ]
+        let id, state = LowLevelMonitor.create state
+        let state = LowLevelMonitor.acquire t0 id state |> acquired
+        // t0 currently owns; not in WaitQueue.
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () -> LowLevelMonitor.spuriousWake id t0 state |> ignore)
+
+        exn.Message |> shouldContainText "WaitQueue"
+
+    /// Snapshot of just the parts of `IlMachineState` that
+    /// `applySpuriousWakeups` is allowed to touch. ThreadState as a whole
+    /// is not equality-comparable (it embeds MethodStates with structural
+    /// non-equality), so we compare what we care about explicitly.
+    let private wakeupVisibleState (state : IlMachineState) =
+        let monitors = state.Kernel.LowLevelMonitors
+        let statuses = state.ThreadState |> Map.map (fun _ ts -> ts.Status)
+        monitors, statuses
+
+    [<Test>]
+    let ``applySpuriousWakeups Disabled is bit-identical to the input state`` () : unit =
+        let state = baseState () |> withThreads [ t0 ; t1 ]
+        let id, state = LowLevelMonitor.create state
+        let state = state |> parkInWait t0 id
+        let state = state |> parkInWait t1 id
+        // Both waiters parked; Owner = None; WaitQueue = [t0; t1].
+
+        let state' =
+            LowLevelMonitor.applySpuriousWakeups SpuriousWakeupStrategy.Disabled 42L state
+
+        wakeupVisibleState state' |> shouldEqual (wakeupVisibleState state)
+
+    [<Test>]
+    let ``applySpuriousWakeups AlwaysAll drains the WaitQueue in FIFO order`` () : unit =
+        let state = baseState () |> withThreads [ t0 ; t1 ; t2 ]
+        let id, state = LowLevelMonitor.create state
+        let state = state |> parkInWait t0 id
+        let state = state |> parkInWait t1 id
+        let state = state |> parkInWait t2 id
+        // WaitQueue = [t0; t1; t2], Owner = None.
+
+        let state =
+            LowLevelMonitor.applySpuriousWakeups SpuriousWakeupStrategy.AlwaysAll 0L state
+
+        let m = monitorOf id state
+        // FIFO: t0 wakes first into a free monitor and takes ownership.
+        // t1 and t2 then queue behind t0.
+        m.Owner |> shouldEqual (Some t0)
+        m.AcquireQueue |> shouldEqual [ t1 ; t2 ]
+        m.WaitQueue |> shouldEqual []
+        statusOf t0 state |> shouldEqual ThreadStatus.Runnable
+        statusOf t1 state |> shouldEqual (ThreadStatus.BlockedOnMonitorAcquire id)
+        statusOf t2 state |> shouldEqual (ThreadStatus.BlockedOnMonitorAcquire id)
+
+    [<Test>]
+    let ``applySpuriousWakeups AlwaysAll processes monitors in ascending id order`` () : unit =
+        // Two independent monitors. Order of monitor processing is
+        // observable through which owner each ends up with, but more
+        // importantly we want to know the iteration is deterministic.
+        let state = baseState () |> withThreads [ t0 ; t1 ; t2 ; t3 ]
+        let id1, state = LowLevelMonitor.create state
+        let id2, state = LowLevelMonitor.create state
+        let state = state |> parkInWait t0 id1
+        let state = state |> parkInWait t1 id1
+        let state = state |> parkInWait t2 id2
+        let state = state |> parkInWait t3 id2
+
+        let state =
+            LowLevelMonitor.applySpuriousWakeups SpuriousWakeupStrategy.AlwaysAll 0L state
+
+        let m1 = monitorOf id1 state
+        let m2 = monitorOf id2 state
+        m1.Owner |> shouldEqual (Some t0)
+        m1.AcquireQueue |> shouldEqual [ t1 ]
+        m1.WaitQueue |> shouldEqual []
+        m2.Owner |> shouldEqual (Some t2)
+        m2.AcquireQueue |> shouldEqual [ t3 ]
+        m2.WaitQueue |> shouldEqual []
+
+    [<Test>]
+    let ``applySpuriousWakeups Scripted only fires at the named tick`` () : unit =
+        let state = baseState () |> withThreads [ t0 ; t1 ]
+        let id, state = LowLevelMonitor.create state
+        let state = state |> parkInWait t0 id
+        let state = state |> parkInWait t1 id
+
+        let script = SpuriousWakeupStrategy.Scripted [ 5L, id, t1 ]
+
+        // At tick 0: nothing scripted; state passes through.
+        let state0 = LowLevelMonitor.applySpuriousWakeups script 0L state
+        (monitorOf id state0).WaitQueue |> shouldEqual [ t0 ; t1 ]
+
+        // At tick 5: only t1 wakes (and takes ownership because monitor
+        // is free).
+        let state5 = LowLevelMonitor.applySpuriousWakeups script 5L state
+        let m = monitorOf id state5
+        m.WaitQueue |> shouldEqual [ t0 ]
+        m.Owner |> shouldEqual (Some t1)
+        statusOf t1 state5 |> shouldEqual ThreadStatus.Runnable
+        statusOf t0 state5 |> shouldEqual (ThreadStatus.BlockedOnMonitorWait id)
+
+    [<Test>]
+    let ``applySpuriousWakeups Scripted fails loud on a stale waiter`` () : unit =
+        // Script names a thread that is not in any WaitQueue; the
+        // interpreter must reject this so scripts can't silently drift.
+        let state = baseState () |> withThreads [ t0 ]
+        let id, state = LowLevelMonitor.create state
+        let script = SpuriousWakeupStrategy.Scripted [ 0L, id, t0 ]
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () -> LowLevelMonitor.applySpuriousWakeups script 0L state |> ignore)
+
+        exn.Message |> shouldContainText "WaitQueue"
+
+    [<Test>]
+    let ``applySpuriousWakeups Random with probability 0.0 is a no-op`` () : unit =
+        let state = baseState () |> withThreads [ t0 ; t1 ]
+        let id, state = LowLevelMonitor.create state
+        let state = state |> parkInWait t0 id
+        let state = state |> parkInWait t1 id
+
+        let state' =
+            LowLevelMonitor.applySpuriousWakeups (SpuriousWakeupStrategy.Random (42UL, 0.0)) 7L state
+
+        wakeupVisibleState state' |> shouldEqual (wakeupVisibleState state)
+
+    [<Test>]
+    let ``applySpuriousWakeups Random with probability 1.0 matches AlwaysAll`` () : unit =
+        // probability=1.0 should wake every (mid, tid) regardless of
+        // seed, producing the same state as AlwaysAll.
+        let state = baseState () |> withThreads [ t0 ; t1 ; t2 ]
+        let id, state = LowLevelMonitor.create state
+        let state = state |> parkInWait t0 id
+        let state = state |> parkInWait t1 id
+        let state = state |> parkInWait t2 id
+
+        let always =
+            LowLevelMonitor.applySpuriousWakeups SpuriousWakeupStrategy.AlwaysAll 0L state
+
+        let random =
+            LowLevelMonitor.applySpuriousWakeups (SpuriousWakeupStrategy.Random (0UL, 1.0)) 0L state
+
+        wakeupVisibleState random |> shouldEqual (wakeupVisibleState always)
+
+    [<Test>]
+    let ``applySpuriousWakeups Random is deterministic in (seed, tick)`` () : unit =
+        // Identical inputs must produce identical outputs — the whole
+        // point of a deterministic strategy is replayability.
+        let state = baseState () |> withThreads [ t0 ; t1 ; t2 ; t3 ]
+        let id, state = LowLevelMonitor.create state
+        let state = state |> parkInWait t0 id
+        let state = state |> parkInWait t1 id
+        let state = state |> parkInWait t2 id
+        let state = state |> parkInWait t3 id
+
+        let strategy = SpuriousWakeupStrategy.Random (123UL, 0.5)
+
+        let r1 = LowLevelMonitor.applySpuriousWakeups strategy 17L state
+        let r2 = LowLevelMonitor.applySpuriousWakeups strategy 17L state
+
+        wakeupVisibleState r1 |> shouldEqual (wakeupVisibleState r2)
+
+    [<Test>]
+    let ``applySpuriousWakeups Random rejects NaN probability`` () : unit =
+        let state = baseState () |> withThreads [ t0 ]
+        let id, state = LowLevelMonitor.create state
+        let state = state |> parkInWait t0 id
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () ->
+                LowLevelMonitor.applySpuriousWakeups (SpuriousWakeupStrategy.Random (1UL, System.Double.NaN)) 0L state
+                |> ignore
+            )
+
+        exn.Message |> shouldContainText "NaN"
+
+    [<Test>]
+    let ``applySpuriousWakeups preserves the Owner/AcquireQueue invariant on a contended monitor`` () : unit =
+        // Pre-existing acquirer + multiple waiters + AlwaysAll wake — the
+        // hard case for the invariant `Owner = None iff AcquireQueue = []`.
+        let state = baseState () |> withThreads [ t0 ; t1 ; t2 ; t3 ]
+        let id, state = LowLevelMonitor.create state
+        // t0 owns; t1 contends.
+        let state = LowLevelMonitor.acquire t0 id state |> acquired
+        let state = LowLevelMonitor.acquire t1 id state |> blocked
+        // t0 waits — t1 inherits ownership; t0 joins the WaitQueue.
+        let state = LowLevelMonitor.wait t0 id state
+        // t1 waits — Owner becomes None, WaitQueue = [t0; t1].
+        let state = LowLevelMonitor.wait t1 id state
+
+        let state =
+            LowLevelMonitor.applySpuriousWakeups SpuriousWakeupStrategy.AlwaysAll 0L state
+
+        let m = monitorOf id state
+        m.WaitQueue |> shouldEqual []
+        // Invariant: Owner = None implies AcquireQueue = [].
+        match m.Owner, m.AcquireQueue with
+        | None, _ :: _ -> failwith "invariant violated: AcquireQueue non-empty with no Owner"
+        | _ -> ()
+        // And specifically: t0 took ownership, t1 queued behind.
+        m.Owner |> shouldEqual (Some t0)
+        m.AcquireQueue |> shouldEqual [ t1 ]
+
+    [<Test>]
+    let ``Property: applySpuriousWakeups preserves invariants for AlwaysAll on randomly parked waiters`` () : unit =
+        // Park a random number of threads via Acquire+Wait, then apply
+        // AlwaysAll. Final state must satisfy:
+        //   1. WaitQueue is empty on the affected monitor.
+        //   2. Owner = None implies AcquireQueue = [] (the directional
+        //      invariant).
+        //   3. The set of (Owner ++ AcquireQueue) equals the original
+        //      WaitQueue (no thread lost or duplicated).
+        let property (PositiveInt n) : bool =
+            let n = min 6 n
+            let threads = [ 0 .. n - 1 ] |> List.map ThreadId
+            let state = baseState () |> withThreads threads
+            let id, state = LowLevelMonitor.create state
+
+            let state = threads |> List.fold (fun s tid -> parkInWait tid id s) state
+
+            let beforeWaiters = (monitorOf id state).WaitQueue
+
+            let state =
+                LowLevelMonitor.applySpuriousWakeups SpuriousWakeupStrategy.AlwaysAll 0L state
+
+            let m = monitorOf id state
+
+            let owners =
+                match m.Owner with
+                | Some o -> [ o ]
+                | None -> []
+
+            // The forbidden state is Owner = None with non-empty queue.
+            let invariantHolds =
+                match m.Owner, m.AcquireQueue with
+                | None, _ :: _ -> false
+                | _ -> true
+
+            m.WaitQueue = []
+            && invariantHolds
+            && Set.ofList (owners @ m.AcquireQueue) = Set.ofList beforeWaiters
+
+        Check.One (config, property)

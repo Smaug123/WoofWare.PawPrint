@@ -24,10 +24,13 @@ namespace WoofWare.PawPrint
 /// scheduler later picks the woken thread, it resumes past the call site
 /// and must already own the monitor for subsequent guest code to be sound.
 ///
-/// Invariant: `Owner = None` iff `AcquireQueue = []`. A non-empty queue with
-/// no owner would mean the head is "next in line" but holds nothing, leaving
+/// Invariant: `Owner = None` implies `AcquireQueue = []` (equivalently,
+/// `AcquireQueue ≠ []` implies `Owner = Some _`). A non-empty queue with no
+/// owner would mean the head is "next in line" but holds nothing, leaving
 /// `Release` to fire as unowned when the resumed thread eventually runs.
-/// Every transition below preserves this invariant; `destroy` asserts it.
+/// Uncontended ownership (`Owner = Some _`, `AcquireQueue = []`) is normal
+/// and not forbidden by this invariant. Every transition below preserves
+/// the implication; `destroy` asserts it.
 ///
 /// Reentrancy: a monitor is non-reentrant, matching CoreCLR. A thread that
 /// already owns the monitor and calls `acquire` again is deadlocking guest
@@ -42,12 +45,15 @@ namespace WoofWare.PawPrint
 /// Calls to `timedWait` therefore fail loud; see the P/Invoke handler in
 /// `NativeLowLevelMonitor.fs` for the failure site.
 ///
-/// Spurious wakeups: not generated. Guest code that depends on the absence
-/// of spurious wakeups is incorrect against real CoreCLR, but adding them
-/// would amplify nondeterminism we are not yet prepared to control. The
-/// model is shaped to make insertion straightforward in future: moving a
-/// thread from `WaitQueue` to `AcquireQueue` from outside `signalRelease`
-/// is structurally the same operation.
+/// Spurious wakeups: injected from outside this module under control of
+/// `EmulatedKernel.SpuriousWakeup`. The transition is `spuriousWake`
+/// below, which routes a waiter through the same reacquire path as
+/// `signalRelease` (take ownership if the monitor is free; otherwise park
+/// at the tail of the acquire queue). The driver applies
+/// `applySpuriousWakeups` once per scheduler tick. Guest code that
+/// depends on the absence of spurious wakeups is incorrect against real
+/// CoreCLR; switching the strategy to `AlwaysAll` is the deterministic
+/// way to expose those bugs.
 [<RequireQualifiedAccess>]
 module LowLevelMonitor =
 
@@ -96,10 +102,10 @@ module LowLevelMonitor =
     /// guest bug that would otherwise present as a use-after-free later.
     ///
     /// The AcquireQueue check is also a defensive assertion of the
-    /// owner/queue invariant (`Owner = None` iff `AcquireQueue = []`): a
-    /// non-empty queue with no owner means a transition somewhere violated
-    /// the invariant, and surfacing that here is cheaper than chasing it
-    /// from a downstream symptom.
+    /// owner/queue invariant (`Owner = None` implies `AcquireQueue = []`):
+    /// a non-empty queue with no owner means a transition somewhere
+    /// violated the invariant, and surfacing that here is cheaper than
+    /// chasing it from a downstream symptom.
     let destroy (id : LowLevelMonitorId) (state : IlMachineState) : IlMachineState =
         let monitor = lookup id state
 
@@ -326,3 +332,130 @@ module LowLevelMonitor =
                 |> Scheduler.setThreadStatus waiter (ThreadStatus.BlockedOnMonitorAcquire id)
 
             release thread id state
+
+    /// Pull `thread` out of `id`'s `WaitQueue` and route it through the
+    /// same reacquire path that `signalRelease` would take. By the
+    /// Owner/AcquireQueue invariant, an unowned monitor has an empty
+    /// acquire queue, so a spurious wake of a free monitor grants
+    /// ownership directly to the woken thread (status flips to
+    /// `Runnable`); a held monitor parks the woken thread at the
+    /// AcquireQueue tail (status flips to `BlockedOnMonitorAcquire`).
+    /// In both cases the waiter eventually resumes past its `Wait` call
+    /// site already owning the monitor — the same shape `signalRelease`
+    /// produces — so the native handler does not need to distinguish
+    /// signalled from spurious wakeups.
+    ///
+    /// Fails loudly if `thread` is not in `id`'s `WaitQueue`. The only
+    /// caller is `applySpuriousWakeups`, which enumerates the waiters
+    /// itself; a miss indicates either a script that named a stale
+    /// thread (silent skip would let the script drift unnoticed) or a
+    /// bug in the strategy interpreter.
+    let spuriousWake (id : LowLevelMonitorId) (thread : ThreadId) (state : IlMachineState) : IlMachineState =
+        let monitor = lookup id state
+
+        if not (List.contains thread monitor.WaitQueue) then
+            failwith
+                $"LowLevelMonitor %O{id}: cannot spuriously wake thread %O{thread} because it is not in WaitQueue (queue: %A{monitor.WaitQueue})."
+
+        let newWaitQueue = monitor.WaitQueue |> List.filter (fun t -> t <> thread)
+
+        match monitor.Owner with
+        | None ->
+            // Uncontended: the invariant guarantees AcquireQueue is empty,
+            // so we take ownership directly and become Runnable.
+            let monitor =
+                { monitor with
+                    Owner = Some thread
+                    WaitQueue = newWaitQueue
+                }
+
+            state
+            |> writeMonitor id monitor
+            |> Scheduler.setThreadStatus thread ThreadStatus.Runnable
+
+        | Some _ ->
+            // Contended: park at the AcquireQueue tail. Ownership will be
+            // handed to us atomically when our predecessor releases.
+            let monitor =
+                { monitor with
+                    AcquireQueue = monitor.AcquireQueue @ [ thread ]
+                    WaitQueue = newWaitQueue
+                }
+
+            state
+            |> writeMonitor id monitor
+            |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnMonitorAcquire id)
+
+    /// SplitMix64-style hash, used to derive a deterministic per-waiter
+    /// coin flip in `[0.0, 1.0)` from `(seed, tick, monitorId, threadId)`.
+    /// Replayability comes from the function being a pure hash with no
+    /// mutable PRNG state — distinct ticks/waiters never share entropy.
+    let private coinFlip (seed : uint64) (tick : int64) (LowLevelMonitorId mid) (ThreadId tid) : float =
+        let mix (h : uint64) (x : uint64) : uint64 =
+            let h = h ^^^ x
+            h * 0x100000001B3UL
+
+        let finalise (h : uint64) : uint64 =
+            let h = h ^^^ (h >>> 33)
+            let h = h * 0xff51afd7ed558ccdUL
+            let h = h ^^^ (h >>> 33)
+            let h = h * 0xc4ceb9fe1a85ec53UL
+            h ^^^ (h >>> 33)
+
+        let h = seed
+        let h = mix h (uint64 tick)
+        let h = mix h (uint64 mid)
+        let h = mix h (uint64 tid)
+        let h = finalise h
+        // Top 53 bits as a float in [0, 1). Matches the common
+        // "uniform double from uint64" recipe; precision loss in the low
+        // bits is irrelevant for a fuzz-probability threshold.
+        float (h >>> 11) / float (1UL <<< 53)
+
+    /// Enumerate the spurious wakeups requested by `strategy` for `tick`
+    /// against the current `WaitQueue` membership, then apply each
+    /// `spuriousWake` in deterministic order (ascending monitor id, then
+    /// FIFO position within `WaitQueue`). Snapshotting the (monitor,
+    /// thread) list first means strategy decisions are computed against
+    /// the state at entry — applying an earlier wake never affects which
+    /// later wakes the strategy would have chosen on this tick.
+    ///
+    /// `Disabled` is the identity. `Random.probability` outside
+    /// `[0.0, 1.0]` is a programmer error and fails loud. `Scripted`
+    /// triples that name a thread not in the named monitor's WaitQueue
+    /// at the named tick fail loud — silent skip would let scripts drift
+    /// when the underlying interleaving changes.
+    let applySpuriousWakeups
+        (strategy : SpuriousWakeupStrategy)
+        (tick : int64)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        match strategy with
+        | SpuriousWakeupStrategy.Disabled -> state
+
+        | SpuriousWakeupStrategy.AlwaysAll ->
+            state.Kernel.LowLevelMonitors
+            |> Map.toSeq
+            |> Seq.sortBy (fun (LowLevelMonitorId i, _) -> i)
+            |> Seq.collect (fun (mid, monitor) -> monitor.WaitQueue |> List.map (fun tid -> mid, tid))
+            |> Seq.toList
+            |> List.fold (fun acc (mid, tid) -> spuriousWake mid tid acc) state
+
+        | SpuriousWakeupStrategy.Random (seed, probability) ->
+            if probability < 0.0 || probability > 1.0 || System.Double.IsNaN probability then
+                failwith
+                    $"SpuriousWakeupStrategy.Random: probability %f{probability} is outside [0.0, 1.0] (NaN or out of range)."
+
+            state.Kernel.LowLevelMonitors
+            |> Map.toSeq
+            |> Seq.sortBy (fun (LowLevelMonitorId i, _) -> i)
+            |> Seq.collect (fun (mid, monitor) -> monitor.WaitQueue |> List.map (fun tid -> mid, tid))
+            |> Seq.filter (fun (mid, tid) -> coinFlip seed tick mid tid < probability)
+            |> Seq.toList
+            |> List.fold (fun acc (mid, tid) -> spuriousWake mid tid acc) state
+
+        | SpuriousWakeupStrategy.Scripted wakeups ->
+            wakeups
+            |> List.filter (fun (t, _, _) -> t = tick)
+            |> List.fold (fun acc (_, mid, tid) -> spuriousWake mid tid acc) state

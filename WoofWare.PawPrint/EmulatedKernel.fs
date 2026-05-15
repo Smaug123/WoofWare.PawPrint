@@ -23,10 +23,13 @@ namespace WoofWare.PawPrint
 /// thread that holds the monitor and calls `Acquire` again deadlocks.
 /// Reentrancy is supplied at a higher level by `LowLevelLock`.
 ///
-/// Spurious wakeups are not generated today, but the model is shaped so
-/// they can be inserted later by moving a thread from `WaitQueue` to
-/// `AcquireQueue` from outside `Signal_Release`. Any guest code that
-/// depends on the absence of spurious wakeups is incorrect on real CoreCLR.
+/// Spurious wakeups are injected externally according to
+/// `EmulatedKernel.SpuriousWakeup` — the model exposes a transition
+/// (`LowLevelMonitor.spuriousWake`) that moves a thread from `WaitQueue`
+/// through the same reacquire path that `Signal_Release` uses. Any guest
+/// code that depends on the absence of spurious wakeups is incorrect on
+/// real CoreCLR; the `SpuriousWakeup` field is the deterministic knob
+/// for exposing those bugs.
 type LowLevelMonitorState =
     {
         Owner : ThreadId option
@@ -42,6 +45,44 @@ module LowLevelMonitorState =
             AcquireQueue = []
             WaitQueue = []
         }
+
+/// Deterministic policy the driver consults each scheduler step to
+/// decide whether to inject spurious wakeups for threads parked in
+/// `BlockedOnMonitorWait`. Real CoreCLR (via pthread `cond_wait`) is
+/// allowed to return from `Wait` without a matching `Signal_Release`,
+/// which is why guest code is required to wrap `Wait` in a predicate
+/// loop. This type drives that contract: a strategy other than
+/// `Disabled` causes PawPrint to wake waiters according to a
+/// deterministic recipe so guest predicate-loop bugs surface as failing
+/// runs rather than latent races.
+///
+/// The strategy is data, not a closure, so it can be printed, diffed,
+/// and replayed across runs. Each variant is independently
+/// deterministic given the current `EmulatedKernel.StepCounter`.
+[<RequireQualifiedAccess>]
+type SpuriousWakeupStrategy =
+    /// Default. Only `Signal_Release` wakes a waiter. Equivalent to a
+    /// pthread implementation that never returns from `cond_wait`
+    /// spuriously: permitted by POSIX but masks predicate-loop bugs.
+    | Disabled
+    /// Wake every waiter on every scheduler tick. Maximum fuzz
+    /// pressure. Guest code that uses `Monitor.Wait` outside a
+    /// re-checking predicate loop will produce wrong results — that is
+    /// the point.
+    | AlwaysAll
+    /// Each (tick, monitor, waiter) tuple wakes independently with the
+    /// given probability. The coin flip is a deterministic function of
+    /// `(seed, tick, monitorId, threadId)`, so the same seed reproduces
+    /// the same wakeup sequence across runs. `probability` is rejected
+    /// at apply time if it is NaN or outside `[0.0, 1.0]` — values
+    /// outside that range are a programmer error and fail loud.
+    | Random of seed : uint64 * probability : float
+    /// Explicit `(tick, monitorId, threadId)` triples. Fully
+    /// replayable. A triple naming a thread that is not in the named
+    /// monitor's `WaitQueue` at the named tick fails loudly — silent
+    /// skip would let scripts drift unnoticed when the interleaving
+    /// underneath them changes.
+    | Scripted of wakeups : (int64 * LowLevelMonitorId * ThreadId) list
 
 /// Aggregates the slice of `IlMachineState` that models host-kernel /
 /// syscall-emulation state: process-wide last-error registers, the native
@@ -98,6 +139,20 @@ type EmulatedKernel =
         /// only need to be unique and non-zero (the BCL treats handle 0 as
         /// "create failed" and throws OOM).
         NextEventPipeId : int64
+        /// Deterministic strategy governing spurious wakeups out of
+        /// `LowLevelMonitor.Wait`. Defaults to `Disabled` so existing runs
+        /// are bit-for-bit unchanged. Set this at construction time (or
+        /// via record-copy in tests) to inject wakeups for fuzz /
+        /// correctness testing of guest condition-variable code.
+        SpuriousWakeup : SpuriousWakeupStrategy
+        /// Monotonically-advancing scheduler tick consumed by
+        /// `SpuriousWakeupStrategy`. The driver loop applies the strategy
+        /// against the current value and then increments by 1 before
+        /// calling `Scheduler.chooseNext`. Threading the tick through state
+        /// (rather than as a side argument to the scheduler) keeps the
+        /// pure model self-contained and means tests can drive the strategy
+        /// without spinning up a real driver.
+        StepCounter : int64
     }
 
 [<RequireQualifiedAccess>]
@@ -111,4 +166,6 @@ module EmulatedKernel =
             LowLevelMonitors = Map.empty
             NextLowLevelMonitorId = 1
             NextEventPipeId = 1L
+            SpuriousWakeup = SpuriousWakeupStrategy.Disabled
+            StepCounter = 0L
         }
