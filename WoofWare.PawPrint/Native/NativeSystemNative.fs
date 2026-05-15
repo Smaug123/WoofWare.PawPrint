@@ -1,5 +1,7 @@
 namespace WoofWare.PawPrint
 
+open System.Collections.Immutable
+
 [<RequireQualifiedAccess>]
 module NativeSystemNative =
     let private trySystemNativeEntryPoint (ctx : NativeCallContext) : string option =
@@ -221,6 +223,177 @@ module NativeSystemNative =
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 resultCode) ctx.Thread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.stepped
+            |> Some
+        | Some "SystemNative_Write",
+          [ ConcreteIntPtr state.ConcreteTypes
+            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            // `int32_t SystemNative_Write(intptr_t fd, const void* buffer, int32_t bufferSize)`
+            // delegates to `Common_Write` in `pal_io_common.h`. The C path:
+            //   * negative `bufferSize`            -> errno = ERANGE, return -1
+            //   * otherwise call real `write(2)`   -> may return short, may EINTR (retried)
+            // PawPrint models only the writable standard streams (fds 1 and
+            // 2) and never returns short, never returns EINTR, and never
+            // blocks: there is no kernel that could push back on our
+            // simulated process. A guest depending on EAGAIN / partial
+            // writes from a non-blocking socket would need new
+            // FileDescriptorRole entries; we'll add those when that need
+            // arises rather than guessing at the contract now.
+            let operation = "SystemNative_Write"
+
+            let fd = fdArgument operation instruction.Arguments.[0]
+
+            let bufferSize = NativeCall.int32Argument operation instruction.Arguments.[2]
+
+            let setErrno (state : IlMachineState) (errno : int) : IlMachineState =
+                state.MapKernel (fun kernel ->
+                    { kernel with
+                        LastSystemError = errno
+                    }
+                )
+
+            // Decoding the `buffer` pointer is deferred until we are
+            // genuinely about to dereference it. `Common_Write` is
+            // documented (in `pal_io_common.h`) to perform no dereference
+            // for `bufferSize < 0` (ERANGE bail) or `bufferSize = 0`
+            // (no-op on every Unix we model), so a guest calling e.g.
+            // `SystemNative_Write((IntPtr)1, (byte*)123, 0)` must succeed
+            // on PawPrint as it does on the real CLR — eagerly decoding
+            // `buffer` would crash here in `managedPointerOfPointerArgument`
+            // for any non-managed pointer literal.
+            let readBuffer (buffer : ManagedPointerSource) (state : IlMachineState) : ImmutableArray<byte> =
+                // Drain `bufferSize` bytes from `buffer`. Called only after
+                // the bufferSize-> 0 and buffer-> non-null checks succeed.
+                let byteConcreteType =
+                    NativeCall.requiredByteConcreteType operation ctx.BaseClassTypes state
+
+                let builder = ImmutableArray.CreateBuilder<byte> bufferSize
+
+                for i = 0 to bufferSize - 1 do
+                    let src =
+                        ManagedPointerByteView.addByteOffset ctx.BaseClassTypes state byteConcreteType i buffer
+
+                    let cell =
+                        IlMachineState.readManagedByrefBytesAs
+                            ctx.BaseClassTypes
+                            state
+                            src
+                            (CliType.Numeric (CliNumericType.UInt8 0uy))
+
+                    match cell with
+                    | CliType.Numeric (CliNumericType.UInt8 b) -> builder.Add b
+                    | other ->
+                        failwith
+                            $"%s{operation}: byte read at offset %d{i} returned non-UInt8 cell %O{other} (this is an interpreter bug)"
+
+                builder.MoveToImmutable ()
+
+            let result, effect, state =
+                if bufferSize < 0 then
+                    // Matches `Common_Write`: refuse the call before any
+                    // dereference of `buffer`. CoreLib callers (`Interop.Sys.
+                    // Write`) never pass negative sizes, so this is a guest
+                    // misuse path; surface it through errno rather than
+                    // crashing so the guest's own error reporting runs.
+                    -1, StepEffect.NoEffect, setErrno state Errno.ERANGE
+                else
+                    match FileDescriptorRegistry.tryFind fd state.Kernel.FileDescriptors with
+                    | None ->
+                        // Unknown fd: report EBADF the same way `write(2)`
+                        // would.
+                        -1, StepEffect.NoEffect, setErrno state Errno.EBADF
+                    | Some entry ->
+                        match entry.Role with
+                        | FileDescriptorRole.StandardInput ->
+                            // `write(2)` on a read-only fd returns -1 + EBADF
+                            // on Linux (the fd's access mode is wrong for the
+                            // operation). Real stdin is opened O_RDONLY by
+                            // the shell, so this matches what guests would
+                            // observe on the host.
+                            -1, StepEffect.NoEffect, setErrno state Errno.EBADF
+                        | (FileDescriptorRole.StandardOutput | FileDescriptorRole.StandardError) as role ->
+                            if bufferSize = 0 then
+                                // `write(fd, _, 0)` is a no-op on every Unix
+                                // we model — no errno, no buffer
+                                // dereference, no observable effect. CoreLib
+                                // in principle never calls with
+                                // `bufferSize = 0` (it bails in
+                                // `Stream.Write`), but honour the C contract
+                                // so guests that DllImport directly behave
+                                // the same as on the host. Crucially, do
+                                // NOT touch `buffer` here: the pointer is
+                                // permitted to be any bit pattern (incl.
+                                // garbage) because it is not dereferenced.
+                                0, StepEffect.NoEffect, state
+                            else
+                                // Try to decode `buffer` as a managed
+                                // pointer. Real `write(2)` returns -1 +
+                                // EFAULT for any non-dereferenceable
+                                // address (including NULL and unmapped
+                                // verbatim bit patterns); collapse both
+                                // those cases to EFAULT here rather than
+                                // crashing PawPrint, so a direct P/Invoke
+                                // that the BCL would never produce
+                                // (`Stream.Write` short-circuits null
+                                // upstream) observes the same syscall
+                                // failure it would on the host.
+                                let dereferenceableBuffer : ManagedPointerSource option =
+                                    // `ManagedPointerSource.Null` is *also*
+                                    // non-dereferenceable — it can arrive
+                                    // wrapped in `CliRuntimePointer.Managed`
+                                    // when the guest passes e.g.
+                                    // `IntPtr.Zero` after a managed
+                                    // conversion, in addition to the
+                                    // verbatim-0 path. Collapse both kinds
+                                    // of null to EFAULT before `readBuffer`
+                                    // is asked to project from them.
+                                    let classifyManaged (ptr : ManagedPointerSource) =
+                                        match ptr with
+                                        | ManagedPointerSource.Null -> None
+                                        | _ -> Some ptr
+
+                                    match CliType.unwrapPrimitiveLikeDeep instruction.Arguments.[1] with
+                                    | CliType.RuntimePointer (CliRuntimePointer.Managed ptr) -> classifyManaged ptr
+                                    | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ptr)) ->
+                                        classifyManaged ptr
+                                    | CliType.RuntimePointer (CliRuntimePointer.Verbatim _) ->
+                                        // 0L is null; non-zero is a raw
+                                        // unmapped address. Either way the
+                                        // kernel cannot read from it.
+                                        None
+                                    | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim _)) -> None
+                                    | other ->
+                                        failwith
+                                            $"%s{operation}: expected buffer to be a managed pointer, raw verbatim address, or null literal, got %O{other} (this is an interpreter bug)"
+
+                                match dereferenceableBuffer with
+                                | None ->
+                                    // EFAULT: bad address. Real kernels
+                                    // perform no I/O on this path.
+                                    -1, StepEffect.NoEffect, setErrno state Errno.EFAULT
+                                | Some buffer ->
+                                    let bytes = readBuffer buffer state
+
+                                    let logEntry =
+                                        {
+                                            OutputLogEntry.Role = role
+                                            OutputLogEntry.Bytes = bytes
+                                        }
+
+                                    let state =
+                                        state.MapKernel (fun kernel ->
+                                            { kernel with
+                                                OutputLog = kernel.OutputLog.Add logEntry
+                                            }
+                                        )
+
+                                    bufferSize, StepEffect.WroteToFd (role, bytes), state
+
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 result) ctx.Thread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.steppedWith effect
             |> Some
         | Some "SystemNative_GetNonCryptographicallySecureRandomBytes",
           [ ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)

@@ -93,13 +93,57 @@ module AppProgram =
                 | [] -> failwith "Exiting thread returned void; expected an int32 exit code"
                 | other :: _ -> failwith $"Exiting thread had unexpected eval-stack top %O{other}; expected int32"
 
+            let drainStandardStreams (state : IlMachineState) : unit =
+                // The interpreter never writes to host stdout/stderr during
+                // execution; instead `SystemNative_Write` appends each call
+                // as an `OutputLogEntry` to `state.Kernel.OutputLog` (and
+                // emits a `StepEffect.WroteToFd` for any consumer that wants
+                // to stream). Here, at the end of the run, drain that log
+                // to the host's real standard streams so a user invoking
+                // `WoofWare.PawPrint.App` sees the guest's output in the
+                // exact write order the guest produced — including across
+                // stdout/stderr — so a `Write(2,…)` followed by a
+                // `Write(1,…)` is replayed as `err`-then-`out`, matching
+                // what a real shell sees under `2>&1`.
+                //
+                // Streaming during execution would couple the functional
+                // core to an imperative sink; leaving it until the end keeps
+                // the interpreter deterministic and replayable. Programs
+                // that crash partway will lose nothing because the log is
+                // what's drained regardless of which `RunOutcome`
+                // terminates the run.
+                let log = state.Kernel.OutputLog
+
+                if log.Length > 0 then
+                    use out = System.Console.OpenStandardOutput ()
+                    use err = System.Console.OpenStandardError ()
+
+                    for entry in log do
+                        match entry.Role with
+                        | FileDescriptorRole.StandardOutput -> out.Write (entry.Bytes.AsSpan ())
+                        | FileDescriptorRole.StandardError -> err.Write (entry.Bytes.AsSpan ())
+                        | FileDescriptorRole.StandardInput ->
+                            // Unreachable: `SystemNative_Write` rejects stdin
+                            // with EBADF before appending. Exhaustiveness is
+                            // load-bearing here — a future writable role
+                            // (e.g. a regular file) will fail to compile
+                            // until its drain destination is decided.
+                            failwith
+                                "drainStandardStreams: OutputLog contains StandardInput entry (this is an interpreter bug)"
+
+                    out.Flush ()
+                    err.Flush ()
+
             match Program.run loggerFactory (Some dllPath) fileStream dotnetRuntimes impls args with
             | RunOutcome.NormalExit (state, thread)
-            | RunOutcome.ProcessExit (state, thread) -> exitCodeFromStack state thread
-            | RunOutcome.FailFast (_state, _thread, message) ->
+            | RunOutcome.ProcessExit (state, thread) ->
+                drainStandardStreams state
+                exitCodeFromStack state thread
+            | RunOutcome.FailFast (state, _thread, message) ->
                 // CoreCLR's Environment_FailFast calls HandleFatalError(COR_E_FAILFAST)
                 // and on Windows terminates with 0x80131623; on Unix it aborts via
                 // SIGABRT (exit code 128 + 6 = 134).
+                drainStandardStreams state
                 let msg = message |> Option.defaultValue "<no message>"
                 logger.LogCritical ("Guest called Environment.FailFast: {FailFastMessage}", msg)
 
@@ -108,6 +152,8 @@ module AppProgram =
                 else
                     134
             | RunOutcome.GuestUnhandledException (state, _thread, exn) ->
+                drainStandardStreams state
+
                 let exceptionTypeName =
                     match state.ManagedHeap.NonArrayObjects |> Map.tryFind exn.ExceptionObject with
                     | Some obj ->
