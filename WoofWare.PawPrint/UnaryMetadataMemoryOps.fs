@@ -92,7 +92,7 @@ module internal UnaryMetadataMemoryOps =
             match src with
             | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte _, _)
             | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte _, _) ->
-                IlMachineState.writeManagedByrefBytesOrTypedCell state src coerced
+                IlMachineState.writeManagedByrefBytesOrTypedCell baseClassTypes state src coerced
             | ManagedPointerSource.Byref _ -> IlMachineState.writeManagedByrefWithBase baseClassTypes state src coerced
             | ManagedPointerSource.Null -> failwith "unreachable: null Stobj target handled above"
 
