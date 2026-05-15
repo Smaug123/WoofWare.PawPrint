@@ -79,6 +79,28 @@ public unsafe class NativeMemoryAllocFreeTests
         Marshal.FreeHGlobal(handle);
         return 0;
     }
+
+    public static int TestAllocOversizeThrowsOom()
+    {
+        // nuint.MaxValue is unrepresentable as a positive allocation size; real
+        // malloc returns null, and CoreLib's NativeMemory.Alloc translates that
+        // into a catchable OutOfMemoryException. Confirm the documented
+        // failure path is reachable rather than aborting the host runtime.
+        try
+        {
+            void* ptr = NativeMemory.Alloc(nuint.MaxValue);
+            if (ptr != null)
+            {
+                NativeMemory.Free(ptr);
+                return 1;
+            }
+            return 2;
+        }
+        catch (System.OutOfMemoryException)
+        {
+            return 0;
+        }
+    }
 }
 
 class Program
@@ -101,6 +123,9 @@ class Program
 
         result = NativeMemoryAllocFreeTests.TestAllocHGlobalRoundTrip();
         if (result != 0) return 5000 + result;
+
+        result = NativeMemoryAllocFreeTests.TestAllocOversizeThrowsOom();
+        if (result != 0) return 6000 + result;
 
         return 0;
     }

@@ -13,18 +13,29 @@ module NativeSystemNative =
         |> Tuple.withRight WhatWeDid.Executed
         |> ExecutionResult.Stepped
 
-    /// Decode an `nuint`-shaped allocation size argument to an `int` byte count,
-    /// failing fast on negative or synthetic (cross-storage subtraction) values
-    /// which can never represent a valid C `size_t`.
-    let private allocationSizeArgument (operation : string) (arg : CliType) : int =
-        let checkedCount (count : int64) : int =
+    /// Decode an `nuint`-shaped allocation size argument to an `int` byte count.
+    /// Returns `ValueNone` for values that a real `malloc`/`calloc` would treat
+    /// as unsatisfiable (negative-as-nuint, or larger than the interpreter's
+    /// Int32 byte-offset model can represent) so the caller can return a null
+    /// pointer and let CoreLib raise a catchable `OutOfMemoryException`.
+    /// Synthetic cross-storage subtraction values still abort, because they
+    /// represent a guest-visible value the interpreter cannot translate to a
+    /// concrete `size_t` rather than a documented allocation-failure mode.
+    let private allocationSizeArgument (operation : string) (arg : CliType) : int voption =
+        let checkedCount (count : int64) : int voption =
             if count < 0L then
-                failwith $"%s{operation}: allocation size %d{count} is negative"
-
-            if count > int64 System.Int32.MaxValue then
-                failwith $"%s{operation}: allocation size %d{count} exceeds the interpreter Int32 byte-offset model"
-
-            int count
+                // Negative `int64` decoded from a `nuint` is a very large
+                // unsigned value (e.g. `nuint.MaxValue` round-trips as -1).
+                // Real `malloc` returns null for such sizes.
+                ValueNone
+            elif count > int64 System.Int32.MaxValue then
+                // The interpreter's byte-offset model is Int32-bounded; values
+                // beyond that cannot be allocated even in principle. Treat as
+                // allocation failure rather than aborting so CoreLib's OOM
+                // path is reachable.
+                ValueNone
+            else
+                ValueSome (int count)
 
         match CliType.unwrapPrimitiveLikeDeep arg with
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim count)) -> checkedCount count
@@ -74,11 +85,15 @@ module NativeSystemNative =
           MethodReturnType.Returns (ConcretePointer _) ->
             // C malloc returns an uninitialised block; mirror that here so guest
             // code that reads before writing is caught by the use-of-uninit
-            // detector rather than silently observing zeros.
-            let size = allocationSizeArgument "SystemNative_Malloc" instruction.Arguments.[0]
-
+            // detector rather than silently observing zeros. Sizes the
+            // interpreter cannot satisfy round-trip as a null return so
+            // CoreLib's `NativeMemory.Alloc` (and `Marshal.AllocHGlobal`)
+            // can raise a catchable `OutOfMemoryException`.
             let ptrSrc, state =
-                IlMachineState.allocateNativeMemory MemoryBlockInitialization.Uninitialized size state
+                match allocationSizeArgument "SystemNative_Malloc" instruction.Arguments.[0] with
+                | ValueNone -> ManagedPointerSource.Null, state
+                | ValueSome size ->
+                    IlMachineState.allocateNativeMemory MemoryBlockInitialization.Uninitialized size state
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptrSrc) ctx.Thread
@@ -88,22 +103,26 @@ module NativeSystemNative =
         | Some "SystemNative_Calloc",
           [ ConcreteUIntPtr state.ConcreteTypes ; ConcreteUIntPtr state.ConcreteTypes ],
           MethodReturnType.Returns (ConcretePointer _) ->
-            let count =
-                allocationSizeArgument "SystemNative_Calloc (num)" instruction.Arguments.[0]
-
-            let elementSize =
-                allocationSizeArgument "SystemNative_Calloc (size)" instruction.Arguments.[1]
-
-            // C calloc multiplies and zero-fills; we mirror the multiplication
-            // here in int64 and reject overflow rather than truncating silently.
-            let total = int64 count * int64 elementSize
-
-            if total > int64 System.Int32.MaxValue then
-                failwith
-                    $"SystemNative_Calloc: allocation %d{count} * %d{elementSize} = %d{total} exceeds the interpreter Int32 byte-offset model"
-
+            // C calloc multiplies count * size and zero-fills the block. If
+            // either argument is unrepresentable or the product overflows the
+            // interpreter's Int32 byte-offset model, return null so CoreLib
+            // raises `OutOfMemoryException` (rather than aborting the host).
             let ptrSrc, state =
-                IlMachineState.allocateNativeMemory MemoryBlockInitialization.ZeroInitialized (int total) state
+                match
+                    allocationSizeArgument "SystemNative_Calloc (num)" instruction.Arguments.[0],
+                    allocationSizeArgument "SystemNative_Calloc (size)" instruction.Arguments.[1]
+                with
+                | ValueNone, _
+                | _, ValueNone -> ManagedPointerSource.Null, state
+                | ValueSome count, ValueSome elementSize ->
+                    // Multiply in int64 so we can detect overflow before
+                    // truncating to the interpreter's Int32 byte-count model.
+                    let total = int64 count * int64 elementSize
+
+                    if total > int64 System.Int32.MaxValue then
+                        ManagedPointerSource.Null, state
+                    else
+                        IlMachineState.allocateNativeMemory MemoryBlockInitialization.ZeroInitialized (int total) state
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptrSrc) ctx.Thread
