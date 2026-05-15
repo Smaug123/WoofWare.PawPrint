@@ -503,6 +503,7 @@ module IlMachineManagedByref =
     let private splitTrailingByteView (src : ManagedPointerSource) : (ByrefRoot * ByrefProjection list * int) voption =
         match src with
         | ManagedPointerSource.Null -> ValueNone
+        | ManagedPointerSource.NativeIntPlaceholder _ -> ValueNone
         | ManagedPointerSource.Byref (root, projs) ->
             match List.rev projs with
             | ByrefProjection.ByteOffset n :: ByrefProjection.ReinterpretAs _ :: revPrefix ->
@@ -986,6 +987,9 @@ module IlMachineManagedByref =
         =
         match src with
         | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
+        | ManagedPointerSource.NativeIntPlaceholder bits ->
+            failwith
+                $"readManagedByrefBytesAs: cannot dereference fake non-null byref @ 0x%x{bits}; the placeholder must never be read"
         | ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, []) -> readHeapValueBytesAs state addr 0 targetTemplate
         | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset), []) ->
             readStackMemoryBytesAs state thread frame block byteOffset targetTemplate
@@ -1083,6 +1087,9 @@ module IlMachineManagedByref =
         =
         match src with
         | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
+        | ManagedPointerSource.NativeIntPlaceholder bits ->
+            failwith
+                $"readManagedByref: cannot dereference fake non-null byref @ 0x%x{bits}; the placeholder must never be read"
         | ManagedPointerSource.Byref (root, projs) ->
             match List.rev projs with
             | ByrefProjection.ByteOffset _ :: ByrefProjection.ReinterpretAs ty :: _
@@ -1212,6 +1219,9 @@ module IlMachineManagedByref =
         =
         match src with
         | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
+        | ManagedPointerSource.NativeIntPlaceholder bits ->
+            failwith
+                $"readManagedByrefField: cannot read field %O{field} through fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
         | ManagedPointerSource.Byref (root, projs) ->
             match List.rev projs with
             | ByrefProjection.ByteOffset _ :: ByrefProjection.ReinterpretAs ty :: _
@@ -1778,6 +1788,9 @@ module IlMachineManagedByref =
 
         match src with
         | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
+        | ManagedPointerSource.NativeIntPlaceholder bits ->
+            failwith
+                $"writeManagedByref: cannot write through fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
         | ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, []) -> writeHeapValueBytes state addr 0 bytes
         | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte _, []) ->
             // Already handled by the StackMemoryByte typed-cell fast path above.
@@ -2049,6 +2062,9 @@ module IlMachineManagedByref =
         =
         match src with
         | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
+        | ManagedPointerSource.NativeIntPlaceholder bits ->
+            failwith
+                $"writeManagedByrefCore: cannot write through fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
         | ManagedPointerSource.Byref (root, []) -> writeRootValue state root newValue
         | ManagedPointerSource.Byref (root, projs) ->
             // Mirror the read-side dispatch: when we have BaseClassTypes,
@@ -2176,6 +2192,9 @@ module IlMachineManagedByref =
         =
         match src with
         | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
+        | ManagedPointerSource.NativeIntPlaceholder bits ->
+            failwith
+                $"writeExactWidthPrimitiveTypedStore: cannot write through fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
         | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte _, _) ->
             failwith "unreachable: StackMemoryByte primitive stores are dispatched before exact-width typed store"
         | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte _, _) ->
@@ -2282,6 +2301,9 @@ module IlMachineManagedByref =
         : IlMachineState
         =
         match src with
+        | ManagedPointerSource.NativeIntPlaceholder bits ->
+            failwith
+                $"writeIndirectPrimitiveStore: cannot write through fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
         | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset), []) ->
             match byteAddressabilityRejection newValue with
             | Some rejection when isNumericProvenanceRejection rejection ->

@@ -95,6 +95,9 @@ module internal UnaryMetadataMemoryOps =
                 IlMachineState.writeManagedByrefBytesOrTypedCell baseClassTypes state src coerced
             | ManagedPointerSource.Byref _ -> IlMachineState.writeManagedByrefWithBase baseClassTypes state src coerced
             | ManagedPointerSource.Null -> failwith "unreachable: null Stobj target handled above"
+            | ManagedPointerSource.NativeIntPlaceholder bits ->
+                failwith
+                    $"Stobj: cannot write through fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
 
         match addr with
         | EvalStackValue.NullObjectRef

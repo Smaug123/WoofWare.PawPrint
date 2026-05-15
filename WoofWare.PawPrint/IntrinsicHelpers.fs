@@ -562,6 +562,7 @@ module internal IntrinsicHelpers =
     let splitTrailingByteView (src : ManagedPointerSource) : (ByrefRoot * ByrefProjection list * int) voption =
         match src with
         | ManagedPointerSource.Null -> ValueNone
+        | ManagedPointerSource.NativeIntPlaceholder _ -> ValueNone
         | ManagedPointerSource.Byref (root, projs) ->
             match List.rev projs with
             | ByrefProjection.ByteOffset n :: ByrefProjection.ReinterpretAs _ :: revPrefix ->
@@ -600,6 +601,9 @@ module internal IntrinsicHelpers =
 
         match src with
         | ManagedPointerSource.Null -> failwith $"%s{operation}: attempted to dereference null byref"
+        | ManagedPointerSource.NativeIntPlaceholder bits ->
+            failwith
+                $"%s{operation}: cannot read fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
         | ManagedPointerSource.Byref (root, projs) ->
             match splitTrailingByteView src with
             | ValueSome (byteViewRoot, prefixProjs, byteOffset) ->

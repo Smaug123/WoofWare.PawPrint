@@ -28,6 +28,9 @@ module private ArithmeticTarget =
     let decompose (ptr : ManagedPointerSource) : ArithmeticTarget =
         match ptr with
         | ManagedPointerSource.Null -> ArithmeticTarget.NullTarget
+        | ManagedPointerSource.NativeIntPlaceholder bits ->
+            failwith
+                $"refusing to do pointer arithmetic on fake non-null byref @ 0x%x{bits}; the placeholder must never be advanced"
         | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset), []) ->
             ArithmeticTarget.StackMemoryTarget (thread, frame, block, byteOffset)
         | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, byteOffset), []) ->
@@ -187,6 +190,24 @@ module ArithmeticOperation =
         (ptr : ManagedPointerSource)
         : Choice<ManagedPointerSource, int>
         =
+        match ptr with
+        | ManagedPointerSource.NativeIntPlaceholder bits ->
+            // `(void*)bits + v = (void*)(bits + v)`. GetNonNullPinnableReference
+            // produces an empty span whose pointer is the placeholder; callers
+            // then form an end pointer by adding `length * elementSize` (which is
+            // zero for an empty span, but in general arithmetic on the bits is
+            // legitimate as long as no dereference occurs). A zero result must
+            // normalise back to `Null` so the placeholder invariant ("never
+            // carries zero") holds and `Unsafe.IsNullRef` agrees with the CLR's
+            // bit-pattern definition.
+            let newBits = bits + int64 v
+
+            if newBits = 0L then
+                Choice1Of2 ManagedPointerSource.Null
+            else
+                Choice1Of2 (ManagedPointerSource.NativeIntPlaceholder newBits)
+        | _ ->
+
         match ArithmeticTarget.decompose ptr with
         | ArithmeticTarget.NullTarget -> Choice2Of2 v
         | ArithmeticTarget.StackMemoryTarget (thread, frame, block, byteOffset) ->
@@ -353,6 +374,16 @@ module ArithmeticOperation =
                 match ptr1, ptr2 with
                 | ptr1, ManagedPointerSource.Null -> Choice1Of2 ptr1
                 | ManagedPointerSource.Null, _ -> failwith "refusing to create negative pointer"
+                | ManagedPointerSource.NativeIntPlaceholder bits1, ManagedPointerSource.NativeIntPlaceholder bits2 ->
+                    // `(void*)b1 - (void*)b2 = b1 - b2`. Both sides are fake
+                    // non-null pointers (bit patterns only); subtracting them
+                    // never dereferences. GetNonNullPinnableReference uses
+                    // `endPtr - startPtr` to recover an empty span's byte length
+                    // (0 when the placeholders share a bit pattern).
+                    bits1 - bits2 |> verbatimInt64 |> Choice2Of2
+                | ManagedPointerSource.NativeIntPlaceholder _, _
+                | _, ManagedPointerSource.NativeIntPlaceholder _ ->
+                    failwith $"refusing to subtract through fake non-null byref placeholder: %O{ptr1} and %O{ptr2}"
                 | ManagedPointerSource.Byref (ByrefRoot.Argument _, _), _
                 | _, ManagedPointerSource.Byref (ByrefRoot.Argument _, _) ->
                     failwith $"refusing to operate on pointers to arguments: %O{ptr1} and %O{ptr2}"

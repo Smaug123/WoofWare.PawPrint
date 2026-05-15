@@ -491,26 +491,55 @@ module Intrinsics =
 
             state |> IlMachineState.advanceProgramCounter currentThread |> Some
         | "System.Private.CoreLib", "Unsafe", "AsRef" ->
-            // `AsRef<T>(ref readonly T)` is a JIT intrinsic. The CoreLib body in
-            // this runtime throws PlatformNotSupportedException; the intended
-            // intrinsic semantics are the address-preserving `ldarg.0; ret`.
-            // Keep the void* overload out of this arm until native pointers are
-            // modelled here deliberately.
+            // `AsRef<T>(ref readonly T)` and `AsRef<T>(void* source)` are JIT
+            // intrinsics. The CoreLib bodies in this runtime throw
+            // PlatformNotSupportedException; the intended intrinsic semantics
+            // are the address-preserving `ldarg.0; ret`.
+            //
+            // The `void*` overload is invoked by BCL code like
+            // `MemoryMarshal.GetNonNullPinnableReference` which fabricates
+            // `Unsafe.AsRef<T>((void*)1)` for empty spans so the subsequent
+            // `fixed` pins to a non-null pointer. Translate the native int back
+            // through the managed-pointer view, normalising `0L` to `Null` and
+            // existing managed-pointer provenance back to its underlying
+            // source; raw verbatim bits become a `NativeIntPlaceholder` whose
+            // contract is "must never be dereferenced".
             let t =
                 match Seq.toList methodToCall.Generics with
                 | [ t ] -> t
                 | _ -> failwith "bad generics Unsafe.AsRef"
 
-            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteByref tParam ], MethodReturnType.Returns (ConcreteByref tRet) when tParam = t && tRet = t -> ()
-            | _ -> failwith $"TODO: Unsafe.AsRef unsupported signature %A{methodToCall.Signature.ParameterTypes}"
+            let isByrefOverload =
+                match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+                | [ ConcreteByref tParam ], MethodReturnType.Returns (ConcreteByref tRet) when tParam = t && tRet = t ->
+                    true
+                | [ ConcretePointer _ ], MethodReturnType.Returns (ConcreteByref tRet) when tRet = t -> false
+                | _ -> failwith $"TODO: Unsafe.AsRef unsupported signature %A{methodToCall.Signature.ParameterTypes}"
 
             let arg, state = IlMachineState.popEvalStack currentThread state
 
             let toPush =
-                match arg with
-                | EvalStackValue.ManagedPointer ptr -> EvalStackValue.ManagedPointer ptr
-                | x -> failwith $"TODO: Unsafe.AsRef(%O{x})"
+                if isByrefOverload then
+                    match arg with
+                    | EvalStackValue.ManagedPointer ptr -> EvalStackValue.ManagedPointer ptr
+                    | x -> failwith $"TODO: Unsafe.AsRef(ref readonly T) on %O{x}"
+                else
+                    let placeholderOf (bits : int64) =
+                        if bits = 0L then
+                            ManagedPointerSource.Null
+                        else
+                            ManagedPointerSource.NativeIntPlaceholder bits
+
+                    match arg with
+                    | EvalStackValue.ManagedPointer ptr -> EvalStackValue.ManagedPointer ptr
+                    | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) -> EvalStackValue.ManagedPointer ptr
+                    | EvalStackValue.NativeInt (NativeIntSource.Verbatim bits) ->
+                        EvalStackValue.ManagedPointer (placeholderOf bits)
+                    | EvalStackValue.Int32 bits -> EvalStackValue.ManagedPointer (placeholderOf (int64 bits))
+                    | EvalStackValue.Int64 (Int64Source.Verbatim bits) ->
+                        EvalStackValue.ManagedPointer (placeholderOf bits)
+                    | EvalStackValue.NullObjectRef -> EvalStackValue.ManagedPointer ManagedPointerSource.Null
+                    | x -> failwith $"TODO: Unsafe.AsRef(void*) on %O{x}"
 
             state
             |> IlMachineState.pushToEvalStack' toPush currentThread

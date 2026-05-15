@@ -41,6 +41,8 @@ module NullaryIlOp =
 
             match ptr with
             | ManagedPointerSource.Null -> failwith "unreachable: tryStableAddressBits handles null managed pointers"
+            | ManagedPointerSource.NativeIntPlaceholder _ ->
+                failwith "unreachable: tryStableAddressBits handles NativeIntPlaceholder managed pointers"
             | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), projs) ->
                 let arrObj = state.ManagedHeap.Arrays.[arr]
 
@@ -179,17 +181,20 @@ module NullaryIlOp =
         match src with
         | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte _, _) -> true
         | ManagedPointerSource.Null
+        | ManagedPointerSource.NativeIntPlaceholder _
         | ManagedPointerSource.Byref _ -> false
 
     let private isNativeMemoryPointer (src : ManagedPointerSource) : bool =
         match src with
         | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte _, _) -> true
         | ManagedPointerSource.Null
+        | ManagedPointerSource.NativeIntPlaceholder _
         | ManagedPointerSource.Byref _ -> false
 
     let private isTrailingByteViewPointer (src : ManagedPointerSource) : bool =
         match src with
         | ManagedPointerSource.Null -> false
+        | ManagedPointerSource.NativeIntPlaceholder _ -> false
         | ManagedPointerSource.Byref (_, projs) ->
             match List.rev projs with
             | ByrefProjection.ByteOffset _ :: ByrefProjection.ReinterpretAs _ :: _

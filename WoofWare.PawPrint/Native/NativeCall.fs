@@ -210,6 +210,9 @@ module NativeCall =
         match ptr with
         | ManagedPointerSource.Null ->
             failwith $"TODO: %s{operation} with null UTF-16 pointer should throw ArgumentNullException"
+        | ManagedPointerSource.NativeIntPlaceholder bits ->
+            failwith
+                $"%s{operation}: cannot read UTF-16 string from fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
         | ManagedPointerSource.Byref _ ->
             let charConcreteType = requiredCharConcreteType operation baseClassTypes state
 
@@ -270,6 +273,9 @@ module NativeCall =
         match ptr with
         | ManagedPointerSource.Null ->
             failwith $"TODO: %s{operation} with null UTF-8 pointer should throw ArgumentNullException"
+        | ManagedPointerSource.NativeIntPlaceholder bits ->
+            failwith
+                $"%s{operation}: cannot read UTF-8 string from fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
         | ManagedPointerSource.Byref _ ->
             let byteConcreteType = requiredByteConcreteType operation baseClassTypes state
 

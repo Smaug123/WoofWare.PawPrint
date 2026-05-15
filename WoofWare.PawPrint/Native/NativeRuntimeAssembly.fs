@@ -246,6 +246,9 @@ module NativeRuntimeAssembly =
             match typeNamePtr with
             | ManagedPointerSource.Null ->
                 failwith $"TODO: %s{operation} with null typeName should throw ArgumentNullException"
+            | ManagedPointerSource.NativeIntPlaceholder bits ->
+                failwith
+                    $"%s{operation}: cannot read typeName through fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
             | ManagedPointerSource.Byref _ -> ()
 
             if nestedCount > 0 then
@@ -253,6 +256,9 @@ module NativeRuntimeAssembly =
                 | ManagedPointerSource.Null ->
                     failwith
                         $"%s{operation}: nestedTypeNames pointer was null but nestedCount=%d{nestedCount} (caller invariant violated)"
+                | ManagedPointerSource.NativeIntPlaceholder bits ->
+                    failwith
+                        $"%s{operation}: cannot read nestedTypeNames through fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
                 | ManagedPointerSource.Byref _ -> ()
 
             let typeName =
