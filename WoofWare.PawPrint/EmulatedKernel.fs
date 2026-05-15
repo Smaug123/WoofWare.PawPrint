@@ -84,6 +84,43 @@ type SpuriousWakeupStrategy =
     /// underneath them changes.
     | Scripted of wakeups : (int64 * LowLevelMonitorId * ThreadId) list
 
+/// Parallel to `SpuriousWakeupStrategy`, but governs spurious wakeups out of
+/// the managed `Monitor.Wait` (i.e. the SyncBlock-backed condition variable)
+/// rather than the `LowLevelMonitor` primitive. CoreCLR's `Monitor.Wait` is
+/// permitted to return without a matching `Pulse` / `PulseAll`, which is why
+/// the documented usage pattern always wraps `Wait` in a predicate loop.
+/// This type is the deterministic knob for forcing those wakeups in PawPrint.
+///
+/// Kept structurally parallel-but-separate from `SpuriousWakeupStrategy` so
+/// a guest's LowLevelMonitor-level fuzz schedule and its SyncBlock-level
+/// schedule are independent dials: a single strategy covering both would
+/// either be hard to script (per-tick wakeups tagged by which queue family
+/// they target) or coarsely tied together (any waiter is fair game on a
+/// given tick), neither of which the user wants when they're trying to
+/// reproduce a specific managed-Monitor bug without disturbing the
+/// LowLevelMonitor schedule.
+[<RequireQualifiedAccess>]
+type SyncBlockSpuriousWakeupStrategy =
+    /// Default. Only `Pulse` / `PulseAll` wakes a waiter. Equivalent to a
+    /// `SyncBlock` implementation that never wakes spuriously: permitted by
+    /// the BCL contract but masks predicate-loop bugs.
+    | Disabled
+    /// Wake every waiter on every scheduler tick. Maximum fuzz pressure.
+    /// Guest code that uses `Monitor.Wait` outside a re-checking predicate
+    /// loop will produce wrong results — that is the point.
+    | AlwaysAll
+    /// Each (tick, lockObject, waiter) tuple wakes independently with the
+    /// given probability. Coin flip is deterministic over
+    /// `(seed, tick, lockObject, threadId)`. `probability` is rejected at
+    /// apply time if NaN or outside `[0.0, 1.0]`.
+    | Random of seed : uint64 * probability : float
+    /// Explicit `(tick, lockObject, threadId)` triples. Fully replayable.
+    /// A triple naming a thread not currently in the named SyncBlock's
+    /// `WaitQueue` at the named tick fails loudly — silent skip would let
+    /// scripts drift unnoticed when the interleaving underneath them
+    /// changes.
+    | Scripted of wakeups : (int64 * ManagedHeapAddress * ThreadId) list
+
 /// Aggregates the slice of `IlMachineState` that models host-kernel /
 /// syscall-emulation state: process-wide last-error registers, the native
 /// heap pool backing `Marshal.AllocHGlobal`, the Unix file-descriptor table,
@@ -145,6 +182,12 @@ type EmulatedKernel =
         /// via record-copy in tests) to inject wakeups for fuzz /
         /// correctness testing of guest condition-variable code.
         SpuriousWakeup : SpuriousWakeupStrategy
+        /// Deterministic strategy governing spurious wakeups out of the
+        /// managed `Monitor.Wait` (SyncBlock-backed condition variable).
+        /// Parallel-but-independent of `SpuriousWakeup` so a guest can fuzz
+        /// the two condvar primitives separately. Defaults to `Disabled` so
+        /// existing runs are bit-for-bit unchanged.
+        SyncBlockSpuriousWakeup : SyncBlockSpuriousWakeupStrategy
         /// Monotonically-advancing scheduler tick consumed by
         /// `SpuriousWakeupStrategy`. The driver loop applies the strategy
         /// against the current value and then increments by 1 before
@@ -236,6 +279,7 @@ module EmulatedKernel =
             NextLowLevelMonitorId = 1
             NextEventPipeId = 1L
             SpuriousWakeup = SpuriousWakeupStrategy.Disabled
+            SyncBlockSpuriousWakeup = SyncBlockSpuriousWakeupStrategy.Disabled
             StepCounter = 0L
             NonCryptoRandomState = NonCryptoRandom.initialState
         }

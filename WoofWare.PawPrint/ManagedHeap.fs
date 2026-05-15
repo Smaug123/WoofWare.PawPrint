@@ -2,12 +2,25 @@ namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
 
-/// State carried by a `Locked` SyncBlock. `AcquireQueue` is the FIFO list of
-/// threads parked in `BlockedOnSyncBlockAcquire` waiting for ownership to be
-/// transferred to them when `LockingThread` calls `Monitor.Exit`. FIFO order
-/// is load-bearing for fairness: switching to LIFO or arbitrary order would
-/// change the observable interleaving for guests that race multiple threads
-/// into the same `lock` block.
+/// State carried when an object's monitor is `Held` by some thread.
+/// `AcquireQueue` is the FIFO list of (thread, optional re-entry depth) pairs
+/// parked in `BlockedOnSyncBlockAcquire` waiting for ownership to be transferred
+/// to them when `LockingThread` calls `Monitor.Exit`. FIFO order is load-bearing
+/// for fairness: switching to LIFO or arbitrary order would change the
+/// observable interleaving for guests that race multiple threads into the same
+/// `lock` block.
+///
+/// The `int option` snapshot on each `AcquireQueue` entry distinguishes the
+/// two flavours of waiter:
+///   * `None` — a fresh entrant from `Monitor.Enter`. On ownership transfer it
+///     becomes the new owner with `ReentrancyCount = 1`.
+///   * `Some depth` — a waiter that was woken from `Monitor.Wait` by
+///     `Monitor.Pulse` / `PulseAll` (or a spurious wake). `Wait` snapshots its
+///     prior `ReentrancyCount` so that on re-acquire the depth it had before
+///     parking is restored verbatim. Storing the depth inline next to the
+///     thread keeps the "what's waiting and what depth do they need" coupling
+///     visible at every read site; a separate map would let a transition lose
+///     the pairing silently.
 ///
 /// `ReentrancyCount` is the depth of nested `Monitor.Enter` calls by
 /// `LockingThread` and must reach exactly zero before ownership can transfer.
@@ -15,12 +28,38 @@ type LockedSyncBlock =
     {
         LockingThread : ThreadId
         ReentrancyCount : int
-        AcquireQueue : ThreadId list
+        AcquireQueue : (ThreadId * int option) list
     }
 
-type SyncBlock =
+/// Ownership state of an object's monitor — distinct from its `WaitQueue`
+/// because `Monitor.Wait` fully releases the lock (`Free`) while leaving its
+/// caller parked in the SyncBlock's `WaitQueue`.
+type SyncBlockLock =
     | Free
-    | Locked of LockedSyncBlock
+    | Held of LockedSyncBlock
+
+/// Per-object monitor metadata. `Lock` describes ownership and FIFO of
+/// `Monitor.Enter` contenders. `WaitQueue` is the FIFO list of (thread,
+/// snapshot depth) pairs currently parked in `BlockedOnSyncBlockWait` from a
+/// `Monitor.Wait` call; they do NOT contend for the lock until a `Pulse` /
+/// `PulseAll` moves them onto `AcquireQueue` (FIFO tail), at which point they
+/// re-enter via the normal ownership-transfer path. The two fields are
+/// orthogonal: a non-empty `WaitQueue` can coexist with `Lock = Free` (the
+/// owner called `Wait`, releasing the lock, but the waiter is still parked).
+/// Pulse on an empty wait queue is a documented no-op (matches CoreCLR's
+/// `SyncBlock`).
+type SyncBlock =
+    {
+        Lock : SyncBlockLock
+        WaitQueue : (ThreadId * int) list
+    }
+
+    /// Initial state for a freshly-allocated object: lock free, no waiters.
+    static member Empty : SyncBlock =
+        {
+            Lock = SyncBlockLock.Free
+            WaitQueue = []
+        }
 
 type AllocatedNonArrayObject =
     {

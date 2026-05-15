@@ -27,13 +27,24 @@ type ThreadStatus =
     /// acquire path.
     | BlockedOnMonitorWait of monitor : LowLevelMonitorId
     /// This thread called `Monitor.Enter` (or its `TryEnter` cousin with a non-zero
-    /// timeout) on an object whose SyncBlock is `Locked` by a different thread, and
+    /// timeout) on an object whose SyncBlock is `Held` by a different thread, and
     /// is parked at the SyncBlock's `AcquireQueue`. The lock owner's eventual
     /// `Monitor.Exit` transfers ownership directly to the FIFO head of the queue,
     /// flipping that thread back to `Runnable` already holding the lock — mirroring
     /// the `LowLevelMonitor` ownership-transfer model so the resumed thread's IL
     /// continues past the `Enter` call site already owning the SyncBlock.
     | BlockedOnSyncBlockAcquire of lockObject : ManagedHeapAddress
+    /// This thread called `Monitor.Wait` on an object's SyncBlock and is parked at
+    /// the SyncBlock's `WaitQueue` with the lock fully released. A subsequent
+    /// `Monitor.Pulse` / `PulseAll` from another thread (or a spurious wake)
+    /// transitions the head of the wait queue onto the SyncBlock's `AcquireQueue`
+    /// carrying its prior reentrancy depth as a `Some depth` snapshot; the resumed
+    /// thread becomes `BlockedOnSyncBlockAcquire` until the current owner's `Exit`
+    /// hands ownership over, at which point its `ReentrancyCount` is restored to
+    /// the snapshotted depth and the IL resumes past the `Wait` call site already
+    /// re-owning the lock. Parallel with `BlockedOnMonitorWait` but for managed
+    /// SyncBlocks rather than `LowLevelMonitor`.
+    | BlockedOnSyncBlockWait of lockObject : ManagedHeapAddress
     /// This thread has executed its final `ret`; it will never run again. Its state is kept
     /// only so other threads can observe termination (e.g. to satisfy Join).
     | Terminated
