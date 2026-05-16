@@ -12,7 +12,6 @@
         <Compile Include="Tokens.fs" />
         <Compile Include="TypeRef.fs" />
         <Compile Include="IlOp.fs" />
-        <Compile Include="CustomAttribute.fs" />
         <Compile Include="AssemblyReference.fs" />
         <Compile Include="EventDefn.fs" />
         <Compile Include="ComparableTypeDefinitionHandle.fs" />
@@ -22,6 +21,7 @@
         <Compile Include="ComparableGenericParameterHandle.fs" />
         <Compile Include="TypeIdentity.fs" />
         <Compile Include="TypeDefn.fs" />
+        <Compile Include="CustomAttribute.fs" />
         <Compile Include="GenericParameter.fs" />
         <Compile Include="ConcreteType.fs" />
         <Compile Include="FieldInfo.fs" />
@@ -32,8 +32,8 @@
         <Compile Include="Namespace.fs" />
         <Compile Include="ExportedType.fs" />
         <Compile Include="TypeSpec.fs" />
-        <Compile Include="Assembly.fs" />
         <Compile Include="FriendAssemblies.fs" />
+        <Compile Include="Assembly.fs" />
         <Compile Include="AccessCheck.fs" />
         <Compile Include="IlFormatting.fs" />
         <Compile Include="TypeConcretisation.fs" />
