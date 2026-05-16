@@ -22,7 +22,7 @@ module TestPureCases =
             "LdtokenField.cs" // past Buffer's reflection-cache copy (cell-aware path); now blocked on the next reflection-cache step at unimplemented InternalCall RuntimeFieldHandle::GetApproxDeclaringMethodTable
             "IsAssignableFromOpenGenericDefinition.cs" // TypeHandle.CanCastTo_NoCacheLookup for open generic
             "InterfaceDispatch.cs" // expected: 0; was: 1024
-            "Threads.cs" // past Buffer's reflection-cache copy (cell-aware path); now blocked on unimplemented QCall ThreadNative_SetIsBackground
+            "Threads.cs" // past Buffer's reflection-cache copy and ThreadNative_SetIsBackground; now blocked on unimplemented QCall ThreadNative_InformThreadNameChange (BCL Thread.Name setter / SetThreadPoolWorkerThreadName)
             "IsAssignableToBasic.cs" // MethodTable field projection for MethodTable::PerInstInfo
         ]
         |> Set.ofList

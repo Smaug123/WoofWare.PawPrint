@@ -74,6 +74,7 @@ module DebuggerServer =
     let private writeThreadStatus (writer : Utf8JsonWriter) (status : ThreadStatus) : unit =
         match status with
         | ThreadStatus.Runnable -> writer.WriteStringValue "runnable"
+        | ThreadStatus.NotStarted -> writer.WriteStringValue "notStarted"
         | ThreadStatus.BlockedOnJoin target ->
             writer.WriteStartObject ()
             writer.WriteString ("kind", "blockedOnJoin")

@@ -89,6 +89,10 @@ module IlMachineState =
 
     let addThread = IlMachineThreadState.addThread
 
+    let allocateUnstartedThread = IlMachineThreadState.allocateUnstartedThread
+
+    let startUnstartedThread = IlMachineThreadState.startUnstartedThread
+
     let allocateArray = IlMachineThreadState.allocateArray
 
     let allocateMultiDimArray = IlMachineThreadState.allocateMultiDimArray
