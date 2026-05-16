@@ -24,7 +24,11 @@ type MethodHandleRegistry =
             /// iterator on `RuntimeTypeHandle`) that hold a bare `RuntimeMethodHandleInternal`
             /// id and need to recover the underlying `MethodHandle`.
             IdToMethodHandle : Map<int64, MethodHandle>
-            MethodHandleToMethod : Map<ManagedHeapAddress, MethodHandle>
+            /// Dedup cache for `getOrAllocate`: when an F# caller asks for the stub address
+            /// of a method we've previously allocated through this same path, return that
+            /// existing address rather than minting a fresh stub. Note that this dedup is
+            /// scoped to F#-side allocations — stubs the BCL constructs in managed code (via
+            /// `new RuntimeMethodInfoStub(...)`) bypass this registry entirely.
             MethodToHandle : Map<MethodHandle, ManagedHeapAddress>
             NextHandle : int64
         }
@@ -33,7 +37,6 @@ type MethodHandleRegistry =
 module MethodHandleRegistry =
     let empty () =
         {
-            MethodHandleToMethod = Map.empty
             MethodToHandle = Map.empty
             MethodHandleToId = Map.empty
             IdToMethodHandle = Map.empty
@@ -366,12 +369,7 @@ module MethodHandleRegistry =
 
         let reg =
             { reg with
-                MethodHandleToMethod = reg.MethodHandleToMethod |> Map.add alloc handle
                 MethodToHandle = reg.MethodToHandle |> Map.add handle alloc
             }
 
         runtimeMethodHandle alloc, reg, state
-
-    /// Given the ManagedHeapAddress of a RuntimeMethodInfoStub, resolve it to the MethodHandle.
-    let resolveMethodFromAddress (addr : ManagedHeapAddress) (reg : MethodHandleRegistry) : MethodHandle option =
-        Map.tryFind addr reg.MethodHandleToMethod
