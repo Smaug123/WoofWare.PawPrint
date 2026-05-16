@@ -286,7 +286,16 @@ module NativeBuffer =
                 else
                     srcInCell = 0
 
-            if not aligned || cellSize > bytesRemaining then
+            // Reject `cellSize <= 0`: a zero-sized value-type cell (PawPrint
+            // gives fieldless default-layout structs `sizeOf = 0`) would
+            // return `Some (newState, 0)`, and the caller would advance `i`
+            // by zero — spinning the copy loop forever for any positive
+            // requested byte count. Falling back to the byte step is also
+            // wrong here (we'd read a byte off a non-existent cell), so the
+            // caller's byte step would itself fail loudly — which is the
+            // intended behaviour, since a positive byte copy against a
+            // zero-sized cell anchor is an interpreter-bug shape.
+            if not aligned || cellSize <= 0 || cellSize > bytesRemaining then
                 None
             else
                 let destCell = IlMachineState.readManagedByref baseClassTypes state destPlain
