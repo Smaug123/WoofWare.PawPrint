@@ -25,7 +25,6 @@ module TestPureCases =
             "IsAssignableFromOpenGenericDefinition.cs" // TypeHandle.CanCastTo_NoCacheLookup for open generic
             "InterfaceDispatch.cs" // expected: 0; was: 1024
             "ComplexTryCatch.cs" // refusing byte view over value type containing object references in an array
-            "RethrowStackTraceBoundary.cs" // expected: 0; was: 11
             "Threads.cs" // blocked by pointer arithmetic over a generated Data field after Interlocked.CompareExchange
             "IsAssignableToBasic.cs" // MethodTable field projection for MethodTable::PerInstInfo
             "RuntimeTypeHandleGetInstantiationOpenGeneric.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringMethodForGenericParameter
