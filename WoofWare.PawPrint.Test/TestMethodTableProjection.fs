@@ -1241,6 +1241,180 @@ public unsafe struct PointerWrapper
         projectAuxiliaryData "Flags" (handleFor bct.Int32)
         |> shouldEqual (CliType.Numeric (CliNumericType.Int32 0))
 
+    let private concretizeNullableOf
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (argHandle : ConcreteTypeHandle)
+        (state : IlMachineState)
+        : IlMachineState * ConcreteTypeHandle
+        =
+        topLevelType "System" "Nullable`1"
+        |> DumpedAssembly.typeInfoToTypeDefn' bct state._LoadedAssemblies
+        |> IlMachineState.concretizeType
+            loggerFactory
+            bct
+            state
+            corelib.Name
+            (ImmutableArray.Create argHandle)
+            ImmutableArray.Empty
+
+    [<Test>]
+    let ``PerInstInfo projection succeeds for closed generic instantiation`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+        let intHandle = handleFor bct.Int32
+
+        let state, nullableIntHandle =
+            concretizeNullableOf loggerFactory intHandle (stateWithLogger loggerFactory)
+
+        let projected, _ =
+            projectFromState loggerFactory state "PerInstInfo" nullableIntHandle
+
+        projected
+        |> shouldEqual (CliType.RuntimePointer (CliRuntimePointer.PerInstInfoPtr nullableIntHandle))
+
+    [<Test>]
+    let ``PerInstInfo projection refuses non-generic concrete types`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () ->
+                projectFromState loggerFactory (stateWithLogger loggerFactory) "PerInstInfo" (handleFor bct.Int32)
+                |> ignore
+            )
+
+        ex.Message |> shouldContainText "PerInstInfo"
+        ex.Message |> shouldContainText "non-generic"
+
+    [<Test>]
+    let ``PerInstInfo projection refuses array handles`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+        let intArrayHandle = ConcreteTypeHandle.OneDimArrayZero (handleFor bct.Int32)
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () ->
+                projectFromState loggerFactory (stateWithLogger loggerFactory) "PerInstInfo" intArrayHandle
+                |> ignore
+            )
+
+        ex.Message |> shouldContainText "PerInstInfo"
+        ex.Message |> shouldContainText "array"
+
+    [<Test>]
+    let ``PerInstInfo projection refuses open generic definitions`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let target =
+            topLevelType "System" "Nullable`1"
+            |> _.Identity
+            |> RuntimeTypeHandleTarget.OpenGenericTypeDefinition
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () ->
+                MethodTableProjection.tryProjectFieldForRuntimeTypeHandleTarget
+                    loggerFactory
+                    bct
+                    (methodTableField "PerInstInfo")
+                    target
+                    (stateWithLogger loggerFactory)
+                |> ignore
+            )
+
+        ex.Message |> shouldContainText "PerInstInfo"
+        ex.Message |> shouldContainText "open generic"
+
+    [<Test>]
+    let ``Ldfld projects PerInstInfo from MethodTable pointer for closed generic`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+        let field = methodTableField "PerInstInfo"
+        let token = MetadataToken.FieldDefinition field.Handle
+        let token = SourcedMetadataToken.make corelib.Name token
+        let op = IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldfld, token)
+        let intHandle = handleFor bct.Int32
+
+        let state, nullableIntHandle =
+            concretizeNullableOf loggerFactory intHandle (stateWithLogger loggerFactory)
+
+        let state, thread = stateWithSingleInstructionFromState loggerFactory op state
+
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack'
+                (EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr nullableIntHandle))
+                thread
+
+        let state, whatWeDid =
+            UnaryMetadataIlOp.execute loggerFactory bct UnaryMetadataTokenIlOp.Ldfld token state thread
+
+        whatWeDid |> shouldEqual WhatWeDid.Executed
+
+        IlMachineState.peekEvalStack thread state
+        |> shouldEqual (Some (EvalStackValue.NativeInt (NativeIntSource.PerInstInfoPtr nullableIntHandle)))
+
+        state.ThreadState.[thread].MethodState.IlOpIndex
+        |> shouldEqual (IlOp.NumberOfBytes op)
+
+    [<Test>]
+    let ``Ldind_i on PerInstInfoPtr steps to PerInstDictPtr for same handle`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+        let op = IlOp.Nullary NullaryIlOp.Ldind_i
+        let intHandle = handleFor bct.Int32
+
+        let state, nullableIntHandle =
+            concretizeNullableOf loggerFactory intHandle (stateWithLogger loggerFactory)
+
+        let state, thread = stateWithSingleInstructionFromState loggerFactory op state
+
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack'
+                (EvalStackValue.NativeInt (NativeIntSource.PerInstInfoPtr nullableIntHandle))
+                thread
+
+        let state =
+            match NullaryIlOp.execute loggerFactory bct state thread NullaryIlOp.Ldind_i with
+            | ExecutionResult.Stepped (state, WhatWeDid.Executed, _) -> state
+            | other -> failwith $"Expected stepped execution, got %O{other}"
+
+        IlMachineState.peekEvalStack thread state
+        |> shouldEqual (Some (EvalStackValue.NativeInt (NativeIntSource.PerInstDictPtr nullableIntHandle)))
+
+        state.ThreadState.[thread].MethodState.IlOpIndex
+        |> shouldEqual (IlOp.NumberOfBytes op)
+
+    [<Test>]
+    let ``Ldind_i on PerInstDictPtr resolves first generic argument's MethodTable`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+        let op = IlOp.Nullary NullaryIlOp.Ldind_i
+        let intHandle = handleFor bct.Int32
+
+        let state, nullableIntHandle =
+            concretizeNullableOf loggerFactory intHandle (stateWithLogger loggerFactory)
+
+        let state, thread = stateWithSingleInstructionFromState loggerFactory op state
+
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack'
+                (EvalStackValue.NativeInt (NativeIntSource.PerInstDictPtr nullableIntHandle))
+                thread
+
+        let state =
+            match NullaryIlOp.execute loggerFactory bct state thread NullaryIlOp.Ldind_i with
+            | ExecutionResult.Stepped (state, WhatWeDid.Executed, _) -> state
+            | other -> failwith $"Expected stepped execution, got %O{other}"
+
+        IlMachineState.peekEvalStack thread state
+        |> shouldEqual (Some (EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr intHandle)))
+
+        state.ThreadState.[thread].MethodState.IlOpIndex
+        |> shouldEqual (IlOp.NumberOfBytes op)
+
     [<Test>]
     let ``Ldfld projects MethodTableAuxiliaryData flags from auxiliary-data pointer provenance`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()

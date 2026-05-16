@@ -151,6 +151,8 @@ module NullaryIlOp =
             | EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr _)
             | EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr _)
             | EvalStackValue.NativeInt (NativeIntSource.MethodTableAuxiliaryDataPtr _)
+            | EvalStackValue.NativeInt (NativeIntSource.PerInstInfoPtr _)
+            | EvalStackValue.NativeInt (NativeIntSource.PerInstDictPtr _)
             | EvalStackValue.NativeInt (NativeIntSource.FieldHandlePtr _)
             | EvalStackValue.NativeInt (NativeIntSource.MethodHandlePtr _)
             | EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr _)
@@ -296,6 +298,10 @@ module NullaryIlOp =
                 failwith $"Neg: refusing to negate MethodTable pointer %O{typeHandle}"
             | NativeIntSource.MethodTableAuxiliaryDataPtr typeHandle ->
                 failwith $"Neg: refusing to negate MethodTableAuxiliaryData pointer %O{typeHandle}"
+            | NativeIntSource.PerInstInfoPtr handle ->
+                failwith $"Neg: refusing to negate PerInstInfo pointer %O{handle}"
+            | NativeIntSource.PerInstDictPtr handle ->
+                failwith $"Neg: refusing to negate PerInstDict pointer %O{handle}"
             | NativeIntSource.MethodHandlePtr handle ->
                 failwith $"Neg: refusing to negate RuntimeMethodHandle pointer %d{handle}"
             | NativeIntSource.FieldHandlePtr handle ->
@@ -650,6 +656,10 @@ module NullaryIlOp =
             | NativeIntSource.MethodTableAuxiliaryDataPtr typeHandle ->
                 failwith
                     $"Conv_ovf_u: refusing to convert MethodTableAuxiliaryData pointer %O{typeHandle} to unsigned native int"
+            | NativeIntSource.PerInstInfoPtr handle ->
+                failwith $"Conv_ovf_u: refusing to convert PerInstInfo pointer %O{handle} to unsigned native int"
+            | NativeIntSource.PerInstDictPtr handle ->
+                failwith $"Conv_ovf_u: refusing to convert PerInstDict pointer %O{handle} to unsigned native int"
             | NativeIntSource.GcHandlePtr handle ->
                 failwith $"Conv_ovf_u: refusing to convert GC handle pointer %O{handle} to unsigned native int"
             | NativeIntSource.EventPipeProviderPtr id ->
@@ -726,6 +736,55 @@ module NullaryIlOp =
                 currentThread
                 state
             |> ExecutionResult.stepped
+        | EvalStackValue.NativeInt (NativeIntSource.PerInstInfoPtr handle) ->
+            // First deref of the `MethodTable*** PerInstInfo` chain: step
+            // from MethodTable*** to MethodTable** (the per-instance
+            // dictionary pointer). The chain is walked only via `ldind.i`;
+            // narrowing widths would betray the synthetic provenance.
+            match targetType with
+            | LdindI ->
+                let state =
+                    state
+                    |> IlMachineState.pushToEvalStack
+                        (CliType.RuntimePointer (CliRuntimePointer.PerInstDictPtr handle))
+                        currentThread
+                    |> IlMachineState.advanceProgramCounter currentThread
+
+                (state, WhatWeDid.Executed) |> ExecutionResult.stepped
+            | _ ->
+                failwith
+                    $"Ldind %O{targetType} on PerInstInfoPtr %O{handle} is not modelled; only LdindI walks the synthetic PerInstInfo chain"
+        | EvalStackValue.NativeInt (NativeIntSource.PerInstDictPtr handle) ->
+            // Second deref of the `MethodTable*** PerInstInfo` chain: the
+            // first slot of the first per-instance dictionary holds the
+            // type's first generic argument's MethodTable*. PawPrint only
+            // models that slot — the rest of the dictionary layout is not
+            // walked.
+            match targetType with
+            | LdindI ->
+                let concreteType =
+                    match AllConcreteTypes.lookup handle state.ConcreteTypes with
+                    | Some c -> c
+                    | None ->
+                        failwith $"Ldind on PerInstDictPtr: handle %O{handle} was not registered in AllConcreteTypes"
+
+                if concreteType.Generics.IsEmpty then
+                    failwith
+                        $"Ldind on PerInstDictPtr %O{handle}: target is non-generic; PerInstInfo chain is meaningful only for generic instantiations"
+
+                let firstArg = concreteType.Generics.[0]
+
+                let state =
+                    state
+                    |> IlMachineState.pushToEvalStack
+                        (CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr firstArg))
+                        currentThread
+                    |> IlMachineState.advanceProgramCounter currentThread
+
+                (state, WhatWeDid.Executed) |> ExecutionResult.stepped
+            | _ ->
+                failwith
+                    $"Ldind %O{targetType} on PerInstDictPtr %O{handle} is not modelled; only LdindI walks the synthetic PerInstInfo chain"
         | _ ->
 
         let targetCliType = getTargetLdindCliType targetType
@@ -830,6 +889,8 @@ module NullaryIlOp =
                 | NativeIntSource.TypeHandlePtr _
                 | NativeIntSource.MethodTablePtr _
                 | NativeIntSource.MethodTableAuxiliaryDataPtr _
+                | NativeIntSource.PerInstInfoPtr _
+                | NativeIntSource.PerInstDictPtr _
                 | NativeIntSource.GcHandlePtr _
                 | NativeIntSource.AssemblyHandle _
                 | NativeIntSource.ModuleHandle _
@@ -886,6 +947,8 @@ module NullaryIlOp =
                 | NativeIntSource.TypeHandlePtr _
                 | NativeIntSource.MethodTablePtr _
                 | NativeIntSource.MethodTableAuxiliaryDataPtr _
+                | NativeIntSource.PerInstInfoPtr _
+                | NativeIntSource.PerInstDictPtr _
                 | NativeIntSource.GcHandlePtr _
                 | NativeIntSource.AssemblyHandle _
                 | NativeIntSource.ModuleHandle _

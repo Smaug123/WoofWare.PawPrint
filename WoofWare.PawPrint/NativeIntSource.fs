@@ -95,6 +95,18 @@ type NativeIntSource =
     | TypeHandlePtr of RuntimeTypeHandleTarget
     | MethodTablePtr of ConcreteTypeHandle
     | MethodTableAuxiliaryDataPtr of RuntimeTypeHandleTarget
+    /// Synthetic `MethodTable*** PerInstInfo` pointer for a generic instantiation.
+    /// First `ldind` step yields `PerInstDictPtr` of the same handle (the
+    /// pointer to the first per-instance dictionary); a second `ldind` step
+    /// yields `MethodTablePtr` of the type's first generic argument. Only the
+    /// `**PerInstInfo` chain used by `CastHelpers.IsNullableForType` is
+    /// modelled today; richer indexing into the dictionary table is not.
+    | PerInstInfoPtr of ConcreteTypeHandle
+    /// Synthetic `MethodTable**` pointing at the first per-instance dictionary
+    /// of the named generic instantiation. Produced by `ldind` on
+    /// `PerInstInfoPtr`; one further `ldind` step yields `MethodTablePtr` of
+    /// the type's first generic argument.
+    | PerInstDictPtr of ConcreteTypeHandle
     | MethodHandlePtr of int64
     | FieldHandlePtr of int64
     | AssemblyHandle of string
@@ -153,6 +165,8 @@ type NativeIntSource =
         | NativeIntSource.TypeHandlePtr ptr -> $"<type ID %O{ptr}>"
         | NativeIntSource.MethodTablePtr ptr -> $"<method table for type %O{ptr}>"
         | NativeIntSource.MethodTableAuxiliaryDataPtr ptr -> $"<method table auxiliary data for type %O{ptr}>"
+        | NativeIntSource.PerInstInfoPtr ptr -> $"<PerInstInfo for type %O{ptr}>"
+        | NativeIntSource.PerInstDictPtr ptr -> $"<PerInstInfo first dictionary for type %O{ptr}>"
         | NativeIntSource.MethodHandlePtr ptr -> $"<method ID %O{ptr}>"
         | NativeIntSource.FieldHandlePtr ptr -> $"<field ID %O{ptr}>"
         | NativeIntSource.AssemblyHandle name -> $"<assembly %s{name}>"
@@ -178,6 +192,8 @@ type NativeIntSource =
             | NativeIntSource.MethodTablePtr left, NativeIntSource.MethodTablePtr right -> left = right
             | NativeIntSource.MethodTableAuxiliaryDataPtr left, NativeIntSource.MethodTableAuxiliaryDataPtr right ->
                 left = right
+            | NativeIntSource.PerInstInfoPtr left, NativeIntSource.PerInstInfoPtr right -> left = right
+            | NativeIntSource.PerInstDictPtr left, NativeIntSource.PerInstDictPtr right -> left = right
             | NativeIntSource.MethodHandlePtr left, NativeIntSource.MethodHandlePtr right -> left = right
             | NativeIntSource.FieldHandlePtr left, NativeIntSource.FieldHandlePtr right -> left = right
             | NativeIntSource.AssemblyHandle left, NativeIntSource.AssemblyHandle right -> left = right
@@ -197,6 +213,8 @@ type NativeIntSource =
             | NativeIntSource.TypeHandlePtr _, _
             | NativeIntSource.MethodTablePtr _, _
             | NativeIntSource.MethodTableAuxiliaryDataPtr _, _
+            | NativeIntSource.PerInstInfoPtr _, _
+            | NativeIntSource.PerInstDictPtr _, _
             | NativeIntSource.MethodHandlePtr _, _
             | NativeIntSource.FieldHandlePtr _, _
             | NativeIntSource.AssemblyHandle _, _
@@ -226,6 +244,8 @@ type NativeIntSource =
         | NativeIntSource.TypeHandlePtr ptr -> HashCode.Combine (3, ptr)
         | NativeIntSource.MethodTablePtr ptr -> HashCode.Combine (4, ptr)
         | NativeIntSource.MethodTableAuxiliaryDataPtr ptr -> HashCode.Combine (5, ptr)
+        | NativeIntSource.PerInstInfoPtr ptr -> HashCode.Combine (18, ptr)
+        | NativeIntSource.PerInstDictPtr ptr -> HashCode.Combine (19, ptr)
         | NativeIntSource.MethodHandlePtr ptr -> HashCode.Combine (6, ptr)
         | NativeIntSource.FieldHandlePtr ptr -> HashCode.Combine (7, ptr)
         | NativeIntSource.AssemblyHandle name -> HashCode.Combine (8, name)
@@ -260,6 +280,8 @@ module NativeIntSource =
         | NativeIntSource.TypeHandlePtr _
         | NativeIntSource.MethodTablePtr _
         | NativeIntSource.MethodTableAuxiliaryDataPtr _
+        | NativeIntSource.PerInstInfoPtr _
+        | NativeIntSource.PerInstDictPtr _
         | NativeIntSource.GcHandlePtr _
         | NativeIntSource.EventPipeProviderPtr _
         | NativeIntSource.EventPipeEventPtr _
@@ -286,6 +308,8 @@ module NativeIntSource =
         | NativeIntSource.TypeHandlePtr _
         | NativeIntSource.MethodTablePtr _
         | NativeIntSource.MethodTableAuxiliaryDataPtr _
+        | NativeIntSource.PerInstInfoPtr _
+        | NativeIntSource.PerInstDictPtr _
         | NativeIntSource.GcHandlePtr _
         | NativeIntSource.EventPipeProviderPtr _
         | NativeIntSource.EventPipeEventPtr _
@@ -325,6 +349,12 @@ type CliRuntimePointer =
     | MethodRegistryHandle of int64
     | MethodTablePtr of ConcreteTypeHandle
     | MethodTableAuxiliaryDataPtr of RuntimeTypeHandleTarget
+    /// See `NativeIntSource.PerInstInfoPtr`. The eval-stack-flattened
+    /// counterpart is `NativeIntSource.PerInstInfoPtr`.
+    | PerInstInfoPtr of ConcreteTypeHandle
+    /// See `NativeIntSource.PerInstDictPtr`. The eval-stack-flattened
+    /// counterpart is `NativeIntSource.PerInstDictPtr`.
+    | PerInstDictPtr of ConcreteTypeHandle
     | Managed of ManagedPointerSource
     /// A GC handle stored in a typed-pointer slot (e.g. `void*`, `T*`). Arithmetic
     /// and comparison operations on this case must go through eval-stack

@@ -21,7 +21,6 @@ module TestPureCases =
             "LdtokenField.cs" // past Buffer's reflection-cache copy (cell-aware path); now blocked on the next reflection-cache step at unimplemented InternalCall RuntimeFieldHandle::GetApproxDeclaringMethodTable
             "InterfaceDispatch.cs" // expected: 0; was: 1024
             "Threads.cs" // past ThreadNative_InformThreadNameChange (Thread.Name setter); now blocked on unimplemented PAL call libSystem.Native!SystemNative_GetLowResolutionTimestamp (.Sys::GetLowResolutionTimestamp, used by the Task/ThreadPool scheduler)
-            "IsAssignableToBasic.cs" // MethodTable field projection for MethodTable::PerInstInfo
         ]
         |> Set.ofList
 

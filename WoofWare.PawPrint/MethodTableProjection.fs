@@ -919,6 +919,42 @@ module internal MethodTableProjection =
                 | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
                     failwith
                         $"MethodTable::ParentMethodTable projection refused for TypeDesc target %O{methodTableFor}: generic parameters have no MethodTable in CoreCLR"
+            | "PerInstInfo" ->
+                // ElementType and PerInstInfo share a FieldOffset on the
+                // CoreCLR struct: only one is meaningful per MethodTable.
+                // PerInstInfo holds a `MethodTable***` that walks the type's
+                // per-instance dictionary table (first dictionary contains
+                // the first generic arg, followed by the canonical
+                // dictionary slots). Only generic instantiations have a
+                // meaningful PerInstInfo; refuse other shapes to keep the
+                // union faithful.
+                match methodTableFor with
+                | RuntimeTypeHandleTarget.Closed handle ->
+                    match handle with
+                    | ConcreteTypeHandle.Concrete _ ->
+                        let concreteType, _ = concreteTypeInfoOrFail state handle
+
+                        if concreteType.Generics.IsEmpty then
+                            failwith
+                                $"MethodTable::PerInstInfo projection refused for non-generic %O{handle}: PerInstInfo is meaningful only for generic instantiations (it aliases ElementType on the MethodTable struct)"
+                        else
+                            Some (CliType.RuntimePointer (CliRuntimePointer.PerInstInfoPtr handle), state)
+                    | ConcreteTypeHandle.OneDimArrayZero _
+                    | ConcreteTypeHandle.Array _ ->
+                        failwith
+                            $"MethodTable::PerInstInfo projection refused for array %O{handle}: arrays carry ElementType in this union slot, not PerInstInfo"
+                    | ConcreteTypeHandle.Byref _
+                    | ConcreteTypeHandle.Pointer _
+                    | ConcreteTypeHandle.FunctionPointer _ ->
+                        failwith
+                            $"MethodTable::PerInstInfo projection refused for TypeDesc-shaped handle %O{handle}: TypeDescs have no MethodTable in CoreCLR"
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
+                    failwith
+                        $"MethodTable::PerInstInfo projection refused for open generic definition %O{methodTableFor}: PerInstInfo is meaningful only for closed instantiations"
+                | RuntimeTypeHandleTarget.GenericParameter _
+                | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
+                    failwith
+                        $"MethodTable::PerInstInfo projection refused for TypeDesc target %O{methodTableFor}: generic parameters have no MethodTable in CoreCLR"
             | _ ->
                 failwith
                     $"TODO: MethodTable field projection for System.Runtime.CompilerServices.MethodTable::{field.Name} on %O{methodTableFor}"

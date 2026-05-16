@@ -100,9 +100,11 @@ module PointerHashSynthesis =
         | NativeIntSource.Verbatim _
         | NativeIntSource.ManagedPointer _
         | NativeIntSource.SyntheticCrossArrayOffset _
-        | NativeIntSource.OpaqueHashBits _ ->
+        | NativeIntSource.OpaqueHashBits _
+        | NativeIntSource.PerInstInfoPtr _
+        | NativeIntSource.PerInstDictPtr _ ->
             failwith
-                $"PointerHashSynthesis.canonicalKey: %O{src} is not a canonicalisable pointer shape; verbatim / managed-pointer / cross-array / already-synthesised values must be handled before reaching this function"
+                $"PointerHashSynthesis.canonicalKey: %O{src} is not a canonicalisable pointer shape; verbatim / managed-pointer / cross-array / already-synthesised values / PerInstInfo chain intermediates must be handled before reaching this function"
 
     /// Low-bit pattern required for a canonical key. Mirrors
     /// `NullaryIlOp.typeHandleLowAddressBits`: MethodTable* is aligned
