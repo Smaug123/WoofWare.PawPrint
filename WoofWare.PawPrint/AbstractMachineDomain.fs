@@ -62,3 +62,16 @@ type LowLevelMonitorId =
     override this.ToString () =
         match this with
         | LowLevelMonitorId.LowLevelMonitorId i -> $"<low-level monitor #%i{i}>"
+
+/// Opaque handle for a Win32-shaped wait handle (semaphore today; event/mutex
+/// in future PRs) minted by the `CreateSemaphoreExW` / `CreateEventExW` /
+/// `CreateMutexExW` QCalls. Round-trips through guest code as an `IntPtr` (see
+/// `NativeIntSource.WaitHandlePtr`), wrapped by the BCL in a `SafeWaitHandle`.
+/// Globally scoped within the `IlMachineState`; never reused after `CloseHandle`
+/// so that use-after-free is caught at the use site.
+type WaitHandleId =
+    | WaitHandleId of int
+
+    override this.ToString () =
+        match this with
+        | WaitHandleId.WaitHandleId i -> $"<wait handle #%i{i}>"

@@ -45,6 +45,16 @@ type ThreadStatus =
     /// re-owning the lock. Parallel with `BlockedOnMonitorWait` but for managed
     /// SyncBlocks rather than `LowLevelMonitor`.
     | BlockedOnSyncBlockWait of lockObject : ManagedHeapAddress
+    /// This thread called `WaitHandle.WaitOne` (via the `WaitHandle_WaitOneCore`
+    /// QCall) on a wait handle whose count was zero / unsignalled, and is
+    /// parked at the handle's FIFO `WaitQueue`. A subsequent state change that
+    /// produces a wake (semaphore `Release`, event `Set`, mutex unlock) flips
+    /// the head of the queue back to `Runnable`; the IL `WaitOne` call site
+    /// has already advanced past itself, so when the scheduler picks the woken
+    /// thread it resumes with `WAIT_OBJECT_0` already on the evaluation stack.
+    /// Single-handle blocking only; multi-handle wait will need a separate
+    /// variant carrying a list plus a wait-all/wait-any flag.
+    | BlockedOnWaitHandle of handle : WaitHandleId
     /// This thread has executed its final `ret`; it will never run again. Its state is kept
     /// only so other threads can observe termination (e.g. to satisfy Join).
     | Terminated
