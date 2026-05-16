@@ -1749,7 +1749,18 @@ module IlMachineRuntimeMetadata =
                 else
 
                 match currentTypeInfo.BaseType with
-                | None -> state, false
+                | None ->
+                    // Interfaces (and System.Object itself) carry no `extends` clause, so
+                    // `BaseType` is `None` in metadata. Every reference type is assignable
+                    // to System.Object, so mirror the closed oracle's `walkBase` fallback
+                    // (lines 1183-1187): when the chain runs out, accept iff the target is
+                    // System.Object. Open generic *classes* and *structs* never hit this
+                    // branch — their metadata BaseType is always System.Object or
+                    // System.ValueType — so in practice this fires for open interfaces with
+                    // no further parent interfaces.
+                    match t with
+                    | ConcreteActivePatterns.ConcreteObj state.ConcreteTypes -> state, true
+                    | _ -> state, false
                 | Some baseTypeInfo ->
                     let state, baseAssy, baseTypeDefn =
                         resolveBaseTypeInfo loggerFactory baseClassTypes state currentAssy baseTypeInfo
