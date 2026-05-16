@@ -616,31 +616,88 @@ module IlMachineRuntimeMetadata =
         | None when String.IsNullOrEmpty ty.Namespace -> ty.Name
         | None -> $"{ty.Namespace}.{ty.Name}"
 
+    /// `Type.Name` for the BCL primitive types — CoreCLR's stack-trace rendering emits these
+    /// rather than the IL keyword forms (e.g. `"Int32"`, not `"int32"`).
+    let private primitiveBclName (pt : PrimitiveType) : string =
+        match pt with
+        | PrimitiveType.Boolean -> "Boolean"
+        | PrimitiveType.Char -> "Char"
+        | PrimitiveType.SByte -> "SByte"
+        | PrimitiveType.Byte -> "Byte"
+        | PrimitiveType.Int16 -> "Int16"
+        | PrimitiveType.UInt16 -> "UInt16"
+        | PrimitiveType.Int32 -> "Int32"
+        | PrimitiveType.UInt32 -> "UInt32"
+        | PrimitiveType.Int64 -> "Int64"
+        | PrimitiveType.UInt64 -> "UInt64"
+        | PrimitiveType.Single -> "Single"
+        | PrimitiveType.Double -> "Double"
+        | PrimitiveType.String -> "String"
+        | PrimitiveType.TypedReference -> "TypedReference"
+        | PrimitiveType.IntPtr -> "IntPtr"
+        | PrimitiveType.UIntPtr -> "UIntPtr"
+        | PrimitiveType.Object -> "Object"
+
     /// Render a parameter's type using the CLR's stack-trace convention: just `Type.Name`.
     /// `Type.Name` for a constructed generic such as `List<int>` is `"List`1"` — the
     /// instantiation is NOT appended (verified against `typeof(List<int>).Name` in CoreCLR),
     /// so this differs from full reflection name rendering (cf. `NativeRuntimeType.fs`
     /// `concreteTypeHandleName`, which appends `[args]` under FormatNamespace/Assembly).
     /// Array, pointer, and byref wrappers do show up in `Type.Name`, so we render those.
-    /// FIXME: For generic-method/generic-type parameters, CoreCLR renders the formal
-    /// parameter name (e.g. `Foo(T x)`); we lose that here because the concretized
-    /// signature has already substituted in the concrete handle. Switching to
-    /// `RawSignature` plus assembly-side generic-param metadata is a separate change.
-    let rec private renderParameterTypeName (state : IlMachineState) (handle : ConcreteTypeHandle) : string =
-        match handle with
-        | ConcreteTypeHandle.Byref inner -> renderParameterTypeName state inner + "&"
-        | ConcreteTypeHandle.Pointer inner -> renderParameterTypeName state inner + "*"
-        | ConcreteTypeHandle.OneDimArrayZero inner -> renderParameterTypeName state inner + "[]"
-        | ConcreteTypeHandle.Array (inner, rank) ->
+    ///
+    /// Generic-method and generic-type parameter references resolve to the parameter's
+    /// declared name (e.g. `TC`, `TM`) via the supplied name arrays. This mirrors
+    /// CoreCLR — stack frames captured for shared-generic JITted code keep the formal
+    /// parameter names rather than the call-site substitution, so a call to
+    /// `Container<int>.Throw<string>(int, string)` renders as `Throw[TM](TC c, TM m)`.
+    let rec private renderTypeDefnForStackFrame
+        (state : IlMachineState)
+        (typeGenericNames : string array)
+        (methodGenericNames : string array)
+        (ty : TypeDefn)
+        : string
+        =
+        let recurse = renderTypeDefnForStackFrame state typeGenericNames methodGenericNames
+
+        match ty with
+        | TypeDefn.PrimitiveType pt -> primitiveBclName pt
+        | TypeDefn.Void -> "Void"
+        | TypeDefn.Byref inner -> recurse inner + "&"
+        | TypeDefn.Pointer inner -> recurse inner + "*"
+        | TypeDefn.OneDimensionalArrayLowerBoundZero inner -> recurse inner + "[]"
+        | TypeDefn.Array (inner, rank) ->
             let dims = if rank <= 1 then "*" else System.String (',', rank - 1)
-            renderParameterTypeName state inner + "[" + dims + "]"
+            recurse inner + "[" + dims + "]"
+        | TypeDefn.Pinned inner -> recurse inner
+        // Modified types: render the underlying (post-modifier) type so optional/required
+        // custom modifiers (e.g. `modreq IsExternalInit`) don't leak into the printed name.
+        | TypeDefn.Modified (_, afterMod, _) -> recurse afterMod
+        // CLR `Type.Name` on `List<int>` is `"List`1"`; the instantiation is dropped.
+        | TypeDefn.GenericInstantiation (generic, _args) -> recurse generic
+        | TypeDefn.GenericTypeParameter index ->
+            if index >= 0 && index < typeGenericNames.Length then
+                typeGenericNames.[index]
+            else
+                // The signature referenced a type-generic position the declaring type
+                // doesn't declare — bad metadata. Render a debuggable placeholder rather
+                // than crash the stack-trace path.
+                $"!{index}"
+        | TypeDefn.GenericMethodParameter index ->
+            if index >= 0 && index < methodGenericNames.Length then
+                methodGenericNames.[index]
+            else
+                $"!!{index}"
+        | TypeDefn.FromReference (typeRef, _) -> typeRef.Name
+        | TypeDefn.FromDefinition (identity, _) ->
+            match state.LoadedAssembly identity.Assembly with
+            | None -> "<unresolved>"
+            | Some assy ->
+                match assy.TypeDefs.TryGetValue identity.TypeDefinition.Get with
+                | true, ti -> ti.Name
+                | false, _ -> "<unresolved>"
         // CoreCLR's TypeString::AppendType emits the empty string for FnPtr when FormatNamespace
         // is unset; stack-trace parameter rendering uses the no-namespace form, so match that.
-        | ConcreteTypeHandle.FunctionPointer _ -> ""
-        | ConcreteTypeHandle.Concrete _ ->
-            match AllConcreteTypes.lookup handle state.ConcreteTypes with
-            | None -> "<unresolved>"
-            | Some ct -> ct.Name
+        | TypeDefn.FunctionPointer _ -> ""
 
     let private renderExceptionStackFrame
         (state : IlMachineState)
@@ -649,6 +706,35 @@ module IlMachineRuntimeMetadata =
         =
         let typeName = concreteTypeFullName state frame.Method.DeclaringType
 
+        // The method's defining assembly is the assembly that contains its declaring type;
+        // both the type-level and the method-level generic-parameter names live in there.
+        let declaringAssembly = state.LoadedAssembly frame.Method.DeclaringType.Assembly
+
+        let typeGenericNames : string array =
+            match declaringAssembly with
+            | None -> Array.empty
+            | Some assy ->
+                match assy.TypeDefs.TryGetValue frame.Method.DeclaringType.Definition.Get with
+                | true, ti -> ti.Generics |> Seq.map (fun (gp, _) -> gp.Name) |> Seq.toArray
+                | false, _ -> Array.empty
+
+        let methodGenericNames : string array =
+            match declaringAssembly with
+            | None -> Array.empty
+            | Some assy ->
+                match assy.Methods.TryGetValue frame.Method.Handle with
+                | true, m -> m.Generics |> Seq.map (fun (gp, _) -> gp.Name) |> Seq.toArray
+                | false, _ -> Array.empty
+
+        // CoreCLR renders the method's generic argument list as `[T1,T2]` (comma-separated,
+        // no space) between the method name and the parameter list. Non-generic methods get
+        // no `[...]` suffix at all.
+        let methodGenericsText =
+            if methodGenericNames.Length = 0 then
+                ""
+            else
+                "[" + (methodGenericNames |> String.concat ",") + "]"
+
         // Metadata Parameters skip SequenceNumber=0 (`this` / ref return), so signature index `i`
         // pairs with the parameter whose SequenceNumber is `i + 1` regardless of static-ness.
         let parameterByPosition =
@@ -656,10 +742,14 @@ module IlMachineRuntimeMetadata =
             |> Seq.map (fun p -> p.SequenceNumber, p.Name)
             |> Map.ofSeq
 
+        // Walk the raw (TypeDefn) signature rather than the concretized one so
+        // `GenericTypeParameter`/`GenericMethodParameter` references survive to render
+        // as their formal names (`TC`, `TM`, etc.).
         let paramText =
-            frame.Method.Signature.ParameterTypes
+            frame.Method.RawSignature.ParameterTypes
             |> List.mapi (fun i ty ->
-                let typeStr = renderParameterTypeName state ty
+                let typeStr =
+                    renderTypeDefnForStackFrame state typeGenericNames methodGenericNames ty
 
                 match Map.tryFind (i + 1) parameterByPosition with
                 | Some name when not (String.IsNullOrEmpty name) -> $"%s{typeStr} %s{name}"
@@ -667,7 +757,7 @@ module IlMachineRuntimeMetadata =
             )
             |> String.concat ", "
 
-        $"   at %s{typeName}.%s{frame.Method.Name}(%s{paramText})"
+        $"   at %s{typeName}.%s{frame.Method.Name}%s{methodGenericsText}(%s{paramText})"
 
     let private renderExceptionStackTrace
         (state : IlMachineState)
