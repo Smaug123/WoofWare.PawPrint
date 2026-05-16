@@ -218,23 +218,37 @@ module internal IntrinsicHelpers =
 
         let tSize = CliType.sizeOf tZero
 
+        // `Unsafe.AsRef<T>((void*)bits)` byrefs are bit patterns, not
+        // anchored byrefs. `Unsafe.Add<T>(ref placeholder, n)` advances
+        // by `n * sizeof(T)` bytes; if the result lands on zero,
+        // normalise to Null so `IsNullRef` agrees with the bit-pattern
+        // definition (mirrors `BinaryArithmetic.addInt32ManagedPtr`).
+        // `Null` is the bit pattern `0`, so adding to it must follow the
+        // same bit-arithmetic route — otherwise a chained
+        // `Unsafe.Add(Unsafe.Add(placeholder, -n), n)` whose middle step
+        // normalised to `Null` would fall into the byref path and try to
+        // project off a null managed pointer.
+        let placeholderBits =
+            match src with
+            | EvalStackValue.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits) -> Some bits
+            | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> Some 0L
+            | _ -> None
+
+        match placeholderBits with
+        | Some bits ->
+            let newBits = bits + int64 offset * int64 tSize
+
+            let ptrSrc =
+                if newBits = 0L then
+                    ManagedPointerSource.Null
+                else
+                    ManagedPointerSource.NativeIntPlaceholder newBits
+
+            EvalStackValue.ManagedPointer ptrSrc, state
+        | None ->
+
         let ptr : EvalStackValue =
             match src with
-            | EvalStackValue.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits) ->
-                // `Unsafe.AsRef<T>((void*)bits)` byrefs are bit patterns, not
-                // anchored byrefs. `Unsafe.Add<T>(ref placeholder, n)` advances
-                // by `n * sizeof(T)` bytes; if the result lands on zero,
-                // normalise to Null so `IsNullRef` agrees with the bit-pattern
-                // definition (mirrors `BinaryArithmetic.addInt32ManagedPtr`).
-                let newBits = bits + int64 offset * int64 tSize
-
-                let src =
-                    if newBits = 0L then
-                        ManagedPointerSource.Null
-                    else
-                        ManagedPointerSource.NativeIntPlaceholder newBits
-
-                EvalStackValue.ManagedPointer src
             | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs)) ->
                 let arrElementSize =
                     let arrObj = state.ManagedHeap.Arrays.[arr]

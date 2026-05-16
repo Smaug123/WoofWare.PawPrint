@@ -254,11 +254,6 @@ module EvalStackValue =
                 failwith $"Conv_U: refusing to convert metadata import handle %s{moduleName} to unsigned native int"
             | NativeIntSource.OpaqueHashBits bits -> UnsignedNativeIntSource.FromOpaqueHashBits bits |> Some
         | EvalStackValue.Float f -> convUFromFloat f |> UnsignedNativeIntSource.Verbatim |> Some
-        | EvalStackValue.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits) ->
-            // `Unsafe.AsRef<T>((void*)bits)` byrefs are bit patterns. Round-
-            // tripping through `conv.u` (e.g. inside `fixed (T* p = &…)`) must
-            // recover the original literal so `(nint)p == bits` succeeds.
-            uint64 bits |> UnsignedNativeIntSource.Verbatim |> Some
         | EvalStackValue.ManagedPointer managedPointerSource ->
             UnsignedNativeIntSource.FromManagedPointer managedPointerSource |> Some
         | EvalStackValue.NullObjectRef ->
@@ -285,11 +280,6 @@ module EvalStackValue =
         | EvalStackValue.Int32 i -> i |> convIFromInt32 |> NativeIntSource.Verbatim |> Some
         | EvalStackValue.NativeInt src -> Some src
         | EvalStackValue.Float f -> f |> convIFromFloat |> NativeIntSource.Verbatim |> Some
-        | EvalStackValue.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits) ->
-            // See `toUnsignedNativeInt`: placeholders ARE bit patterns; preserve
-            // them as verbatim native ints so the documented `conv.u`/`conv.i`
-            // round-trip from `Unsafe.AsRef<T>(void*)` recovers the literal.
-            NativeIntSource.Verbatim bits |> Some
         | EvalStackValue.ManagedPointer ptr -> NativeIntSource.ManagedPointer ptr |> Some
         | EvalStackValue.NullObjectRef -> ManagedPointerSource.Null |> NativeIntSource.ManagedPointer |> Some
         | EvalStackValue.ObjectRef _
@@ -357,10 +347,6 @@ module EvalStackValue =
             // `Conv.I8 → … → Conv.I` round-trip.
             Some (Int64Source.widenedNativeInt src true)
         | EvalStackValue.Float f -> convI8FromFloat f |> Int64Source.Verbatim |> Some
-        | EvalStackValue.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits) ->
-            // Placeholders ARE bit patterns; widening to int64 is verbatim, not
-            // a provenance-carrying wrap (see toUnsignedNativeInt/toNativeInt).
-            Int64Source.Verbatim bits |> Some
         | EvalStackValue.ManagedPointer ptr ->
             // Same rationale as the NativeInt arm: keep the pointer's provenance
             // as a widened-native-int so a subsequent `Conv.U` / `Conv.I`
@@ -378,9 +364,6 @@ module EvalStackValue =
         | EvalStackValue.Int64 i -> Some i
         | EvalStackValue.NativeInt src -> Some (Int64Source.widenedNativeInt src false)
         | EvalStackValue.Float f -> convU8FromFloat f |> Int64Source.Verbatim |> Some
-        | EvalStackValue.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits) ->
-            // Mirrors `convToInt64`: placeholders widen as verbatim bits.
-            Int64Source.Verbatim bits |> Some
         | EvalStackValue.ManagedPointer ptr ->
             Some (Int64Source.widenedNativeInt (NativeIntSource.ManagedPointer ptr) false)
         | EvalStackValue.NullObjectRef ->

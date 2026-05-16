@@ -463,15 +463,6 @@ module Intrinsics =
 
             let toPush =
                 match arg with
-                | EvalStackValue.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits) ->
-                    // The placeholder *is* a native-int bit pattern; the original
-                    // `Unsafe.AsRef<T>(void* source)` round-trip is documented to
-                    // recover `source`. Surface those bits as a verbatim native
-                    // pointer so subsequent `conv.u`/`(IntPtr)` casts and direct
-                    // comparisons (`p == (void*)1`) see the raw value rather
-                    // than a managed-pointer wrapper that no other operand
-                    // shape can match.
-                    CliRuntimePointer.Verbatim bits
                 | EvalStackValue.ManagedPointer ptr -> CliRuntimePointer.Managed ptr
                 | x -> failwith $"TODO: Unsafe.AsPointer(%O{x})"
 
@@ -1961,10 +1952,20 @@ module Intrinsics =
             // `Unsafe.AsRef<T>((void*)bits)` byrefs are bit patterns, not
             // anchored byrefs. `Unsafe.AddByteOffset` on a placeholder is just
             // bit addition; appending a `ReinterpretAs` would be meaningless on
-            // a target that doesn't represent memory. Normalise zero to Null so
-            // `IsNullRef` agrees with the CLR's bit-pattern definition.
-            match srcPtr with
-            | ManagedPointerSource.NativeIntPlaceholder bits ->
+            // a target that doesn't represent memory. `Null` is the bit pattern
+            // `0` (we normalise placeholder→Null on zero), so an offset from
+            // `Null` must use the same bit-arithmetic route — otherwise the
+            // chain `placeholder + (-bits)` (which normalises to `Null`) +
+            // another `AddByteOffset` would fall into the byref path and try
+            // to project off a null managed pointer.
+            let placeholderBits =
+                match srcPtr with
+                | ManagedPointerSource.NativeIntPlaceholder bits -> Some bits
+                | ManagedPointerSource.Null -> Some 0L
+                | _ -> None
+
+            match placeholderBits with
+            | Some bits ->
                 let newBits = bits + int64 offset
 
                 let ptr =
@@ -1977,7 +1978,7 @@ module Intrinsics =
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
                 |> Some
-            | _ ->
+            | None ->
 
             // `addByteOffsetUnderReinterpret` anchors the byte cursor under `ReinterpretAs T`
             // before appending the offset, so it works regardless of whether the source byref

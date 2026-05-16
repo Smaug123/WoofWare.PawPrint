@@ -483,6 +483,17 @@ module EvalStackValueComparisons =
                     "native-int-wrapped byref"
                     (ManagedPointerSource.unsafeAssumeNormalisedForComparison f1)
                     (ManagedPointerSource.unsafeAssumeNormalisedForComparison f2)
+            // `Unsafe.AsRef<T>((void*)bits)` placeholders ARE bit patterns
+            // (see ManagedPointerSource.NativeIntPlaceholder). A `conv.u` of
+            // such a placeholder widens to `NativeIntSource.ManagedPointer`,
+            // and a literal cast to `(nint)` produces `NativeIntSource.Verbatim`;
+            // both shapes encode the same address bits, so CEQ must equate
+            // them when the bits match. This is the BCL `(nint)Unsafe.AsPointer(ref p) == 1`
+            // pattern that empty-span code relies on.
+            | NativeIntSource.Verbatim n,
+              NativeIntSource.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits)
+            | NativeIntSource.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits),
+              NativeIntSource.Verbatim n -> n = bits
             | NativeIntSource.Verbatim _, NativeIntSource.ManagedPointer _
             | NativeIntSource.ManagedPointer _, NativeIntSource.Verbatim _
             | NativeIntSource.SyntheticCrossArrayOffset _, NativeIntSource.ManagedPointer _
