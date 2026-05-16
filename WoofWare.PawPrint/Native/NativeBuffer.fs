@@ -131,24 +131,52 @@ module NativeBuffer =
             srcOffset < destOffset && destOffset < srcOffset + int64 byteCount
         | _ -> false
 
+    /// All residual projections must be plain `Field` projections. The
+    /// fast-path uses `readManagedByref` on the residual, which dispatches
+    /// through `readProjectedValue`: that helper supports `Field` cleanly,
+    /// short-circuits `ReinterpretAs` only for same-width primitive families
+    /// (and throws otherwise), and unconditionally throws on `ByteOffset`.
+    /// Allowing interior `ReinterpretAs` here would turn the fast path into
+    /// a host failure for shapes the byte-walk fallback would otherwise
+    /// service (e.g. a byte view built from a non-trailing `ReinterpretAs`
+    /// such as `Unsafe.As<int, S>(ref arr[0]).B`), so the fast path
+    /// declines and lets the byte-walk peel the projection.
+    let private isPlainResidual (projs : ByrefProjection list) : bool =
+        projs
+        |> List.forall (fun proj ->
+            match proj with
+            | ByrefProjection.Field _ -> true
+            | ByrefProjection.ReinterpretAs _
+            | ByrefProjection.ByteOffset _ -> false
+        )
+
     /// Strip a trailing byte-view suffix (`[..., ReinterpretAs _]` or
     /// `[..., ReinterpretAs _; ByteOffset n]`) and return the residual byref
-    /// together with the intra-cell byte offset. Returns `None` for
-    /// non-Byref pointers or for byrefs whose trailing projections are not a
-    /// clean byte-view suffix (e.g. a trailing `Field` or `ByteOffset`
-    /// without a preceding `ReinterpretAs` — the latter would already be an
-    /// interpreter-bug shape).
+    /// together with the intra-cell byte offset. Returns `None` for non-Byref
+    /// pointers, for byrefs whose trailing projections are not a clean
+    /// byte-view suffix (e.g. a trailing `Field` or `ByteOffset` without a
+    /// preceding `ReinterpretAs` — the latter would already be an
+    /// interpreter-bug shape), or for byrefs whose residual after stripping
+    /// would still contain an interior `ReinterpretAs` / `ByteOffset`
+    /// projection (see `isPlainResidual` for why those must fall back to the
+    /// byte-walk).
     let private inCellOffsetAndStripByteView (ptr : ManagedPointerSource) : (ManagedPointerSource * int) option =
+        let tryReturn (root : ByrefRoot) (residualRev : ByrefProjection list) (inCellOffset : int) =
+            let residual = List.rev residualRev
+
+            if isPlainResidual residual then
+                Some (ManagedPointerSource.Byref (root, residual), inCellOffset)
+            else
+                None
+
         match ptr with
         | ManagedPointerSource.Null
         | ManagedPointerSource.NativeIntPlaceholder _ -> None
         | ManagedPointerSource.Byref (root, projs) ->
             match List.rev projs with
             | [] -> Some (ptr, 0)
-            | ByrefProjection.ByteOffset n :: ByrefProjection.ReinterpretAs _ :: revRest ->
-                Some (ManagedPointerSource.Byref (root, List.rev revRest), n)
-            | ByrefProjection.ReinterpretAs _ :: revRest ->
-                Some (ManagedPointerSource.Byref (root, List.rev revRest), 0)
+            | ByrefProjection.ByteOffset n :: ByrefProjection.ReinterpretAs _ :: revRest -> tryReturn root revRest n
+            | ByrefProjection.ReinterpretAs _ :: revRest -> tryReturn root revRest 0
             | _ -> None
 
     /// True when copying the src cell wholesale into the dest cell would
