@@ -71,10 +71,12 @@
     <Compile Include="TestSyncBlockMonitor.fs" />
     <Compile Include="TestPureCases.fs" />
     <Compile Include="TestImpureCases.fs" />
+    <Compile Include="TestRaces.fs" />
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="sourcesPure\*.cs" />
     <EmbeddedResource Include="sourcesImpure\*.cs" />
+    <EmbeddedResource Include="sources\*.cs" />
   </ItemGroup>
 
   <ItemGroup>
