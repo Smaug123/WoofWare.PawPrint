@@ -19,19 +19,19 @@ module TestPureCases =
         [
             "MultiDimensionalArrays.cs" // `int[,]` lowers to calls on the synthetic instance methods `Set(int,int,int)`/`Get(int,int)`/`Address(int,int)`/`.ctor(int,int)` of the array type, which the runtime does not yet synthesise
             "AdvancedStructLayout.cs" // past MarshalNative_SizeOfHelper for ByValTStr and SystemNative_Malloc / SystemNative_Free / Marshal.AllocHGlobal / FreeHGlobal; now blocked downstream at the unimplemented MarshalNative_TryGetStructMarshalStub QCall (CoreLib's Marshal.StructureToPtr path)
-            "MarshalSizeOfAutoLayoutStruct.cs" // marshal walker correctly rejects `[StructLayout(LayoutKind.Auto)]` at top level (see CliValueType.IsAutoLayout), but `MarshalNative_SizeOfHelper` in `Native/NativeMarshal.fs` currently turns the `Result.Error` into a host `failwith` rather than raising a managed `ArgumentException`. Needs the QCall handler to translate marshal-size failures into a guest-side ArgumentException throw (CoreCLR `marshalnative.cpp:169` `COMPlusThrow(kArgumentException, IDS_CANNOT_MARSHAL, ...)`).
+            "MarshalSizeOfAutoLayoutStruct.cs" // refusing to compute unmanaged marshalled size because LayoutKind.Auto but throwIfNotMarshalable=true
             "LdtokenField.cs" // past InternalCall System.Buffer::BulkMoveWithWriteBarrierInternal; now blocked during reflection-cache update because Buffer's byte-wise copy refuses to byte-view object-reference array cells (`validateByteAddressableCell` rejects ObjectRef storage)
             "RuntimeFieldHandleGetUtf8Name.cs" // exercises RuntimeFieldHandle::GetUtf8NameInternal, RuntimeTypeHandle::GetInterfaces, and Volatile.Write of object refs successfully; now blocked at the next step in the reflection-cache copy by `validateByteAddressableCell` refusing to byte-view object-reference cells inside Buffer::BulkMoveWithWriteBarrierInternal
             "RuntimeTypeGetInterfacesInherited.cs" // exercises the QCall's inherited-base + transitive-interface walk; now blocked during the reflection-cache update by `validateByteAddressableCell` refusing to byte-view object-reference cells inside Buffer::BulkMoveWithWriteBarrierInternal
-            "IsAssignableFromOpenGenericDefinition.cs" // TypeHandle::CanCastTo_NoCacheLookup handler currently TODO-fails on non-Closed RuntimeTypeHandleTargets (open generic definitions, generic parameters, method generic parameters); needs TypeDesc::CanCastTo modelling to return CoreCLR's answer rather than throwing
-            "InterfaceDispatch.cs" // past MetadataImport::GetCustomAttributeProps; now blocked by unimplemented InternalCall MetadataImport::GetParentToken
-            "ComplexTryCatch.cs" // blocked after Unsafe.IsNullRef by unimplemented QCall!AssemblyNative_GetResource
-            "RethrowStackTraceBoundary.cs" // stack trace rendering lacks CLR inner-exception boundary and parameterised frames
+            "IsAssignableFromOpenGenericDefinition.cs" // TypeHandle.CanCastTo_NoCacheLookup for open generic
+            "InterfaceDispatch.cs" // expected: 0; was: 1024
+            "ComplexTryCatch.cs" // refusing byte view over value type containing object references in an array
+            "RethrowStackTraceBoundary.cs" // expected: 0; was: 11
             "Threads.cs" // blocked by pointer arithmetic over a generated Data field after Interlocked.CompareExchange
-            "IsAssignableToBasic.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringTypeHandle
+            "IsAssignableToBasic.cs" // MethodTable field projection for MethodTable::PerInstInfo
             "RuntimeTypeHandleGetInstantiationOpenGeneric.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringMethodForGenericParameter
-            "ActivatorCreateInstanceThrowingCtor.cs" // Activator.CreateInstance<T>() does not wrap the ctor's exception in TargetInvocationException. CoreCLR's RuntimeType.CreateInstanceOfT (RuntimeType.CoreCLR.cs:4045-4048) wraps; the PawPrint intrinsic in `tryHandleActivatorCreateInstance` just recurses into callMethod and lets the raw exception propagate. Fix needs a ctor-frame marker so the exception dispatcher can rethrow wrapped, plus a host helper to construct the TargetInvocationException.
-            "IndirectMemoryOperations.cs" // TestIndirectNativeInt now passes (Conv_U/Conv_I anchor a ReinterpretAs T projection on plain array byrefs so subsequent pointer arithmetic is byte-stride per ECMA-335 §III.1.5); now blocked at TestIndirectInt8 by the pre-existing `Ldelem_i1` TODO at NullaryIlOp.fs (`arr[2]` access on `sbyte[]` after pinned-pointer writes)
+            "ActivatorCreateInstanceThrowingCtor.cs" // Expected: 0; was: 3
+            "IndirectMemoryOperations.cs" // raise IndexOutOfRangeException: array index 8 >= length 3 on array
         ]
         |> Set.ofList
 
