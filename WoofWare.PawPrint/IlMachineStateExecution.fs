@@ -1563,9 +1563,6 @@ module IlMachineStateExecution =
     /// storable. Value-typed-element arrays bypass the gate: there is no covariance
     /// for value types, the verifier rejects mismatching value-store opcodes at
     /// load time, and primitive coercion is handled by `EvalStackValue.toCliTypeCoerced`.
-    /// (ECMA-335 also recognises a primitive-equivalence rule, e.g. `int[]` /
-    /// `uint[]`, which is intentionally not modelled yet — see the TODO at
-    /// `IlMachineRuntimeMetadata.checkArraySpecificRules`.)
     let checkArrayStoreVariance
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -1615,41 +1612,17 @@ module IlMachineStateExecution =
         | EvalStackValue.ObjectRef addr ->
             let valueRuntimeType = ManagedHeap.getObjectConcreteType addr state.ManagedHeap
 
-            // `isConcreteTypeAssignableTo` still `failwith`s on one remaining
-            // combination it doesn't yet model: `walk` traversing a Concrete
-            // type whose definition has variant generic parameters (the
-            // `TODO: generic variance check needed` site in
-            // IlMachineRuntimeMetadata). This arises from legitimate covariant
-            // assignments like `Func<int>` into a `Func<int>[]` element when
-            // other instantiations also exist. Before this gate such stores
-            // silently succeeded — they don't go through any assignability
-            // check at all in the previous code. Turning them into host
-            // failures would regress previously-working programs, so we
-            // degrade to "permit" when the walk can't reach a definitive
-            // answer. The variance gate is therefore best-effort until that
-            // remaining TODO is implemented; at that point this try/with can
-            // be removed and the check becomes precise. The array-source →
-            // generic-interface case (e.g. `string[]` into `IEnumerable<T>[]`
-            // element) is now precise via the SZ-array implicit-interface
-            // carve-out implemented in `isConcreteTypeAssignableTo`.
-            let state, decision =
-                try
-                    let state, isAssignable =
-                        IlMachineState.isConcreteTypeAssignableTo
-                            loggerFactory
-                            baseClassTypes
-                            state
-                            valueRuntimeType
-                            storedElement
+            let state, isAssignable =
+                IlMachineState.isConcreteTypeAssignableTo
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    valueRuntimeType
+                    storedElement
 
-                    state, ValueSome isAssignable
-                with ex when ex.Message.StartsWith "TODO:" ->
-                    state, ValueNone
-
-            match decision with
-            | ValueNone
-            | ValueSome true -> ArrayStoreVarianceCheck.Allowed state
-            | ValueSome false ->
+            if isAssignable then
+                ArrayStoreVarianceCheck.Allowed state
+            else
                 let state, _whatWeDid =
                     raiseRuntimeException
                         loggerFactory
