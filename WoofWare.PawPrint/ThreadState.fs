@@ -89,6 +89,18 @@ type ThreadState =
         /// preserving round-trip semantics for guest code that reads back
         /// `Thread.IsBackground`. Default `false` matches the BCL.
         IsBackground : bool
+        /// Diagnostic mirror of the thread's name, populated when the guest
+        /// invokes the `ThreadNative_InformThreadNameChange` QCall (i.e. via
+        /// the managed `Thread.Name` setter). The canonical name lives in the
+        /// managed `Thread._name` field; the BCL getter reads that field
+        /// directly without consulting us, so this mirror is *not* an
+        /// authoritative source for guest reads. It exists so PawPrint's
+        /// debugger, tracing, and snapshot tooling can surface a thread's
+        /// name without walking heap fields. Reflection-based writes to
+        /// `_name` would not update this mirror, but such drift is invisible
+        /// to guests because they read `_name`, not this field. `None` means
+        /// the guest has either never set the name or has cleared it.
+        Name : string option
     }
 
     // --- Frame resolution primitives ---
@@ -165,6 +177,7 @@ type ThreadState =
             NextFrameId = 1
             Status = ThreadStatus.Runnable
             IsBackground = false
+            Name = None
         }
 
     static member peekEvalStack (state : ThreadState) : EvalStackValue option =

@@ -260,6 +260,47 @@ module NativeCall =
 
             loop 0 []
 
+    /// Read exactly `length` UTF-16 code units from `ptr`, returning the resulting
+    /// `string`. Counterpart to `readNullTerminatedUtf16` for callers whose source
+    /// passes an explicit length alongside the pointer (e.g. the
+    /// `ThreadNative_InformThreadNameChange` QCall, whose CoreCLR signature is
+    /// `(ThreadHandle, char* name, int32 len) -> void`).
+    ///
+    /// `length = 0` returns `""` even when `ptr` is `Null`: that matches what the
+    /// BCL hands us when the guest clears `Thread.Name` (it passes a null pointer
+    /// alongside `len = 0` rather than allocating an empty buffer). `length < 0`
+    /// is a guest contract violation and fails loudly. A null pointer with
+    /// `length > 0` is also a contract violation and fails loudly rather than
+    /// dereferencing the null.
+    let readLengthPrefixedUtf16
+        (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (ptr : ManagedPointerSource)
+        (length : int)
+        : string
+        =
+        if length < 0 then
+            failwith $"%s{operation}: UTF-16 length %d{length} is negative"
+        elif length = 0 then
+            ""
+        else
+            match ptr with
+            | ManagedPointerSource.Null ->
+                failwith
+                    $"%s{operation}: cannot read UTF-16 string of length %d{length} from a null pointer; callers must pass length=0 when the pointer is null"
+            | ManagedPointerSource.NativeIntPlaceholder bits ->
+                failwith
+                    $"%s{operation}: cannot read UTF-16 string from fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
+            | ManagedPointerSource.Byref _ ->
+                let charConcreteType = requiredCharConcreteType operation baseClassTypes state
+                let chars = Array.zeroCreate<char> length
+
+                for i in 0 .. length - 1 do
+                    chars.[i] <- readUtf16Char operation baseClassTypes state charConcreteType ptr i
+
+                System.String chars
+
     let requiredByteConcreteType
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)

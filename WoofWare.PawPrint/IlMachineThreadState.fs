@@ -376,6 +376,7 @@ module IlMachineThreadState =
                 ActiveMethodState = FrameId -1
                 Status = ThreadStatus.NotStarted
                 IsBackground = false
+                Name = None
             }
 
         let newState =
