@@ -139,7 +139,7 @@ module internal UnaryMetadataCallOps =
         let typeGenerics = currentMethod.DeclaringType.Generics
         let methodGenerics = currentMethod.Generics
 
-        let state, zeroOfType, elementHandle =
+        let state, zeroOfType, _elementHandle =
             IlMachineState.cliTypeZeroOf
                 loggerFactory
                 baseClassTypes
@@ -149,25 +149,13 @@ module internal UnaryMetadataCallOps =
                 methodGenerics
                 state
 
-        // ECMA-335 III.4.x: covariant array stores raise ArrayTypeMismatchException when
-        // the value is not assignment-compatible with the array's actual element type.
-        // Full assignment compatibility isn't modelled here; we use the conservative check
-        // "metadata element handle equals the array's stored element handle". C# never emits
-        // covariant mdarray Set so the false-positive surface is hand-rolled IL only.
-        let arrayElementHandle =
-            match arrObj.ConcreteType with
-            | ConcreteTypeHandle.Array (h, _) -> h
-            | other -> failwith $"BUG: multi-dim array Set: array at %O{arrAddr} has non-Array ConcreteType %O{other}"
-
-        if elementHandle <> arrayElementHandle then
-            IlMachineStateExecution.raiseRuntimeException
-                loggerFactory
-                baseClassTypes
-                baseClassTypes.ArrayTypeMismatchException
-                thread
-                state
-        else
-
+        // Array covariance check (ECMA-335 III.4.x) is intentionally not modelled here, to
+        // match the szarray `stelem` precedent in UnaryMetadataArrayOps.executeStelem (and the
+        // wider tech debt acknowledged at NullaryIlOp.fs's stelem.ref TODO at line 586). For a
+        // reference array accessed through a base-typed view (e.g. `object[,]` aliasing a
+        // `string[,]`), the metadata-derived element type legitimately differs from the array's
+        // stored element handle, so an exact-handle check would reject valid C# code; the
+        // correct runtime-assignment-compatibility check requires machinery not yet wired in.
         let coerced = EvalStackValue.toCliTypeCoerced zeroOfType value
 
         let state =
