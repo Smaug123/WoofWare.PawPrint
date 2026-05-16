@@ -104,6 +104,11 @@ module DebuggerServer =
             writer.WriteString ("kind", "blockedOnSyncBlockWait")
             writer.WriteNumber ("lockObject", heapAddressValue lockObject)
             writer.WriteEndObject ()
+        | ThreadStatus.BlockedOnWaitHandle (WaitHandleId handle) ->
+            writer.WriteStartObject ()
+            writer.WriteString ("kind", "blockedOnWaitHandle")
+            writer.WriteNumber ("handle", handle)
+            writer.WriteEndObject ()
         | ThreadStatus.Terminated -> writer.WriteStringValue "terminated"
 
     let private writeFrameProperties

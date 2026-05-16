@@ -45,6 +45,7 @@
     <Compile Include="TestFieldHandleRegistry.fs" />
     <Compile Include="TestNativeMetadataImport.fs" />
     <Compile Include="TestNativeSignature.fs" />
+    <Compile Include="TestNativeCustomAttribute.fs" />
     <Compile Include="TestManifestResources.fs" />
     <Compile Include="TestNativeEnum.fs" />
     <Compile Include="TestMethodHandleRegistry.fs" />
@@ -66,6 +67,7 @@
     <Compile Include="TestDebuggerServer.fs" />
     <Compile Include="TestBclIntrinsicStaticFields.fs" />
     <Compile Include="TestLowLevelMonitor.fs" />
+    <Compile Include="TestWaitHandle.fs" />
     <Compile Include="TestSyncBlockMonitor.fs" />
     <Compile Include="TestPureCases.fs" />
     <Compile Include="TestImpureCases.fs" />

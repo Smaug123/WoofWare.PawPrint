@@ -79,6 +79,7 @@
     <Compile Include="ExternImplementations\NativeImpls.fs" />
     <Compile Include="Scheduler.fs" />
     <Compile Include="LowLevelMonitor.fs" />
+    <Compile Include="WaitHandle.fs" />
     <Compile Include="SyncBlockMonitor.fs" />
     <Compile Include="ExternImplementations\System.Threading.Monitor.fs" />
     <Compile Include="Native\NativeCall.fs" />
@@ -98,11 +99,13 @@
     <Compile Include="Native\NativeArray.fs" />
     <Compile Include="Native\NativeEnum.fs" />
     <Compile Include="Native\NativeKernel32.fs" />
+    <Compile Include="Native\NativeWaitHandle.fs" />
     <Compile Include="Native\NativeRuntimeAssembly.fs" />
     <Compile Include="Native\NativeMetadataUpdater.fs" />
     <Compile Include="Native\NativeThreading.fs" />
     <Compile Include="Native\NativeDebugger.fs" />
     <Compile Include="Native\NativeEventPipe.fs" />
+    <Compile Include="Native\NativeCustomAttribute.fs" />
     <Compile Include="Native\NativeQCall.fs" />
     <Compile Include="Native\NativeType.fs" />
     <Compile Include="Native\NativeString.fs" />

@@ -123,6 +123,38 @@ type SyncBlockSpuriousWakeupStrategy =
     /// changes.
     | Scripted of wakeups : (int64 * ManagedHeapAddress * ThreadId) list
 
+/// Deterministic model of a single Win32-shaped semaphore kernel object, as
+/// minted by `CreateSemaphoreExW`. CoreCLR backs this with a real Win32
+/// `CreateSemaphoreEx` on Windows and with a `SemaphoreSlim`-style construct
+/// on Unix (via the QCall-rebound `Libraries.Kernel32`). PawPrint reproduces
+/// the observable semantics through three pieces of state owned by the
+/// kernel's `WaitHandles` registry:
+///
+///   - `Count` is the current signalled count: `WaitOne` decrements it
+///     when positive, otherwise the caller is parked on `WaitQueue`.
+///   - `Maximum` is the ceiling supplied at create time;
+///     `ReleaseSemaphore` refuses (with `ERROR_TOO_MANY_POSTS`) when an
+///     increment would breach it.
+///   - `WaitQueue` is the FIFO list of threads parked in
+///     `BlockedOnWaitHandle`. The head is woken first by a subsequent
+///     `Release`; FIFO order is load-bearing for the higher-level
+///     `LowLevelLifoSemaphore` fairness contract.
+type SemaphoreState =
+    {
+        Count : int
+        Maximum : int
+        WaitQueue : ThreadId list
+    }
+
+/// Kind-tagged state for a single Win32-shaped wait-handle kernel object
+/// resident in `EmulatedKernel.WaitHandles`. Kind-agnostic operations
+/// (`WaitHandle_WaitOneCore`, `CloseHandle`) take one map lookup and then
+/// match on kind; new kinds (Event, Mutex) slot in as additional cases
+/// without disturbing the table or the wait/close handlers.
+[<RequireQualifiedAccess>]
+type WaitHandleState = | Semaphore of SemaphoreState
+// future: | Event of EventState | Mutex of MutexState
+
 /// One entry in `EmulatedKernel.OutputLog`: the role the guest targeted (a
 /// writable standard stream — stdout or stderr) and the byte payload of
 /// that single `SystemNative_Write` call. Chunks are not coalesced across
@@ -199,6 +231,19 @@ type EmulatedKernel =
         /// is never triggered for a successfully-minted monitor. IDs are
         /// never reused; freeing a monitor leaves a gap.
         NextLowLevelMonitorId : int
+        /// Registry of Win32-shaped wait-handle kernel objects (Semaphore /
+        /// Event / Mutex), minted by `CreateSemaphoreExW` and its peers. The
+        /// handle held by the guest (as an `IntPtr` produced by the QCall) is
+        /// the `WaitHandleId` key; the value is the deterministic kind-tagged
+        /// state. `CloseHandle` removes the entry so any retained handle
+        /// fails loudly at the next use rather than silently referencing a
+        /// recycled object.
+        WaitHandles : Map<WaitHandleId, WaitHandleState>
+        /// Monotonic ID source for `WaitHandlePtr`. Starts at 1 so the BCL's
+        /// "create failed" check (`if (handle == IntPtr.Zero) throw new ...`)
+        /// is never triggered for a successfully-minted handle. IDs are never
+        /// reused; closing a handle leaves a gap.
+        NextWaitHandleId : int
         /// Monotonic ID source for opaque EventPipe provider/event handles
         /// minted by the `EventPipeInternal_*` QCalls. PawPrint never opens a
         /// tracing session, so the IDs are not stored in any registry; they
@@ -344,6 +389,8 @@ module EmulatedKernel =
             FileDescriptors = FileDescriptorRegistry.initial
             LowLevelMonitors = Map.empty
             NextLowLevelMonitorId = 1
+            WaitHandles = Map.empty
+            NextWaitHandleId = 1
             NextEventPipeId = 1L
             SpuriousWakeup = SpuriousWakeupStrategy.Disabled
             SyncBlockSpuriousWakeup = SyncBlockSpuriousWakeupStrategy.Disabled

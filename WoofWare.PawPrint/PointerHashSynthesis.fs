@@ -29,6 +29,7 @@ type CanonicalPointerKey =
     | EventPipeProvider of int64
     | EventPipeEvent of int64
     | LowLevelMonitor of LowLevelMonitorId
+    | WaitHandle of WaitHandleId
     | AssemblyHandle of string
     | ModuleHandle of string
     | MetadataImportHandle of string
@@ -92,6 +93,7 @@ module PointerHashSynthesis =
         | NativeIntSource.EventPipeProviderPtr id -> CanonicalPointerKey.EventPipeProvider id
         | NativeIntSource.EventPipeEventPtr id -> CanonicalPointerKey.EventPipeEvent id
         | NativeIntSource.LowLevelMonitorPtr id -> CanonicalPointerKey.LowLevelMonitor id
+        | NativeIntSource.WaitHandlePtr id -> CanonicalPointerKey.WaitHandle id
         | NativeIntSource.AssemblyHandle name -> CanonicalPointerKey.AssemblyHandle name
         | NativeIntSource.ModuleHandle name -> CanonicalPointerKey.ModuleHandle name
         | NativeIntSource.MetadataImportHandle name -> CanonicalPointerKey.MetadataImportHandle name
@@ -133,6 +135,7 @@ module PointerHashSynthesis =
         | CanonicalPointerKey.EventPipeProvider _
         | CanonicalPointerKey.EventPipeEvent _
         | CanonicalPointerKey.LowLevelMonitor _
+        | CanonicalPointerKey.WaitHandle _
         | CanonicalPointerKey.AssemblyHandle _
         | CanonicalPointerKey.ModuleHandle _
         | CanonicalPointerKey.MetadataImportHandle _ -> 0UL
