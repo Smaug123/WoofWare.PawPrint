@@ -218,6 +218,35 @@ module internal IntrinsicHelpers =
 
         let tSize = CliType.sizeOf tZero
 
+        // `Unsafe.AsRef<T>((void*)bits)` byrefs are bit patterns, not
+        // anchored byrefs. `Unsafe.Add<T>(ref placeholder, n)` advances
+        // by `n * sizeof(T)` bytes; if the result lands on zero,
+        // normalise to Null so `IsNullRef` agrees with the bit-pattern
+        // definition (mirrors `BinaryArithmetic.addInt32ManagedPtr`).
+        // `Null` is the bit pattern `0`, so adding to it must follow the
+        // same bit-arithmetic route — otherwise a chained
+        // `Unsafe.Add(Unsafe.Add(placeholder, -n), n)` whose middle step
+        // normalised to `Null` would fall into the byref path and try to
+        // project off a null managed pointer.
+        let placeholderBits =
+            match src with
+            | EvalStackValue.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits) -> Some bits
+            | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> Some 0L
+            | _ -> None
+
+        match placeholderBits with
+        | Some bits ->
+            let newBits = bits + int64 offset * int64 tSize
+
+            let ptrSrc =
+                if newBits = 0L then
+                    ManagedPointerSource.Null
+                else
+                    ManagedPointerSource.NativeIntPlaceholder newBits
+
+            EvalStackValue.ManagedPointer ptrSrc, state
+        | None ->
+
         let ptr : EvalStackValue =
             match src with
             | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs)) ->
@@ -562,6 +591,7 @@ module internal IntrinsicHelpers =
     let splitTrailingByteView (src : ManagedPointerSource) : (ByrefRoot * ByrefProjection list * int) voption =
         match src with
         | ManagedPointerSource.Null -> ValueNone
+        | ManagedPointerSource.NativeIntPlaceholder _ -> ValueNone
         | ManagedPointerSource.Byref (root, projs) ->
             match List.rev projs with
             | ByrefProjection.ByteOffset n :: ByrefProjection.ReinterpretAs _ :: revPrefix ->
@@ -600,6 +630,9 @@ module internal IntrinsicHelpers =
 
         match src with
         | ManagedPointerSource.Null -> failwith $"%s{operation}: attempted to dereference null byref"
+        | ManagedPointerSource.NativeIntPlaceholder bits ->
+            failwith
+                $"%s{operation}: cannot read fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
         | ManagedPointerSource.Byref (root, projs) ->
             match splitTrailingByteView src with
             | ValueSome (byteViewRoot, prefixProjs, byteOffset) ->
@@ -798,9 +831,21 @@ module internal IntrinsicHelpers =
             | Some info -> info
             | None -> failwith $"Span pointer constructor element type was not registered: %O{elementType}"
 
+        // `Unsafe.AsRef<T>((void*)bits)` placeholders are bit patterns, not
+        // anchored byrefs; `appendProjection` rightly refuses to project off
+        // them. The CLR permits arbitrary non-null pointers for zero-length
+        // pointer-backed spans (the source must never be dereferenced), so
+        // for `length = 0` we skip the `ReinterpretAs` and keep the
+        // placeholder verbatim. For `length > 0` over a placeholder we
+        // refuse: any indexing would have to project off the placeholder,
+        // which is undefined.
         let sourcePtr =
             match sourcePtr with
             | ManagedPointerSource.Null -> ManagedPointerSource.Null
+            | ManagedPointerSource.NativeIntPlaceholder _ when length = 0 -> sourcePtr
+            | ManagedPointerSource.NativeIntPlaceholder bits ->
+                failwith
+                    $"TODO: %s{methodToCall.DeclaringType.Name}(void*, int) with non-zero length %d{length} over placeholder pointer 0x%x{bits}"
             | sourcePtr ->
                 ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs elementTypeInfo) sourcePtr
 

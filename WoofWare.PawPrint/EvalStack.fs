@@ -33,6 +33,10 @@ module EvalStackValue =
         | NativeIntSource.SyntheticCrossArrayOffset _ ->
             failwith $"%s{operation}: refusing to convert cross-array offset to an integer"
         | NativeIntSource.ManagedPointer ManagedPointerSource.Null -> 0L
+        | NativeIntSource.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits) ->
+            // `Unsafe.AsRef<T>((void*)bits)` placeholders ARE bit patterns;
+            // narrowing to a smaller integer is just truncation of those bits.
+            bits
         | NativeIntSource.ManagedPointer ptr ->
             failwith $"%s{operation}: refusing to convert managed pointer %O{ptr} to an integer"
         | NativeIntSource.FunctionPointer methodInfo ->
