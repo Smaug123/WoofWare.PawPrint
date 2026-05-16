@@ -18,7 +18,6 @@ module TestPureCases =
     let unimplemented =
         [
             "AdvancedStructLayout.cs" // past MarshalNative_SizeOfHelper for ByValTStr and SystemNative_Malloc / SystemNative_Free / Marshal.AllocHGlobal / FreeHGlobal; now blocked downstream at the unimplemented MarshalNative_TryGetStructMarshalStub QCall (CoreLib's Marshal.StructureToPtr path)
-            "MarshalSizeOfAutoLayoutStruct.cs" // refusing to compute unmanaged marshalled size because LayoutKind.Auto but throwIfNotMarshalable=true
             "LdtokenField.cs" // past Buffer's reflection-cache copy (cell-aware path); now blocked on the next reflection-cache step at unimplemented InternalCall RuntimeFieldHandle::GetApproxDeclaringMethodTable
             "IsAssignableFromOpenGenericDefinition.cs" // TypeHandle.CanCastTo_NoCacheLookup for open generic
             "InterfaceDispatch.cs" // expected: 0; was: 1024
