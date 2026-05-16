@@ -421,6 +421,95 @@ module NativeThreading =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 resultInt)) ctx.Thread state
 
             NativeHandlerResult.completed state |> Some
+        | "ThreadNative_InformThreadNameChange",
+          "System.Private.CoreLib",
+          "System.Threading",
+          "Thread",
+          // The C# source uses LibraryImport with StringMarshalling.Utf16 on a non-blittable
+          // `string?` parameter, so Roslyn emits a marshalling stub whose synthesised name
+          // (`<InformThreadNameChange>g____PInvoke|N_M`) carries source-generator counters
+          // not stable across runtime versions. Discard the IL method name and validate the
+          // signature shape on the parameter-types pattern below; the QCall entry-point
+          // tuple element is already an exact match. Same approach as Environment_FailFast.
+          _,
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Threading",
+                                              "ThreadHandle",
+                                              threadHandleGenerics)
+            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt16)
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Void when threadHandleGenerics.IsEmpty ->
+            // .NET 10 QCall fired by the `Thread.Name` setter after the BCL has already
+            // written the canonical name into the managed `Thread._name` field. In CoreCLR
+            // this hook tells the OS / debugger about the new thread name
+            // (SetThreadDescription on Windows, pthread_setname_np on Linux). PawPrint has
+            // no OS threads to name, so we simply record the value on `ThreadState.Name`
+            // as a diagnostic mirror — guest reads of `Thread.Name` go through `_name` and
+            // never consult our mirror, so the mirror cannot mislead guest code.
+            //
+            // The BCL passes (handle, char* name, int32 length). When the guest clears the
+            // name (`Thread.Name = null`), the call arrives with a null pointer and
+            // length=0; we translate that to `None`. Otherwise length is the count of
+            // UTF-16 code units pointed to by `name` (no null terminator required), which
+            // we read with `readLengthPrefixedUtf16` and store as `Some s`.
+            let operation = "ThreadNative_InformThreadNameChange"
+
+            if instruction.Arguments.Length <> 3 then
+                failwith $"%s{operation}: expected three native arguments, got %d{instruction.Arguments.Length}"
+
+            let threadAddr =
+                threadAddrFromThreadHandle state operation instruction.Arguments.[0]
+
+            let targetThreadId = threadIdFromThreadAddr state operation threadAddr
+
+            let namePtr =
+                NativeCall.managedPointerOfPointerArgument operation "name" instruction.Arguments.[1]
+
+            let nameLength =
+                match instruction.Arguments.[2] |> CliType.unwrapPrimitiveLikeDeep with
+                | CliType.Numeric (CliNumericType.Int32 i) -> i
+                | other -> failwith $"%s{operation}: expected int32 length, got %O{other}"
+
+            let newName : string option =
+                // Disambiguate `Thread.Name = null` from `Thread.Name = ""` by inspecting
+                // the pointer alongside the length: clearing the name passes a null
+                // pointer with len=0, but assigning `""` passes a non-null pointer
+                // (from `String.Empty.GetPinnableReference()`) also with len=0. The
+                // canonical `_name` field stores the two states distinctly, so the
+                // diagnostic mirror must do the same. Anything else delegates to
+                // `readLengthPrefixedUtf16`, which yields `""` for non-null + len=0
+                // and fails loudly on null + len>0.
+                match namePtr with
+                | ManagedPointerSource.Null when nameLength = 0 -> None
+                | _ ->
+                    NativeCall.readLengthPrefixedUtf16 operation ctx.BaseClassTypes state namePtr nameLength
+                    |> Some
+
+            let targetState =
+                state.ThreadState
+                |> Map.tryFind targetThreadId
+                |> Option.defaultWith (fun () ->
+                    failwith $"%s{operation}: target ThreadId {targetThreadId} has no ThreadState"
+                )
+
+            // Unlike SetIsBackground, `Thread.Name`'s managed setter has no `_isDead`
+            // check and CoreCLR's native InformThreadNameChange just skips the OS-level
+            // naming when the handle is invalid (it does not throw). So setting or
+            // clearing `Thread.Name` on a terminated thread is valid guest behaviour —
+            // we record the requested value unconditionally, matching the BCL's
+            // unconditional update of the canonical `_name` field that runs before
+            // this QCall fires.
+            let updatedThreadState =
+                { targetState with
+                    Name = newName
+                }
+
+            let state =
+                { state with
+                    ThreadState = state.ThreadState |> Map.add targetThreadId updatedThreadState
+                }
+
+            NativeHandlerResult.completed state |> Some
         | _ -> None
 
     let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =

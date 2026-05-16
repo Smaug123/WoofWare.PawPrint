@@ -20,7 +20,7 @@ module TestPureCases =
             "AdvancedStructLayout.cs" // past MarshalNative_SizeOfHelper for ByValTStr and SystemNative_Malloc / SystemNative_Free / Marshal.AllocHGlobal / FreeHGlobal; now blocked downstream at the unimplemented MarshalNative_TryGetStructMarshalStub QCall (CoreLib's Marshal.StructureToPtr path)
             "LdtokenField.cs" // past Buffer's reflection-cache copy (cell-aware path); now blocked on the next reflection-cache step at unimplemented InternalCall RuntimeFieldHandle::GetApproxDeclaringMethodTable
             "InterfaceDispatch.cs" // expected: 0; was: 1024
-            "Threads.cs" // past Buffer's reflection-cache copy and ThreadNative_SetIsBackground; now blocked on unimplemented QCall ThreadNative_InformThreadNameChange (BCL Thread.Name setter / SetThreadPoolWorkerThreadName)
+            "Threads.cs" // past ThreadNative_InformThreadNameChange (Thread.Name setter); now blocked on unimplemented PAL call libSystem.Native!SystemNative_GetLowResolutionTimestamp (.Sys::GetLowResolutionTimestamp, used by the Task/ThreadPool scheduler)
             "IsAssignableToBasic.cs" // MethodTable field projection for MethodTable::PerInstInfo
         ]
         |> Set.ofList

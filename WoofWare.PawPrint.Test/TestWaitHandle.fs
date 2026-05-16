@@ -39,6 +39,7 @@ module TestWaitHandle =
             ActiveMethodState = FrameId -1
             Status = status
             IsBackground = false
+            Name = None
         }
 
     let private withThreads (threads : ThreadId list) (state : IlMachineState) : IlMachineState =
