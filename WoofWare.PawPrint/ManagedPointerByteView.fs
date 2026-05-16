@@ -103,11 +103,12 @@ module ManagedPointerByteView =
 
         ManagedPointerSource.addByteOffsetToByteView normalisation byteOffset ptr
 
-    /// Anchor a byte-view on a plain `ArrayElement` byref so subsequent pointer
-    /// arithmetic uses byte stride (ECMA-335 §III.1.5: native-pointer +/- int is
-    /// byte arithmetic). Plain byrefs without this anchor keep element-stride
-    /// semantics, matching `Unsafe.Add<T>` intrinsic behaviour. Apply at the
-    /// byref-to-native-pointer transition (`Conv_U`, `Conv_I`).
+    /// Anchor a byte-view on a plain byref (array-element or string-char) so
+    /// subsequent pointer arithmetic uses byte stride (ECMA-335 §III.1.5:
+    /// native-pointer +/- int is byte arithmetic). Plain byrefs without this
+    /// anchor keep element-stride semantics, matching `Unsafe.Add<T>`
+    /// intrinsic behaviour. Apply at the byref-to-native-pointer transition
+    /// (`Conv_U`, `Conv_I`).
     ///
     /// Reference-typed element arrays (e.g. `object[]`) are anchored too: the
     /// C# `fixed (object* p = arr) { p[k] = ...; }` pattern lowers to a
@@ -131,6 +132,13 @@ module ManagedPointerByteView =
     /// independent of the reinterpret target), and the cell-aligned
     /// read/write short-circuits preserve identity exactly as for `object[]`.
     ///
+    /// String-char byrefs (`StringCharAt`) are anchored with `System.Char` so
+    /// that the C# `fixed (char* p = &MemoryMarshal.GetReference(span))`
+    /// pattern, followed by a byte-stride `Unsafe.Add<byte>`, takes the
+    /// byte-cursor branch in `IntrinsicHelpers.offsetManagedPointerByElements`
+    /// rather than the element-stride branch that demands a matching char
+    /// cell size.
+    ///
     /// Pointer/byref/fnptr element handles (e.g. `int*[]`,
     /// `delegate*<...>[]`) carry non-byte-addressable pointer provenance and
     /// no `ObjectRef`-shaped surrogate type, so the byte-view machinery
@@ -149,6 +157,10 @@ module ManagedPointerByteView =
         =
         let tryObjectConcreteType () : ConcreteType<ConcreteTypeHandle> option =
             AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Object.Identity
+            |> Option.bind (fun handle -> AllConcreteTypes.lookup handle state.ConcreteTypes)
+
+        let tryCharConcreteType () : ConcreteType<ConcreteTypeHandle> option =
+            AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Char.Identity
             |> Option.bind (fun handle -> AllConcreteTypes.lookup handle state.ConcreteTypes)
 
         match ptr with
@@ -172,4 +184,8 @@ module ManagedPointerByteView =
             | ConcreteTypeHandle.Byref _
             | ConcreteTypeHandle.Pointer _
             | ConcreteTypeHandle.FunctionPointer _ -> ptr
+        | ManagedPointerSource.Byref (ByrefRoot.StringCharAt _, []) ->
+            match tryCharConcreteType () with
+            | Some charType -> addByteOffset baseClassTypes state charType 0 ptr
+            | None -> ptr
         | _ -> ptr

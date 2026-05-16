@@ -99,6 +99,26 @@ public class StringCharByref
         return 0;
     }
 
+    public static unsafe int TestStringFixedPointerByteAdd()
+    {
+        // Use a string literal not shared with other tests so this case is
+        // robust against in-place byte-view mutations elsewhere in the
+        // assembly that would otherwise alias through the intern pool.
+        string s = "fp";
+        ReadOnlySpan<char> span = s;
+        fixed (char* p = &MemoryMarshal.GetReference(span))
+        {
+            ref byte b0 = ref Unsafe.AsRef<byte>(p);
+            ref byte b2 = ref Unsafe.Add(ref b0, 2);
+            if (b2 != (byte)'p')
+                return 14;
+            if (b0 != (byte)'f')
+                return 15;
+        }
+
+        return 0;
+    }
+
     public static int Main(string[] argv)
     {
         int result = TestSecondCharByUnsafeAdd();
@@ -118,6 +138,10 @@ public class StringCharByref
             return result;
 
         result = TestStringByteViewWrite();
+        if (result != 0)
+            return result;
+
+        result = TestStringFixedPointerByteAdd();
         if (result != 0)
             return result;
 
