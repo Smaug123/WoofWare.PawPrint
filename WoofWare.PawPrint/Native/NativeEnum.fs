@@ -227,7 +227,7 @@ module NativeEnum =
         | CliType.Bool value -> value <> 0uy
         | other -> failwith $"%s{operation}: expected Interop.BOOL argument as Int32, got %O{other}"
 
-    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : ExecutionResult option =
+    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
 
@@ -323,5 +323,5 @@ module NativeEnum =
                 else
                     state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | _ -> None

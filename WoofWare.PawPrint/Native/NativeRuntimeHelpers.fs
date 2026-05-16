@@ -2,7 +2,7 @@ namespace WoofWare.PawPrint
 
 [<RequireQualifiedAccess>]
 module NativeRuntimeHelpers =
-    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : ExecutionResult option =
+    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
 
@@ -47,7 +47,7 @@ module NativeRuntimeHelpers =
                 | ConcreteTypeHandle.Array _ ->
                     // Pointer, byref, fnptr, and array type descriptors have no .cctor;
                     // CoreCLR treats this as a no-op. Return immediately.
-                    (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+                    NativeHandlerResult.completed state |> Some
                 | ConcreteTypeHandle.Concrete _ ->
                     let state, typeInit =
                         IlMachineStateExecution.ensureTypeInitialised
@@ -58,7 +58,7 @@ module NativeRuntimeHelpers =
                             state
 
                     match typeInit with
-                    | WhatWeDid.Executed -> (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+                    | WhatWeDid.Executed -> NativeHandlerResult.completed state |> Some
                     | WhatWeDid.SuspendedForClassInit ->
                         // The cctor was pushed as a new frame. We must NOT go through the normal
                         // returnStackFrame path (which would pop the cctor frame we just pushed).
@@ -66,17 +66,15 @@ module NativeRuntimeHelpers =
                         // When the cctor finishes, returnStackFrame pops it, bringing us back to
                         // this native method frame. executeOneStep re-enters here and
                         // ensureTypeInitialised will return Executed.
-                        ExecutionResult.stepped (state, WhatWeDid.SuspendedForClassInit) |> Some
+                        NativeHandlerResult.suspendedForClassInit state |> Some
                     | WhatWeDid.SuspendedForManagedCall ->
                         failwith "logic error: ensureTypeInitialised cannot suspend for an arbitrary managed call"
                     | WhatWeDid.ThrowingTypeInitializationException ->
-                        (state, WhatWeDid.ThrowingTypeInitializationException)
-                        |> ExecutionResult.stepped
-                        |> Some
+                        NativeHandlerResult.throwingTypeInitializationException state |> Some
                     | WhatWeDid.BlockedOnClassInit blockedBy ->
                         // Another thread owns this type's .cctor lock. Yield so the scheduler
                         // can run that thread to completion before re-entering.
-                        ExecutionResult.stepped (state, WhatWeDid.BlockedOnClassInit blockedBy) |> Some
+                        NativeHandlerResult.blockedOnClassInit blockedBy state |> Some
         | _ -> None
 
     /// Identity hash for a managed object reference. Heap addresses are positive and
@@ -91,7 +89,7 @@ module NativeRuntimeHelpers =
         | EvalStackValue.ObjectRef (ManagedHeapAddress addr) -> addr
         | other -> failwith $"%s{operation}: expected ObjectRef or NullObjectRef, got %O{other}"
 
-    let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
+    let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
 
@@ -115,7 +113,7 @@ module NativeRuntimeHelpers =
             let state =
                 IlMachineState.pushToEvalStack' (EvalStackValue.Int32 hash) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib",
           "System.Runtime.CompilerServices",
           "RuntimeHelpers",
@@ -138,5 +136,5 @@ module NativeRuntimeHelpers =
             let state =
                 IlMachineState.pushToEvalStack' (EvalStackValue.Int32 hash) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | _ -> None

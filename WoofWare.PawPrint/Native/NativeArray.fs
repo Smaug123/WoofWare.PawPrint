@@ -55,7 +55,7 @@ module NativeArray =
                 failwith
                     $"TODO: %s{operation} for rank %d{rank}; PawPrint array allocation currently models rank-1 zero-lower-bound arrays"
 
-    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : ExecutionResult option =
+    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
 
@@ -146,5 +146,5 @@ module NativeArray =
                     retArray
                     (CliType.ObjectRef (Some arrayAddr))
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | _ -> None

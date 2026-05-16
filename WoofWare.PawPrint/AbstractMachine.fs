@@ -45,33 +45,46 @@ module AbstractMachine =
                 | Some result -> result
                 | None -> NativeDispatch.failUnimplemented nativeContext
 
-
             match outcome with
-            | ExecutionResult.Terminated (state, terminating) -> ExecutionResult.Terminated (state, terminating)
-            | ExecutionResult.ProcessExit _ -> outcome
-            | ExecutionResult.FailFast _ -> outcome
-            | ExecutionResult.UnhandledException _ -> outcome
-            | ExecutionResult.Stepped (state, WhatWeDid.SuspendedForClassInit, effect) ->
-                // A cctor was pushed; the native frame must stay on the stack so the dispatch loop
-                // runs the cctor first, then re-enters this native method on the next step.
-                ExecutionResult.Stepped (state, WhatWeDid.SuspendedForClassInit, effect)
-            | ExecutionResult.Stepped (state, WhatWeDid.SuspendedForManagedCall, effect) ->
-                // The native handler pushed a managed callee on top of itself; the native frame
-                // must stay on the stack so the dispatch loop runs the callee, then re-enters this
-                // native method on the next step.
+            | NativeHandlerResult.Completed (state, effect) ->
+                // Native handler ran to completion. Pop the native frame and surface
+                // WhatWeDid.Executed; this is the common case.
+                match IlMachineState.returnStackFrame loggerFactory baseClassTypes thread state with
+                | ReturnFrameResult.NormalReturn state -> ExecutionResult.Stepped (state, WhatWeDid.Executed, effect)
+                | result -> failwith $"unexpected ReturnFrameResult from extern method return: %A{result}"
+            | NativeHandlerResult.PushedManagedCallee (state, effect) ->
+                // The handler pushed a managed callee on top of itself for re-entry: leave
+                // the native frame on the stack so the dispatch loop runs the callee, then
+                // re-enters this native method on a future step.
                 ExecutionResult.Stepped (state, WhatWeDid.SuspendedForManagedCall, effect)
-            | ExecutionResult.Stepped (state, WhatWeDid.ThrowingTypeInitializationException, effect) ->
-                // Exception dispatch has already unwound past this native frame to the matching
-                // handler, so returnStackFrame would pop the wrong frame.
-                ExecutionResult.Stepped (state, WhatWeDid.ThrowingTypeInitializationException, effect)
-            | ExecutionResult.Stepped (state, WhatWeDid.BlockedOnClassInit blockedBy, effect) ->
+            | NativeHandlerResult.RaiseException (state, exnType, effect) ->
+                // The handler wants to raise `exnType`. Allocate the exception, call its
+                // parameterless ctor, and arm dispatch-on-return; leave the native frame
+                // on the stack so exception dispatch can unwind through it on the ctor's
+                // `Ret`. The handler is never re-entered. We surface
+                // SuspendedForManagedCall because, from the Scheduler's point of view, a
+                // managed callee (the ctor) has been pushed on top of the native frame.
+                let state, _whatWeDid =
+                    IlMachineStateExecution.raiseRuntimeException loggerFactory baseClassTypes exnType thread state
+
+                ExecutionResult.Stepped (state, WhatWeDid.SuspendedForManagedCall, effect)
+            | NativeHandlerResult.SuspendedForClassInit (state, effect) ->
+                // A cctor was pushed; the native frame must stay on the stack so the dispatch
+                // loop runs the cctor first, then re-enters this native method on the next step.
+                ExecutionResult.Stepped (state, WhatWeDid.SuspendedForClassInit, effect)
+            | NativeHandlerResult.BlockedOnClassInit (state, blockedBy, effect) ->
                 // Another thread owns this type's .cctor lock; the native frame must persist
                 // until that thread finishes, then we re-enter.
                 ExecutionResult.Stepped (state, WhatWeDid.BlockedOnClassInit blockedBy, effect)
-            | ExecutionResult.Stepped (state, whatWeDid, effect) ->
-                match IlMachineState.returnStackFrame loggerFactory baseClassTypes thread state with
-                | ReturnFrameResult.NormalReturn state -> ExecutionResult.Stepped (state, whatWeDid, effect)
-                | result -> failwith $"unexpected ReturnFrameResult from extern method return: %A{result}"
+            | NativeHandlerResult.ThrowingTypeInitializationException (state, effect) ->
+                // A sub-call's exception has already unwound past this native frame to the
+                // matching handler; returnStackFrame would pop the wrong frame.
+                ExecutionResult.Stepped (state, WhatWeDid.ThrowingTypeInitializationException, effect)
+            | NativeHandlerResult.Terminating executionResult ->
+                // The handler delegated to an ExternImpl that produced a terminating
+                // outcome (ProcessExit, FailFast, Terminated, UnhandledException). Surface
+                // it verbatim — frame management is irrelevant because the run is over.
+                executionResult
 
         let dispatchDelegateCtor () =
             IlMachineState.executeDelegateConstructor baseClassTypes instruction state

@@ -2,7 +2,7 @@ namespace WoofWare.PawPrint
 
 [<RequireQualifiedAccess>]
 module NativeDebugger =
-    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : ExecutionResult option =
+    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
 
@@ -29,10 +29,10 @@ module NativeDebugger =
             let state =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 isAttached)) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | _ -> None
 
-    let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
+    let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
 
@@ -57,5 +57,5 @@ module NativeDebugger =
             let state =
                 IlMachineState.pushToEvalStack (CliType.ofBool isAttached) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | _ -> None

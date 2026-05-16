@@ -2,7 +2,7 @@ namespace WoofWare.PawPrint
 
 [<RequireQualifiedAccess>]
 module NativeQCall =
-    let private handlers : Map<string, NativeCallContext -> ExecutionResult option> =
+    let private handlers : Map<string, NativeCallContext -> NativeHandlerResult option> =
         [
             "ReflectionInvocation_RunClassConstructor",
             NativeRuntimeHelpers.tryExecuteQCall "ReflectionInvocation_RunClassConstructor"
@@ -109,7 +109,7 @@ module NativeQCall =
         ]
         |> Map.ofList
 
-    let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
+    let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
         match NativeCall.tryQCallEntryPoint ctx with
         | None -> None
         | Some entryPoint -> handlers |> Map.tryFind entryPoint |> Option.bind (fun handler -> handler ctx)

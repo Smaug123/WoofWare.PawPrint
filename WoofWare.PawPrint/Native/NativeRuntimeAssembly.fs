@@ -50,7 +50,7 @@ module NativeRuntimeAssembly =
             assemblyFullName
         | other -> failwith $"%s{operation}: expected AssemblyHandle in RuntimeAssembly.m_assembly, got %O{other}"
 
-    let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
+    let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
 
@@ -85,7 +85,7 @@ module NativeRuntimeAssembly =
             let state =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 mdAssemblyToken)) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib",
           "System.Reflection",
           "RuntimeAssembly",
@@ -117,10 +117,10 @@ module NativeRuntimeAssembly =
             let state =
                 IlMachineState.pushToEvalStack (CliType.ObjectRef (Some runtimeModuleAddr)) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | _ -> None
 
-    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : ExecutionResult option =
+    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
 
@@ -203,7 +203,7 @@ module NativeRuntimeAssembly =
                     failwith
                         $"TODO: %s{operation} does not support assembly-forwarded manifest resource %s{actualResourceName} in %s{assemblyFullName} forwarded to %s{assemblyReference.Name.FullName}"
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | "AssemblyNative_GetTypeCore",
           "System.Private.CoreLib",
           "System.Reflection",
@@ -350,7 +350,7 @@ module NativeRuntimeAssembly =
 
                 // Caller's local was preinitialized to null (Type? type = null);
                 // leaving retType untouched preserves that.
-                (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+                NativeHandlerResult.completed state |> Some
             | Some typeInfo ->
                 let runtimeTypeAddr, state =
                     if typeInfo.Generics.IsEmpty then
@@ -377,5 +377,5 @@ module NativeRuntimeAssembly =
                         retType
                         (CliType.ObjectRef (Some runtimeTypeAddr))
 
-                (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+                NativeHandlerResult.completed state |> Some
         | _ -> None

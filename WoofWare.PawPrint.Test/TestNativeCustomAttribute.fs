@@ -460,7 +460,7 @@ public sealed class CctorAttribute : System.Attribute
             State = state
         |}
 
-    let private invokeHandler (fixture : Fixture) (thread : ThreadId) (state : IlMachineState) : ExecutionResult =
+    let private invokeHandler (fixture : Fixture) (thread : ThreadId) (state : IlMachineState) : NativeHandlerResult =
         let ctx : NativeCallContext =
             {
                 LoggerFactory = fixture.LoggerFactory
@@ -486,8 +486,8 @@ public sealed class CctorAttribute : System.Attribute
 
         let state =
             match result with
-            | ExecutionResult.Stepped (state, WhatWeDid.SuspendedForManagedCall, _) -> state
-            | other -> failwithf "Phase 1 expected SuspendedForManagedCall, got %A" other
+            | NativeHandlerResult.PushedManagedCallee (state, _) -> state
+            | other -> failwithf "Phase 1 expected PushedManagedCallee, got %A" other
 
         // The blob cursor cell now points one-past-end of the blob: fixed-args consumed
         // 12 bytes, then the named-arg count uint16 added 2 more.
@@ -576,8 +576,8 @@ public sealed class CctorAttribute : System.Attribute
 
         let state =
             match result with
-            | ExecutionResult.Stepped (state, WhatWeDid.Executed, _) -> state
-            | other -> failwithf "Phase 2 expected Executed, got %A" other
+            | NativeHandlerResult.Completed (state, _) -> state
+            | other -> failwithf "Phase 2 expected Completed, got %A" other
 
         // The instance ObjectHandleOnStack slot now points at the marker.
         match IlMachineState.getArrayValue prep.InstanceArr 0 state with
@@ -603,7 +603,7 @@ public sealed class CctorAttribute : System.Attribute
 
         let state =
             match result with
-            | ExecutionResult.Stepped (state, WhatWeDid.SuspendedForClassInit, _) -> state
+            | NativeHandlerResult.SuspendedForClassInit (state, _) -> state
             | other -> failwithf "Class-init suspension test expected SuspendedForClassInit, got %A" other
 
         // The blob cursor cell must still be the starting byref into cell 0 of the blob.

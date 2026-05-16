@@ -375,7 +375,7 @@ module NativeMetadataImport =
 
         valueType, state
 
-    let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
+    let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
 
@@ -413,7 +413,7 @@ module NativeMetadataImport =
                     ctx.Thread
                     state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib",
           "System.Reflection",
           "MetadataImport",
@@ -485,7 +485,7 @@ module NativeMetadataImport =
 
             let state = writeInt32AtPointer ctx.BaseClassTypes state lengthOut values.Length
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib",
           "System.Reflection",
           "MetadataImport",
@@ -520,7 +520,7 @@ module NativeMetadataImport =
             let state =
                 IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib",
           "System.Reflection",
           "MetadataImport",
@@ -552,7 +552,7 @@ module NativeMetadataImport =
             let state =
                 IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib",
           "System.Reflection",
           "MetadataImport",
@@ -611,7 +611,7 @@ module NativeMetadataImport =
             let state =
                 IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib",
           "System.Reflection",
           "MetadataImport",
@@ -664,7 +664,7 @@ module NativeMetadataImport =
             let state =
                 IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib",
           "System.Reflection",
           "MetadataImport",
@@ -804,7 +804,7 @@ module NativeMetadataImport =
             let state =
                 IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib",
           "System.Reflection",
           "MetadataImport",
@@ -840,5 +840,5 @@ module NativeMetadataImport =
             let state =
                 IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | _ -> None

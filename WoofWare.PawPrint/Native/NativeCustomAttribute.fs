@@ -70,7 +70,7 @@ module NativeCustomAttribute =
             failwith
                 $"TODO: %s{operation} %s{label} pointer must be a plain ArrayElement byref (no projections); other shapes (e.g. raw native pointers, byte-view projections) are not yet supported, got %O{other}"
 
-    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : ExecutionResult option =
+    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
 
@@ -152,7 +152,7 @@ module NativeCustomAttribute =
                         resultHandle
                         (CliType.ObjectRef (Some addr))
 
-                (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+                NativeHandlerResult.completed state |> Some
             | [] ->
                 // QCallModule is not consulted on the success path; CoreCLR threads it through
                 // `GetDataFromBlob` for SERIALIZATION_TYPE_TYPE / TAGGED_OBJECT, which the
@@ -348,13 +348,11 @@ module NativeCustomAttribute =
                         state
 
                 match typeInit with
-                | WhatWeDid.SuspendedForClassInit ->
-                    ExecutionResult.stepped (state, WhatWeDid.SuspendedForClassInit) |> Some
+                | WhatWeDid.SuspendedForClassInit -> NativeHandlerResult.suspendedForClassInit state |> Some
                 | WhatWeDid.BlockedOnClassInit blockedBy ->
-                    ExecutionResult.stepped (state, WhatWeDid.BlockedOnClassInit blockedBy) |> Some
+                    NativeHandlerResult.blockedOnClassInit blockedBy state |> Some
                 | WhatWeDid.ThrowingTypeInitializationException ->
-                    ExecutionResult.stepped (state, WhatWeDid.ThrowingTypeInitializationException)
-                    |> Some
+                    NativeHandlerResult.throwingTypeInitializationException state |> Some
                 | WhatWeDid.SuspendedForManagedCall ->
                     failwith "logic error: ensureTypeInitialised cannot suspend for an arbitrary managed call"
                 | WhatWeDid.Executed ->
@@ -454,7 +452,7 @@ module NativeCustomAttribute =
                         false // wrapExceptionInTargetInvocation
                         state
 
-                ExecutionResult.stepped (state, WhatWeDid.SuspendedForManagedCall) |> Some
+                NativeHandlerResult.pushedManagedCallee state |> Some
             | other ->
                 failwith
                     $"%s{operation}: expected at most one re-entry marker on the eval stack, got %d{other.Length} value(s): %A{other}"
