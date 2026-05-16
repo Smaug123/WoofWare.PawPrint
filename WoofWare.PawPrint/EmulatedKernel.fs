@@ -192,16 +192,48 @@ type MutexState =
         WaitQueue : ThreadId list
     }
 
+/// Reset mode of a Win32-shaped event kernel object, set at create time and
+/// immutable thereafter. `Manual` events stay signalled across waiters
+/// (one `SetEvent` wakes every parked waiter and leaves the event
+/// signalled until `ResetEvent`); `Auto` events have direct-handoff
+/// semantics (one `SetEvent` wakes exactly one parked waiter, or sets the
+/// signalled flag if none, and `WaitOne` on a signalled `Auto` event
+/// consumes the signal as part of acquiring).
+[<RequireQualifiedAccess>]
+type EventResetMode =
+    | Manual
+    | Auto
+
+/// Deterministic model of a single Win32-shaped event kernel object, as
+/// minted by `CreateEventExW`. `Mode` is set at create time and never
+/// changes. `Signaled` is the current signal state; `WaitQueue` is the
+/// FIFO list of threads parked in `BlockedOnWaitHandle` because the event
+/// was unsignalled when they called `WaitOne`.
+///
+/// Invariant: `Signaled = true ⇒ WaitQueue = []`. The operations enforce
+/// it: `setEvent` on a `Manual` event with parked waiters wakes them all
+/// and sets `Signaled = true` (leaving the queue empty); `setEvent` on an
+/// `Auto` event either wakes the FIFO head (leaving `Signaled = false`) or
+/// — if no waiters — sets `Signaled = true`. `waitOne` on a signalled
+/// `Auto` event consumes the signal as part of acquiring, so a thread can
+/// never observe `Signaled = true` while there is a parked waiter.
+type EventState =
+    {
+        Mode : EventResetMode
+        Signaled : bool
+        WaitQueue : ThreadId list
+    }
+
 /// Kind-tagged state for a single Win32-shaped wait-handle kernel object
 /// resident in `EmulatedKernel.WaitHandles`. Kind-agnostic operations
 /// (`WaitHandle_WaitOneCore`, `CloseHandle`) take one map lookup and then
-/// match on kind; new kinds (Event) slot in as additional cases without
-/// disturbing the table or the wait/close handlers.
+/// match on kind; new kinds slot in as additional cases without disturbing
+/// the table or the wait/close handlers.
 [<RequireQualifiedAccess>]
 type WaitHandleState =
     | Semaphore of SemaphoreState
     | Mutex of MutexState
-// future: | Event of EventState
+    | Event of EventState
 
 /// One entry in `EmulatedKernel.OutputLog`: the role the guest targeted (a
 /// writable standard stream — stdout or stderr) and the byte payload of

@@ -3,20 +3,23 @@ namespace WoofWare.PawPrint
 /// Deterministic state machine for the Win32-shaped wait-handle kernel
 /// objects exposed to managed code through `CreateSemaphoreExW`,
 /// `ReleaseSemaphore`, `CloseHandle`, `WaitHandle_WaitOneCore`,
-/// `WaitHandle_WaitOnePrioritized`, `PAL_CreateMutexW`, and
-/// `ReleaseMutex`. On .NET 10 CoreCLR-on-Unix the BCL compiles
-/// `Semaphore.Windows.cs` / `Mutex.CoreCLR.Unix.cs` regardless of host,
-/// with `Libraries.Kernel32` rebound to `RuntimeHelpers.QCall`; every
-/// Kernel32 LibraryImport therefore routes to the runtime as a QCall
-/// whose entry point uses the Win32 wide-string name. PawPrint
+/// `WaitHandle_WaitOnePrioritized`, `PAL_CreateMutexW`, `ReleaseMutex`,
+/// `CreateEventExW`, `SetEvent`, and `ResetEvent`. On .NET 10
+/// CoreCLR-on-Unix the BCL compiles `Semaphore.Windows.cs` /
+/// `Mutex.CoreCLR.Unix.cs` / `EventWaitHandle.Windows.cs` regardless of
+/// host, with `Libraries.Kernel32` rebound to `RuntimeHelpers.QCall`;
+/// every Kernel32 LibraryImport therefore routes to the runtime as a
+/// QCall whose entry point uses the Win32 wide-string name. PawPrint
 /// reproduces the observable semantics through `WaitHandleState`
 /// (registry value, kind-tagged) and one `ThreadStatus` case
 /// (`BlockedOnWaitHandle`).
 ///
-/// Two kinds are supported today: semaphore (`Count`-based) and mutex
-/// (ownership-based, re-entrant on owner, abandoned-flag-aware). The
-/// DU's job is to keep "kind dispatch in WaitOne/Close" exhaustive so
-/// the compiler catches a missing branch when `Event` lands.
+/// Three kinds are supported today: semaphore (`Count`-based), mutex
+/// (ownership-based, re-entrant on owner, abandoned-flag-aware), and
+/// event (Manual or Auto reset, with a `Signaled` flag and a FIFO
+/// `WaitQueue`). The DU's job is to keep "kind dispatch in WaitOne /
+/// Close" exhaustive so the compiler catches a missing branch when a
+/// further kind lands.
 ///
 /// The module is pure: every transition is `IlMachineState ->
 /// IlMachineState` (or returns an outcome carrying the next state) and
@@ -133,6 +136,9 @@ module WaitHandle =
         | WaitHandleState.Mutex _ ->
             failwith
                 $"%s{operation}: WaitHandle %O{id} is a Mutex, but this operation only accepts a Semaphore (e.g. ReleaseSemaphore / WaitOnePrioritized). This is a guest bug — the BCL would have failed in its own wrapper before reaching the runtime."
+        | WaitHandleState.Event _ ->
+            failwith
+                $"%s{operation}: WaitHandle %O{id} is an Event, but this operation only accepts a Semaphore (e.g. ReleaseSemaphore / WaitOnePrioritized). This is a guest bug — the BCL would have failed in its own wrapper before reaching the runtime."
 
     let private expectMutex (operation : string) (id : WaitHandleId) (handle : WaitHandleState) : MutexState =
         match handle with
@@ -140,6 +146,19 @@ module WaitHandle =
         | WaitHandleState.Semaphore _ ->
             failwith
                 $"%s{operation}: WaitHandle %O{id} is a Semaphore, but this operation only accepts a Mutex (e.g. ReleaseMutex). This is a guest bug — the BCL would have failed in its own wrapper before reaching the runtime."
+        | WaitHandleState.Event _ ->
+            failwith
+                $"%s{operation}: WaitHandle %O{id} is an Event, but this operation only accepts a Mutex (e.g. ReleaseMutex). This is a guest bug — the BCL would have failed in its own wrapper before reaching the runtime."
+
+    let private expectEvent (operation : string) (id : WaitHandleId) (handle : WaitHandleState) : EventState =
+        match handle with
+        | WaitHandleState.Event e -> e
+        | WaitHandleState.Semaphore _ ->
+            failwith
+                $"%s{operation}: WaitHandle %O{id} is a Semaphore, but this operation only accepts an Event (e.g. SetEvent / ResetEvent). This is a guest bug — the BCL would have failed in its own wrapper before reaching the runtime."
+        | WaitHandleState.Mutex _ ->
+            failwith
+                $"%s{operation}: WaitHandle %O{id} is a Mutex, but this operation only accepts an Event (e.g. SetEvent / ResetEvent). This is a guest bug — the BCL would have failed in its own wrapper before reaching the runtime."
 
     /// Allocate a fresh semaphore kernel object. Returns the new handle
     /// alongside the updated state. The handle is non-zero (counters
@@ -217,6 +236,37 @@ module WaitHandle =
             state.MapKernel (fun kernel ->
                 { kernel with
                     WaitHandles = kernel.WaitHandles |> Map.add id (WaitHandleState.Mutex mutex)
+                    NextWaitHandleId = kernel.NextWaitHandleId + 1
+                }
+            )
+
+        id, state
+
+    /// Allocate a fresh event kernel object. Returns the new handle
+    /// alongside the updated state. `initialState = true` corresponds to
+    /// `CREATE_EVENT_INITIAL_SET` (the event starts signalled) — by the
+    /// `Signaled ⇒ WaitQueue = []` invariant the queue is necessarily
+    /// empty at create time, so there is no waiter to wake. `mode` is
+    /// fixed for the lifetime of the handle.
+    let createEvent
+        (initialState : bool)
+        (mode : EventResetMode)
+        (state : IlMachineState)
+        : WaitHandleId * IlMachineState
+        =
+        let id = WaitHandleId state.Kernel.NextWaitHandleId
+
+        let event : EventState =
+            {
+                Mode = mode
+                Signaled = initialState
+                WaitQueue = []
+            }
+
+        let state =
+            state.MapKernel (fun kernel ->
+                { kernel with
+                    WaitHandles = kernel.WaitHandles |> Map.add id (WaitHandleState.Event event)
                     NextWaitHandleId = kernel.NextWaitHandleId + 1
                 }
             )
@@ -302,6 +352,43 @@ module WaitHandle =
             |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnWaitHandle id)
             |> WaitOutcome.Blocked
 
+    /// Internal: kind-private event waitOne. Acquiring a signalled `Auto`
+    /// event consumes the signal (clears `Signaled`); acquiring a
+    /// signalled `Manual` event leaves it signalled (every concurrent
+    /// waiter passes through). On an unsignalled event the thread parks
+    /// at the FIFO tail.
+    let private waitOneEvent
+        (thread : ThreadId)
+        (id : WaitHandleId)
+        (event : EventState)
+        (state : IlMachineState)
+        : WaitOutcome
+        =
+        if event.Signaled then
+            let event =
+                match event.Mode with
+                | EventResetMode.Auto ->
+                    { event with
+                        Signaled = false
+                    }
+                | EventResetMode.Manual -> event
+
+            state |> writeHandle id (WaitHandleState.Event event) |> WaitOutcome.Acquired
+        else
+            // Slow path: park at the tail of the FIFO wait queue.
+            // `setEvent` will wake (all parked waiters for Manual, the
+            // FIFO head for Auto); a guest can never observe Signaled =
+            // true while there is a parked waiter by invariant.
+            let event =
+                { event with
+                    WaitQueue = event.WaitQueue @ [ thread ]
+                }
+
+            state
+            |> writeHandle id (WaitHandleState.Event event)
+            |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnWaitHandle id)
+            |> WaitOutcome.Blocked
+
     /// Try to take ownership of `id` on behalf of `thread`. Dispatches
     /// by kind:
     ///
@@ -323,6 +410,7 @@ module WaitHandle =
         match handle with
         | WaitHandleState.Semaphore semaphore -> waitOneSemaphore thread id semaphore state
         | WaitHandleState.Mutex mutex -> waitOneMutex thread id mutex state
+        | WaitHandleState.Event event -> waitOneEvent thread id event state
 
     /// Non-blocking probe used to model the zero-timeout `WaitOne(0)`
     /// path. CoreCLR's contract for a zero millisecond timeout: try the
@@ -374,6 +462,20 @@ module WaitHandle =
                 state |> writeHandle id (WaitHandleState.Mutex mutex) |> TryWaitOutcome.Acquired
             | MutexOwnership.Held _ ->
                 // Held by another thread: no enqueue, no status flip.
+                TryWaitOutcome.TimedOut state
+        | WaitHandleState.Event event ->
+            if event.Signaled then
+                let event =
+                    match event.Mode with
+                    | EventResetMode.Auto ->
+                        { event with
+                            Signaled = false
+                        }
+                    | EventResetMode.Manual -> event
+
+                state |> writeHandle id (WaitHandleState.Event event) |> TryWaitOutcome.Acquired
+            else
+                // No enqueue, no status flip.
                 TryWaitOutcome.TimedOut state
 
     /// Semaphore-only non-blocking probe used by the prioritized
@@ -572,6 +674,77 @@ module WaitHandle =
 
                 Ok (), state
 
+    /// Signal an event. Behaviour depends on `Mode`:
+    ///
+    ///  - `Manual`: wake every parked waiter and set `Signaled = true`,
+    ///    so further waiters that arrive before a `ResetEvent` pass
+    ///    through immediately. The invariant `Signaled ⇒ WaitQueue = []`
+    ///    is preserved because we clear the queue as we wake.
+    ///  - `Auto`: if any waiter is parked, hand the signal directly to
+    ///    the FIFO head — wake exactly that thread and leave `Signaled =
+    ///    false`. If no waiter is parked, set `Signaled = true`; the next
+    ///    `WaitOne` will consume the signal as part of acquiring.
+    ///
+    /// Idempotent on already-signalled events. Never fails — the Win32
+    /// `SetEvent` only returns FALSE on an invalid handle, which is
+    /// caught by `expectEvent`.
+    let setEvent (id : WaitHandleId) (state : IlMachineState) : IlMachineState =
+        let handle = lookup id state
+        let event = expectEvent "WaitHandle.setEvent" id handle
+
+        match event.Mode with
+        | EventResetMode.Manual ->
+            // Wake every parked waiter, clear the queue, mark signalled.
+            let waiters = event.WaitQueue
+
+            let event =
+                { event with
+                    Signaled = true
+                    WaitQueue = []
+                }
+
+            let state = writeHandle id (WaitHandleState.Event event) state
+
+            waiters
+            |> List.fold (fun acc tid -> Scheduler.setThreadStatus tid ThreadStatus.Runnable acc) state
+        | EventResetMode.Auto ->
+            match event.WaitQueue with
+            | [] ->
+                // No waiter: latch the signal.
+                let event =
+                    { event with
+                        Signaled = true
+                    }
+
+                state |> writeHandle id (WaitHandleState.Event event)
+            | head :: rest ->
+                // Direct-handoff: wake the FIFO head only; Signaled stays
+                // false (the signal was consumed by the wakeup).
+                let event =
+                    { event with
+                        Signaled = false
+                        WaitQueue = rest
+                    }
+
+                state
+                |> writeHandle id (WaitHandleState.Event event)
+                |> Scheduler.setThreadStatus head ThreadStatus.Runnable
+
+    /// Clear the signalled flag. By invariant `WaitQueue` is empty if
+    /// `Signaled` was true, so there is nothing to do beyond flipping the
+    /// flag; if `Signaled` was already false `WaitQueue` may be non-empty
+    /// but the waiters are untouched. Idempotent.
+    let resetEvent (id : WaitHandleId) (state : IlMachineState) : IlMachineState =
+        let handle = lookup id state
+        let event = expectEvent "WaitHandle.resetEvent" id handle
+
+        let event =
+            { event with
+                Signaled = false
+            }
+
+        state |> writeHandle id (WaitHandleState.Event event)
+
     /// Tear down a wait handle. The Win32 contract is that `CloseHandle`
     /// runs after the handle is fully quiescent — no thread is currently
     /// waiting on it. We enforce that contract loudly: closing a handle
@@ -611,6 +784,12 @@ module WaitHandle =
             | MutexOwnership.Held (owner, recursionCount) ->
                 failwith
                     $"WaitHandle %O{id}: refusing to Close a mutex still held by thread %O{owner} (recursion count = %d{recursionCount}); the guest must ReleaseMutex before Disposing."
+        | WaitHandleState.Event event ->
+            match event.WaitQueue with
+            | [] -> ()
+            | waiters ->
+                failwith
+                    $"WaitHandle %O{id}: refusing to Close an event with %d{List.length waiters} thread(s) parked in BlockedOnWaitHandle (%A{waiters}); the guest must Set/Reset and let waiters drain before Disposing."
 
         state.MapKernel (fun kernel ->
             { kernel with

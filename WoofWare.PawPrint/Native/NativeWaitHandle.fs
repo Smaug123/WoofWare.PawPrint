@@ -3,9 +3,10 @@ namespace WoofWare.PawPrint
 /// Native handler for the Win32-shaped wait-handle QCalls reachable from
 /// CoreCLR-on-Unix: `CreateSemaphoreExW`, `ReleaseSemaphore`,
 /// `CloseHandle`, `WaitHandle_WaitOneCore`,
-/// `WaitHandle_WaitOnePrioritized`, `PAL_CreateMutexW`, and
-/// `ReleaseMutex`. On .NET 10 the BCL compiles `Semaphore.Windows.cs`
-/// and `Mutex.CoreCLR.Unix.cs` regardless of host, with
+/// `WaitHandle_WaitOnePrioritized`, `PAL_CreateMutexW`, `ReleaseMutex`,
+/// `CreateEventExW`, `SetEvent`, and `ResetEvent`. On .NET 10 the BCL
+/// compiles `Semaphore.Windows.cs`, `Mutex.CoreCLR.Unix.cs`, and
+/// `EventWaitHandle.Windows.cs` regardless of host, with
 /// `Libraries.Kernel32` rebound to `RuntimeHelpers.QCall`, so every
 /// Kernel32 LibraryImport routes to the runtime as a QCall whose entry
 /// point uses the Win32 wide-string name. `LowLevelLifoSemaphore.Unix
@@ -15,11 +16,11 @@ namespace WoofWare.PawPrint
 /// catches each entry point here and forwards it to the deterministic
 /// state machine in `WaitHandle.fs`.
 ///
-/// Semaphore and mutex variants are supported today; events,
-/// multi-handle waits, named handles (`PAL_OpenMutexW`), and non-zero
-/// finite timeouts are out of scope pending future PRs and a virtual
-/// clock. Zero-timeout waits (the deterministic non-blocking probe
-/// `WaitOne(0)` emits) are handled inline — no clock is needed.
+/// Semaphore, mutex, and event variants are supported today;
+/// multi-handle waits, named handles (`PAL_OpenMutexW`, `OpenEventW`),
+/// and non-zero finite timeouts are out of scope pending future PRs and
+/// a virtual clock. Zero-timeout waits (the deterministic non-blocking
+/// probe `WaitOne(0)` emits) are handled inline — no clock is needed.
 [<RequireQualifiedAccess>]
 module NativeWaitHandle =
 
@@ -92,6 +93,27 @@ module NativeWaitHandle =
         | other -> failwith $"%s{operation}: expected WaitHandle handle, got %O{other}"
 
     /// Decode the `IntPtr handle` argument and additionally require
+    /// that it refer to an Event (rather than a Semaphore, a Mutex, or
+    /// any future kind). Used by `SetEvent` and `ResetEvent`: these are
+    /// only legal against an event handle; routing a foreign-kind handle
+    /// through them is a guest bug that should fail loud at the decoder
+    /// rather than fall through to a kind-generic probe.
+    let private eventHandleOfArgument (operation : string) (arg : CliType) (state : IlMachineState) : WaitHandleId =
+        let id = waitHandleOfArgument operation arg
+
+        match Map.tryFind id state.Kernel.WaitHandles with
+        | Some (WaitHandleState.Event _) -> id
+        | Some (WaitHandleState.Semaphore _) ->
+            failwith
+                $"%s{operation}: WaitHandle %O{id} is a Semaphore, but this entry point is only legal against an Event. This is a guest bug — the BCL only calls this through EventWaitHandle."
+        | Some (WaitHandleState.Mutex _) ->
+            failwith
+                $"%s{operation}: WaitHandle %O{id} is a Mutex, but this entry point is only legal against an Event. This is a guest bug — the BCL only calls this through EventWaitHandle."
+        | None ->
+            failwith
+                $"%s{operation}: WaitHandle %O{id} is not registered (use-after-free on a closed handle, or never created)."
+
+    /// Decode the `IntPtr handle` argument and additionally require
     /// that it refer to a Semaphore (rather than a Mutex or any future
     /// kind). Used by `WaitHandle_WaitOnePrioritized`: the
     /// PAL-prioritized waiter is the LowLevelLifoSemaphore park
@@ -106,6 +128,9 @@ module NativeWaitHandle =
         | Some (WaitHandleState.Mutex _) ->
             failwith
                 $"%s{operation}: WaitHandle %O{id} is a Mutex, but this entry point is only legal against a Semaphore (the BCL's LowLevelLifoSemaphore is the sole caller). This is a guest bug."
+        | Some (WaitHandleState.Event _) ->
+            failwith
+                $"%s{operation}: WaitHandle %O{id} is an Event, but this entry point is only legal against a Semaphore (the BCL's LowLevelLifoSemaphore is the sole caller). This is a guest bug."
         | None ->
             failwith
                 $"%s{operation}: WaitHandle %O{id} is not registered (use-after-free on a closed handle, or never created)."
@@ -130,6 +155,46 @@ module NativeWaitHandle =
         match CliType.unwrapPrimitiveLikeDeep arg with
         | CliType.Numeric (CliNumericType.Int32 i) -> i <> 0
         | other -> failwith $"%s{operation}: expected %s{argName} to be Int32 BOOL, got %O{other}"
+
+    /// Decode a UInt32 argument. PawPrint models a CLI UInt32 as a
+    /// signed Int32 cell while preserving the low 32 bits (see
+    /// `NativeCall.cliUInt32`); we reverse that here.
+    let private uint32OfArgument (operation : string) (argName : string) (arg : CliType) : uint32 =
+        match CliType.unwrapPrimitiveLikeDeep arg with
+        | CliType.Numeric (CliNumericType.Int32 i) -> uint32 i
+        | other -> failwith $"%s{operation}: expected %s{argName} to be UInt32, got %O{other}"
+
+    /// `CREATE_EVENT_MANUAL_RESET = 0x1` — when set on `CreateEventExW`'s
+    /// `flags`, the new event is `Manual`; cleared means `Auto`. See
+    /// `Interop.EventWaitHandle.cs`.
+    let private createEventManualReset : uint32 = 0x1u
+
+    /// `CREATE_EVENT_INITIAL_SET = 0x2` — when set, the new event is
+    /// created in the signalled state. See `Interop.EventWaitHandle.cs`.
+    let private createEventInitialSet : uint32 = 0x2u
+
+    /// Parse `CreateEventExW`'s `flags` argument into the two documented
+    /// bits (`CREATE_EVENT_MANUAL_RESET`, `CREATE_EVENT_INITIAL_SET`).
+    /// Any unknown bit fails loud — a guest passing a flag CoreLib does
+    /// not produce is using an unsupported Win32 extension we have not
+    /// modelled. The two known bits compose freely.
+    let private parseCreateEventFlags (operation : string) (flags : uint32) : bool * EventResetMode =
+        let known = createEventManualReset ||| createEventInitialSet
+        let unknown = flags &&& ~~~known
+
+        if unknown <> 0u then
+            failwith
+                $"%s{operation}: unrecognised CreateEventExW flag bits: 0x%x{unknown} (known bits: CREATE_EVENT_MANUAL_RESET=0x1, CREATE_EVENT_INITIAL_SET=0x2)"
+
+        let initialState = (flags &&& createEventInitialSet) <> 0u
+
+        let mode =
+            if (flags &&& createEventManualReset) <> 0u then
+                EventResetMode.Manual
+            else
+                EventResetMode.Auto
+
+        initialState, mode
 
     /// Decode the UTF-16 `name` pointer for `CreateSemaphoreExW`. CoreLib
     /// passes `null` for unnamed semaphores; named semaphores are out of
@@ -523,5 +588,85 @@ module NativeWaitHandle =
                 |> Tuple.withRight WhatWeDid.Executed
                 |> ExecutionResult.stepped
                 |> Some
+
+        | "CreateEventExW",
+          "System.Private.CoreLib",
+          "Kernel32",
+          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt16)
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32 ],
+          MethodReturnType.Returns _ ->
+            // `EventWaitHandle.Windows.cs` declares the return as
+            // `SafeWaitHandle`, a reference type at the IL boundary; the
+            // LibraryImport stub marshals it as `IntPtr` over the wire.
+            // We don't constrain the return type pattern beyond "has a
+            // return" for the same reason as `PAL_CreateMutexW`.
+            let operation = "CreateEventExW"
+            // CoreLib's `CreateEventCore(initialState, mode)` passes
+            // `lpSecurityAttributes = 0`. Non-null is reserved for the
+            // named CurrentUserOnly path which is unreachable on Unix
+            // (named events PNSE before reaching the QCall).
+            requireNullIntPtr operation "lpSecurityAttributes" instruction.Arguments.[0]
+            // Named events on Unix throw `PlatformNotSupportedException`
+            // at `EventWaitHandle.Windows.cs:55`, so a non-null name
+            // reaching this QCall is a guest bug — strict null until the
+            // named-handle registry lands alongside named semaphores /
+            // mutexes.
+            requireNullName operation instruction.Arguments.[1]
+
+            let flags = uint32OfArgument operation "flags" instruction.Arguments.[2]
+            let initialState, mode = parseCreateEventFlags operation flags
+            // `dwDesiredAccess` is hardcoded to MAXIMUM_ALLOWED |
+            // SYNCHRONIZE | EVENT_MODIFY_STATE by the BCL; we don't
+            // model access rights, so decode for shape validation only.
+            let _desiredAccess =
+                uint32OfArgument operation "dwDesiredAccess" instruction.Arguments.[3]
+
+            let id, state = WaitHandle.createEvent initialState mode state
+
+            state
+            |> withLastSystemError 0
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.WaitHandlePtr id)) ctx.Thread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.stepped
+            |> Some
+
+        | "SetEvent",
+          "System.Private.CoreLib",
+          "Kernel32",
+          [ _ ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            // The single argument is declared as `SafeWaitHandle` in
+            // `Interop.EventWaitHandle.cs`; the LibraryImport stub
+            // marshals it as `IntPtr` at the QCall boundary. Decode
+            // through `eventHandleOfArgument`, which kind-checks the
+            // handle and rejects null / non-event handles loudly.
+            let operation = "SetEvent"
+            let id = eventHandleOfArgument operation instruction.Arguments.[0] state
+            let state = WaitHandle.setEvent id state
+
+            state
+            |> withLastSystemError 0
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) ctx.Thread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.stepped
+            |> Some
+
+        | "ResetEvent",
+          "System.Private.CoreLib",
+          "Kernel32",
+          [ _ ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            let operation = "ResetEvent"
+            let id = eventHandleOfArgument operation instruction.Arguments.[0] state
+            let state = WaitHandle.resetEvent id state
+
+            state
+            |> withLastSystemError 0
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) ctx.Thread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.stepped
+            |> Some
 
         | _ -> None
