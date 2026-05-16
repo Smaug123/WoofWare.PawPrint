@@ -94,7 +94,17 @@ module IlMachineStateExecution =
             else
                 None
 
+        // When dispatching through a variant interface (ECMA-335 §I.8.7), the MethodImpl's
+        // declaration may be a variance-compatible — not identical — instantiation of the
+        // call target's interface. In that case the body's parameter types are the
+        // declared interface's view (e.g. `IContravariant<object>.Set(object)`) while the
+        // call site has the relaxed view (`IContravariant<string>.Set(string)`), so an
+        // exact parameter-type comparison would wrongly reject the override. Allowing
+        // contravariant parameter assignability matches the variance rule for `in T`
+        // (call-site parameters are assignable to body parameters); `out T` interfaces
+        // never put `T` in parameter position, so this check reduces to equality there.
         let signatureMatchesTarget
+            (paramsAllowVariance : bool)
             (candidateAssembly : AssemblyName)
             (candidateTypeGenerics : ImmutableArray<ConcreteTypeHandle>)
             (candidateSignature : TypeMethodSignature<TypeDefn>)
@@ -133,11 +143,38 @@ module IlMachineStateExecution =
                 | MethodReturnType.Void, MethodReturnType.Returns _
                 | MethodReturnType.Returns _, MethodReturnType.Void -> state, false
 
-            state,
-            retAssignable
-            && candidateSignature.ParameterTypes = methodToCall.Signature.ParameterTypes
+            if not retAssignable then
+                state, false
+            elif not paramsAllowVariance then
+                state, candidateSignature.ParameterTypes = methodToCall.Signature.ParameterTypes
+            elif
+                candidateSignature.ParameterTypes.Length
+                <> methodToCall.Signature.ParameterTypes.Length
+            then
+                state, false
+            else
+                let mutable state = state
+                let mutable allMatch = true
+                let mutable i = 0
+
+                while allMatch && i < candidateSignature.ParameterTypes.Length do
+                    let candParam = candidateSignature.ParameterTypes.[i]
+                    let targetParam = methodToCall.Signature.ParameterTypes.[i]
+
+                    if candParam = targetParam then
+                        i <- i + 1
+                    else
+                        let state', ok =
+                            isAssignableFrom loggerFactory baseClassTypes targetParam candParam state
+
+                        state <- state'
+                        allMatch <- ok
+                        i <- i + 1
+
+                state, allMatch
 
         let methodReferenceMatchesTarget
+            (paramsAllowVariance : bool)
             (candidateTypeGenerics : ImmutableArray<ConcreteTypeHandle>)
             (meth : WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>)
             (state : IlMachineState)
@@ -146,7 +183,12 @@ module IlMachineStateExecution =
             if meth.Name <> methodToCall.Name then
                 state, false
             else
-                signatureMatchesTarget meth.DeclaringType.Assembly candidateTypeGenerics meth.Signature state
+                signatureMatchesTarget
+                    paramsAllowVariance
+                    meth.DeclaringType.Assembly
+                    candidateTypeGenerics
+                    meth.Signature
+                    state
 
         let methodMatches
             (candidateTypeGenerics : ImmutableArray<ConcreteTypeHandle>)
@@ -179,7 +221,7 @@ module IlMachineStateExecution =
             else
 
             let state, matches =
-                signatureMatchesTarget meth.DeclaringType.Assembly candidateTypeGenerics meth.Signature state
+                signatureMatchesTarget false meth.DeclaringType.Assembly candidateTypeGenerics meth.Signature state
 
             if matches then
                 Some (meth, Some meth.Name = interfaceExplicitNamedMethod), state
@@ -348,11 +390,15 @@ module IlMachineStateExecution =
                             },
                             handle
 
-                    let state, declarationTypeMatches =
+                    // declarationTypeMatches is true when the MethodImpl's declared interface
+                    // matches the dispatch target; varianceInPlay tracks whether the match
+                    // relied on generic variance (vs identical instantiations), so we know to
+                    // relax the parameter check accordingly.
+                    let state, declarationTypeMatches, varianceInPlay =
                         if declaration.DeclaringType.Identity <> methodToCall.DeclaringType.Identity then
-                            state, false
+                            state, false, false
                         elif declarationTypeGenerics = methodToCall.DeclaringType.Generics then
-                            state, true
+                            state, true, false
                         else
                             let state, fromH =
                                 ensureRegistered
@@ -370,7 +416,9 @@ module IlMachineStateExecution =
                                     methodToCall.DeclaringType.Name
                                     methodToCall.DeclaringType.Generics
 
-                            isAssignableFrom loggerFactory baseClassTypes fromH toH state
+                            let state, matches = isAssignableFrom loggerFactory baseClassTypes fromH toH state
+
+                            state, matches, matches
 
                     if not declarationTypeMatches then
                         state, acc
@@ -378,7 +426,7 @@ module IlMachineStateExecution =
 
                     let matches, state =
                         let state, matches =
-                            methodReferenceMatchesTarget declarationTypeGenerics declaration state
+                            methodReferenceMatchesTarget varianceInPlay declarationTypeGenerics declaration state
 
                         matches, state
 
