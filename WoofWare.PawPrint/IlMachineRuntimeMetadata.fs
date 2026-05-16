@@ -1285,9 +1285,13 @@ module IlMachineRuntimeMetadata =
             match tryGetConcreteTypeInfo state current with
             | None -> walkBase state current
             | Some (currentCt, _) ->
-                // If two types share the same definition but differ in generics, check whether
-                // variance could apply. Classes are invariant so the answer is definitively false.
-                // Interfaces and delegates can have variance, so we must crash rather than guess.
+                // Same TypeDef but different instantiations is the variance hook
+                // (ECMA-335 §I.8.7.2 / CoreCLR
+                // `CanCastByVarianceToInterfaceOrDelegate`). Classes are invariant
+                // by spec, so when none of the parameters declare variance the
+                // answer is definitively false. Interfaces and delegates can
+                // declare `+`/`-` on each parameter; per-parameter assignability
+                // resolves the cast.
                 let sameDefnDifferentGenerics =
                     match AllConcreteTypes.lookup targetType state.ConcreteTypes with
                     | Some targetCt when
@@ -1307,7 +1311,7 @@ module IlMachineRuntimeMetadata =
                         |> Seq.exists (fun (_, metadata) -> metadata.Variance.IsSome)
 
                     if hasVariantGenericParams then
-                        failwith $"TODO: generic variance check needed: is %O{currentCt} assignable to %O{targetCt}?"
+                        checkVariantGenericArgs state currentCt targetCt targetTypeInfo
                     else
                         // All generic parameters are invariant; same definition + different generics = not assignable.
                         state, false
@@ -1318,6 +1322,62 @@ module IlMachineRuntimeMetadata =
                         state, true
                     else
                         walkBase state current
+
+        // ECMA-335 §I.8.7 / CoreCLR `MethodTable::CanCastByVarianceToInterfaceOrDelegate`:
+        // when two generic instantiations share the same TypeDef and the
+        // definition declares variance on at least one parameter, the cast
+        // reduces to a per-parameter check.
+        //   - Identical arguments are always accepted.
+        //   - Covariant (`out`) parameter: `fromArg` must be a reference type
+        //     and reference-assignable to `toArg`. (CoreCLR's `IsBoxedAndCanCastTo`
+        //     rejects value-typed `fromArg` regardless of the declared variance —
+        //     boxing changes identity, and the variance walk assumes the
+        //     argument is in its boxed form.)
+        //   - Contravariant (`in`) parameter: `toArg` must be a reference type
+        //     and reference-assignable to `fromArg`.
+        //   - Invariant parameter: arguments must be identical, so a difference
+        //     here short-circuits to `false`.
+        // Recursion into `isConcreteTypeAssignableTo` for the per-argument check
+        // is necessary because variance composes (e.g. `Func<Func<Derived>>` ⊑
+        // `Func<Func<Base>>` for the nested covariant `out` parameter).
+        and checkVariantGenericArgs
+            (state : IlMachineState)
+            (currentCt : ConcreteType<ConcreteTypeHandle>)
+            (targetCt : ConcreteType<ConcreteTypeHandle>)
+            (targetTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+            : IlMachineState * bool
+            =
+            let rec loop (state : IlMachineState) (i : int) : IlMachineState * bool =
+                if i >= currentCt.Generics.Length then
+                    state, true
+                else
+                    let fromArg = currentCt.Generics.[i]
+                    let toArg = targetCt.Generics.[i]
+
+                    if fromArg = toArg then
+                        loop state (i + 1)
+                    else
+                        let _, paramMetadata = targetTypeInfo.Generics.[i]
+
+                        let state, argOk =
+                            match paramMetadata.Variance with
+                            | None ->
+                                // Invariant parameter with non-identical arguments.
+                                state, false
+                            | Some GenericVariance.Covariant ->
+                                if not (isReferenceTypeHandle state fromArg) then
+                                    state, false
+                                else
+                                    isConcreteTypeAssignableTo loggerFactory baseClassTypes state fromArg toArg
+                            | Some GenericVariance.Contravariant ->
+                                if not (isReferenceTypeHandle state toArg) then
+                                    state, false
+                                else
+                                    isConcreteTypeAssignableTo loggerFactory baseClassTypes state toArg fromArg
+
+                        if argOk then loop state (i + 1) else state, false
+
+            loop state 0
 
         // Returns true if `handle` is a CLR enum value type — a nominal type whose
         // immediate runtime base is `System.Enum`. Used by the array-element
