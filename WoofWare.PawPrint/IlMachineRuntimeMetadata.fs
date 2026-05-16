@@ -616,13 +616,60 @@ module IlMachineRuntimeMetadata =
         | None when String.IsNullOrEmpty ty.Namespace -> ty.Name
         | None -> $"{ty.Namespace}.{ty.Name}"
 
+    /// Render a parameter's type using the CLR's stack-trace convention:
+    /// `Type.Name` (no namespace, no assembly) with structural wrappers applied recursively.
+    /// Matches CoreCLR's `StackTrace.ToString` which appends each parameter type's `.Name`,
+    /// and is distinct from full reflection name rendering (cf. `NativeRuntimeType.fs`
+    /// `concreteTypeHandleName`, which honours the FormatNamespace / FormatAssembly bits).
+    let rec private renderParameterTypeName (state : IlMachineState) (handle : ConcreteTypeHandle) : string =
+        match handle with
+        | ConcreteTypeHandle.Byref inner -> renderParameterTypeName state inner + "&"
+        | ConcreteTypeHandle.Pointer inner -> renderParameterTypeName state inner + "*"
+        | ConcreteTypeHandle.OneDimArrayZero inner -> renderParameterTypeName state inner + "[]"
+        | ConcreteTypeHandle.Array (inner, rank) ->
+            let dims = if rank <= 1 then "*" else System.String (',', rank - 1)
+            renderParameterTypeName state inner + "[" + dims + "]"
+        // CoreCLR's TypeString::AppendType emits the empty string for FnPtr when FormatNamespace
+        // is unset; stack-trace parameter rendering uses the no-namespace form, so match that.
+        | ConcreteTypeHandle.FunctionPointer _ -> ""
+        | ConcreteTypeHandle.Concrete _ ->
+            match AllConcreteTypes.lookup handle state.ConcreteTypes with
+            | None -> "<unresolved>"
+            | Some ct ->
+                if ct.Generics.IsEmpty then
+                    ct.Name
+                else
+                    let args =
+                        ct.Generics |> Seq.map (renderParameterTypeName state) |> String.concat ","
+
+                    $"%s{ct.Name}[%s{args}]"
+
     let private renderExceptionStackFrame
         (state : IlMachineState)
         (frame : ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         : string
         =
         let typeName = concreteTypeFullName state frame.Method.DeclaringType
-        $"   at %s{typeName}.%s{frame.Method.Name}()"
+
+        // Metadata Parameters skip SequenceNumber=0 (`this` / ref return), so signature index `i`
+        // pairs with the parameter whose SequenceNumber is `i + 1` regardless of static-ness.
+        let parameterByPosition =
+            frame.Method.Parameters
+            |> Seq.map (fun p -> p.SequenceNumber, p.Name)
+            |> Map.ofSeq
+
+        let paramText =
+            frame.Method.Signature.ParameterTypes
+            |> List.mapi (fun i ty ->
+                let typeStr = renderParameterTypeName state ty
+
+                match Map.tryFind (i + 1) parameterByPosition with
+                | Some name when not (String.IsNullOrEmpty name) -> $"%s{typeStr} %s{name}"
+                | _ -> typeStr
+            )
+            |> String.concat ", "
+
+        $"   at %s{typeName}.%s{frame.Method.Name}(%s{paramText})"
 
     let private renderExceptionStackTrace
         (state : IlMachineState)
