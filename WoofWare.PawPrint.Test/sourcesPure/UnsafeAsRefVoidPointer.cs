@@ -54,6 +54,32 @@ namespace UnsafeAsRefVoidPointer
             ref int normalised = ref Unsafe.AsRef<int>(normalisedBytes);
             if (!Unsafe.IsNullRef(in normalised)) return 8;
 
+            // `Unsafe.AsPointer` must round-trip the placeholder back to the
+            // original bit pattern. Casting that pointer to IntPtr/nint must
+            // give the original literal so downstream code can compare it
+            // against the magic constant it threaded through.
+            void* roundTrip = Unsafe.AsPointer(ref oneRef);
+            if ((nint)roundTrip != 1) return 9;
+
+            void* advancedRoundTrip = Unsafe.AsPointer(ref advanced);
+            if ((nint)advancedRoundTrip != 9) return 10;
+
+            // `Unsafe.ByteOffset` between two placeholders is the bit
+            // difference, matching the IL `sub` semantics.
+            ref byte byteOne = ref Unsafe.AsRef<byte>((void*)1);
+            ref byte byteNine = ref Unsafe.AsRef<byte>((void*)9);
+            nint delta = Unsafe.ByteOffset(ref byteOne, ref byteNine);
+            if (delta != 8) return 11;
+
+            nint reverseDelta = Unsafe.ByteOffset(ref byteNine, ref byteOne);
+            if (reverseDelta != -8) return 12;
+
+            // Null is bit pattern 0; ByteOffset with Null on one side is
+            // still well-defined as bit subtraction.
+            ref byte byteZero = ref Unsafe.AsRef<byte>((void*)0);
+            nint zeroDelta = Unsafe.ByteOffset(ref byteZero, ref byteOne);
+            if (zeroDelta != 1) return 13;
+
             return 0;
         }
     }

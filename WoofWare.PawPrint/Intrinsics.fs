@@ -463,6 +463,15 @@ module Intrinsics =
 
             let toPush =
                 match arg with
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits) ->
+                    // The placeholder *is* a native-int bit pattern; the original
+                    // `Unsafe.AsRef<T>(void* source)` round-trip is documented to
+                    // recover `source`. Surface those bits as a verbatim native
+                    // pointer so subsequent `conv.u`/`(IntPtr)` casts and direct
+                    // comparisons (`p == (void*)1`) see the raw value rather
+                    // than a managed-pointer wrapper that no other operand
+                    // shape can match.
+                    CliRuntimePointer.Verbatim bits
                 | EvalStackValue.ManagedPointer ptr -> CliRuntimePointer.Managed ptr
                 | x -> failwith $"TODO: Unsafe.AsPointer(%O{x})"
 
@@ -2055,6 +2064,29 @@ module Intrinsics =
             let tSize, state =
                 let tZero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes t
                 CliType.sizeOf tZero, state
+
+            // `Unsafe.AsRef<T>((void*)bits)` byrefs are bit patterns, not
+            // anchored byrefs. `Unsafe.ByteOffset` on a pair of them is just
+            // the bit-difference, matching the IL `sub` semantics implemented
+            // in BinaryArithmetic. Null is the placeholder for bits=0, so
+            // pairings with Null are still well-defined as bit subtraction.
+            let asPlaceholderBits (v : EvalStackValue) : int64 option =
+                match v with
+                | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> Some 0L
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits) -> Some bits
+                | _ -> None
+
+            match asPlaceholderBits origin, asPlaceholderBits target with
+            | Some originBits, Some targetBits ->
+                let byteOffset = targetBits - originBits
+
+                state
+                |> IlMachineState.pushToEvalStack'
+                    (EvalStackValue.NativeInt (NativeIntSource.Verbatim byteOffset))
+                    currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Some
+            | _ ->
 
             // ByteOffset measures the byte distance between two byref address
             // targets. The generic T on the method is only the static view
