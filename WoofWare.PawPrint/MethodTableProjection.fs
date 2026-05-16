@@ -922,21 +922,34 @@ module internal MethodTableProjection =
             | "PerInstInfo" ->
                 // ElementType and PerInstInfo share a FieldOffset on the
                 // CoreCLR struct: only one is meaningful per MethodTable.
-                // PerInstInfo holds a `MethodTable***` that walks the type's
-                // per-instance dictionary table (first dictionary contains
-                // the first generic arg, followed by the canonical
-                // dictionary slots). Only generic instantiations have a
-                // meaningful PerInstInfo; refuse other shapes to keep the
-                // union faithful.
+                // PerInstInfo holds `MethodTable***` indexed by dictionary
+                // slot. For a type with `N` per-instance dictionaries the
+                // *first* slot contains the *base* type's dictionary and the
+                // *last* slot contains the type's own — PawPrint only walks
+                // the synthetic chain for types with a single dictionary
+                // whose own generic args occupy that one slot. The current
+                // call site is `CastHelpers.IsNullableForType`, so we gate
+                // strictly to `System.Nullable\`1` to keep the deref correct
+                // by construction; other generic instantiations would need
+                // explicit dictionary-index modelling before this can be
+                // broadened.
                 match methodTableFor with
                 | RuntimeTypeHandleTarget.Closed handle ->
                     match handle with
                     | ConcreteTypeHandle.Concrete _ ->
                         let concreteType, _ = concreteTypeInfoOrFail state handle
 
-                        if concreteType.Generics.IsEmpty then
+                        let isNullable =
+                            concreteType.Namespace = "System"
+                            && concreteType.Name = "Nullable`1"
+                            && concreteType.Assembly.FullName = baseClassTypes.Corelib.Name.FullName
+
+                        if not isNullable then
                             failwith
-                                $"MethodTable::PerInstInfo projection refused for non-generic %O{handle}: PerInstInfo is meaningful only for generic instantiations (it aliases ElementType on the MethodTable struct)"
+                                $"MethodTable::PerInstInfo projection refused for %O{handle}: PawPrint only models the synthetic PerInstInfo dictionary chain for System.Nullable`1 today; broader support requires explicit dictionary-index modelling because the first PerInstInfo slot holds the base type's dictionary in inherited generic chains"
+                        elif concreteType.Generics.IsEmpty then
+                            failwith
+                                $"MethodTable::PerInstInfo projection refused for %O{handle}: System.Nullable`1 instantiation unexpectedly has no generic arguments"
                         else
                             Some (CliType.RuntimePointer (CliRuntimePointer.PerInstInfoPtr handle), state)
                     | ConcreteTypeHandle.OneDimArrayZero _

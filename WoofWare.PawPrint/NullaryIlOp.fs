@@ -756,10 +756,13 @@ module NullaryIlOp =
                     $"Ldind %O{targetType} on PerInstInfoPtr %O{handle} is not modelled; only LdindI walks the synthetic PerInstInfo chain"
         | EvalStackValue.NativeInt (NativeIntSource.PerInstDictPtr handle) ->
             // Second deref of the `MethodTable*** PerInstInfo` chain: the
-            // first slot of the first per-instance dictionary holds the
-            // type's first generic argument's MethodTable*. PawPrint only
-            // models that slot — the rest of the dictionary layout is not
-            // walked.
+            // first slot of a `System.Nullable\`1` instantiation's
+            // single per-instance dictionary holds T's MethodTable*. The
+            // projection that minted this synthetic value already gates to
+            // Nullable; we re-check here as a defense-in-depth invariant
+            // because `Generics.[0]` is only the correct slot when the type
+            // has exactly one dictionary (the inherited-dictionary layout
+            // for derived generics would put the base's dictionary first).
             match targetType with
             | LdindI ->
                 let concreteType =
@@ -768,9 +771,18 @@ module NullaryIlOp =
                     | None ->
                         failwith $"Ldind on PerInstDictPtr: handle %O{handle} was not registered in AllConcreteTypes"
 
+                let isNullable =
+                    concreteType.Namespace = "System"
+                    && concreteType.Name = "Nullable`1"
+                    && concreteType.Assembly.FullName = corelib.Corelib.Name.FullName
+
+                if not isNullable then
+                    failwith
+                        $"Ldind on PerInstDictPtr %O{handle}: PawPrint only models the synthetic PerInstInfo dictionary chain for System.Nullable`1 today; broader support requires explicit dictionary-index modelling"
+
                 if concreteType.Generics.IsEmpty then
                     failwith
-                        $"Ldind on PerInstDictPtr %O{handle}: target is non-generic; PerInstInfo chain is meaningful only for generic instantiations"
+                        $"Ldind on PerInstDictPtr %O{handle}: System.Nullable`1 instantiation unexpectedly has no generic arguments"
 
                 let firstArg = concreteType.Generics.[0]
 

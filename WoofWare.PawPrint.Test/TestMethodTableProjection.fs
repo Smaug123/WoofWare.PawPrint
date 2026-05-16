@@ -1258,7 +1258,7 @@ public unsafe struct PointerWrapper
             ImmutableArray.Empty
 
     [<Test>]
-    let ``PerInstInfo projection succeeds for closed generic instantiation`` () : unit =
+    let ``PerInstInfo projection succeeds for System.Nullable`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
         use _loggerFactoryResource = loggerFactory
         let intHandle = handleFor bct.Int32
@@ -1284,7 +1284,38 @@ public unsafe struct PointerWrapper
             )
 
         ex.Message |> shouldContainText "PerInstInfo"
-        ex.Message |> shouldContainText "non-generic"
+        ex.Message |> shouldContainText "Nullable"
+
+    [<Test>]
+    let ``PerInstInfo projection refuses non-Nullable closed generics`` () : unit =
+        // List<int> has a single dictionary (no generic ancestors) so in
+        // principle the first PerInstInfo slot would hold int's MethodTable,
+        // but PawPrint only commits to the Nullable layout today. The
+        // classifier must refuse this case to keep its contract truthful;
+        // broadening requires explicit dictionary-index modelling for types
+        // whose inheritance chain contributes additional dictionaries.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+        let intHandle = handleFor bct.Int32
+
+        let state, listIntHandle =
+            topLevelType "System.Collections.Generic" "List`1"
+            |> DumpedAssembly.typeInfoToTypeDefn' bct (stateWithLogger loggerFactory)._LoadedAssemblies
+            |> IlMachineState.concretizeType
+                loggerFactory
+                bct
+                (stateWithLogger loggerFactory)
+                corelib.Name
+                (ImmutableArray.Create intHandle)
+                ImmutableArray.Empty
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () ->
+                projectFromState loggerFactory state "PerInstInfo" listIntHandle |> ignore
+            )
+
+        ex.Message |> shouldContainText "PerInstInfo"
+        ex.Message |> shouldContainText "Nullable"
 
     [<Test>]
     let ``PerInstInfo projection refuses array handles`` () : unit =
