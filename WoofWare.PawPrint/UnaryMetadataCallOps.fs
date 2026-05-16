@@ -34,13 +34,14 @@ module internal UnaryMetadataCallOps =
 
     /// Pop `rank` Int32 indices off the eval stack — the topmost popped value is the
     /// rightmost index (dimension `rank-1`) — followed by the array reference. Returns
-    /// the indices in dimension order along with the resolved array address.
+    /// the indices in dimension order along with the array address (`None` if the
+    /// receiver was null; callers should raise `NullReferenceException`).
     let private popMultiDimIndicesAndArray
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (thread : ThreadId)
         (rank : int)
         (state : IlMachineState)
-        : int[] * ManagedHeapAddress * IlMachineState
+        : int[] * ManagedHeapAddress option * IlMachineState
         =
         let indices = Array.zeroCreate<int> rank
         let mutable s = state
@@ -56,12 +57,7 @@ module internal UnaryMetadataCallOps =
                 failwith $"unexpectedly popped non-Int32 value %O{other} as multi-dim array index at dimension %d{i}"
 
         let arrEval, s = IlMachineState.popEvalStack thread s
-
-        let arrAddr =
-            match IlMachineState.evalStackValueToObjectRef baseClassTypes s arrEval with
-            | Some addr -> addr
-            | None -> failwith "TODO: multi-dim array access on null reference; should raise NullReferenceException"
-
+        let arrAddr = IlMachineState.evalStackValueToObjectRef baseClassTypes s arrEval
         indices, arrAddr, s
 
     /// Implements `call instance void T[<rank>]::Set(int32, ..., int32, T)` — the
@@ -106,8 +102,19 @@ module internal UnaryMetadataCallOps =
 
         let value, state = IlMachineState.popEvalStack thread state
 
-        let indices, arrAddr, state =
+        let indices, arrAddrOpt, state =
             popMultiDimIndicesAndArray baseClassTypes thread rank state
+
+        match arrAddrOpt with
+        | None ->
+            // Don't advance PC: exception dispatch needs the faulting instruction's offset.
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                baseClassTypes
+                baseClassTypes.NullReferenceException
+                thread
+                state
+        | Some arrAddr ->
 
         let arrObj =
             match state.ManagedHeap.Arrays.TryGetValue arrAddr with
@@ -119,7 +126,6 @@ module internal UnaryMetadataCallOps =
                 $"multi-dim array Set: rank %d{rank} from metadata does not match the allocated array's rank %d{arrObj.Lengths.Length} at %O{arrAddr}"
 
         if indicesOutOfRange arrObj.Lengths indices then
-            // Don't advance PC: exception dispatch needs the faulting instruction's offset.
             IlMachineStateExecution.raiseRuntimeException
                 loggerFactory
                 baseClassTypes
@@ -133,7 +139,7 @@ module internal UnaryMetadataCallOps =
         let typeGenerics = currentMethod.DeclaringType.Generics
         let methodGenerics = currentMethod.Generics
 
-        let state, zeroOfType, _elementHandle =
+        let state, zeroOfType, elementHandle =
             IlMachineState.cliTypeZeroOf
                 loggerFactory
                 baseClassTypes
@@ -142,6 +148,25 @@ module internal UnaryMetadataCallOps =
                 typeGenerics
                 methodGenerics
                 state
+
+        // ECMA-335 III.4.x: covariant array stores raise ArrayTypeMismatchException when
+        // the value is not assignment-compatible with the array's actual element type.
+        // Full assignment compatibility isn't modelled here; we use the conservative check
+        // "metadata element handle equals the array's stored element handle". C# never emits
+        // covariant mdarray Set so the false-positive surface is hand-rolled IL only.
+        let arrayElementHandle =
+            match arrObj.ConcreteType with
+            | ConcreteTypeHandle.Array (h, _) -> h
+            | other -> failwith $"BUG: multi-dim array Set: array at %O{arrAddr} has non-Array ConcreteType %O{other}"
+
+        if elementHandle <> arrayElementHandle then
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                baseClassTypes
+                baseClassTypes.ArrayTypeMismatchException
+                thread
+                state
+        else
 
         let coerced = EvalStackValue.toCliTypeCoerced zeroOfType value
 
@@ -181,8 +206,19 @@ module internal UnaryMetadataCallOps =
             failwith
                 $"TODO: multi-dim array Get for rank %d{rank} had %d{methodSig.ParameterTypes.Length} parameters; only the zero-lower-bound form (%d{rank} Int32 indices) is implemented"
 
-        let indices, arrAddr, state =
+        let indices, arrAddrOpt, state =
             popMultiDimIndicesAndArray baseClassTypes thread rank state
+
+        match arrAddrOpt with
+        | None ->
+            // Don't advance PC: exception dispatch needs the faulting instruction's offset.
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                baseClassTypes
+                baseClassTypes.NullReferenceException
+                thread
+                state
+        | Some arrAddr ->
 
         let arrObj =
             match state.ManagedHeap.Arrays.TryGetValue arrAddr with
