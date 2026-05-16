@@ -145,6 +145,44 @@ module NativeWaitHandle =
             failwith
                 $"%s{operation}: named wait handles are not yet supported; expected a null name pointer, got %O{other}"
 
+    /// Decode the UTF-16 `name` pointer for `PAL_CreateMutexW`. Unlike
+    /// `Semaphore.Windows.cs`, which throws `PlatformNotSupportedException`
+    /// before ever passing a non-null name to the PAL, `Mutex.CoreCLR
+    /// .Unix.cs` treats `string.IsNullOrEmpty(name)` as unnamed at the
+    /// options layer but still flows the original `name` string through
+    /// the LibraryImport marshaller. An empty string therefore arrives
+    /// at this QCall as a non-null UTF-16 pointer to a single NUL char;
+    /// CoreLib still considers the call unnamed. Accept null or empty
+    /// UTF-16 here, and fail loud for any non-empty name — named
+    /// mutexes are out of scope until the named-handle registry lands.
+    let private requireUnnamedMutex
+        (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (arg : CliType)
+        : unit
+        =
+        match CliType.unwrapPrimitiveLikeDeep arg with
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null))
+        | CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L)
+        | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null) -> ()
+        | CliType.RuntimePointer (CliRuntimePointer.Managed ptr) ->
+            let name = NativeCall.readNullTerminatedUtf16 operation baseClassTypes state ptr
+
+            if name <> "" then
+                failwith
+                    $"%s{operation}: named mutexes are not yet supported; expected an unnamed handle (null or empty name) but got '%s{name}'"
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ptr)) ->
+            let name = NativeCall.readNullTerminatedUtf16 operation baseClassTypes state ptr
+
+            if name <> "" then
+                failwith
+                    $"%s{operation}: named mutexes are not yet supported; expected an unnamed handle (null or empty name) but got '%s{name}'"
+        | other ->
+            failwith
+                $"%s{operation}: named mutexes are not yet supported; expected a null or empty UTF-16 name pointer, got %O{other}"
+
     /// Decode an unused `byte*` argument (e.g. `PAL_CreateMutexW`'s
     /// `systemCallErrors` out-buffer). The buffer is only written on the
     /// PAL failure paths we don't take; on success the BCL ignores its
@@ -432,7 +470,7 @@ module NativeWaitHandle =
             let initialOwner =
                 boolOfBoolArgument operation "initialOwner" instruction.Arguments.[0]
 
-            requireNullName operation instruction.Arguments.[1]
+            requireUnnamedMutex operation ctx.BaseClassTypes state instruction.Arguments.[1]
             // `currentUserOnly` flags whether the named-handle backing
             // store should be filtered to the current user. We don't
             // support named handles, so its value is moot — decode for
