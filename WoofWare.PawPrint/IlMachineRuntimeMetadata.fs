@@ -1731,6 +1731,28 @@ module IlMachineRuntimeMetadata =
 
             let sTypeInfo = sAssy.TypeDefs.[s.TypeDefinition.Get]
 
+            // Capture target's identity and whether any of its generic parameters carry
+            // variance. CoreCLR can assign an open generic interface to a closed
+            // instantiation of itself when the parameter is variant and its constraints
+            // are satisfied (e.g. `IOut<out T> where T : class` makes
+            // `typeof(IOut<object>).IsAssignableFrom(typeof(IOut<>))` true). We don't yet
+            // model constraint-aware variance during an open walk, so when the walk
+            // encounters a node whose identity matches a variant target we crash loudly
+            // rather than silently returning false. The mirror at the closed/closed oracle
+            // (lines 1215-1220) uses the same shape.
+            let targetIdentityWithVariance =
+                match AllConcreteTypes.lookup t state.ConcreteTypes with
+                | Some targetCt ->
+                    let targetAssy = state._LoadedAssemblies.[targetCt.Identity.AssemblyFullName]
+                    let targetTypeInfo = targetAssy.TypeDefs.[targetCt.Identity.TypeDefinition.Get]
+
+                    let hasVariantGenericParams =
+                        targetTypeInfo.Generics
+                        |> Seq.exists (fun (_, metadata) -> metadata.Variance.IsSome)
+
+                    Some (targetCt.Identity, hasVariantGenericParams)
+                | None -> None
+
             // The walk begins by treating every one of the source's generic parameters as
             // unbound: each `GenericTypeParameter i` substitutes to itself, so the source's
             // own metadata edges keep their original parameter references when first
@@ -1756,6 +1778,14 @@ module IlMachineRuntimeMetadata =
                 if Set.contains currentIdentity visited then
                     state, false
                 else
+
+                match targetIdentityWithVariance with
+                | Some (targetIdentity, true) when currentIdentity = targetIdentity ->
+                    failwithf
+                        "TODO: isRuntimeTypeHandleTargetAssignableTo: open source %O reaches target identity %O which has variant generic parameters; need constraint-aware variance check"
+                        s.TypeDefinition.Get
+                        targetIdentity.TypeDefinition.Get
+                | _ ->
 
                 let visited = Set.add currentIdentity visited
 
