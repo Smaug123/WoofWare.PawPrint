@@ -1319,6 +1319,31 @@ module IlMachineRuntimeMetadata =
                     else
                         walkBase state current
 
+        // ECMA-335 III.8.7 / CoreCLR `GetNormalizedIntegralArrayElementType`:
+        // signed and unsigned primitive integers of equal width are interchangeable
+        // as array element types (`int[]` ↔ `uint[]`, `short[]` ↔ `ushort[]`, etc.).
+        // Returns `Some normalizedIdentity` when `handle` is one of those primitive
+        // integers; otherwise `None`. Floating-point, Boolean, and Char have no
+        // normalization partners.
+        let normalizedPrimitiveIntegerIdentity (handle : ConcreteTypeHandle) : ResolvedTypeIdentity option =
+            match tryGetConcreteTypeInfo state handle with
+            | Some (ct, _) when ct.Generics.IsEmpty ->
+                let id = ct.Identity
+
+                if id = baseClassTypes.SByte.Identity || id = baseClassTypes.Byte.Identity then
+                    Some baseClassTypes.SByte.Identity
+                elif id = baseClassTypes.Int16.Identity || id = baseClassTypes.UInt16.Identity then
+                    Some baseClassTypes.Int16.Identity
+                elif id = baseClassTypes.Int32.Identity || id = baseClassTypes.UInt32.Identity then
+                    Some baseClassTypes.Int32.Identity
+                elif id = baseClassTypes.Int64.Identity || id = baseClassTypes.UInt64.Identity then
+                    Some baseClassTypes.Int64.Identity
+                elif id = baseClassTypes.IntPtr.Identity || id = baseClassTypes.UIntPtr.Identity then
+                    Some baseClassTypes.IntPtr.Identity
+                else
+                    None
+            | _ -> None
+
         let checkArraySpecificRules
             (state : IlMachineState)
             (objType : ConcreteTypeHandle)
@@ -1340,11 +1365,22 @@ module IlMachineRuntimeMetadata =
 
                     state, Some elementAssignable
                 else
-                    // TODO: ECMA-335 permits some value-type array assignments when
-                    // the element types have equivalent underlying primitive types
-                    // (for example int[] <-> uint[]). Model that rule explicitly
-                    // before broadening this branch.
-                    state, Some false
+                    // Both element types are value-typed (or one of each, in which case
+                    // primitive-integer equivalence cannot hold and we fall through to
+                    // `Some false`). Apply primitive-integer equivalence; any other
+                    // value-type assignment (notably enums with equivalent underlying
+                    // integer types) is not yet modelled and continues to report
+                    // non-assignable here.
+                    match
+                        normalizedPrimitiveIntegerIdentity objElement, normalizedPrimitiveIntegerIdentity targetElement
+                    with
+                    | Some a, Some b when a = b -> state, Some true
+                    | _, _ ->
+                        // TODO: ECMA-335 also permits arrays whose value-type elements
+                        // share an equivalent enum underlying integer type to be
+                        // interchangeable (e.g. `MyEnum : int` array ↔ `int[]`).
+                        // Model that rule before broadening this branch.
+                        state, Some false
             | Some _, None -> state, None
             | None, _ -> failwith $"checkArraySpecificRules called with non-array source %O{objType}"
 
