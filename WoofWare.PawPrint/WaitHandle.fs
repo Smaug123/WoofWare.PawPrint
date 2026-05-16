@@ -23,10 +23,14 @@ namespace WoofWare.PawPrint
 /// higher-level guest primitives (`LowLevelLifoSemaphore`,
 /// `PortableThreadPool`) depend on.
 ///
-/// Timeouts: finite timeouts on `WaitHandle_WaitOneCore` are not
-/// implemented today, for the same reason `LowLevelMonitor.TimedWait`
-/// is not — PawPrint has no virtual clock. Calls with a finite timeout
-/// fail loud in the native handler.
+/// Timeouts: non-zero finite timeouts on `WaitHandle_WaitOneCore` /
+/// `WaitHandle_WaitOnePrioritized` are not implemented today, for the
+/// same reason `LowLevelMonitor.TimedWait` is not — PawPrint has no
+/// virtual clock. Calls with a non-zero finite timeout fail loud in
+/// the native handler. The zero-timeout case is fully deterministic
+/// (`tryWaitOne`): it does not park, never touches the queue, and
+/// returns `WAIT_OBJECT_0` or `WAIT_TIMEOUT` depending on whether the
+/// fast path applied.
 [<RequireQualifiedAccess>]
 module WaitHandle =
 
@@ -52,6 +56,17 @@ module WaitHandle =
     type WaitOutcome =
         | Acquired of IlMachineState
         | Blocked of IlMachineState
+
+    /// Outcome of a non-blocking `tryWaitOne` probe (zero-timeout wait).
+    /// `Acquired` means the fast path applied — count was decremented.
+    /// `TimedOut` means count was 0; the state is unchanged (no enqueue,
+    /// no thread-status flip — that's the entire point of distinguishing
+    /// this from `waitOne`). The native handler maps these to
+    /// `WAIT_OBJECT_0` (0) and `WAIT_TIMEOUT` (0x102) respectively.
+    [<RequireQualifiedAccess>]
+    type TryWaitOutcome =
+        | Acquired of IlMachineState
+        | TimedOut of IlMachineState
 
     /// Look up the handle for `id`, or fail loud. A retained IntPtr that
     /// outlives `close` lands here so use-after-free shows up at the use
@@ -163,6 +178,71 @@ module WaitHandle =
             |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnWaitHandle id)
             |> WaitOutcome.Blocked
 
+    /// Non-blocking probe used to model the zero-timeout `WaitOne(0)`
+    /// path. CoreCLR's contract for a zero millisecond timeout: try the
+    /// fast path; if it cannot succeed, return `WAIT_TIMEOUT` without
+    /// ever entering the wait queue. Distinct from `waitOne` because the
+    /// caller is *not* parked — leaving the thread Runnable is the entire
+    /// observable difference from a guest's point of view, and silently
+    /// parking would deadlock guests that rely on `WaitOne(0)` as a poll.
+    let tryWaitOne (id : WaitHandleId) (state : IlMachineState) : TryWaitOutcome =
+        let handle = lookup id state
+        let semaphore = expectSemaphore "WaitHandle.tryWaitOne" id handle
+
+        if semaphore.Count > 0 then
+            let semaphore =
+                { semaphore with
+                    Count = semaphore.Count - 1
+                }
+
+            state
+            |> writeHandle id (WaitHandleState.Semaphore semaphore)
+            |> TryWaitOutcome.Acquired
+        else
+            // State must be returned verbatim: no enqueue, no status flip.
+            TryWaitOutcome.TimedOut state
+
+    /// Prioritized variant of `waitOne` matching the
+    /// `PAL_WaitForSingleObjectPrioritized` contract: when the wait
+    /// blocks, the thread is registered at the **head** of `WaitQueue`
+    /// (not the tail). A subsequent `releaseSemaphore` therefore wakes
+    /// the most recently registered prioritized waiter first, giving
+    /// LIFO release semantics among prioritized waiters — and strict
+    /// precedence over any earlier-arrived non-prioritized waiters.
+    /// `LowLevelLifoSemaphore` (the PortableThreadPool worker park
+    /// primitive on Unix) imports this entry point precisely because its
+    /// fairness contract is LIFO over the kernel semaphore's FIFO base.
+    ///
+    /// The fast path is identical to `waitOne`: priority only matters
+    /// when the call has to block.
+    let waitOnePrioritized (thread : ThreadId) (id : WaitHandleId) (state : IlMachineState) : WaitOutcome =
+        let handle = lookup id state
+        let semaphore = expectSemaphore "WaitHandle.waitOnePrioritized" id handle
+
+        if semaphore.Count > 0 then
+            let semaphore =
+                { semaphore with
+                    Count = semaphore.Count - 1
+                }
+
+            state
+            |> writeHandle id (WaitHandleState.Semaphore semaphore)
+            |> WaitOutcome.Acquired
+        else
+            // Prioritized slow path: prepend to the head of the queue.
+            // The wake step in `releaseSemaphore` pops from the head, so
+            // a later release will hand its freshly-issued unit to this
+            // thread before any earlier-enqueued waiter.
+            let semaphore =
+                { semaphore with
+                    WaitQueue = thread :: semaphore.WaitQueue
+                }
+
+            state
+            |> writeHandle id (WaitHandleState.Semaphore semaphore)
+            |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnWaitHandle id)
+            |> WaitOutcome.Blocked
+
     /// Increment the semaphore by `releaseCount`, waking up to that many
     /// FIFO-head waiters. Returns the previous count on success (matching
     /// the Win32 `lpPreviousCount` out-parameter contract) and the
@@ -207,10 +287,14 @@ module WaitHandle =
             Error (ReleaseFailure.WouldExceedMaximum (attemptedTotal, semaphore.Maximum)), state
         else
             // Direct-handoff: each wake consumes one of the new units.
-            // FIFO over WaitQueue is load-bearing for the
-            // LowLevelLifoSemaphore fairness contract higher up the
-            // stack — switching to LIFO or arbitrary order is not a
-            // refactor.
+            // The wake step always pops from the head of `WaitQueue`;
+            // ordering discipline lives at insertion time (`waitOne`
+            // appends to the tail for FIFO; `waitOnePrioritized`
+            // prepends to the head for LIFO over prioritized waiters,
+            // matching `PAL_WaitForSingleObjectPrioritized`). The
+            // LowLevelLifoSemaphore fairness contract that
+            // PortableThreadPool depends on is delivered through that
+            // insertion-side asymmetry, not by changing this wake step.
             let toWake = min releaseCount (List.length semaphore.WaitQueue)
             let wakers, remainingQueue = List.splitAt toWake semaphore.WaitQueue
             // Now safe: the guard above ensures `previousCount +

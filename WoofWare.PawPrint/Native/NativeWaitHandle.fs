@@ -14,8 +14,10 @@ namespace WoofWare.PawPrint
 /// in `WaitHandle.fs`.
 ///
 /// This first slice supports the semaphore variant only; events,
-/// mutexes, multi-handle waits, and finite timeouts are out of scope
-/// pending future PRs and a virtual clock.
+/// mutexes, multi-handle waits, and non-zero finite timeouts are out
+/// of scope pending future PRs and a virtual clock. Zero-timeout waits
+/// (the deterministic non-blocking probe `WaitOne(0)` emits) are
+/// handled inline — no clock is needed.
 [<RequireQualifiedAccess>]
 module NativeWaitHandle =
 
@@ -28,6 +30,18 @@ module NativeWaitHandle =
     /// any guest that reads `Marshal.GetLastPInvokeError` after the
     /// throw.
     let private errorTooManyPosts : int = 298
+
+    /// `WAIT_OBJECT_0 = 0`. The Win32 return code for a successful wait
+    /// — the wait acquired its target object. Matches
+    /// `WaitHandle.WaitSuccess` in the BCL.
+    let private waitObjectZero : int = 0
+
+    /// `WAIT_TIMEOUT = 0x102 = 258`. The Win32 return code for a wait
+    /// that did not acquire its target before the timeout expired.
+    /// `WaitHandle.WaitOne(int)` checks the return against
+    /// `WaitHandle.WaitTimeout = 0x102` to decide whether to return
+    /// `true` / `false` to the guest.
+    let private waitTimeout : int = 0x102
 
     /// Mutate the kernel's `LastSystemError` slot. The
     /// LibraryImport-generated stub for a `SetLastError = true` import
@@ -91,6 +105,60 @@ module NativeWaitHandle =
         | other ->
             failwith
                 $"%s{operation}: named wait handles are not yet supported; expected a null name pointer, got %O{other}"
+
+    /// Drive the timeout dispatch shared by `WaitHandle_WaitOneCore`
+    /// and `WaitHandle_WaitOnePrioritized`: timeout = -1 (INFINITE)
+    /// blocks via `blockingWait`; timeout = 0 (the non-blocking probe
+    /// `WaitOne(0)` issues) takes the deterministic try-and-return path
+    /// via `tryWaitOne`; any other finite timeout currently fails loud
+    /// (no virtual clock — same blocker as
+    /// `SystemNative_LowLevelMonitor_TimedWait`). Returns the new
+    /// `IlMachineState` and the Int32 return value the guest sees.
+    ///
+    /// The two callers differ in `blockingWait`: `WaitOneCore` uses
+    /// `WaitHandle.waitOne` (FIFO tail insertion);
+    /// `WaitOnePrioritized` uses `WaitHandle.waitOnePrioritized`
+    /// (LIFO head insertion). Both share the zero-timeout `tryWaitOne`
+    /// because priority only matters when the wait actually parks.
+    let private dispatchWait
+        (operation : string)
+        (id : WaitHandleId)
+        (timeout : int)
+        (blockingWait : IlMachineState -> WaitHandle.WaitOutcome)
+        (state : IlMachineState)
+        : IlMachineState * int
+        =
+        if timeout = System.Threading.Timeout.Infinite then
+            // Both fast (count > 0) and slow (parked) blocking paths
+            // return WAIT_OBJECT_0 to the guest; the IL site advances
+            // in both cases, and the scheduler simply will not pick a
+            // parked thread again until a subsequent `releaseSemaphore`
+            // wakes it. This mirrors
+            // `SystemNative_LowLevelMonitor_Acquire`'s posture.
+            let state =
+                match blockingWait state with
+                | WaitHandle.WaitOutcome.Acquired state
+                | WaitHandle.WaitOutcome.Blocked state -> state
+
+            state, waitObjectZero
+        elif timeout = 0 then
+            // Zero-timeout: try the fast path, then return immediately.
+            // CoreCLR returns `WAIT_OBJECT_0` if the handle was signalled,
+            // else `WAIT_TIMEOUT`; the caller is never enqueued. Treating
+            // a zero-timeout as an unimplemented finite timeout would
+            // crash on a deterministic non-blocking probe (e.g. the
+            // `WaitOne(0)` poll pattern), which is the wrong envelope.
+            match WaitHandle.tryWaitOne id state with
+            | WaitHandle.TryWaitOutcome.Acquired state -> state, waitObjectZero
+            | WaitHandle.TryWaitOutcome.TimedOut state -> state, waitTimeout
+        else
+            // No virtual clock yet. Same envelope as `Monitor_Wait` /
+            // `SystemNative_LowLevelMonitor_TimedWait`: silently treating
+            // a finite timeout as Infinite would mask guest bugs that
+            // depend on timeout-based wakeups; treating it as immediate
+            // timeout would break the higher-level fairness contract.
+            failwith
+                $"%s{operation}: finite timeout (%d{timeout} ms) is not yet implemented; PawPrint has no virtual clock. Guest code that depends on timed waits must be lifted onto a deterministic clock abstraction first."
 
     /// Decode an optional `int*` out-pointer that may be `IntPtr.Zero`.
     /// `Some ptr` means we must write to `*ptr`; `None` means the
@@ -235,27 +303,11 @@ module NativeWaitHandle =
             let _useTrivialWaits =
                 boolOfBoolArgument operation "useTrivialWaits" instruction.Arguments.[2]
 
-            if timeout <> System.Threading.Timeout.Infinite then
-                // No virtual clock yet. Same envelope as `Monitor_Wait` /
-                // `SystemNative_LowLevelMonitor_TimedWait`: silently treating
-                // a finite timeout as Infinite would mask guest bugs that
-                // depend on timeout-based wakeups; treating it as immediate
-                // timeout would break the higher-level fairness contract.
-                failwith
-                    $"%s{operation}: finite timeout (%d{timeout} ms) is not yet implemented; PawPrint has no virtual clock. Guest code that depends on timed waits must be lifted onto a deterministic clock abstraction first."
-
-            // Both the fast path (count > 0) and the slow path (parked)
-            // return WAIT_OBJECT_0 = 0 to the guest. The IL site advances
-            // in both cases; the scheduler simply will not pick this thread
-            // again until a subsequent `releaseSemaphore` wakes it. This
-            // mirrors `SystemNative_LowLevelMonitor_Acquire`'s posture.
-            let state =
-                match WaitHandle.waitOne ctx.Thread id state with
-                | WaitHandle.WaitOutcome.Acquired state
-                | WaitHandle.WaitOutcome.Blocked state -> state
+            let state, ret =
+                dispatchWait operation id timeout (WaitHandle.waitOne ctx.Thread id) state
 
             state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 ret) ctx.Thread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.stepped
             |> Some
@@ -268,35 +320,23 @@ module NativeWaitHandle =
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
             // `LowLevelLifoSemaphore.WaitCore` (PortableThreadPool's worker
             // park primitive on Unix) imports this 2-arg variant of the
-            // waiter. The "Prioritized" tag tells the real PAL to use
-            // `PAL_WaitForSingleObjectPrioritized` — a host-side priority
-            // hint that does not change the wakeup semantics from the
-            // guest's point of view. PawPrint does not model thread
-            // priority, so the slow path uses the same FIFO `WaitQueue`
-            // as `WaitOneCore`; this preserves determinism while leaving
-            // a hook for a future priority-aware queue if a guest ever
-            // depends on it.
+            // waiter. The "Prioritized" tag corresponds to
+            // `PAL_WaitForSingleObjectPrioritized`'s LIFO release policy:
+            // new waiters are registered at the head of the wait queue
+            // and a later `Release` wakes the most recent one first.
+            // This is load-bearing for `LowLevelLifoSemaphore` (and hence
+            // `PortableThreadPool`) — that's exactly why it has its own
+            // entry point separate from `WaitOneCore`.
             let operation = "WaitHandle_WaitOnePrioritized"
             let id = waitHandleOfArgument operation instruction.Arguments.[0]
 
             let timeout = NativeCall.int32Argument operation instruction.Arguments.[1]
 
-            if timeout <> System.Threading.Timeout.Infinite then
-                // Same envelope as `WaitOneCore`. The threadpool worker
-                // path always passes a finite timeout, so failing here
-                // is the deterministic surfacing of the missing virtual-
-                // clock primitive — masking it would let the threadpool
-                // run with no fairness/progress guarantees.
-                failwith
-                    $"%s{operation}: finite timeout (%d{timeout} ms) is not yet implemented; PawPrint has no virtual clock. Guest code that depends on timed waits must be lifted onto a deterministic clock abstraction first."
-
-            let state =
-                match WaitHandle.waitOne ctx.Thread id state with
-                | WaitHandle.WaitOutcome.Acquired state
-                | WaitHandle.WaitOutcome.Blocked state -> state
+            let state, ret =
+                dispatchWait operation id timeout (WaitHandle.waitOnePrioritized ctx.Thread id) state
 
             state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 ret) ctx.Thread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.stepped
             |> Some

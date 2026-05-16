@@ -66,6 +66,16 @@ module TestWaitHandle =
         | WaitHandle.WaitOutcome.Blocked state -> state
         | WaitHandle.WaitOutcome.Acquired _ -> failwith "expected Blocked but got Acquired"
 
+    let private tryAcquired (outcome : WaitHandle.TryWaitOutcome) : IlMachineState =
+        match outcome with
+        | WaitHandle.TryWaitOutcome.Acquired state -> state
+        | WaitHandle.TryWaitOutcome.TimedOut _ -> failwith "expected Acquired but got TimedOut"
+
+    let private timedOut (outcome : WaitHandle.TryWaitOutcome) : IlMachineState =
+        match outcome with
+        | WaitHandle.TryWaitOutcome.TimedOut state -> state
+        | WaitHandle.TryWaitOutcome.Acquired _ -> failwith "expected TimedOut but got Acquired"
+
     let private t0 = ThreadId 0
     let private t1 = ThreadId 1
     let private t2 = ThreadId 2
@@ -193,6 +203,160 @@ module TestWaitHandle =
         statusOf t0 state |> shouldEqual ThreadStatus.Runnable
         statusOf t1 state |> shouldEqual ThreadStatus.Runnable
         statusOf t2 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
+
+    // -------------------------------------------------------------------
+    // tryWaitOne — non-blocking probe used by zero-timeout WaitOne(0)
+    // -------------------------------------------------------------------
+
+    [<Test>]
+    let ``tryWaitOne on a signalled semaphore decrements count and reports Acquired`` () : unit =
+        let state = baseState ()
+        let id, state = WaitHandle.createSemaphore 2 5 state
+
+        let state = WaitHandle.tryWaitOne id state |> tryAcquired
+
+        let s = semaphoreOf id state
+        s.Count |> shouldEqual 1
+        s.WaitQueue |> shouldEqual []
+
+    [<Test>]
+    let ``tryWaitOne on a zero-count semaphore reports TimedOut without parking`` () : unit =
+        // The deterministic non-blocking probe the BCL drives through a
+        // zero-timeout WaitOne(0). CoreCLR's semantics: the caller does
+        // not enter the wait queue and the handle is left untouched —
+        // we'd be observably violating the contract if we parked the
+        // thread for what should be an immediate-return path.
+        let state = baseState () |> withThreads [ t0 ]
+        let id, state = WaitHandle.createSemaphore 0 5 state
+
+        let state = WaitHandle.tryWaitOne id state |> timedOut
+
+        let s = semaphoreOf id state
+        s.Count |> shouldEqual 0
+        s.WaitQueue |> shouldEqual []
+        statusOf t0 state |> shouldEqual ThreadStatus.Runnable
+
+    // -------------------------------------------------------------------
+    // waitOnePrioritized — LIFO insertion at head of wait queue
+    // -------------------------------------------------------------------
+
+    [<Test>]
+    let ``waitOnePrioritized on a signalled semaphore decrements count and stays Runnable`` () : unit =
+        // Fast path is identical to waitOne: priority only matters when
+        // the wait actually blocks.
+        let state = baseState () |> withThreads [ t0 ]
+        let id, state = WaitHandle.createSemaphore 2 5 state
+
+        let state = WaitHandle.waitOnePrioritized t0 id state |> acquired
+
+        let s = semaphoreOf id state
+        s.Count |> shouldEqual 1
+        s.WaitQueue |> shouldEqual []
+        statusOf t0 state |> shouldEqual ThreadStatus.Runnable
+
+    [<Test>]
+    let ``waitOnePrioritized parks each caller at the HEAD of the wait queue`` () : unit =
+        // PAL_WaitForSingleObjectPrioritized contract: prioritized waiters
+        // are registered at the BEGINNING of the wait queue (LIFO release
+        // policy). Verifies the queue shape after three back-to-back
+        // prioritized waits.
+        let state = baseState () |> withThreads [ t0 ; t1 ; t2 ]
+        let id, state = WaitHandle.createSemaphore 0 5 state
+
+        let state = WaitHandle.waitOnePrioritized t0 id state |> blocked
+        let state = WaitHandle.waitOnePrioritized t1 id state |> blocked
+        let state = WaitHandle.waitOnePrioritized t2 id state |> blocked
+
+        let s = semaphoreOf id state
+        s.Count |> shouldEqual 0
+        // Latest-arrived prioritized waiter is at head; oldest is at tail.
+        s.WaitQueue |> shouldEqual [ t2 ; t1 ; t0 ]
+        statusOf t0 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
+        statusOf t1 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
+        statusOf t2 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
+
+    [<Test>]
+    let ``releaseSemaphore wakes prioritized waiters in LIFO order`` () : unit =
+        // The LowLevelLifoSemaphore contract that PortableThreadPool
+        // relies on: a later-arrived prioritized waiter is woken before
+        // an earlier-arrived one.
+        let state = baseState () |> withThreads [ t0 ; t1 ; t2 ]
+        let id, state = WaitHandle.createSemaphore 0 5 state
+
+        let state = WaitHandle.waitOnePrioritized t0 id state |> blocked
+        let state = WaitHandle.waitOnePrioritized t1 id state |> blocked
+        let state = WaitHandle.waitOnePrioritized t2 id state |> blocked
+
+        let _, state = WaitHandle.releaseSemaphore id 1 state
+
+        statusOf t2 state |> shouldEqual ThreadStatus.Runnable
+        statusOf t1 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
+        statusOf t0 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
+
+        let _, state = WaitHandle.releaseSemaphore id 1 state
+
+        statusOf t1 state |> shouldEqual ThreadStatus.Runnable
+        statusOf t0 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
+
+        let _, state = WaitHandle.releaseSemaphore id 1 state
+
+        statusOf t0 state |> shouldEqual ThreadStatus.Runnable
+
+    [<Test>]
+    let ``prioritized waiter wakes before any earlier-arrived non-prioritized waiter`` () : unit =
+        // PAL contract: a prioritized waiter goes to the HEAD of the queue
+        // even when non-prioritized waiters are already enqueued behind it.
+        // Verifies the cross-class ordering (prioritized strictly precedes
+        // earlier-arrived non-prioritized in wake order).
+        let state = baseState () |> withThreads [ t0 ; t1 ; t2 ]
+        let id, state = WaitHandle.createSemaphore 0 5 state
+
+        let state = WaitHandle.waitOne t0 id state |> blocked
+        let state = WaitHandle.waitOne t1 id state |> blocked
+        let state = WaitHandle.waitOnePrioritized t2 id state |> blocked
+
+        let s = semaphoreOf id state
+        // t2 is at the head; t0 and t1 preserve their FIFO ordering behind.
+        s.WaitQueue |> shouldEqual [ t2 ; t0 ; t1 ]
+
+        let _, state = WaitHandle.releaseSemaphore id 1 state
+
+        statusOf t2 state |> shouldEqual ThreadStatus.Runnable
+        statusOf t0 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
+        statusOf t1 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
+
+    [<Test>]
+    let ``Property: releaseSemaphore wakes prioritized waiters in LIFO registration order`` () : unit =
+        let property (PositiveInt k) : bool =
+            let k = min 16 k
+            let threads = [ 0 .. k - 1 ] |> List.map ThreadId
+            let state = baseState () |> withThreads threads
+            let id, state = WaitHandle.createSemaphore 0 k state
+
+            let state =
+                threads
+                |> List.fold (fun s tid -> WaitHandle.waitOnePrioritized tid id s |> blocked) state
+
+            // LIFO over prioritized waiters: latest registration wakes first.
+            let expectedWakeOrder = List.rev threads
+
+            let mutable state = state
+            let mutable observed = []
+
+            for _ in 1..k do
+                let head = List.head (semaphoreOf id state).WaitQueue
+                let _, s = WaitHandle.releaseSemaphore id 1 state
+                state <- s
+                observed <- observed @ [ head ]
+
+            let s = semaphoreOf id state
+
+            observed = expectedWakeOrder
+            && s.Count = 0
+            && s.WaitQueue = []
+            && threads |> List.forall (fun t -> statusOf t state = ThreadStatus.Runnable)
+
+        Check.One (config, property)
 
     // -------------------------------------------------------------------
     // releaseSemaphore — direct handoff, overflow, FIFO
