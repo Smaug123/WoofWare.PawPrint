@@ -1323,8 +1323,7 @@ module IlMachineRuntimeMetadata =
         // immediate runtime base is `System.Enum`. Used by the array-element
         // assignability rule below to detect cases where ECMA-335 / CoreCLR
         // enum-underlying-type equivalence (e.g. `MyEnum : int` ↔ `int`, or two
-        // enums sharing an underlying integer) might permit a store, but the
-        // underlying-type lookup itself isn't yet modelled.
+        // enums sharing an underlying integer) might permit a store.
         let isEnumValueType (state : IlMachineState) (handle : ConcreteTypeHandle) : IlMachineState * bool =
             match handle with
             | ConcreteTypeHandle.OneDimArrayZero _
@@ -1342,6 +1341,42 @@ module IlMachineRuntimeMetadata =
                     match AllConcreteTypes.lookup bh state.ConcreteTypes with
                     | Some baseTy -> state, baseTy.Identity = baseClassTypes.Enum.Identity
                     | None -> state, false
+
+        // For an enum `ConcreteTypeHandle`, return the `ConcreteTypeHandle` of its
+        // underlying integer type by concretising the signature of its sole instance
+        // field (`value__`, the CLR-reserved name for the integer slot of an enum;
+        // ECMA-335 §II.14.3). Returns `None` if `handle` is not an enum, has no TypeDef
+        // row, or — defensively — has a malformed Fields list. The caller is expected
+        // to have first verified enum-ness via `isEnumValueType`; this helper does the
+        // metadata read.
+        let enumUnderlyingHandle
+            (state : IlMachineState)
+            (handle : ConcreteTypeHandle)
+            : (IlMachineState * ConcreteTypeHandle) option
+            =
+            match tryGetConcreteTypeInfo state handle with
+            | None -> None
+            | Some (ct, typeInfo) ->
+                let instanceFields =
+                    typeInfo.Fields
+                    |> List.filter (fun f -> not (f.Attributes.HasFlag FieldAttributes.Static))
+
+                match instanceFields with
+                | [ valueField ] when valueField.Name = "value__" ->
+                    let assy = state._LoadedAssemblies.[ct.Identity.AssemblyFullName]
+
+                    let state, underlying =
+                        IlMachineTypeResolution.concretizeType
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            assy.Name
+                            ct.Generics
+                            ImmutableArray.Empty
+                            valueField.Signature
+
+                    Some (state, underlying)
+                | _ -> None
 
         // ECMA-335 III.8.7 / CoreCLR `GetNormalizedIntegralArrayElementType`:
         // signed and unsigned primitive integers of equal width are interchangeable
@@ -1367,6 +1402,28 @@ module IlMachineRuntimeMetadata =
                 else
                     None
             | _ -> None
+
+        // ECMA-335 III.4.3 / CoreCLR `CanCastParam`: for value-typed array elements the
+        // assignment-compatibility relation reduces to "the normalised integer identity
+        // of each element matches". The normalised identity of a primitive integer is
+        // the signed canonical (see `normalizedPrimitiveIntegerIdentity`); the normalised
+        // identity of an enum is the normalised identity of its underlying integer.
+        // Anything else (`float`, `double`, `bool`, `char`, non-integer struct) has no
+        // normalised identity. Returns `None` when the input has no equivalence partner;
+        // returns `Some id` otherwise.
+        let valueElementNormalisedIdentity
+            (state : IlMachineState)
+            (handle : ConcreteTypeHandle)
+            : IlMachineState * ResolvedTypeIdentity option
+            =
+            let state, isEnum = isEnumValueType state handle
+
+            if isEnum then
+                match enumUnderlyingHandle state handle with
+                | None -> state, None
+                | Some (state, underlying) -> state, normalizedPrimitiveIntegerIdentity underlying
+            else
+                state, normalizedPrimitiveIntegerIdentity handle
 
         let checkArraySpecificRules
             (state : IlMachineState)
@@ -1396,46 +1453,23 @@ module IlMachineRuntimeMetadata =
                         // so the answer is definitively non-assignable here.
                         state, Some false
                     else
-                        // Both element types are value-typed. ECMA-335 / CoreCLR permit
-                        // two complementary rules for value-typed array elements:
+                        // Both element types are value-typed. ECMA-335 III.4.3 /
+                        // CoreCLR `CanCastParam` reduces the relation to
+                        // "normalised integer identities match", combining two rules:
                         //   (a) signed/unsigned primitive integers of equal width
                         //       (`int[]` ↔ `uint[]`, etc.) — `GetNormalizedIntegralArrayElementType`.
-                        //   (b) enums whose underlying integer type matches the partner's
-                        //       (e.g. `MyEnum : int` ↔ `int`, or two enums with the same
-                        //       underlying type).
-                        // (a) is modelled below. (b) requires reading each enum's `value__`
-                        // field to discover its underlying type, which we haven't taught
-                        // the assignability walk yet. Enum-underlying equivalence can only
-                        // make the answer `true` when the partner is either another enum
-                        // or a primitive integer in the normalization table; for any other
-                        // partner (float, double, bool, char, non-integer struct) the
-                        // answer remains definitively false. So we return `None` only when
-                        // both sides plausibly participate in rule (b); otherwise we keep
-                        // the definitive `Some false` answer that callers like `isinst` /
-                        // `castclass` rely on.
-                        let state, objIsEnum = isEnumValueType state objElement
-                        let state, targetIsEnum = isEnumValueType state targetElement
+                        //   (b) enum equivalence with the underlying integer or with
+                        //       another enum that shares the same underlying integer
+                        //       (e.g. `MyEnum : int` ↔ `int[]` ↔ `uint[]`, or `MyEnum:int` ↔ `OtherEnum:int`).
+                        // `valueElementNormalisedIdentity` looks the underlying integer
+                        // up for enums and applies `normalizedPrimitiveIntegerIdentity`
+                        // to the result, giving a definitive yes/no answer.
+                        let state, objNormalised = valueElementNormalisedIdentity state objElement
+                        let state, targetNormalised = valueElementNormalisedIdentity state targetElement
 
-                        let objNormalized = normalizedPrimitiveIntegerIdentity objElement
-                        let targetNormalized = normalizedPrimitiveIntegerIdentity targetElement
-
-                        let enumCandidate (isEnum : bool) (normalized : ResolvedTypeIdentity option) =
-                            isEnum || normalized.IsSome
-
-                        if
-                            (objIsEnum || targetIsEnum)
-                            && enumCandidate objIsEnum objNormalized
-                            && enumCandidate targetIsEnum targetNormalized
-                        then
-                            // At least one element is an enum and the partner could share
-                            // an underlying integer type.
-                            // TODO: model enum-underlying integer equivalence so this case
-                            // becomes a precise answer rather than "unknown".
-                            state, None
-                        else
-                            match objNormalized, targetNormalized with
-                            | Some a, Some b when a = b -> state, Some true
-                            | _, _ -> state, Some false
+                        match objNormalised, targetNormalised with
+                        | Some a, Some b when a = b -> state, Some true
+                        | _, _ -> state, Some false
             | Some _, None -> state, None
             | None, _ -> failwith $"checkArraySpecificRules called with non-array source %O{objType}"
 
