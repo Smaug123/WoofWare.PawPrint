@@ -323,11 +323,15 @@ module NativeThreading =
             // "process terminates when the last foreground thread exits" semantics, so the
             // flag is stored on `ThreadState.IsBackground` purely so the paired getter
             // round-trips and guest code that reads `Thread.IsBackground` after writing it
-            // sees its own value. The real CLR also raises `ThreadStateException` when the
-            // target is `_isDead`; PawPrint can't synthesise managed exceptions from QCalls
-            // yet, so a Set against a terminated thread would silently succeed here. That
-            // mirrors the existing gap in `executeJoinCore` rather than introducing a new
-            // one — a guest that depends on the throw will need exception synthesis first.
+            // sees its own value.
+            //
+            // The real CLR raises `ThreadStateException` when the target is dead — the BCL
+            // does this in managed code via the `_isDead` check on `Thread.IsBackground`
+            // before reaching the QCall. PawPrint doesn't currently write `_isDead = true`
+            // when a thread terminates (a separate piece of work — also needed by Priority
+            // and the other `_isDead`-guarded properties), so the BCL check passes and we
+            // reach this handler on a Terminated thread. Reject that here rather than
+            // silently storing an unobservable flag, mirroring the executeJoinCore guard.
             let operation = "ThreadNative_SetIsBackground"
 
             if instruction.Arguments.Length <> 2 then
@@ -346,16 +350,23 @@ module NativeThreading =
                 | CliType.Numeric (CliNumericType.Int32 i) -> i <> 0
                 | other -> failwith $"%s{operation}: expected Interop.BOOL as Int32, got %O{other}"
 
-            let updatedThreadState =
+            let targetState =
                 state.ThreadState
                 |> Map.tryFind targetThreadId
                 |> Option.defaultWith (fun () ->
                     failwith $"%s{operation}: target ThreadId {targetThreadId} has no ThreadState"
                 )
-                |> fun ts ->
-                    { ts with
-                        IsBackground = value
-                    }
+
+            match targetState.Status with
+            | ThreadStatus.Terminated ->
+                failwith
+                    $"%s{operation}: target ThreadId {targetThreadId} has terminated. The real CLR raises ThreadStateException via the BCL's `_isDead` check; PawPrint doesn't synthesise that yet, so this is a guest bug we can't currently report structurally."
+            | _ -> ()
+
+            let updatedThreadState =
+                { targetState with
+                    IsBackground = value
+                }
 
             let state =
                 { state with
@@ -377,7 +388,10 @@ module NativeThreading =
             ->
             // .NET 10 QCall backing the `Thread.IsBackground` getter. Returns Interop.BOOL
             // (int32-backed: TRUE=1, FALSE=0); we push 0/1 directly because the IL caller
-            // reinterprets the return on the stack via `(int)result != 0`.
+            // reinterprets the return on the stack via `(int)result != 0`. Symmetric with
+            // the setter: the BCL's managed `_isDead` check should reject reads against
+            // terminated threads before the QCall fires, but PawPrint doesn't yet flip
+            // `_isDead`, so we guard the case here rather than handing back a stale flag.
             let operation = "ThreadNative_GetIsBackground"
 
             if instruction.Arguments.Length <> 1 then
@@ -388,15 +402,20 @@ module NativeThreading =
 
             let targetThreadId = threadIdFromThreadAddr state operation threadAddr
 
-            let isBackground =
+            let targetState =
                 state.ThreadState
                 |> Map.tryFind targetThreadId
-                |> Option.map (fun ts -> ts.IsBackground)
                 |> Option.defaultWith (fun () ->
                     failwith $"%s{operation}: target ThreadId {targetThreadId} has no ThreadState"
                 )
 
-            let resultInt = if isBackground then 1 else 0
+            match targetState.Status with
+            | ThreadStatus.Terminated ->
+                failwith
+                    $"%s{operation}: target ThreadId {targetThreadId} has terminated. The real CLR raises ThreadStateException via the BCL's `_isDead` check; PawPrint doesn't synthesise that yet, so this is a guest bug we can't currently report structurally."
+            | _ -> ()
+
+            let resultInt = if targetState.IsBackground then 1 else 0
 
             let state =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 resultInt)) ctx.Thread state
