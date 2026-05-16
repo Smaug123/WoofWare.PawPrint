@@ -63,6 +63,9 @@ module IlMachineState =
     let withReplacedConstructedObject =
         IlMachineThreadState.withReplacedConstructedObject
 
+    let markActiveFrameWrapInTargetInvocation =
+        IlMachineThreadState.markActiveFrameWrapInTargetInvocation
+
     let pushToEvalStack' = IlMachineThreadState.pushToEvalStack'
 
     let pushToEvalStack = IlMachineThreadState.pushToEvalStack

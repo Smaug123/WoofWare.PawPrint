@@ -898,10 +898,10 @@ module IlMachineRuntimeMetadata =
 
     /// Synthesize a TargetInvocationException wrapping the given inner exception object.
     /// Allocates the exception on the heap with zero-initialized fields (constructor is NOT run).
-    /// Sets the _innerException and _HResult fields on the base Exception so that
-    /// `catch (TargetInvocationException ex) { ... ex.InnerException ... }` sees the original
-    /// exception, matching what `new TargetInvocationException(inner)` would have done in CoreCLR.
-    /// Returns the heap address, the ConcreteTypeHandle, and the updated state.
+    /// Sets the _innerException, _message and _HResult fields on the base Exception to match what
+    /// `new TargetInvocationException(inner)` would have done in CoreCLR (whose base ctor sets
+    /// `_message` to the SR.Arg_TargetInvocationException string). Returns the heap address, the
+    /// ConcreteTypeHandle, and the updated state.
     /// See https://github.com/dotnet/runtime/blob/HEAD/src/libraries/System.Private.CoreLib/src/System/Reflection/TargetInvocationException.cs
     let synthesizeTargetInvocationException
         (loggerFactory : ILoggerFactory)
@@ -939,6 +939,19 @@ module IlMachineRuntimeMetadata =
 
         let addr, state = IlMachineThreadState.allocateManagedObject tieHandle fields state
 
+        // CoreCLR's TargetInvocationException(Exception) ctor calls
+        //     base(SR.Arg_TargetInvocationException, inner)
+        // which sets `_message` to the canonical string below. Bypassing the ctor would leave
+        // `_message` null and divert `Message` / `ToString()` to the
+        // "Exception of type '...' was thrown." fallback in Exception.Message, so allocate and
+        // store the message explicitly.
+        let messageAddr, state =
+            allocateManagedString
+                loggerFactory
+                baseClassTypes
+                "Exception has been thrown by the target of an invocation."
+                state
+
         let heapObj = ManagedHeap.get addr state.ManagedHeap
 
         let exceptionHandle =
@@ -948,6 +961,10 @@ module IlMachineRuntimeMetadata =
             FieldIdentity.requiredOwnInstanceField baseClassTypes.Exception "_innerException"
             |> FieldIdentity.fieldId exceptionHandle
 
+        let messageField =
+            FieldIdentity.requiredOwnInstanceField baseClassTypes.Exception "_message"
+            |> FieldIdentity.fieldId exceptionHandle
+
         let hresultField =
             FieldIdentity.requiredOwnInstanceField baseClassTypes.Exception "_HResult"
             |> FieldIdentity.fieldId exceptionHandle
@@ -955,6 +972,7 @@ module IlMachineRuntimeMetadata =
         let heapObj =
             heapObj
             |> AllocatedNonArrayObject.SetFieldById innerExceptionField (CliType.ObjectRef (Some innerExceptionAddr))
+            |> AllocatedNonArrayObject.SetFieldById messageField (CliType.ObjectRef (Some messageAddr))
             |> AllocatedNonArrayObject.SetFieldById
                 hresultField
                 (CliType.Numeric (

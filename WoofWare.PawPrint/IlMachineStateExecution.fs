@@ -906,6 +906,49 @@ module IlMachineStateExecution =
                             $"Activator.CreateInstance<T>(): concrete type handle %O{tHandle} not found in AllConcreteTypes"
                     )
 
+                // CoreCLR's `CreateInstanceOfT` catches *every* exception escaping the
+                // cache.CallRefConstructor path — including a `TypeInitializationException`
+                // raised by T's `.cctor` — and rethrows it wrapped in `TargetInvocationException`.
+                // We mirror that on three sub-paths:
+                //
+                //   (a) T's cctor was previously cached as Failed. We synthesise a fresh
+                //       `TargetInvocationException` whose `_innerException` is the cached TIE
+                //       and dispatch it ourselves. Per CoreCLR the cctor is NOT re-run, but a
+                //       fresh wrap is produced each time (verified against .NET 10).
+                //   (b) T's cctor is about to run for the first time. We let `ensureTypeInitialised`
+                //       push the cctor frame, then flip its `WrapExceptionInTargetInvocation`
+                //       flag so that if the cctor unwinds with a TIE (after the existing
+                //       `WasInitialisingType` wrap), the dispatcher additionally wraps it in
+                //       `TargetInvocationException` on the way out of the cctor frame.
+                //   (c) T's cctor has already run successfully; we just call the instance ctor
+                //       with the wrap flag set on the ctor's frame.
+                match TypeInitTable.tryGet tHandle state.TypeInitTable with
+                | Some (TypeInitState.Failed (cachedTieAddr, _cachedTieType)) ->
+                    let state =
+                        IlMachineState.setExceptionStackTraceString loggerFactory baseClassTypes cachedTieAddr [] state
+
+                    let tieAddr, tieType, state =
+                        IlMachineState.synthesizeTargetInvocationException
+                            loggerFactory
+                            baseClassTypes
+                            cachedTieAddr
+                            state
+
+                    match
+                        ExceptionDispatching.throwExceptionObject
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            thread
+                            tieAddr
+                            tieType
+                    with
+                    | ExceptionDispatchResult.HandlerFound state -> Some state
+                    | ExceptionDispatchResult.ExceptionUnhandled _ ->
+                        failwith
+                            "Unhandled TargetInvocationException wrapping a cached TypeInitializationException during Activator.CreateInstance<T>(); should have been caught by a handler"
+                | _ ->
+
                 let state, init =
                     ensureTypeInitialised loggerFactory baseClassTypes thread tHandle state
 
@@ -968,6 +1011,12 @@ module IlMachineStateExecution =
                     //
                     // Caller-PC advancement happens later in `callMethod` (line ~961); by short-
                     // circuiting here we never reach it, so the caller's PC stays put. Good.
+                    //
+                    // The cctor frame is now the active frame on this thread. Mark it so that if
+                    // the cctor throws, the resulting TIE is rewrapped in TargetInvocationException
+                    // when the cctor frame unwinds — see comment block (a)/(b)/(c) above.
+                    let state = IlMachineState.markActiveFrameWrapInTargetInvocation thread state
+
                     Some state
                 | WhatWeDid.BlockedOnClassInit _ ->
                     failwith
@@ -976,9 +1025,10 @@ module IlMachineStateExecution =
                     failwith
                         "logic error: ensureTypeInitialised inside Activator.CreateInstance<T>() cannot suspend for an arbitrary managed call"
                 | WhatWeDid.ThrowingTypeInitializationException ->
-                    // Exception dispatch is in flight; the in-flight exception handler will take
-                    // over from the caller, not us.
-                    Some state
+                    // Unreachable: the only way `ensureTypeInitialised` returns this is via the
+                    // `TypeInitState.Failed` cached-cctor path, which we pre-handle above.
+                    failwith
+                        "logic error: ensureTypeInitialised should not reach the cached-failure path inside Activator.CreateInstance<T>() (handled separately above)"
             else
                 None
 
