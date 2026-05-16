@@ -411,6 +411,119 @@ public class TestTypeConversions
         return 0;
     }
     
+    // Test checked conversions from floating-point sources
+    public static int TestConvOverflowFromFloat()
+    {
+        // Valid checked float-to-int truncates toward zero
+        try
+        {
+            double d = 3.7;
+            int i = checked((int)d);
+            if (i != 3) return 150;
+        }
+        catch (OverflowException)
+        {
+            return 151;
+        }
+
+        try
+        {
+            double d = -3.7;
+            int i = checked((int)d);
+            if (i != -3) return 152;
+        }
+        catch (OverflowException)
+        {
+            return 153;
+        }
+
+        // Out-of-range float to int overflows
+        try
+        {
+            double d = 1e20;
+            int i = checked((int)d);
+            return 154;
+        }
+        catch (OverflowException)
+        {
+            // Expected
+        }
+
+        // NaN to checked int overflows
+        try
+        {
+            double d = double.NaN;
+            int i = checked((int)d);
+            return 155;
+        }
+        catch (OverflowException)
+        {
+            // Expected
+        }
+
+        // Negative float to checked uint overflows
+        try
+        {
+            double d = -1.5;
+            uint u = checked((uint)d);
+            return 156;
+        }
+        catch (OverflowException)
+        {
+            // Expected
+        }
+
+        // Valid checked float-to-byte
+        try
+        {
+            double d = 200.5;
+            byte b = checked((byte)d);
+            if (b != 200) return 157;
+        }
+        catch (OverflowException)
+        {
+            return 158;
+        }
+
+        // Out-of-range float to byte overflows
+        try
+        {
+            double d = 300.0;
+            byte b = checked((byte)d);
+            return 159;
+        }
+        catch (OverflowException)
+        {
+            // Expected
+        }
+
+        // Valid checked float-to-sbyte (negative)
+        try
+        {
+            double d = -100.9;
+            sbyte sb = checked((sbyte)d);
+            if (sb != -100) return 160;
+        }
+        catch (OverflowException)
+        {
+            return 161;
+        }
+
+        // Out-of-range float to sbyte overflows
+        try
+        {
+            double d = 200.0;
+            sbyte sb = checked((sbyte)d);
+            return 162;
+        }
+        catch (OverflowException)
+        {
+            // Expected
+        }
+
+        return 0;
+    }
+
     // Test Conv_r_un: Unsigned to float conversion
     public static int TestConvRUn()
     {
@@ -480,7 +593,10 @@ public class TestTypeConversions
         
         result = TestConvRUn();
         if (result != 0) return 4400 + result;
-        
+
+        result = TestConvOverflowFromFloat();
+        if (result != 0) return 4500 + result;
+
         return 0;
     }
 }
