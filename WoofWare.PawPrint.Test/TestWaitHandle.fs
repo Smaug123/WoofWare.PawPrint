@@ -291,13 +291,39 @@ module TestWaitHandle =
 
         match result with
         | Error (WaitHandle.ReleaseFailure.WouldExceedMaximum (attempted, maximum)) ->
-            attempted |> shouldEqual 6
+            attempted |> shouldEqual 6L
             maximum |> shouldEqual 5
         | Ok _ -> failwith "expected overflow but got success"
 
         // State must be untouched: a failed release is observably a no-op
         // on the semaphore side, mirroring `ERROR_TOO_MANY_POSTS` /
         // `SemaphoreFullException`.
+        semaphoreOf id state' |> shouldEqual before
+
+    [<Test>]
+    let ``releaseSemaphore rejects overflow without int32 wraparound near Int32.MaxValue`` () : unit =
+        // Regression for an int32 overflow in the maximum check: at
+        // `previousCount = Int32.MaxValue`, computing `previousCount +
+        // releaseCount` wraps to a negative value that's < Maximum, so
+        // the naive check would silently accept the release and store a
+        // negative `Count`. The actual check must compare without
+        // computing the sum.
+        let state = baseState ()
+
+        let id, state =
+            WaitHandle.createSemaphore System.Int32.MaxValue System.Int32.MaxValue state
+
+        let before = semaphoreOf id state
+
+        let result, state' = WaitHandle.releaseSemaphore id 1 state
+
+        match result with
+        | Error (WaitHandle.ReleaseFailure.WouldExceedMaximum (attempted, maximum)) ->
+            // The error must carry the true (non-wrapped) total.
+            attempted |> shouldEqual (int64 System.Int32.MaxValue + 1L)
+            maximum |> shouldEqual System.Int32.MaxValue
+        | Ok _ -> failwith "expected overflow but got success"
+
         semaphoreOf id state' |> shouldEqual before
 
     [<Test>]

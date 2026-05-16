@@ -2,13 +2,16 @@ namespace WoofWare.PawPrint
 
 /// Native handler for the Win32-shaped wait-handle QCalls reachable from
 /// CoreCLR-on-Unix: `CreateSemaphoreExW`, `ReleaseSemaphore`,
-/// `CloseHandle`, and `WaitHandle_WaitOneCore`. On .NET 10 the BCL
-/// compiles `Semaphore.Windows.cs` regardless of host, with
-/// `Libraries.Kernel32` rebound to `RuntimeHelpers.QCall`, so every
-/// Kernel32 LibraryImport routes to the runtime as a QCall whose entry
-/// point uses the Win32 wide-string name. PawPrint catches each entry
-/// point here and forwards it to the deterministic state machine in
-/// `WaitHandle.fs`.
+/// `CloseHandle`, `WaitHandle_WaitOneCore`, and
+/// `WaitHandle_WaitOnePrioritized`. On .NET 10 the BCL compiles
+/// `Semaphore.Windows.cs` regardless of host, with `Libraries.Kernel32`
+/// rebound to `RuntimeHelpers.QCall`, so every Kernel32 LibraryImport
+/// routes to the runtime as a QCall whose entry point uses the Win32
+/// wide-string name. `LowLevelLifoSemaphore.Unix.cs` independently
+/// imports `WaitHandle_WaitOnePrioritized` (the PAL-prioritized waiter
+/// that `PortableThreadPool` workers park on). PawPrint catches each
+/// entry point here and forwards it to the deterministic state machine
+/// in `WaitHandle.fs`.
 ///
 /// This first slice supports the semaphore variant only; events,
 /// mutexes, multi-handle waits, and finite timeouts are out of scope
@@ -246,6 +249,47 @@ module NativeWaitHandle =
             // in both cases; the scheduler simply will not pick this thread
             // again until a subsequent `releaseSemaphore` wakes it. This
             // mirrors `SystemNative_LowLevelMonitor_Acquire`'s posture.
+            let state =
+                match WaitHandle.waitOne ctx.Thread id state with
+                | WaitHandle.WaitOutcome.Acquired state
+                | WaitHandle.WaitOutcome.Blocked state -> state
+
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.stepped
+            |> Some
+
+        | "WaitHandle_WaitOnePrioritized",
+          "System.Private.CoreLib",
+          "LowLevelLifoSemaphore",
+          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            // `LowLevelLifoSemaphore.WaitCore` (PortableThreadPool's worker
+            // park primitive on Unix) imports this 2-arg variant of the
+            // waiter. The "Prioritized" tag tells the real PAL to use
+            // `PAL_WaitForSingleObjectPrioritized` — a host-side priority
+            // hint that does not change the wakeup semantics from the
+            // guest's point of view. PawPrint does not model thread
+            // priority, so the slow path uses the same FIFO `WaitQueue`
+            // as `WaitOneCore`; this preserves determinism while leaving
+            // a hook for a future priority-aware queue if a guest ever
+            // depends on it.
+            let operation = "WaitHandle_WaitOnePrioritized"
+            let id = waitHandleOfArgument operation instruction.Arguments.[0]
+
+            let timeout = NativeCall.int32Argument operation instruction.Arguments.[1]
+
+            if timeout <> System.Threading.Timeout.Infinite then
+                // Same envelope as `WaitOneCore`. The threadpool worker
+                // path always passes a finite timeout, so failing here
+                // is the deterministic surfacing of the missing virtual-
+                // clock primitive — masking it would let the threadpool
+                // run with no fairness/progress guarantees.
+                failwith
+                    $"%s{operation}: finite timeout (%d{timeout} ms) is not yet implemented; PawPrint has no virtual clock. Guest code that depends on timed waits must be lifted onto a deterministic clock abstraction first."
+
             let state =
                 match WaitHandle.waitOne ctx.Thread id state with
                 | WaitHandle.WaitOutcome.Acquired state

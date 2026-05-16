@@ -36,8 +36,11 @@ module WaitHandle =
         /// Adding `releaseCount` to the current count would breach the
         /// semaphore's maximum. The Win32 contract sets
         /// `ERROR_TOO_MANY_POSTS` and returns FALSE; the BCL turns that
-        /// into a `SemaphoreFullException`.
-        | WouldExceedMaximum of attemptedTotal : int * maximum : int
+        /// into a `SemaphoreFullException`. `attemptedTotal` is reported
+        /// as `int64` so that the value stays meaningful when an `int32`
+        /// add of two near-`Int32.MaxValue` ints would overflow — the
+        /// check itself is done without computing the sum.
+        | WouldExceedMaximum of attemptedTotal : int64 * maximum : int
 
     /// Outcome of a `waitOne` call. The native handler treats both
     /// constructors identically — advance IL and return `WAIT_OBJECT_0` —
@@ -190,9 +193,17 @@ module WaitHandle =
         let semaphore = expectSemaphore "WaitHandle.releaseSemaphore" id handle
 
         let previousCount = semaphore.Count
-        let attemptedTotal = previousCount + releaseCount
-
-        if attemptedTotal > semaphore.Maximum then
+        // Order the comparison so the int32 add can never overflow:
+        // `previousCount ≤ Maximum` is an invariant, so `Maximum -
+        // previousCount` is non-negative, and `releaseCount ≥ 1` is
+        // asserted above. A guest that creates a semaphore at near
+        // `Int32.MaxValue` and posts a release would otherwise wrap to a
+        // negative `attemptedTotal`, sneak past the maximum check, and
+        // store a negative `Count`.
+        if releaseCount > semaphore.Maximum - previousCount then
+            // Compute `attemptedTotal` in int64 so the error stays
+            // meaningful even in the overflow regime.
+            let attemptedTotal = int64 previousCount + int64 releaseCount
             Error (ReleaseFailure.WouldExceedMaximum (attemptedTotal, semaphore.Maximum)), state
         else
             // Direct-handoff: each wake consumes one of the new units.
@@ -202,10 +213,13 @@ module WaitHandle =
             // refactor.
             let toWake = min releaseCount (List.length semaphore.WaitQueue)
             let wakers, remainingQueue = List.splitAt toWake semaphore.WaitQueue
+            // Now safe: the guard above ensures `previousCount +
+            // releaseCount ≤ Maximum`, so the int32 add cannot overflow.
+            let newCount = previousCount + releaseCount - toWake
 
             let semaphore =
                 { semaphore with
-                    Count = attemptedTotal - toWake
+                    Count = newCount
                     WaitQueue = remainingQueue
                 }
 
