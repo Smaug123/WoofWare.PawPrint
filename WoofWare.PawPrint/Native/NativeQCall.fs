@@ -63,6 +63,8 @@ module NativeQCall =
             "AssemblyNative_GetTypeCore", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetTypeCore"
             "AssemblyNative_IsApplyUpdateSupported",
             NativeMetadataUpdater.tryExecuteQCall "AssemblyNative_IsApplyUpdateSupported"
+            "CustomAttribute_CreateCustomAttributeInstance",
+            NativeCustomAttribute.tryExecuteQCall "CustomAttribute_CreateCustomAttributeInstance"
             // The CoreLib source is a Kernel32 LibraryImport, but the runtime
             // assembly we execute presents this PAL entry point through QCall
             // import metadata.
