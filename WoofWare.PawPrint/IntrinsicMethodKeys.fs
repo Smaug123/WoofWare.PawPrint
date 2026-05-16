@@ -343,6 +343,10 @@ module IntrinsicMethodKeys =
             // https://github.com/dotnet/runtime/blob/d258af50034c192bf7f0a18856bf83d2903d98ae/src/libraries/System.Private.CoreLib/src/System/Math.cs#L127
             // https://github.com/dotnet/runtime/blob/d258af50034c192bf7f0a18856bf83d2903d98ae/src/libraries/System.Private.CoreLib/src/System/Math.cs#L137
             anyParams "System.Private.CoreLib" "System.Math" "Abs"
+            // Single-line delegation to Math.Abs above; the [Intrinsic] marker is for the JIT,
+            // but the IL body is just a tail call we can safely execute.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Double.cs#L1041-L1043
+            anyParams "System.Private.CoreLib" "System.Double" "Abs"
             // https://github.com/dotnet/runtime/blob/d258af50034c192bf7f0a18856bf83d2903d98ae/src/libraries/System.Private.CoreLib/src/System/Math.cs#L965C10-L1062C19
             anyParams "System.Private.CoreLib" "System.Math" "Max"
             // Mirror of Math.Max above: most overloads have a `(val1 <= val2) ? val1 : val2`
