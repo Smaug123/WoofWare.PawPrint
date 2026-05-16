@@ -471,13 +471,17 @@ module NativeThreading =
                 | other -> failwith $"%s{operation}: expected int32 length, got %O{other}"
 
             let newName : string option =
-                if nameLength = 0 then
-                    // Guest passed length=0; pointer may legally be null (when the guest
-                    // cleared `Thread.Name`). We model "no name set" as `None` rather
-                    // than `Some ""` so the field round-trips cleanly through serialisation
-                    // and so consumers don't have to disambiguate the two empty states.
-                    None
-                else
+                // Disambiguate `Thread.Name = null` from `Thread.Name = ""` by inspecting
+                // the pointer alongside the length: clearing the name passes a null
+                // pointer with len=0, but assigning `""` passes a non-null pointer
+                // (from `String.Empty.GetPinnableReference()`) also with len=0. The
+                // canonical `_name` field stores the two states distinctly, so the
+                // diagnostic mirror must do the same. Anything else delegates to
+                // `readLengthPrefixedUtf16`, which yields `""` for non-null + len=0
+                // and fails loudly on null + len>0.
+                match namePtr with
+                | ManagedPointerSource.Null when nameLength = 0 -> None
+                | _ ->
                     NativeCall.readLengthPrefixedUtf16 operation ctx.BaseClassTypes state namePtr nameLength
                     |> Some
 

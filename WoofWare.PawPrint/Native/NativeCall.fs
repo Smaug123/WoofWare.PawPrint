@@ -266,12 +266,13 @@ module NativeCall =
     /// `ThreadNative_InformThreadNameChange` QCall, whose CoreCLR signature is
     /// `(ThreadHandle, char* name, int32 len) -> void`).
     ///
-    /// `length = 0` returns `""` even when `ptr` is `Null`: that matches what the
-    /// BCL hands us when the guest clears `Thread.Name` (it passes a null pointer
-    /// alongside `len = 0` rather than allocating an empty buffer). `length < 0`
-    /// is a guest contract violation and fails loudly. A null pointer with
-    /// `length > 0` is also a contract violation and fails loudly rather than
-    /// dereferencing the null.
+    /// `length = 0` returns `""` regardless of `ptr` (so this helper safely
+    /// handles both `Thread.Name = ""` — non-null pointer, len=0 — and
+    /// `Thread.Name = null` — null pointer, len=0); callers that need to
+    /// distinguish those two cases must inspect the pointer themselves before
+    /// invoking. `length < 0` is a guest contract violation and fails loudly.
+    /// A null pointer with `length > 0` is also a contract violation and
+    /// fails loudly rather than dereferencing the null.
     let readLengthPrefixedUtf16
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
