@@ -678,8 +678,7 @@ module NativeRuntimeTypeQCall =
                         state
 
                 match typeInit with
-                | WhatWeDid.SuspendedForClassInit ->
-                    NativeHandlerResult.suspendedForClassInit state |> Some
+                | WhatWeDid.SuspendedForClassInit -> NativeHandlerResult.suspendedForClassInit state |> Some
                 | WhatWeDid.BlockedOnClassInit blockedBy ->
                     NativeHandlerResult.blockedOnClassInit blockedBy state |> Some
                 | WhatWeDid.ThrowingTypeInitializationException ->
