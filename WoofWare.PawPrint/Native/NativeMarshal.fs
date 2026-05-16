@@ -112,9 +112,41 @@ module NativeMarshal =
                 | other -> failwith $"%s{operation}: expected throwIfNotMarshalable as Int32, got %O{other}"
 
             match CliType.TryComputeMarshalSize state.ConcreteTypes state._LoadedAssemblies ctx.BaseClassTypes zero with
-            | Result.Error reason ->
+            | Result.Error (MarshalSizeError.NotMarshalable _) when throwIfNotMarshalable ->
+                // CoreCLR's `MarshalNative_SizeOfHelper` (marshalnative.cpp:150) throws
+                // `ArgumentException` (resource `IDS_CANNOT_MARSHAL`) for types it can't
+                // marshal as unmanaged structures when `throwIfNotMarshalable` is set.
+                // Mirror that with a guest exception so the caller's `try/catch` can handle it.
+                //
+                // `raiseRuntimeException` pushes the exception's ctor frame on top of the
+                // current (native) frame. The native dispatcher must NOT pop us via
+                // `returnStackFrame` on the way back: when the ctor returns, exception
+                // dispatch needs the native frame still present so it can be unwound while
+                // searching for a handler. Signal that by overriding the returned
+                // `WhatWeDid` with `SuspendedForManagedCall`, matching the same convention
+                // the dispatcher uses for native handlers that synchronously push a managed
+                // callee on top of themselves.
+                let state, _ =
+                    IlMachineStateExecution.raiseRuntimeException
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        ctx.BaseClassTypes.ArgumentException
+                        ctx.Thread
+                        state
+
+                (state, WhatWeDid.SuspendedForManagedCall) |> ExecutionResult.stepped |> Some
+            | Result.Error (MarshalSizeError.NotMarshalable reason) ->
+                // `throwIfNotMarshalable=false` path: CoreCLR falls through to
+                // `MethodTable::GetNativeSize` and returns whatever the type loader recorded.
+                // PawPrint doesn't compute that value yet, so surface a host failure with a
+                // clear TODO until a real caller forces us to model it.
                 failwith
-                    $"%s{operation}: refusing to compute unmanaged marshalled size because %s{reason} (throwIfNotMarshalable=%b{throwIfNotMarshalable})"
+                    $"TODO %s{operation}: throwIfNotMarshalable=false fall-through to GetNativeSize is not implemented; type rejected because %s{reason}"
+            | Result.Error (MarshalSizeError.NotImplemented reason) ->
+                // PawPrint hasn't implemented this marshalling case; CoreCLR would compute a
+                // size successfully. Surface as a host TODO so the missing case is visible.
+                failwith
+                    $"TODO %s{operation}: unimplemented marshalling case (throwIfNotMarshalable=%b{throwIfNotMarshalable}): %s{reason}"
             | Result.Ok size ->
                 let state =
                     IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 size.Size)) ctx.Thread state

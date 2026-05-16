@@ -12,6 +12,41 @@ type SizeofResult =
         Size : int
     }
 
+/// Why we couldn't compute the unmanaged marshalled size of a type.
+/// Distinguishes "CoreCLR would reject this too" from "PawPrint hasn't implemented this yet",
+/// so callers at runtime boundaries can react appropriately: `NotMarshalable` is a real
+/// guest-visible error (`ArgumentException` for `Marshal.SizeOf`); `NotImplemented` is a
+/// missing PawPrint feature and should typically surface as a host `failwith` until covered.
+type MarshalSizeError =
+    /// CoreCLR genuinely rejects this shape from being marshalled as an unmanaged structure.
+    /// Examples: `LayoutKind.Auto`, `[MarshalAs(ByValTStr)]` on a non-`System.String` field,
+    /// width-mismatched scalar `[MarshalAs]`, mixed explicit/automatic field offsets.
+    | NotMarshalable of reason : string
+    /// CoreCLR would compute a size here, but PawPrint hasn't implemented the case yet.
+    /// Examples: `CharSet.Auto` (deliberately not chosen platform-dependent), bare `System.Boolean`
+    /// (CoreCLR marshals as a 4-byte BOOL), `UnmanagedType` variants we don't decode yet.
+    | NotImplemented of reason : string
+
+    member this.Reason : string =
+        match this with
+        | MarshalSizeError.NotMarshalable reason
+        | MarshalSizeError.NotImplemented reason -> reason
+
+[<RequireQualifiedAccess>]
+module MarshalSizeError =
+    /// Prepend a `field X: ` label to the inner reason, preserving the case.
+    /// Used to attribute a per-field error to its containing struct field.
+    let prefixField (fieldName : string) (err : MarshalSizeError) : MarshalSizeError =
+        match err with
+        | MarshalSizeError.NotMarshalable reason -> MarshalSizeError.NotMarshalable $"field %s{fieldName}: %s{reason}"
+        | MarshalSizeError.NotImplemented reason -> MarshalSizeError.NotImplemented $"field %s{fieldName}: %s{reason}"
+
+    /// Prepend an arbitrary label to the inner reason, preserving the case.
+    let prefix (label : string) (err : MarshalSizeError) : MarshalSizeError =
+        match err with
+        | MarshalSizeError.NotMarshalable reason -> MarshalSizeError.NotMarshalable $"%s{label}%s{reason}"
+        | MarshalSizeError.NotImplemented reason -> MarshalSizeError.NotImplemented $"%s{label}%s{reason}"
+
 type CliByteAddressabilityRejection =
     | ObjectReference
     | RuntimePointer
@@ -184,28 +219,33 @@ type CliType =
         | CliType.Numeric _
         | CliType.RuntimePointer _ -> None
 
-    /// Compute the unmanaged size that `Marshal.SizeOf` would return for `t`. Returns `Error reason`
-    /// when the type contains a shape whose unmanaged layout we can't yet derive from the managed
-    /// representation alone (e.g. an object reference field with no `[MarshalAs]` descriptor, or a
-    /// `[MarshalAs]` variant we don't decode yet). Value types delegate to
-    /// `CliValueType.TryComputeMarshalSize`, which consumes per-field `FieldMarshalDescriptor` and
-    /// the declaring type's `CharSet` to size `[MarshalAs(ByValTStr)]` and `[MarshalAs(ByValArray)]`
-    /// fields correctly. Type-system context is required so descriptors that depend on the
-    /// field's nominal type can be validated.
+    /// Compute the unmanaged size that `Marshal.SizeOf` would return for `t`. Returns `Error`
+    /// classifying the failure as either `NotMarshalable` (CoreCLR rejects the same shape, e.g.
+    /// `LayoutKind.Auto`) or `NotImplemented` (CoreCLR would compute a size, but PawPrint hasn't
+    /// implemented the case yet). Value types delegate to `CliValueType.TryComputeMarshalSize`,
+    /// which consumes per-field `FieldMarshalDescriptor` and the declaring type's `CharSet` to
+    /// size `[MarshalAs(ByValTStr)]` and `[MarshalAs(ByValArray)]` fields correctly. Type-system
+    /// context is required so descriptors that depend on the field's nominal type can be validated.
     static member TryComputeMarshalSize
         (concreteTypes : AllConcreteTypes)
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
         (corelib : BaseClassTypes<DumpedAssembly>)
         (t : CliType)
-        : Result<SizeofResult, string>
+        : Result<SizeofResult, MarshalSizeError>
         =
         match t with
         | CliType.Numeric _
         | CliType.RuntimePointer _ -> Result.Ok (CliType.SizeOf t)
-        | CliType.Bool _ -> Result.Error "System.Boolean marshals as a 4-byte BOOL by default, not a 1-byte CLI bool"
+        | CliType.Bool _ ->
+            MarshalSizeError.NotImplemented "System.Boolean marshals as a 4-byte BOOL by default, not a 1-byte CLI bool"
+            |> Result.Error
         | CliType.Char _ ->
-            Result.Error "System.Char marshalling depends on CharSet and does not always match 2-byte CLI char"
-        | CliType.ObjectRef _ -> Result.Error "object references require managed-to-unmanaged marshalling"
+            MarshalSizeError.NotImplemented
+                "System.Char marshalling depends on CharSet and does not always match 2-byte CLI char"
+            |> Result.Error
+        | CliType.ObjectRef _ ->
+            MarshalSizeError.NotImplemented "object references require managed-to-unmanaged marshalling"
+            |> Result.Error
         | CliType.ValueType vt -> CliValueType.TryComputeMarshalSize concreteTypes assemblies corelib vt
 
     static member ToBytes (t : CliType) : byte[] =
@@ -1048,14 +1088,18 @@ and CliValueType =
     /// `[MarshalAs(ByValTStr)]` fields. `None` is treated as the runtime default (Ansi). `Auto`
     /// is platform-dependent (Unicode on Windows, Ansi on Unix), so we reject it explicitly
     /// rather than picking a host-dependent answer in a deterministic interpreter.
-    static member private CharSetByteSize (charSet : CharSet) : Result<int, string> =
+    static member private CharSetByteSize (charSet : CharSet) : Result<int, MarshalSizeError> =
         match charSet with
         | CharSet.None
         | CharSet.Ansi -> Result.Ok 1
         | CharSet.Unicode -> Result.Ok 2
         | CharSet.Auto ->
-            Result.Error "CharSet.Auto is platform-dependent and not yet supported by marshalled-size computation"
-        | other -> Result.Error $"unrecognised CharSet %O{other}"
+            MarshalSizeError.NotImplemented
+                "CharSet.Auto is platform-dependent and not yet supported by marshalled-size computation"
+            |> Result.Error
+        | other ->
+            MarshalSizeError.NotImplemented $"unrecognised CharSet %O{other}"
+            |> Result.Error
 
     /// Unmanaged size of a fixed-width scalar `UnmanagedType`. Used both as the per-element
     /// size for `[MarshalAs(ByValArray)]` and as the basis for the compatibility check when a
@@ -1063,7 +1107,7 @@ and CliValueType =
     /// unambiguous fixed-width primitive cases are decoded; everything else is rejected so the
     /// caller can decide whether a richer mapping is needed. `Error` (HRESULT) is included
     /// because CoreCLR accepts it on `int`/`uint` fields and it has the same width as `I4`.
-    static member private MarshalSizeOfScalar (unmanagedType : UnmanagedType) : Result<SizeofResult, string> =
+    static member private MarshalSizeOfScalar (unmanagedType : UnmanagedType) : Result<SizeofResult, MarshalSizeError> =
         match unmanagedType with
         | UnmanagedType.I1
         | UnmanagedType.U1 ->
@@ -1103,7 +1147,10 @@ and CliValueType =
                     Size = NATIVE_INT_SIZE
                     Alignment = NATIVE_INT_SIZE
                 }
-        | other -> Result.Error $"UnmanagedType %O{other} is not yet supported by marshalled-size computation"
+        | other ->
+            MarshalSizeError.NotImplemented
+                $"UnmanagedType %O{other} is not yet supported by marshalled-size computation"
+            |> Result.Error
 
     /// True iff the given handle refers to a CLI array type. CoreCLR only accepts
     /// `[MarshalAs(ByValArray)]` on array-typed fields, so we use this as the shape guard.
@@ -1227,7 +1274,7 @@ and CliValueType =
         (descriptor : FieldMarshalDescriptor option)
         (fieldType : ConcreteTypeHandle)
         (contents : CliType)
-        : Result<SizeofResult, string>
+        : Result<SizeofResult, MarshalSizeError>
         =
         match descriptor with
         | Some (FieldMarshalDescriptor.ByValTStr sizeConst) ->
@@ -1236,9 +1283,12 @@ and CliValueType =
             // references (e.g. arbitrary class fields) don't silently get a string-buffer
             // size.
             if not (CliValueType.IsStringFieldType concreteTypes assemblies corelib fieldType) then
-                Result.Error "[MarshalAs(UnmanagedType.ByValTStr)] is only valid on System.String fields"
+                MarshalSizeError.NotMarshalable
+                    "[MarshalAs(UnmanagedType.ByValTStr)] is only valid on System.String fields"
+                |> Result.Error
             elif sizeConst <= 0 then
-                Result.Error $"ByValTStr SizeConst=%d{sizeConst} is not positive"
+                MarshalSizeError.NotMarshalable $"ByValTStr SizeConst=%d{sizeConst} is not positive"
+                |> Result.Error
             else
                 CliValueType.CharSetByteSize charSet
                 |> Result.map (fun bpc ->
@@ -1250,12 +1300,15 @@ and CliValueType =
         | Some (FieldMarshalDescriptor.ByValArray (sizeConst, Some elementType)) ->
             // Likewise, ByValArray requires an array-typed field; reject anything else.
             if not (CliValueType.IsArrayFieldType fieldType) then
-                Result.Error "[MarshalAs(UnmanagedType.ByValArray)] is only valid on array-typed fields"
+                MarshalSizeError.NotMarshalable
+                    "[MarshalAs(UnmanagedType.ByValArray)] is only valid on array-typed fields"
+                |> Result.Error
             elif sizeConst <= 0 then
-                Result.Error $"ByValArray SizeConst=%d{sizeConst} is not positive"
+                MarshalSizeError.NotMarshalable $"ByValArray SizeConst=%d{sizeConst} is not positive"
+                |> Result.Error
             else
                 CliValueType.MarshalSizeOfScalar elementType
-                |> Result.mapError (fun reason -> $"ByValArray element type: %s{reason}")
+                |> Result.mapError (MarshalSizeError.prefix "ByValArray element type: ")
                 |> Result.map (fun elementSize ->
                     {
                         Size = sizeConst * elementSize.Size
@@ -1263,7 +1316,8 @@ and CliValueType =
                     }
                 )
         | Some (FieldMarshalDescriptor.ByValArray (_, None)) ->
-            Result.Error "ByValArray descriptor without an explicit element type is not supported"
+            MarshalSizeError.NotImplemented "ByValArray descriptor without an explicit element type is not supported"
+            |> Result.Error
         | Some (FieldMarshalDescriptor.Other UnmanagedType.Struct) ->
             // `[MarshalAs(UnmanagedType.Struct)]` on a value-type field instructs the
             // marshaller to lay out that struct inline using its own native layout. Recurse
@@ -1280,8 +1334,9 @@ and CliValueType =
                 else
                     CliValueType.TryComputeMarshalSize concreteTypes assemblies corelib vt
             | _ ->
-                Result.Error
+                MarshalSizeError.NotMarshalable
                     "[MarshalAs(UnmanagedType.Struct)] is only valid on value-type fields, not reference or primitive contents"
+                |> Result.Error
         | Some (FieldMarshalDescriptor.Other unmanagedType) ->
             // CoreCLR's `MarshalInfo` validates a scalar `[MarshalAs]` against the managed
             // field type and rejects width-mismatched pairs (e.g. `[MarshalAs(I1)] int`).
@@ -1293,8 +1348,9 @@ and CliValueType =
                 let cliSize = CliType.SizeOf contents
 
                 if cliSize.Size <> descSize.Size then
-                    Result.Error
+                    MarshalSizeError.NotMarshalable
                         $"[MarshalAs(%O{unmanagedType})] declares %d{descSize.Size}-byte unmanaged width but managed field has %d{cliSize.Size} bytes"
+                    |> Result.Error
                 else
                     Result.Ok descSize
             )
@@ -1303,10 +1359,16 @@ and CliValueType =
             | CliType.Numeric _
             | CliType.RuntimePointer _ -> Result.Ok (CliType.SizeOf contents)
             | CliType.Bool _ ->
-                Result.Error "System.Boolean marshals as a 4-byte BOOL by default, not a 1-byte CLI bool"
+                MarshalSizeError.NotImplemented
+                    "System.Boolean marshals as a 4-byte BOOL by default, not a 1-byte CLI bool"
+                |> Result.Error
             | CliType.Char _ ->
-                Result.Error "System.Char marshalling depends on CharSet and does not always match 2-byte CLI char"
-            | CliType.ObjectRef _ -> Result.Error "object references require managed-to-unmanaged marshalling"
+                MarshalSizeError.NotImplemented
+                    "System.Char marshalling depends on CharSet and does not always match 2-byte CLI char"
+                |> Result.Error
+            | CliType.ObjectRef _ ->
+                MarshalSizeError.NotImplemented "object references require managed-to-unmanaged marshalling"
+                |> Result.Error
             | CliType.ValueType vt ->
                 // Mirror CoreCLR's `MarshalInfo::MarshalInfo` (mlinfo.cpp:1747): a DateTime-typed
                 // field short-circuits to `MARSHAL_TYPE_DATE` (8 bytes, 8-byte aligned) without
@@ -1331,7 +1393,7 @@ and CliValueType =
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
         (corelib : BaseClassTypes<DumpedAssembly>)
         (vt : CliValueType)
-        : Result<SizeofResult, string>
+        : Result<SizeofResult, MarshalSizeError>
         =
         // Mirror CoreCLR's `IsStructMarshalable` (fieldmarshaler.cpp:288): a type with
         // `LayoutKind.Auto` reports `HasLayout() == false`, so `Marshal.SizeOf<T>()` throws an
@@ -1340,7 +1402,8 @@ and CliValueType =
         // `TryFieldMarshalSize` before they recurse, so by the time we see an AutoLayout type
         // it really is something we should reject.
         if CliValueType.IsAutoLayout concreteTypes assemblies vt then
-            Result.Error "type has [StructLayout(LayoutKind.Auto)] and has no native layout"
+            MarshalSizeError.NotMarshalable "type has [StructLayout(LayoutKind.Auto)] and has no native layout"
+            |> Result.Error
         else
 
         match vt._Storage with
@@ -1398,7 +1461,7 @@ and CliValueType =
                                 field.Type
                                 field.Contents
                         with
-                        | Result.Error reason -> Result.Error $"field %s{field.Name}: %s{reason}"
+                        | Result.Error err -> Result.Error (MarshalSizeError.prefixField field.Name err)
                         | Result.Ok size ->
                             let alignmentCap = min size.Alignment packingSize
 
@@ -1432,14 +1495,16 @@ and CliValueType =
                                 field.Type
                                 field.Contents
                         with
-                        | Result.Error reason -> Result.Error $"field %s{field.Name}: %s{reason}"
+                        | Result.Error err -> Result.Error (MarshalSizeError.prefixField field.Name err)
                         | Result.Ok size ->
                             let alignmentCap = min size.Alignment packingSize
                             let fieldEnd = field.Offset + size.Size
                             Result.Ok (max maxEnd fieldEnd, max maxAlign alignmentCap)
                 )
                 |> Result.map (fun (off, align) -> computeFinal off align)
-            | _ :: _, _ :: _ -> Result.Error "unexpectedly mixed explicit and automatic field offsets"
+            | _ :: _, _ :: _ ->
+                MarshalSizeError.NotMarshalable "unexpectedly mixed explicit and automatic field offsets"
+                |> Result.Error
 
     /// Sets the value of the specified field, *without* touching any overlapping fields.
     /// `DereferenceField` handles resolving conflicts between overlapping fields.
