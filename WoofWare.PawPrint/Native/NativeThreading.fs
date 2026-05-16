@@ -488,16 +488,13 @@ module NativeThreading =
                     failwith $"%s{operation}: target ThreadId {targetThreadId} has no ThreadState"
                 )
 
-            // Mirror the SetIsBackground guard: the real CLR raises ThreadStateException
-            // via the BCL's `_isDead` check on terminated threads before reaching the
-            // QCall; PawPrint doesn't yet flip `_isDead` at thread termination, so we
-            // catch the case here rather than silently storing a name on a dead thread.
-            match targetState.Status with
-            | ThreadStatus.Terminated ->
-                failwith
-                    $"%s{operation}: target ThreadId {targetThreadId} has terminated. The real CLR raises ThreadStateException via the BCL's `_isDead` check; PawPrint doesn't synthesise that yet, so this is a guest bug we can't currently report structurally."
-            | _ -> ()
-
+            // Unlike SetIsBackground, `Thread.Name`'s managed setter has no `_isDead`
+            // check and CoreCLR's native InformThreadNameChange just skips the OS-level
+            // naming when the handle is invalid (it does not throw). So setting or
+            // clearing `Thread.Name` on a terminated thread is valid guest behaviour —
+            // we record the requested value unconditionally, matching the BCL's
+            // unconditional update of the canonical `_name` field that runs before
+            // this QCall fires.
             let updatedThreadState =
                 { targetState with
                     Name = newName
