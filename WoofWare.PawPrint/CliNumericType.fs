@@ -337,6 +337,7 @@ type CliNumericType =
             | NativeIntSource.EventPipeProviderPtr _ -> failwith "refusing to express EventPipeProviderPtr as bytes"
             | NativeIntSource.EventPipeEventPtr _ -> failwith "refusing to express EventPipeEventPtr as bytes"
             | NativeIntSource.LowLevelMonitorPtr _ -> failwith "refusing to express LowLevelMonitorPtr as bytes"
+            | NativeIntSource.WaitHandlePtr _ -> failwith "refusing to express WaitHandlePtr as bytes"
             | NativeIntSource.AssemblyHandle _ -> failwith "refusing to express AssemblyHandle as bytes"
             | NativeIntSource.ModuleHandle _ -> failwith "refusing to express ModuleHandle as bytes"
             | NativeIntSource.MetadataImportHandle _ -> failwith "refusing to express MetadataImportHandle as bytes"

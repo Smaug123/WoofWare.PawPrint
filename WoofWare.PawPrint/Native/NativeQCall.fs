@@ -69,6 +69,20 @@ module NativeQCall =
             // assembly we execute presents this PAL entry point through QCall
             // import metadata.
             "GetEnvironmentVariableW", NativeKernel32.tryExecuteQCall "GetEnvironmentVariableW"
+            // CoreCLR-on-Unix rebinds `Libraries.Kernel32` to `RuntimeHelpers.QCall`,
+            // so the Win32-shaped Semaphore P/Invokes plus `CloseHandle` reach
+            // the runtime as QCalls under their Win32 wide-string names.
+            // `WaitHandle_WaitOneCore` is a separate QCall declared on
+            // `WaitHandle` itself. All four are dispatched into the
+            // deterministic state machine in `WaitHandle.fs`.
+            "CreateSemaphoreExW", NativeWaitHandle.tryExecuteQCall "CreateSemaphoreExW"
+            "ReleaseSemaphore", NativeWaitHandle.tryExecuteQCall "ReleaseSemaphore"
+            "CloseHandle", NativeWaitHandle.tryExecuteQCall "CloseHandle"
+            "WaitHandle_WaitOneCore", NativeWaitHandle.tryExecuteQCall "WaitHandle_WaitOneCore"
+            // `LowLevelLifoSemaphore.Unix.cs` independently imports the
+            // prioritized 2-arg waiter; routes to the same deterministic
+            // state machine as `WaitOneCore`.
+            "WaitHandle_WaitOnePrioritized", NativeWaitHandle.tryExecuteQCall "WaitHandle_WaitOnePrioritized"
         ]
         |> Map.ofList
 
