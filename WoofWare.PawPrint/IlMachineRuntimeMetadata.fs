@@ -1681,6 +1681,78 @@ module IlMachineRuntimeMetadata =
         | TypeDefn.GenericMethodParameter _
         | TypeDefn.Void -> state, None
 
+    /// Walk a `TypeDefn` and rewrite every `FromReference` (assembly-relative) into the
+    /// equivalent `FromDefinition` (carrying a fully-resolved identity), preserving structure
+    /// elsewhere. The caller supplies the assembly whose TypeRef tables interpret the input;
+    /// after this transform the result is assembly-independent and can be substituted into a
+    /// TypeDefn that lives in a different assembly without resolution errors.
+    ///
+    /// Used by the open-generic cast walk at the strip boundary: when a recursion crosses
+    /// from `currentAssy` to a different `strippedAssy`, the args carried into the deeper
+    /// walk may contain TypeRefs declared in the outer assembly (e.g. `Derived<T> :
+    /// Base<Arg, T>` in assembly E, where `Arg` lives in A and `Base` in B). Without
+    /// canonicalisation, deeper materialisations would try to resolve those TypeRefs against
+    /// the wrong assembly's reference tables and fail. `GenericTypeParameter` positions are
+    /// positional and assembly-independent, so they pass through unchanged.
+    let rec private canonicalizeTypeDefn
+        (loggerFactory : ILoggerFactory)
+        (state : IlMachineState)
+        (sourceAssy : DumpedAssembly)
+        (ty : TypeDefn)
+        : IlMachineState * TypeDefn
+        =
+        match ty with
+        | TypeDefn.PrimitiveType _
+        | TypeDefn.Void
+        | TypeDefn.GenericTypeParameter _
+        | TypeDefn.GenericMethodParameter _
+        | TypeDefn.FromDefinition _ -> state, ty
+        | TypeDefn.FromReference (typeRef, sigKind) ->
+            let state, _, resolved =
+                IlMachineTypeResolution.resolveTypeFromRef loggerFactory sourceAssy typeRef ImmutableArray.Empty state
+
+            state, TypeDefn.FromDefinition (resolved.Identity, sigKind)
+        | TypeDefn.GenericInstantiation (generic, args) ->
+            let state, generic' = canonicalizeTypeDefn loggerFactory state sourceAssy generic
+
+            let state, argsList =
+                ((state, []), args)
+                ||> Seq.fold (fun (state, acc) arg ->
+                    let state, arg' = canonicalizeTypeDefn loggerFactory state sourceAssy arg
+                    state, arg' :: acc
+                )
+
+            let argsArr = argsList |> List.rev |> ImmutableArray.CreateRange
+            state, TypeDefn.GenericInstantiation (generic', argsArr)
+        | TypeDefn.Array (element, rank) ->
+            let state, element' = canonicalizeTypeDefn loggerFactory state sourceAssy element
+            state, TypeDefn.Array (element', rank)
+        | TypeDefn.OneDimensionalArrayLowerBoundZero element ->
+            let state, element' = canonicalizeTypeDefn loggerFactory state sourceAssy element
+            state, TypeDefn.OneDimensionalArrayLowerBoundZero element'
+        | TypeDefn.Pointer element ->
+            let state, element' = canonicalizeTypeDefn loggerFactory state sourceAssy element
+            state, TypeDefn.Pointer element'
+        | TypeDefn.Byref element ->
+            let state, element' = canonicalizeTypeDefn loggerFactory state sourceAssy element
+            state, TypeDefn.Byref element'
+        | TypeDefn.Pinned element ->
+            let state, element' = canonicalizeTypeDefn loggerFactory state sourceAssy element
+            state, TypeDefn.Pinned element'
+        | TypeDefn.Modified (original, modifier, required) ->
+            let state, original' = canonicalizeTypeDefn loggerFactory state sourceAssy original
+            let state, modifier' = canonicalizeTypeDefn loggerFactory state sourceAssy modifier
+            state, TypeDefn.Modified (original', modifier', required)
+        | TypeDefn.FunctionPointer _ ->
+            // FunctionPointer carries a TypeMethodSignature with parameter and return TypeDefns;
+            // canonicalising those requires walking the signature shape. None of the current
+            // open-generic walk targets exercises this case (you can't author
+            // `delegate*<X, void>` as a generic argument in C#), so defer until a real test
+            // case forces it.
+            failwithf
+                "TODO: canonicalizeTypeDefn: FunctionPointer not yet supported in cross-assembly substitutions (%O)"
+                ty
+
     /// Cast oracle entry point over the full `RuntimeTypeHandleTarget` DU. The Closed/Closed case
     /// delegates to `isConcreteTypeAssignableTo`; the open-generic and generic-parameter variants
     /// are handled at this layer so that callers (e.g. the `TypeHandle_CanCastTo_NoCacheLookup`
@@ -1824,7 +1896,27 @@ module IlMachineRuntimeMetadata =
                         match stripped with
                         | None -> state, false
                         | Some (strippedAssy, strippedTypeInfo, strippedArgs) ->
-                            walkOpen state visited strippedArgs strippedAssy strippedTypeInfo
+                            // Canonicalise each arg against the edge's authoring assembly
+                            // before recursing. `strippedArgs` are the GenericInstantiation
+                            // args from `substituted`, which inherits TypeRefs from
+                            // `edgeAssy` (where the edge was authored) plus whatever the
+                            // outer substitutions had filled in (already canonical by this
+                            // function's invariant at this point of the recursion). The
+                            // deeper walk's currentAssy becomes `strippedAssy`, which is a
+                            // different assembly's reference tables, so unresolved TypeRefs
+                            // must be turned into `FromDefinition` here to remain
+                            // interpretable downstream.
+                            let state, canonicalisedArgs =
+                                ((state, []), strippedArgs)
+                                ||> Seq.fold (fun (state, acc) arg ->
+                                    let state, arg' = canonicalizeTypeDefn loggerFactory state edgeAssy arg
+
+                                    state, arg' :: acc
+                                )
+
+                            let canonicalisedArgs = canonicalisedArgs |> List.rev |> ImmutableArray.CreateRange
+
+                            walkOpen state visited canonicalisedArgs strippedAssy strippedTypeInfo
 
                 let state, interfaceMatch =
                     ((state, false), currentTypeInfo.ImplementedInterfaces)
