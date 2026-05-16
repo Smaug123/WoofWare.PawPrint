@@ -80,6 +80,7 @@ module NativeBuffer =
         =
         match ptr with
         | ManagedPointerSource.Null -> None
+        | ManagedPointerSource.NativeIntPlaceholder _ -> None
         | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), projs) ->
             projectionByteOffset projs
             |> Option.map (fun byteOffset ->

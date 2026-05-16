@@ -66,6 +66,12 @@ module Int64Source =
         | NativeIntSource.Verbatim n -> Int64Source.Verbatim n
         | NativeIntSource.SyntheticCrossArrayOffset s -> Int64Source.SyntheticCrossArrayOffset s
         | NativeIntSource.ManagedPointer ManagedPointerSource.Null -> Int64Source.Verbatim 0L
+        | NativeIntSource.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits) ->
+            // `Unsafe.AsRef<T>((void*)bits)` placeholders ARE bit patterns;
+            // widening to int64 is a verbatim move, not a provenance-carrying
+            // wrap. Should normally be canonicalised before reaching here, but
+            // defending in depth keeps the invariant local.
+            Int64Source.Verbatim bits
         | NativeIntSource.OpaqueHashBits bits -> Int64Source.OpaqueHashBits bits
         | _ -> Int64Source.WidenedNativeInt (src, signed)
 

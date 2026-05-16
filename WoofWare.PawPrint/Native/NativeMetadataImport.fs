@@ -66,6 +66,9 @@ module NativeMetadataImport =
             ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset + (index * 4)), [])
             |> Some
         | ManagedPointerSource.Null -> failwith $"%s{operation}: expected non-null Int32 result buffer"
+        | ManagedPointerSource.NativeIntPlaceholder bits ->
+            failwith
+                $"%s{operation}: cannot use fake non-null byref @ 0x%x{bits} as Int32 result buffer; the placeholder must never be dereferenced"
         | ManagedPointerSource.Byref _ -> None
 
     let private tryWriteSmallInt32Buffer

@@ -17,6 +17,9 @@ module NativeArray =
         =
         match ptr with
         | ManagedPointerSource.Null -> failwith $"%s{operation}: expected non-null %s{argName} pointer"
+        | ManagedPointerSource.NativeIntPlaceholder bits ->
+            failwith
+                $"%s{operation}: cannot read %s{argName} through fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
         | ManagedPointerSource.Byref _ ->
             IlMachineState.readManagedByref baseClassTypes state ptr
             |> int32OfCliType operation argName
@@ -116,6 +119,9 @@ module NativeArray =
 
             match lowerBounds with
             | ManagedPointerSource.Null -> ()
+            | ManagedPointerSource.NativeIntPlaceholder bits ->
+                failwith
+                    $"%s{operation}: cannot read lowerBounds through fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
             | ManagedPointerSource.Byref _ ->
                 let lowerBound =
                     readInt32Pointer ctx.BaseClassTypes operation state "lowerBounds[0]" lowerBounds

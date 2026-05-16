@@ -167,6 +167,19 @@ type ByrefProjection =
 type ManagedPointerSource =
     | Null
     | Byref of root : ByrefRoot * projections : ByrefProjection list
+    /// A fake non-null managed reference whose only meaningful content is the
+    /// raw `int64` bit pattern that produced it. BCL code in
+    /// `MemoryMarshal.GetNonNullPinnableReference` synthesises one of these
+    /// via `Unsafe.AsRef<T>((void*)1)` when a `Span<T>` is empty, so the
+    /// subsequent `fixed (T* p = &ref)` pins to a non-null `T*` (the
+    /// downstream native API is documented to tolerate any address for a
+    /// zero-length buffer, as long as it isn't null). The reference must
+    /// never be dereferenced; the only legitimate operations are
+    /// round-tripping back through `conv.u`/`conv.i` to a `Verbatim`,
+    /// `Unsafe.IsNullRef` (true iff `bits = 0L`, but normalised away at
+    /// construction so this case never carries zero), and structural
+    /// equality against another managed reference.
+    | NativeIntPlaceholder of bits : int64
 
     override this.ToString () =
         let formatProj acc proj =
@@ -177,6 +190,7 @@ type ManagedPointerSource =
 
         match this with
         | ManagedPointerSource.Null -> "<null managed pointer>"
+        | ManagedPointerSource.NativeIntPlaceholder bits -> $"<fake non-null byref @ 0x%x{bits}>"
         | ManagedPointerSource.Byref (root, projs) ->
             let rootStr =
                 match root with
@@ -285,6 +299,7 @@ module ManagedPointerSource =
 
         match src1, src2 with
         | ManagedPointerSource.Null, ManagedPointerSource.Null -> Some 0L
+        | ManagedPointerSource.NativeIntPlaceholder b1, ManagedPointerSource.NativeIntPlaceholder b2 -> Some (b2 - b1)
         | ManagedPointerSource.Byref (root1, projs1), ManagedPointerSource.Byref (root2, projs2) when root1 = root2 ->
             match splitTrailingByteCursor projs1, splitTrailingByteCursor projs2 with
             | Some (prefix1, offset1), Some (prefix2, offset2) when prefix1 = prefix2 -> Some (offset2 - offset1)
@@ -397,6 +412,7 @@ module ManagedPointerSource =
     let tryStableAddressBits (src : ManagedPointerSource) : int64 option =
         match src with
         | ManagedPointerSource.Null -> Some 0L
+        | ManagedPointerSource.NativeIntPlaceholder bits -> Some bits
         | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (_, _, _, rootByteOffset), projs) ->
             let rec loop (byteOffset : int) (projs : ByrefProjection list) : int64 option =
                 match projs with
@@ -432,6 +448,8 @@ module ManagedPointerSource =
     let appendProjection (projection : ByrefProjection) (src : ManagedPointerSource) : ManagedPointerSource =
         match src with
         | ManagedPointerSource.Null -> failwith "cannot project from null managed pointer"
+        | ManagedPointerSource.NativeIntPlaceholder bits ->
+            failwith $"cannot project from fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
         | ManagedPointerSource.Byref (root, projs) ->
             // ReinterpretAs is address-preserving: it changes only the type view, not the byte offset.
             // So consecutive ReinterpretAs projections collapse to the most recent one; any trailing
@@ -470,6 +488,7 @@ module ManagedPointerSource =
         =
         match src with
         | ManagedPointerSource.Null -> src
+        | ManagedPointerSource.NativeIntPlaceholder _ -> src
         | ManagedPointerSource.Byref (root, projs) ->
             match List.rev projs, tryGetCellSize root with
             | ByrefProjection.ByteOffset n :: ByrefProjection.ReinterpretAs ty :: rest, Some cellSize when cellSize > 0 ->
@@ -622,6 +641,7 @@ module ManagedPointerSource =
         let rec go (src : ManagedPointerSource) : ManagedPointerSource =
             match src with
             | ManagedPointerSource.Null -> src
+            | ManagedPointerSource.NativeIntPlaceholder _ -> src
             | ManagedPointerSource.Byref (root, projs) ->
                 match List.rev projs with
                 | ByrefProjection.ByteOffset 0 :: revRest -> go (ManagedPointerSource.Byref (root, List.rev revRest))
@@ -653,6 +673,7 @@ module ManagedPointerSource =
 
         match src with
         | ManagedPointerSource.Null -> false
+        | ManagedPointerSource.NativeIntPlaceholder _ -> false
         | ManagedPointerSource.Byref (_, projs) ->
             let stripped =
                 projs

@@ -491,26 +491,55 @@ module Intrinsics =
 
             state |> IlMachineState.advanceProgramCounter currentThread |> Some
         | "System.Private.CoreLib", "Unsafe", "AsRef" ->
-            // `AsRef<T>(ref readonly T)` is a JIT intrinsic. The CoreLib body in
-            // this runtime throws PlatformNotSupportedException; the intended
-            // intrinsic semantics are the address-preserving `ldarg.0; ret`.
-            // Keep the void* overload out of this arm until native pointers are
-            // modelled here deliberately.
+            // `AsRef<T>(ref readonly T)` and `AsRef<T>(void* source)` are JIT
+            // intrinsics. The CoreLib bodies in this runtime throw
+            // PlatformNotSupportedException; the intended intrinsic semantics
+            // are the address-preserving `ldarg.0; ret`.
+            //
+            // The `void*` overload is invoked by BCL code like
+            // `MemoryMarshal.GetNonNullPinnableReference` which fabricates
+            // `Unsafe.AsRef<T>((void*)1)` for empty spans so the subsequent
+            // `fixed` pins to a non-null pointer. Translate the native int back
+            // through the managed-pointer view, normalising `0L` to `Null` and
+            // existing managed-pointer provenance back to its underlying
+            // source; raw verbatim bits become a `NativeIntPlaceholder` whose
+            // contract is "must never be dereferenced".
             let t =
                 match Seq.toList methodToCall.Generics with
                 | [ t ] -> t
                 | _ -> failwith "bad generics Unsafe.AsRef"
 
-            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteByref tParam ], MethodReturnType.Returns (ConcreteByref tRet) when tParam = t && tRet = t -> ()
-            | _ -> failwith $"TODO: Unsafe.AsRef unsupported signature %A{methodToCall.Signature.ParameterTypes}"
+            let isByrefOverload =
+                match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+                | [ ConcreteByref tParam ], MethodReturnType.Returns (ConcreteByref tRet) when tParam = t && tRet = t ->
+                    true
+                | [ ConcretePointer _ ], MethodReturnType.Returns (ConcreteByref tRet) when tRet = t -> false
+                | _ -> failwith $"TODO: Unsafe.AsRef unsupported signature %A{methodToCall.Signature.ParameterTypes}"
 
             let arg, state = IlMachineState.popEvalStack currentThread state
 
             let toPush =
-                match arg with
-                | EvalStackValue.ManagedPointer ptr -> EvalStackValue.ManagedPointer ptr
-                | x -> failwith $"TODO: Unsafe.AsRef(%O{x})"
+                if isByrefOverload then
+                    match arg with
+                    | EvalStackValue.ManagedPointer ptr -> EvalStackValue.ManagedPointer ptr
+                    | x -> failwith $"TODO: Unsafe.AsRef(ref readonly T) on %O{x}"
+                else
+                    let placeholderOf (bits : int64) =
+                        if bits = 0L then
+                            ManagedPointerSource.Null
+                        else
+                            ManagedPointerSource.NativeIntPlaceholder bits
+
+                    match arg with
+                    | EvalStackValue.ManagedPointer ptr -> EvalStackValue.ManagedPointer ptr
+                    | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) -> EvalStackValue.ManagedPointer ptr
+                    | EvalStackValue.NativeInt (NativeIntSource.Verbatim bits) ->
+                        EvalStackValue.ManagedPointer (placeholderOf bits)
+                    | EvalStackValue.Int32 bits -> EvalStackValue.ManagedPointer (placeholderOf (int64 bits))
+                    | EvalStackValue.Int64 (Int64Source.Verbatim bits) ->
+                        EvalStackValue.ManagedPointer (placeholderOf bits)
+                    | EvalStackValue.NullObjectRef -> EvalStackValue.ManagedPointer ManagedPointerSource.Null
+                    | x -> failwith $"TODO: Unsafe.AsRef(void*) on %O{x}"
 
             state
             |> IlMachineState.pushToEvalStack' toPush currentThread
@@ -1920,6 +1949,37 @@ module Intrinsics =
                 | EvalStackValue.ManagedPointer p -> p
                 | _ -> failwith $"TODO: Unsafe.AddByteOffset on non-ManagedPointer source byref: %O{src}"
 
+            // `Unsafe.AsRef<T>((void*)bits)` byrefs are bit patterns, not
+            // anchored byrefs. `Unsafe.AddByteOffset` on a placeholder is just
+            // bit addition; appending a `ReinterpretAs` would be meaningless on
+            // a target that doesn't represent memory. `Null` is the bit pattern
+            // `0` (we normalise placeholder→Null on zero), so an offset from
+            // `Null` must use the same bit-arithmetic route — otherwise the
+            // chain `placeholder + (-bits)` (which normalises to `Null`) +
+            // another `AddByteOffset` would fall into the byref path and try
+            // to project off a null managed pointer.
+            let placeholderBits =
+                match srcPtr with
+                | ManagedPointerSource.NativeIntPlaceholder bits -> Some bits
+                | ManagedPointerSource.Null -> Some 0L
+                | _ -> None
+
+            match placeholderBits with
+            | Some bits ->
+                let newBits = bits + int64 offset
+
+                let ptr =
+                    if newBits = 0L then
+                        ManagedPointerSource.Null
+                    else
+                        ManagedPointerSource.NativeIntPlaceholder newBits
+
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Some
+            | None ->
+
             // `addByteOffsetUnderReinterpret` anchors the byte cursor under `ReinterpretAs T`
             // before appending the offset, so it works regardless of whether the source byref
             // already carries a trailing byte-view tail. The trailing `ReinterpretAs T` is
@@ -2026,6 +2086,29 @@ module Intrinsics =
             let tSize, state =
                 let tZero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes t
                 CliType.sizeOf tZero, state
+
+            // `Unsafe.AsRef<T>((void*)bits)` byrefs are bit patterns, not
+            // anchored byrefs. `Unsafe.ByteOffset` on a pair of them is just
+            // the bit-difference, matching the IL `sub` semantics implemented
+            // in BinaryArithmetic. Null is the placeholder for bits=0, so
+            // pairings with Null are still well-defined as bit subtraction.
+            let asPlaceholderBits (v : EvalStackValue) : int64 option =
+                match v with
+                | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> Some 0L
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits) -> Some bits
+                | _ -> None
+
+            match asPlaceholderBits origin, asPlaceholderBits target with
+            | Some originBits, Some targetBits ->
+                let byteOffset = targetBits - originBits
+
+                state
+                |> IlMachineState.pushToEvalStack'
+                    (EvalStackValue.NativeInt (NativeIntSource.Verbatim byteOffset))
+                    currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Some
+            | _ ->
 
             // ByteOffset measures the byte distance between two byref address
             // targets. The generic T on the method is only the static view
