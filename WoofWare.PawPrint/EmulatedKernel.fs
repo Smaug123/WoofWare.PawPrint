@@ -146,14 +146,62 @@ type SemaphoreState =
         WaitQueue : ThreadId list
     }
 
+/// Ownership state of a single Win32-shaped mutex. Modelled as a DU
+/// rather than an `Owner option + RecursionCount + IsAbandoned` triple
+/// so that illegal states (held but with no owner; recursion count 0
+/// while held; held *and* abandoned) are unrepresentable.
+///
+/// `Free wasAbandoned = true` is the post-abandonment Win32 contract: the
+/// previous owner died while still holding the mutex, the kernel marks
+/// the mutex free with a sticky "abandoned" flag, and the very next
+/// `WaitOne` succeeds but returns `WAIT_ABANDONED` (which the BCL turns
+/// into `AbandonedMutexException`). The flag is cleared by the
+/// acquiring `WaitOne`.
+[<RequireQualifiedAccess>]
+type MutexOwnership =
+    /// No thread currently owns the mutex. `wasAbandoned = true` means
+    /// the previous owner terminated without calling `ReleaseMutex`;
+    /// the next acquirer observes that fact (via `WAIT_ABANDONED`) and
+    /// the flag clears as part of the acquire step.
+    | Free of wasAbandoned : bool
+    /// Held by `owner` with `recursionCount` outstanding `WaitOne`
+    /// calls. `recursionCount` is always `≥ 1`; the released-the-last-
+    /// nesting transition moves to `Free false` (or to a fresh `Held`
+    /// state for the woken queue head, via direct handoff).
+    | Held of owner : ThreadId * recursionCount : int
+
+/// Deterministic model of a single Win32-shaped mutex kernel object, as
+/// minted by `PAL_CreateMutexW`. Carries ownership (per `MutexOwnership`)
+/// plus the FIFO wait queue of threads parked in `BlockedOnWaitHandle`
+/// because the mutex was held by another thread when they called
+/// `WaitOne`. The wait queue lives outside the ownership DU because it
+/// is orthogonal to who currently owns the mutex — a free mutex can
+/// have a non-empty queue (transient, between direct-handoff release
+/// and the woken thread being picked by the scheduler) although our
+/// release path immediately re-installs the woken thread as the new
+/// owner so this is in practice always empty when `Free`.
+///
+/// Mutexes are re-entrant on `owner`: a second `WaitOne` from the
+/// owning thread succeeds on the fast path and bumps `recursionCount`.
+/// Matching `ReleaseMutex` calls walk the count back down; the
+/// outermost release either marks the mutex free or performs direct
+/// handoff to the FIFO head of the queue.
+type MutexState =
+    {
+        Ownership : MutexOwnership
+        WaitQueue : ThreadId list
+    }
+
 /// Kind-tagged state for a single Win32-shaped wait-handle kernel object
 /// resident in `EmulatedKernel.WaitHandles`. Kind-agnostic operations
 /// (`WaitHandle_WaitOneCore`, `CloseHandle`) take one map lookup and then
-/// match on kind; new kinds (Event, Mutex) slot in as additional cases
-/// without disturbing the table or the wait/close handlers.
+/// match on kind; new kinds (Event) slot in as additional cases without
+/// disturbing the table or the wait/close handlers.
 [<RequireQualifiedAccess>]
-type WaitHandleState = | Semaphore of SemaphoreState
-// future: | Event of EventState | Mutex of MutexState
+type WaitHandleState =
+    | Semaphore of SemaphoreState
+    | Mutex of MutexState
+// future: | Event of EventState
 
 /// One entry in `EmulatedKernel.OutputLog`: the role the guest targeted (a
 /// writable standard stream — stdout or stderr) and the byte payload of

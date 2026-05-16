@@ -55,26 +55,48 @@ module TestWaitHandle =
     let private semaphoreOf (id : WaitHandleId) (state : IlMachineState) : SemaphoreState =
         match Map.find id state.Kernel.WaitHandles with
         | WaitHandleState.Semaphore s -> s
+        | WaitHandleState.Mutex _ -> failwith "expected a Semaphore handle but got a Mutex"
+
+    let private mutexOf (id : WaitHandleId) (state : IlMachineState) : MutexState =
+        match Map.find id state.Kernel.WaitHandles with
+        | WaitHandleState.Mutex m -> m
+        | WaitHandleState.Semaphore _ -> failwith "expected a Mutex handle but got a Semaphore"
 
     let private acquired (outcome : WaitHandle.WaitOutcome) : IlMachineState =
         match outcome with
         | WaitHandle.WaitOutcome.Acquired state -> state
+        | WaitHandle.WaitOutcome.AcquiredAbandoned _ -> failwith "expected Acquired but got AcquiredAbandoned"
         | WaitHandle.WaitOutcome.Blocked _ -> failwith "expected Acquired but got Blocked"
+
+    let private acquiredAbandoned (outcome : WaitHandle.WaitOutcome) : IlMachineState =
+        match outcome with
+        | WaitHandle.WaitOutcome.AcquiredAbandoned state -> state
+        | WaitHandle.WaitOutcome.Acquired _ -> failwith "expected AcquiredAbandoned but got Acquired"
+        | WaitHandle.WaitOutcome.Blocked _ -> failwith "expected AcquiredAbandoned but got Blocked"
 
     let private blocked (outcome : WaitHandle.WaitOutcome) : IlMachineState =
         match outcome with
         | WaitHandle.WaitOutcome.Blocked state -> state
         | WaitHandle.WaitOutcome.Acquired _ -> failwith "expected Blocked but got Acquired"
+        | WaitHandle.WaitOutcome.AcquiredAbandoned _ -> failwith "expected Blocked but got AcquiredAbandoned"
 
     let private tryAcquired (outcome : WaitHandle.TryWaitOutcome) : IlMachineState =
         match outcome with
         | WaitHandle.TryWaitOutcome.Acquired state -> state
+        | WaitHandle.TryWaitOutcome.AcquiredAbandoned _ -> failwith "expected Acquired but got AcquiredAbandoned"
         | WaitHandle.TryWaitOutcome.TimedOut _ -> failwith "expected Acquired but got TimedOut"
+
+    let private tryAcquiredAbandoned (outcome : WaitHandle.TryWaitOutcome) : IlMachineState =
+        match outcome with
+        | WaitHandle.TryWaitOutcome.AcquiredAbandoned state -> state
+        | WaitHandle.TryWaitOutcome.Acquired _ -> failwith "expected AcquiredAbandoned but got Acquired"
+        | WaitHandle.TryWaitOutcome.TimedOut _ -> failwith "expected AcquiredAbandoned but got TimedOut"
 
     let private timedOut (outcome : WaitHandle.TryWaitOutcome) : IlMachineState =
         match outcome with
         | WaitHandle.TryWaitOutcome.TimedOut state -> state
         | WaitHandle.TryWaitOutcome.Acquired _ -> failwith "expected TimedOut but got Acquired"
+        | WaitHandle.TryWaitOutcome.AcquiredAbandoned _ -> failwith "expected TimedOut but got AcquiredAbandoned"
 
     let private t0 = ThreadId 0
     let private t1 = ThreadId 1
@@ -210,10 +232,10 @@ module TestWaitHandle =
 
     [<Test>]
     let ``tryWaitOne on a signalled semaphore decrements count and reports Acquired`` () : unit =
-        let state = baseState ()
+        let state = baseState () |> withThreads [ t0 ]
         let id, state = WaitHandle.createSemaphore 2 5 state
 
-        let state = WaitHandle.tryWaitOne id state |> tryAcquired
+        let state = WaitHandle.tryWaitOne t0 id state |> tryAcquired
 
         let s = semaphoreOf id state
         s.Count |> shouldEqual 1
@@ -229,7 +251,7 @@ module TestWaitHandle =
         let state = baseState () |> withThreads [ t0 ]
         let id, state = WaitHandle.createSemaphore 0 5 state
 
-        let state = WaitHandle.tryWaitOne id state |> timedOut
+        let state = WaitHandle.tryWaitOne t0 id state |> timedOut
 
         let s = semaphoreOf id state
         s.Count |> shouldEqual 0
@@ -688,6 +710,10 @@ module TestWaitHandle =
                 match outcome with
                 | WaitHandle.WaitOutcome.Acquired s -> s, waited + 1, released
                 | WaitHandle.WaitOutcome.Blocked s -> s, waited + 1, released
+                | WaitHandle.WaitOutcome.AcquiredAbandoned _ ->
+                    // The semaphore variant never produces AcquiredAbandoned;
+                    // that's mutex-only. Surface as a script-invariant break.
+                    failwith "Semaphore waitOne unexpectedly produced AcquiredAbandoned"
         | Op.Release n ->
             let result, state' = WaitHandle.releaseSemaphore id n state
 
@@ -743,3 +769,379 @@ module TestWaitHandle =
             invariantOk && conservation && sem.Maximum = maximum
 
         Check.One (config, property)
+
+    // -------------------------------------------------------------------
+    // Mutex — create, re-entrancy, FIFO direct handoff, abandoned flag
+    // -------------------------------------------------------------------
+
+    [<Test>]
+    let ``createMutex without initialOwner starts free, not abandoned, with empty queue`` () : unit =
+        let state = baseState () |> withThreads [ t0 ]
+        let id, state = WaitHandle.createMutex false t0 state
+
+        let m = mutexOf id state
+        m.Ownership |> shouldEqual (MutexOwnership.Free false)
+        m.WaitQueue |> shouldEqual []
+
+    [<Test>]
+    let ``createMutex with initialOwner installs the creator with recursion count 1`` () : unit =
+        let state = baseState () |> withThreads [ t0 ]
+        let id, state = WaitHandle.createMutex true t0 state
+
+        let m = mutexOf id state
+        m.Ownership |> shouldEqual (MutexOwnership.Held (t0, 1))
+        m.WaitQueue |> shouldEqual []
+
+    [<Test>]
+    let ``minted mutex ids are never zero (BCL OOM guard never fires)`` () : unit =
+        let state = baseState () |> withThreads [ t0 ]
+        let id, _ = WaitHandle.createMutex false t0 state
+        let (WaitHandleId i) = id
+        i |> shouldNotEqual 0
+
+    [<Test>]
+    let ``mutex ids interleave with semaphore ids on a shared counter`` () : unit =
+        // Single monotonic ID source; minting mutex / semaphore handles
+        // alternately produces distinct ids in registration order.
+        let state = baseState () |> withThreads [ t0 ]
+        let mutexId1, state = WaitHandle.createMutex false t0 state
+        let semId1, state = WaitHandle.createSemaphore 0 1 state
+        let mutexId2, state = WaitHandle.createMutex false t0 state
+        let semId2, _ = WaitHandle.createSemaphore 0 1 state
+
+        mutexId1 |> shouldNotEqual semId1
+        semId1 |> shouldNotEqual mutexId2
+        mutexId2 |> shouldNotEqual semId2
+        mutexId1 |> shouldNotEqual mutexId2
+
+    [<Test>]
+    let ``waitOne on a free mutex takes ownership with recursion count 1`` () : unit =
+        let state = baseState () |> withThreads [ t0 ]
+        let id, state = WaitHandle.createMutex false t0 state
+
+        let state = WaitHandle.waitOne t0 id state |> acquired
+
+        let m = mutexOf id state
+        m.Ownership |> shouldEqual (MutexOwnership.Held (t0, 1))
+        m.WaitQueue |> shouldEqual []
+        statusOf t0 state |> shouldEqual ThreadStatus.Runnable
+
+    [<Test>]
+    let ``waitOne by owner is re-entrant and bumps recursion count`` () : unit =
+        let state = baseState () |> withThreads [ t0 ]
+        let id, state = WaitHandle.createMutex false t0 state
+
+        let state = WaitHandle.waitOne t0 id state |> acquired
+        let state = WaitHandle.waitOne t0 id state |> acquired
+        let state = WaitHandle.waitOne t0 id state |> acquired
+
+        let m = mutexOf id state
+        m.Ownership |> shouldEqual (MutexOwnership.Held (t0, 3))
+        m.WaitQueue |> shouldEqual []
+
+    [<Test>]
+    let ``waitOne by a non-owner parks at the FIFO tail`` () : unit =
+        let state = baseState () |> withThreads [ t0 ; t1 ; t2 ]
+        let id, state = WaitHandle.createMutex true t0 state
+
+        let state = WaitHandle.waitOne t1 id state |> blocked
+        let state = WaitHandle.waitOne t2 id state |> blocked
+
+        let m = mutexOf id state
+        m.Ownership |> shouldEqual (MutexOwnership.Held (t0, 1))
+        m.WaitQueue |> shouldEqual [ t1 ; t2 ]
+        statusOf t0 state |> shouldEqual ThreadStatus.Runnable
+        statusOf t1 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
+        statusOf t2 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
+
+    [<Test>]
+    let ``releaseMutex by owner without waiters marks the mutex free`` () : unit =
+        let state = baseState () |> withThreads [ t0 ]
+        let id, state = WaitHandle.createMutex true t0 state
+
+        let result, state = WaitHandle.releaseMutex t0 id state
+
+        result |> shouldEqual (Ok ())
+        let m = mutexOf id state
+        m.Ownership |> shouldEqual (MutexOwnership.Free false)
+        m.WaitQueue |> shouldEqual []
+
+    [<Test>]
+    let ``releaseMutex unwinds recursion before releasing`` () : unit =
+        let state = baseState () |> withThreads [ t0 ]
+        let id, state = WaitHandle.createMutex true t0 state
+        let state = WaitHandle.waitOne t0 id state |> acquired
+        let state = WaitHandle.waitOne t0 id state |> acquired
+
+        let _, state = WaitHandle.releaseMutex t0 id state
+        (mutexOf id state).Ownership |> shouldEqual (MutexOwnership.Held (t0, 2))
+
+        let _, state = WaitHandle.releaseMutex t0 id state
+        (mutexOf id state).Ownership |> shouldEqual (MutexOwnership.Held (t0, 1))
+
+        let _, state = WaitHandle.releaseMutex t0 id state
+        (mutexOf id state).Ownership |> shouldEqual (MutexOwnership.Free false)
+
+    [<Test>]
+    let ``releaseMutex with waiters hands ownership directly to the FIFO head`` () : unit =
+        let state = baseState () |> withThreads [ t0 ; t1 ; t2 ]
+        let id, state = WaitHandle.createMutex true t0 state
+        let state = WaitHandle.waitOne t1 id state |> blocked
+        let state = WaitHandle.waitOne t2 id state |> blocked
+
+        let result, state = WaitHandle.releaseMutex t0 id state
+
+        result |> shouldEqual (Ok ())
+        let m = mutexOf id state
+        // Direct handoff: t1 wakes already owning the mutex with
+        // recursion count 1; t2 stays parked behind.
+        m.Ownership |> shouldEqual (MutexOwnership.Held (t1, 1))
+        m.WaitQueue |> shouldEqual [ t2 ]
+        statusOf t0 state |> shouldEqual ThreadStatus.Runnable
+        statusOf t1 state |> shouldEqual ThreadStatus.Runnable
+        statusOf t2 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
+
+    [<Test>]
+    let ``releaseMutex by a non-owner returns NotOwner and leaves state unchanged`` () : unit =
+        let state = baseState () |> withThreads [ t0 ; t1 ]
+        let id, state = WaitHandle.createMutex true t0 state
+        let before = mutexOf id state
+
+        let result, state' = WaitHandle.releaseMutex t1 id state
+
+        result |> shouldEqual (Error WaitHandle.ReleaseMutexFailure.NotOwner)
+        mutexOf id state' |> shouldEqual before
+
+    [<Test>]
+    let ``releaseMutex on a free mutex returns NotOwner and leaves state unchanged`` () : unit =
+        let state = baseState () |> withThreads [ t0 ]
+        let id, state = WaitHandle.createMutex false t0 state
+        let before = mutexOf id state
+
+        let result, state' = WaitHandle.releaseMutex t0 id state
+
+        result |> shouldEqual (Error WaitHandle.ReleaseMutexFailure.NotOwner)
+        mutexOf id state' |> shouldEqual before
+
+    [<Test>]
+    let ``Property: matched waitOne/releaseMutex pairs by owner leave mutex Free false`` () : unit =
+        let property (PositiveInt depthRaw) : bool =
+            let depth = 1 + (depthRaw % 16)
+            let state = baseState () |> withThreads [ t0 ]
+            // Start free; the first WaitOne takes ownership; further
+            // WaitOnes bump the recursion count; matched releases unwind.
+            let id, state = WaitHandle.createMutex false t0 state
+
+            let state =
+                [ 1..depth ]
+                |> List.fold (fun s _ -> WaitHandle.waitOne t0 id s |> acquired) state
+
+            (mutexOf id state).Ownership = MutexOwnership.Held (t0, depth)
+            && let state =
+                [ 1..depth ]
+                |> List.fold
+                    (fun s _ ->
+                        let _, s = WaitHandle.releaseMutex t0 id s
+                        s
+                    )
+                    state in
+
+               (mutexOf id state).Ownership = MutexOwnership.Free false
+               && (mutexOf id state).WaitQueue = []
+
+        Check.One (config, property)
+
+    // -------------------------------------------------------------------
+    // tryWaitOne on mutex — kind-aware non-blocking probe
+    // -------------------------------------------------------------------
+
+    [<Test>]
+    let ``tryWaitOne on a free mutex acquires it`` () : unit =
+        let state = baseState () |> withThreads [ t0 ]
+        let id, state = WaitHandle.createMutex false t0 state
+
+        let state = WaitHandle.tryWaitOne t0 id state |> tryAcquired
+
+        (mutexOf id state).Ownership |> shouldEqual (MutexOwnership.Held (t0, 1))
+
+    [<Test>]
+    let ``tryWaitOne by owner of a held mutex bumps recursion count`` () : unit =
+        let state = baseState () |> withThreads [ t0 ]
+        let id, state = WaitHandle.createMutex true t0 state
+
+        let state = WaitHandle.tryWaitOne t0 id state |> tryAcquired
+
+        (mutexOf id state).Ownership |> shouldEqual (MutexOwnership.Held (t0, 2))
+
+    [<Test>]
+    let ``tryWaitOne on a mutex held by another thread reports TimedOut without parking`` () : unit =
+        let state = baseState () |> withThreads [ t0 ; t1 ]
+        let id, state = WaitHandle.createMutex true t0 state
+
+        let state = WaitHandle.tryWaitOne t1 id state |> timedOut
+
+        // No enqueue, no status flip — the entire point of the zero-
+        // timeout probe.
+        let m = mutexOf id state
+        m.Ownership |> shouldEqual (MutexOwnership.Held (t0, 1))
+        m.WaitQueue |> shouldEqual []
+        statusOf t1 state |> shouldEqual ThreadStatus.Runnable
+
+    // -------------------------------------------------------------------
+    // Abandoned flag — synthesised via direct state manipulation
+    // -------------------------------------------------------------------
+    // Full abandoned propagation (driving the flag via owner-thread
+    // termination) is structural and deferred — Scheduler.onThreadTerminated
+    // currently fails loud on owned mutexes. The state-machine behaviour
+    // on a Free(wasAbandoned=true) mutex is still required to be correct
+    // for when that gap closes; we test it here by synthesising the state
+    // directly. -------------------------------------------------------------------
+
+    let private installAbandonedMutex (id : WaitHandleId) (state : IlMachineState) : IlMachineState =
+        state.MapKernel (fun kernel ->
+            let mutex =
+                {
+                    Ownership = MutexOwnership.Free true
+                    WaitQueue = []
+                }
+
+            { kernel with
+                WaitHandles = Map.add id (WaitHandleState.Mutex mutex) kernel.WaitHandles
+            }
+        )
+
+    [<Test>]
+    let ``waitOne on an abandoned-flagged free mutex produces AcquiredAbandoned and clears the flag`` () : unit =
+        let state = baseState () |> withThreads [ t0 ]
+        let id, state = WaitHandle.createMutex false t0 state
+        let state = installAbandonedMutex id state
+
+        let state = WaitHandle.waitOne t0 id state |> acquiredAbandoned
+
+        let m = mutexOf id state
+        m.Ownership |> shouldEqual (MutexOwnership.Held (t0, 1))
+
+    [<Test>]
+    let ``tryWaitOne on an abandoned-flagged free mutex produces AcquiredAbandoned and clears the flag`` () : unit =
+        let state = baseState () |> withThreads [ t0 ]
+        let id, state = WaitHandle.createMutex false t0 state
+        let state = installAbandonedMutex id state
+
+        let state = WaitHandle.tryWaitOne t0 id state |> tryAcquiredAbandoned
+
+        let m = mutexOf id state
+        m.Ownership |> shouldEqual (MutexOwnership.Held (t0, 1))
+
+    [<Test>]
+    let ``releaseMutex on a mutex acquired-abandoned leaves the flag cleared`` () : unit =
+        // Once the abandoned flag is consumed by the acquiring WaitOne,
+        // a subsequent release produces a plain Free(false), not a
+        // Free(true) — the flag is sticky to a single wake, not to the
+        // mutex permanently.
+        let state = baseState () |> withThreads [ t0 ]
+        let id, state = WaitHandle.createMutex false t0 state
+        let state = installAbandonedMutex id state
+        let state = WaitHandle.waitOne t0 id state |> acquiredAbandoned
+
+        let _, state = WaitHandle.releaseMutex t0 id state
+
+        (mutexOf id state).Ownership |> shouldEqual (MutexOwnership.Free false)
+
+    // -------------------------------------------------------------------
+    // close — mutex variants
+    // -------------------------------------------------------------------
+
+    [<Test>]
+    let ``close removes a quiescent free mutex from the registry`` () : unit =
+        let state = baseState () |> withThreads [ t0 ]
+        let id, state = WaitHandle.createMutex false t0 state
+
+        let state = WaitHandle.close id state
+
+        Map.containsKey id state.Kernel.WaitHandles |> shouldEqual false
+
+    [<Test>]
+    let ``close fails loud on a still-held mutex`` () : unit =
+        let state = baseState () |> withThreads [ t0 ]
+        let id, state = WaitHandle.createMutex true t0 state
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () -> WaitHandle.close id state |> ignore)
+
+        exn.Message |> shouldContainText "still held"
+
+    [<Test>]
+    let ``close fails loud on a mutex with parked waiters`` () : unit =
+        let state = baseState () |> withThreads [ t0 ; t1 ]
+        let id, state = WaitHandle.createMutex true t0 state
+        let state = WaitHandle.waitOne t1 id state |> blocked
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () -> WaitHandle.close id state |> ignore)
+
+        exn.Message |> shouldContainText "parked"
+
+    // -------------------------------------------------------------------
+    // Cross-kind failures — wrong-kind handle to a kind-specific operation
+    // -------------------------------------------------------------------
+
+    [<Test>]
+    let ``releaseSemaphore on a mutex id fails loud`` () : unit =
+        let state = baseState () |> withThreads [ t0 ]
+        let id, state = WaitHandle.createMutex false t0 state
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () -> WaitHandle.releaseSemaphore id 1 state |> ignore)
+
+        exn.Message |> shouldContainText "Mutex"
+
+    [<Test>]
+    let ``waitOnePrioritized on a mutex id fails loud`` () : unit =
+        // The LowLevelLifoSemaphore park primitive is only ever called
+        // against semaphores; routing a mutex into the prioritized
+        // entry point is a guest bug.
+        let state = baseState () |> withThreads [ t0 ]
+        let id, state = WaitHandle.createMutex false t0 state
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () -> WaitHandle.waitOnePrioritized t0 id state |> ignore)
+
+        exn.Message |> shouldContainText "Mutex"
+
+    [<Test>]
+    let ``releaseMutex on a semaphore id fails loud`` () : unit =
+        let state = baseState () |> withThreads [ t0 ]
+        let id, state = WaitHandle.createSemaphore 1 5 state
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () -> WaitHandle.releaseMutex t0 id state |> ignore)
+
+        exn.Message |> shouldContainText "Semaphore"
+
+    // -------------------------------------------------------------------
+    // Use-after-free
+    // -------------------------------------------------------------------
+
+    [<Test>]
+    let ``waitOne on a closed mutex fails loud (use-after-free)`` () : unit =
+        let state = baseState () |> withThreads [ t0 ]
+        let id, state = WaitHandle.createMutex false t0 state
+        let state = WaitHandle.close id state
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () -> WaitHandle.waitOne t0 id state |> ignore)
+
+        exn.Message |> shouldContainText "not registered"
+
+    [<Test>]
+    let ``releaseMutex on a closed mutex fails loud (use-after-free)`` () : unit =
+        let state = baseState () |> withThreads [ t0 ]
+        let id, state = WaitHandle.createMutex true t0 state
+        // Release before close so the close itself succeeds.
+        let _, state = WaitHandle.releaseMutex t0 id state
+        let state = WaitHandle.close id state
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () -> WaitHandle.releaseMutex t0 id state |> ignore)
+
+        exn.Message |> shouldContainText "not registered"

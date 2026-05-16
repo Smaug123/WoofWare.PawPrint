@@ -96,6 +96,15 @@ module Scheduler =
     ///   `LowLevelMonitor` predicates "thread does not die holding the monitor" on
     ///   higher-level discipline (RAII in `LowLevelMonitorHelper`); we mirror that
     ///   contract with a loud failure rather than a silent deadlock.
+    /// - Fails loudly if `terminated` was still the Owner of any mutex. Full
+    ///   Win32 abandoned-mutex propagation (so the next waiter wakes with
+    ///   `WAIT_ABANDONED` and `AbandonedMutexException`) is structural and
+    ///   not yet implemented: the wake-time return value is pushed onto
+    ///   blocked waiters' eval stacks at park time, so changing it requires
+    ///   deferred-return-value materialisation. Until that lands, failing
+    ///   loud here is correct-by-detection — a real guest reaching this case
+    ///   surfaces as a clean crash rather than a silent permanent ownership
+    ///   transfer.
     let onThreadTerminated (terminated : ThreadId) (state : IlMachineState) : IlMachineState =
         let orphanedInits =
             state.TypeInitTable
@@ -153,6 +162,32 @@ module Scheduler =
         | _ ->
             failwith
                 $"Thread {terminated} terminated while still holding {orphanedSyncBlocks.Length} SyncBlock(s) (%A{orphanedSyncBlocks}); any thread parked in BlockedOnSyncBlockAcquire on those objects would deadlock on a dead owner. The guest must Monitor.Exit before terminating."
+
+        // Same contract for Win32-shaped mutexes (Mutex.WaitOne / ReleaseMutex):
+        // a terminating thread must not still own any mutex, because abandoned-
+        // mutex wake-up propagation is not yet implemented. Real CoreCLR sets
+        // a sticky abandoned flag and wakes waiters with WAIT_ABANDONED; we
+        // can't (yet) rewrite the wake-time return value of already-blocked
+        // waiters because their `WAIT_OBJECT_0` slot is pushed at park time.
+        // Failing loud is correct-by-detection until that gap is closed.
+        let orphanedMutexes =
+            state.Kernel.WaitHandles
+            |> Map.toSeq
+            |> Seq.choose (fun (id, handle) ->
+                match handle with
+                | WaitHandleState.Mutex mutex ->
+                    match mutex.Ownership with
+                    | MutexOwnership.Held (owner, _) when owner = terminated -> Some id
+                    | _ -> None
+                | WaitHandleState.Semaphore _ -> None
+            )
+            |> Seq.toList
+
+        match orphanedMutexes with
+        | [] -> ()
+        | _ ->
+            failwith
+                $"Thread {terminated} terminated while still owning {orphanedMutexes.Length} mutex(es) (%A{orphanedMutexes}); abandoned-mutex propagation is not yet implemented (the wake-time return value is pushed onto blocked waiters' eval stacks at park time, so producing WAIT_ABANDONED for them requires deferred-return-value materialisation). The guest must ReleaseMutex before terminating until that gap is closed."
 
         let threadState =
             state.ThreadState
