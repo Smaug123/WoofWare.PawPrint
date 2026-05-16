@@ -68,6 +68,7 @@ module private ByteAddressabilityClassifier =
         | NativeIntSource.EventPipeProviderPtr _
         | NativeIntSource.EventPipeEventPtr _
         | NativeIntSource.LowLevelMonitorPtr _
+        | NativeIntSource.WaitHandlePtr _
         | NativeIntSource.SyntheticCrossArrayOffset _
         | NativeIntSource.OpaqueHashBits _ ->
             CliByteAddressability.Rejected (CliByteAddressabilityRejection.NativeIntSourceNotByteAddressable source)
