@@ -372,15 +372,24 @@ module ArithmeticOperation =
 
             member _.ManagedPtrManagedPtr baseClassTypes state ptr1 ptr2 =
                 match ptr1, ptr2 with
+                // `Unsafe.AsRef<T>((void*)bits)` produces a bit-pattern byref,
+                // and the null managed pointer is just the placeholder at
+                // `bits = 0`. Pointer subtraction over these is plain bit
+                // subtraction: GetNonNullPinnableReference uses
+                // `endPtr - startPtr` to recover an empty span's byte length
+                // (0 when the placeholders share a bit pattern). These arms
+                // must precede the generic `Null`-on-either-side arms below,
+                // which would otherwise return the left ManagedPointer
+                // (Choice1Of2) for `placeholder - Null` or refuse the
+                // `Null - placeholder` case.
+                | ManagedPointerSource.NativeIntPlaceholder bits1, ManagedPointerSource.NativeIntPlaceholder bits2 ->
+                    bits1 - bits2 |> verbatimInt64 |> Choice2Of2
+                | ManagedPointerSource.NativeIntPlaceholder bits1, ManagedPointerSource.Null ->
+                    bits1 |> verbatimInt64 |> Choice2Of2
+                | ManagedPointerSource.Null, ManagedPointerSource.NativeIntPlaceholder bits2 ->
+                    -bits2 |> verbatimInt64 |> Choice2Of2
                 | ptr1, ManagedPointerSource.Null -> Choice1Of2 ptr1
                 | ManagedPointerSource.Null, _ -> failwith "refusing to create negative pointer"
-                | ManagedPointerSource.NativeIntPlaceholder bits1, ManagedPointerSource.NativeIntPlaceholder bits2 ->
-                    // `(void*)b1 - (void*)b2 = b1 - b2`. Both sides are fake
-                    // non-null pointers (bit patterns only); subtracting them
-                    // never dereferences. GetNonNullPinnableReference uses
-                    // `endPtr - startPtr` to recover an empty span's byte length
-                    // (0 when the placeholders share a bit pattern).
-                    bits1 - bits2 |> verbatimInt64 |> Choice2Of2
                 | ManagedPointerSource.NativeIntPlaceholder _, _
                 | _, ManagedPointerSource.NativeIntPlaceholder _ ->
                     failwith $"refusing to subtract through fake non-null byref placeholder: %O{ptr1} and %O{ptr2}"

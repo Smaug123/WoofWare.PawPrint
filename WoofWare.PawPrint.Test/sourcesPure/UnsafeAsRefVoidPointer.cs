@@ -129,6 +129,19 @@ namespace UnsafeAsRefVoidPointer
             Span<byte> emptySpan = new Span<byte>(emptyBase, 0);
             if (emptySpan.Length != 0) return 24;
 
+            // `byte* - byte*` between a placeholder and the null managed
+            // pointer must produce the bit-pattern delta as a native int.
+            // `Unsafe.AsRef<byte>((void*)0)` normalises to Null, so this
+            // exercises the `placeholder - Null` and `Null - placeholder`
+            // arms of the managed-pointer subtraction.
+            byte* subFive = (byte*)Unsafe.AsPointer(ref Unsafe.AsRef<byte>((void*)5));
+            byte* subNull = (byte*)Unsafe.AsPointer(ref Unsafe.AsRef<byte>((void*)0));
+            long subDelta = subFive - subNull;
+            if (subDelta != 5) return 25;
+
+            long reverseSubDelta = subNull - subFive;
+            if (reverseSubDelta != -5) return 26;
+
             return 0;
         }
     }
