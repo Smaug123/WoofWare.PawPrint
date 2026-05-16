@@ -63,6 +63,9 @@ module IlMachineState =
     let withReplacedConstructedObject =
         IlMachineThreadState.withReplacedConstructedObject
 
+    let markActiveFrameWrapInTargetInvocation =
+        IlMachineThreadState.markActiveFrameWrapInTargetInvocation
+
     let pushToEvalStack' = IlMachineThreadState.pushToEvalStack'
 
     let pushToEvalStack = IlMachineThreadState.pushToEvalStack
@@ -190,6 +193,9 @@ module IlMachineState =
 
     let synthesizeTypeInitializationException =
         IlMachineRuntimeMetadata.synthesizeTypeInitializationException
+
+    let synthesizeTargetInvocationException =
+        IlMachineRuntimeMetadata.synthesizeTargetInvocationException
 
     let resolveTypeMetadataToken = IlMachineRuntimeMetadata.resolveTypeMetadataToken
 

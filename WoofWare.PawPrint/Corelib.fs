@@ -115,6 +115,9 @@ module Corelib =
         let argumentNullException = findCorelibType corelib "System" "ArgumentNullException"
         let dateTime = findCorelibType corelib "System" "DateTime"
 
+        let targetInvocationException =
+            findCorelibType corelib "System.Reflection" "TargetInvocationException"
+
         {
             Corelib = corelib
             String = stringType
@@ -166,6 +169,7 @@ module Corelib =
             ArgumentException = argumentException
             ArgumentNullException = argumentNullException
             DateTime = dateTime
+            TargetInvocationException = targetInvocationException
         }
 
     let concretizeAll

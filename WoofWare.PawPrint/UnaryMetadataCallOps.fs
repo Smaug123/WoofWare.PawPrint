@@ -7,6 +7,405 @@ open Microsoft.Extensions.Logging
 
 [<RequireQualifiedAccess>]
 module internal UnaryMetadataCallOps =
+    /// Per-dimension bounds check for a multi-dim array access. Indices smaller than
+    /// the running flat-offset upper bound can still target the wrong cell — e.g.
+    /// `arr[1, 5]` on a `[3, 4]` array has flat offset 9 (< total length 12) but lies
+    /// in the row-1 region rather than producing IndexOutOfRangeException.
+    let private indicesOutOfRange (lengths : ImmutableArray<int>) (indices : int[]) : bool =
+        let mutable bad = false
+
+        for k = 0 to indices.Length - 1 do
+            if indices.[k] < 0 || indices.[k] >= lengths.[k] then
+                bad <- true
+
+        bad
+
+    /// Row-major flatten: ECMA layout for `arr[i_0, ..., i_{n-1}]` with lengths
+    /// `[L_0, ..., L_{n-1}]` is `((((i_0)*L_1)+i_1)*L_2 + i_2)*...*L_{n-1} + i_{n-1}`.
+    /// The iterative form starting from `flat = 0` reproduces this because the first
+    /// multiplication (by L_0) is on a zero accumulator.
+    let private rowMajorOffset (lengths : ImmutableArray<int>) (indices : int[]) : int =
+        let mutable flat = 0
+
+        for k = 0 to indices.Length - 1 do
+            flat <- flat * lengths.[k] + indices.[k]
+
+        flat
+
+    /// Pop `rank` Int32 indices off the eval stack — the topmost popped value is the
+    /// rightmost index (dimension `rank-1`) — followed by the array reference. Returns
+    /// the indices in dimension order along with the array address (`None` if the
+    /// receiver was null; callers should raise `NullReferenceException`).
+    let private popMultiDimIndicesAndArray
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (thread : ThreadId)
+        (rank : int)
+        (state : IlMachineState)
+        : int[] * ManagedHeapAddress option * IlMachineState
+        =
+        let indices = Array.zeroCreate<int> rank
+        let mutable s = state
+
+        for i = rank - 1 downto 0 do
+            let v, s' = IlMachineState.popEvalStack thread s
+
+            match v with
+            | EvalStackValue.Int32 n ->
+                indices.[i] <- n
+                s <- s'
+            | other ->
+                failwith $"unexpectedly popped non-Int32 value %O{other} as multi-dim array index at dimension %d{i}"
+
+        let arrEval, s = IlMachineState.popEvalStack thread s
+        let arrAddr = IlMachineState.evalStackValueToObjectRef baseClassTypes s arrEval
+        indices, arrAddr, s
+
+    /// Implements `call instance void T[<rank>]::Set(int32, ..., int32, T)` — the
+    /// runtime-synthesized element-store operation for a multi-dimensional array of
+    /// element type `elementType`. Pops the value (top of stack), then `rank` Int32
+    /// indices (top-of-stack is the rightmost), then the array reference. Per-dimension
+    /// bounds violations raise `IndexOutOfRangeException`; on success the coerced value
+    /// is written into the row-major backing store at the computed flat offset.
+    let private executeMultiDimArraySet
+        (ctx : UnaryMetadataIlOpContext)
+        (state : IlMachineState)
+        (elementType : TypeDefn)
+        (rank : int)
+        (signature : MemberSignature)
+        : IlMachineState * WhatWeDid
+        =
+        let loggerFactory = ctx.LoggerFactory
+        let baseClassTypes = ctx.BaseClassTypes
+        let activeAssy = ctx.ActiveAssembly
+        let currentMethod = ctx.CurrentMethod
+        let thread = ctx.Thread
+
+        // Rank-1 ELEMENT_TYPE_ARRAY morphs to SZARRAY at runtime per ECMA-335 II.14.2;
+        // the symmetric morphing in `executeMultiDimArrayNewobj` isn't implemented either,
+        // and C# never emits this form.
+        if rank < 2 then
+            failwith
+                $"TODO: multi-dim array Set on rank-%d{rank} ELEMENT_TYPE_ARRAY; rank-1 should morph to SZARRAY per CoreCLR semantics"
+
+        let methodSig =
+            match signature with
+            | MemberSignature.Method m -> m
+            | MemberSignature.Field _ ->
+                failwith $"BUG: multi-dim array Set for rank %d{rank} had a field signature; expected method signature"
+
+        // Zero-lower-bound form: `rank` Int32 indices followed by the element value.
+        // ECMA-335 II.14.2 also defines a 2*rank Int32 form for non-zero lower bounds,
+        // which is not yet supported (C# never emits it).
+        if methodSig.ParameterTypes.Length <> rank + 1 then
+            failwith
+                $"TODO: multi-dim array Set for rank %d{rank} had %d{methodSig.ParameterTypes.Length} parameters; only the zero-lower-bound form (%d{rank} Int32 indices + 1 value) is implemented"
+
+        let value, state = IlMachineState.popEvalStack thread state
+
+        let indices, arrAddrOpt, state =
+            popMultiDimIndicesAndArray baseClassTypes thread rank state
+
+        match arrAddrOpt with
+        | None ->
+            // Don't advance PC: exception dispatch needs the faulting instruction's offset.
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                baseClassTypes
+                baseClassTypes.NullReferenceException
+                thread
+                state
+        | Some arrAddr ->
+
+        let arrObj =
+            match state.ManagedHeap.Arrays.TryGetValue arrAddr with
+            | true, v -> v
+            | false, _ -> failwith $"multi-dim array Set: array allocation not found at %O{arrAddr}"
+
+        if arrObj.Lengths.Length <> rank then
+            failwith
+                $"multi-dim array Set: rank %d{rank} from metadata does not match the allocated array's rank %d{arrObj.Lengths.Length} at %O{arrAddr}"
+
+        if indicesOutOfRange arrObj.Lengths indices then
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                baseClassTypes
+                baseClassTypes.IndexOutOfRangeException
+                thread
+                state
+        else
+
+        let flat = rowMajorOffset arrObj.Lengths indices
+
+        let typeGenerics = currentMethod.DeclaringType.Generics
+        let methodGenerics = currentMethod.Generics
+
+        let state, zeroOfType, _elementHandle =
+            IlMachineState.cliTypeZeroOf
+                loggerFactory
+                baseClassTypes
+                activeAssy
+                elementType
+                typeGenerics
+                methodGenerics
+                state
+
+        // Array covariance check (ECMA-335 III.4.x) is intentionally not modelled here, to
+        // match the szarray `stelem` precedent in UnaryMetadataArrayOps.executeStelem (and the
+        // wider tech debt acknowledged at NullaryIlOp.fs's stelem.ref TODO at line 586). For a
+        // reference array accessed through a base-typed view (e.g. `object[,]` aliasing a
+        // `string[,]`), the metadata-derived element type legitimately differs from the array's
+        // stored element handle, so an exact-handle check would reject valid C# code; the
+        // correct runtime-assignment-compatibility check requires machinery not yet wired in.
+        let coerced = EvalStackValue.toCliTypeCoerced zeroOfType value
+
+        let state =
+            IlMachineState.setArrayValue arrAddr coerced flat state
+            |> IlMachineState.advanceProgramCounter thread
+
+        state, WhatWeDid.Executed
+
+    /// Implements `call instance T T[<rank>]::Get(int32, ..., int32)` — the
+    /// runtime-synthesized element-load operation for a multi-dimensional array of
+    /// element type `elementType`. Pops `rank` Int32 indices (top-of-stack is the
+    /// rightmost) and the array reference, then pushes the loaded element. Per-dimension
+    /// bounds violations raise `IndexOutOfRangeException`.
+    let private executeMultiDimArrayGet
+        (ctx : UnaryMetadataIlOpContext)
+        (state : IlMachineState)
+        (rank : int)
+        (signature : MemberSignature)
+        : IlMachineState * WhatWeDid
+        =
+        let loggerFactory = ctx.LoggerFactory
+        let baseClassTypes = ctx.BaseClassTypes
+        let thread = ctx.Thread
+
+        if rank < 2 then
+            failwith
+                $"TODO: multi-dim array Get on rank-%d{rank} ELEMENT_TYPE_ARRAY; rank-1 should morph to SZARRAY per CoreCLR semantics"
+
+        let methodSig =
+            match signature with
+            | MemberSignature.Method m -> m
+            | MemberSignature.Field _ ->
+                failwith $"BUG: multi-dim array Get for rank %d{rank} had a field signature; expected method signature"
+
+        if methodSig.ParameterTypes.Length <> rank then
+            failwith
+                $"TODO: multi-dim array Get for rank %d{rank} had %d{methodSig.ParameterTypes.Length} parameters; only the zero-lower-bound form (%d{rank} Int32 indices) is implemented"
+
+        let indices, arrAddrOpt, state =
+            popMultiDimIndicesAndArray baseClassTypes thread rank state
+
+        match arrAddrOpt with
+        | None ->
+            // Don't advance PC: exception dispatch needs the faulting instruction's offset.
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                baseClassTypes
+                baseClassTypes.NullReferenceException
+                thread
+                state
+        | Some arrAddr ->
+
+        let arrObj =
+            match state.ManagedHeap.Arrays.TryGetValue arrAddr with
+            | true, v -> v
+            | false, _ -> failwith $"multi-dim array Get: array allocation not found at %O{arrAddr}"
+
+        if arrObj.Lengths.Length <> rank then
+            failwith
+                $"multi-dim array Get: rank %d{rank} from metadata does not match the allocated array's rank %d{arrObj.Lengths.Length} at %O{arrAddr}"
+
+        if indicesOutOfRange arrObj.Lengths indices then
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                baseClassTypes
+                baseClassTypes.IndexOutOfRangeException
+                thread
+                state
+        else
+
+        let flat = rowMajorOffset arrObj.Lengths indices
+
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack arrObj.Elements.[flat] thread
+            |> IlMachineState.advanceProgramCounter thread
+
+        state, WhatWeDid.Executed
+
+    /// Implements `call instance T& T[<rank>]::Address(int32, ..., int32)` — the
+    /// runtime-synthesized element-address operation for a multi-dimensional array of
+    /// element type `elementType`. Pops `rank` Int32 indices (top-of-stack is the
+    /// rightmost) and the array reference, then pushes a managed byref to the slot at
+    /// the row-major flat offset.
+    ///
+    /// ECMA-335 III.4.10: without the `readonly.` prefix, the metadata-derived element
+    /// type must exactly equal the array's stored element type (no assignment-compat
+    /// fallback); otherwise `ArrayTypeMismatchException`. With `readonly.`, the result
+    /// is a controlled-mutability byref and the check is suppressed — matching the
+    /// szarray `ldelema` precedent in `UnaryMetadataArrayOps.executeLdelema`.
+    let private executeMultiDimArrayAddress
+        (ctx : UnaryMetadataIlOpContext)
+        (state : IlMachineState)
+        (elementType : TypeDefn)
+        (rank : int)
+        (signature : MemberSignature)
+        : IlMachineState * WhatWeDid
+        =
+        let loggerFactory = ctx.LoggerFactory
+        let baseClassTypes = ctx.BaseClassTypes
+        let activeAssy = ctx.ActiveAssembly
+        let currentMethod = ctx.CurrentMethod
+        let thread = ctx.Thread
+
+        if rank < 2 then
+            failwith
+                $"TODO: multi-dim array Address on rank-%d{rank} ELEMENT_TYPE_ARRAY; rank-1 should morph to SZARRAY per CoreCLR semantics"
+
+        let methodSig =
+            match signature with
+            | MemberSignature.Method m -> m
+            | MemberSignature.Field _ ->
+                failwith
+                    $"BUG: multi-dim array Address for rank %d{rank} had a field signature; expected method signature"
+
+        if methodSig.ParameterTypes.Length <> rank then
+            failwith
+                $"TODO: multi-dim array Address for rank %d{rank} had %d{methodSig.ParameterTypes.Length} parameters; only the zero-lower-bound form (%d{rank} Int32 indices) is implemented"
+
+        // ECMA-335 III.2.2: capture-and-clear the `readonly.` prefix. The prefix's scope
+        // is exactly this instruction, so we always clear it; we capture into `wasReadonly`
+        // so the element-type check below can branch on it.
+        let activeFrameId = state.ThreadState.[thread].ActiveMethodState
+        let wasReadonly = state.ThreadState.[thread].MethodState.PendingPrefix.Readonly
+
+        let state =
+            if wasReadonly then
+                state
+                |> IlMachineState.mapFrame
+                    thread
+                    activeFrameId
+                    (fun frame ->
+                        { frame with
+                            PendingPrefix =
+                                { frame.PendingPrefix with
+                                    Readonly = false
+                                }
+                        }
+                    )
+            else
+                state
+
+        let indices, arrAddrOpt, state =
+            popMultiDimIndicesAndArray baseClassTypes thread rank state
+
+        match arrAddrOpt with
+        | None ->
+            // Don't advance PC: exception dispatch needs the faulting instruction's offset.
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                baseClassTypes
+                baseClassTypes.NullReferenceException
+                thread
+                state
+        | Some arrAddr ->
+
+        let arrObj =
+            match state.ManagedHeap.Arrays.TryGetValue arrAddr with
+            | true, v -> v
+            | false, _ -> failwith $"multi-dim array Address: array allocation not found at %O{arrAddr}"
+
+        if arrObj.Lengths.Length <> rank then
+            failwith
+                $"multi-dim array Address: rank %d{rank} from metadata does not match the allocated array's rank %d{arrObj.Lengths.Length} at %O{arrAddr}"
+
+        if indicesOutOfRange arrObj.Lengths indices then
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                baseClassTypes
+                baseClassTypes.IndexOutOfRangeException
+                thread
+                state
+        else
+
+        let flat = rowMajorOffset arrObj.Lengths indices
+
+        let buildResult (state : IlMachineState) : IlMachineState * WhatWeDid =
+            let result =
+                ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrAddr, flat), [])
+                |> EvalStackValue.ManagedPointer
+
+            let state =
+                IlMachineState.pushToEvalStack' result thread state
+                |> IlMachineState.advanceProgramCounter thread
+
+            state, WhatWeDid.Executed
+
+        if wasReadonly then
+            // The readonly. prefix produces a controlled-mutability byref and suppresses
+            // the array-element-type check.
+            buildResult state
+        else
+
+        let typeGenerics = currentMethod.DeclaringType.Generics
+        let methodGenerics = currentMethod.Generics
+
+        let state, _zeroOfType, tokenElementHandle =
+            IlMachineState.cliTypeZeroOf
+                loggerFactory
+                baseClassTypes
+                activeAssy
+                elementType
+                typeGenerics
+                methodGenerics
+                state
+
+        let arrayElementHandle =
+            match arrObj.ConcreteType with
+            | ConcreteTypeHandle.Array (h, _) -> h
+            | other ->
+                failwith $"BUG: multi-dim array Address: array at %O{arrAddr} has non-Array ConcreteType %O{other}"
+
+        if tokenElementHandle <> arrayElementHandle then
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                baseClassTypes
+                baseClassTypes.ArrayTypeMismatchException
+                thread
+                state
+        else
+            buildResult state
+
+    /// Detect `call` targeting a runtime-synthesized member on a multi-dim array
+    /// (ECMA-335 II.14.2): a MemberReference whose parent TypeSpec is `TypeDefn.Array`.
+    /// `newobj` for the synthesized ctor is handled in `executeNewobj`; this entry
+    /// point covers the `Set`/`Get`/`Address` members invoked via plain `call`. Returns
+    /// `None` for ordinary method calls so they take the normal resolution path.
+    let private tryGetMultiDimArrayCall
+        (activeAssy : DumpedAssembly)
+        (metadataToken : MetadataToken)
+        : (string * TypeDefn * int * MemberSignature) option
+        =
+        match metadataToken with
+        | MetadataToken.MemberReference mrHandle ->
+            match activeAssy.Members.TryGetValue mrHandle with
+            | true, memberRef ->
+                match memberRef.Parent with
+                | MetadataToken.TypeSpecification specHandle ->
+                    match activeAssy.TypeSpecs.TryGetValue specHandle with
+                    | true, ts ->
+                        match ts.Signature with
+                        | TypeDefn.Array (elt, rank) ->
+                            let name = activeAssy.Strings memberRef.Name
+                            Some (name, elt, rank, memberRef.Signature)
+                        | _ -> None
+                    | false, _ -> None
+                | _ -> None
+            | false, _ -> None
+        | _ -> None
+
     let executeCall (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
@@ -14,6 +413,22 @@ module internal UnaryMetadataCallOps =
         let metadataToken = ctx.MetadataToken
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
+
+        // Multi-dimensional array Get/Set are runtime-synthesized (ECMA-335 II.14.2): the
+        // metadata token is a MemberReference whose parent is a TypeSpec of TypeDefn.Array.
+        // There's no managed body to resolve, so route to the inline element-access path
+        // before invoking ordinary member resolution (which would look up the name on
+        // System.Array and fail).
+        match tryGetMultiDimArrayCall activeAssy metadataToken with
+        | Some (name, elt, rank, sig0) ->
+            match name with
+            | "Set" -> executeMultiDimArraySet ctx state elt rank sig0
+            | "Get" -> executeMultiDimArrayGet ctx state rank sig0
+            | "Address" -> executeMultiDimArrayAddress ctx state elt rank sig0
+            | other ->
+                failwith
+                    $"unexpected synthesized member %s{other} on multi-dim array (rank %d{rank}); expected Get/Set/Address/.ctor"
+        | None ->
 
         // For MethodSpec(MemberReference) the spec's method-generic args are caller-relative
         // and have already been substituted against the current frame to drive overload
@@ -233,6 +648,7 @@ module internal UnaryMetadataCallOps =
                 threadState
                 None
                 false
+                false // wrapExceptionInTargetInvocation
                 state,
             WhatWeDid.Executed
         | FirstLoadThis state -> reinstallConstrained state, WhatWeDid.SuspendedForClassInit
@@ -613,6 +1029,7 @@ module internal UnaryMetadataCallOps =
             threadState
             None
             false
+            false // wrapExceptionInTargetInvocation
             state,
         WhatWeDid.Executed
 
