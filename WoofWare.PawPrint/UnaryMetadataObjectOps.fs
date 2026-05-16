@@ -308,6 +308,7 @@ module internal UnaryMetadataObjectOps =
             threadState
             None
             false
+            false // wrapExceptionInTargetInvocation
             state,
         WhatWeDid.Executed
 

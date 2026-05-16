@@ -602,6 +602,14 @@ type MethodReturnState =
         /// managed exception on return instead of being pushed onto the caller's eval stack.
         /// Used by raiseRuntimeException to run exception ctors via the dispatch loop.
         DispatchAsExceptionOnReturn : bool
+        /// When true, an exception escaping this frame is wrapped in a fresh
+        /// `System.Reflection.TargetInvocationException` whose `_innerException` points at the
+        /// original exception object. Used by the `Activator.CreateInstance<T>()` intrinsic to
+        /// reproduce CoreCLR's `RuntimeType.CreateInstanceOfT` `try { ctor } catch (Exception e)
+        /// { throw new TargetInvocationException(e); }` wrap without synthesising a trampoline
+        /// frame. The wrap fires only on unwind across this frame's boundary, so a `try`/`catch`
+        /// *inside* the ctor that handles the exception is unaffected.
+        WrapExceptionInTargetInvocation : bool
     }
 
 and MethodState =

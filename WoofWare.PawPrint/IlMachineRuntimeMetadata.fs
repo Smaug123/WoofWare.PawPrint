@@ -896,6 +896,96 @@ module IlMachineRuntimeMetadata =
 
         addr, tieHandle, state
 
+    /// Synthesize a TargetInvocationException wrapping the given inner exception object.
+    /// Allocates the exception on the heap with zero-initialized fields (constructor is NOT run).
+    /// Sets the _innerException, _message and _HResult fields on the base Exception to match what
+    /// `new TargetInvocationException(inner)` would have done in CoreCLR (whose base ctor sets
+    /// `_message` to the SR.Arg_TargetInvocationException string). Returns the heap address, the
+    /// ConcreteTypeHandle, and the updated state.
+    /// See https://github.com/dotnet/runtime/blob/HEAD/src/libraries/System.Private.CoreLib/src/System/Reflection/TargetInvocationException.cs
+    let synthesizeTargetInvocationException
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (innerExceptionAddr : ManagedHeapAddress)
+        (state : IlMachineState)
+        : ManagedHeapAddress * ConcreteTypeHandle * IlMachineState
+        =
+        let tieTypeInfo = baseClassTypes.TargetInvocationException
+
+        let stk =
+            DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies tieTypeInfo
+
+        let state, tieHandle =
+            IlMachineTypeResolution.concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                tieTypeInfo.Assembly
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                (TypeDefn.FromDefinition (tieTypeInfo.Identity, stk))
+
+        let state, allFields =
+            collectAllInstanceFields loggerFactory baseClassTypes state tieHandle
+
+        let fields =
+            CliValueType.OfFields
+                baseClassTypes
+                state.ConcreteTypes
+                tieHandle
+                tieTypeInfo.Layout
+                (CharSetMetadata.ofTypeAttributes tieTypeInfo.TypeAttributes)
+                allFields
+
+        let addr, state = IlMachineThreadState.allocateManagedObject tieHandle fields state
+
+        // CoreCLR's TargetInvocationException(Exception) ctor calls
+        //     base(SR.Arg_TargetInvocationException, inner)
+        // which sets `_message` to the canonical string below. Bypassing the ctor would leave
+        // `_message` null and divert `Message` / `ToString()` to the
+        // "Exception of type '...' was thrown." fallback in Exception.Message, so allocate and
+        // store the message explicitly.
+        let messageAddr, state =
+            allocateManagedString
+                loggerFactory
+                baseClassTypes
+                "Exception has been thrown by the target of an invocation."
+                state
+
+        let heapObj = ManagedHeap.get addr state.ManagedHeap
+
+        let exceptionHandle =
+            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Exception
+
+        let innerExceptionField =
+            FieldIdentity.requiredOwnInstanceField baseClassTypes.Exception "_innerException"
+            |> FieldIdentity.fieldId exceptionHandle
+
+        let messageField =
+            FieldIdentity.requiredOwnInstanceField baseClassTypes.Exception "_message"
+            |> FieldIdentity.fieldId exceptionHandle
+
+        let hresultField =
+            FieldIdentity.requiredOwnInstanceField baseClassTypes.Exception "_HResult"
+            |> FieldIdentity.fieldId exceptionHandle
+
+        let heapObj =
+            heapObj
+            |> AllocatedNonArrayObject.SetFieldById innerExceptionField (CliType.ObjectRef (Some innerExceptionAddr))
+            |> AllocatedNonArrayObject.SetFieldById messageField (CliType.ObjectRef (Some messageAddr))
+            |> AllocatedNonArrayObject.SetFieldById
+                hresultField
+                (CliType.Numeric (
+                    CliNumericType.Int32 (ExceptionHResults.lookup "System.Reflection.TargetInvocationException")
+                ))
+
+        let state =
+            { state with
+                ManagedHeap = ManagedHeap.set addr heapObj state.ManagedHeap
+            }
+
+        addr, tieHandle, state
+
     /// Resolve a MetadataToken (TypeDefinition, TypeReference, or TypeSpecification) to a TypeDefn,
     /// together with the assembly the type was resolved in.
     let resolveTypeMetadataToken

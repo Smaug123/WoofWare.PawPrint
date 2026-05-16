@@ -79,6 +79,7 @@ module internal ExceptionHResults =
             "System.MissingMethodException", int 0x80131513u // COR_E_MISSINGMETHOD
             "System.ArgumentException", int 0x80070057u // COR_E_ARGUMENT
             "System.ArgumentNullException", 0x80004003 // E_POINTER (ArgumentNullException maps to E_POINTER in the CLR)
+            "System.Reflection.TargetInvocationException", int 0x80131604u // COR_E_TARGETINVOCATION
         ]
 
     /// The fallback HResult for exception types not in the table.

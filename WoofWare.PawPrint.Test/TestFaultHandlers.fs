@@ -138,6 +138,7 @@ module TestFaultHandlers =
                 WasConstructingObj = None
                 CallSiteIlOpIndex = threadState.MethodState.IlOpIndex
                 DispatchAsExceptionOnReturn = false
+                WrapExceptionInTargetInvocation = false
             }
 
         let calleeFrame =
