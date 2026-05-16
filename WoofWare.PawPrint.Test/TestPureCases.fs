@@ -465,6 +465,51 @@ class Program
                     failwith $"expected FailFast, got guest unhandled exception: %O{exn.ExceptionObject}"
             )
 
+    [<Test>]
+    let ``Explicit MethodImpl on covariant interface dispatches through less-specific instantiation`` () =
+        // Regression for IlMachineStateExecution.findMatchingMethodImplBodies: when a class
+        // provides an explicit MethodImpl for ICovariant<string>.Get and the call site
+        // dispatches ICovariant<object>.Get (allowed by `out`-variance), the MethodImpl must
+        // still be selected. Earlier we used exact generic-argument equality on the
+        // declaration's declaring type, which rejected this case.
+        let source =
+            """
+using System;
+
+interface ICovariant<out T> { T Get(); }
+
+class CovariantImpl : ICovariant<string>
+{
+    string ICovariant<string>.Get() => "covariant";
+}
+
+class Program
+{
+    static int Main(string[] args)
+    {
+        ICovariant<string> strCov = new CovariantImpl();
+        ICovariant<object> objCov = strCov;
+        object result = objCov.Get();
+        return (result is string s && s == "covariant") ? 0 : 1;
+    }
+}
+"""
+
+        runPawPrintSource
+            "CovariantExplicitMethodImpl.cs"
+            source
+            (MockEnv.make ())
+            Map.empty
+            (fun _image pawPrintResult ->
+                match pawPrintResult with
+                | RunOutcome.NormalExit (terminalState, terminatingThread) ->
+                    match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
+                    | EvalStackValue.Int32 exitCode :: _ -> exitCode |> shouldEqual 0
+                    | [] -> failwith "expected program to return an int, but it returned void"
+                    | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
+                | other -> failwith $"expected normal exit, got %O{other}"
+            )
+
     [<TestCaseSource(nameof simpleCases)>]
     let ``Standard tests`` (fileName : string) =
         {

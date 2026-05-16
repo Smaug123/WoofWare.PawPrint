@@ -315,11 +315,35 @@ module IlMachineStateExecution =
                     // A MethodImpl binds a Body to the specific virtual slot identified by its
                     // Declaration: ECMA-335 II.22.27 keys the slot on (declaring type, member).
                     // Name + signature alone is not enough — two unrelated interfaces can share
-                    // a shape (e.g. `IReader.Read()` and `IScanner.Read()`), so we must also
-                    // require the declaration's declaring type to match the dispatch target.
-                    let declarationTypeMatches =
-                        declaration.DeclaringType.Identity = methodToCall.DeclaringType.Identity
-                        && declarationTypeGenerics = methodToCall.DeclaringType.Generics
+                    // a shape (e.g. `IReader.Read()` and `IScanner.Read()`), so we also require
+                    // the declaration's declaring type to match the dispatch target.
+                    //
+                    // For variant interfaces (ECMA-335 §I.8.7) a MethodImpl on `IFoo<X>` also
+                    // satisfies dispatch through `IFoo<Y>` when `IFoo<X>` is variance-assignable
+                    // to `IFoo<Y>` (e.g. `ICovariant<string>` satisfies `ICovariant<object>`),
+                    // so we defer same-TypeDef generic comparisons to the assignability walk
+                    // rather than insisting on exact-argument equality.
+                    let state, declarationTypeMatches =
+                        if declaration.DeclaringType.Identity <> methodToCall.DeclaringType.Identity then
+                            state, false
+                        elif declarationTypeGenerics = methodToCall.DeclaringType.Generics then
+                            state, true
+                        else
+                            let declarationHandle =
+                                AllConcreteTypes.findExistingConcreteType
+                                    state.ConcreteTypes
+                                    declaration.DeclaringType.Identity
+                                    declarationTypeGenerics
+
+                            let methodToCallHandle =
+                                AllConcreteTypes.findExistingConcreteType
+                                    state.ConcreteTypes
+                                    methodToCall.DeclaringType.Identity
+                                    methodToCall.DeclaringType.Generics
+
+                            match declarationHandle, methodToCallHandle with
+                            | Some fromH, Some toH -> isAssignableFrom loggerFactory baseClassTypes fromH toH state
+                            | _ -> state, false
 
                     if not declarationTypeMatches then
                         state, acc
