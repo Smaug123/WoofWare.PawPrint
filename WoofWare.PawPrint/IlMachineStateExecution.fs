@@ -312,6 +312,19 @@ module IlMachineStateExecution =
                             failwith
                                 $"MethodImpl declaration for %s{currentTypeInfo.Namespace}.%s{currentTypeInfo.Name} referenced generic MethodDef %s{declaration.Name} without concrete type arguments"
 
+                    // A MethodImpl binds a Body to the specific virtual slot identified by its
+                    // Declaration: ECMA-335 II.22.27 keys the slot on (declaring type, member).
+                    // Name + signature alone is not enough — two unrelated interfaces can share
+                    // a shape (e.g. `IReader.Read()` and `IScanner.Read()`), so we must also
+                    // require the declaration's declaring type to match the dispatch target.
+                    let declarationTypeMatches =
+                        declaration.DeclaringType.Identity = methodToCall.DeclaringType.Identity
+                        && declarationTypeGenerics = methodToCall.DeclaringType.Generics
+
+                    if not declarationTypeMatches then
+                        state, acc
+                    else
+
                     let matches, state =
                         let state, matches =
                             methodReferenceMatchesTarget declarationTypeGenerics declaration state
