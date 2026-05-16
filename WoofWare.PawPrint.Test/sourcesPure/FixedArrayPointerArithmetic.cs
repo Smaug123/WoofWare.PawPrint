@@ -217,6 +217,38 @@ public unsafe class FixedArrayPointerArithmetic
         return 0;
     }
 
+    // Jagged arrays (`object[][]`) carry a structural element handle
+    // (`OneDimArrayZero` over the inner element type), which isn't registered
+    // in `AllConcreteTypes`. Without anchoring those cells too, the same
+    // element-stride bug bites `fixed (object[]* p = jagged)`: the trailing
+    // `sizeof object[]; add` for `p[1]` would produce an out-of-bounds cell
+    // index. The byte-view anchor uses `System.Object` as the reinterpret
+    // target — the cells share `ObjectRef` shape with plain `object[]`, so
+    // the cell-aligned read/write short-circuits reuse the same path.
+    public static int TestJaggedArrayPointerArithmetic()
+    {
+        object[] a = new object[] { "a0" };
+        object[] b = new object[] { "b0", "b1" };
+        object[] c = new object[] { "c0", "c1", "c2" };
+        object[][] arr = new object[][] { a, b, c };
+        fixed (object[]* p = arr)
+        {
+            if (!object.ReferenceEquals(p[0], a)) return 120;
+            if (!object.ReferenceEquals(p[1], b)) return 121;
+            if (!object.ReferenceEquals(p[2], c)) return 122;
+
+            p[0] = c;
+            if (!object.ReferenceEquals(p[0], c)) return 123;
+
+            p[2] = null;
+            if (p[2] != null) return 124;
+        }
+        if (!object.ReferenceEquals(arr[0], c)) return 125;
+        if (!object.ReferenceEquals(arr[1], b)) return 126;
+        if (arr[2] != null) return 127;
+        return 0;
+    }
+
     // `fixed (object* p = arr) { p[k]; p[k] = value; }` over a reference-type
     // array exercises both `Ldind_ref`/`Stind_ref` and the byte-stride
     // pointer arithmetic that `p[k]` lowers to (`sizeof object; mul; add`,
@@ -276,6 +308,8 @@ public unsafe class FixedArrayPointerArithmetic
         r = TestObjectArrayFixedStore();
         if (r != 0) return r;
         r = TestObjectArrayPointerArithmetic();
+        if (r != 0) return r;
+        r = TestJaggedArrayPointerArithmetic();
         if (r != 0) return r;
         return 0;
     }
