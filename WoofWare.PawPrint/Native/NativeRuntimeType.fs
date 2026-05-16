@@ -2693,6 +2693,53 @@ module NativeRuntimeType =
                     state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+        | "RuntimeTypeHandle_GetDeclaringMethodForGenericParameter",
+          "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "GetDeclaringMethodForGenericParameter",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "QCallTypeHandle",
+                                              qCallGenerics)
+            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "ObjectHandleOnStack",
+                                              objectHandleGenerics) ],
+          MethodReturnType.Void when qCallGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
+            let operation = "RuntimeTypeHandle.GetDeclaringMethodForGenericParameter"
+
+            if instruction.Arguments.Length <> 2 then
+                failwith $"%s{operation}: expected two native arguments, got %d{instruction.Arguments.Length}"
+
+            let qCallHandle = instruction.Arguments.[0] |> EvalStackValue.ofCliType
+
+            let typeHandleTarget =
+                NativeCall.qCallTypeHandleToRuntimeTypeHandleTarget operation state qCallHandle
+
+            // Validate the ObjectHandleOnStack argument shape eagerly so a malformed
+            // BCL call fails here rather than later. We don't write through the byref
+            // on the type-level branch: the managed wrapper initialises its local
+            // `IRuntimeMethodInfo? method = null` before the QCall, and CoreCLR's
+            // implementation in runtimehandles.cpp:885 leaves `result` untouched when
+            // the generic variable's def-token is not an mdtMethodDef. Returning
+            // without writing therefore yields the same null the managed wrapper
+            // reads back.
+            let _ =
+                NativeCall.objectHandleOnStackTarget operation state "result" instruction.Arguments.[1]
+
+            match typeHandleTarget with
+            | RuntimeTypeHandleTarget.GenericParameter _ ->
+                // Type-level generic parameter: CoreCLR's `defToken` is mdtTypeDef,
+                // so the early-exit branch leaves `result` null. Mirror that.
+                (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+                failwith
+                    $"TODO: %s{operation} for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}; need to allocate and return an IRuntimeMethodInfo for the declaring method (same gap as the RuntimeTypeHandle.GetDeclaringMethod InternalCall)"
+            | RuntimeTypeHandleTarget.Closed _
+            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
+                failwith
+                    $"%s{operation}: BCL contract violation: QCall reached for non-generic-variable target %O{typeHandleTarget}; the managed wrapper guards with Debug.Assert(IsGenericVariable(type))"
         | "ModuleHandle_ResolveType",
           "System.Private.CoreLib",
           "System",
