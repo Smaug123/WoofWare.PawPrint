@@ -443,6 +443,8 @@ module EvalStackValueComparisons =
             | NativeIntSource.TypeHandlePtr f1, NativeIntSource.TypeHandlePtr f2 -> f1 = f2
             | NativeIntSource.MethodTablePtr f1, NativeIntSource.MethodTablePtr f2 -> f1 = f2
             | NativeIntSource.MethodTableAuxiliaryDataPtr f1, NativeIntSource.MethodTableAuxiliaryDataPtr f2 -> f1 = f2
+            | NativeIntSource.PerInstInfoPtr f1, NativeIntSource.PerInstInfoPtr f2 -> f1 = f2
+            | NativeIntSource.PerInstDictPtr f1, NativeIntSource.PerInstDictPtr f2 -> f1 = f2
             | NativeIntSource.MethodHandlePtr f1, NativeIntSource.MethodHandlePtr f2 -> f1 = f2
             | NativeIntSource.FieldHandlePtr f1, NativeIntSource.FieldHandlePtr f2 -> f1 = f2
             | NativeIntSource.AssemblyHandle f1, NativeIntSource.AssemblyHandle f2 -> f1 = f2
@@ -484,6 +486,10 @@ module EvalStackValueComparisons =
             | NativeIntSource.MethodTablePtr _, NativeIntSource.OpaqueHashBits _
             | NativeIntSource.OpaqueHashBits _, NativeIntSource.MethodTableAuxiliaryDataPtr _
             | NativeIntSource.MethodTableAuxiliaryDataPtr _, NativeIntSource.OpaqueHashBits _
+            | NativeIntSource.OpaqueHashBits _, NativeIntSource.PerInstInfoPtr _
+            | NativeIntSource.PerInstInfoPtr _, NativeIntSource.OpaqueHashBits _
+            | NativeIntSource.OpaqueHashBits _, NativeIntSource.PerInstDictPtr _
+            | NativeIntSource.PerInstDictPtr _, NativeIntSource.OpaqueHashBits _
             | NativeIntSource.OpaqueHashBits _, NativeIntSource.MethodHandlePtr _
             | NativeIntSource.MethodHandlePtr _, NativeIntSource.OpaqueHashBits _
             | NativeIntSource.OpaqueHashBits _, NativeIntSource.FieldHandlePtr _
@@ -557,6 +563,10 @@ module EvalStackValueComparisons =
             | _, NativeIntSource.MethodTablePtr _
             | NativeIntSource.MethodTableAuxiliaryDataPtr _, _
             | _, NativeIntSource.MethodTableAuxiliaryDataPtr _
+            | NativeIntSource.PerInstInfoPtr _, _
+            | _, NativeIntSource.PerInstInfoPtr _
+            | NativeIntSource.PerInstDictPtr _, _
+            | _, NativeIntSource.PerInstDictPtr _
             | NativeIntSource.MethodHandlePtr _, _
             | _, NativeIntSource.MethodHandlePtr _
             | NativeIntSource.FieldHandlePtr _, _

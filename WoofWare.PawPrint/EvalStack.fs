@@ -47,6 +47,10 @@ module EvalStackValue =
             failwith $"%s{operation}: refusing to convert MethodTable pointer %O{typeHandle} to an integer"
         | NativeIntSource.MethodTableAuxiliaryDataPtr typeHandle ->
             failwith $"%s{operation}: refusing to convert MethodTableAuxiliaryData pointer %O{typeHandle} to an integer"
+        | NativeIntSource.PerInstInfoPtr handle ->
+            failwith $"%s{operation}: refusing to convert PerInstInfo pointer %O{handle} to an integer"
+        | NativeIntSource.PerInstDictPtr handle ->
+            failwith $"%s{operation}: refusing to convert PerInstDict pointer %O{handle} to an integer"
         | NativeIntSource.FieldHandlePtr handle ->
             failwith $"%s{operation}: refusing to convert RuntimeFieldHandle pointer %d{handle} to an integer"
         | NativeIntSource.MethodHandlePtr handle ->
@@ -240,6 +244,10 @@ module EvalStackValue =
             | NativeIntSource.MethodTableAuxiliaryDataPtr typeHandle ->
                 failwith
                     $"Conv_U: refusing to convert MethodTableAuxiliaryData pointer %O{typeHandle} to unsigned native int"
+            | NativeIntSource.PerInstInfoPtr handle ->
+                failwith $"Conv_U: refusing to convert PerInstInfo pointer %O{handle} to unsigned native int"
+            | NativeIntSource.PerInstDictPtr handle ->
+                failwith $"Conv_U: refusing to convert PerInstDict pointer %O{handle} to unsigned native int"
             | NativeIntSource.GcHandlePtr handle ->
                 failwith $"Conv_U: refusing to convert GC handle pointer %O{handle} to unsigned native int"
             | NativeIntSource.EventPipeProviderPtr id ->
@@ -518,6 +526,10 @@ module EvalStackValue =
             | CliRuntimePointer.MethodTableAuxiliaryDataPtr typeHandle ->
                 NativeIntSource.MethodTableAuxiliaryDataPtr typeHandle
                 |> EvalStackValue.NativeInt
+            | CliRuntimePointer.PerInstInfoPtr handle ->
+                NativeIntSource.PerInstInfoPtr handle |> EvalStackValue.NativeInt
+            | CliRuntimePointer.PerInstDictPtr handle ->
+                NativeIntSource.PerInstDictPtr handle |> EvalStackValue.NativeInt
             | CliRuntimePointer.Managed ptr -> ptr |> EvalStackValue.ManagedPointer
             | CliRuntimePointer.GcHandlePtr addr -> NativeIntSource.GcHandlePtr addr |> EvalStackValue.NativeInt
         | CliType.ValueType vt ->
@@ -561,6 +573,10 @@ module EvalStackValue =
                     | NativeIntSource.TypeHandlePtr f -> failwith $"TODO: {f}"
                     | NativeIntSource.MethodTablePtr f -> failwith $"TODO: {f}"
                     | NativeIntSource.MethodTableAuxiliaryDataPtr f -> failwith $"TODO: {f}"
+                    | NativeIntSource.PerInstInfoPtr f ->
+                        failwith $"refusing to coerce PerInstInfo pointer %O{f} to int64"
+                    | NativeIntSource.PerInstDictPtr f ->
+                        failwith $"refusing to coerce PerInstDict pointer %O{f} to int64"
                     | NativeIntSource.GcHandlePtr f -> failwith $"TODO: {f}"
                     | NativeIntSource.EventPipeProviderPtr id ->
                         failwith $"refusing to coerce EventPipe provider handle #%d{id} to int64"
@@ -621,6 +637,10 @@ module EvalStackValue =
                             CliType.Numeric (
                                 CliNumericType.NativeInt (NativeIntSource.MethodTableAuxiliaryDataPtr typeHandle)
                             )
+                        | CliRuntimePointer.PerInstInfoPtr handle ->
+                            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.PerInstInfoPtr handle))
+                        | CliRuntimePointer.PerInstDictPtr handle ->
+                            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.PerInstDictPtr handle))
                         | CliRuntimePointer.Managed src ->
                             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer src))
                         | CliRuntimePointer.GcHandlePtr addr ->
@@ -668,6 +688,10 @@ module EvalStackValue =
                     failwith "refusing to interpret method table pointer as an object ref"
                 | NativeIntSource.MethodTableAuxiliaryDataPtr _ ->
                     failwith "refusing to interpret method table auxiliary-data pointer as an object ref"
+                | NativeIntSource.PerInstInfoPtr _ ->
+                    failwith "refusing to interpret PerInstInfo pointer as an object ref"
+                | NativeIntSource.PerInstDictPtr _ ->
+                    failwith "refusing to interpret PerInstDict pointer as an object ref"
                 | NativeIntSource.MethodHandlePtr _ ->
                     failwith "refusing to interpret method handle ID as an object ref"
                 | NativeIntSource.FieldHandlePtr _ -> failwith "refusing to interpret field handle ID as an object ref"
@@ -724,6 +748,10 @@ module EvalStackValue =
                     CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr typeHandle)
                 | NativeIntSource.MethodTableAuxiliaryDataPtr typeHandle ->
                     CliType.RuntimePointer (CliRuntimePointer.MethodTableAuxiliaryDataPtr typeHandle)
+                | NativeIntSource.PerInstInfoPtr handle ->
+                    CliType.RuntimePointer (CliRuntimePointer.PerInstInfoPtr handle)
+                | NativeIntSource.PerInstDictPtr handle ->
+                    CliType.RuntimePointer (CliRuntimePointer.PerInstDictPtr handle)
                 | NativeIntSource.FieldHandlePtr ptr ->
                     CliType.RuntimePointer (CliRuntimePointer.FieldRegistryHandle ptr)
                 | NativeIntSource.MethodHandlePtr ptr ->

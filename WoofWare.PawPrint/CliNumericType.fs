@@ -333,6 +333,8 @@ type CliNumericType =
             | NativeIntSource.MethodTablePtr _ -> failwith "refusing to express MethodTablePtr as bytes"
             | NativeIntSource.MethodTableAuxiliaryDataPtr _ ->
                 failwith "refusing to express MethodTableAuxiliaryDataPtr as bytes"
+            | NativeIntSource.PerInstInfoPtr _ -> failwith "refusing to express PerInstInfoPtr as bytes"
+            | NativeIntSource.PerInstDictPtr _ -> failwith "refusing to express PerInstDictPtr as bytes"
             | NativeIntSource.GcHandlePtr _ -> failwith "refusing to express GcHandlePtr as bytes"
             | NativeIntSource.EventPipeProviderPtr _ -> failwith "refusing to express EventPipeProviderPtr as bytes"
             | NativeIntSource.EventPipeEventPtr _ -> failwith "refusing to express EventPipeEventPtr as bytes"

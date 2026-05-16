@@ -94,6 +94,8 @@ module private ByteAddressabilityClassifier =
         | NativeIntSource.TypeHandlePtr _
         | NativeIntSource.MethodTablePtr _
         | NativeIntSource.MethodTableAuxiliaryDataPtr _
+        | NativeIntSource.PerInstInfoPtr _
+        | NativeIntSource.PerInstDictPtr _
         | NativeIntSource.MethodHandlePtr _
         | NativeIntSource.FieldHandlePtr _
         | NativeIntSource.AssemblyHandle _
