@@ -1319,6 +1319,55 @@ module IlMachineRuntimeMetadata =
                     else
                         walkBase state current
 
+        // Returns true if `handle` is a CLR enum value type — a nominal type whose
+        // immediate runtime base is `System.Enum`. Used by the array-element
+        // assignability rule below to detect cases where ECMA-335 / CoreCLR
+        // enum-underlying-type equivalence (e.g. `MyEnum : int` ↔ `int`, or two
+        // enums sharing an underlying integer) might permit a store, but the
+        // underlying-type lookup itself isn't yet modelled.
+        let isEnumValueType (state : IlMachineState) (handle : ConcreteTypeHandle) : IlMachineState * bool =
+            match handle with
+            | ConcreteTypeHandle.OneDimArrayZero _
+            | ConcreteTypeHandle.Array _
+            | ConcreteTypeHandle.Byref _
+            | ConcreteTypeHandle.Pointer _
+            | ConcreteTypeHandle.FunctionPointer _ -> state, false
+            | ConcreteTypeHandle.Concrete _ ->
+                let state, baseHandle =
+                    resolveBaseConcreteType loggerFactory baseClassTypes state handle
+
+                match baseHandle with
+                | None -> state, false
+                | Some bh ->
+                    match AllConcreteTypes.lookup bh state.ConcreteTypes with
+                    | Some baseTy -> state, baseTy.Identity = baseClassTypes.Enum.Identity
+                    | None -> state, false
+
+        // ECMA-335 III.8.7 / CoreCLR `GetNormalizedIntegralArrayElementType`:
+        // signed and unsigned primitive integers of equal width are interchangeable
+        // as array element types (`int[]` ↔ `uint[]`, `short[]` ↔ `ushort[]`, etc.).
+        // Returns `Some normalizedIdentity` when `handle` is one of those primitive
+        // integers; otherwise `None`. Floating-point, Boolean, and Char have no
+        // normalization partners.
+        let normalizedPrimitiveIntegerIdentity (handle : ConcreteTypeHandle) : ResolvedTypeIdentity option =
+            match tryGetConcreteTypeInfo state handle with
+            | Some (ct, _) when ct.Generics.IsEmpty ->
+                let id = ct.Identity
+
+                if id = baseClassTypes.SByte.Identity || id = baseClassTypes.Byte.Identity then
+                    Some baseClassTypes.SByte.Identity
+                elif id = baseClassTypes.Int16.Identity || id = baseClassTypes.UInt16.Identity then
+                    Some baseClassTypes.Int16.Identity
+                elif id = baseClassTypes.Int32.Identity || id = baseClassTypes.UInt32.Identity then
+                    Some baseClassTypes.Int32.Identity
+                elif id = baseClassTypes.Int64.Identity || id = baseClassTypes.UInt64.Identity then
+                    Some baseClassTypes.Int64.Identity
+                elif id = baseClassTypes.IntPtr.Identity || id = baseClassTypes.UIntPtr.Identity then
+                    Some baseClassTypes.IntPtr.Identity
+                else
+                    None
+            | _ -> None
+
         let checkArraySpecificRules
             (state : IlMachineState)
             (objType : ConcreteTypeHandle)
@@ -1331,20 +1380,62 @@ module IlMachineRuntimeMetadata =
                     state, Some false
                 elif objElement = targetElement then
                     state, Some true
-                elif
-                    isReferenceTypeHandle state objElement
-                    && isReferenceTypeHandle state targetElement
-                then
-                    let state, elementAssignable =
-                        isConcreteTypeAssignableTo loggerFactory baseClassTypes state objElement targetElement
-
-                    state, Some elementAssignable
                 else
-                    // TODO: ECMA-335 permits some value-type array assignments when
-                    // the element types have equivalent underlying primitive types
-                    // (for example int[] <-> uint[]). Model that rule explicitly
-                    // before broadening this branch.
-                    state, Some false
+                    let objIsRef = isReferenceTypeHandle state objElement
+                    let targetIsRef = isReferenceTypeHandle state targetElement
+
+                    if objIsRef && targetIsRef then
+                        let state, elementAssignable =
+                            isConcreteTypeAssignableTo loggerFactory baseClassTypes state objElement targetElement
+
+                        state, Some elementAssignable
+                    elif objIsRef <> targetIsRef then
+                        // One element is reference-typed and the other is value-typed.
+                        // ECMA-335 covariance applies only across reference types, and
+                        // primitive/enum equivalence applies only between value types,
+                        // so the answer is definitively non-assignable here.
+                        state, Some false
+                    else
+                        // Both element types are value-typed. ECMA-335 / CoreCLR permit
+                        // two complementary rules for value-typed array elements:
+                        //   (a) signed/unsigned primitive integers of equal width
+                        //       (`int[]` ↔ `uint[]`, etc.) — `GetNormalizedIntegralArrayElementType`.
+                        //   (b) enums whose underlying integer type matches the partner's
+                        //       (e.g. `MyEnum : int` ↔ `int`, or two enums with the same
+                        //       underlying type).
+                        // (a) is modelled below. (b) requires reading each enum's `value__`
+                        // field to discover its underlying type, which we haven't taught
+                        // the assignability walk yet. Enum-underlying equivalence can only
+                        // make the answer `true` when the partner is either another enum
+                        // or a primitive integer in the normalization table; for any other
+                        // partner (float, double, bool, char, non-integer struct) the
+                        // answer remains definitively false. So we return `None` only when
+                        // both sides plausibly participate in rule (b); otherwise we keep
+                        // the definitive `Some false` answer that callers like `isinst` /
+                        // `castclass` rely on.
+                        let state, objIsEnum = isEnumValueType state objElement
+                        let state, targetIsEnum = isEnumValueType state targetElement
+
+                        let objNormalized = normalizedPrimitiveIntegerIdentity objElement
+                        let targetNormalized = normalizedPrimitiveIntegerIdentity targetElement
+
+                        let enumCandidate (isEnum : bool) (normalized : ResolvedTypeIdentity option) =
+                            isEnum || normalized.IsSome
+
+                        if
+                            (objIsEnum || targetIsEnum)
+                            && enumCandidate objIsEnum objNormalized
+                            && enumCandidate targetIsEnum targetNormalized
+                        then
+                            // At least one element is an enum and the partner could share
+                            // an underlying integer type.
+                            // TODO: model enum-underlying integer equivalence so this case
+                            // becomes a precise answer rather than "unknown".
+                            state, None
+                        else
+                            match objNormalized, targetNormalized with
+                            | Some a, Some b when a = b -> state, Some true
+                            | _, _ -> state, Some false
             | Some _, None -> state, None
             | None, _ -> failwith $"checkArraySpecificRules called with non-array source %O{objType}"
 

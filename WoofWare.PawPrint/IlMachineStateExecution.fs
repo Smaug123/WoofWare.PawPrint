@@ -1542,3 +1542,131 @@ module IlMachineStateExecution =
             false // wrapExceptionInTargetInvocation
             state,
         WhatWeDid.Executed
+
+    /// Result of the ECMA-335 III.4.x runtime array-store variance gate.
+    [<RequireQualifiedAccess>]
+    type ArrayStoreVarianceCheck =
+        /// The store may proceed. The state may have been updated as a side effect of
+        /// the assignability walk (which may concretize additional metadata), so the
+        /// caller must use the state carried here, not its pre-check state.
+        | Allowed of state : IlMachineState
+        /// The store was rejected as covariance-incompatible; `ArrayTypeMismatchException`
+        /// has been raised on the current thread. The caller must return
+        /// `(state, WhatWeDid.Executed)` immediately without advancing PC: exception
+        /// dispatch needs the faulting instruction's offset.
+        | Raised of state : IlMachineState
+
+    /// ECMA-335 III.4.x runtime-assignment-compatibility gate for `stelem` /
+    /// runtime-synthesized `T[<rank>]::Set`. For reference-typed array elements, the
+    /// value's runtime type must be assignment-compatible with the array's stored
+    /// element type; otherwise raise `ArrayTypeMismatchException`. Null is always
+    /// storable. Value-typed-element arrays bypass the gate: there is no covariance
+    /// for value types, the verifier rejects mismatching value-store opcodes at
+    /// load time, and primitive coercion is handled by `EvalStackValue.toCliTypeCoerced`.
+    /// (ECMA-335 also recognises a primitive-equivalence rule, e.g. `int[]` /
+    /// `uint[]`, which is intentionally not modelled yet — see the TODO at
+    /// `IlMachineRuntimeMetadata.checkArraySpecificRules`.)
+    let checkArrayStoreVariance
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (currentThread : ThreadId)
+        (arrayAddress : ManagedHeapAddress)
+        (value : EvalStackValue)
+        (state : IlMachineState)
+        : ArrayStoreVarianceCheck
+        =
+        let arrayObj =
+            match state.ManagedHeap.Arrays.TryGetValue arrayAddress with
+            | true, v -> v
+            | false, _ ->
+                failwith
+                    $"checkArrayStoreVariance: no array allocation at %O{arrayAddress}; helper called with a non-array heap address"
+
+        let storedElement =
+            match arrayObj.ConcreteType with
+            | ConcreteTypeHandle.OneDimArrayZero elt -> elt
+            | ConcreteTypeHandle.Array (elt, _) -> elt
+            | other ->
+                failwith
+                    $"checkArrayStoreVariance: array allocation at %O{arrayAddress} has non-array ConcreteType %O{other}"
+
+        let storedElementIsReference =
+            match storedElement with
+            | ConcreteTypeHandle.OneDimArrayZero _
+            | ConcreteTypeHandle.Array _ -> true
+            | ConcreteTypeHandle.Byref _
+            | ConcreteTypeHandle.Pointer _
+            | ConcreteTypeHandle.FunctionPointer _ -> false
+            | ConcreteTypeHandle.Concrete _ ->
+                match IlMachineState.tryGetConcreteTypeInfo state storedElement with
+                | Some (_, typeInfo) -> DumpedAssembly.isReferenceType baseClassTypes state._LoadedAssemblies typeInfo
+                | None -> failwith $"checkArrayStoreVariance: array element handle %O{storedElement} has no TypeDef row"
+
+        if not storedElementIsReference then
+            // Value-type element store: variance does not apply. Numeric coercion
+            // happens in toCliTypeCoerced; the verifier guards value-type identity.
+            ArrayStoreVarianceCheck.Allowed state
+        else
+
+        match value with
+        | EvalStackValue.NullObjectRef ->
+            // Null is always storable into a reference-typed array slot.
+            ArrayStoreVarianceCheck.Allowed state
+        | EvalStackValue.ObjectRef addr ->
+            let valueRuntimeType = ManagedHeap.getObjectConcreteType addr state.ManagedHeap
+
+            // `isConcreteTypeAssignableTo` currently `failwith`s on two combinations
+            // it doesn't yet model: (a) `walk` traversing a Concrete type whose
+            // definition has variant generic parameters (line 1175 in
+            // IlMachineRuntimeMetadata), and (b) an array source being checked
+            // against a generic-interface target (line 1243). Both arise from
+            // legitimate covariant array stores (e.g. `string[]` into an
+            // `IEnumerable<string>[]` element; `Func<int>` into a `Func<int>[]`
+            // element when other instantiations also exist). Before this gate
+            // those stores silently succeeded — they don't go through any
+            // assignability check at all in the previous code. Turning them into
+            // host failures would regress previously-working programs, so we
+            // degrade to "permit" when the walk can't reach a definitive answer.
+            // The variance gate is therefore best-effort until those TODOs in
+            // `IlMachineRuntimeMetadata` are implemented; at that point this
+            // try/with can be removed and the check becomes precise.
+            let state, decision =
+                try
+                    let state, isAssignable =
+                        IlMachineState.isConcreteTypeAssignableTo
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            valueRuntimeType
+                            storedElement
+
+                    state, ValueSome isAssignable
+                with ex when ex.Message.StartsWith "TODO:" ->
+                    state, ValueNone
+
+            match decision with
+            | ValueNone
+            | ValueSome true -> ArrayStoreVarianceCheck.Allowed state
+            | ValueSome false ->
+                let state, _whatWeDid =
+                    raiseRuntimeException
+                        loggerFactory
+                        baseClassTypes
+                        baseClassTypes.ArrayTypeMismatchException
+                        currentThread
+                        state
+
+                ArrayStoreVarianceCheck.Raised state
+        | EvalStackValue.ManagedPointer _
+        | EvalStackValue.Int32 _
+        | EvalStackValue.Int64 _
+        | EvalStackValue.NativeInt _
+        | EvalStackValue.Float _
+        | EvalStackValue.UserDefinedValueType _ ->
+            // Reference-typed-element arrays only accept ObjectRef / NullObjectRef stack
+            // values. The verifier rejects other shapes at load time, so reaching this
+            // arm means either the verifier was skipped or the interpreter produced a
+            // value of the wrong shape. Surface the gap explicitly rather than letting
+            // the store silently mis-coerce.
+            failwith
+                $"TODO: array-store variance check for reference-typed-element array with stack value form %O{value}; expected ObjectRef or NullObjectRef"
