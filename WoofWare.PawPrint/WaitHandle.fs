@@ -2,18 +2,21 @@ namespace WoofWare.PawPrint
 
 /// Deterministic state machine for the Win32-shaped wait-handle kernel
 /// objects exposed to managed code through `CreateSemaphoreExW`,
-/// `ReleaseSemaphore`, `CloseHandle`, and `WaitHandle_WaitOneCore`. On
-/// .NET 10 CoreCLR-on-Unix the BCL compiles `Semaphore.Windows.cs`
-/// regardless of host, with `Libraries.Kernel32` rebound to
-/// `RuntimeHelpers.QCall`; every Kernel32 LibraryImport therefore routes
-/// to the runtime as a QCall whose entry point uses the Win32 wide-string
-/// name. PawPrint reproduces the observable semantics through
-/// `WaitHandleState` (registry value, kind-tagged) and one new
-/// `ThreadStatus` case (`BlockedOnWaitHandle`).
+/// `ReleaseSemaphore`, `CloseHandle`, `WaitHandle_WaitOneCore`,
+/// `WaitHandle_WaitOnePrioritized`, `PAL_CreateMutexW`, and
+/// `ReleaseMutex`. On .NET 10 CoreCLR-on-Unix the BCL compiles
+/// `Semaphore.Windows.cs` / `Mutex.CoreCLR.Unix.cs` regardless of host,
+/// with `Libraries.Kernel32` rebound to `RuntimeHelpers.QCall`; every
+/// Kernel32 LibraryImport therefore routes to the runtime as a QCall
+/// whose entry point uses the Win32 wide-string name. PawPrint
+/// reproduces the observable semantics through `WaitHandleState`
+/// (registry value, kind-tagged) and one `ThreadStatus` case
+/// (`BlockedOnWaitHandle`).
 ///
-/// This first slice supports the semaphore variant only. The DU's job is
-/// to keep "kind dispatch in WaitOne/Close" exhaustive so the compiler
-/// catches a missing branch when `Event` or `Mutex` lands.
+/// Two kinds are supported today: semaphore (`Count`-based) and mutex
+/// (ownership-based, re-entrant on owner, abandoned-flag-aware). The
+/// DU's job is to keep "kind dispatch in WaitOne/Close" exhaustive so
+/// the compiler catches a missing branch when `Event` lands.
 ///
 /// The module is pure: every transition is `IlMachineState ->
 /// IlMachineState` (or returns an outcome carrying the next state) and
@@ -31,6 +34,16 @@ namespace WoofWare.PawPrint
 /// (`tryWaitOne`): it does not park, never touches the queue, and
 /// returns `WAIT_OBJECT_0` or `WAIT_TIMEOUT` depending on whether the
 /// fast path applied.
+///
+/// Abandoned-mutex propagation: full support (rewriting the wake-time
+/// return value of already-blocked waiters when their owner thread
+/// terminates) is structural and out of scope for this slice — the
+/// scheduler pushes `WAIT_OBJECT_0` at park time, so making the wake
+/// produce `WAIT_ABANDONED` requires deferred-return-value
+/// materialisation. Until that lands, `Scheduler.onThreadTerminated`
+/// fails loud if a terminating thread still owns any mutex, so a real
+/// guest reaching that case surfaces as a clean failure rather than a
+/// silent permanent ownership.
 [<RequireQualifiedAccess>]
 module WaitHandle =
 
@@ -46,26 +59,55 @@ module WaitHandle =
         /// check itself is done without computing the sum.
         | WouldExceedMaximum of attemptedTotal : int64 * maximum : int
 
-    /// Outcome of a `waitOne` call. The native handler treats both
-    /// constructors identically — advance IL and return `WAIT_OBJECT_0` —
-    /// because the IL `WaitOne` call site has already moved past itself
-    /// by the time the scheduler picks the woken thread. The split
-    /// exists so callers (notably future multi-handle waits) can
-    /// distinguish "took ownership on the fast path" from "parked".
+    /// Why `releaseMutex` rejected a request. The Win32 `ReleaseMutex`
+    /// returns FALSE and sets `ERROR_NOT_OWNER (0x120 = 288)` for both
+    /// "free mutex" and "held by another thread" cases; the BCL's
+    /// `Mutex.ReleaseMutex` translates that into
+    /// `ApplicationException` / `SynchronizationLockException`.
+    [<RequireQualifiedAccess>]
+    type ReleaseMutexFailure =
+        /// The mutex is free, or held by a thread other than the caller.
+        | NotOwner
+
+    /// Outcome of a `waitOne` call.
+    ///
+    /// `Acquired` and `AcquiredAbandoned` are both fast-path successes
+    /// (the thread stays Runnable); the only observable difference is
+    /// the integer return code (`WAIT_OBJECT_0` vs `WAIT_ABANDONED`),
+    /// which the native handler unpacks. `AcquiredAbandoned` is only
+    /// produced by the mutex variant on a `Free wasAbandoned=true`
+    /// transition; semaphore acquires never produce it. The
+    /// non-mutex-aware caller can still pattern-match against the
+    /// constructor (it'd never fire) — that's tolerable because
+    /// `waitOne` is the operation as a whole, and the abandoned outcome
+    /// is properly a wait-handle-level concept rather than a
+    /// kind-specific one.
+    ///
+    /// `Blocked` means the thread is parked at the wait queue and its
+    /// status flipped to `BlockedOnWaitHandle`. The IL site advances in
+    /// every case; when the parked thread is later woken its
+    /// `WAIT_OBJECT_0` slot has already been pushed onto its eval stack
+    /// at park time.
     [<RequireQualifiedAccess>]
     type WaitOutcome =
         | Acquired of IlMachineState
+        | AcquiredAbandoned of IlMachineState
         | Blocked of IlMachineState
 
     /// Outcome of a non-blocking `tryWaitOne` probe (zero-timeout wait).
-    /// `Acquired` means the fast path applied — count was decremented.
-    /// `TimedOut` means count was 0; the state is unchanged (no enqueue,
+    /// `Acquired` means the fast path applied — count was decremented or
+    /// the mutex was taken. `AcquiredAbandoned` is the mutex-on-abandoned
+    /// flag analogue (still a fast-path success, but the caller pushes
+    /// `WAIT_ABANDONED` rather than `WAIT_OBJECT_0`). `TimedOut` means
+    /// the fast path could not apply; state is unchanged (no enqueue,
     /// no thread-status flip — that's the entire point of distinguishing
     /// this from `waitOne`). The native handler maps these to
-    /// `WAIT_OBJECT_0` (0) and `WAIT_TIMEOUT` (0x102) respectively.
+    /// `WAIT_OBJECT_0` (0), `WAIT_ABANDONED` (0x80), and `WAIT_TIMEOUT`
+    /// (0x102) respectively.
     [<RequireQualifiedAccess>]
     type TryWaitOutcome =
         | Acquired of IlMachineState
+        | AcquiredAbandoned of IlMachineState
         | TimedOut of IlMachineState
 
     /// Look up the handle for `id`, or fail loud. A retained IntPtr that
@@ -88,6 +130,16 @@ module WaitHandle =
     let private expectSemaphore (operation : string) (id : WaitHandleId) (handle : WaitHandleState) : SemaphoreState =
         match handle with
         | WaitHandleState.Semaphore s -> s
+        | WaitHandleState.Mutex _ ->
+            failwith
+                $"%s{operation}: WaitHandle %O{id} is a Mutex, but this operation only accepts a Semaphore (e.g. ReleaseSemaphore / WaitOnePrioritized). This is a guest bug — the BCL would have failed in its own wrapper before reaching the runtime."
+
+    let private expectMutex (operation : string) (id : WaitHandleId) (handle : WaitHandleState) : MutexState =
+        match handle with
+        | WaitHandleState.Mutex m -> m
+        | WaitHandleState.Semaphore _ ->
+            failwith
+                $"%s{operation}: WaitHandle %O{id} is a Semaphore, but this operation only accepts a Mutex (e.g. ReleaseMutex). This is a guest bug — the BCL would have failed in its own wrapper before reaching the runtime."
 
     /// Allocate a fresh semaphore kernel object. Returns the new handle
     /// alongside the updated state. The handle is non-zero (counters
@@ -136,23 +188,51 @@ module WaitHandle =
 
         id, state
 
-    /// Try to take one unit from the semaphore on behalf of `thread`.
-    ///
-    /// Returns `Acquired` if the fast path applied: count was > 0 and we
-    /// decremented it. The IL `WaitOne` site advances and the thread
-    /// stays Runnable.
-    ///
-    /// Returns `Blocked` if count was 0: the thread is parked at the
-    /// FIFO tail of `WaitQueue` and its status flips to
-    /// `BlockedOnWaitHandle`. The IL site still advances (the native
-    /// handler returns `Stepped/Executed` in both cases); when the
-    /// thread is later woken by `releaseSemaphore`, its count slot has
-    /// already been consumed by the wake step, so resuming past the
-    /// `WaitOne` call is correct without re-decrementing.
-    let waitOne (thread : ThreadId) (id : WaitHandleId) (state : IlMachineState) : WaitOutcome =
-        let handle = lookup id state
-        let semaphore = expectSemaphore "WaitHandle.waitOne" id handle
+    /// Allocate a fresh mutex kernel object. Returns the new handle
+    /// alongside the updated state. If `initialOwner = true`, the caller
+    /// (`creator`) becomes the initial owner with `recursionCount = 1`,
+    /// matching the Win32 `CreateMutex(bInitialOwner = TRUE)` contract;
+    /// otherwise the mutex starts free.
+    let createMutex
+        (initialOwner : bool)
+        (creator : ThreadId)
+        (state : IlMachineState)
+        : WaitHandleId * IlMachineState
+        =
+        let id = WaitHandleId state.Kernel.NextWaitHandleId
 
+        let ownership =
+            if initialOwner then
+                MutexOwnership.Held (creator, 1)
+            else
+                MutexOwnership.Free false
+
+        let mutex : MutexState =
+            {
+                Ownership = ownership
+                WaitQueue = []
+            }
+
+        let state =
+            state.MapKernel (fun kernel ->
+                { kernel with
+                    WaitHandles = kernel.WaitHandles |> Map.add id (WaitHandleState.Mutex mutex)
+                    NextWaitHandleId = kernel.NextWaitHandleId + 1
+                }
+            )
+
+        id, state
+
+    /// Internal: kind-private semaphore waitOne. Used by the kind
+    /// dispatcher in `waitOne` and the property tests that exercise the
+    /// semaphore path directly.
+    let private waitOneSemaphore
+        (thread : ThreadId)
+        (id : WaitHandleId)
+        (semaphore : SemaphoreState)
+        (state : IlMachineState)
+        : WaitOutcome
+        =
         if semaphore.Count > 0 then
             // Fast path: consume one unit and stay Runnable. The new
             // count is in `[0, Maximum - 1]`, preserving the invariant.
@@ -178,6 +258,72 @@ module WaitHandle =
             |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnWaitHandle id)
             |> WaitOutcome.Blocked
 
+    /// Internal: kind-private mutex waitOne. Re-entrant on owner; the
+    /// `Free wasAbandoned=true` transition produces `AcquiredAbandoned`
+    /// and clears the flag.
+    let private waitOneMutex
+        (thread : ThreadId)
+        (id : WaitHandleId)
+        (mutex : MutexState)
+        (state : IlMachineState)
+        : WaitOutcome
+        =
+        match mutex.Ownership with
+        | MutexOwnership.Free wasAbandoned ->
+            // Take ownership; clear the abandoned flag.
+            let mutex =
+                { mutex with
+                    Ownership = MutexOwnership.Held (thread, 1)
+                }
+
+            let state = writeHandle id (WaitHandleState.Mutex mutex) state
+
+            if wasAbandoned then
+                WaitOutcome.AcquiredAbandoned state
+            else
+                WaitOutcome.Acquired state
+        | MutexOwnership.Held (owner, recursionCount) when owner = thread ->
+            // Re-entrant acquisition: bump recursion count.
+            let mutex =
+                { mutex with
+                    Ownership = MutexOwnership.Held (owner, recursionCount + 1)
+                }
+
+            state |> writeHandle id (WaitHandleState.Mutex mutex) |> WaitOutcome.Acquired
+        | MutexOwnership.Held _ ->
+            // Held by another thread: park at FIFO tail.
+            let mutex =
+                { mutex with
+                    WaitQueue = mutex.WaitQueue @ [ thread ]
+                }
+
+            state
+            |> writeHandle id (WaitHandleState.Mutex mutex)
+            |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnWaitHandle id)
+            |> WaitOutcome.Blocked
+
+    /// Try to take ownership of `id` on behalf of `thread`. Dispatches
+    /// by kind:
+    ///
+    ///  - Semaphore: decrement the count if positive; otherwise park at
+    ///    the FIFO tail of `WaitQueue` and flip the thread's status to
+    ///    `BlockedOnWaitHandle`.
+    ///  - Mutex: re-entrant fast path on the owning thread; take the
+    ///    free mutex (producing `AcquiredAbandoned` iff the abandoned
+    ///    flag was set, clearing it); otherwise park at the FIFO tail.
+    ///
+    /// The IL `WaitOne` site advances in every case (the native handler
+    /// returns `Stepped/Executed` for all three outcomes). When a parked
+    /// thread is later woken, its `WAIT_OBJECT_0` slot has already been
+    /// pushed onto its eval stack at park time — see the
+    /// abandoned-mutex-propagation note on the module docstring.
+    let waitOne (thread : ThreadId) (id : WaitHandleId) (state : IlMachineState) : WaitOutcome =
+        let handle = lookup id state
+
+        match handle with
+        | WaitHandleState.Semaphore semaphore -> waitOneSemaphore thread id semaphore state
+        | WaitHandleState.Mutex mutex -> waitOneMutex thread id mutex state
+
     /// Non-blocking probe used to model the zero-timeout `WaitOne(0)`
     /// path. CoreCLR's contract for a zero millisecond timeout: try the
     /// fast path; if it cannot succeed, return `WAIT_TIMEOUT` without
@@ -185,9 +331,62 @@ module WaitHandle =
     /// caller is *not* parked — leaving the thread Runnable is the entire
     /// observable difference from a guest's point of view, and silently
     /// parking would deadlock guests that rely on `WaitOne(0)` as a poll.
-    let tryWaitOne (id : WaitHandleId) (state : IlMachineState) : TryWaitOutcome =
+    ///
+    /// `thread` is consumed by the mutex kind (for re-entrancy and
+    /// ownership identity); the semaphore kind ignores it.
+    let tryWaitOne (thread : ThreadId) (id : WaitHandleId) (state : IlMachineState) : TryWaitOutcome =
         let handle = lookup id state
-        let semaphore = expectSemaphore "WaitHandle.tryWaitOne" id handle
+
+        match handle with
+        | WaitHandleState.Semaphore semaphore ->
+            if semaphore.Count > 0 then
+                let semaphore =
+                    { semaphore with
+                        Count = semaphore.Count - 1
+                    }
+
+                state
+                |> writeHandle id (WaitHandleState.Semaphore semaphore)
+                |> TryWaitOutcome.Acquired
+            else
+                // State must be returned verbatim: no enqueue, no status flip.
+                TryWaitOutcome.TimedOut state
+        | WaitHandleState.Mutex mutex ->
+            match mutex.Ownership with
+            | MutexOwnership.Free wasAbandoned ->
+                let mutex =
+                    { mutex with
+                        Ownership = MutexOwnership.Held (thread, 1)
+                    }
+
+                let state = writeHandle id (WaitHandleState.Mutex mutex) state
+
+                if wasAbandoned then
+                    TryWaitOutcome.AcquiredAbandoned state
+                else
+                    TryWaitOutcome.Acquired state
+            | MutexOwnership.Held (owner, recursionCount) when owner = thread ->
+                let mutex =
+                    { mutex with
+                        Ownership = MutexOwnership.Held (owner, recursionCount + 1)
+                    }
+
+                state |> writeHandle id (WaitHandleState.Mutex mutex) |> TryWaitOutcome.Acquired
+            | MutexOwnership.Held _ ->
+                // Held by another thread: no enqueue, no status flip.
+                TryWaitOutcome.TimedOut state
+
+    /// Semaphore-only non-blocking probe used by the prioritized
+    /// dispatch path. Keeping the two `tryWait` variants split (rather
+    /// than letting prioritized fall through to the kind-generic
+    /// `tryWaitOne`) lets the prioritized native handler keep its
+    /// "mutexes are not legal on this entry point" guarantee — passing
+    /// a mutex handle to `WaitHandle_WaitOnePrioritized` is a guest bug,
+    /// and we want it to fail loud rather than accidentally succeed via
+    /// the kind-generic probe.
+    let internal tryWaitOneSemaphore (id : WaitHandleId) (state : IlMachineState) : TryWaitOutcome =
+        let handle = lookup id state
+        let semaphore = expectSemaphore "WaitHandle.tryWaitOneSemaphore" id handle
 
         if semaphore.Count > 0 then
             let semaphore =
@@ -199,7 +398,6 @@ module WaitHandle =
             |> writeHandle id (WaitHandleState.Semaphore semaphore)
             |> TryWaitOutcome.Acquired
         else
-            // State must be returned verbatim: no enqueue, no status flip.
             TryWaitOutcome.TimedOut state
 
     /// Prioritized variant of `waitOne` matching the
@@ -317,12 +515,76 @@ module WaitHandle =
 
             Ok previousCount, state
 
+    /// Decrement the recursion count, or — if it was the outermost
+    /// release — either mark the mutex free (no waiters) or hand
+    /// ownership directly to the FIFO head of `WaitQueue` (the
+    /// "direct-handoff" posture also used by `Monitor.Exit` and
+    /// `LowLevelMonitor.release`; the woken thread resumes past its
+    /// `WaitOne` call site already owning the mutex).
+    ///
+    /// Returns `Error NotOwner` if the mutex is free, or held by a
+    /// thread other than `thread`; the state is unchanged in that case.
+    /// `Error NotOwner` is what the Win32 `ReleaseMutex` returns for
+    /// either case (with `ERROR_NOT_OWNER = 0x120`); the BCL maps the
+    /// FALSE return into `SynchronizationLockException`.
+    let releaseMutex
+        (thread : ThreadId)
+        (id : WaitHandleId)
+        (state : IlMachineState)
+        : Result<unit, ReleaseMutexFailure> * IlMachineState
+        =
+        let handle = lookup id state
+        let mutex = expectMutex "WaitHandle.releaseMutex" id handle
+
+        match mutex.Ownership with
+        | MutexOwnership.Free _ -> Error ReleaseMutexFailure.NotOwner, state
+        | MutexOwnership.Held (owner, _) when owner <> thread -> Error ReleaseMutexFailure.NotOwner, state
+        | MutexOwnership.Held (_, recursionCount) when recursionCount > 1 ->
+            // Inner release: drop the count by one, ownership unchanged.
+            let mutex =
+                { mutex with
+                    Ownership = MutexOwnership.Held (thread, recursionCount - 1)
+                }
+
+            Ok (), writeHandle id (WaitHandleState.Mutex mutex) state
+        | MutexOwnership.Held (_, _) ->
+            // Outermost release: either mark free, or direct-handoff to
+            // the FIFO head of the wait queue.
+            match mutex.WaitQueue with
+            | [] ->
+                let mutex =
+                    { mutex with
+                        Ownership = MutexOwnership.Free false
+                    }
+
+                Ok (), writeHandle id (WaitHandleState.Mutex mutex) state
+            | head :: rest ->
+                let mutex =
+                    { mutex with
+                        Ownership = MutexOwnership.Held (head, 1)
+                        WaitQueue = rest
+                    }
+
+                let state =
+                    state
+                    |> writeHandle id (WaitHandleState.Mutex mutex)
+                    |> Scheduler.setThreadStatus head ThreadStatus.Runnable
+
+                Ok (), state
+
     /// Tear down a wait handle. The Win32 contract is that `CloseHandle`
     /// runs after the handle is fully quiescent — no thread is currently
     /// waiting on it. We enforce that contract loudly: closing a handle
     /// with a non-empty wait queue is a guest bug that would otherwise
     /// present as the waiters being permanently parked on a recycled
     /// object.
+    ///
+    /// For mutexes, we additionally require the mutex to be free.
+    /// Closing a still-held mutex is a guest bug: real CoreCLR closes
+    /// the handle and the kernel reaps the mutex, but any waiter that
+    /// somehow held a separate handle would deadlock. We don't model
+    /// shared/duplicated handles, so the contract is "release before
+    /// dispose", and we fail loud otherwise.
     ///
     /// IDs are never reused; the entry is removed from the table, so a
     /// retained `IntPtr` to the closed handle fails loudly at the next
@@ -337,6 +599,18 @@ module WaitHandle =
             | waiters ->
                 failwith
                     $"WaitHandle %O{id}: refusing to Close a semaphore with %d{List.length waiters} thread(s) parked in BlockedOnWaitHandle (%A{waiters}); the guest must Release before Disposing."
+        | WaitHandleState.Mutex mutex ->
+            match mutex.WaitQueue with
+            | [] -> ()
+            | waiters ->
+                failwith
+                    $"WaitHandle %O{id}: refusing to Close a mutex with %d{List.length waiters} thread(s) parked in BlockedOnWaitHandle (%A{waiters}); the guest must Release before Disposing."
+
+            match mutex.Ownership with
+            | MutexOwnership.Free _ -> ()
+            | MutexOwnership.Held (owner, recursionCount) ->
+                failwith
+                    $"WaitHandle %O{id}: refusing to Close a mutex still held by thread %O{owner} (recursion count = %d{recursionCount}); the guest must ReleaseMutex before Disposing."
 
         state.MapKernel (fun kernel ->
             { kernel with

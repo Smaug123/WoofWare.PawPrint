@@ -83,6 +83,15 @@ module NativeQCall =
             // prioritized 2-arg waiter; routes to the same deterministic
             // state machine as `WaitOneCore`.
             "WaitHandle_WaitOnePrioritized", NativeWaitHandle.tryExecuteQCall "WaitHandle_WaitOnePrioritized"
+            // `Mutex.CoreCLR.Unix.cs` imports `PAL_CreateMutexW` directly
+            // (separate from the semaphore's `CreateSemaphoreExW`);
+            // `ReleaseMutex` is the Win32 wide-string name that
+            // `Interop.Mutex.cs` uses, routed to QCall on Unix via the
+            // `Libraries.Kernel32 = RuntimeHelpers.QCall` rebinding.
+            // Both dispatch into the deterministic mutex state machine
+            // in `WaitHandle.fs`.
+            "PAL_CreateMutexW", NativeWaitHandle.tryExecuteQCall "PAL_CreateMutexW"
+            "ReleaseMutex", NativeWaitHandle.tryExecuteQCall "ReleaseMutex"
         ]
         |> Map.ofList
 
