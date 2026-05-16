@@ -9,11 +9,10 @@ module NativeSystemNative =
         | Some import when import.ModuleName = "libSystem.Native" -> Some import.EntryPointName
         | _ -> None
 
-    let private pushInt32 (value : int) (ctx : NativeCallContext) : ExecutionResult =
+    let private pushInt32 (value : int) (ctx : NativeCallContext) : NativeHandlerResult =
         ctx.State
         |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 value) ctx.Thread
-        |> Tuple.withRight WhatWeDid.Executed
-        |> ExecutionResult.stepped
+        |> NativeHandlerResult.completed
 
     /// Decode an `nint`-shaped Unix file-descriptor argument. CoreLib passes
     /// fds across the SystemNative boundary as plain `IntPtr` values (the low
@@ -74,7 +73,7 @@ module NativeSystemNative =
         | CliType.Numeric (CliNumericType.Int32 count) -> checkedCount (int64 count)
         | other -> failwith $"%s{operation}: expected UIntPtr allocation size, got %O{other}"
 
-    let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
+    let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
 
@@ -99,13 +98,12 @@ module NativeSystemNative =
             let error =
                 NativeCall.int32Argument "SystemNative_SetErrNo" instruction.Arguments.[0]
 
-            (state.MapKernel (fun kernel ->
+            state.MapKernel (fun kernel ->
                 { kernel with
                     LastSystemError = error
                 }
-             ),
-             WhatWeDid.Executed)
-            |> ExecutionResult.stepped
+            )
+            |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_Malloc",
           [ ConcreteUIntPtr state.ConcreteTypes ],
@@ -124,8 +122,7 @@ module NativeSystemNative =
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptrSrc) ctx.Thread
-            |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.stepped
+            |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_Calloc",
           [ ConcreteUIntPtr state.ConcreteTypes ; ConcreteUIntPtr state.ConcreteTypes ],
@@ -153,8 +150,7 @@ module NativeSystemNative =
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptrSrc) ctx.Thread
-            |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.stepped
+            |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_Dup",
           [ ConcreteIntPtr state.ConcreteTypes ],
@@ -187,8 +183,7 @@ module NativeSystemNative =
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.Verbatim resultFd)) ctx.Thread
-            |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.stepped
+            |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_Close",
           [ ConcreteIntPtr state.ConcreteTypes ],
@@ -221,8 +216,7 @@ module NativeSystemNative =
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 resultCode) ctx.Thread
-            |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.stepped
+            |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_Write",
           [ ConcreteIntPtr state.ConcreteTypes
@@ -392,8 +386,7 @@ module NativeSystemNative =
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 result) ctx.Thread
-            |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.steppedWith effect
+            |> NativeHandlerResult.completedWith effect
             |> Some
         | Some "SystemNative_GetNonCryptographicallySecureRandomBytes",
           [ ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
@@ -468,7 +461,7 @@ module NativeSystemNative =
                             }
                         )
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | Some "SystemNative_Free", [ ConcretePointer _ ], MethodReturnType.Void ->
             let ptr =
                 NativeCall.managedPointerOfPointerArgument "SystemNative_Free" "ptr" instruction.Arguments.[0]
@@ -504,5 +497,5 @@ module NativeSystemNative =
                     failwith
                         $"SystemNative_Free: expected null or native-heap pointer, got %O{other} (only pointers from SystemNative_Malloc/Calloc may be freed here)"
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | _ -> None

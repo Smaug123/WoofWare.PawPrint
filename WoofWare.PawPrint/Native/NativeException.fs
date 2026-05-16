@@ -17,7 +17,7 @@ module NativeException =
             failwith
                 $"%s{operation}: unknown ExceptionMessageKind value %d{other} (expected 1=ThreadAbort, 2=ThreadInterrupted, 3=OutOfMemory)"
 
-    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : ExecutionResult option =
+    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
 
@@ -64,5 +64,5 @@ module NativeException =
                     retString
                     (CliType.ObjectRef (Some messageAddr))
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | _ -> None

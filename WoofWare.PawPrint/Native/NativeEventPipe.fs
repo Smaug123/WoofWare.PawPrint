@@ -40,41 +40,35 @@ module NativeEventPipe =
         | CliType.Numeric (CliNumericType.Int32 i) -> uint32 i
         | other -> failwith $"%s{operation}: expected %s{argName} to be UInt32 argument, got %O{other}"
 
-    let private pushIntPtrZero (thread : ThreadId) (state : IlMachineState) : ExecutionResult =
+    let private pushIntPtrZero (thread : ThreadId) (state : IlMachineState) : NativeHandlerResult =
         state
         |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L)) thread
-        |> Tuple.withRight WhatWeDid.Executed
-        |> ExecutionResult.stepped
+        |> NativeHandlerResult.completed
 
-    let private pushProviderHandle (id : int64) (thread : ThreadId) (state : IlMachineState) : ExecutionResult =
+    let private pushProviderHandle (id : int64) (thread : ThreadId) (state : IlMachineState) : NativeHandlerResult =
         state
         |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.EventPipeProviderPtr id)) thread
-        |> Tuple.withRight WhatWeDid.Executed
-        |> ExecutionResult.stepped
+        |> NativeHandlerResult.completed
 
-    let private pushEventHandle (id : int64) (thread : ThreadId) (state : IlMachineState) : ExecutionResult =
+    let private pushEventHandle (id : int64) (thread : ThreadId) (state : IlMachineState) : NativeHandlerResult =
         state
         |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.EventPipeEventPtr id)) thread
-        |> Tuple.withRight WhatWeDid.Executed
-        |> ExecutionResult.stepped
+        |> NativeHandlerResult.completed
 
-    let private pushUInt64Zero (thread : ThreadId) (state : IlMachineState) : ExecutionResult =
+    let private pushUInt64Zero (thread : ThreadId) (state : IlMachineState) : NativeHandlerResult =
         // The CLI evaluation stack stores UInt64 in the same Int64 cell, two's-complement.
         state
         |> IlMachineState.pushToEvalStack' (EvalStackValue.Int64 (Int64Source.Verbatim 0L)) thread
-        |> Tuple.withRight WhatWeDid.Executed
-        |> ExecutionResult.stepped
+        |> NativeHandlerResult.completed
 
-    let private pushInt32 (value : int32) (thread : ThreadId) (state : IlMachineState) : ExecutionResult =
+    let private pushInt32 (value : int32) (thread : ThreadId) (state : IlMachineState) : NativeHandlerResult =
         state
         |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 value) thread
-        |> Tuple.withRight WhatWeDid.Executed
-        |> ExecutionResult.stepped
+        |> NativeHandlerResult.completed
 
-    let private justStep (state : IlMachineState) : ExecutionResult =
-        (state, WhatWeDid.Executed) |> ExecutionResult.stepped
+    let private justStep (state : IlMachineState) : NativeHandlerResult = NativeHandlerResult.completed state
 
-    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : ExecutionResult option =
+    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
 

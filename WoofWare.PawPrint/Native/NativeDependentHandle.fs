@@ -2,7 +2,7 @@ namespace WoofWare.PawPrint
 
 [<RequireQualifiedAccess>]
 module NativeDependentHandle =
-    let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
+    let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
 
@@ -42,7 +42,7 @@ module NativeDependentHandle =
 
             let state = NativeCall.pushGcHandleAddress handle ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib",
           "System.Runtime",
           "DependentHandle",
@@ -58,7 +58,7 @@ module NativeDependentHandle =
 
             let state = NativeCall.pushObjectTarget target ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib",
           "System.Runtime",
           "DependentHandle",
@@ -88,7 +88,7 @@ module NativeDependentHandle =
 
             let state = NativeCall.pushObjectTarget dependent ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib",
           "System.Runtime",
           "DependentHandle",
@@ -129,7 +129,7 @@ module NativeDependentHandle =
 
             let state = NativeCall.pushObjectTarget target ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib",
           "System.Runtime",
           "DependentHandle",
@@ -154,7 +154,7 @@ module NativeDependentHandle =
                     GcHandles = state.GcHandles |> GcHandleRegistry.setDependent handle dependent
                 }
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib",
           "System.Runtime",
           "DependentHandle",
@@ -171,7 +171,7 @@ module NativeDependentHandle =
                     GcHandles = state.GcHandles |> GcHandleRegistry.setTarget handle None
                 }
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib",
           "System.Runtime",
           "DependentHandle",
@@ -192,5 +192,5 @@ module NativeDependentHandle =
             // PawPrint has no GC and free always succeeds, so we report true.
             let state = IlMachineState.pushToEvalStack (CliType.ofBool true) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | _ -> None

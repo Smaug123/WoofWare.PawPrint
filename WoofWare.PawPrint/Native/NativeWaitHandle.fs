@@ -335,7 +335,7 @@ module NativeWaitHandle =
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ptr)) -> Some ptr
         | other -> failwith $"%s{operation}: expected %s{argName} to be a managed int pointer or null, got %O{other}"
 
-    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : ExecutionResult option =
+    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
 
@@ -377,8 +377,7 @@ module NativeWaitHandle =
             state
             |> withLastSystemError 0
             |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.WaitHandlePtr id)) ctx.Thread
-            |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.stepped
+            |> NativeHandlerResult.completed
             |> Some
 
         | "ReleaseSemaphore",
@@ -413,16 +412,14 @@ module NativeWaitHandle =
                 state
                 |> withLastSystemError 0
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) ctx.Thread
-                |> Tuple.withRight WhatWeDid.Executed
-                |> ExecutionResult.stepped
+                |> NativeHandlerResult.completed
                 |> Some
 
             | Error (WaitHandle.ReleaseFailure.WouldExceedMaximum _) ->
                 state
                 |> withLastSystemError errorTooManyPosts
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread
-                |> Tuple.withRight WhatWeDid.Executed
-                |> ExecutionResult.stepped
+                |> NativeHandlerResult.completed
                 |> Some
 
         | "CloseHandle",
@@ -437,8 +434,7 @@ module NativeWaitHandle =
             state
             |> withLastSystemError 0
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) ctx.Thread
-            |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.stepped
+            |> NativeHandlerResult.completed
             |> Some
 
         | "WaitHandle_WaitOneCore",
@@ -469,8 +465,7 @@ module NativeWaitHandle =
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 ret) ctx.Thread
-            |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.stepped
+            |> NativeHandlerResult.completed
             |> Some
 
         | "WaitHandle_WaitOnePrioritized",
@@ -507,8 +502,7 @@ module NativeWaitHandle =
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 ret) ctx.Thread
-            |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.stepped
+            |> NativeHandlerResult.completed
             |> Some
 
         | "PAL_CreateMutexW",
@@ -554,8 +548,7 @@ module NativeWaitHandle =
             state
             |> withLastSystemError 0
             |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.WaitHandlePtr id)) ctx.Thread
-            |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.stepped
+            |> NativeHandlerResult.completed
             |> Some
 
         | "ReleaseMutex",
@@ -578,15 +571,13 @@ module NativeWaitHandle =
                 state
                 |> withLastSystemError 0
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) ctx.Thread
-                |> Tuple.withRight WhatWeDid.Executed
-                |> ExecutionResult.stepped
+                |> NativeHandlerResult.completed
                 |> Some
             | Error WaitHandle.ReleaseMutexFailure.NotOwner ->
                 state
                 |> withLastSystemError errorNotOwner
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread
-                |> Tuple.withRight WhatWeDid.Executed
-                |> ExecutionResult.stepped
+                |> NativeHandlerResult.completed
                 |> Some
 
         | "CreateEventExW",
@@ -628,8 +619,7 @@ module NativeWaitHandle =
             state
             |> withLastSystemError 0
             |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.WaitHandlePtr id)) ctx.Thread
-            |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.stepped
+            |> NativeHandlerResult.completed
             |> Some
 
         | "SetEvent",
@@ -649,8 +639,7 @@ module NativeWaitHandle =
             state
             |> withLastSystemError 0
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) ctx.Thread
-            |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.stepped
+            |> NativeHandlerResult.completed
             |> Some
 
         | "ResetEvent",
@@ -665,8 +654,7 @@ module NativeWaitHandle =
             state
             |> withLastSystemError 0
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) ctx.Thread
-            |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.stepped
+            |> NativeHandlerResult.completed
             |> Some
 
         | _ -> None

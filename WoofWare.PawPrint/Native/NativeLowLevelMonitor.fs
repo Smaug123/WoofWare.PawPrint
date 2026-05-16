@@ -28,7 +28,7 @@ module NativeLowLevelMonitor =
                 $"%s{operation}: monitor argument was IntPtr.Zero, but LowLevelMonitor invariants require a non-null handle (the wrapper would have thrown OOM at Initialize)."
         | other -> failwith $"%s{operation}: expected LowLevelMonitor handle, got %O{other}"
 
-    let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
+    let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
 
@@ -49,8 +49,7 @@ module NativeLowLevelMonitor =
             |> IlMachineState.pushToEvalStack'
                 (EvalStackValue.NativeInt (NativeIntSource.LowLevelMonitorPtr id))
                 ctx.Thread
-            |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.stepped
+            |> NativeHandlerResult.completed
             |> Some
 
         | Some "SystemNative_LowLevelMonitor_Destroy",
@@ -59,7 +58,7 @@ module NativeLowLevelMonitor =
             let operation = "SystemNative_LowLevelMonitor_Destroy"
             let id = monitorOfArgument operation instruction.Arguments.[0]
             let state = LowLevelMonitor.destroy id state
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
 
         | Some "SystemNative_LowLevelMonitor_Acquire",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
@@ -78,7 +77,7 @@ module NativeLowLevelMonitor =
                 | LowLevelMonitor.AcquireOutcome.Acquired state
                 | LowLevelMonitor.AcquireOutcome.Blocked state -> state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
 
         | Some "SystemNative_LowLevelMonitor_Release",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
@@ -86,7 +85,7 @@ module NativeLowLevelMonitor =
             let operation = "SystemNative_LowLevelMonitor_Release"
             let id = monitorOfArgument operation instruction.Arguments.[0]
             let state = LowLevelMonitor.release ctx.Thread id state
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
 
         | Some "SystemNative_LowLevelMonitor_Wait",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
@@ -94,7 +93,7 @@ module NativeLowLevelMonitor =
             let operation = "SystemNative_LowLevelMonitor_Wait"
             let id = monitorOfArgument operation instruction.Arguments.[0]
             let state = LowLevelMonitor.wait ctx.Thread id state
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
 
         | Some "SystemNative_LowLevelMonitor_TimedWait",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
@@ -121,6 +120,6 @@ module NativeLowLevelMonitor =
             let operation = "SystemNative_LowLevelMonitor_Signal_Release"
             let id = monitorOfArgument operation instruction.Arguments.[0]
             let state = LowLevelMonitor.signalRelease ctx.Thread id state
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
 
         | _ -> None

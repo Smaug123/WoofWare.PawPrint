@@ -252,6 +252,60 @@ type ExecutionResult =
         terminatingThread : ThreadId *
         CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
 
+/// Outcome of invoking a native handler (QCall, P/Invoke shim, or other host-provided
+/// primitive registered under `WoofWare.PawPrint.Native`). Each variant names a single
+/// dispatcher decision, so the dispatcher's pattern match is total and the convention
+/// "remember to set the right `WhatWeDid`" that the legacy `ExecutionResult` shape relied
+/// on is eliminated.
+///
+/// The native dispatcher (`AbstractMachine.executeOneStep.dispatchNative`) translates each
+/// variant into an `ExecutionResult`, performing frame-management on the handler's behalf
+/// (popping the native frame when it has finished, or leaving it on the stack so exception
+/// dispatch / re-entry / cctor unwinding can walk through it).
+type NativeHandlerResult =
+    /// Native handler ran to completion. Dispatcher pops the native frame and reports
+    /// `WhatWeDid.Executed` to the Scheduler.
+    | Completed of IlMachineState * StepEffect
+    /// Native handler synchronously pushed a managed callee on top of itself for re-entry:
+    /// the handler will be invoked again after the callee returns, typically via re-entry
+    /// markers placed on the eval stack so the handler can distinguish first entry from
+    /// resumption. Dispatcher leaves the native frame on the stack and reports
+    /// `WhatWeDid.SuspendedForManagedCall` to the Scheduler.
+    | PushedManagedCallee of IlMachineState * StepEffect
+    /// Native handler is raising a runtime exception. The dispatcher invokes
+    /// `IlMachineStateExecution.raiseRuntimeException` for the supplied exception type
+    /// (which must be a non-generic BCL exception with a parameterless ctor), allocating
+    /// the object, calling its ctor, and arming dispatch-on-return. The native frame stays
+    /// on the stack so exception dispatch can unwind it on the ctor's `Ret`; the handler
+    /// is never re-entered. Reports `WhatWeDid.SuspendedForManagedCall` to the Scheduler.
+    | RaiseException of IlMachineState * exnType : TypeInfo<GenericParamFromMetadata, TypeDefn> * StepEffect
+    /// A type's `.cctor` has been pushed on top of the native frame (typically because a
+    /// sub-call into managed code needed to initialise an uninitialised type). Dispatcher
+    /// leaves the native frame on the stack until the `.cctor` completes, then re-enters
+    /// the handler. Reports `WhatWeDid.SuspendedForClassInit` to the Scheduler.
+    | SuspendedForClassInit of IlMachineState * StepEffect
+    /// Another thread owns the `.cctor` lock for a type the handler needs initialised;
+    /// this thread yields. Dispatcher leaves the native frame on the stack so the handler
+    /// can be re-entered when the lock is released. Reports `WhatWeDid.BlockedOnClassInit`
+    /// to the Scheduler.
+    | BlockedOnClassInit of IlMachineState * blockedBy : ThreadId * StepEffect
+    /// A sub-call's exception (typically a `TypeInitializationException` raised by a
+    /// previously-failed `.cctor`) has already been dispatched into the guest and unwound
+    /// past this native frame to a matching handler. The state already reflects the
+    /// unwind; dispatcher leaves it alone. Reports
+    /// `WhatWeDid.ThrowingTypeInitializationException` to the Scheduler.
+    | ThrowingTypeInitializationException of IlMachineState * StepEffect
+    /// The handler produced a terminating `ExecutionResult` (one of `Terminated`,
+    /// `ProcessExit`, `FailFast`, or `UnhandledException`) that the dispatcher should
+    /// surface to the run loop verbatim, bypassing native-frame management. This variant
+    /// only arises from native bridges that delegate to ExternImpls whose interface is
+    /// typed in terms of `ExecutionResult` (e.g. `ISystem_Environment._Exit`/`FailFast`).
+    /// The embedded `ExecutionResult` is never a `Stepped` value — use
+    /// `NativeHandlerResult.ofExecutionResult` to construct one from an arbitrary
+    /// ExternImpl result, which routes `Stepped(Executed)` to `Completed` and rejects
+    /// other `Stepped` shapes as logic errors.
+    | Terminating of ExecutionResult
+
 /// Result of returning from a method frame via `Ret`.
 type ReturnFrameResult =
     /// No caller frame to return to (entry-point method hit Ret).
@@ -309,3 +363,99 @@ module ExecutionResult =
     /// other by inserting `|> steppedWith effect` in place of `|> stepped`.
     let steppedWith (effect : StepEffect) ((state, whatWeDid) : IlMachineState * WhatWeDid) : ExecutionResult =
         ExecutionResult.Stepped (state, whatWeDid, effect)
+
+[<RequireQualifiedAccess>]
+module NativeHandlerResult =
+    /// Native handler completed normally with no externally-observable effect.
+    /// The default for the overwhelming majority of native handlers.
+    let completed (state : IlMachineState) : NativeHandlerResult =
+        NativeHandlerResult.Completed (state, StepEffect.NoEffect)
+
+    /// Native handler completed normally and emitted `effect`. Use this for handlers
+    /// that performed an externally-observable side effect (e.g. `SystemNative_Write`).
+    let completedWith (effect : StepEffect) (state : IlMachineState) : NativeHandlerResult =
+        NativeHandlerResult.Completed (state, effect)
+
+    /// Native handler pushed a managed callee on top of itself for re-entry. The
+    /// handler will be re-invoked on a future step (typically distinguishing first
+    /// entry from re-entry via markers placed on the eval stack).
+    let pushedManagedCallee (state : IlMachineState) : NativeHandlerResult =
+        NativeHandlerResult.PushedManagedCallee (state, StepEffect.NoEffect)
+
+    /// Native handler is raising the given exception type. The dispatcher allocates
+    /// the exception, calls its parameterless ctor, arms dispatch-on-return, and
+    /// leaves the native frame on the stack so exception dispatch can unwind it.
+    /// The exception type must be a non-generic BCL exception (typically a field on
+    /// `BaseClassTypes`); use this for runtime-synthesised exceptions only, not for
+    /// guest-thrown exceptions (which go through `newobj` + `throw`).
+    let raiseException
+        (exnType : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        (state : IlMachineState)
+        : NativeHandlerResult
+        =
+        NativeHandlerResult.RaiseException (state, exnType, StepEffect.NoEffect)
+
+    /// Forward a `WhatWeDid.SuspendedForClassInit` outcome from a sub-call. Use this
+    /// at the leaf of a passthrough branch when the dispatcher should keep the native
+    /// frame on the stack while a `.cctor` runs.
+    let suspendedForClassInit (state : IlMachineState) : NativeHandlerResult =
+        NativeHandlerResult.SuspendedForClassInit (state, StepEffect.NoEffect)
+
+    /// Forward a `WhatWeDid.BlockedOnClassInit` outcome from a sub-call. Use this
+    /// at the leaf of a passthrough branch when another thread owns the cctor lock.
+    let blockedOnClassInit (blockedBy : ThreadId) (state : IlMachineState) : NativeHandlerResult =
+        NativeHandlerResult.BlockedOnClassInit (state, blockedBy, StepEffect.NoEffect)
+
+    /// Forward a `WhatWeDid.ThrowingTypeInitializationException` outcome from a sub-call.
+    /// Use this at the leaf of a passthrough branch when an exception has already been
+    /// dispatched past this native frame.
+    let throwingTypeInitializationException (state : IlMachineState) : NativeHandlerResult =
+        NativeHandlerResult.ThrowingTypeInitializationException (state, StepEffect.NoEffect)
+
+    /// Translate the outcome of a managed sub-call (e.g. `ensureTypeInitialised`,
+    /// `callMethod`) into a `NativeHandlerResult` the native handler can return early
+    /// with. Returns `Some` when the sub-call's outcome means the native handler must
+    /// stop work and propagate (cctor pending, blocked on another thread, exception
+    /// already dispatched). Returns `None` when the sub-call ran to completion
+    /// (`WhatWeDid.Executed`) so the handler should continue.
+    ///
+    /// `WhatWeDid.SuspendedForManagedCall` is rejected as a logic error: that variant
+    /// is produced only by native handlers themselves pushing a managed callee, never
+    /// by managed sub-calls returning to a native handler.
+    let tryEarlyReturn ((state, whatWeDid) : IlMachineState * WhatWeDid) : NativeHandlerResult option =
+        match whatWeDid with
+        | WhatWeDid.Executed -> None
+        | WhatWeDid.SuspendedForClassInit -> Some (suspendedForClassInit state)
+        | WhatWeDid.BlockedOnClassInit blockedBy -> Some (blockedOnClassInit blockedBy state)
+        | WhatWeDid.ThrowingTypeInitializationException -> Some (throwingTypeInitializationException state)
+        | WhatWeDid.SuspendedForManagedCall ->
+            failwith
+                "logic error: managed sub-call produced SuspendedForManagedCall; that variant is only valid as a native handler's own outcome"
+
+    /// Translate an `ExecutionResult` produced by an ExternImpl (`ISystem_Environment`,
+    /// `System_Threading_Monitor`, etc.) into a `NativeHandlerResult` suitable for return
+    /// from a native handler. ExternImpls produce a constrained subset of `ExecutionResult`
+    /// values:
+    ///
+    /// * `Stepped(state, WhatWeDid.Executed, effect)` — the handler ran a normal step;
+    ///   routed to `Completed(state, effect)` so the dispatcher pops the native frame.
+    /// * `Terminated`, `ProcessExit`, `FailFast`, `UnhandledException` — terminating
+    ///   outcomes wrapped in `NativeHandlerResult.Terminating` so the dispatcher surfaces
+    ///   them verbatim to the run loop, bypassing frame management.
+    ///
+    /// Any `Stepped` value with a `WhatWeDid` other than `Executed` is rejected as a logic
+    /// error: ExternImpls are not authorised to drive cctor / managed-call / exception
+    /// re-entry directly, because those decisions require structural support (re-entry
+    /// markers, `dispatchAsExceptionOnReturn` arming) that ExternImpls don't have access to.
+    /// Such cases should instead use the dedicated `NativeHandlerResult` constructors from
+    /// the native handler that called the ExternImpl.
+    let ofExecutionResult (executionResult : ExecutionResult) : NativeHandlerResult =
+        match executionResult with
+        | ExecutionResult.Stepped (state, WhatWeDid.Executed, effect) -> NativeHandlerResult.Completed (state, effect)
+        | ExecutionResult.Stepped (_, other, _) ->
+            failwith
+                $"logic error: ExternImpl produced Stepped with WhatWeDid=%A{other}; ExternImpls may only produce Executed steps or terminating outcomes. Use a dedicated NativeHandlerResult constructor from the native handler instead."
+        | ExecutionResult.Terminated _
+        | ExecutionResult.ProcessExit _
+        | ExecutionResult.FailFast _
+        | ExecutionResult.UnhandledException _ -> NativeHandlerResult.Terminating executionResult

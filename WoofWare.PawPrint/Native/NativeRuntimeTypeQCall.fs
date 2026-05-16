@@ -7,7 +7,7 @@ open NativeRuntimeTypeHelpers
 
 [<RequireQualifiedAccess>]
 module NativeRuntimeTypeQCall =
-    let tryExecute (entryPoint : string) (ctx : NativeCallContext) : ExecutionResult option =
+    let tryExecute (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
 
@@ -61,7 +61,7 @@ module NativeRuntimeTypeQCall =
                     retString
                     (CliType.ObjectRef (Some nameAddr))
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | "TypeHandle_GetCorElementType",
           "System.Private.CoreLib",
           "System.Runtime.CompilerServices",
@@ -84,7 +84,7 @@ module NativeRuntimeTypeQCall =
             let state =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 elementType)) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | "TypeHandle_CanCastTo_NoCacheLookup",
           "System.Private.CoreLib",
           "System.Runtime.CompilerServices",
@@ -133,7 +133,7 @@ module NativeRuntimeTypeQCall =
                 let ret = if isAssignable then 1 else 0
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 ret)) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | "MethodTable_CanCompareBitsOrUseFastGetHashCode",
           "System.Private.CoreLib",
           "System",
@@ -165,7 +165,7 @@ module NativeRuntimeTypeQCall =
 
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 ret)) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | "RuntimeTypeHandle_Instantiate",
           "System.Private.CoreLib",
           "System",
@@ -224,26 +224,8 @@ module NativeRuntimeTypeQCall =
 
             match constraintViolation with
             | Some _message ->
-                // raiseRuntimeException pushes the ArgumentException ctor frame on top of
-                // this native QCall frame and arms `dispatchAsExceptionOnReturn`, so when
-                // the ctor finishes its `Ret` will dispatch.  From the QCall dispatch
-                // loop's point of view we have set up a managed continuation, exactly the
-                // shape described by `SuspendedForManagedCall`: the native frame must
-                // stay on the stack while the ctor runs.  We override the
-                // `WhatWeDid.Executed` that `raiseRuntimeException` returns (which is
-                // the right answer for IL-handler callers, where the ctor frame becomes
-                // the new active frame and no QCall return-frame logic runs over it).
-                // Exception dispatch on the ctor's `Ret` will eventually unwind the
-                // native QCall frame too, so we never re-enter this handler.
-                let state, _ =
-                    IlMachineStateExecution.raiseRuntimeException
-                        ctx.LoggerFactory
-                        ctx.BaseClassTypes
-                        ctx.BaseClassTypes.ArgumentException
-                        ctx.Thread
-                        state
-
-                ExecutionResult.stepped (state, WhatWeDid.SuspendedForManagedCall) |> Some
+                NativeHandlerResult.raiseException ctx.BaseClassTypes.ArgumentException state
+                |> Some
             | None ->
 
             let instantiatedHandle, state =
@@ -269,7 +251,7 @@ module NativeRuntimeTypeQCall =
                     retType
                     (CliType.ObjectRef (Some runtimeTypeAddr))
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | "RuntimeTypeHandle_GetInstantiation",
           "System.Private.CoreLib",
           "System",
@@ -353,7 +335,7 @@ module NativeRuntimeTypeQCall =
             // Empty: leave the caller's local null. RuntimeType.GetGenericArguments handles
             // null via `?? EmptyTypes`, matching native CopyRuntimeTypeHandles for 0 args.
             if genericArgumentTargets.IsEmpty then
-                (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+                NativeHandlerResult.completed state |> Some
             else
                 let elementTypeName = if asRuntimeTypeArray then "RuntimeType" else "Type"
 
@@ -391,7 +373,7 @@ module NativeRuntimeTypeQCall =
                         retTypes
                         (CliType.ObjectRef (Some arrayAddr))
 
-                (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+                NativeHandlerResult.completed state |> Some
         | "RuntimeTypeHandle_GetConstraints",
           "System.Private.CoreLib",
           "System",
@@ -536,7 +518,7 @@ module NativeRuntimeTypeQCall =
                     // CopyRuntimeTypeHandles writes NULL when count = 0; the managed wrapper turns
                     // the resulting null into Type.EmptyTypes via `?? EmptyTypes`. Leave the
                     // caller's local null untouched.
-                    (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+                    NativeHandlerResult.completed state |> Some
                 else
                     // CopyRuntimeTypeHandles allocates Type[] (CLASS__TYPE) — not RuntimeType[].
                     let state, _, typeHandle =
@@ -573,7 +555,7 @@ module NativeRuntimeTypeQCall =
                             retTypes
                             (CliType.ObjectRef (Some arrayAddr))
 
-                    (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+                    NativeHandlerResult.completed state |> Some
 
             | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
                 failwith
@@ -641,7 +623,7 @@ module NativeRuntimeTypeQCall =
                         outHandle
                         (CliType.ObjectRef (Some addr))
 
-                (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+                NativeHandlerResult.completed state |> Some
             | [] ->
                 let typeHandleTarget =
                     NativeCall.qCallTypeHandleToRuntimeTypeHandleTarget
@@ -681,13 +663,11 @@ module NativeRuntimeTypeQCall =
                         state
 
                 match typeInit with
-                | WhatWeDid.SuspendedForClassInit ->
-                    ExecutionResult.stepped (state, WhatWeDid.SuspendedForClassInit) |> Some
+                | WhatWeDid.SuspendedForClassInit -> NativeHandlerResult.suspendedForClassInit state |> Some
                 | WhatWeDid.BlockedOnClassInit blockedBy ->
-                    ExecutionResult.stepped (state, WhatWeDid.BlockedOnClassInit blockedBy) |> Some
+                    NativeHandlerResult.blockedOnClassInit blockedBy state |> Some
                 | WhatWeDid.ThrowingTypeInitializationException ->
-                    ExecutionResult.stepped (state, WhatWeDid.ThrowingTypeInitializationException)
-                    |> Some
+                    NativeHandlerResult.throwingTypeInitializationException state |> Some
                 | WhatWeDid.SuspendedForManagedCall ->
                     failwith "logic error: ensureTypeInitialised cannot suspend for an arbitrary managed call"
                 | WhatWeDid.Executed ->
@@ -772,7 +752,7 @@ module NativeRuntimeTypeQCall =
                         false // wrapExceptionInTargetInvocation
                         state
 
-                ExecutionResult.stepped (state, WhatWeDid.SuspendedForManagedCall) |> Some
+                NativeHandlerResult.pushedManagedCallee state |> Some
             | other ->
                 failwith
                     $"%s{operation}: expected at most one re-entry marker on the eval stack, got %d{other.Length} value(s): %A{other}"
@@ -858,7 +838,7 @@ module NativeRuntimeTypeQCall =
             let state =
                 IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt returnSource) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | "RuntimeTypeHandle_GetDeclaringTypeHandleForGenericVariable",
           "System.Private.CoreLib",
           "System",
@@ -933,7 +913,7 @@ module NativeRuntimeTypeQCall =
                     ctx.Thread
                     state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | "RuntimeTypeHandle_GetDeclaringMethodForGenericParameter",
           "System.Private.CoreLib",
           "System",
@@ -973,7 +953,7 @@ module NativeRuntimeTypeQCall =
             | RuntimeTypeHandleTarget.GenericParameter _ ->
                 // Type-level generic parameter: CoreCLR's `defToken` is mdtTypeDef,
                 // so the early-exit branch leaves `result` null. Mirror that.
-                (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+                NativeHandlerResult.completed state |> Some
             | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
                 failwith
                     $"TODO: %s{operation} for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}; need to allocate and return an IRuntimeMethodInfo for the declaring method (same gap as the RuntimeTypeHandle.GetDeclaringMethod InternalCall)"
@@ -1134,7 +1114,7 @@ module NativeRuntimeTypeQCall =
                     retType
                     (CliType.ObjectRef (Some runtimeTypeAddr))
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | "ModuleHandle_ResolveMethod",
           "System.Private.CoreLib",
           "System",
@@ -1358,7 +1338,7 @@ module NativeRuntimeTypeQCall =
             let state =
                 IlMachineState.pushToEvalStack (CliType.ValueType handleValue) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | "RuntimeTypeHandle_GetFields",
           "System.Private.CoreLib",
           "System",
@@ -1453,7 +1433,7 @@ module NativeRuntimeTypeQCall =
             let state =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 result)) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | "RuntimeTypeHandle_GetInterfaces",
           "System.Private.CoreLib",
           "System",
@@ -1586,7 +1566,7 @@ module NativeRuntimeTypeQCall =
 
             if List.isEmpty interfaceHandles then
                 // Mirror CoreCLR: skip the allocation and leave the caller's `[]` local intact.
-                (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+                NativeHandlerResult.completed state |> Some
             else
                 let state, _, runtimeTypeElementHandle =
                     concretizeNonGenericCorelibType ctx.LoggerFactory ctx.BaseClassTypes state "System" "RuntimeType"
@@ -1626,5 +1606,5 @@ module NativeRuntimeTypeQCall =
                         retArray
                         (CliType.ObjectRef (Some arrayAddr))
 
-                (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+                NativeHandlerResult.completed state |> Some
         | _ -> None

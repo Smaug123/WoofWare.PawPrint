@@ -2,7 +2,7 @@ namespace WoofWare.PawPrint
 
 [<RequireQualifiedAccess>]
 module NativeMarshal =
-    let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
+    let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
 
@@ -22,8 +22,7 @@ module NativeMarshal =
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 state.Kernel.LastPInvokeError) ctx.Thread
-            |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.stepped
+            |> NativeHandlerResult.completed
             |> Some
         | "System.Private.CoreLib",
           "System.Runtime.InteropServices",
@@ -33,8 +32,7 @@ module NativeMarshal =
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 state.Kernel.LastSystemError) ctx.Thread
-            |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.stepped
+            |> NativeHandlerResult.completed
             |> Some
         | "System.Private.CoreLib",
           "System.Runtime.InteropServices",
@@ -45,13 +43,12 @@ module NativeMarshal =
             let error =
                 NativeCall.int32Argument "Marshal.SetLastPInvokeError" instruction.Arguments.[0]
 
-            (state.MapKernel (fun kernel ->
+            state.MapKernel (fun kernel ->
                 { kernel with
                     LastPInvokeError = error
                 }
-             ),
-             WhatWeDid.Executed)
-            |> ExecutionResult.stepped
+            )
+            |> NativeHandlerResult.completed
             |> Some
         | "System.Private.CoreLib",
           "System.Runtime.InteropServices",
@@ -62,17 +59,16 @@ module NativeMarshal =
             let error =
                 NativeCall.int32Argument "Marshal.SetLastSystemError" instruction.Arguments.[0]
 
-            (state.MapKernel (fun kernel ->
+            state.MapKernel (fun kernel ->
                 { kernel with
                     LastSystemError = error
                 }
-             ),
-             WhatWeDid.Executed)
-            |> ExecutionResult.stepped
+            )
+            |> NativeHandlerResult.completed
             |> Some
         | _ -> None
 
-    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : ExecutionResult option =
+    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
 
@@ -117,24 +113,8 @@ module NativeMarshal =
                 // `ArgumentException` (resource `IDS_CANNOT_MARSHAL`) for types it can't
                 // marshal as unmanaged structures when `throwIfNotMarshalable` is set.
                 // Mirror that with a guest exception so the caller's `try/catch` can handle it.
-                //
-                // `raiseRuntimeException` pushes the exception's ctor frame on top of the
-                // current (native) frame. The native dispatcher must NOT pop us via
-                // `returnStackFrame` on the way back: when the ctor returns, exception
-                // dispatch needs the native frame still present so it can be unwound while
-                // searching for a handler. Signal that by overriding the returned
-                // `WhatWeDid` with `SuspendedForManagedCall`, matching the same convention
-                // the dispatcher uses for native handlers that synchronously push a managed
-                // callee on top of themselves.
-                let state, _ =
-                    IlMachineStateExecution.raiseRuntimeException
-                        ctx.LoggerFactory
-                        ctx.BaseClassTypes
-                        ctx.BaseClassTypes.ArgumentException
-                        ctx.Thread
-                        state
-
-                (state, WhatWeDid.SuspendedForManagedCall) |> ExecutionResult.stepped |> Some
+                NativeHandlerResult.raiseException ctx.BaseClassTypes.ArgumentException state
+                |> Some
             | Result.Error (MarshalSizeError.NotMarshalable reason) ->
                 // `throwIfNotMarshalable=false` path: CoreCLR falls through to
                 // `MethodTable::GetNativeSize` and returns whatever the type loader recorded.
@@ -151,5 +131,5 @@ module NativeMarshal =
                 let state =
                     IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 size.Size)) ctx.Thread state
 
-                (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+                NativeHandlerResult.completed state |> Some
         | _ -> None

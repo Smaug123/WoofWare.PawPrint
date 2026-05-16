@@ -14,7 +14,7 @@ module NativeMonitor =
             Some ()
         | _ -> None
 
-    let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
+    let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
 
@@ -33,6 +33,7 @@ module NativeMonitor =
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) ->
             System_Threading_Monitor.TryEnter_FastPath ctx.BaseClassTypes ctx.Thread state
+            |> NativeHandlerResult.ofExecutionResult
             |> Some
         | "System.Private.CoreLib",
           "System.Threading",
@@ -42,6 +43,7 @@ module NativeMonitor =
             ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Returns (MonitorNestedEnum state.ConcreteTypes "EnterHelperResult") ->
             System_Threading_Monitor.TryEnter_FastPath_WithTimeout ctx.BaseClassTypes ctx.Thread state
+            |> NativeHandlerResult.ofExecutionResult
             |> Some
         | "System.Private.CoreLib",
           "System.Threading",
@@ -50,6 +52,7 @@ module NativeMonitor =
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ],
           MethodReturnType.Returns (MonitorNestedEnum state.ConcreteTypes "LeaveHelperAction") ->
             System_Threading_Monitor.Exit_FastPath ctx.BaseClassTypes ctx.Thread state
+            |> NativeHandlerResult.ofExecutionResult
             |> Some
         | "System.Private.CoreLib",
           "System.Threading",
@@ -58,6 +61,7 @@ module NativeMonitor =
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) ->
             System_Threading_Monitor.IsEnteredNative ctx.BaseClassTypes ctx.Thread state
+            |> NativeHandlerResult.ofExecutionResult
             |> Some
         | _ -> None
 
@@ -80,7 +84,7 @@ module NativeMonitor =
         | CliType.ObjectRef None -> failwith $"%s{operation}: ObjectHandleOnStack pointed to a null object reference"
         | other -> failwith $"%s{operation}: expected ObjectRef in ObjectHandleOnStack, got %O{other}"
 
-    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : ExecutionResult option =
+    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
 
@@ -145,7 +149,7 @@ module NativeMonitor =
             let state =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 1)) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
 
         | "Monitor_Pulse",
           "System.Private.CoreLib",
@@ -167,7 +171,7 @@ module NativeMonitor =
                 addressFromObjectHandle operation ctx.BaseClassTypes state instruction.Arguments.[0]
 
             let state = SyncBlockMonitor.pulse ctx.Thread addr state
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
 
         | "Monitor_PulseAll",
           "System.Private.CoreLib",
@@ -189,6 +193,6 @@ module NativeMonitor =
                 addressFromObjectHandle operation ctx.BaseClassTypes state instruction.Arguments.[0]
 
             let state = SyncBlockMonitor.pulseAll ctx.Thread addr state
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
 
         | _ -> None

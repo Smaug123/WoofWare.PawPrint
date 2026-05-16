@@ -482,7 +482,7 @@ module NativeCall =
 
             assemblyNameOfHandle concreteTypeHandle
 
-    let failUnimplemented (ctx : NativeCallContext) : ExecutionResult =
+    let failUnimplemented (ctx : NativeCallContext) : NativeHandlerResult =
         let instruction = ctx.Instruction
         let state = ctx.State
 

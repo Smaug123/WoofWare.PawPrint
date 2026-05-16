@@ -575,7 +575,7 @@ public class DerivedWithField : BaseWithField
 
         let state =
             match NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_GetFields" ctx with
-            | Some (ExecutionResult.Stepped (state, WhatWeDid.Executed, _)) -> state
+            | Some (NativeHandlerResult.Completed (state, _)) -> state
             | Some result -> failwith $"unexpected RuntimeTypeHandle_GetFields execution result: %O{result}"
             | None -> failwith "RuntimeTypeHandle_GetFields did not match"
 
@@ -647,7 +647,7 @@ public class DerivedWithField : BaseWithField
 
         let state =
             match NativeRuntimeFieldHandle.tryExecute ctx with
-            | Some (ExecutionResult.Stepped (state, WhatWeDid.Executed, _)) -> state
+            | Some (NativeHandlerResult.Completed (state, _)) -> state
             | Some result -> failwith $"unexpected RuntimeFieldHandle.GetAttributes execution result: %O{result}"
             | None -> failwith "RuntimeFieldHandle.GetAttributes did not match"
 
