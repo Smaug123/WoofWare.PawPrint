@@ -56,11 +56,19 @@ module TestWaitHandle =
         match Map.find id state.Kernel.WaitHandles with
         | WaitHandleState.Semaphore s -> s
         | WaitHandleState.Mutex _ -> failwith "expected a Semaphore handle but got a Mutex"
+        | WaitHandleState.Event _ -> failwith "expected a Semaphore handle but got an Event"
 
     let private mutexOf (id : WaitHandleId) (state : IlMachineState) : MutexState =
         match Map.find id state.Kernel.WaitHandles with
         | WaitHandleState.Mutex m -> m
         | WaitHandleState.Semaphore _ -> failwith "expected a Mutex handle but got a Semaphore"
+        | WaitHandleState.Event _ -> failwith "expected a Mutex handle but got an Event"
+
+    let private eventOf (id : WaitHandleId) (state : IlMachineState) : EventState =
+        match Map.find id state.Kernel.WaitHandles with
+        | WaitHandleState.Event e -> e
+        | WaitHandleState.Semaphore _ -> failwith "expected an Event handle but got a Semaphore"
+        | WaitHandleState.Mutex _ -> failwith "expected an Event handle but got a Mutex"
 
     let private acquired (outcome : WaitHandle.WaitOutcome) : IlMachineState =
         match outcome with
@@ -1145,3 +1153,566 @@ module TestWaitHandle =
             Assert.Throws<System.Exception> (fun () -> WaitHandle.releaseMutex t0 id state |> ignore)
 
         exn.Message |> shouldContainText "not registered"
+
+    // -------------------------------------------------------------------
+    // Event — create, set, reset, wait, close
+    // -------------------------------------------------------------------
+
+    [<Test>]
+    let ``createEvent Manual unsignalled starts with empty queue and Signaled=false`` () : unit =
+        let state = baseState ()
+        let id, state = WaitHandle.createEvent false EventResetMode.Manual state
+        let e = eventOf id state
+        e.Mode |> shouldEqual EventResetMode.Manual
+        e.Signaled |> shouldEqual false
+        e.WaitQueue |> shouldEqual []
+
+    [<Test>]
+    let ``createEvent Manual signalled starts Signaled=true with empty queue`` () : unit =
+        let state = baseState ()
+        let id, state = WaitHandle.createEvent true EventResetMode.Manual state
+        let e = eventOf id state
+        e.Mode |> shouldEqual EventResetMode.Manual
+        e.Signaled |> shouldEqual true
+        e.WaitQueue |> shouldEqual []
+
+    [<Test>]
+    let ``createEvent Auto unsignalled starts with empty queue and Signaled=false`` () : unit =
+        let state = baseState ()
+        let id, state = WaitHandle.createEvent false EventResetMode.Auto state
+        let e = eventOf id state
+        e.Mode |> shouldEqual EventResetMode.Auto
+        e.Signaled |> shouldEqual false
+        e.WaitQueue |> shouldEqual []
+
+    [<Test>]
+    let ``createEvent Auto signalled starts Signaled=true with empty queue`` () : unit =
+        let state = baseState ()
+        let id, state = WaitHandle.createEvent true EventResetMode.Auto state
+        let e = eventOf id state
+        e.Mode |> shouldEqual EventResetMode.Auto
+        e.Signaled |> shouldEqual true
+        e.WaitQueue |> shouldEqual []
+
+    [<Test>]
+    let ``createEvent mints distinct ids`` () : unit =
+        let state = baseState ()
+        let id1, state = WaitHandle.createEvent false EventResetMode.Manual state
+        let id2, state = WaitHandle.createEvent true EventResetMode.Auto state
+        let id3, _ = WaitHandle.createEvent false EventResetMode.Manual state
+
+        id1 |> shouldNotEqual id2
+        id1 |> shouldNotEqual id3
+        id2 |> shouldNotEqual id3
+
+    [<Test>]
+    let ``minted event ids are never zero (BCL OOM guard never fires)`` () : unit =
+        let state = baseState ()
+        let id, _ = WaitHandle.createEvent false EventResetMode.Manual state
+        let (WaitHandleId i) = id
+        i |> shouldNotEqual 0
+
+    [<Test>]
+    let ``event ids interleave with semaphore + mutex ids on the shared counter`` () : unit =
+        let state = baseState () |> withThreads [ t0 ]
+        let semId, state = WaitHandle.createSemaphore 0 1 state
+        let evId1, state = WaitHandle.createEvent false EventResetMode.Manual state
+        let mutexId, state = WaitHandle.createMutex false t0 state
+        let evId2, _ = WaitHandle.createEvent true EventResetMode.Auto state
+
+        semId |> shouldNotEqual evId1
+        evId1 |> shouldNotEqual mutexId
+        mutexId |> shouldNotEqual evId2
+        evId1 |> shouldNotEqual evId2
+
+    // ---- waitOne ----
+
+    [<Test>]
+    let ``waitOne on a signalled Manual event acquires without clearing the signal`` () : unit =
+        let state = baseState () |> withThreads [ t0 ]
+        let id, state = WaitHandle.createEvent true EventResetMode.Manual state
+
+        let state = WaitHandle.waitOne t0 id state |> acquired
+
+        let e = eventOf id state
+        e.Signaled |> shouldEqual true
+        e.WaitQueue |> shouldEqual []
+        statusOf t0 state |> shouldEqual ThreadStatus.Runnable
+
+    [<Test>]
+    let ``waitOne on a signalled Auto event acquires and clears the signal`` () : unit =
+        let state = baseState () |> withThreads [ t0 ]
+        let id, state = WaitHandle.createEvent true EventResetMode.Auto state
+
+        let state = WaitHandle.waitOne t0 id state |> acquired
+
+        let e = eventOf id state
+        e.Signaled |> shouldEqual false
+        e.WaitQueue |> shouldEqual []
+        statusOf t0 state |> shouldEqual ThreadStatus.Runnable
+
+    [<Test>]
+    let ``waitOne on an unsignalled Manual event parks the caller at the FIFO tail`` () : unit =
+        let state = baseState () |> withThreads [ t0 ; t1 ; t2 ]
+        let id, state = WaitHandle.createEvent false EventResetMode.Manual state
+
+        let state = WaitHandle.waitOne t0 id state |> blocked
+        let state = WaitHandle.waitOne t1 id state |> blocked
+        let state = WaitHandle.waitOne t2 id state |> blocked
+
+        let e = eventOf id state
+        e.Signaled |> shouldEqual false
+        e.WaitQueue |> shouldEqual [ t0 ; t1 ; t2 ]
+        statusOf t0 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
+        statusOf t1 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
+        statusOf t2 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
+
+    [<Test>]
+    let ``waitOne on an unsignalled Auto event parks the caller at the FIFO tail`` () : unit =
+        let state = baseState () |> withThreads [ t0 ; t1 ; t2 ]
+        let id, state = WaitHandle.createEvent false EventResetMode.Auto state
+
+        let state = WaitHandle.waitOne t0 id state |> blocked
+        let state = WaitHandle.waitOne t1 id state |> blocked
+
+        let e = eventOf id state
+        e.Signaled |> shouldEqual false
+        e.WaitQueue |> shouldEqual [ t0 ; t1 ]
+
+    // ---- setEvent ----
+
+    [<Test>]
+    let ``setEvent on a Manual event with no waiters latches Signaled=true`` () : unit =
+        let state = baseState ()
+        let id, state = WaitHandle.createEvent false EventResetMode.Manual state
+
+        let state = WaitHandle.setEvent id state
+
+        let e = eventOf id state
+        e.Signaled |> shouldEqual true
+        e.WaitQueue |> shouldEqual []
+
+    [<Test>]
+    let ``setEvent on a Manual event wakes every parked waiter and latches Signaled=true`` () : unit =
+        let state = baseState () |> withThreads [ t0 ; t1 ; t2 ]
+        let id, state = WaitHandle.createEvent false EventResetMode.Manual state
+        let state = WaitHandle.waitOne t0 id state |> blocked
+        let state = WaitHandle.waitOne t1 id state |> blocked
+        let state = WaitHandle.waitOne t2 id state |> blocked
+
+        let state = WaitHandle.setEvent id state
+
+        let e = eventOf id state
+        e.Signaled |> shouldEqual true
+        e.WaitQueue |> shouldEqual []
+        statusOf t0 state |> shouldEqual ThreadStatus.Runnable
+        statusOf t1 state |> shouldEqual ThreadStatus.Runnable
+        statusOf t2 state |> shouldEqual ThreadStatus.Runnable
+
+    [<Test>]
+    let ``setEvent on an Auto event with no waiters latches Signaled=true`` () : unit =
+        let state = baseState ()
+        let id, state = WaitHandle.createEvent false EventResetMode.Auto state
+
+        let state = WaitHandle.setEvent id state
+
+        let e = eventOf id state
+        e.Signaled |> shouldEqual true
+        e.WaitQueue |> shouldEqual []
+
+    [<Test>]
+    let ``setEvent on an Auto event with waiters wakes only the FIFO head, Signaled stays false`` () : unit =
+        let state = baseState () |> withThreads [ t0 ; t1 ; t2 ]
+        let id, state = WaitHandle.createEvent false EventResetMode.Auto state
+        let state = WaitHandle.waitOne t0 id state |> blocked
+        let state = WaitHandle.waitOne t1 id state |> blocked
+        let state = WaitHandle.waitOne t2 id state |> blocked
+
+        let state = WaitHandle.setEvent id state
+
+        let e = eventOf id state
+        e.Signaled |> shouldEqual false
+        e.WaitQueue |> shouldEqual [ t1 ; t2 ]
+        statusOf t0 state |> shouldEqual ThreadStatus.Runnable
+        statusOf t1 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
+        statusOf t2 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
+
+    [<Test>]
+    let ``repeated setEvent on Auto with a queue drains FIFO one at a time`` () : unit =
+        let state = baseState () |> withThreads [ t0 ; t1 ; t2 ; t3 ]
+        let id, state = WaitHandle.createEvent false EventResetMode.Auto state
+        let state = WaitHandle.waitOne t0 id state |> blocked
+        let state = WaitHandle.waitOne t1 id state |> blocked
+        let state = WaitHandle.waitOne t2 id state |> blocked
+        let state = WaitHandle.waitOne t3 id state |> blocked
+
+        let state = WaitHandle.setEvent id state
+        (eventOf id state).WaitQueue |> shouldEqual [ t1 ; t2 ; t3 ]
+        statusOf t0 state |> shouldEqual ThreadStatus.Runnable
+
+        let state = WaitHandle.setEvent id state
+        (eventOf id state).WaitQueue |> shouldEqual [ t2 ; t3 ]
+        statusOf t1 state |> shouldEqual ThreadStatus.Runnable
+
+        let state = WaitHandle.setEvent id state
+        (eventOf id state).WaitQueue |> shouldEqual [ t3 ]
+        statusOf t2 state |> shouldEqual ThreadStatus.Runnable
+
+        let state = WaitHandle.setEvent id state
+        (eventOf id state).WaitQueue |> shouldEqual []
+        statusOf t3 state |> shouldEqual ThreadStatus.Runnable
+        // Queue drained; the latched signal should now be false (the
+        // last setEvent woke t3 directly rather than latching).
+        (eventOf id state).Signaled |> shouldEqual false
+
+    [<Test>]
+    let ``setEvent on an already-signalled Manual event is idempotent`` () : unit =
+        let state = baseState ()
+        let id, state = WaitHandle.createEvent true EventResetMode.Manual state
+        let before = eventOf id state
+
+        let state = WaitHandle.setEvent id state
+
+        eventOf id state |> shouldEqual before
+
+    [<Test>]
+    let ``setEvent on an already-signalled Auto event is idempotent`` () : unit =
+        let state = baseState ()
+        let id, state = WaitHandle.createEvent true EventResetMode.Auto state
+        let before = eventOf id state
+
+        let state = WaitHandle.setEvent id state
+
+        eventOf id state |> shouldEqual before
+
+    [<Test>]
+    let ``Auto event: setEvent then waitOne acquires and clears the signal`` () : unit =
+        let state = baseState () |> withThreads [ t0 ]
+        let id, state = WaitHandle.createEvent false EventResetMode.Auto state
+        let state = WaitHandle.setEvent id state
+        (eventOf id state).Signaled |> shouldEqual true
+
+        let state = WaitHandle.waitOne t0 id state |> acquired
+
+        let e = eventOf id state
+        e.Signaled |> shouldEqual false
+        statusOf t0 state |> shouldEqual ThreadStatus.Runnable
+
+    // ---- resetEvent ----
+
+    [<Test>]
+    let ``resetEvent clears Signaled on a signalled Manual event`` () : unit =
+        let state = baseState ()
+        let id, state = WaitHandle.createEvent true EventResetMode.Manual state
+
+        let state = WaitHandle.resetEvent id state
+
+        (eventOf id state).Signaled |> shouldEqual false
+
+    [<Test>]
+    let ``resetEvent clears Signaled on a signalled Auto event`` () : unit =
+        let state = baseState ()
+        let id, state = WaitHandle.createEvent true EventResetMode.Auto state
+
+        let state = WaitHandle.resetEvent id state
+
+        (eventOf id state).Signaled |> shouldEqual false
+
+    [<Test>]
+    let ``resetEvent on an already-unsignalled event is idempotent`` () : unit =
+        let state = baseState ()
+        let id, state = WaitHandle.createEvent false EventResetMode.Manual state
+        let before = eventOf id state
+
+        let state = WaitHandle.resetEvent id state
+
+        eventOf id state |> shouldEqual before
+
+    [<Test>]
+    let ``resetEvent on an unsignalled Manual event with parked waiters does not touch the queue`` () : unit =
+        let state = baseState () |> withThreads [ t0 ; t1 ]
+        let id, state = WaitHandle.createEvent false EventResetMode.Manual state
+        let state = WaitHandle.waitOne t0 id state |> blocked
+        let state = WaitHandle.waitOne t1 id state |> blocked
+
+        let state = WaitHandle.resetEvent id state
+
+        let e = eventOf id state
+        e.Signaled |> shouldEqual false
+        e.WaitQueue |> shouldEqual [ t0 ; t1 ]
+        statusOf t0 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
+        statusOf t1 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
+
+    // ---- tryWaitOne ----
+
+    [<Test>]
+    let ``tryWaitOne on a signalled Manual event acquires without clearing the signal`` () : unit =
+        let state = baseState () |> withThreads [ t0 ]
+        let id, state = WaitHandle.createEvent true EventResetMode.Manual state
+
+        let state = WaitHandle.tryWaitOne t0 id state |> tryAcquired
+
+        (eventOf id state).Signaled |> shouldEqual true
+
+    [<Test>]
+    let ``tryWaitOne on a signalled Auto event acquires and clears the signal`` () : unit =
+        let state = baseState () |> withThreads [ t0 ]
+        let id, state = WaitHandle.createEvent true EventResetMode.Auto state
+
+        let state = WaitHandle.tryWaitOne t0 id state |> tryAcquired
+
+        (eventOf id state).Signaled |> shouldEqual false
+
+    [<Test>]
+    let ``tryWaitOne on an unsignalled event reports TimedOut without parking`` () : unit =
+        let state = baseState () |> withThreads [ t0 ]
+        let id, state = WaitHandle.createEvent false EventResetMode.Auto state
+
+        let state = WaitHandle.tryWaitOne t0 id state |> timedOut
+
+        let e = eventOf id state
+        e.WaitQueue |> shouldEqual []
+        statusOf t0 state |> shouldEqual ThreadStatus.Runnable
+
+    // ---- close ----
+
+    [<Test>]
+    let ``close removes a quiescent unsignalled event from the registry`` () : unit =
+        let state = baseState ()
+        let id, state = WaitHandle.createEvent false EventResetMode.Manual state
+
+        let state = WaitHandle.close id state
+
+        Map.containsKey id state.Kernel.WaitHandles |> shouldEqual false
+
+    [<Test>]
+    let ``close removes a quiescent signalled event from the registry`` () : unit =
+        let state = baseState ()
+        let id, state = WaitHandle.createEvent true EventResetMode.Auto state
+
+        let state = WaitHandle.close id state
+
+        Map.containsKey id state.Kernel.WaitHandles |> shouldEqual false
+
+    [<Test>]
+    let ``close fails loud on an event with parked waiters`` () : unit =
+        let state = baseState () |> withThreads [ t0 ]
+        let id, state = WaitHandle.createEvent false EventResetMode.Manual state
+        let state = WaitHandle.waitOne t0 id state |> blocked
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () -> WaitHandle.close id state |> ignore)
+
+        exn.Message |> shouldContainText "parked"
+
+    // ---- cross-kind safety ----
+
+    [<Test>]
+    let ``setEvent on a semaphore id fails loud`` () : unit =
+        let state = baseState ()
+        let id, state = WaitHandle.createSemaphore 1 5 state
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () -> WaitHandle.setEvent id state |> ignore)
+
+        exn.Message |> shouldContainText "Semaphore"
+
+    [<Test>]
+    let ``setEvent on a mutex id fails loud`` () : unit =
+        let state = baseState () |> withThreads [ t0 ]
+        let id, state = WaitHandle.createMutex false t0 state
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () -> WaitHandle.setEvent id state |> ignore)
+
+        exn.Message |> shouldContainText "Mutex"
+
+    [<Test>]
+    let ``resetEvent on a semaphore id fails loud`` () : unit =
+        let state = baseState ()
+        let id, state = WaitHandle.createSemaphore 1 5 state
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () -> WaitHandle.resetEvent id state |> ignore)
+
+        exn.Message |> shouldContainText "Semaphore"
+
+    [<Test>]
+    let ``resetEvent on a mutex id fails loud`` () : unit =
+        let state = baseState () |> withThreads [ t0 ]
+        let id, state = WaitHandle.createMutex false t0 state
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () -> WaitHandle.resetEvent id state |> ignore)
+
+        exn.Message |> shouldContainText "Mutex"
+
+    [<Test>]
+    let ``releaseSemaphore on an event id fails loud`` () : unit =
+        let state = baseState ()
+        let id, state = WaitHandle.createEvent false EventResetMode.Manual state
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () -> WaitHandle.releaseSemaphore id 1 state |> ignore)
+
+        exn.Message |> shouldContainText "Event"
+
+    [<Test>]
+    let ``releaseMutex on an event id fails loud`` () : unit =
+        let state = baseState () |> withThreads [ t0 ]
+        let id, state = WaitHandle.createEvent false EventResetMode.Manual state
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () -> WaitHandle.releaseMutex t0 id state |> ignore)
+
+        exn.Message |> shouldContainText "Event"
+
+    [<Test>]
+    let ``waitOnePrioritized on an event id fails loud`` () : unit =
+        let state = baseState () |> withThreads [ t0 ]
+        let id, state = WaitHandle.createEvent false EventResetMode.Manual state
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () -> WaitHandle.waitOnePrioritized t0 id state |> ignore)
+
+        exn.Message |> shouldContainText "Event"
+
+    // ---- use-after-free ----
+
+    [<Test>]
+    let ``setEvent on a closed event fails loud (use-after-free)`` () : unit =
+        let state = baseState ()
+        let id, state = WaitHandle.createEvent false EventResetMode.Manual state
+        let state = WaitHandle.close id state
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () -> WaitHandle.setEvent id state |> ignore)
+
+        exn.Message |> shouldContainText "not registered"
+
+    [<Test>]
+    let ``resetEvent on a closed event fails loud (use-after-free)`` () : unit =
+        let state = baseState ()
+        let id, state = WaitHandle.createEvent false EventResetMode.Manual state
+        let state = WaitHandle.close id state
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () -> WaitHandle.resetEvent id state |> ignore)
+
+        exn.Message |> shouldContainText "not registered"
+
+    [<Test>]
+    let ``waitOne on a closed event fails loud (use-after-free)`` () : unit =
+        let state = baseState () |> withThreads [ t0 ]
+        let id, state = WaitHandle.createEvent false EventResetMode.Manual state
+        let state = WaitHandle.close id state
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () -> WaitHandle.waitOne t0 id state |> ignore)
+
+        exn.Message |> shouldContainText "not registered"
+
+    [<Test>]
+    let ``tryWaitOne on a closed event fails loud (use-after-free)`` () : unit =
+        let state = baseState () |> withThreads [ t0 ]
+        let id, state = WaitHandle.createEvent false EventResetMode.Manual state
+        let state = WaitHandle.close id state
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () -> WaitHandle.tryWaitOne t0 id state |> ignore)
+
+        exn.Message |> shouldContainText "not registered"
+
+    // ---- property: invariant `Signaled ⇒ WaitQueue = []` ----
+
+    [<RequireQualifiedAccess>]
+    type private EventOp =
+        | Wait of ThreadId
+        | Set
+        | Reset
+
+    let private applyEventOp (id : WaitHandleId) (op : EventOp) (state : IlMachineState) : IlMachineState =
+        match op with
+        | EventOp.Wait tid ->
+            // A thread that is already blocked cannot wait again; in
+            // PawPrint that would re-park it which is a guest bug. Skip.
+            match statusOf tid state with
+            | ThreadStatus.BlockedOnWaitHandle _ -> state
+            | _ ->
+                match WaitHandle.waitOne tid id state with
+                | WaitHandle.WaitOutcome.Acquired s
+                | WaitHandle.WaitOutcome.Blocked s -> s
+                | WaitHandle.WaitOutcome.AcquiredAbandoned _ ->
+                    failwith "Event waitOne unexpectedly produced AcquiredAbandoned"
+        | EventOp.Set -> WaitHandle.setEvent id state
+        | EventOp.Reset -> WaitHandle.resetEvent id state
+
+    let private runEventScript
+        (mode : EventResetMode)
+        (initialSignal : bool)
+        (threadCount : int)
+        (script : EventOp list)
+        : EventState
+        =
+        let threads = [ 0 .. threadCount - 1 ] |> List.map ThreadId
+        let state = baseState () |> withThreads threads
+        let id, state = WaitHandle.createEvent initialSignal mode state
+
+        let final = script |> List.fold (fun s op -> applyEventOp id op s) state
+
+        eventOf id final
+
+    [<Test>]
+    let ``Property: Manual event invariant Signaled implies empty WaitQueue holds across any script`` () : unit =
+        let property (PositiveInt threadCountRaw) (NonNegativeInt seedRaw) : bool =
+            let threadCount = 1 + (threadCountRaw % 6)
+            let rng = System.Random seedRaw
+            let scriptLen = 30
+
+            let threads = [ 0 .. threadCount - 1 ] |> List.map ThreadId
+
+            let script =
+                [
+                    for _ in 1..scriptLen do
+                        let r = rng.Next 3
+
+                        if r = 0 then
+                            yield EventOp.Wait (List.item (rng.Next threadCount) threads)
+                        elif r = 1 then
+                            yield EventOp.Set
+                        else
+                            yield EventOp.Reset
+                ]
+
+            let e = runEventScript EventResetMode.Manual false threadCount script
+            // Signaled ⇒ WaitQueue = []
+            not e.Signaled || e.WaitQueue = []
+
+        Check.One (config, property)
+
+    [<Test>]
+    let ``Property: Auto event invariant Signaled implies empty WaitQueue holds across any script`` () : unit =
+        let property (PositiveInt threadCountRaw) (NonNegativeInt seedRaw) : bool =
+            let threadCount = 1 + (threadCountRaw % 6)
+            let rng = System.Random seedRaw
+            let scriptLen = 30
+
+            let threads = [ 0 .. threadCount - 1 ] |> List.map ThreadId
+
+            let script =
+                [
+                    for _ in 1..scriptLen do
+                        let r = rng.Next 3
+
+                        if r = 0 then
+                            yield EventOp.Wait (List.item (rng.Next threadCount) threads)
+                        elif r = 1 then
+                            yield EventOp.Set
+                        else
+                            yield EventOp.Reset
+                ]
+
+            let e = runEventScript EventResetMode.Auto false threadCount script
+            not e.Signaled || e.WaitQueue = []
+
+        Check.One (config, property)

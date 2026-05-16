@@ -92,6 +92,16 @@ module NativeQCall =
             // in `WaitHandle.fs`.
             "PAL_CreateMutexW", NativeWaitHandle.tryExecuteQCall "PAL_CreateMutexW"
             "ReleaseMutex", NativeWaitHandle.tryExecuteQCall "ReleaseMutex"
+            // `EventWaitHandle.Windows.cs` runs on .NET 10 CoreCLR
+            // regardless of host; `Libraries.Kernel32 = RuntimeHelpers
+            // .QCall` routes the three Kernel32 LibraryImports
+            // (`CreateEventEx` / `SetEvent` / `ResetEvent`) to the
+            // runtime as QCalls under their Win32 wide-string entry
+            // points. Both `Manual` and `Auto` reset modes dispatch into
+            // the deterministic state machine in `WaitHandle.fs`.
+            "CreateEventExW", NativeWaitHandle.tryExecuteQCall "CreateEventExW"
+            "SetEvent", NativeWaitHandle.tryExecuteQCall "SetEvent"
+            "ResetEvent", NativeWaitHandle.tryExecuteQCall "ResetEvent"
         ]
         |> Map.ofList
 
