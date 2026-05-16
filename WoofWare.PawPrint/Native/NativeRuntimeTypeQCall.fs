@@ -119,28 +119,13 @@ module NativeRuntimeTypeQCall =
                     operation
                     (instruction.Arguments.[1] |> EvalStackValue.ofCliType)
 
-            // Non-Closed handles correspond to CoreCLR TypeDescs (generic parameters, open
-            // generic definitions). The full cast oracle for those involves variance/identity
-            // rules that PawPrint does not yet model; fail loudly so the missing case surfaces
-            // rather than silently returning a wrong answer.
-            let toConcreteHandle (label : string) (target : RuntimeTypeHandleTarget) : ConcreteTypeHandle =
-                match target with
-                | RuntimeTypeHandleTarget.Closed handle -> handle
-                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
-                    failwith
-                        $"TODO: %s{operation} for open generic %s{label} type definition %O{identity}; need to model variance/identity rules"
-                | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
-                    failwith
-                        $"TODO: %s{operation} for generic parameter %s{label} #%i{position} of %O{declaringType.TypeDefinition.Get}"
-                | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
-                    failwith
-                        $"TODO: %s{operation} for method generic parameter %s{label} #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
-
-            let fromHandle = toConcreteHandle "from" fromTarget
-            let toHandle = toConcreteHandle "to" toTarget
-
             let state, isAssignable =
-                IlMachineState.isConcreteTypeAssignableTo ctx.LoggerFactory ctx.BaseClassTypes state fromHandle toHandle
+                IlMachineState.isRuntimeTypeHandleTargetAssignableTo
+                    ctx.LoggerFactory
+                    ctx.BaseClassTypes
+                    state
+                    fromTarget
+                    toTarget
 
             // Interop.BOOL is int-backed with FALSE = 0 and TRUE = 1, so a raw Int32 is the
             // correct representation on the eval stack.
