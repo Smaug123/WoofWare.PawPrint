@@ -19,14 +19,11 @@ module TestPureCases =
         [
             "AdvancedStructLayout.cs" // past MarshalNative_SizeOfHelper for ByValTStr and SystemNative_Malloc / SystemNative_Free / Marshal.AllocHGlobal / FreeHGlobal; now blocked downstream at the unimplemented MarshalNative_TryGetStructMarshalStub QCall (CoreLib's Marshal.StructureToPtr path)
             "MarshalSizeOfAutoLayoutStruct.cs" // refusing to compute unmanaged marshalled size because LayoutKind.Auto but throwIfNotMarshalable=true
-            "LdtokenField.cs" // past InternalCall System.Buffer::BulkMoveWithWriteBarrierInternal; now blocked during reflection-cache update because Buffer's byte-wise copy refuses to byte-view object-reference array cells (`validateByteAddressableCell` rejects ObjectRef storage)
-            "RuntimeFieldHandleGetUtf8Name.cs" // exercises RuntimeFieldHandle::GetUtf8NameInternal, RuntimeTypeHandle::GetInterfaces, and Volatile.Write of object refs successfully; now blocked at the next step in the reflection-cache copy by `validateByteAddressableCell` refusing to byte-view object-reference cells inside Buffer::BulkMoveWithWriteBarrierInternal
-            "RuntimeTypeGetInterfacesInherited.cs" // exercises the QCall's inherited-base + transitive-interface walk; now blocked during the reflection-cache update by `validateByteAddressableCell` refusing to byte-view object-reference cells inside Buffer::BulkMoveWithWriteBarrierInternal
+            "LdtokenField.cs" // past Buffer's reflection-cache copy (cell-aware path); now blocked on the next reflection-cache step at unimplemented InternalCall RuntimeFieldHandle::GetApproxDeclaringMethodTable
             "IsAssignableFromOpenGenericDefinition.cs" // TypeHandle.CanCastTo_NoCacheLookup for open generic
             "InterfaceDispatch.cs" // expected: 0; was: 1024
-            "ComplexTryCatch.cs" // refusing byte view over value type containing object references in an array
             "RethrowStackTraceBoundary.cs" // expected: 0; was: 11
-            "Threads.cs" // blocked by pointer arithmetic over a generated Data field after Interlocked.CompareExchange
+            "Threads.cs" // past Buffer's reflection-cache copy (cell-aware path); now blocked on unimplemented QCall ThreadNative_SetIsBackground
             "IsAssignableToBasic.cs" // MethodTable field projection for MethodTable::PerInstInfo
             "RuntimeTypeHandleGetInstantiationOpenGeneric.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringMethodForGenericParameter
             "IndirectMemoryOperations.cs" // raise IndexOutOfRangeException: array index 8 >= length 3 on array
