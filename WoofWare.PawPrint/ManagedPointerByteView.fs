@@ -42,27 +42,6 @@ module ManagedPointerByteView =
         let handle = arrayElementHandle obj
         AllConcreteTypes.lookup handle state.ConcreteTypes
 
-    /// `true` when the array's element handle is a reference type. Structural
-    /// array element handles (`OneDimArrayZero`, `Array`) are themselves
-    /// reference types; structural pointer/byref/fnptr handles are not. For
-    /// `Concrete` element handles, dispatch through the loaded `TypeInfo`.
-    let private isReferenceElementHandle
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        (handle : ConcreteTypeHandle)
-        : bool
-        =
-        match handle with
-        | ConcreteTypeHandle.OneDimArrayZero _
-        | ConcreteTypeHandle.Array _ -> true
-        | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _
-        | ConcreteTypeHandle.FunctionPointer _ -> false
-        | ConcreteTypeHandle.Concrete _ ->
-            match IlMachineState.tryGetConcreteTypeInfo state handle with
-            | Some (_, typeInfo) -> DumpedAssembly.isReferenceType baseClassTypes state._LoadedAssemblies typeInfo
-            | None -> failwith $"isReferenceElementHandle: concrete type handle %O{handle} has no TypeDef row"
-
     let arrayBytePosition
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -130,6 +109,18 @@ module ManagedPointerByteView =
     /// semantics, matching `Unsafe.Add<T>` intrinsic behaviour. Apply at the
     /// byref-to-native-pointer transition (`Conv_U`, `Conv_I`).
     ///
+    /// Reference-typed element arrays (e.g. `object[]`) are anchored too: the
+    /// C# `fixed (object* p = arr) { p[k] = ...; }` pattern lowers to a
+    /// byref-to-native-pointer transition followed by `sizeof object; add;
+    /// stind.ref`, so without the anchor the trailing `add` would be
+    /// element-stride and produce out-of-bounds element indices. The cells
+    /// themselves are non-byte-addressable (`ObjectRef`); cell-aligned typed
+    /// reads route through `readArrayBytesAs`'s shape-matching short-circuit
+    /// and cell-aligned typed writes route through
+    /// `tryWriteArrayElementPrecise`, both of which preserve identity.
+    /// Mid-cell access would still fail at the byte-scatter walks, which is
+    /// correct — reference cells aren't byte-addressable.
+    ///
     /// When the array element handle is structural (e.g. `int*[]`,
     /// `delegate*<...>[]`), the element type is not registered in
     /// `AllConcreteTypes` and the cells themselves carry non-byte-addressable
@@ -141,15 +132,6 @@ module ManagedPointerByteView =
     /// Subsequent pointer arithmetic on the structural-element byref will
     /// still use element-stride semantics — extending byte-stride support to
     /// pointer-element arrays is future work.
-    ///
-    /// Reference-typed element arrays (e.g. `object[]`) are also left
-    /// un-anchored: `stind.ref` through a byte-view byref would try to
-    /// byte-flatten the `ObjectRef` payload, which the byte-scatter path
-    /// rejects. Keeping reference arrays on the typed-cell path preserves
-    /// the existing `fixed (object* p = arr) { *p = value; }` shape;
-    /// byte-stride pointer arithmetic over reference arrays would also
-    /// have no useful semantics, since reference cells aren't
-    /// byte-addressable.
     let anchorByteViewIfPlainArrayByref
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -161,10 +143,7 @@ module ManagedPointerByteView =
             let arrObj = state.ManagedHeap.Arrays.[arr]
             let handle = arrayElementHandle arrObj
 
-            if isReferenceElementHandle baseClassTypes state handle then
-                ptr
-            else
-                match AllConcreteTypes.lookup handle state.ConcreteTypes with
-                | Some elementType -> addByteOffset baseClassTypes state elementType 0 ptr
-                | None -> ptr
+            match AllConcreteTypes.lookup handle state.ConcreteTypes with
+            | Some elementType -> addByteOffset baseClassTypes state elementType 0 ptr
+            | None -> ptr
         | _ -> ptr

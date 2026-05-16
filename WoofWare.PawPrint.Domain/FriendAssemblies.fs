@@ -262,11 +262,9 @@ module FriendAssemblyName =
 
         if not defIsStrongNamed then
             false
-        else if
 
-            // CompareRefToDef name comparison.
-            not (namesEqual ref.Name def.Name)
-        then
+        // CompareRefToDef name comparison.
+        else if not (namesEqual ref.Name def.Name) then
             false
         else
 

@@ -200,9 +200,9 @@ public unsafe class FixedArrayPointerArithmetic
     // `fixed (object* p = arr) { *p = value; }` over a reference-type array
     // must remain a typed `ArrayElement` store: `stind.ref` over the native
     // pointer cannot byte-flatten an `ObjectRef`. The Conv_U/Conv_I anchor
-    // must therefore skip reference-typed element arrays — byte-stride
-    // pointer arithmetic over object cells would have no useful semantics
-    // anyway, since reference cells aren't byte-addressable.
+    // therefore lands a byte-view on the reference-array byref, but the
+    // cell-aligned dispatch in `tryWriteArrayElementPrecise` routes the
+    // store through `setArrayValue` and preserves the `ObjectRef` payload.
     public static int TestObjectArrayFixedStore()
     {
         object obj1 = new object();
@@ -214,6 +214,41 @@ public unsafe class FixedArrayPointerArithmetic
         }
         if (!object.ReferenceEquals(arr[0], obj2)) return 60;
         if (!object.ReferenceEquals(arr[1], obj1)) return 61;
+        return 0;
+    }
+
+    // `fixed (object* p = arr) { p[k]; p[k] = value; }` over a reference-type
+    // array exercises both `Ldind_ref`/`Stind_ref` and the byte-stride
+    // pointer arithmetic that `p[k]` lowers to (`sizeof object; mul; add`,
+    // or `sizeof object; add` for `k = 1`). Without the byte-view anchor on
+    // the reference-array byref, the trailing `add` would be element-stride
+    // and produce an out-of-bounds cell index, e.g. index 8 for `p[1]` on a
+    // length-3 array. The anchor makes the arithmetic byte-stride; cell-
+    // aligned reads land back on the right element through
+    // `readArrayBytesAs`'s `Rejected` short-circuit, and cell-aligned writes
+    // through `tryWriteArrayElementPrecise`.
+    public static int TestObjectArrayPointerArithmetic()
+    {
+        object obj0 = new object();
+        object obj1 = "hello";
+        object obj2 = new object();
+        object[] arr = new object[] { obj0, obj1, obj2 };
+        fixed (object* p = arr)
+        {
+            if (!object.ReferenceEquals(p[0], obj0)) return 100;
+            if (!object.ReferenceEquals(p[1], obj1)) return 101;
+            if (!object.ReferenceEquals(p[2], obj2)) return 102;
+
+            object replacement = "world";
+            p[1] = replacement;
+            if (!object.ReferenceEquals(p[1], replacement)) return 103;
+
+            p[2] = null;
+            if (p[2] != null) return 104;
+        }
+        if (!object.ReferenceEquals(arr[0], obj0)) return 105;
+        if (arr[1] as string != "world") return 106;
+        if (arr[2] != null) return 107;
         return 0;
     }
 
@@ -239,6 +274,8 @@ public unsafe class FixedArrayPointerArithmetic
         r = TestStructWithProvenanceFixedStore();
         if (r != 0) return r;
         r = TestObjectArrayFixedStore();
+        if (r != 0) return r;
+        r = TestObjectArrayPointerArithmetic();
         if (r != 0) return r;
         return 0;
     }
