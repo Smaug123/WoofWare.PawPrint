@@ -2528,6 +2528,7 @@ module NativeRuntimeType =
                         threadState
                         None
                         false
+                        false // wrapExceptionInTargetInvocation
                         state
 
                 ExecutionResult.stepped (state, WhatWeDid.SuspendedForManagedCall) |> Some

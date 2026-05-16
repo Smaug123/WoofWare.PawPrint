@@ -648,6 +648,7 @@ module internal UnaryMetadataCallOps =
                 threadState
                 None
                 false
+                false // wrapExceptionInTargetInvocation
                 state,
             WhatWeDid.Executed
         | FirstLoadThis state -> reinstallConstrained state, WhatWeDid.SuspendedForClassInit
@@ -1028,6 +1029,7 @@ module internal UnaryMetadataCallOps =
             threadState
             None
             false
+            false // wrapExceptionInTargetInvocation
             state,
         WhatWeDid.Executed
 

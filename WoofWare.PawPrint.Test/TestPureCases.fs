@@ -29,7 +29,6 @@ module TestPureCases =
             "Threads.cs" // blocked by pointer arithmetic over a generated Data field after Interlocked.CompareExchange
             "IsAssignableToBasic.cs" // MethodTable field projection for MethodTable::PerInstInfo
             "RuntimeTypeHandleGetInstantiationOpenGeneric.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringMethodForGenericParameter
-            "ActivatorCreateInstanceThrowingCtor.cs" // Expected: 0; was: 3
             "IndirectMemoryOperations.cs" // raise IndexOutOfRangeException: array index 8 >= length 3 on array
         ]
         |> Set.ofList

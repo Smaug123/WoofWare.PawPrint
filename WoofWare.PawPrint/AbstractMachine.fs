@@ -166,6 +166,7 @@ module AbstractMachine =
                     currentThreadState
                     originalCallSitePC
                     false
+                    false // wrapExceptionInTargetInvocation
                     state
 
             ExecutionResult.stepped (state, WhatWeDid.Executed)
