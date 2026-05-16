@@ -240,15 +240,34 @@ module NativeCustomAttribute =
                     failwith
                         $"TODO: %s{operation}: value-typed attribute %s{attrTypeInfo.Namespace}.%s{attrTypeInfo.Name} would need unboxing for `this` slot; CoreCLR's value-type branch is unreachable from the BCL filter and is not yet modelled here"
 
-                // Resolve the ctor metadata via the method-handle registry. The BCL handed us a
-                // RuntimeMethodInfoStub address; the registry maps it back to the canonical
-                // `MethodHandle` we minted when this ctor was first reflected, which carries
-                // the declaring type's concrete generics and the method's own generic args.
-                let methodHandle =
-                    MethodHandleRegistry.resolveMethodFromAddress ctorStubAddr state.MethodHandles
+                // Resolve the ctor metadata via the method-handle registry. We can't rely on the
+                // stub's heap address being in `MethodHandleToMethod`: only stubs allocated by
+                // `IlMachineState.getOrAllocateMethod` are registered that way. The real BCL path
+                // (`ModuleHandle.ResolveMethodHandle(...).GetMethodInfo()`) constructs the stub in
+                // managed code, so its address is unknown to the registry. The stub's `m_value`
+                // field (a `RuntimeMethodHandleInternal`) does, however, carry a registry id that
+                // the producing QCall minted — that's the canonical path, and it works for both
+                // origins.
+                let ctorStubObj = ManagedHeap.get ctorStubAddr state.ManagedHeap
+
+                let stubValueField =
+                    IlMachineState.requiredOwnInstanceFieldId state ctorStubObj.ConcreteType "m_value"
+
+                let stubMValue =
+                    AllocatedNonArrayObject.DereferenceFieldById stubValueField ctorStubObj
+
+                let methodRegistryId =
+                    NativeCall.methodHandleIdOfRuntimeMethodHandleInternal operation stubMValue
                     |> Option.defaultWith (fun () ->
                         failwith
-                            $"%s{operation}: RuntimeMethodInfoStub at %O{ctorStubAddr} did not resolve to a registered MethodHandle"
+                            $"%s{operation}: RuntimeMethodInfoStub at %O{ctorStubAddr} carried a null RuntimeMethodHandleInternal"
+                    )
+
+                let methodHandle =
+                    MethodHandleRegistry.resolveMethodFromId methodRegistryId state.MethodHandles
+                    |> Option.defaultWith (fun () ->
+                        failwith
+                            $"%s{operation}: RuntimeMethodHandleInternal id %d{methodRegistryId} (from stub at %O{ctorStubAddr}) did not resolve to a registered MethodHandle"
                     )
 
                 let ctorAssemblyName = methodHandle.GetAssemblyFullName ()
@@ -316,26 +335,13 @@ module NativeCustomAttribute =
                     failwith
                         $"%s{operation}: CustomAttrib blob declares zero named args but %d{blobBytes.Length - cursorAfterNamedArgs} byte(s) remain at offset %d{cursorAfterNamedArgs} (total %d{blobBytes.Length})"
 
-                let updatedCursor =
-                    ManagedPointerSource.Byref (
-                        ByrefRoot.ArrayElement (blobStartArr, blobStartIdx + cursorAfterNamedArgs),
-                        []
-                    )
-
-                let state =
-                    IlMachineState.writeManagedByrefWithBase
-                        ctx.BaseClassTypes
-                        state
-                        blobCursorSlot
-                        (CliType.RuntimePointer (CliRuntimePointer.Managed updatedCursor))
-
-                let state =
-                    IlMachineState.writeManagedByrefWithBase
-                        ctx.BaseClassTypes
-                        state
-                        namedArgsSlot
-                        (CliType.Numeric (CliNumericType.Int32 namedArgCount))
-
+                // Run type initialisation *before* writing back the blob cursor and named-arg
+                // count. If `ensureTypeInitialised` suspends for a static ctor (or a chain of
+                // them), the QCall frame is re-entered with an empty eval stack and the handler
+                // has to re-parse the blob from `*ppBlob`. Advancing the cursor first would mean
+                // the re-entered handler reads zero bytes (or the wrong bytes), so the writes
+                // must wait until we've committed to allocating the instance and calling the
+                // ctor.
                 let state, typeInit =
                     IlMachineStateExecution.ensureTypeInitialised
                         ctx.LoggerFactory
@@ -355,6 +361,26 @@ module NativeCustomAttribute =
                 | WhatWeDid.SuspendedForManagedCall ->
                     failwith "logic error: ensureTypeInitialised cannot suspend for an arbitrary managed call"
                 | WhatWeDid.Executed ->
+
+                let updatedCursor =
+                    ManagedPointerSource.Byref (
+                        ByrefRoot.ArrayElement (blobStartArr, blobStartIdx + cursorAfterNamedArgs),
+                        []
+                    )
+
+                let state =
+                    IlMachineState.writeManagedByrefWithBase
+                        ctx.BaseClassTypes
+                        state
+                        blobCursorSlot
+                        (CliType.RuntimePointer (CliRuntimePointer.Managed updatedCursor))
+
+                let state =
+                    IlMachineState.writeManagedByrefWithBase
+                        ctx.BaseClassTypes
+                        state
+                        namedArgsSlot
+                        (CliType.Numeric (CliNumericType.Int32 namedArgCount))
 
                 let state, allFields =
                     IlMachineState.collectAllInstanceFields

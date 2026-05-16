@@ -20,6 +20,21 @@ public sealed class MyAttribute : System.Attribute
 }
 """
 
+    /// Variant attribute whose declaring type has a non-trivial static initialiser, so that
+    /// the QCall's `ensureTypeInitialised` call returns `SuspendedForClassInit` on first
+    /// entry. Pins down the contract that the cursor / named-arg out-slots are *not* written
+    /// when class init suspends — otherwise the re-entered QCall would re-parse from the
+    /// wrong offset.
+    let private cctorAttributeSource =
+        """
+public sealed class CctorAttribute : System.Attribute
+{
+    private static readonly int Sentinel = ComputeSentinel();
+    public CctorAttribute(int x, string s) { }
+    private static int ComputeSentinel() => 7;
+}
+"""
+
     type private Fixture =
         {
             LoggerFactory : ILoggerFactory
@@ -249,11 +264,11 @@ public sealed class MyAttribute : System.Attribute
                 failwith
                     $"QCall entry point CustomAttribute_CreateCustomAttributeInstance was ambiguous on System.Reflection.CustomAttribute: %d{methods.Length} matches"
 
-    /// Compile MyAttribute, load corelib, find and concretize the QCall method and the
-    /// attribute type, allocate the RuntimeType and RuntimeMethodInfoStub for the attribute
-    /// + its ctor. Mirrors the state the BCL would have prepared by the time it reaches the
-    /// CreateCustomAttributeInstance QCall.
-    let private makeFixture () : Fixture =
+    /// Compile the given attribute source, load corelib, find and concretize the QCall method
+    /// and the named attribute type, allocate the RuntimeType and RuntimeMethodInfoStub for
+    /// the attribute + its ctor. Mirrors the state the BCL would have prepared by the time it
+    /// reaches the CreateCustomAttributeInstance QCall.
+    let private makeFixtureWith (attributeSource : string) (attributeTypeName : string) : Fixture =
         let image =
             Roslyn.compileAssembly
                 "CustomAttributeQCallTestAssembly"
@@ -303,7 +318,7 @@ public sealed class MyAttribute : System.Attribute
                 ImmutableArray.Empty
                 state
 
-        let attributeType = requiredTopLevelType guestAssembly "" "MyAttribute"
+        let attributeType = requiredTopLevelType guestAssembly "" attributeTypeName
 
         let state, attributeTypeHandle =
             concretizeTypeInfo loggerFactory baseClassTypes state attributeType
@@ -351,6 +366,9 @@ public sealed class MyAttribute : System.Attribute
             CtorStubAddr = ctorStubAddr
             State = state
         }
+
+    let private makeFixture () : Fixture =
+        makeFixtureWith attributeSource "MyAttribute"
 
     /// Build the seven-argument frame the QCall expects, install it on a fresh thread,
     /// and return the slot addresses the test will inspect after invocation.
@@ -569,3 +587,40 @@ public sealed class MyAttribute : System.Attribute
         // And the eval stack has been emptied.
         let threadState = state.ThreadState.[prep.Thread]
         threadState.MethodState.EvaluationStack.Values |> shouldEqual []
+
+    [<Test>]
+    let ``Class-init suspension leaves blob cursor and pcNamedArgs untouched`` () : unit =
+        // CctorAttribute has a static field initialiser, so the attribute type's cctor must
+        // run before the QCall can allocate the instance. The handler must therefore return
+        // `SuspendedForClassInit` *without* having written the blob cursor or named-arg count
+        // out-cells — when the cctor finishes and the QCall is re-entered, the BCL re-parses
+        // the blob from `*ppBlob`, and a prematurely-advanced cursor would feed it bytes that
+        // belong past the end of the blob.
+        let fixture = makeFixtureWith cctorAttributeSource "CctorAttribute"
+        let prep = prepareInvocation fixture
+
+        let result = invokeHandler fixture prep.Thread prep.State
+
+        let state =
+            match result with
+            | ExecutionResult.Stepped (state, WhatWeDid.SuspendedForClassInit, _) -> state
+            | other -> failwithf "Class-init suspension test expected SuspendedForClassInit, got %A" other
+
+        // The blob cursor cell must still be the starting byref into cell 0 of the blob.
+        match IlMachineState.getArrayValue prep.IntPtrArr 0 state with
+        | CliType.RuntimePointer (CliRuntimePointer.Managed (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr,
+                                                                                                                 idx),
+                                                                                         []))) ->
+            arr |> shouldEqual prep.BlobArr
+            idx |> shouldEqual 0
+        | other -> failwithf "Expected ppBlob cell to still point at blob[0] after suspension, got %A" other
+
+        // pcNamedArgs must still hold its zero-initialised default.
+        match IlMachineState.getArrayValue prep.NamedArgsArr 0 state with
+        | CliType.Numeric (CliNumericType.Int32 n) -> n |> shouldEqual 0
+        | other -> failwithf "Expected pcNamedArgs cell to still hold its initial zero, got %A" other
+
+        // The instance slot is still null too — phase 2 hasn't run.
+        match IlMachineState.getArrayValue prep.InstanceArr 0 state with
+        | CliType.ObjectRef None -> ()
+        | other -> failwithf "Expected instance slot to remain null after suspension, got %A" other
