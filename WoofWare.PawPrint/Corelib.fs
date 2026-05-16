@@ -118,6 +118,23 @@ module Corelib =
         let targetInvocationException =
             findCorelibType corelib "System.Reflection" "TargetInvocationException"
 
+        // The five interfaces in CoreCLR's `IsImplicitInterfaceOfSZArray` set.
+        // Their open-generic TypeDef rows live in System.Collections.Generic in
+        // the corelib; the metadata Name carries the backtick-arity suffix.
+        let iListGeneric = findCorelibType corelib "System.Collections.Generic" "IList`1"
+
+        let iEnumerableGeneric =
+            findCorelibType corelib "System.Collections.Generic" "IEnumerable`1"
+
+        let iCollectionGeneric =
+            findCorelibType corelib "System.Collections.Generic" "ICollection`1"
+
+        let iReadOnlyListGeneric =
+            findCorelibType corelib "System.Collections.Generic" "IReadOnlyList`1"
+
+        let iReadOnlyCollectionGeneric =
+            findCorelibType corelib "System.Collections.Generic" "IReadOnlyCollection`1"
+
         {
             Corelib = corelib
             String = stringType
@@ -170,6 +187,11 @@ module Corelib =
             ArgumentNullException = argumentNullException
             DateTime = dateTime
             TargetInvocationException = targetInvocationException
+            IListGeneric = iListGeneric
+            IEnumerableGeneric = iEnumerableGeneric
+            ICollectionGeneric = iCollectionGeneric
+            IReadOnlyListGeneric = iReadOnlyListGeneric
+            IReadOnlyCollectionGeneric = iReadOnlyCollectionGeneric
         }
 
     let concretizeAll

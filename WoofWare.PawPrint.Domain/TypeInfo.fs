@@ -238,6 +238,24 @@ type BaseClassTypes<'corelib> =
         /// DateTime field to `MARSHAL_TYPE_DATE` (8 bytes) before the AutoLayout rejection
         /// triggers; reproducing that requires identifying DateTime nominally at marshal time.
         DateTime : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        /// `System.Collections.Generic.IList<T>`. The open generic definition. Used by the
+        /// SZ-array → implicit-generic-interface carve-out (CoreCLR's
+        /// `IsImplicitInterfaceOfSZArray`): a single-dimensional zero-bound array
+        /// implements `IList<T>` for any element-compatible `T`, even though the metadata
+        /// of `System.Array` does not list it as an implemented interface.
+        IListGeneric : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        /// `System.Collections.Generic.IEnumerable<T>`. One of the five interfaces in the
+        /// SZ-array implicit-interface set.
+        IEnumerableGeneric : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        /// `System.Collections.Generic.ICollection<T>`. One of the five interfaces in the
+        /// SZ-array implicit-interface set.
+        ICollectionGeneric : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        /// `System.Collections.Generic.IReadOnlyList<T>`. One of the five interfaces in
+        /// the SZ-array implicit-interface set.
+        IReadOnlyListGeneric : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        /// `System.Collections.Generic.IReadOnlyCollection<T>`. One of the five interfaces
+        /// in the SZ-array implicit-interface set.
+        IReadOnlyCollectionGeneric : TypeInfo<GenericParamFromMetadata, TypeDefn>
     }
 
 [<RequireQualifiedAccess>]

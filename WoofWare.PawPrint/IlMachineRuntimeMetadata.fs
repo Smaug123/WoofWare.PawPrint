@@ -1425,6 +1425,40 @@ module IlMachineRuntimeMetadata =
             else
                 state, normalizedPrimitiveIntegerIdentity handle
 
+        // ECMA-335 III.4.3 / CoreCLR `TypeDesc::CanCastParam`: element-compatibility
+        // for parameterised array slots (whether array-to-array or SZ-array-to-
+        // implicit-generic-interface) reduces to one of three cases.
+        //   1. Identical elements — always compatible.
+        //   2. Both reference-typed — recursive assignability (covariance).
+        //   3. Both value-typed — same normalised integer identity, applying both
+        //      ECMA-335 III.8.7 primitive-width equivalence and enum-underlying-
+        //      type equivalence (see `valueElementNormalisedIdentity`).
+        // Anything else (ref/value mismatch, non-integer value types, generic
+        // type variables) answers definitively false.
+        let elementCovariantlyCompatible
+            (state : IlMachineState)
+            (objElement : ConcreteTypeHandle)
+            (targetElement : ConcreteTypeHandle)
+            : IlMachineState * bool
+            =
+            if objElement = targetElement then
+                state, true
+            else
+                let objIsRef = isReferenceTypeHandle state objElement
+                let targetIsRef = isReferenceTypeHandle state targetElement
+
+                if objIsRef && targetIsRef then
+                    isConcreteTypeAssignableTo loggerFactory baseClassTypes state objElement targetElement
+                elif objIsRef <> targetIsRef then
+                    state, false
+                else
+                    let state, objNormalised = valueElementNormalisedIdentity state objElement
+                    let state, targetNormalised = valueElementNormalisedIdentity state targetElement
+
+                    match objNormalised, targetNormalised with
+                    | Some a, Some b when a = b -> state, true
+                    | _, _ -> state, false
+
         let checkArraySpecificRules
             (state : IlMachineState)
             (objType : ConcreteTypeHandle)
@@ -1435,43 +1469,58 @@ module IlMachineRuntimeMetadata =
             | Some (objElement, objShape), Some (targetElement, targetShape) ->
                 if objShape <> targetShape then
                     state, Some false
-                elif objElement = targetElement then
-                    state, Some true
                 else
-                    let objIsRef = isReferenceTypeHandle state objElement
-                    let targetIsRef = isReferenceTypeHandle state targetElement
-
-                    if objIsRef && targetIsRef then
-                        let state, elementAssignable =
-                            isConcreteTypeAssignableTo loggerFactory baseClassTypes state objElement targetElement
-
-                        state, Some elementAssignable
-                    elif objIsRef <> targetIsRef then
-                        // One element is reference-typed and the other is value-typed.
-                        // ECMA-335 covariance applies only across reference types, and
-                        // primitive/enum equivalence applies only between value types,
-                        // so the answer is definitively non-assignable here.
-                        state, Some false
-                    else
-                        // Both element types are value-typed. ECMA-335 III.4.3 /
-                        // CoreCLR `CanCastParam` reduces the relation to
-                        // "normalised integer identities match", combining two rules:
-                        //   (a) signed/unsigned primitive integers of equal width
-                        //       (`int[]` ↔ `uint[]`, etc.) — `GetNormalizedIntegralArrayElementType`.
-                        //   (b) enum equivalence with the underlying integer or with
-                        //       another enum that shares the same underlying integer
-                        //       (e.g. `MyEnum : int` ↔ `int[]` ↔ `uint[]`, or `MyEnum:int` ↔ `OtherEnum:int`).
-                        // `valueElementNormalisedIdentity` looks the underlying integer
-                        // up for enums and applies `normalizedPrimitiveIntegerIdentity`
-                        // to the result, giving a definitive yes/no answer.
-                        let state, objNormalised = valueElementNormalisedIdentity state objElement
-                        let state, targetNormalised = valueElementNormalisedIdentity state targetElement
-
-                        match objNormalised, targetNormalised with
-                        | Some a, Some b when a = b -> state, Some true
-                        | _, _ -> state, Some false
+                    let state, compatible = elementCovariantlyCompatible state objElement targetElement
+                    state, Some compatible
             | Some _, None -> state, None
             | None, _ -> failwith $"checkArraySpecificRules called with non-array source %O{objType}"
+
+        // CoreCLR `MethodTable::ArraySupportsBizarreInterface` /
+        // `IsImplicitInterfaceOfSZArray` (`src/coreclr/vm/array.cpp`): an
+        // SZ-array `T[]` implicitly implements the five generic interfaces
+        // `IList<U>`, `ICollection<U>`, `IEnumerable<U>`, `IReadOnlyList<U>`,
+        // and `IReadOnlyCollection<U>` whenever `T` is element-compatible
+        // with `U` under the CoreCLR `CanCastParam` rule (recursive
+        // reference covariance for ref elements; normalised-integer
+        // equivalence for value elements). The carve-out applies even for
+        // the invariant interfaces (`IList<U>`, `ICollection<U>`).
+        //
+        // Multi-dim arrays do NOT participate in this carve-out, and other
+        // generic interfaces (anything that isn't one of the five) are
+        // never implicitly implemented by arrays. Returns `None` when the
+        // pair does not fit the carve-out, leaving the caller to default
+        // to `false`.
+        let tryCheckSzArrayImplicitInterface
+            (state : IlMachineState)
+            (objType : ConcreteTypeHandle)
+            (targetType : ConcreteTypeHandle)
+            : (IlMachineState * bool) option
+            =
+            match objType with
+            | ConcreteTypeHandle.OneDimArrayZero objElement ->
+                match tryGetConcreteTypeInfo state targetType with
+                | Some (targetCt, _) when targetCt.Generics.Length = 1 ->
+                    let targetId = targetCt.Identity
+
+                    let isImplicit =
+                        targetId = baseClassTypes.IListGeneric.Identity
+                        || targetId = baseClassTypes.IEnumerableGeneric.Identity
+                        || targetId = baseClassTypes.ICollectionGeneric.Identity
+                        || targetId = baseClassTypes.IReadOnlyListGeneric.Identity
+                        || targetId = baseClassTypes.IReadOnlyCollectionGeneric.Identity
+
+                    if isImplicit then
+                        let targetElement = targetCt.Generics.[0]
+                        let state, compatible = elementCovariantlyCompatible state objElement targetElement
+                        Some (state, compatible)
+                    else
+                        None
+                | _ -> None
+            | ConcreteTypeHandle.Array _
+            | ConcreteTypeHandle.Concrete _
+            | ConcreteTypeHandle.Byref _
+            | ConcreteTypeHandle.Pointer _
+            | ConcreteTypeHandle.FunctionPointer _ -> None
 
         match objType with
         | ConcreteTypeHandle.OneDimArrayZero _
@@ -1484,24 +1533,14 @@ module IlMachineRuntimeMetadata =
                 match checkArraySpecificRules state objType targetType with
                 | state, Some assignable -> state, assignable
                 | state, None ->
-                    let targetTypeInfo = tryGetConcreteTypeInfo state targetType
-
-                    let targetNeedsArraySpecificRules =
-                        match targetType with
-                        | ConcreteTypeHandle.OneDimArrayZero _
-                        | ConcreteTypeHandle.Array _ -> true
-                        | ConcreteTypeHandle.Concrete _
-                        | ConcreteTypeHandle.Byref _
-                        | ConcreteTypeHandle.Pointer _
-                        | ConcreteTypeHandle.FunctionPointer _ ->
-                            match targetTypeInfo with
-                            | Some (targetCt, targetTypeInfo) ->
-                                targetTypeInfo.IsInterface && not targetCt.Generics.IsEmpty
-                            | None -> false
-
-                    if targetNeedsArraySpecificRules then
-                        failwith $"TODO: array assignability check from %O{objType} to %O{targetType}"
-                    else
+                    match tryCheckSzArrayImplicitInterface state objType targetType with
+                    | Some result -> result
+                    | None ->
+                        // The remaining structural shapes — multi-dim arrays
+                        // against any generic interface, or SZ-arrays against
+                        // a generic interface that isn't one of the five
+                        // implicit ones — are definitively not assignable.
+                        // CoreCLR's `ArraySupportsBizarreInterface` agrees.
                         state, false
         | ConcreteTypeHandle.Concrete _
         | ConcreteTypeHandle.Byref _
