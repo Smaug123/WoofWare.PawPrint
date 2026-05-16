@@ -220,6 +220,24 @@ module internal UnaryMetadataArrayOps =
             | Some addr -> addr
             | None -> failwith "expected heap allocation for array, got null"
 
+        // ECMA-335 III.4.x: bounds check fires before the array-store variance
+        // check, matching CoreCLR ordering (e.g. `Store<object>(new string[0], 0, new object())`
+        // must raise IndexOutOfRangeException, not ArrayTypeMismatchException).
+        let arrAlloc =
+            match state.ManagedHeap.Arrays.TryGetValue arr with
+            | true, v -> v
+            | false, _ -> failwith $"executeStelem: array allocation not found at %O{arr}"
+
+        if index < 0 || index >= arrAlloc.Length then
+            // Don't advance PC: exception dispatch needs the faulting instruction's offset.
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                baseClassTypes
+                baseClassTypes.IndexOutOfRangeException
+                thread
+                state
+        else
+
         let elementType =
             DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies elementType
 
