@@ -240,14 +240,11 @@ module NativeCustomAttribute =
                     failwith
                         $"TODO: %s{operation}: value-typed attribute %s{attrTypeInfo.Namespace}.%s{attrTypeInfo.Name} would need unboxing for `this` slot; CoreCLR's value-type branch is unreachable from the BCL filter and is not yet modelled here"
 
-                // Resolve the ctor metadata via the method-handle registry. We can't rely on the
-                // stub's heap address being in `MethodHandleToMethod`: only stubs allocated by
-                // `IlMachineState.getOrAllocateMethod` are registered that way. The real BCL path
-                // (`ModuleHandle.ResolveMethodHandle(...).GetMethodInfo()`) constructs the stub in
-                // managed code, so its address is unknown to the registry. The stub's `m_value`
-                // field (a `RuntimeMethodHandleInternal`) does, however, carry a registry id that
-                // the producing QCall minted — that's the canonical path, and it works for both
-                // origins.
+                // Resolve the ctor metadata via the method-handle registry. The stub's `m_value`
+                // field (a `RuntimeMethodHandleInternal`) carries a registry id minted by whichever
+                // QCall produced the handle, and that's the canonical identity available regardless
+                // of whether the stub was allocated F#-side (via `IlMachineState.getOrAllocateMethod`)
+                // or by the BCL itself (via `ModuleHandle.ResolveMethodHandle(...).GetMethodInfo()`).
                 let ctorStubObj = ManagedHeap.get ctorStubAddr state.ManagedHeap
 
                 let stubValueField =
