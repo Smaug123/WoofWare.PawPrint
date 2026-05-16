@@ -74,6 +74,7 @@ module DebuggerServer =
     let private writeThreadStatus (writer : Utf8JsonWriter) (status : ThreadStatus) : unit =
         match status with
         | ThreadStatus.Runnable -> writer.WriteStringValue "runnable"
+        | ThreadStatus.NotStarted -> writer.WriteStringValue "notStarted"
         | ThreadStatus.BlockedOnJoin target ->
             writer.WriteStartObject ()
             writer.WriteString ("kind", "blockedOnJoin")
@@ -147,10 +148,21 @@ module DebuggerServer =
         writer.WriteNumber ("id", threadIdValue threadId)
         writer.WritePropertyName "status"
         writeThreadStatus writer threadState.Status
-        writer.WriteString ("activeAssembly", threadState.ActiveAssembly.FullName)
-        writer.WriteNumber ("activeFrame", frameIdValue threadState.ActiveMethodState)
-        writer.WritePropertyName "activeFrameSummary"
-        writeFrameSummary writer threadState.ActiveMethodState threadState.ActiveMethodState threadState.MethodState
+
+        match threadState.Status with
+        | ThreadStatus.NotStarted ->
+            // A pre-`Start` Thread has no frames yet; the ActiveMethodState/MethodState
+            // accessors would crash. Surface the absence explicitly rather than
+            // skipping the keys, so consumers see a consistent shape.
+            writer.WriteNull "activeAssembly"
+            writer.WriteNull "activeFrame"
+            writer.WriteNull "activeFrameSummary"
+        | _ ->
+            writer.WriteString ("activeAssembly", threadState.ActiveAssembly.FullName)
+            writer.WriteNumber ("activeFrame", frameIdValue threadState.ActiveMethodState)
+            writer.WritePropertyName "activeFrameSummary"
+            writeFrameSummary writer threadState.ActiveMethodState threadState.ActiveMethodState threadState.MethodState
+
         writer.WriteEndObject ()
 
     let private writeValueArray<'a>
@@ -450,8 +462,14 @@ module DebuggerServer =
             writer.WriteNumber ("id", threadIdValue threadId)
             writer.WritePropertyName "status"
             writeThreadStatus writer threadState.Status
-            writer.WriteString ("activeAssembly", threadState.ActiveAssembly.FullName)
-            writer.WriteNumber ("activeFrame", frameIdValue threadState.ActiveMethodState)
+
+            match threadState.Status with
+            | ThreadStatus.NotStarted ->
+                writer.WriteNull "activeAssembly"
+                writer.WriteNull "activeFrame"
+            | _ ->
+                writer.WriteString ("activeAssembly", threadState.ActiveAssembly.FullName)
+                writer.WriteNumber ("activeFrame", frameIdValue threadState.ActiveMethodState)
 
             writeValueArray
                 writer
@@ -526,11 +544,25 @@ module DebuggerServer =
             writer.WriteNumber ("id", threadIdValue threadId)
             writer.WritePropertyName "status"
             writeThreadStatus writer threadState.Status
-            writer.WriteString ("activeAssembly", threadState.ActiveAssembly.FullName)
-            writer.WriteNumber ("activeFrame", frameIdValue threadState.ActiveMethodState)
-            writer.WriteNumber ("frameCount", frames.Length)
-            writer.WritePropertyName "activeFrameSummary"
-            writeFrameSummary writer threadState.ActiveMethodState threadState.ActiveMethodState threadState.MethodState
+
+            match threadState.Status with
+            | ThreadStatus.NotStarted ->
+                writer.WriteNull "activeAssembly"
+                writer.WriteNull "activeFrame"
+                writer.WriteNumber ("frameCount", frames.Length)
+                writer.WriteNull "activeFrameSummary"
+            | _ ->
+                writer.WriteString ("activeAssembly", threadState.ActiveAssembly.FullName)
+                writer.WriteNumber ("activeFrame", frameIdValue threadState.ActiveMethodState)
+                writer.WriteNumber ("frameCount", frames.Length)
+                writer.WritePropertyName "activeFrameSummary"
+
+                writeFrameSummary
+                    writer
+                    threadState.ActiveMethodState
+                    threadState.ActiveMethodState
+                    threadState.MethodState
+
             writeValueArray writer "topMethods" methodCounts writeMethodCount
 
             writeValueArray
@@ -601,6 +633,14 @@ module DebuggerServer =
         | None ->
             writer.WriteStartObject ()
             writer.WriteString ("error", $"thread %d{threadIdValue threadId} does not exist")
+            writer.WriteEndObject ()
+        | Some threadState when threadState.Status = ThreadStatus.NotStarted ->
+            // No frames have been pushed yet; there is no active method whose IL
+            // we could disassemble. Report this rather than dereferencing the
+            // sentinel ActiveMethodState.
+            writer.WriteStartObject ()
+            writer.WriteNumber ("thread", threadIdValue threadId)
+            writer.WriteString ("error", $"thread %d{threadIdValue threadId} has not been started")
             writer.WriteEndObject ()
         | Some threadState ->
             let frameId = threadState.ActiveMethodState

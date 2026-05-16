@@ -18,6 +18,57 @@ module NativeThreading =
         =
         FieldIdentity.requiredNonGenericInstanceFieldId state.ConcreteTypes baseClassTypes.DelegateType fieldName
 
+    /// Recover the heap address stored inside a `ThreadHandle` QCall argument.
+    /// `ThreadHandle` is `internal readonly struct ThreadHandle { IntPtr _ptr }`
+    /// in CoreCLR; the QCall marshaller may flatten it to a bare `nativeint`
+    /// or pass the wrapping struct cell. In both cases the underlying value is
+    /// the `_DONT_USE_InternalThread` we wrote in `initializeThreadObject`,
+    /// which is the heap address of the Thread object reinterpreted as a
+    /// `nativeint`.
+    let private threadAddrFromThreadHandle
+        (state : IlMachineState)
+        (operation : string)
+        (handleArg : CliType)
+        : ManagedHeapAddress
+        =
+        match handleArg |> CliType.unwrapPrimitiveLike with
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim addrInt)) ->
+            ManagedHeapAddress (int addrInt)
+        | CliType.ValueType vt ->
+            let ptrField = IlMachineState.requiredOwnInstanceFieldId state vt.Declared "_ptr"
+
+            match CliValueType.DereferenceFieldById ptrField vt |> CliType.unwrapPrimitiveLike with
+            | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim addrInt)) ->
+                ManagedHeapAddress (int addrInt)
+            | other -> failwith $"%s{operation}: expected Verbatim nativeint inside ThreadHandle._ptr, got %O{other}"
+        | other -> failwith $"%s{operation}: unexpected shape for ThreadHandle argument: %O{other}"
+
+    /// Reverse-lookup the interpreter `ThreadId` that owns the given Thread
+    /// heap object. Distinguishes "guest handed a wild pointer" (interpreter
+    /// bug — no heap object exists at the address at all) from "Thread object
+    /// was never Start()ed" (guest bug that the real CLR would surface as
+    /// `ThreadStateException` once exception synthesis lands here). Both
+    /// surface as `failwith` for now because the interpreter cannot yet
+    /// raise managed exceptions on behalf of native helpers.
+    let private threadIdFromThreadAddr
+        (state : IlMachineState)
+        (operation : string)
+        (threadAddr : ManagedHeapAddress)
+        : ThreadId
+        =
+        state.ManagedThreadObjects
+        |> Map.toSeq
+        |> Seq.tryPick (fun (tid, addr) -> if addr = threadAddr then Some tid else None)
+        |> Option.defaultWith (fun () ->
+            match state.ManagedHeap.NonArrayObjects |> Map.tryFind threadAddr with
+            | Some _ ->
+                failwith
+                    $"%s{operation}: Thread object at {threadAddr} was never Start()ed. The real CLR raises ThreadStateException here; PawPrint doesn't synthesise that yet, so this is a guest bug we can't currently report structurally."
+            | None ->
+                failwith
+                    $"%s{operation}: no heap object at {threadAddr} (interpreter bug: stale or invalid Thread reference)."
+        )
+
     /// Core of the Thread.Join semantics shared between the pre-.NET 10 InternalCall and the
     /// .NET 10 ThreadNative_Join QCall. Returns the post-call state (with any necessary scheduler
     /// block applied) and the bool result the caller should push as Join's return value.
@@ -45,25 +96,7 @@ module NativeThreading =
             failwith
                 $"Thread.Join: millisecondsTimeout=%d{other} is not supported. Only -1 (Timeout.Infinite) and 0 (non-blocking poll) are implemented; finite timeouts require a virtual clock PawPrint does not yet model. Negative values other than -1 would raise ArgumentOutOfRangeException in the real CLR, which PawPrint doesn't synthesise yet."
 
-        let targetThreadId =
-            state.ManagedThreadObjects
-            |> Map.toSeq
-            |> Seq.tryPick (fun (tid, addr) -> if addr = threadAddr then Some tid else None)
-            |> Option.defaultWith (fun () ->
-                // Distinguish "guest called Join on a Thread it never Start()ed"
-                // (real CLR would raise ThreadStateException) from "the interpreter's
-                // ManagedThreadObjects bookkeeping is out of sync with a live thread".
-                // Presence of a heap object at `threadAddr` means the guest legitimately
-                // allocated a Thread; absence means we've been handed a wild pointer
-                // and the bug is inside PawPrint.
-                match state.ManagedHeap.NonArrayObjects |> Map.tryFind threadAddr with
-                | Some _ ->
-                    failwith
-                        $"Thread.Join: Thread object at {threadAddr} was never Start()ed. The real CLR raises ThreadStateException here; PawPrint doesn't synthesise that yet, so this is a guest bug we can't currently report structurally."
-                | None ->
-                    failwith
-                        $"Thread.Join: no heap object at {threadAddr} (interpreter bug: stale or invalid Thread reference handed to Join)."
-            )
+        let targetThreadId = threadIdFromThreadAddr state "Thread.Join" threadAddr
 
         // Self-join is an immediate deadlock: blocking ourselves on ourselves means
         // no thread will ever wake us. The real CLR also hangs, but in PawPrint this
@@ -79,6 +112,19 @@ module NativeThreading =
             |> Option.defaultWith (fun () ->
                 failwith $"Thread.Join: target ThreadId {targetThreadId} has no ThreadState"
             )
+
+        // A constructed-but-never-Start()ed Thread used to be unreachable here:
+        // `ManagedThreadObjects` had no entry, so `threadIdFromThreadAddr` would
+        // fail. Pre-allocating the NotStarted slot at Initialize time means the
+        // lookup now succeeds, so we have to reject the case explicitly. The
+        // real CLR raises ThreadStateException; PawPrint can't synthesise that
+        // yet, so fail loud at the call site rather than silently returning
+        // false (timeout=0) or blocking forever on a thread that will never run.
+        match targetState.Status with
+        | ThreadStatus.NotStarted ->
+            failwith
+                $"Thread.Join: target ThreadId {targetThreadId} has never been Start()ed. The real CLR raises ThreadStateException here; PawPrint doesn't synthesise that yet, so this is a guest bug we can't currently report structurally."
+        | _ -> ()
 
         let targetTerminated = targetState.Status = ThreadStatus.Terminated
 
@@ -99,10 +145,21 @@ module NativeThreading =
 
             state, true
 
-    /// Sets up the managed thread ID, priority, and native handle sentinel on the Thread object.
-    /// Backs the Initialize InternalCall in pre-.NET 10 BCLs and the ThreadNative_Initialize QCall
-    /// in .NET 10+.
-    let private initializeThreadObject (threadAddr : ManagedHeapAddress) (state : IlMachineState) : IlMachineState =
+    /// Sets up the managed thread ID, priority, and native handle sentinel on the Thread object,
+    /// and pre-allocates a `NotStarted` interpreter `ThreadState` bound to the Thread heap
+    /// address. Backs the Initialize InternalCall in pre-.NET 10 BCLs and the
+    /// ThreadNative_Initialize QCall in .NET 10+.
+    ///
+    /// Pre-allocating the `ThreadState` here (rather than at `StartInternal` time) is what
+    /// lets the `IsBackground` QCalls — which the thread-pool worker setup invokes between
+    /// the constructor and `Start` — find a per-thread record to store their value on. The
+    /// scheduler ignores `NotStarted` threads, so the slot stays inert until `StartInternal`
+    /// populates a bottom frame and flips the status to `Runnable`.
+    let private initializeThreadObject
+        (threadAddr : ManagedHeapAddress)
+        (state : IlMachineState)
+        : IlMachineState * ThreadId
+        =
         let managedThreadId = state.NextManagedThreadId
         let threadPriorityNormal = 2
         let (ManagedHeapAddress addrInt) = threadAddr
@@ -121,10 +178,13 @@ module NativeThreading =
                 (objectOwnFieldId state threadObj "_DONT_USE_InternalThread")
                 (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim (int64 addrInt))))
 
-        { state with
-            ManagedHeap = ManagedHeap.set threadAddr updatedObj state.ManagedHeap
-            NextManagedThreadId = state.NextManagedThreadId + 1
-        }
+        let state =
+            { state with
+                ManagedHeap = ManagedHeap.set threadAddr updatedObj state.ManagedHeap
+                NextManagedThreadId = state.NextManagedThreadId + 1
+            }
+
+        IlMachineState.allocateUnstartedThread threadAddr state
 
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : ExecutionResult option =
         let state = ctx.State
@@ -198,7 +258,7 @@ module NativeThreading =
                     failwith $"%s{operation}: ObjectHandleOnStack pointed to a null Thread reference"
                 | other -> failwith $"%s{operation}: expected ObjectRef in ObjectHandleOnStack, got %O{other}"
 
-            let state = initializeThreadObject threadAddr state
+            let state, _newThreadId = initializeThreadObject threadAddr state
             (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "ThreadNative_Join",
           "System.Private.CoreLib",
@@ -248,6 +308,119 @@ module NativeThreading =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 resultInt)) ctx.Thread state
 
             (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+        | "ThreadNative_SetIsBackground",
+          "System.Private.CoreLib",
+          "System.Threading",
+          "Thread",
+          "SetIsBackground",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Threading",
+                                              "ThreadHandle",
+                                              threadHandleGenerics)
+            ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "", "BOOL", boolGenerics) ],
+          MethodReturnType.Void when threadHandleGenerics.IsEmpty && boolGenerics.IsEmpty ->
+            // .NET 10 QCall backing `Thread.IsBackground = value`. We don't yet model the
+            // "process terminates when the last foreground thread exits" semantics, so the
+            // flag is stored on `ThreadState.IsBackground` purely so the paired getter
+            // round-trips and guest code that reads `Thread.IsBackground` after writing it
+            // sees its own value.
+            //
+            // The real CLR raises `ThreadStateException` when the target is dead — the BCL
+            // does this in managed code via the `_isDead` check on `Thread.IsBackground`
+            // before reaching the QCall. PawPrint doesn't currently write `_isDead = true`
+            // when a thread terminates (a separate piece of work — also needed by Priority
+            // and the other `_isDead`-guarded properties), so the BCL check passes and we
+            // reach this handler on a Terminated thread. Reject that here rather than
+            // silently storing an unobservable flag, mirroring the executeJoinCore guard.
+            let operation = "ThreadNative_SetIsBackground"
+
+            if instruction.Arguments.Length <> 2 then
+                failwith $"%s{operation}: expected two native arguments, got %d{instruction.Arguments.Length}"
+
+            let threadAddr =
+                threadAddrFromThreadHandle state operation instruction.Arguments.[0]
+
+            let targetThreadId = threadIdFromThreadAddr state operation threadAddr
+
+            // Interop.BOOL is int32-backed: FALSE=0, TRUE=1. The IL marshaller flattens the
+            // enum to its underlying value before the QCall, so unwrap the primitive and
+            // treat any non-zero as truthy (matches `result != 0` in the BCL).
+            let value =
+                match instruction.Arguments.[1] |> CliType.unwrapPrimitiveLikeDeep with
+                | CliType.Numeric (CliNumericType.Int32 i) -> i <> 0
+                | other -> failwith $"%s{operation}: expected Interop.BOOL as Int32, got %O{other}"
+
+            let targetState =
+                state.ThreadState
+                |> Map.tryFind targetThreadId
+                |> Option.defaultWith (fun () ->
+                    failwith $"%s{operation}: target ThreadId {targetThreadId} has no ThreadState"
+                )
+
+            match targetState.Status with
+            | ThreadStatus.Terminated ->
+                failwith
+                    $"%s{operation}: target ThreadId {targetThreadId} has terminated. The real CLR raises ThreadStateException via the BCL's `_isDead` check; PawPrint doesn't synthesise that yet, so this is a guest bug we can't currently report structurally."
+            | _ -> ()
+
+            let updatedThreadState =
+                { targetState with
+                    IsBackground = value
+                }
+
+            let state =
+                { state with
+                    ThreadState = state.ThreadState |> Map.add targetThreadId updatedThreadState
+                }
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+        | "ThreadNative_GetIsBackground",
+          "System.Private.CoreLib",
+          "System.Threading",
+          "Thread",
+          "GetIsBackground",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Threading",
+                                              "ThreadHandle",
+                                              threadHandleGenerics) ],
+          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "", "BOOL", boolGenerics)) when
+            threadHandleGenerics.IsEmpty && boolGenerics.IsEmpty
+            ->
+            // .NET 10 QCall backing the `Thread.IsBackground` getter. Returns Interop.BOOL
+            // (int32-backed: TRUE=1, FALSE=0); we push 0/1 directly because the IL caller
+            // reinterprets the return on the stack via `(int)result != 0`. Symmetric with
+            // the setter: the BCL's managed `_isDead` check should reject reads against
+            // terminated threads before the QCall fires, but PawPrint doesn't yet flip
+            // `_isDead`, so we guard the case here rather than handing back a stale flag.
+            let operation = "ThreadNative_GetIsBackground"
+
+            if instruction.Arguments.Length <> 1 then
+                failwith $"%s{operation}: expected one native argument, got %d{instruction.Arguments.Length}"
+
+            let threadAddr =
+                threadAddrFromThreadHandle state operation instruction.Arguments.[0]
+
+            let targetThreadId = threadIdFromThreadAddr state operation threadAddr
+
+            let targetState =
+                state.ThreadState
+                |> Map.tryFind targetThreadId
+                |> Option.defaultWith (fun () ->
+                    failwith $"%s{operation}: target ThreadId {targetThreadId} has no ThreadState"
+                )
+
+            match targetState.Status with
+            | ThreadStatus.Terminated ->
+                failwith
+                    $"%s{operation}: target ThreadId {targetThreadId} has terminated. The real CLR raises ThreadStateException via the BCL's `_isDead` check; PawPrint doesn't synthesise that yet, so this is a guest bug we can't currently report structurally."
+            | _ -> ()
+
+            let resultInt = if targetState.IsBackground then 1 else 0
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 resultInt)) ctx.Thread state
+
+            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | _ -> None
 
     let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
@@ -289,7 +462,7 @@ module NativeThreading =
                 | EvalStackValue.ObjectRef addr -> addr
                 | other -> failwith $"Thread.Initialize: expected ObjectRef for 'this', got %O{other}"
 
-            let state = initializeThreadObject threadAddr state
+            let state, _newThreadId = initializeThreadObject threadAddr state
             (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
         | "System.Private.CoreLib", "System.Threading", "Thread", "StartInternal", _, MethodReturnType.Void ->
             // StartInternal (ThreadHandle t, int stackSize, int priority, Interop.BOOL isThreadPool, char* pThreadName) -> void
@@ -297,33 +470,20 @@ module NativeThreading =
             // Thread heap object from the handle and spawn a new interpreter thread that begins
             // executing the user-supplied delegate directly, bypassing the BCL StartCallback
             // path (which otherwise pulls in ExecutionContext/culture/autorelease machinery).
-            let threadHandleArg = instruction.Arguments.[0]
-
             let threadAddr =
-                match threadHandleArg |> CliType.unwrapPrimitiveLike with
-                | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim addrInt)) ->
-                    ManagedHeapAddress (int addrInt)
-                | CliType.ValueType vt ->
-                    let ptrField = IlMachineState.requiredOwnInstanceFieldId state vt.Declared "_ptr"
+                threadAddrFromThreadHandle state "Thread.StartInternal" instruction.Arguments.[0]
 
-                    match CliValueType.DereferenceFieldById ptrField vt |> CliType.unwrapPrimitiveLike with
-                    | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim addrInt)) ->
-                        ManagedHeapAddress (int addrInt)
-                    | other ->
-                        failwith
-                            $"Thread.StartInternal: expected Verbatim nativeint inside ThreadHandle._ptr, got %O{other}"
-                | other -> failwith $"Thread.StartInternal: unexpected shape for ThreadHandle argument: %O{other}"
-
-            // Double-Start detection: if this Thread heap object is already bound to
-            // an interpreter thread, the guest has called Start() twice. The real
-            // runtime nulls out _startHelper on a successful Start so the second
-            // call throws ThreadStateException; we can't synthesise that exception
-            // yet, so fail the interpreter loudly instead of silently spawning a
-            // second worker. When exception synthesis lands, replace this failwith
-            // with the ThreadStateException raise and the _startHelper nulling.
-            if state.ManagedThreadObjects |> Map.exists (fun _ addr -> addr = threadAddr) then
-                failwith
-                    $"Thread.StartInternal: Thread object at {threadAddr} has already been started; the guest would observe ThreadStateException, which is not yet synthesised. Double-Start is a guest bug."
+            // The Thread heap object is always bound to a `NotStarted` interpreter
+            // ThreadId from `Thread.Initialize`; recover that slot here and fill in
+            // its bottom frame below. Double-Start detection rides on the slot's
+            // status: anything other than `NotStarted` means `Start` has already
+            // succeeded (Runnable / blocked / Terminated) — the real runtime nulls
+            // `_startHelper` on a successful Start so the second call would observe
+            // `ThreadStateException`, and `startUnstartedThread` surfaces the same
+            // condition via its status assert. When exception synthesis lands,
+            // replace that loud failure with the ThreadStateException raise plus
+            // the `_startHelper` nulling.
+            let newThreadId = threadIdFromThreadAddr state "Thread.StartInternal" threadAddr
 
             let threadObj = ManagedHeap.get threadAddr state.ManagedHeap
 
@@ -435,14 +595,13 @@ module NativeThreading =
                 | Ok ms -> ms
                 | Error _ -> failwith "Thread.StartInternal: failed to build MethodState for thread delegate target"
 
-            let state, newThreadId = IlMachineState.addThread newMethodState state
-
-            // Link the fresh ThreadId to the pre-existing Thread heap object so that
-            // Thread.CurrentThread on the new thread returns the original Thread reference.
-            let state =
-                { state with
-                    ManagedThreadObjects = state.ManagedThreadObjects |> Map.add newThreadId threadAddr
-                }
+            // The ThreadId slot was minted at `Thread.Initialize` time and bound to
+            // `threadAddr` in `ManagedThreadObjects`; promote it from `NotStarted`
+            // to `Runnable` and install the worker's bottom frame in one step.
+            // Status / frame transitions go through `startUnstartedThread` so the
+            // double-Start guard (status must be `NotStarted`) lives next to the
+            // mutation it protects.
+            let state = IlMachineState.startUnstartedThread newThreadId newMethodState state
 
             // ECMA-335: a type's .cctor must run before any of its static methods
             // or before the first instance is touched. For delegates bound to a

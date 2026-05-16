@@ -44,6 +44,7 @@ module TestSyncBlockMonitor =
             NextFrameId = 0
             ActiveMethodState = FrameId -1
             Status = status
+            IsBackground = false
         }
 
     let private withThreads (threads : ThreadId list) (state : IlMachineState) : IlMachineState =

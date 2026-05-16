@@ -7,6 +7,21 @@ open System.Reflection
 /// flips it back to Runnable.
 type ThreadStatus =
     | Runnable
+    /// The managed `Thread` heap object has been constructed (its `Initialize`
+    /// QCall / InternalCall ran, allocating a `ThreadId` slot for it) but
+    /// `Thread.Start` has not yet been called, so no IL has executed on this
+    /// thread. The scheduler never picks `NotStarted` threads; `StartInternal`
+    /// flips the status to `Runnable` after populating the bottom frame with
+    /// the user's delegate target. Lets us model state that lives on the
+    /// managed `Thread` object before its first execution (notably
+    /// `IsBackground`, which the thread-pool worker setup writes between the
+    /// constructor call and `Start`) by keeping the per-thread record alive
+    /// from construction time. Threads that are constructed and never started
+    /// (e.g. a `new Thread(...)` reference that the guest then drops on the
+    /// floor) remain `NotStarted` for the lifetime of the run; they do not
+    /// contribute to deadlock detection beyond appearing in the stuck-threads
+    /// description.
+    | NotStarted
     /// This thread is blocked inside Thread.Join, waiting for the named thread to terminate.
     | BlockedOnJoin of target : ThreadId
     /// This thread tried to access a type whose .cctor is currently being run by another
@@ -66,6 +81,14 @@ type ThreadState =
         NextFrameId : int
         ActiveMethodState : FrameId
         Status : ThreadStatus
+        /// Mirrors the CoreCLR `Thread.IsBackground` flag set via the
+        /// `ThreadNative_SetIsBackground` QCall. The interpreter does not yet
+        /// model the "process terminates when the last foreground thread
+        /// exits" semantics; this field exists so the QCall can store the
+        /// guest's request faithfully and the paired getter can return it,
+        /// preserving round-trip semantics for guest code that reads back
+        /// `Thread.IsBackground`. Default `false` matches the BCL.
+        IsBackground : bool
     }
 
     // --- Frame resolution primitives ---
@@ -141,6 +164,7 @@ type ThreadState =
             MethodStates = Map.empty |> Map.add (FrameId 0) methodState
             NextFrameId = 1
             Status = ThreadStatus.Runnable
+            IsBackground = false
         }
 
     static member peekEvalStack (state : ThreadState) : EvalStackValue option =

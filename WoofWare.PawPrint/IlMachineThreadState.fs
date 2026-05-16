@@ -353,6 +353,78 @@ module IlMachineThreadState =
 
         newState, thread
 
+    /// Allocate a fresh `ThreadId` for a Thread heap object that the guest has
+    /// just constructed (i.e. its `Initialize` ran) but not yet started. The
+    /// resulting `ThreadState` is frame-less and has status `NotStarted`; the
+    /// scheduler will not pick it until `Thread.StartInternal` populates the
+    /// bottom frame and flips status to `Runnable` via `startUnstartedThread`.
+    /// Binds the new ThreadId to `threadAddr` in `ManagedThreadObjects` so
+    /// helpers like `threadIdFromThreadAddr` can reverse-look-up the thread
+    /// during the pre-Start window (notably for the `IsBackground` QCalls).
+    let allocateUnstartedThread (threadAddr : ManagedHeapAddress) (state : IlMachineState) : IlMachineState * ThreadId =
+        let thread = ThreadId state.NextThreadId
+
+        // Frame-less stub mirroring the test helpers in TestLowLevelMonitor /
+        // TestWaitHandle / TestSyncBlockMonitor: `ActiveMethodState` points at
+        // a sentinel `FrameId` not present in the empty `MethodStates` map, so
+        // any premature attempt to dereference it crashes loudly rather than
+        // executing arbitrary IL on an unprepared thread.
+        let unstartedState : ThreadState =
+            {
+                MethodStates = Map.empty
+                NextFrameId = 0
+                ActiveMethodState = FrameId -1
+                Status = ThreadStatus.NotStarted
+                IsBackground = false
+            }
+
+        let newState =
+            { state with
+                NextThreadId = state.NextThreadId + 1
+                ThreadState = state.ThreadState |> Map.add thread unstartedState
+                ManagedThreadObjects = state.ManagedThreadObjects |> Map.add thread threadAddr
+            }
+
+        newState, thread
+
+    /// Populate the bottom frame of a `NotStarted` thread with the user's
+    /// delegate target and flip its status to `Runnable`. The thread was
+    /// previously allocated by `allocateUnstartedThread` at `Thread.Initialize`
+    /// time. Fails loud if the thread is missing, in a non-`NotStarted`
+    /// status (double-Start would be the typical cause; the real CLR raises
+    /// `ThreadStateException` here), or already has live frames.
+    let startUnstartedThread
+        (thread : ThreadId)
+        (newMethodState : MethodState)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        let existing =
+            state.ThreadState
+            |> Map.tryFind thread
+            |> Option.defaultWith (fun () -> failwith $"startUnstartedThread: thread {thread} has no ThreadState")
+
+        match existing.Status with
+        | ThreadStatus.NotStarted -> ()
+        | other ->
+            failwith
+                $"startUnstartedThread: thread {thread} is in status %O{other}, expected NotStarted. Most likely cause: double-Start on a Thread object. The real CLR raises ThreadStateException here, which PawPrint does not yet synthesise."
+
+        if not (Map.isEmpty existing.MethodStates) then
+            failwith $"startUnstartedThread: thread {thread} unexpectedly has live frames before Start"
+
+        let started =
+            existing
+            |> ThreadState.replaceFrames newMethodState
+            |> fun ts ->
+                { ts with
+                    Status = ThreadStatus.Runnable
+                }
+
+        { state with
+            ThreadState = state.ThreadState |> Map.add thread started
+        }
+
     let allocateArray
         (arrayType : ConcreteTypeHandle)
         (zeroOfType : unit -> CliType)
