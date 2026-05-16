@@ -113,6 +113,19 @@ module NativeThreading =
                 failwith $"Thread.Join: target ThreadId {targetThreadId} has no ThreadState"
             )
 
+        // A constructed-but-never-Start()ed Thread used to be unreachable here:
+        // `ManagedThreadObjects` had no entry, so `threadIdFromThreadAddr` would
+        // fail. Pre-allocating the NotStarted slot at Initialize time means the
+        // lookup now succeeds, so we have to reject the case explicitly. The
+        // real CLR raises ThreadStateException; PawPrint can't synthesise that
+        // yet, so fail loud at the call site rather than silently returning
+        // false (timeout=0) or blocking forever on a thread that will never run.
+        match targetState.Status with
+        | ThreadStatus.NotStarted ->
+            failwith
+                $"Thread.Join: target ThreadId {targetThreadId} has never been Start()ed. The real CLR raises ThreadStateException here; PawPrint doesn't synthesise that yet, so this is a guest bug we can't currently report structurally."
+        | _ -> ()
+
         let targetTerminated = targetState.Status = ThreadStatus.Terminated
 
         match timeout with
