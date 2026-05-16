@@ -1319,6 +1319,30 @@ module IlMachineRuntimeMetadata =
                     else
                         walkBase state current
 
+        // Returns true if `handle` is a CLR enum value type — a nominal type whose
+        // immediate runtime base is `System.Enum`. Used by the array-element
+        // assignability rule below to detect cases where ECMA-335 / CoreCLR
+        // enum-underlying-type equivalence (e.g. `MyEnum : int` ↔ `int`, or two
+        // enums sharing an underlying integer) might permit a store, but the
+        // underlying-type lookup itself isn't yet modelled.
+        let isEnumValueType (state : IlMachineState) (handle : ConcreteTypeHandle) : IlMachineState * bool =
+            match handle with
+            | ConcreteTypeHandle.OneDimArrayZero _
+            | ConcreteTypeHandle.Array _
+            | ConcreteTypeHandle.Byref _
+            | ConcreteTypeHandle.Pointer _
+            | ConcreteTypeHandle.FunctionPointer _ -> state, false
+            | ConcreteTypeHandle.Concrete _ ->
+                let state, baseHandle =
+                    resolveBaseConcreteType loggerFactory baseClassTypes state handle
+
+                match baseHandle with
+                | None -> state, false
+                | Some bh ->
+                    match AllConcreteTypes.lookup bh state.ConcreteTypes with
+                    | Some baseTy -> state, baseTy.Identity = baseClassTypes.Enum.Identity
+                    | None -> state, false
+
         // ECMA-335 III.8.7 / CoreCLR `GetNormalizedIntegralArrayElementType`:
         // signed and unsigned primitive integers of equal width are interchangeable
         // as array element types (`int[]` ↔ `uint[]`, `short[]` ↔ `ushort[]`, etc.).
@@ -1367,20 +1391,33 @@ module IlMachineRuntimeMetadata =
                 else
                     // Both element types are value-typed (or one of each, in which case
                     // primitive-integer equivalence cannot hold and we fall through to
-                    // `Some false`). Apply primitive-integer equivalence; any other
-                    // value-type assignment (notably enums with equivalent underlying
-                    // integer types) is not yet modelled and continues to report
-                    // non-assignable here.
-                    match
-                        normalizedPrimitiveIntegerIdentity objElement, normalizedPrimitiveIntegerIdentity targetElement
-                    with
-                    | Some a, Some b when a = b -> state, Some true
-                    | _, _ ->
-                        // TODO: ECMA-335 also permits arrays whose value-type elements
-                        // share an equivalent enum underlying integer type to be
-                        // interchangeable (e.g. `MyEnum : int` array ↔ `int[]`).
-                        // Model that rule before broadening this branch.
-                        state, Some false
+                    // `Some false`). ECMA-335 / CoreCLR permit two complementary rules
+                    // for value-typed array elements:
+                    //   (a) signed/unsigned primitive integers of equal width
+                    //       (`int[]` ↔ `uint[]`, etc.) — `GetNormalizedIntegralArrayElementType`.
+                    //   (b) enums whose underlying integer type matches the partner's
+                    //       (e.g. `MyEnum : int` ↔ `int`, or two enums with the same
+                    //       underlying type).
+                    // (a) is modelled below. (b) requires reading each enum's `value__`
+                    // field to discover its underlying type, which we haven't taught
+                    // the assignability walk yet. When either element is an enum we
+                    // therefore return `None` (undecided) so callers can degrade rather
+                    // than rejecting a valid covariant store. Two non-enum value types
+                    // keep the definitive `Some false` answer.
+                    let state, objIsEnum = isEnumValueType state objElement
+                    let state, targetIsEnum = isEnumValueType state targetElement
+
+                    if objIsEnum || targetIsEnum then
+                        // TODO: model enum-underlying integer equivalence so this case
+                        // becomes a precise answer rather than "unknown".
+                        state, None
+                    else
+                        match
+                            normalizedPrimitiveIntegerIdentity objElement,
+                            normalizedPrimitiveIntegerIdentity targetElement
+                        with
+                        | Some a, Some b when a = b -> state, Some true
+                        | _, _ -> state, Some false
             | Some _, None -> state, None
             | None, _ -> failwith $"checkArraySpecificRules called with non-array source %O{objType}"
 
