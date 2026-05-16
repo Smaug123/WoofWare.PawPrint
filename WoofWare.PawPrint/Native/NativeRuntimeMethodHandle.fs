@@ -142,7 +142,7 @@ module NativeRuntimeMethodHandle =
 
         List.ofSeq acc
 
-    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : ExecutionResult option =
+    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
 
@@ -299,10 +299,10 @@ module NativeRuntimeMethodHandle =
                 let ret = if visible then 1 else 0
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 ret)) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | _ -> None
 
-    let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
+    let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
 
@@ -340,7 +340,7 @@ module NativeRuntimeMethodHandle =
             let state =
                 IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer namePtr) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib",
           "System",
           "RuntimeMethodHandle",
@@ -370,7 +370,7 @@ module NativeRuntimeMethodHandle =
                     ctx.Thread
                     state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib",
           "System",
           "RuntimeMethodHandle",
@@ -482,7 +482,7 @@ module NativeRuntimeMethodHandle =
             let state =
                 IlMachineState.pushToEvalStack (CliType.ValueType returnValue) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib",
           "System",
           "RuntimeMethodHandle",
@@ -522,5 +522,5 @@ module NativeRuntimeMethodHandle =
 
             let state = IlMachineState.pushToEvalStack (CliType.ObjectRef None) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | _ -> None

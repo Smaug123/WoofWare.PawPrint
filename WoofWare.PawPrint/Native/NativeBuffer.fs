@@ -366,7 +366,7 @@ module NativeBuffer =
 
         state
 
-    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : ExecutionResult option =
+    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
 
@@ -417,7 +417,7 @@ module NativeBuffer =
                 else
                     copy ctx.BaseClassTypes state dest src byteCount
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | _ -> None
 
     /// Dispatches the InternalCall (FCall) variants of `System.Buffer` that
@@ -435,7 +435,7 @@ module NativeBuffer =
     /// whole typed cells through `readManagedByref` /
     /// `writeManagedByrefWithBase` so the dest cell's CLI shape and the
     /// stored ObjectRef provenance are preserved.
-    let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
+    let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
 
@@ -481,5 +481,5 @@ module NativeBuffer =
                 else
                     copy ctx.BaseClassTypes state dest src byteCount
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | _ -> None

@@ -2,7 +2,7 @@ namespace WoofWare.PawPrint
 
 [<RequireQualifiedAccess>]
 module NativeDispatch =
-    let private nativeHandlers : (NativeCallContext -> ExecutionResult option) list =
+    let private nativeHandlers : (NativeCallContext -> NativeHandlerResult option) list =
         [
             NativeEnvironment.tryExecute
             NativeMonitor.tryExecute
@@ -29,7 +29,7 @@ module NativeDispatch =
             NativeDebugger.tryExecute
         ]
 
-    let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
+    let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
         nativeHandlers |> List.tryPick (fun handler -> handler ctx)
 
-    let failUnimplemented (ctx : NativeCallContext) : ExecutionResult = NativeCall.failUnimplemented ctx
+    let failUnimplemented (ctx : NativeCallContext) : NativeHandlerResult = NativeCall.failUnimplemented ctx

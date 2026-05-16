@@ -186,7 +186,7 @@ module NativeThreading =
 
         IlMachineState.allocateUnstartedThread threadAddr state
 
-    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : ExecutionResult option =
+    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
 
@@ -228,7 +228,7 @@ module NativeThreading =
                     threadOut
                     (CliType.ObjectRef (Some addr))
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | "ThreadNative_Initialize",
           "System.Private.CoreLib",
           "System.Threading",
@@ -259,7 +259,7 @@ module NativeThreading =
                 | other -> failwith $"%s{operation}: expected ObjectRef in ObjectHandleOnStack, got %O{other}"
 
             let state, _newThreadId = initializeThreadObject threadAddr state
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | "ThreadNative_Join",
           "System.Private.CoreLib",
           "System.Threading",
@@ -307,7 +307,7 @@ module NativeThreading =
             let state =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 resultInt)) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | "ThreadNative_SetIsBackground",
           "System.Private.CoreLib",
           "System.Threading",
@@ -373,7 +373,7 @@ module NativeThreading =
                     ThreadState = state.ThreadState |> Map.add targetThreadId updatedThreadState
                 }
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | "ThreadNative_GetIsBackground",
           "System.Private.CoreLib",
           "System.Threading",
@@ -420,10 +420,10 @@ module NativeThreading =
             let state =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 resultInt)) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | _ -> None
 
-    let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
+    let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
 
@@ -450,7 +450,7 @@ module NativeThreading =
             let state =
                 IlMachineState.pushToEvalStack (CliType.ObjectRef (Some addr)) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib", "System.Threading", "Thread", "Initialize", [], MethodReturnType.Void ->
             // Pre-.NET 10 InternalCall backing `new Thread(...)` constructor. .NET 10 routes the
             // same logic through the ThreadNative_Initialize QCall above.
@@ -463,7 +463,7 @@ module NativeThreading =
                 | other -> failwith $"Thread.Initialize: expected ObjectRef for 'this', got %O{other}"
 
             let state, _newThreadId = initializeThreadObject threadAddr state
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib", "System.Threading", "Thread", "StartInternal", _, MethodReturnType.Void ->
             // StartInternal (ThreadHandle t, int stackSize, int priority, Interop.BOOL isThreadPool, char* pThreadName) -> void
             // We don't yet model stack size / priority / thread-pool / native name; we recover the
@@ -652,7 +652,7 @@ module NativeThreading =
 
             let state = Scheduler.onWorkerSpawned newThreadId workerInitOutcome state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib",
           "System.Threading",
           "Thread",
@@ -679,5 +679,5 @@ module NativeThreading =
 
             let state = IlMachineState.pushToEvalStack (CliType.ofBool result) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | _ -> None

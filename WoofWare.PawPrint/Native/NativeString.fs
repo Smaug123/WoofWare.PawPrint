@@ -46,7 +46,7 @@ module NativeString =
         | CliType.Numeric (CliNumericType.Int32 count) -> checkedLength (int64 count)
         | other -> failwith $"%s{operation}: expected nint length, got %O{other}"
 
-    let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
+    let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
 
@@ -75,7 +75,7 @@ module NativeString =
 
             state
             |> allocateAndPushBlankString ctx length
-            |> fun state -> (state, WhatWeDid.Executed) |> ExecutionResult.stepped
+            |> fun state -> NativeHandlerResult.completed state
             |> Some
         | "System.Private.CoreLib",
           "System",
@@ -112,7 +112,7 @@ module NativeString =
 
             state
             |> allocateAndPushBlankString ctx length
-            |> fun state -> (state, WhatWeDid.Executed) |> ExecutionResult.stepped
+            |> fun state -> NativeHandlerResult.completed state
             |> Some
         | "System.Private.CoreLib",
           "System",
@@ -245,7 +245,7 @@ module NativeString =
             // the placeholder allocated by executeNewobj is left as garbage.
             state
             |> IlMachineState.withReplacedConstructedObject newAddr ctx.Thread
-            |> fun state -> (state, WhatWeDid.Executed) |> ExecutionResult.stepped
+            |> fun state -> NativeHandlerResult.completed state
             |> Some
         | "System.Private.CoreLib",
           "System",
@@ -295,6 +295,6 @@ module NativeString =
             // the placeholder allocated by executeNewobj is left as garbage.
             state
             |> IlMachineState.withReplacedConstructedObject newAddr ctx.Thread
-            |> fun state -> (state, WhatWeDid.Executed) |> ExecutionResult.stepped
+            |> fun state -> NativeHandlerResult.completed state
             |> Some
         | _ -> None

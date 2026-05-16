@@ -20,7 +20,7 @@ module NativeEnvironment =
             NativeCall.readNullTerminatedUtf16 operation ctx.BaseClassTypes ctx.State ptr
             |> Some
 
-    let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
+    let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
 
@@ -39,7 +39,10 @@ module NativeEnvironment =
           [],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
             let env = ISystem_Environment_Env.get ctx.Implementations
-            env.GetProcessorCount ctx.Thread state |> Some
+
+            env.GetProcessorCount ctx.Thread state
+            |> NativeHandlerResult.ofExecutionResult
+            |> Some
         | "System.Private.CoreLib",
           "System",
           "Environment",
@@ -47,7 +50,10 @@ module NativeEnvironment =
           [],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
             let env = ISystem_Environment_Env.get ctx.Implementations
-            env.GetCurrentManagedThreadId ctx.Thread state |> Some
+
+            env.GetCurrentManagedThreadId ctx.Thread state
+            |> NativeHandlerResult.ofExecutionResult
+            |> Some
         | "System.Private.CoreLib",
           "System",
           "Environment",
@@ -55,7 +61,7 @@ module NativeEnvironment =
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Void ->
             let env = ISystem_Environment_Env.get ctx.Implementations
-            env._Exit ctx.Thread state |> Some
+            env._Exit ctx.Thread state |> NativeHandlerResult.ofExecutionResult |> Some
         | "System.Private.CoreLib", "System", "Environment", _, _, _ when
             NativeCall.tryQCallEntryPoint ctx = Some "Environment_FailFast"
             ->
@@ -98,7 +104,10 @@ module NativeEnvironment =
                     tryReadOptionalUtf16 operation "errorSource" ctx instruction.Arguments.[3]
 
                 let env = ISystem_Environment_Env.get ctx.Implementations
-                env.FailFast ctx.Thread message errorSource state |> Some
+
+                env.FailFast ctx.Thread message errorSource state
+                |> NativeHandlerResult.ofExecutionResult
+                |> Some
             | paramTypes, returnType ->
                 failwith
                     $"%s{operation}: matched QCall entry point but signature unexpected: params=%A{paramTypes}, return=%A{returnType}"

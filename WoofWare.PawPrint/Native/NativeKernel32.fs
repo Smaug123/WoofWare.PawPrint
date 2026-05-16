@@ -104,13 +104,12 @@ module NativeKernel32 =
 
         int value
 
-    let private pushUInt32 (value : uint32) (thread : ThreadId) (state : IlMachineState) : ExecutionResult =
+    let private pushUInt32 (value : uint32) (thread : ThreadId) (state : IlMachineState) : NativeHandlerResult =
         state
         |> IlMachineState.pushToEvalStack (NativeCall.cliUInt32 value) thread
-        |> Tuple.withRight WhatWeDid.Executed
-        |> ExecutionResult.stepped
+        |> NativeHandlerResult.completed
 
-    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : ExecutionResult option =
+    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
 
