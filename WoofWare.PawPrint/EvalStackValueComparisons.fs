@@ -3,7 +3,27 @@ namespace WoofWare.PawPrint
 [<RequireQualifiedAccess>]
 module EvalStackValueComparisons =
 
+    // `Unsafe.AsRef<T>((void*)bits)` placeholders carry a literal bit pattern
+    // in a byref-shaped wrapper. CIL treats pointers and `nativeint` as the
+    // same stack type, so C# emits no `conv.i`/`conv.u` for casts like
+    // `(nint)(byte*)p` — the placeholder ManagedPointer arrives at
+    // numeric-shape operations (clt/cgt/clt_un/cgt_un/ceq) verbatim. For
+    // those operations the placeholder *is* its bits, so normalise both
+    // possible shapes (`ManagedPointer placeholder` and the
+    // post-`conv.u` form `NativeInt (ManagedPointer placeholder)`) to
+    // `NativeInt (Verbatim bits)` before dispatching. The byref-shape
+    // arms downstream stay honest: they only see real byrefs.
+    let private unwrapPlaceholderForBitComparison (v : EvalStackValue) : EvalStackValue =
+        match v with
+        | EvalStackValue.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits)
+        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits)) ->
+            EvalStackValue.NativeInt (NativeIntSource.Verbatim bits)
+        | _ -> v
+
     let clt (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
+        let var1 = unwrapPlaceholderForBitComparison var1
+        let var2 = unwrapPlaceholderForBitComparison var2
+
         match var1, var2 with
         | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> Int64Source.compareSigned var1 var2 < 0
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> var1 < var2
@@ -41,6 +61,9 @@ module EvalStackValueComparisons =
             failwith "TODO: Clt UserDefinedValueType vs UserDefinedValueType comparison unimplemented"
 
     let cgt (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
+        let var1 = unwrapPlaceholderForBitComparison var1
+        let var2 = unwrapPlaceholderForBitComparison var2
+
         match var1, var2 with
         | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> Int64Source.compareSigned var1 var2 > 0
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> var1 > var2
@@ -78,6 +101,9 @@ module EvalStackValueComparisons =
             failwith "TODO: Cgt UserDefinedValueType vs UserDefinedValueType comparison unimplemented"
 
     let rec cgtUn (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
+        let var1 = unwrapPlaceholderForBitComparison var1
+        let var2 = unwrapPlaceholderForBitComparison var2
+
         match var1, var2 with
         // A WidenedNativeInt is the int64 bit pattern of a NativeInt under our
         // 64-bit assumption, so unsigned comparison agrees with comparing the
@@ -191,6 +217,9 @@ module EvalStackValueComparisons =
         | other1, other2 -> failwith $"Cgt.un instruction invalid for comparing {other1} vs {other2}"
 
     let rec cltUn (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
+        let var1 = unwrapPlaceholderForBitComparison var1
+        let var2 = unwrapPlaceholderForBitComparison var2
+
         match var1, var2 with
         // See cgtUn: WidenedNativeInt collapses to NativeInt for unsigned
         // comparison under the 64-bit assumption.
@@ -312,6 +341,8 @@ module EvalStackValueComparisons =
         ManagedPointerSource.stripTrailingReinterprets p1 = ManagedPointerSource.stripTrailingReinterprets p2
 
     let rec ceq (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
+        let var1 = unwrapPlaceholderForBitComparison var1
+        let var2 = unwrapPlaceholderForBitComparison var2
         // Table III.4
         // Primitive-like wrappers AND enums are flattened on push (see EvalStackValue.ofCliType),
         // so UserDefinedValueType here is always a genuine user struct. ECMA leaves ceq between
@@ -483,17 +514,6 @@ module EvalStackValueComparisons =
                     "native-int-wrapped byref"
                     (ManagedPointerSource.unsafeAssumeNormalisedForComparison f1)
                     (ManagedPointerSource.unsafeAssumeNormalisedForComparison f2)
-            // `Unsafe.AsRef<T>((void*)bits)` placeholders ARE bit patterns
-            // (see ManagedPointerSource.NativeIntPlaceholder). A `conv.u` of
-            // such a placeholder widens to `NativeIntSource.ManagedPointer`,
-            // and a literal cast to `(nint)` produces `NativeIntSource.Verbatim`;
-            // both shapes encode the same address bits, so CEQ must equate
-            // them when the bits match. This is the BCL `(nint)Unsafe.AsPointer(ref p) == 1`
-            // pattern that empty-span code relies on.
-            | NativeIntSource.Verbatim n,
-              NativeIntSource.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits)
-            | NativeIntSource.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits),
-              NativeIntSource.Verbatim n -> n = bits
             | NativeIntSource.Verbatim _, NativeIntSource.ManagedPointer _
             | NativeIntSource.ManagedPointer _, NativeIntSource.Verbatim _
             | NativeIntSource.SyntheticCrossArrayOffset _, NativeIntSource.ManagedPointer _

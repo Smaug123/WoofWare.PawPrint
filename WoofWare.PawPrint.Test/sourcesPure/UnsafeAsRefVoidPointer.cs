@@ -1,3 +1,4 @@
+using System;
 using System.Runtime.CompilerServices;
 
 namespace UnsafeAsRefVoidPointer
@@ -104,6 +105,29 @@ namespace UnsafeAsRefVoidPointer
             {
                 if ((nint)pinned != 1) return 17;
             }
+
+            // Pointer-typed comparisons against `nint` literals: C# does not
+            // emit `conv.i` for `(nint)byte*` since they share stack type, so
+            // a placeholder ManagedPointer reaches `clt`/`cgt`/`ceq` directly.
+            // Each comparison must treat the placeholder as its bit pattern.
+            ref byte cmpRef = ref Unsafe.AsRef<byte>((void*)5);
+            byte* cmpPtr = (byte*)Unsafe.AsPointer(ref cmpRef);
+            if (!((nint)cmpPtr < 10)) return 18;
+            if (!((nint)cmpPtr > 3)) return 19;
+            if (!((nint)cmpPtr == 5)) return 20;
+            if (!((nint)cmpPtr != 6)) return 21;
+
+            // Unsigned comparisons against the placeholder bits.
+            if (!((nuint)cmpPtr < 10u)) return 22;
+            if (!((nuint)cmpPtr > 3u)) return 23;
+
+            // Zero-length `Span<T>` constructed over a placeholder pointer:
+            // the BCL pattern for fabricating an empty span without
+            // allocating. The source must survive the constructor without
+            // being projected (the placeholder is never safe to dereference).
+            byte* emptyBase = (byte*)Unsafe.AsPointer(ref Unsafe.AsRef<byte>((void*)1));
+            Span<byte> emptySpan = new Span<byte>(emptyBase, 0);
+            if (emptySpan.Length != 0) return 24;
 
             return 0;
         }

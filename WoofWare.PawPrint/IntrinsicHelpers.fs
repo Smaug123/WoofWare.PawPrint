@@ -831,9 +831,21 @@ module internal IntrinsicHelpers =
             | Some info -> info
             | None -> failwith $"Span pointer constructor element type was not registered: %O{elementType}"
 
+        // `Unsafe.AsRef<T>((void*)bits)` placeholders are bit patterns, not
+        // anchored byrefs; `appendProjection` rightly refuses to project off
+        // them. The CLR permits arbitrary non-null pointers for zero-length
+        // pointer-backed spans (the source must never be dereferenced), so
+        // for `length = 0` we skip the `ReinterpretAs` and keep the
+        // placeholder verbatim. For `length > 0` over a placeholder we
+        // refuse: any indexing would have to project off the placeholder,
+        // which is undefined.
         let sourcePtr =
             match sourcePtr with
             | ManagedPointerSource.Null -> ManagedPointerSource.Null
+            | ManagedPointerSource.NativeIntPlaceholder _ when length = 0 -> sourcePtr
+            | ManagedPointerSource.NativeIntPlaceholder bits ->
+                failwith
+                    $"TODO: %s{methodToCall.DeclaringType.Name}(void*, int) with non-zero length %d{length} over placeholder pointer 0x%x{bits}"
             | sourcePtr ->
                 ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs elementTypeInfo) sourcePtr
 
