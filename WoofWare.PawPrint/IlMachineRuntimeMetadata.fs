@@ -1405,22 +1405,35 @@ module IlMachineRuntimeMetadata =
                         //       underlying type).
                         // (a) is modelled below. (b) requires reading each enum's `value__`
                         // field to discover its underlying type, which we haven't taught
-                        // the assignability walk yet. When either element is an enum we
-                        // therefore return `None` (undecided) so callers can degrade rather
-                        // than rejecting a valid covariant store. Two non-enum value types
-                        // keep the definitive `Some false` answer.
+                        // the assignability walk yet. Enum-underlying equivalence can only
+                        // make the answer `true` when the partner is either another enum
+                        // or a primitive integer in the normalization table; for any other
+                        // partner (float, double, bool, char, non-integer struct) the
+                        // answer remains definitively false. So we return `None` only when
+                        // both sides plausibly participate in rule (b); otherwise we keep
+                        // the definitive `Some false` answer that callers like `isinst` /
+                        // `castclass` rely on.
                         let state, objIsEnum = isEnumValueType state objElement
                         let state, targetIsEnum = isEnumValueType state targetElement
 
-                        if objIsEnum || targetIsEnum then
+                        let objNormalized = normalizedPrimitiveIntegerIdentity objElement
+                        let targetNormalized = normalizedPrimitiveIntegerIdentity targetElement
+
+                        let enumCandidate (isEnum : bool) (normalized : ResolvedTypeIdentity option) =
+                            isEnum || normalized.IsSome
+
+                        if
+                            (objIsEnum || targetIsEnum)
+                            && enumCandidate objIsEnum objNormalized
+                            && enumCandidate targetIsEnum targetNormalized
+                        then
+                            // At least one element is an enum and the partner could share
+                            // an underlying integer type.
                             // TODO: model enum-underlying integer equivalence so this case
                             // becomes a precise answer rather than "unknown".
                             state, None
                         else
-                            match
-                                normalizedPrimitiveIntegerIdentity objElement,
-                                normalizedPrimitiveIntegerIdentity targetElement
-                            with
+                            match objNormalized, targetNormalized with
                             | Some a, Some b when a = b -> state, Some true
                             | _, _ -> state, Some false
             | Some _, None -> state, None
