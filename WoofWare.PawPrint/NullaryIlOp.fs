@@ -328,24 +328,18 @@ module NullaryIlOp =
         | EvalStackValue.UserDefinedValueType valueType ->
             failwith $"Neg: refusing to negate user-defined value type %O{valueType}"
 
-    let private convOvfI4Un (value : EvalStackValue) : int32 =
-        let fromUnsignedInt64 (sourceDescription : string) (value : int64) : int32 =
+    let private convOvfI4Un (value : EvalStackValue) : Result<int32, unit> =
+        let fromUnsignedInt64 (value : int64) : Result<int32, unit> =
             if value < 0L || value > int64 Int32.MaxValue then
-                failwith
-                    $"TODO: throw OverflowException for Conv_ovf_i4_un when %s{sourceDescription} does not fit in int32: %d{value}"
+                Error ()
             else
-                int32 value
+                int32 value |> Ok
 
         match value with
-        | EvalStackValue.Int32 i ->
-            if i < 0 then
-                failwith
-                    $"TODO: throw OverflowException for Conv_ovf_i4_un when unsigned int32 does not fit in int32: %u{uint32 i}"
-            else
-                i
-        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> fromUnsignedInt64 "unsigned int64" i
-        | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset i) ->
-            failwith "TODO: synthetic cross-array offset"
+        | EvalStackValue.Int32 i -> if i < 0 then Error () else Ok i
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> fromUnsignedInt64 i
+        | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) ->
+            failwith "TODO: Conv_ovf_i4_un from synthetic cross-array offset"
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
             failwith $"TODO: Conv_ovf_i4_un from widened native int %O{src}"
         | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) ->
@@ -355,17 +349,243 @@ module NullaryIlOp =
             // is a real CLR semantic that hash bits don't model; fail
             // loudly until a call site demonstrates the need.
             failwith $"TODO: Conv_ovf_i4_un from synthesised pointer-hash bits 0x%x{bits}"
-        | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) -> fromUnsignedInt64 "unsigned native int" i
-        | EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset i) ->
-            failwith "TODO: synthetic cross-array offset"
-        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) -> 0
+        | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) -> fromUnsignedInt64 i
+        | EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset _) ->
+            failwith "TODO: Conv_ovf_i4_un from synthetic cross-array offset native int"
+        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) -> Ok 0
         | EvalStackValue.NativeInt src -> failwith $"TODO: Conv_ovf_i4_un from non-verbatim native int source %O{src}"
-        | EvalStackValue.Float f -> failwith $"TODO: Conv_ovf_i4_un from float %f{f}"
+        | EvalStackValue.Float f ->
+            // ECMA-335 III.3.27: for a floating-point source, the `_un` suffix has
+            // no effect — floats are signed by construction, so there is no source
+            // bit-pattern to reinterpret. Behaviour matches `conv.ovf.i4`: truncate
+            // toward zero, accept results in `[Int32.MinValue, Int32.MaxValue]`,
+            // overflow on NaN or out-of-range.
+            if Double.IsNaN f || f >= 2147483648.0 || f <= -2147483649.0 then
+                Error ()
+            else
+                int32<float> (Math.Truncate f) |> Ok
         | EvalStackValue.ManagedPointer ptr -> failwith $"TODO: Conv_ovf_i4_un from managed pointer %O{ptr}"
         | EvalStackValue.NullObjectRef -> failwith "TODO: Conv_ovf_i4_un from null object reference"
         | EvalStackValue.ObjectRef addr -> failwith $"TODO: Conv_ovf_i4_un from object reference %O{addr}"
         | EvalStackValue.UserDefinedValueType valueType ->
             failwith $"TODO: Conv_ovf_i4_un from user-defined value type %O{valueType}"
+
+    /// `conv.ovf.i4`: treats the source as signed and converts it to int32,
+    /// returning `Error ()` when the value does not fit in `[Int32.MinValue,
+    /// Int32.MaxValue]`. Pointer-shaped native ints reach this opcode only via
+    /// patterns we have not yet observed, so they `failwith` until a real call
+    /// site demonstrates the right policy.
+    let private convOvfI4 (value : EvalStackValue) : Result<int32, unit> =
+        let fromSignedInt64 (value : int64) : Result<int32, unit> =
+            if value < int64 Int32.MinValue || value > int64 Int32.MaxValue then
+                Error ()
+            else
+                int32 value |> Ok
+
+        match value with
+        | EvalStackValue.Int32 i -> Ok i
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> fromSignedInt64 i
+        | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) ->
+            failwith "TODO: Conv_ovf_i4 from synthetic cross-array offset"
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
+            failwith $"TODO: Conv_ovf_i4 from widened native int %O{src}"
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) ->
+            failwith $"TODO: Conv_ovf_i4 from synthesised pointer-hash bits 0x%x{bits}"
+        | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) -> fromSignedInt64 i
+        | EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset _) ->
+            failwith "TODO: Conv_ovf_i4 from synthetic cross-array offset native int"
+        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) -> Ok 0
+        | EvalStackValue.NativeInt src -> failwith $"TODO: Conv_ovf_i4 from non-verbatim native int source %O{src}"
+        | EvalStackValue.Float f ->
+            // Truncate toward zero, then check the truncated integer fits in
+            // `[Int32.MinValue, Int32.MaxValue]`. `2147483648.0` (= 2^31) is exactly
+            // representable and is the smallest double > Int32.MaxValue;
+            // `-2147483649.0` (= -2^31 - 1) is exactly representable and is the
+            // largest double < Int32.MinValue. Doubles strictly between
+            // `-2147483649.0` and `-2147483648.0` truncate to `-2147483648` which is
+            // in range, so use a strict `<` against `-2147483649.0`. NaN compares
+            // false to every value, so guard separately.
+            if Double.IsNaN f || f >= 2147483648.0 || f <= -2147483649.0 then
+                Error ()
+            else
+                int32<float> (Math.Truncate f) |> Ok
+        | EvalStackValue.ManagedPointer ptr -> failwith $"TODO: Conv_ovf_i4 from managed pointer %O{ptr}"
+        | EvalStackValue.NullObjectRef -> failwith "TODO: Conv_ovf_i4 from null object reference"
+        | EvalStackValue.ObjectRef addr -> failwith $"TODO: Conv_ovf_i4 from object reference %O{addr}"
+        | EvalStackValue.UserDefinedValueType valueType ->
+            failwith $"TODO: Conv_ovf_i4 from user-defined value type %O{valueType}"
+
+    /// `conv.ovf.u4`: treats the source as signed and converts it to uint32,
+    /// returning `Error ()` when the value does not fit in `[0,
+    /// UInt32.MaxValue]`. Negative signed sources overflow; positive sources
+    /// up to UInt32.MaxValue succeed.
+    let private convOvfU4 (value : EvalStackValue) : Result<uint32, unit> =
+        let fromSignedInt64 (value : int64) : Result<uint32, unit> =
+            if value < 0L || value > int64 UInt32.MaxValue then
+                Error ()
+            else
+                uint32 value |> Ok
+
+        match value with
+        | EvalStackValue.Int32 i -> if i < 0 then Error () else uint32 i |> Ok
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> fromSignedInt64 i
+        | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) ->
+            failwith "TODO: Conv_ovf_u4 from synthetic cross-array offset"
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
+            failwith $"TODO: Conv_ovf_u4 from widened native int %O{src}"
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) ->
+            failwith $"TODO: Conv_ovf_u4 from synthesised pointer-hash bits 0x%x{bits}"
+        | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) -> fromSignedInt64 i
+        | EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset _) ->
+            failwith "TODO: Conv_ovf_u4 from synthetic cross-array offset native int"
+        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) -> Ok 0u
+        | EvalStackValue.NativeInt src -> failwith $"TODO: Conv_ovf_u4 from non-verbatim native int source %O{src}"
+        | EvalStackValue.Float f ->
+            // Truncate toward zero, then check the truncated integer fits in
+            // `[0, UInt32.MaxValue]`. `4294967296.0` (= 2^32) is exactly
+            // representable and is the smallest double > UInt32.MaxValue. Doubles
+            // strictly between `-1.0` and `0.0` truncate to `0` which is in range,
+            // so use `<=` against `-1.0` for the lower bound. NaN guard separate.
+            if Double.IsNaN f || f >= 4294967296.0 || f <= -1.0 then
+                Error ()
+            else
+                uint32<float> (Math.Truncate f) |> Ok
+        | EvalStackValue.ManagedPointer ptr -> failwith $"TODO: Conv_ovf_u4 from managed pointer %O{ptr}"
+        | EvalStackValue.NullObjectRef -> failwith "TODO: Conv_ovf_u4 from null object reference"
+        | EvalStackValue.ObjectRef addr -> failwith $"TODO: Conv_ovf_u4 from object reference %O{addr}"
+        | EvalStackValue.UserDefinedValueType valueType ->
+            failwith $"TODO: Conv_ovf_u4 from user-defined value type %O{valueType}"
+
+    /// `conv.ovf.i1`: treats the source as signed and converts it to int8,
+    /// returning `Error ()` when the value does not fit in `[SByte.MinValue,
+    /// SByte.MaxValue]`.
+    let private convOvfI1 (value : EvalStackValue) : Result<sbyte, unit> =
+        let fromSignedInt32 (value : int32) : Result<sbyte, unit> =
+            if value < int32 SByte.MinValue || value > int32 SByte.MaxValue then
+                Error ()
+            else
+                sbyte value |> Ok
+
+        let fromSignedInt64 (value : int64) : Result<sbyte, unit> =
+            if value < int64 SByte.MinValue || value > int64 SByte.MaxValue then
+                Error ()
+            else
+                sbyte value |> Ok
+
+        match value with
+        | EvalStackValue.Int32 i -> fromSignedInt32 i
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> fromSignedInt64 i
+        | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) ->
+            failwith "TODO: Conv_ovf_i1 from synthetic cross-array offset"
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
+            failwith $"TODO: Conv_ovf_i1 from widened native int %O{src}"
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) ->
+            failwith $"TODO: Conv_ovf_i1 from synthesised pointer-hash bits 0x%x{bits}"
+        | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) -> fromSignedInt64 i
+        | EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset _) ->
+            failwith "TODO: Conv_ovf_i1 from synthetic cross-array offset native int"
+        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) -> Ok 0y
+        | EvalStackValue.NativeInt src -> failwith $"TODO: Conv_ovf_i1 from non-verbatim native int source %O{src}"
+        | EvalStackValue.Float f ->
+            // Truncate toward zero, then check the truncated integer fits in
+            // `[SByte.MinValue, SByte.MaxValue]`. Both bounds are exactly
+            // representable in double. Doubles strictly between `-129.0` and
+            // `-128.0` truncate to `-128` which is in range, so use strict `<`
+            // against `-129.0`. NaN guard separate.
+            if Double.IsNaN f || f >= 128.0 || f <= -129.0 then
+                Error ()
+            else
+                sbyte<float> (Math.Truncate f) |> Ok
+        | EvalStackValue.ManagedPointer ptr -> failwith $"TODO: Conv_ovf_i1 from managed pointer %O{ptr}"
+        | EvalStackValue.NullObjectRef -> failwith "TODO: Conv_ovf_i1 from null object reference"
+        | EvalStackValue.ObjectRef addr -> failwith $"TODO: Conv_ovf_i1 from object reference %O{addr}"
+        | EvalStackValue.UserDefinedValueType valueType ->
+            failwith $"TODO: Conv_ovf_i1 from user-defined value type %O{valueType}"
+
+    /// `conv.ovf.u1`: treats the source as signed and converts it to uint8,
+    /// returning `Error ()` when the value does not fit in `[0, 255]`. Negative
+    /// signed sources overflow.
+    let private convOvfU1 (value : EvalStackValue) : Result<byte, unit> =
+        let fromSignedInt32 (value : int32) : Result<byte, unit> =
+            if value < 0 || value > 255 then
+                Error ()
+            else
+                byte value |> Ok
+
+        let fromSignedInt64 (value : int64) : Result<byte, unit> =
+            if value < 0L || value > 255L then
+                Error ()
+            else
+                byte value |> Ok
+
+        match value with
+        | EvalStackValue.Int32 i -> fromSignedInt32 i
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> fromSignedInt64 i
+        | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) ->
+            failwith "TODO: Conv_ovf_u1 from synthetic cross-array offset"
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
+            failwith $"TODO: Conv_ovf_u1 from widened native int %O{src}"
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) ->
+            failwith $"TODO: Conv_ovf_u1 from synthesised pointer-hash bits 0x%x{bits}"
+        | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) -> fromSignedInt64 i
+        | EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset _) ->
+            failwith "TODO: Conv_ovf_u1 from synthetic cross-array offset native int"
+        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) -> Ok 0uy
+        | EvalStackValue.NativeInt src -> failwith $"TODO: Conv_ovf_u1 from non-verbatim native int source %O{src}"
+        | EvalStackValue.Float f ->
+            // Truncate toward zero, then check the truncated integer fits in
+            // `[0, 255]`. `256.0` is exactly representable. NaN guard separate.
+            if Double.IsNaN f || f >= 256.0 || f <= -1.0 then
+                Error ()
+            else
+                byte<float> (Math.Truncate f) |> Ok
+        | EvalStackValue.ManagedPointer ptr -> failwith $"TODO: Conv_ovf_u1 from managed pointer %O{ptr}"
+        | EvalStackValue.NullObjectRef -> failwith "TODO: Conv_ovf_u1 from null object reference"
+        | EvalStackValue.ObjectRef addr -> failwith $"TODO: Conv_ovf_u1 from object reference %O{addr}"
+        | EvalStackValue.UserDefinedValueType valueType ->
+            failwith $"TODO: Conv_ovf_u1 from user-defined value type %O{valueType}"
+
+    /// `conv.ovf.u1.un`: treats the source as unsigned and converts it to
+    /// uint8, returning `Error ()` when the value does not fit in `[0, 255]`.
+    /// Because the source is interpreted unsigned, an Int32 with the sign bit
+    /// set (e.g. -1) is treated as a large positive uint32, which overflows.
+    let private convOvfU1Un (value : EvalStackValue) : Result<byte, unit> =
+        let fromUnsignedInt32 (value : int32) : Result<byte, unit> =
+            let u = uint32 value
+            if u > 255u then Error () else byte u |> Ok
+
+        let fromUnsignedInt64 (value : int64) : Result<byte, unit> =
+            let u = uint64 value
+            if u > 255UL then Error () else byte u |> Ok
+
+        match value with
+        | EvalStackValue.Int32 i -> fromUnsignedInt32 i
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> fromUnsignedInt64 i
+        | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) ->
+            failwith "TODO: Conv_ovf_u1_un from synthetic cross-array offset"
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
+            failwith $"TODO: Conv_ovf_u1_un from widened native int %O{src}"
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) ->
+            failwith $"TODO: Conv_ovf_u1_un from synthesised pointer-hash bits 0x%x{bits}"
+        | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) -> fromUnsignedInt64 i
+        | EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset _) ->
+            failwith "TODO: Conv_ovf_u1_un from synthetic cross-array offset native int"
+        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) -> Ok 0uy
+        | EvalStackValue.NativeInt src -> failwith $"TODO: Conv_ovf_u1_un from non-verbatim native int source %O{src}"
+        | EvalStackValue.Float f ->
+            // For float sources the `_un` suffix is a no-op: floats are signed by
+            // construction. Truncate toward zero, then check the truncated integer
+            // fits in `[0, 255]`. `256.0` is exactly representable. NaN guard
+            // separate.
+            if Double.IsNaN f || f >= 256.0 || f <= -1.0 then
+                Error ()
+            else
+                byte<float> (Math.Truncate f) |> Ok
+        | EvalStackValue.ManagedPointer ptr -> failwith $"TODO: Conv_ovf_u1_un from managed pointer %O{ptr}"
+        | EvalStackValue.NullObjectRef -> failwith "TODO: Conv_ovf_u1_un from null object reference"
+        | EvalStackValue.ObjectRef addr -> failwith $"TODO: Conv_ovf_u1_un from object reference %O{addr}"
+        | EvalStackValue.UserDefinedValueType valueType ->
+            failwith $"TODO: Conv_ovf_u1_un from user-defined value type %O{valueType}"
 
     /// The conversion performed by `conv.ovf.u`: treats the source value as
     /// signed and converts it to an unsigned native int, returning `Error ()`
@@ -1885,18 +2105,46 @@ module NullaryIlOp =
         | Conv_ovf_i_un -> failwith "TODO: Conv_ovf_i_un unimplemented"
         | Conv_ovf_u_un -> failwith "TODO: Conv_ovf_u_un unimplemented"
         | Conv_ovf_i1_un -> failwith "TODO: Conv_ovf_i1_un unimplemented"
-        | Conv_ovf_u1_un -> failwith "TODO: Conv_ovf_u1_un unimplemented"
+        | Conv_ovf_u1_un ->
+            let popped, state = IlMachineState.popEvalStack currentThread state
+
+            match convOvfU1Un popped with
+            | Ok conv ->
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (int32 conv)) currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Tuple.withRight WhatWeDid.Executed
+                |> ExecutionResult.stepped
+            | Error () ->
+                IlMachineStateExecution.raiseRuntimeException
+                    loggerFactory
+                    corelib
+                    corelib.OverflowException
+                    currentThread
+                    state
+                |> ExecutionResult.stepped
         | Conv_ovf_i2_un -> failwith "TODO: Conv_ovf_i2_un unimplemented"
         | Conv_ovf_u2_un -> failwith "TODO: Conv_ovf_u2_un unimplemented"
         | Conv_ovf_i4_un ->
             let popped, state = IlMachineState.popEvalStack currentThread state
-            let converted = convOvfI4Un popped
 
-            state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 converted) currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
-            |> Tuple.withRight WhatWeDid.Executed
-            |> ExecutionResult.stepped
+            match convOvfI4Un popped with
+            | Ok conv ->
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 conv) currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Tuple.withRight WhatWeDid.Executed
+                |> ExecutionResult.stepped
+            | Error () ->
+                // Exception dispatch uses the faulting instruction's PC, so do
+                // not advance the program counter on this branch.
+                IlMachineStateExecution.raiseRuntimeException
+                    loggerFactory
+                    corelib
+                    corelib.OverflowException
+                    currentThread
+                    state
+                |> ExecutionResult.stepped
         | Conv_ovf_u4_un -> failwith "TODO: Conv_ovf_u4_un unimplemented"
         | Conv_ovf_i8_un -> failwith "TODO: Conv_ovf_i8_un unimplemented"
         | Conv_ovf_u8_un -> failwith "TODO: Conv_ovf_u8_un unimplemented"
@@ -2306,13 +2554,81 @@ module NullaryIlOp =
             stElem loggerFactory corelib (CliType.ObjectRef None) value index arr currentThread state
         | Cpblk -> failwith "TODO: Cpblk unimplemented"
         | Initblk -> failwith "TODO: Initblk unimplemented"
-        | Conv_ovf_u1 -> failwith "TODO: Conv_ovf_u1 unimplemented"
+        | Conv_ovf_u1 ->
+            let popped, state = IlMachineState.popEvalStack currentThread state
+
+            match convOvfU1 popped with
+            | Ok conv ->
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (int32 conv)) currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Tuple.withRight WhatWeDid.Executed
+                |> ExecutionResult.stepped
+            | Error () ->
+                IlMachineStateExecution.raiseRuntimeException
+                    loggerFactory
+                    corelib
+                    corelib.OverflowException
+                    currentThread
+                    state
+                |> ExecutionResult.stepped
         | Conv_ovf_u2 -> failwith "TODO: Conv_ovf_u2 unimplemented"
-        | Conv_ovf_u4 -> failwith "TODO: Conv_ovf_u4 unimplemented"
+        | Conv_ovf_u4 ->
+            let popped, state = IlMachineState.popEvalStack currentThread state
+
+            match convOvfU4 popped with
+            | Ok conv ->
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (int32 conv)) currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Tuple.withRight WhatWeDid.Executed
+                |> ExecutionResult.stepped
+            | Error () ->
+                IlMachineStateExecution.raiseRuntimeException
+                    loggerFactory
+                    corelib
+                    corelib.OverflowException
+                    currentThread
+                    state
+                |> ExecutionResult.stepped
         | Conv_ovf_u8 -> failwith "TODO: Conv_ovf_u8 unimplemented"
-        | Conv_ovf_i1 -> failwith "TODO: Conv_ovf_i1 unimplemented"
+        | Conv_ovf_i1 ->
+            let popped, state = IlMachineState.popEvalStack currentThread state
+
+            match convOvfI1 popped with
+            | Ok conv ->
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (int32 conv)) currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Tuple.withRight WhatWeDid.Executed
+                |> ExecutionResult.stepped
+            | Error () ->
+                IlMachineStateExecution.raiseRuntimeException
+                    loggerFactory
+                    corelib
+                    corelib.OverflowException
+                    currentThread
+                    state
+                |> ExecutionResult.stepped
         | Conv_ovf_i2 -> failwith "TODO: Conv_ovf_i2 unimplemented"
-        | Conv_ovf_i4 -> failwith "TODO: Conv_ovf_i4 unimplemented"
+        | Conv_ovf_i4 ->
+            let popped, state = IlMachineState.popEvalStack currentThread state
+
+            match convOvfI4 popped with
+            | Ok conv ->
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 conv) currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Tuple.withRight WhatWeDid.Executed
+                |> ExecutionResult.stepped
+            | Error () ->
+                IlMachineStateExecution.raiseRuntimeException
+                    loggerFactory
+                    corelib
+                    corelib.OverflowException
+                    currentThread
+                    state
+                |> ExecutionResult.stepped
         | Conv_ovf_i8 -> failwith "TODO: Conv_ovf_i8 unimplemented"
         | Break -> failwith "TODO: Break unimplemented"
         | Conv_r_un ->
