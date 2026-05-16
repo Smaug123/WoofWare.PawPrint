@@ -191,6 +191,9 @@ module IlMachineState =
     let synthesizeTypeInitializationException =
         IlMachineRuntimeMetadata.synthesizeTypeInitializationException
 
+    let synthesizeTargetInvocationException =
+        IlMachineRuntimeMetadata.synthesizeTargetInvocationException
+
     let resolveTypeMetadataToken = IlMachineRuntimeMetadata.resolveTypeMetadataToken
 
     let tryGetConcreteTypeInfo = IlMachineRuntimeMetadata.tryGetConcreteTypeInfo

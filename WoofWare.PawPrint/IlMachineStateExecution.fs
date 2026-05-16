@@ -717,6 +717,7 @@ module IlMachineStateExecution =
         (threadState : ThreadState)
         (callSiteIlOpIndexOverride : int option)
         (dispatchAsExceptionOnReturn : bool)
+        (wrapExceptionInTargetInvocation : bool)
         (state : IlMachineState)
         : IlMachineState
         =
@@ -769,13 +770,15 @@ module IlMachineStateExecution =
         // allocate the object and run its parameterless ctor by recursing through `callMethod`.
         // See https://github.com/dotnet/runtime/blob/HEAD/src/coreclr/System.Private.CoreLib/src/System/Activator.RuntimeType.cs#L138
         //
-        // Known unimplemented behaviour:
+        // Exception wrapping:
         //  - CoreCLR's `CreateInstanceOfT` wraps any exception thrown by the recursed ctor in a
-        //    `TargetInvocationException`. We don't intercept the exception today; user code that
-        //    catches `TargetInvocationException` around `Activator.CreateInstance<T>()` will see the
-        //    raw guest exception instead. Tracked by `ActivatorCreateInstanceThrowingCtor.cs` in the
-        //    `unimplemented` set. Fix needs a marker on the ctor frame so the exception dispatcher
-        //    rethrows wrapped, plus a host-side `TargetInvocationException` constructor.
+        //    `TargetInvocationException`. We can't observe that in a separate Activator frame
+        //    because we inline the intrinsic, so the recursive `callMethod` for the ctor sets
+        //    `WrapExceptionInTargetInvocation = true` on the ctor frame's `ReturnState`. When
+        //    `ExceptionDispatching.unwindToCallerAndSearch` pops the ctor frame, it synthesises
+        //    a fresh `TargetInvocationException` with the original exception as `_innerException`
+        //    and continues the search with the wrapped exception. A try/catch *inside* the ctor
+        //    that handles the exception is unaffected, matching CoreCLR.
         //
         // Intentional divergence (see docs/divergences.md):
         //  - For `BeforeFieldInit` reference types, CoreCLR defers the type initializer past the
@@ -952,6 +955,7 @@ module IlMachineStateExecution =
                         threadState
                         None
                         false
+                        true // wrapExceptionInTargetInvocation: mirror CreateInstanceOfT
                         state
                     |> Some
                 | WhatWeDid.SuspendedForClassInit ->
@@ -1146,6 +1150,7 @@ module IlMachineStateExecution =
                         WasConstructingObj = wasConstructing
                         CallSiteIlOpIndex = callSiteIlOpIndexOverride |> Option.defaultValue afterPop.IlOpIndex
                         DispatchAsExceptionOnReturn = dispatchAsExceptionOnReturn
+                        WrapExceptionInTargetInvocation = wrapExceptionInTargetInvocation
                     }
 
             match
@@ -1349,6 +1354,7 @@ module IlMachineStateExecution =
                     currentThreadState
                     None
                     false
+                    false // wrapExceptionInTargetInvocation
                     state
                 |> FirstLoadThis
             | None ->
@@ -1483,5 +1489,6 @@ module IlMachineStateExecution =
             threadState
             None
             true // dispatchAsExceptionOnReturn
+            false // wrapExceptionInTargetInvocation
             state,
         WhatWeDid.Executed

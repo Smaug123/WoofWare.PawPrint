@@ -230,6 +230,10 @@ type BaseClassTypes<'corelib> =
         OutOfMemoryException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         ArgumentException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         ArgumentNullException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        /// `System.Reflection.TargetInvocationException`. Used to wrap the inner exception
+        /// when a reflection-style invocation (e.g. `Activator.CreateInstance<T>()`) propagates
+        /// an exception thrown by user code through the runtime's invocation seam.
+        TargetInvocationException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         /// `System.DateTime`. Host-known because CoreCLR's `MarshalInfo` short-circuits a
         /// DateTime field to `MARSHAL_TYPE_DATE` (8 bytes) before the AutoLayout rejection
         /// triggers; reproducing that requires identifying DateTime nominally at marshal time.

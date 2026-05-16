@@ -553,6 +553,42 @@ module ExceptionDispatching =
 
                 state, wrappedCliException, tieType
 
+        // If this frame was the ctor target of `Activator.CreateInstance<T>()` (or any other
+        // CreateInstanceOfT-style invocation that opts in via `WrapExceptionInTargetInvocation`),
+        // wrap the in-flight exception in a fresh `TargetInvocationException` whose
+        // `_innerException` field points at the original. This mirrors CoreCLR's
+        // `try { ctor } catch (Exception e) { throw new TargetInvocationException(e); }` wrap
+        // around `cache.CallRefConstructor` in `RuntimeType.CreateInstanceOfT` without
+        // synthesising an extra trampoline frame: the wrap only fires on unwind across this
+        // frame's boundary, so a try/catch *inside* the ctor that handles the exception is
+        // unaffected.
+        let state, cliException, exceptionType =
+            if not returnState.WrapExceptionInTargetInvocation then
+                state, cliException, exceptionType
+            else
+                let state =
+                    IlMachineState.setExceptionStackTraceString
+                        loggerFactory
+                        corelib
+                        cliException.ExceptionObject
+                        cliException.StackTrace
+                        state
+
+                let tieAddr, tieType, state =
+                    IlMachineState.synthesizeTargetInvocationException
+                        loggerFactory
+                        corelib
+                        cliException.ExceptionObject
+                        state
+
+                let wrappedCliException =
+                    {
+                        ExceptionObject = tieAddr
+                        StackTrace = []
+                    }
+
+                state, wrappedCliException, tieType
+
         // Pop to caller frame
         let callerFrame = ThreadState.getFrame returnState.JumpTo threadState
 
