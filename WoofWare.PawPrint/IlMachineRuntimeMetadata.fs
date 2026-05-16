@@ -1580,25 +1580,71 @@ module IlMachineRuntimeMetadata =
         | TypeDefn.FromDefinition _
         | TypeDefn.Void -> false
 
+    /// Apply a `TypeDefn` substitution to every `GenericTypeParameter` reference inside `ty`.
+    /// This is purely syntactic; assembly identifiers and primitives pass through unchanged.
+    /// `GenericMethodParameter` references are left in place because they have no legitimate
+    /// appearance in a type definition's base or interface signatures (method generics belong
+    /// to method signatures, not type metadata edges).
+    let rec private substituteTypeDefn (subs : ImmutableArray<TypeDefn>) (ty : TypeDefn) : TypeDefn =
+        match ty with
+        | TypeDefn.GenericTypeParameter idx ->
+            if idx < subs.Length then
+                subs.[idx]
+            else
+                failwithf
+                    "substituteTypeDefn: GenericTypeParameter %d out of bounds (substitution arity %d)"
+                    idx
+                    subs.Length
+        | TypeDefn.GenericMethodParameter _ -> ty
+        | TypeDefn.GenericInstantiation (generic, args) ->
+            let builder = ImmutableArray.CreateBuilder args.Length
+
+            for arg in args do
+                builder.Add (substituteTypeDefn subs arg)
+
+            TypeDefn.GenericInstantiation (substituteTypeDefn subs generic, builder.ToImmutable ())
+        | TypeDefn.Array (element, rank) -> TypeDefn.Array (substituteTypeDefn subs element, rank)
+        | TypeDefn.OneDimensionalArrayLowerBoundZero element ->
+            TypeDefn.OneDimensionalArrayLowerBoundZero (substituteTypeDefn subs element)
+        | TypeDefn.Pointer element -> TypeDefn.Pointer (substituteTypeDefn subs element)
+        | TypeDefn.Byref element -> TypeDefn.Byref (substituteTypeDefn subs element)
+        | TypeDefn.Pinned element -> TypeDefn.Pinned (substituteTypeDefn subs element)
+        | TypeDefn.Modified (original, modifier, required) ->
+            TypeDefn.Modified (substituteTypeDefn subs original, substituteTypeDefn subs modifier, required)
+        | TypeDefn.FunctionPointer _
+        | TypeDefn.PrimitiveType _
+        | TypeDefn.FromReference _
+        | TypeDefn.FromDefinition _
+        | TypeDefn.Void -> ty
+
     /// Strip outer `GenericInstantiation` layers and resolve the underlying definition to
-    /// `(assembly, TypeInfo)`. Returns `None` when the stripped TypeDefn is not a nominal type
-    /// definition (e.g. an array, pointer, byref, primitive, or generic parameter) — none of
-    /// which is a legitimate `BaseType` or interface implementation, so the caller treats them
-    /// as dead-end edges for the identity walk.
+    /// `(assembly, TypeInfo, genericArgs)`. Returns `None` when the stripped TypeDefn is not a
+    /// nominal type definition (e.g. an array, pointer, byref, primitive, or generic
+    /// parameter) — none of which is a legitimate `BaseType` or interface implementation, so
+    /// the caller treats them as dead-end edges for the identity walk. The returned
+    /// `genericArgs` are the args from the outermost `GenericInstantiation` (already
+    /// substituted by the caller), or `ImmutableArray.Empty` when the type was a plain
+    /// definition without an explicit generic instantiation around it.
     let rec private stripToTypeInfo
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (declaringAssembly : DumpedAssembly)
         (ty : TypeDefn)
-        : IlMachineState * (DumpedAssembly * TypeInfo<GenericParamFromMetadata, TypeDefn>) option
+        : IlMachineState *
+          (DumpedAssembly * TypeInfo<GenericParamFromMetadata, TypeDefn> * ImmutableArray<TypeDefn>) option
         =
         match ty with
-        | TypeDefn.GenericInstantiation (generic, _) ->
-            stripToTypeInfo loggerFactory baseClassTypes state declaringAssembly generic
+        | TypeDefn.GenericInstantiation (generic, args) ->
+            let state, inner =
+                stripToTypeInfo loggerFactory baseClassTypes state declaringAssembly generic
+
+            match inner with
+            | Some (assy, typeInfo, _) -> state, Some (assy, typeInfo, args)
+            | None -> state, None
         | TypeDefn.FromDefinition (identity, _) ->
             match state.LoadedAssembly identity.Assembly with
-            | Some assy -> state, Some (assy, assy.TypeDefs.[identity.TypeDefinition.Get])
+            | Some assy -> state, Some (assy, assy.TypeDefs.[identity.TypeDefinition.Get], ImmutableArray.Empty)
             | None ->
                 failwithf "stripToTypeInfo: assembly for type definition %s was not loaded" identity.AssemblyFullName
         | TypeDefn.FromReference _ ->
@@ -1618,7 +1664,7 @@ module IlMachineRuntimeMetadata =
             let identity = resolved.Identity
 
             match state.LoadedAssembly identity.Assembly with
-            | Some assy -> state, Some (assy, assy.TypeDefs.[identity.TypeDefinition.Get])
+            | Some assy -> state, Some (assy, assy.TypeDefs.[identity.TypeDefinition.Get], ImmutableArray.Empty)
             | None ->
                 failwithf
                     "stripToTypeInfo: assembly for resolved type reference %s was not loaded"
@@ -1646,10 +1692,15 @@ module IlMachineRuntimeMetadata =
     ///   closed can be assigned to a type token that names "the open def" itself)
     /// - OpenGenericTypeDefinition s / OpenGenericTypeDefinition t → s = t (identity only;
     ///   stripping during a parent walk is for traversal, not for matching an open target)
-    /// - OpenGenericTypeDefinition / Closed → identity-walk source's base chain and
-    ///   implemented interfaces; at each edge, materialise to a `ConcreteTypeHandle` when no
-    ///   `GenericTypeParameter` is referenced and delegate to Closed/Closed, otherwise strip
-    ///   the outer `GenericInstantiation` to its definition identity and continue walking
+    /// - OpenGenericTypeDefinition / Closed → walk the source's base chain and implemented
+    ///   interfaces, threading a substitution context so that partially-closed inheritance
+    ///   like `class C<T> : B<int,T>` propagates the `int` binding into B's own walk. At
+    ///   each edge: substitute with the current context, then if no `GenericTypeParameter`
+    ///   reference remains, materialise to a `ConcreteTypeHandle` and delegate to
+    ///   Closed/Closed; otherwise strip to the definition's `TypeInfo` and recurse with the
+    ///   (substituted) generic args as the new context. The fallback when both the base and
+    ///   the interface chain are exhausted is to accept iff the target is System.Object,
+    ///   matching the closed oracle's `walkBase` `None` branch for interfaces.
     /// - GenericParameter / MethodGenericParameter (either side) → TODO until constraints
     ///   are modelled in the cast oracle
     let isRuntimeTypeHandleTargetAssignableTo
@@ -1680,9 +1731,22 @@ module IlMachineRuntimeMetadata =
 
             let sTypeInfo = sAssy.TypeDefs.[s.TypeDefinition.Get]
 
+            // The walk begins by treating every one of the source's generic parameters as
+            // unbound: each `GenericTypeParameter i` substitutes to itself, so the source's
+            // own metadata edges keep their original parameter references when first
+            // inspected, and only fully-bound positions get materialised as we descend.
+            let initialSubstitutions =
+                let builder = ImmutableArray.CreateBuilder sTypeInfo.Generics.Length
+
+                for i in 0 .. sTypeInfo.Generics.Length - 1 do
+                    builder.Add (TypeDefn.GenericTypeParameter i)
+
+                builder.ToImmutable ()
+
             let rec walkOpen
                 (state : IlMachineState)
                 (visited : Set<ResolvedTypeIdentity>)
+                (substitutions : ImmutableArray<TypeDefn>)
                 (currentAssy : DumpedAssembly)
                 (currentTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
                 : IlMachineState * bool
@@ -1695,20 +1759,18 @@ module IlMachineRuntimeMetadata =
 
                 let visited = Set.add currentIdentity visited
 
-                let tryMaterialiseAndCheck
+                let tryEdge
                     (state : IlMachineState)
                     (edgeAssy : DumpedAssembly)
                     (edgeTypeDefn : TypeDefn)
                     : IlMachineState * bool
                     =
-                    if containsAnyGenericParameter edgeTypeDefn then
-                        let state, stripped =
-                            stripToTypeInfo loggerFactory baseClassTypes state edgeAssy edgeTypeDefn
+                    let substituted = substituteTypeDefn substitutions edgeTypeDefn
 
-                        match stripped with
-                        | None -> state, false
-                        | Some (strippedAssy, strippedTypeInfo) -> walkOpen state visited strippedAssy strippedTypeInfo
-                    else
+                    if not (containsAnyGenericParameter substituted) then
+                        // Edge is fully closed under the current substitution. Materialise and
+                        // delegate to the closed oracle, which handles all variance, array, and
+                        // base-chain rules.
                         let state, edgeHandle =
                             IlMachineTypeResolution.concretizeType
                                 loggerFactory
@@ -1717,9 +1779,22 @@ module IlMachineRuntimeMetadata =
                                 edgeAssy.Name
                                 ImmutableArray.Empty
                                 ImmutableArray.Empty
-                                edgeTypeDefn
+                                substituted
 
                         isConcreteTypeAssignableTo loggerFactory baseClassTypes state edgeHandle t
+                    else
+                        // Edge still mentions an unbound parameter from the original open
+                        // source. It can never be identical to a closed target, but its own
+                        // base/interface chain might be. Strip to the edge's `TypeInfo` and
+                        // recurse, threading the (already-substituted) generic args as the
+                        // edge's substitution context.
+                        let state, stripped =
+                            stripToTypeInfo loggerFactory baseClassTypes state edgeAssy substituted
+
+                        match stripped with
+                        | None -> state, false
+                        | Some (strippedAssy, strippedTypeInfo, strippedArgs) ->
+                            walkOpen state visited strippedArgs strippedAssy strippedTypeInfo
 
                 let state, interfaceMatch =
                     ((state, false), currentTypeInfo.ImplementedInterfaces)
@@ -1741,7 +1816,7 @@ module IlMachineRuntimeMetadata =
                                     ImmutableArray.Empty
                                     impl.InterfaceHandle
 
-                            tryMaterialiseAndCheck state implResolvedAssy implTypeDefn
+                            tryEdge state implResolvedAssy implTypeDefn
                     )
 
                 if interfaceMatch then
@@ -1765,9 +1840,9 @@ module IlMachineRuntimeMetadata =
                     let state, baseAssy, baseTypeDefn =
                         resolveBaseTypeInfo loggerFactory baseClassTypes state currentAssy baseTypeInfo
 
-                    tryMaterialiseAndCheck state baseAssy baseTypeDefn
+                    tryEdge state baseAssy baseTypeDefn
 
-            walkOpen state Set.empty sAssy sTypeInfo
+            walkOpen state Set.empty initialSubstitutions sAssy sTypeInfo
         | RuntimeTypeHandleTarget.GenericParameter (declaringType, position), _ ->
             failwithf
                 "TODO: isRuntimeTypeHandleTargetAssignableTo: generic parameter source #%d of %O; need to model constraint-based assignability"
