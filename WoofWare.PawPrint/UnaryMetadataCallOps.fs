@@ -149,13 +149,17 @@ module internal UnaryMetadataCallOps =
                 methodGenerics
                 state
 
-        // Array covariance check (ECMA-335 III.4.x) is intentionally not modelled here, to
-        // match the szarray `stelem` precedent in UnaryMetadataArrayOps.executeStelem (and the
-        // wider tech debt acknowledged at NullaryIlOp.fs's stelem.ref TODO at line 586). For a
-        // reference array accessed through a base-typed view (e.g. `object[,]` aliasing a
-        // `string[,]`), the metadata-derived element type legitimately differs from the array's
-        // stored element handle, so an exact-handle check would reject valid C# code; the
-        // correct runtime-assignment-compatibility check requires machinery not yet wired in.
+        // ECMA-335 III.4.x runtime-assignment-compatibility gate. A covariant
+        // view (e.g. `object[,]` aliasing `string[,]`) must reject stores whose
+        // value's runtime type is not assignable to the array's stored element
+        // type, raising ArrayTypeMismatchException. Null and value-typed-element
+        // arrays pass through unchanged.
+        match
+            IlMachineStateExecution.checkArrayStoreVariance loggerFactory baseClassTypes thread arrAddr value state
+        with
+        | IlMachineStateExecution.ArrayStoreVarianceCheck.Raised state -> state, WhatWeDid.Executed
+        | IlMachineStateExecution.ArrayStoreVarianceCheck.Allowed state ->
+
         let coerced = EvalStackValue.toCliTypeCoerced zeroOfType value
 
         let state =

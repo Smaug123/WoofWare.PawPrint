@@ -233,6 +233,14 @@ module internal UnaryMetadataArrayOps =
                 ImmutableArray.Empty
                 state
 
+        // ECMA-335 III.4.x runtime-assignment-compatibility gate (see
+        // IlMachineStateExecution.checkArrayStoreVariance).
+        match
+            IlMachineStateExecution.checkArrayStoreVariance loggerFactory baseClassTypes thread arr contents state
+        with
+        | IlMachineStateExecution.ArrayStoreVarianceCheck.Raised state -> state, WhatWeDid.Executed
+        | IlMachineStateExecution.ArrayStoreVarianceCheck.Allowed state ->
+
         let contents = EvalStackValue.toCliTypeCoerced zeroOfType contents
 
         IlMachineState.setArrayValue arr contents index state

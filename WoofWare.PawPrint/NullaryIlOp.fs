@@ -646,6 +646,8 @@ module NullaryIlOp =
         | value -> failwith $"Endfilter requires an int32 result on the stack; got %O{value}"
 
     let internal stElem
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (targetCliTypeZero : CliType)
         (value : EvalStackValue)
         (index : EvalStackValue)
@@ -685,12 +687,26 @@ module NullaryIlOp =
             | EvalStackValue.ObjectRef addr -> addr
             | EvalStackValue.NullObjectRef -> failwith "TODO: throw NRE"
             | _ -> failwith $"Invalid array: %O{arr}"
-        // TODO: throw ArrayTypeMismatchException if incorrect types
 
         let arr = state.ManagedHeap.Arrays.[arrAddr]
 
         if index < 0 || index >= arr.Length then
             failwith "TODO: throw IndexOutOfRangeException"
+
+        // ECMA-335 III.4.x runtime-assignment-compatibility gate (see
+        // IlMachineStateExecution.checkArrayStoreVariance).
+        match
+            IlMachineStateExecution.checkArrayStoreVariance
+                loggerFactory
+                baseClassTypes
+                currentThread
+                arrAddr
+                value
+                state
+        with
+        | IlMachineStateExecution.ArrayStoreVarianceCheck.Raised state ->
+            ExecutionResult.stepped (state, WhatWeDid.Executed)
+        | IlMachineStateExecution.ArrayStoreVarianceCheck.Allowed state ->
 
         let state =
             state
@@ -2211,6 +2227,8 @@ module NullaryIlOp =
             let arr, state = IlMachineState.popEvalStack currentThread state
 
             stElem
+                loggerFactory
+                corelib
                 (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
                 value
                 index
@@ -2221,19 +2239,22 @@ module NullaryIlOp =
             let value, state = IlMachineState.popEvalStack currentThread state
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
-            stElem (CliType.Numeric (CliNumericType.Int8 0y)) value index arr currentThread state
+
+            stElem loggerFactory corelib (CliType.Numeric (CliNumericType.Int8 0y)) value index arr currentThread state
         | Stelem_u1 -> failwith "TODO: Stelem_u1 unimplemented"
         | Stelem_i2 ->
             let value, state = IlMachineState.popEvalStack currentThread state
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
-            stElem (CliType.Numeric (CliNumericType.Int16 0s)) value index arr currentThread state
+
+            stElem loggerFactory corelib (CliType.Numeric (CliNumericType.Int16 0s)) value index arr currentThread state
         | Stelem_u2 -> failwith "TODO: Stelem_u2 unimplemented"
         | Stelem_i4 ->
             let value, state = IlMachineState.popEvalStack currentThread state
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
-            stElem (CliType.Numeric (CliNumericType.Int32 0)) value index arr currentThread state
+
+            stElem loggerFactory corelib (CliType.Numeric (CliNumericType.Int32 0)) value index arr currentThread state
         | Stelem_u4 -> failwith "TODO: Stelem_u4 unimplemented"
         | Stelem_i8 ->
             let value, state = IlMachineState.popEvalStack currentThread state
@@ -2241,6 +2262,8 @@ module NullaryIlOp =
             let arr, state = IlMachineState.popEvalStack currentThread state
 
             stElem
+                loggerFactory
+                corelib
                 (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L)))
                 value
                 index
@@ -2252,17 +2275,35 @@ module NullaryIlOp =
             let value, state = IlMachineState.popEvalStack currentThread state
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
-            stElem (CliType.Numeric (CliNumericType.Float32 0.0f)) value index arr currentThread state
+
+            stElem
+                loggerFactory
+                corelib
+                (CliType.Numeric (CliNumericType.Float32 0.0f))
+                value
+                index
+                arr
+                currentThread
+                state
         | Stelem_r8 ->
             let value, state = IlMachineState.popEvalStack currentThread state
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
-            stElem (CliType.Numeric (CliNumericType.Float64 0.0)) value index arr currentThread state
+
+            stElem
+                loggerFactory
+                corelib
+                (CliType.Numeric (CliNumericType.Float64 0.0))
+                value
+                index
+                arr
+                currentThread
+                state
         | Stelem_ref ->
             let value, state = IlMachineState.popEvalStack currentThread state
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
-            stElem (CliType.ObjectRef None) value index arr currentThread state
+            stElem loggerFactory corelib (CliType.ObjectRef None) value index arr currentThread state
         | Cpblk -> failwith "TODO: Cpblk unimplemented"
         | Initblk -> failwith "TODO: Initblk unimplemented"
         | Conv_ovf_u1 -> failwith "TODO: Conv_ovf_u1 unimplemented"
