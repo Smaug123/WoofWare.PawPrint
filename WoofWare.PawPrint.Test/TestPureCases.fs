@@ -17,7 +17,6 @@ module TestPureCases =
 
     let unimplemented =
         [
-            "MultiDimensionalArrays.cs" // `int[,]` lowers to calls on the synthetic instance methods `Set(int,int,int)`/`Get(int,int)`/`Address(int,int)`/`.ctor(int,int)` of the array type, which the runtime does not yet synthesise
             "AdvancedStructLayout.cs" // past MarshalNative_SizeOfHelper for ByValTStr and SystemNative_Malloc / SystemNative_Free / Marshal.AllocHGlobal / FreeHGlobal; now blocked downstream at the unimplemented MarshalNative_TryGetStructMarshalStub QCall (CoreLib's Marshal.StructureToPtr path)
             "MarshalSizeOfAutoLayoutStruct.cs" // refusing to compute unmanaged marshalled size because LayoutKind.Auto but throwIfNotMarshalable=true
             "LdtokenField.cs" // past InternalCall System.Buffer::BulkMoveWithWriteBarrierInternal; now blocked during reflection-cache update because Buffer's byte-wise copy refuses to byte-view object-reference array cells (`validateByteAddressableCell` rejects ObjectRef storage)
