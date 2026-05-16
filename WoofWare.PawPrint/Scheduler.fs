@@ -180,6 +180,7 @@ module Scheduler =
                     | MutexOwnership.Held (owner, _) when owner = terminated -> Some id
                     | _ -> None
                 | WaitHandleState.Semaphore _ -> None
+                | WaitHandleState.Event _ -> None
             )
             |> Seq.toList
 
