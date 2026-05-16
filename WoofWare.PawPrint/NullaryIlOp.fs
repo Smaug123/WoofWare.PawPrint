@@ -484,6 +484,7 @@ module NullaryIlOp =
         | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) -> fromSignedInt64 i
         | EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset _) ->
             failwith "TODO: Conv_ovf_i1 from synthetic cross-array offset native int"
+        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) -> Ok 0y
         | EvalStackValue.NativeInt src -> failwith $"TODO: Conv_ovf_i1 from non-verbatim native int source %O{src}"
         | EvalStackValue.Float f ->
             // Truncate toward zero, then check the truncated integer fits in
@@ -529,6 +530,7 @@ module NullaryIlOp =
         | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) -> fromSignedInt64 i
         | EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset _) ->
             failwith "TODO: Conv_ovf_u1 from synthetic cross-array offset native int"
+        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) -> Ok 0uy
         | EvalStackValue.NativeInt src -> failwith $"TODO: Conv_ovf_u1 from non-verbatim native int source %O{src}"
         | EvalStackValue.Float f ->
             // Truncate toward zero, then check the truncated integer fits in
@@ -568,6 +570,7 @@ module NullaryIlOp =
         | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) -> fromUnsignedInt64 i
         | EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset _) ->
             failwith "TODO: Conv_ovf_u1_un from synthetic cross-array offset native int"
+        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) -> Ok 0uy
         | EvalStackValue.NativeInt src -> failwith $"TODO: Conv_ovf_u1_un from non-verbatim native int source %O{src}"
         | EvalStackValue.Float f ->
             // For float sources the `_un` suffix is a no-op: floats are signed by
