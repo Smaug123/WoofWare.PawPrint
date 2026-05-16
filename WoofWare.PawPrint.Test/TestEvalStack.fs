@@ -489,3 +489,165 @@ module TestEvalStack =
 
         if EvalStackValueComparisons.cltUn lo alsoLo then
             failwith "clt.un should report equal native-memory offsets as not strictly ordered"
+
+    // Sentinel floats covering the regimes the ordered ble/bge arms must respect.
+    // ECMA-335 III.3.7 specifies "ordered" for ble/bge: NaN comparisons must report the
+    // branch as *not* taken, which corresponds to IEEE `<=` / `>=` returning false on NaN.
+    let private nan : float = System.Double.NaN
+    let private pInf : float = System.Double.PositiveInfinity
+    let private nInf : float = System.Double.NegativeInfinity
+    let private pZero : float = 0.0
+    let private nZero : float = -0.0
+    let private subnormal : float = System.Double.Epsilon
+
+    let private floatEsv (v : float) : EvalStackValue = EvalStackValue.Float v
+
+    [<Test>]
+    let ``cle on Float × Float matches IEEE <= (ordered semantics)`` () : unit =
+        EvalStackValueComparisons.cle (floatEsv 1.0) (floatEsv 2.0) |> shouldEqual true
+        EvalStackValueComparisons.cle (floatEsv 2.0) (floatEsv 1.0) |> shouldEqual false
+        EvalStackValueComparisons.cle (floatEsv 1.0) (floatEsv 1.0) |> shouldEqual true
+
+        // ±0 compare equal.
+        EvalStackValueComparisons.cle (floatEsv pZero) (floatEsv nZero)
+        |> shouldEqual true
+
+        EvalStackValueComparisons.cle (floatEsv nZero) (floatEsv pZero)
+        |> shouldEqual true
+
+        // ±Inf.
+        EvalStackValueComparisons.cle (floatEsv nInf) (floatEsv 0.0) |> shouldEqual true
+        EvalStackValueComparisons.cle (floatEsv 0.0) (floatEsv pInf) |> shouldEqual true
+
+        EvalStackValueComparisons.cle (floatEsv pInf) (floatEsv pInf)
+        |> shouldEqual true
+
+        EvalStackValueComparisons.cle (floatEsv pInf) (floatEsv 0.0)
+        |> shouldEqual false
+
+        // Subnormals are real, finite values; ordering is well-defined.
+        EvalStackValueComparisons.cle (floatEsv subnormal) (floatEsv 1.0)
+        |> shouldEqual true
+
+        EvalStackValueComparisons.cle (floatEsv 0.0) (floatEsv subnormal)
+        |> shouldEqual true
+
+        // Ordered: NaN compared to anything (including itself) must report false, so the
+        // branch is not taken.
+        EvalStackValueComparisons.cle (floatEsv nan) (floatEsv 1.0) |> shouldEqual false
+        EvalStackValueComparisons.cle (floatEsv 1.0) (floatEsv nan) |> shouldEqual false
+        EvalStackValueComparisons.cle (floatEsv nan) (floatEsv nan) |> shouldEqual false
+
+        EvalStackValueComparisons.cle (floatEsv nan) (floatEsv pInf)
+        |> shouldEqual false
+
+        EvalStackValueComparisons.cle (floatEsv nInf) (floatEsv nan)
+        |> shouldEqual false
+
+    [<Test>]
+    let ``cge on Float × Float matches IEEE >= (ordered semantics)`` () : unit =
+        EvalStackValueComparisons.cge (floatEsv 2.0) (floatEsv 1.0) |> shouldEqual true
+        EvalStackValueComparisons.cge (floatEsv 1.0) (floatEsv 2.0) |> shouldEqual false
+        EvalStackValueComparisons.cge (floatEsv 1.0) (floatEsv 1.0) |> shouldEqual true
+
+        EvalStackValueComparisons.cge (floatEsv pZero) (floatEsv nZero)
+        |> shouldEqual true
+
+        EvalStackValueComparisons.cge (floatEsv nZero) (floatEsv pZero)
+        |> shouldEqual true
+
+        EvalStackValueComparisons.cge (floatEsv pInf) (floatEsv 0.0) |> shouldEqual true
+        EvalStackValueComparisons.cge (floatEsv 0.0) (floatEsv nInf) |> shouldEqual true
+
+        EvalStackValueComparisons.cge (floatEsv nInf) (floatEsv nInf)
+        |> shouldEqual true
+
+        EvalStackValueComparisons.cge (floatEsv 0.0) (floatEsv pInf)
+        |> shouldEqual false
+
+        EvalStackValueComparisons.cge (floatEsv 1.0) (floatEsv subnormal)
+        |> shouldEqual true
+
+        EvalStackValueComparisons.cge (floatEsv subnormal) (floatEsv 0.0)
+        |> shouldEqual true
+
+        EvalStackValueComparisons.cge (floatEsv nan) (floatEsv 1.0) |> shouldEqual false
+        EvalStackValueComparisons.cge (floatEsv 1.0) (floatEsv nan) |> shouldEqual false
+        EvalStackValueComparisons.cge (floatEsv nan) (floatEsv nan) |> shouldEqual false
+
+        EvalStackValueComparisons.cge (floatEsv pInf) (floatEsv nan)
+        |> shouldEqual false
+
+        EvalStackValueComparisons.cge (floatEsv nan) (floatEsv nInf)
+        |> shouldEqual false
+
+    [<Test>]
+    let ``cle and cge on Int × Int agree with the obvious arithmetic`` () : unit =
+        let i32 (v : int32) = EvalStackValue.Int32 v
+
+        let i64 (v : int64) =
+            EvalStackValue.Int64 (Int64Source.Verbatim v)
+
+        EvalStackValueComparisons.cle (i32 1) (i32 2) |> shouldEqual true
+        EvalStackValueComparisons.cle (i32 2) (i32 2) |> shouldEqual true
+        EvalStackValueComparisons.cle (i32 3) (i32 2) |> shouldEqual false
+
+        EvalStackValueComparisons.cge (i32 2) (i32 1) |> shouldEqual true
+        EvalStackValueComparisons.cge (i32 2) (i32 2) |> shouldEqual true
+        EvalStackValueComparisons.cge (i32 1) (i32 2) |> shouldEqual false
+
+        EvalStackValueComparisons.cle (i64 1L) (i64 2L) |> shouldEqual true
+        EvalStackValueComparisons.cle (i64 -5L) (i64 -5L) |> shouldEqual true
+        EvalStackValueComparisons.cge (i64 -1L) (i64 -5L) |> shouldEqual true
+        EvalStackValueComparisons.cge (i64 -5L) (i64 -1L) |> shouldEqual false
+
+    [<Test>]
+    let ``cle and cge fail on Float × Int (cross-type guard inherited from cgt/clt)`` () : unit =
+        // ECMA-335 leaves cross-shape numeric comparisons unverifiable; we keep the
+        // classifier honest by failing loudly rather than coercing one side. cle defers
+        // non-Float×Float to `not cgt`, so the Float × Int case re-uses cgt's existing
+        // "invalid comparison" failwith.
+        let f = EvalStackValue.Float 1.0
+        let i = EvalStackValue.Int32 1
+        let n = EvalStackValue.NativeInt (NativeIntSource.Verbatim 1L)
+
+        let exFI =
+            Assert.Throws<System.Exception> (fun () -> EvalStackValueComparisons.cle f i |> ignore)
+
+        exFI.Message |> shouldContainText "invalid comparison"
+
+        let exIF =
+            Assert.Throws<System.Exception> (fun () -> EvalStackValueComparisons.cle i f |> ignore)
+
+        exIF.Message |> shouldContainText "invalid comparison"
+
+        let exFN =
+            Assert.Throws<System.Exception> (fun () -> EvalStackValueComparisons.cle f n |> ignore)
+
+        exFN.Message |> shouldContainText "invalid comparison"
+
+        let exNF =
+            Assert.Throws<System.Exception> (fun () -> EvalStackValueComparisons.cle n f |> ignore)
+
+        exNF.Message |> shouldContainText "invalid comparison"
+
+        // And symmetrically for cge (defers to `not clt`).
+        let gxFI =
+            Assert.Throws<System.Exception> (fun () -> EvalStackValueComparisons.cge f i |> ignore)
+
+        gxFI.Message |> shouldContainText "invalid comparison"
+
+        let gxIF =
+            Assert.Throws<System.Exception> (fun () -> EvalStackValueComparisons.cge i f |> ignore)
+
+        gxIF.Message |> shouldContainText "invalid comparison"
+
+        let gxFN =
+            Assert.Throws<System.Exception> (fun () -> EvalStackValueComparisons.cge f n |> ignore)
+
+        gxFN.Message |> shouldContainText "invalid comparison"
+
+        let gxNF =
+            Assert.Throws<System.Exception> (fun () -> EvalStackValueComparisons.cge n f |> ignore)
+
+        gxNF.Message |> shouldContainText "invalid comparison"

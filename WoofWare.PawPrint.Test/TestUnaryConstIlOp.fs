@@ -231,3 +231,163 @@ module TestUnaryConstIlOp =
         if bltTaken = 0 || bltNotTaken = 0 || bgtTaken = 0 || bgtNotTaken = 0 then
             failwith
                 $"generator missed required regimes: bltTaken=%d{bltTaken}, bltNotTaken=%d{bltNotTaken}, bgtTaken=%d{bgtTaken}, bgtNotTaken=%d{bgtNotTaken}"
+
+    /// Push two float operands onto a fresh evaluation stack, queue `op` as the only instruction,
+    /// then dispatch it. Returns the post-dispatch PC and the residual eval stack so callers can
+    /// assert both branch direction (PC) and that the operands were consumed.
+    let private runFloatBranch (op : UnaryConstIlOp) (value1 : float) (value2 : float) : int32 * EvalStackValue list =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let state, method =
+            initialState loggerFactory |> methodWithUnaryConst loggerFactory op
+
+        let methodState =
+            match
+                MethodState.Empty
+                    state.ConcreteTypes
+                    baseClassTypes
+                    state._LoadedAssemblies
+                    corelib
+                    method
+                    ImmutableArray.Empty
+                    (ImmutableArray.Create (CliType.ObjectRef None))
+                    None
+            with
+            | Ok methodState -> methodState
+            | Error missing ->
+                failwith $"Unexpected missing assembly references creating float-branch test frame: %O{missing}"
+
+        let thread = ThreadId.ThreadId 0
+
+        let state =
+            { state with
+                ThreadState = Map.empty |> Map.add thread (ThreadState.New methodState)
+            }
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Float value1) thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Float value2) thread
+
+        let state, whatWeDid = UnaryConstIlOp.execute state thread op
+
+        whatWeDid |> shouldEqual WhatWeDid.Executed
+
+        let methodState = state.ThreadState.[thread].MethodState
+        methodState.IlOpIndex, methodState.EvaluationStack.Values
+
+    /// Expected PC after executing `op` (the only instruction in its method) given whether the
+    /// branch is taken.
+    let private expectedPcAfter (op : UnaryConstIlOp) (taken : bool) (offset : int32) : int32 =
+        let instructionSize = IlOp.NumberOfBytes (IlOp.UnaryConst op)
+        instructionSize + (if taken then offset else 0)
+
+    // Ordered float branches: ECMA-335 specifies that NaN comparisons report "branch not taken",
+    // matching .NET's default IEEE semantics for `<`/`<=`/`>`/`>=` (all return false for NaN).
+    // ±0 compare equal under IEEE; ±Inf orders sit at the extremes of the real-valued reals.
+    let private nanF : float = System.Double.NaN
+    let private pInfF : float = System.Double.PositiveInfinity
+    let private nInfF : float = System.Double.NegativeInfinity
+    let private subnormalF : float = System.Double.Epsilon
+
+    /// `(name, op, factory)` quartet: each branch op under test together with the helper that
+    /// reconstructs it for a given short-form offset. Long-form Ble/Bge are exercised in their
+    /// own test; the short-form (Blt_s/Ble_s/Bgt_s/Bge_s) versions are the ones that were
+    /// `failwith "todo"` for Float × Float before this change.
+    let private floatTakenCases (v1 : float) (v2 : float) : (string * bool) list =
+        [ "blt", v1 < v2 ; "ble", v1 <= v2 ; "bgt", v1 > v2 ; "bge", v1 >= v2 ]
+
+    [<Test>]
+    let ``Blt_s/Ble_s/Bgt_s/Bge_s on Float × Float follow IEEE ordered semantics`` () : unit =
+        let offset = 7
+
+        let assertCase (name : string) (op : UnaryConstIlOp) (expectedTaken : bool) (v1 : float) (v2 : float) : unit =
+            let pc, stack = runFloatBranch op v1 v2
+
+            stack |> shouldEqual []
+
+            let expectedPc = expectedPcAfter op expectedTaken offset
+
+            if pc <> expectedPc then
+                failwith
+                    $"%s{name} (%f{v1}, %f{v2}): expected pc=%d{expectedPc} (taken=%b{expectedTaken}), got pc=%d{pc}"
+
+        let cases : (float * float) list =
+            [
+                // Ordinary ordered finite reals.
+                1.0, 2.0
+                2.0, 1.0
+                1.0, 1.0
+                -3.5, -3.5
+                -3.5, 3.5
+                // ±0 equality.
+                0.0, -0.0
+                -0.0, 0.0
+                // ±Inf at the extremes.
+                pInfF, 1.0
+                1.0, pInfF
+                nInfF, 1.0
+                1.0, nInfF
+                pInfF, nInfF
+                nInfF, pInfF
+                pInfF, pInfF
+                nInfF, nInfF
+                // Subnormals are real, finite values; ordering is well-defined.
+                subnormalF, 1.0
+                1.0, subnormalF
+                0.0, subnormalF
+                // NaN: every ordered comparison must report "not taken" (false), in all
+                // directions and against any other regime (including itself).
+                nanF, 1.0
+                1.0, nanF
+                nanF, nanF
+                nanF, pInfF
+                nInfF, nanF
+                nanF, 0.0
+            ]
+
+        for v1, v2 in cases do
+            for name, taken in floatTakenCases v1 v2 do
+                let op =
+                    match name with
+                    | "blt" -> UnaryConstIlOp.Blt_s (int8 offset)
+                    | "ble" -> UnaryConstIlOp.Ble_s (int8 offset)
+                    | "bgt" -> UnaryConstIlOp.Bgt_s (int8 offset)
+                    | "bge" -> UnaryConstIlOp.Bge_s (int8 offset)
+                    | other -> failwith $"unexpected float-branch case: %s{other}"
+
+                assertCase name op taken v1 v2
+
+    [<Test>]
+    let ``Ble/Bge (long form) on Float × Float follow IEEE ordered semantics`` () : unit =
+        // The long-form ops were also previously `failwith "todo"` on Float; cover them here
+        // with a smaller but still NaN-inclusive battery. `Blt`/`Bgt` (long form) already
+        // delegated to `clt`/`cgt` before this change, but we exercise them too for symmetry.
+        let offset = 13
+
+        let assertCase (name : string) (op : UnaryConstIlOp) (expectedTaken : bool) (v1 : float) (v2 : float) : unit =
+            let pc, stack = runFloatBranch op v1 v2
+
+            stack |> shouldEqual []
+
+            let expectedPc = expectedPcAfter op expectedTaken offset
+
+            if pc <> expectedPc then
+                failwith
+                    $"%s{name} (%f{v1}, %f{v2}): expected pc=%d{expectedPc} (taken=%b{expectedTaken}), got pc=%d{pc}"
+
+        let cases : (float * float) list =
+            [
+                1.0, 2.0
+                2.0, 1.0
+                1.0, 1.0
+                0.0, -0.0
+                pInfF, nInfF
+                nanF, 1.0
+                1.0, nanF
+                nanF, nanF
+            ]
+
+        for v1, v2 in cases do
+            assertCase "blt" (UnaryConstIlOp.Blt offset) (v1 < v2) v1 v2
+            assertCase "ble" (UnaryConstIlOp.Ble offset) (v1 <= v2) v1 v2
+            assertCase "bgt" (UnaryConstIlOp.Bgt offset) (v1 > v2) v1 v2
+            assertCase "bge" (UnaryConstIlOp.Bge offset) (v1 >= v2) v1 v2

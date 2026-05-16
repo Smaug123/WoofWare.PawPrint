@@ -100,6 +100,24 @@ module EvalStackValueComparisons =
         | EvalStackValue.UserDefinedValueType _, UserDefinedValueType _ ->
             failwith "TODO: Cgt UserDefinedValueType vs UserDefinedValueType comparison unimplemented"
 
+    /// Ordered "less than or equal". For floats this is IEEE `<=` (NaN ⇒ false), which is the
+    /// correct ECMA-335 ordered ble semantics. For other types we defer to `not (cgt v1 v2)` —
+    /// note that for floats this would be wrong (`not cgt` is the *unordered* ble, since
+    /// `cgt(NaN, _)` is false), so the Float × Float arm overrides explicitly. Cross-type
+    /// (Float vs Int / NativeInt) is inherited from `cgt`'s "invalid comparison" failwith.
+    let cle (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
+        match var1, var2 with
+        | EvalStackValue.Float var1, EvalStackValue.Float var2 -> var1 <= var2
+        | _ -> not (cgt var1 var2)
+
+    /// Ordered "greater than or equal". Mirrors `cle`: Float × Float uses IEEE `>=`
+    /// (NaN ⇒ false); other types defer to `not (clt v1 v2)`. Cross-type guards are
+    /// inherited from `clt`.
+    let cge (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
+        match var1, var2 with
+        | EvalStackValue.Float var1, EvalStackValue.Float var2 -> var1 >= var2
+        | _ -> not (clt var1 var2)
+
     let rec cgtUn (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
         let var1 = unwrapPlaceholderForBitComparison var1
         let var2 = unwrapPlaceholderForBitComparison var2
