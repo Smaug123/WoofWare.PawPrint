@@ -80,6 +80,31 @@ namespace UnsafeAsRefVoidPointer
             nint zeroDelta = Unsafe.ByteOffset(ref byteZero, ref byteOne);
             if (zeroDelta != 1) return 13;
 
+            // `Unsafe.Add<T>(ref placeholder, n)` advances by `n * sizeof(T)`
+            // bits. The result is still a placeholder; round-tripping back
+            // through AsPointer must surface the advanced bit pattern.
+            ref int intOne = ref Unsafe.AsRef<int>((void*)1);
+            ref int intAdded = ref Unsafe.Add(ref intOne, 2);
+            if ((nint)Unsafe.AsPointer(ref intAdded) != 1 + 2 * sizeof(int)) return 14;
+
+            // `Unsafe.AddByteOffset` is the same arithmetic in byte units.
+            ref byte byteOneAgain = ref Unsafe.AsRef<byte>((void*)1);
+            ref byte byteAdded = ref Unsafe.AddByteOffset(ref byteOneAgain, (nint)7);
+            if ((nint)Unsafe.AsPointer(ref byteAdded) != 8) return 15;
+
+            // `Unsafe.Add` that lands back on zero must normalise to Null.
+            ref byte byteFour = ref Unsafe.AsRef<byte>((void*)4);
+            ref byte byteBack = ref Unsafe.AddByteOffset(ref byteFour, (nint)(-4));
+            if (!Unsafe.IsNullRef(in byteBack)) return 16;
+
+            // The `fixed` statement on a placeholder byref pins to its bit
+            // pattern; `conv.u` on the byref must recover those bits so the
+            // resulting pointer compares equal to the literal source.
+            fixed (byte* pinned = &Unsafe.AsRef<byte>((void*)1))
+            {
+                if ((nint)pinned != 1) return 17;
+            }
+
             return 0;
         }
     }

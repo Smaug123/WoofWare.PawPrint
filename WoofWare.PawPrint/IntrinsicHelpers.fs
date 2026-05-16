@@ -220,6 +220,21 @@ module internal IntrinsicHelpers =
 
         let ptr : EvalStackValue =
             match src with
+            | EvalStackValue.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits) ->
+                // `Unsafe.AsRef<T>((void*)bits)` byrefs are bit patterns, not
+                // anchored byrefs. `Unsafe.Add<T>(ref placeholder, n)` advances
+                // by `n * sizeof(T)` bytes; if the result lands on zero,
+                // normalise to Null so `IsNullRef` agrees with the bit-pattern
+                // definition (mirrors `BinaryArithmetic.addInt32ManagedPtr`).
+                let newBits = bits + int64 offset * int64 tSize
+
+                let src =
+                    if newBits = 0L then
+                        ManagedPointerSource.Null
+                    else
+                        ManagedPointerSource.NativeIntPlaceholder newBits
+
+                EvalStackValue.ManagedPointer src
             | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs)) ->
                 let arrElementSize =
                     let arrObj = state.ManagedHeap.Arrays.[arr]

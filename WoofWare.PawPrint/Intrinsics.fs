@@ -1958,6 +1958,27 @@ module Intrinsics =
                 | EvalStackValue.ManagedPointer p -> p
                 | _ -> failwith $"TODO: Unsafe.AddByteOffset on non-ManagedPointer source byref: %O{src}"
 
+            // `Unsafe.AsRef<T>((void*)bits)` byrefs are bit patterns, not
+            // anchored byrefs. `Unsafe.AddByteOffset` on a placeholder is just
+            // bit addition; appending a `ReinterpretAs` would be meaningless on
+            // a target that doesn't represent memory. Normalise zero to Null so
+            // `IsNullRef` agrees with the CLR's bit-pattern definition.
+            match srcPtr with
+            | ManagedPointerSource.NativeIntPlaceholder bits ->
+                let newBits = bits + int64 offset
+
+                let ptr =
+                    if newBits = 0L then
+                        ManagedPointerSource.Null
+                    else
+                        ManagedPointerSource.NativeIntPlaceholder newBits
+
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Some
+            | _ ->
+
             // `addByteOffsetUnderReinterpret` anchors the byte cursor under `ReinterpretAs T`
             // before appending the offset, so it works regardless of whether the source byref
             // already carries a trailing byte-view tail. The trailing `ReinterpretAs T` is
