@@ -1615,17 +1615,39 @@ module IlMachineStateExecution =
         | EvalStackValue.ObjectRef addr ->
             let valueRuntimeType = ManagedHeap.getObjectConcreteType addr state.ManagedHeap
 
-            let state, isAssignable =
-                IlMachineState.isConcreteTypeAssignableTo
-                    loggerFactory
-                    baseClassTypes
-                    state
-                    valueRuntimeType
-                    storedElement
+            // `isConcreteTypeAssignableTo` currently `failwith`s on two combinations
+            // it doesn't yet model: (a) `walk` traversing a Concrete type whose
+            // definition has variant generic parameters (line 1175 in
+            // IlMachineRuntimeMetadata), and (b) an array source being checked
+            // against a generic-interface target (line 1243). Both arise from
+            // legitimate covariant array stores (e.g. `string[]` into an
+            // `IEnumerable<string>[]` element; `Func<int>` into a `Func<int>[]`
+            // element when other instantiations also exist). Before this gate
+            // those stores silently succeeded — they don't go through any
+            // assignability check at all in the previous code. Turning them into
+            // host failures would regress previously-working programs, so we
+            // degrade to "permit" when the walk can't reach a definitive answer.
+            // The variance gate is therefore best-effort until those TODOs in
+            // `IlMachineRuntimeMetadata` are implemented; at that point this
+            // try/with can be removed and the check becomes precise.
+            let state, decision =
+                try
+                    let state, isAssignable =
+                        IlMachineState.isConcreteTypeAssignableTo
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            valueRuntimeType
+                            storedElement
 
-            if isAssignable then
-                ArrayStoreVarianceCheck.Allowed state
-            else
+                    state, ValueSome isAssignable
+                with ex when ex.Message.StartsWith "TODO:" ->
+                    state, ValueNone
+
+            match decision with
+            | ValueNone
+            | ValueSome true -> ArrayStoreVarianceCheck.Allowed state
+            | ValueSome false ->
                 let state, _whatWeDid =
                     raiseRuntimeException
                         loggerFactory
