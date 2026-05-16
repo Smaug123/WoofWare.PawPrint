@@ -616,11 +616,16 @@ module IlMachineRuntimeMetadata =
         | None when String.IsNullOrEmpty ty.Namespace -> ty.Name
         | None -> $"{ty.Namespace}.{ty.Name}"
 
-    /// Render a parameter's type using the CLR's stack-trace convention:
-    /// `Type.Name` (no namespace, no assembly) with structural wrappers applied recursively.
-    /// Matches CoreCLR's `StackTrace.ToString` which appends each parameter type's `.Name`,
-    /// and is distinct from full reflection name rendering (cf. `NativeRuntimeType.fs`
-    /// `concreteTypeHandleName`, which honours the FormatNamespace / FormatAssembly bits).
+    /// Render a parameter's type using the CLR's stack-trace convention: just `Type.Name`.
+    /// `Type.Name` for a constructed generic such as `List<int>` is `"List`1"` — the
+    /// instantiation is NOT appended (verified against `typeof(List<int>).Name` in CoreCLR),
+    /// so this differs from full reflection name rendering (cf. `NativeRuntimeType.fs`
+    /// `concreteTypeHandleName`, which appends `[args]` under FormatNamespace/Assembly).
+    /// Array, pointer, and byref wrappers do show up in `Type.Name`, so we render those.
+    /// FIXME: For generic-method/generic-type parameters, CoreCLR renders the formal
+    /// parameter name (e.g. `Foo(T x)`); we lose that here because the concretized
+    /// signature has already substituted in the concrete handle. Switching to
+    /// `RawSignature` plus assembly-side generic-param metadata is a separate change.
     let rec private renderParameterTypeName (state : IlMachineState) (handle : ConcreteTypeHandle) : string =
         match handle with
         | ConcreteTypeHandle.Byref inner -> renderParameterTypeName state inner + "&"
@@ -635,14 +640,7 @@ module IlMachineRuntimeMetadata =
         | ConcreteTypeHandle.Concrete _ ->
             match AllConcreteTypes.lookup handle state.ConcreteTypes with
             | None -> "<unresolved>"
-            | Some ct ->
-                if ct.Generics.IsEmpty then
-                    ct.Name
-                else
-                    let args =
-                        ct.Generics |> Seq.map (renderParameterTypeName state) |> String.concat ","
-
-                    $"%s{ct.Name}[%s{args}]"
+            | Some ct -> ct.Name
 
     let private renderExceptionStackFrame
         (state : IlMachineState)
