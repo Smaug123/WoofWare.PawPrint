@@ -323,27 +323,54 @@ module IlMachineStateExecution =
                     // to `IFoo<Y>` (e.g. `ICovariant<string>` satisfies `ICovariant<object>`),
                     // so we defer same-TypeDef generic comparisons to the assignability walk
                     // rather than insisting on exact-argument equality.
+                    //
+                    // The declaration's declaring-type instantiation may not yet be in the
+                    // ConcreteTypes registry (e.g. `ICovariant<object> obj = new CovariantImpl();
+                    // obj.Get()` only concretizes the call target `ICovariant<object>`, not the
+                    // body's declared interface `ICovariant<string>`). Register it on demand so
+                    // the variance check is not silently skipped.
+                    let ensureRegistered
+                        (state : IlMachineState)
+                        (identity : ResolvedTypeIdentity)
+                        (ns : string)
+                        (name : string)
+                        (generics : ImmutableArray<ConcreteTypeHandle>)
+                        : IlMachineState * ConcreteTypeHandle
+                        =
+                        match AllConcreteTypes.findExistingConcreteType state.ConcreteTypes identity generics with
+                        | Some handle -> state, handle
+                        | None ->
+                            let ct = ConcreteType.makeFromIdentity identity ns name generics
+                            let handle, newConcreteTypes = AllConcreteTypes.add ct state.ConcreteTypes
+
+                            { state with
+                                ConcreteTypes = newConcreteTypes
+                            },
+                            handle
+
                     let state, declarationTypeMatches =
                         if declaration.DeclaringType.Identity <> methodToCall.DeclaringType.Identity then
                             state, false
                         elif declarationTypeGenerics = methodToCall.DeclaringType.Generics then
                             state, true
                         else
-                            let declarationHandle =
-                                AllConcreteTypes.findExistingConcreteType
-                                    state.ConcreteTypes
+                            let state, fromH =
+                                ensureRegistered
+                                    state
                                     declaration.DeclaringType.Identity
+                                    declaration.DeclaringType.Namespace
+                                    declaration.DeclaringType.Name
                                     declarationTypeGenerics
 
-                            let methodToCallHandle =
-                                AllConcreteTypes.findExistingConcreteType
-                                    state.ConcreteTypes
+                            let state, toH =
+                                ensureRegistered
+                                    state
                                     methodToCall.DeclaringType.Identity
+                                    methodToCall.DeclaringType.Namespace
+                                    methodToCall.DeclaringType.Name
                                     methodToCall.DeclaringType.Generics
 
-                            match declarationHandle, methodToCallHandle with
-                            | Some fromH, Some toH -> isAssignableFrom loggerFactory baseClassTypes fromH toH state
-                            | _ -> state, false
+                            isAssignableFrom loggerFactory baseClassTypes fromH toH state
 
                     if not declarationTypeMatches then
                         state, acc

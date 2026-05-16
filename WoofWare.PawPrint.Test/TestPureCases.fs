@@ -487,8 +487,12 @@ class Program
 {
     static int Main(string[] args)
     {
-        ICovariant<string> strCov = new CovariantImpl();
-        ICovariant<object> objCov = strCov;
+        // Dispatch directly through ICovariant<object> without ever materialising an
+        // ICovariant<string> reference: the call site only registers the call target
+        // (ICovariant<object>), so the MethodImpl's body declaration (ICovariant<string>)
+        // is *not* yet in the ConcreteTypes registry when dispatch runs. A cache-only
+        // lookup of the declaration would silently skip the MethodImpl.
+        ICovariant<object> objCov = new CovariantImpl();
         object result = objCov.Get();
         return (result is string s && s == "covariant") ? 0 : 1;
     }
