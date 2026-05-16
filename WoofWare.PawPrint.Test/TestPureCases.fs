@@ -24,7 +24,6 @@ module TestPureCases =
             "InterfaceDispatch.cs" // expected: 0; was: 1024
             "Threads.cs" // past Buffer's reflection-cache copy (cell-aware path); now blocked on unimplemented QCall ThreadNative_SetIsBackground
             "IsAssignableToBasic.cs" // MethodTable field projection for MethodTable::PerInstInfo
-            "RuntimeTypeHandleGetInstantiationOpenGeneric.cs" // blocked by unimplemented QCall RuntimeTypeHandle::GetDeclaringMethodForGenericParameter
         ]
         |> Set.ofList
 
