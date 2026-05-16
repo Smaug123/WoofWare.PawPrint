@@ -355,12 +355,12 @@ module NullaryIlOp =
         | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) -> Ok 0
         | EvalStackValue.NativeInt src -> failwith $"TODO: Conv_ovf_i4_un from non-verbatim native int source %O{src}"
         | EvalStackValue.Float f ->
-            // For float sources the `_un` suffix is a no-op: floats are signed by
-            // construction. Truncate toward zero, then check the truncated integer
-            // fits in `[0, Int32.MaxValue]`. `2147483648.0` is exactly representable
-            // (2^31) and is the smallest double > Int32.MaxValue, so use `>=`. NaN
-            // compares false to every value, so guard separately.
-            if Double.IsNaN f || f >= 2147483648.0 || f <= -1.0 then
+            // ECMA-335 III.3.27: for a floating-point source, the `_un` suffix has
+            // no effect — floats are signed by construction, so there is no source
+            // bit-pattern to reinterpret. Behaviour matches `conv.ovf.i4`: truncate
+            // toward zero, accept results in `[Int32.MinValue, Int32.MaxValue]`,
+            // overflow on NaN or out-of-range.
+            if Double.IsNaN f || f >= 2147483648.0 || f <= -2147483649.0 then
                 Error ()
             else
                 int32<float> (Math.Truncate f) |> Ok
