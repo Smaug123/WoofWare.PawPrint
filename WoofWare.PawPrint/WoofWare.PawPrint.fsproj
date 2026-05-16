@@ -95,6 +95,9 @@
     <Compile Include="Native\NativeDependentHandle.fs" />
     <Compile Include="Native\NativeBuffer.fs" />
     <Compile Include="Native\NativeException.fs" />
+    <Compile Include="Native\NativeRuntimeTypeHelpers.fs" />
+    <Compile Include="Native\NativeRuntimeTypeQCall.fs" />
+    <Compile Include="Native\NativeRuntimeTypeFCall.fs" />
     <Compile Include="Native\NativeRuntimeType.fs" />
     <Compile Include="Native\NativeArray.fs" />
     <Compile Include="Native\NativeEnum.fs" />
