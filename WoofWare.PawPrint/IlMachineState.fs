@@ -208,3 +208,6 @@ module IlMachineState =
     let requiredOwnInstanceFieldId = IlMachineRuntimeMetadata.requiredOwnInstanceFieldId
 
     let isConcreteTypeAssignableTo = IlMachineRuntimeMetadata.isConcreteTypeAssignableTo
+
+    let isRuntimeTypeHandleTargetAssignableTo =
+        IlMachineRuntimeMetadata.isRuntimeTypeHandleTargetAssignableTo
