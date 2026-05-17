@@ -19,10 +19,16 @@ type PendingSignal =
 ///   * `Initialized` — has the BCL invoked
 ///     `SystemNative_InitializeTerminalAndSignalHandling` yet? Several
 ///     console paths gate work behind this flag.
-///   * `Registrations` — the per-signal dispatch target. A signal that is
-///     not in this map has no handler installed; pending entries for such
-///     signals stay queued (the consumer decides whether to drop or wait
-///     for a registration).
+///   * `Registrations` — the per-signal handler list, in registration
+///     order (first-registered at the head, most-recently-registered at
+///     the tail). A signal that is not in this map has no handler
+///     installed; pending entries for such signals stay queued (the
+///     consumer decides whether to drop or wait for a registration).
+///     Multiple handlers per signal are supported and preserved as
+///     distinct list entries, mirroring real .NET, where every
+///     `PosixSignalRegistration` is its own `Token` in the BCL's
+///     per-signo list and dispatched in reverse registration order
+///     (LIFO) with `Cancel`-based short-circuit semantics.
 ///   * `Blocked` — per-thread sigprocmask. A signal in a thread's set is
 ///     blocked for that thread and cannot be delivered to it.
 ///   * `Pending` — FIFO queue of generated signals waiting for dispatch.
@@ -37,7 +43,12 @@ type SignalState =
     private
         {
             Initialized : bool
-            Registrations : Map<Signal, SignalHandler>
+            /// Per-signal handler list in registration order. The empty
+            /// list is NOT a permitted value: when the last handler for a
+            /// signal is unregistered, the key is dropped, so two states
+            /// differing only in "key absent" vs "key present with empty
+            /// list" remain structurally equal.
+            Registrations : Map<Signal, SignalHandler list>
             Blocked : Map<ThreadId, Set<Signal>>
             /// Pending entries in FIFO order (head = next candidate for
             /// dispatch). A plain list rather than `ImmutableQueue<T>`
@@ -73,27 +84,63 @@ module SignalState =
                 Initialized = true
             }
 
-    let tryGetHandler (signal : Signal) (state : SignalState) : SignalHandler option =
-        Map.tryFind signal state.Registrations
+    /// All handlers registered for `signal`, in registration order
+    /// (first-registered at the head). Returns the empty list when no
+    /// handler is installed. Dispatch consumers should iterate in
+    /// reverse to match .NET's LIFO dispatch semantics.
+    let handlers (signal : Signal) (state : SignalState) : SignalHandler list =
+        match Map.tryFind signal state.Registrations with
+        | None -> []
+        | Some hs -> hs
 
-    let registrations (state : SignalState) : Map<Signal, SignalHandler> = state.Registrations
+    let registrations (state : SignalState) : Map<Signal, SignalHandler list> = state.Registrations
 
-    /// Install or replace the handler for `signal`. POSIX permits exactly
-    /// one disposition per signal at a time; a second `register` overwrites
-    /// the first.
+    /// Append `handler` to the registration list for `signal`. POSIX (and
+    /// the .NET `PosixSignalRegistration` surface) permits any number of
+    /// independent handlers per signal, dispatched in reverse registration
+    /// order. Two `register` calls with structurally identical
+    /// `SignalHandler` values are preserved as two distinct entries here,
+    /// because each `PosixSignalRegistration` in real .NET is an
+    /// independent `Token` even when its delegate has the same target.
     let register (signal : Signal) (handler : SignalHandler) (state : SignalState) : SignalState =
+        let existing : SignalHandler list =
+            match Map.tryFind signal state.Registrations with
+            | None -> []
+            | Some hs -> hs
+
         { state with
-            Registrations = Map.add signal handler state.Registrations
+            Registrations = Map.add signal (existing @ [ handler ]) state.Registrations
         }
 
-    /// Remove the handler for `signal`. After this, pending entries for the
-    /// signal remain queued (a future `register` will make them deliverable)
-    /// but `tryDeliverable` will not dispatch them in the meantime. No-op if
-    /// no handler was installed.
-    let unregister (signal : Signal) (state : SignalState) : SignalState =
-        { state with
-            Registrations = Map.remove signal state.Registrations
-        }
+    /// Remove the first occurrence of `handler` (by structural equality)
+    /// from `signal`'s registration list. No-op if no matching handler is
+    /// registered for that signal. When the resulting list is empty, the
+    /// key is dropped from the map so two states differing only in
+    /// "absent" vs "empty list" remain structurally equal.
+    ///
+    /// Mirrors `PosixSignalRegistration.Dispose`, which removes exactly
+    /// the registration's own `Token` from the BCL's per-signo list and
+    /// leaves any sibling registrations in place.
+    let unregister (signal : Signal) (handler : SignalHandler) (state : SignalState) : SignalState =
+        match Map.tryFind signal state.Registrations with
+        | None -> state
+        | Some hs ->
+            let rec removeFirst (acc : SignalHandler list) (rest : SignalHandler list) : SignalHandler list option =
+                match rest with
+                | [] -> None
+                | h :: tail when h = handler -> Some (List.rev acc @ tail)
+                | h :: tail -> removeFirst (h :: acc) tail
+
+            match removeFirst [] hs with
+            | None -> state
+            | Some [] ->
+                { state with
+                    Registrations = Map.remove signal state.Registrations
+                }
+            | Some hs' ->
+                { state with
+                    Registrations = Map.add signal hs' state.Registrations
+                }
 
     let isBlocked (thread : ThreadId) (signal : Signal) (state : SignalState) : bool =
         match Map.tryFind thread state.Blocked with
@@ -159,7 +206,7 @@ module SignalState =
 
     /// Walk the pending queue in FIFO order and return the first entry that
     /// can be delivered now. An entry is deliverable iff:
-    ///   * a handler is registered for its `Signal`;
+    ///   * at least one handler is registered for its `Signal`;
     ///   * either it is `pthread_kill`-directed at a thread that is live and
     ///     not blocking the signal, or
     ///   * it is process-directed (`Target = ValueNone`) and at least one
@@ -170,12 +217,17 @@ module SignalState =
     /// "lowest id" composes well with the existing thread-scheduling
     /// conventions.
     ///
+    /// The returned `SignalHandler list` is in registration order. The
+    /// dispatch consumer is expected to iterate it in reverse to match
+    /// .NET's LIFO dispatch semantics (and to honour any per-handler
+    /// `Cancel` short-circuit).
+    ///
     /// Skipped (non-deliverable) entries keep their relative order in the
     /// queue. Returns `None` if no entry is deliverable.
     let tryDeliverable
         (liveThreads : ImmutableArray<ThreadId>)
         (state : SignalState)
-        : (PendingSignal * ThreadId * SignalHandler * SignalState) option
+        : (PendingSignal * ThreadId * SignalHandler list * SignalState) option
         =
         let liveSet : Set<ThreadId> = liveThreads |> Seq.toList |> Set.ofList
 
@@ -197,7 +249,7 @@ module SignalState =
             | head :: tail ->
                 match Map.tryFind head.Signal state.Registrations with
                 | None -> scan (head :: skipped) tail
-                | Some handler ->
+                | Some hs ->
                     match pickReceiver head with
                     | None -> scan (head :: skipped) tail
                     | Some tid ->
@@ -206,7 +258,7 @@ module SignalState =
                         Some (
                             head,
                             tid,
-                            handler,
+                            hs,
                             { state with
                                 Pending = remaining
                             }

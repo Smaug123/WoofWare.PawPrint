@@ -61,7 +61,7 @@ module TestSignalState =
     let ``empty has nothing registered, nothing blocked, nothing pending`` () : unit =
         let s = SignalState.empty
         SignalState.isInitialized s |> shouldEqual false
-        SignalState.tryGetHandler Signal.SIGINT s |> shouldEqual None
+        SignalState.handlers Signal.SIGINT s |> shouldEqual []
         SignalState.isBlocked t0 Signal.SIGINT s |> shouldEqual false
         SignalState.blockedFor t0 s |> shouldEqual Set.empty
         SignalState.pending s |> Seq.toList |> shouldEqual []
@@ -80,30 +80,83 @@ module TestSignalState =
     [<Test>]
     let ``register installs handler`` () : unit =
         let s = SignalState.empty |> SignalState.register Signal.SIGINT (callback 1)
-        SignalState.tryGetHandler Signal.SIGINT s |> shouldEqual (Some (callback 1))
+        SignalState.handlers Signal.SIGINT s |> shouldEqual [ callback 1 ]
 
     [<Test>]
-    let ``register replaces an existing handler`` () : unit =
+    let ``register appends new handlers in registration order`` () : unit =
+        // .NET semantics: a second `PosixSignalRegistration.Create` for the
+        // same signal installs a sibling handler, it does not replace the
+        // first. Both fire at dispatch time (in reverse registration order
+        // with `Cancel` short-circuit semantics, which is the dispatcher's
+        // job — `SignalState` just stores the list).
         let s =
             SignalState.empty
             |> SignalState.register Signal.SIGINT (callback 1)
             |> SignalState.register Signal.SIGINT (callback 2)
 
-        SignalState.tryGetHandler Signal.SIGINT s |> shouldEqual (Some (callback 2))
+        SignalState.handlers Signal.SIGINT s |> shouldEqual [ callback 1 ; callback 2 ]
+
+    [<Test>]
+    let ``register preserves duplicates as distinct entries`` () : unit =
+        // Even with the same `SignalHandler` value, each call is a separate
+        // registration — mirrors that each .NET `PosixSignalRegistration`
+        // is its own `Token` regardless of delegate target identity.
+        let s =
+            SignalState.empty
+            |> SignalState.register Signal.SIGINT (callback 1)
+            |> SignalState.register Signal.SIGINT (callback 1)
+
+        SignalState.handlers Signal.SIGINT s |> shouldEqual [ callback 1 ; callback 1 ]
 
     [<Test>]
     let ``unregister removes an installed handler`` () : unit =
         let s =
             SignalState.empty
             |> SignalState.register Signal.SIGINT (callback 1)
-            |> SignalState.unregister Signal.SIGINT
+            |> SignalState.unregister Signal.SIGINT (callback 1)
 
-        SignalState.tryGetHandler Signal.SIGINT s |> shouldEqual None
+        SignalState.handlers Signal.SIGINT s |> shouldEqual []
 
     [<Test>]
     let ``unregister of an absent handler is a no-op`` () : unit =
-        let s = SignalState.empty |> SignalState.unregister Signal.SIGINT
+        let s = SignalState.empty |> SignalState.unregister Signal.SIGINT (callback 1)
         s |> shouldEqual SignalState.empty
+
+    [<Test>]
+    let ``unregister of a non-matching handler with siblings is a no-op`` () : unit =
+        let before =
+            SignalState.empty
+            |> SignalState.register Signal.SIGINT (callback 1)
+            |> SignalState.register Signal.SIGINT (callback 2)
+
+        let after = before |> SignalState.unregister Signal.SIGINT (callback 3)
+
+        after |> shouldEqual before
+
+    [<Test>]
+    let ``unregister removes only the first matching handler when duplicates exist`` () : unit =
+        let s =
+            SignalState.empty
+            |> SignalState.register Signal.SIGINT (callback 1)
+            |> SignalState.register Signal.SIGINT (callback 1)
+            |> SignalState.register Signal.SIGINT (callback 2)
+            |> SignalState.unregister Signal.SIGINT (callback 1)
+
+        SignalState.handlers Signal.SIGINT s |> shouldEqual [ callback 1 ; callback 2 ]
+
+    [<Test>]
+    let ``unregister that empties the list drops the key`` () : unit =
+        // Critical structural-equality invariant: a state that registered
+        // and then fully unregistered must equal a state that never
+        // registered. Without dropping the empty-list key, the dedup hash
+        // used downstream would distinguish two semantically-equivalent
+        // states.
+        let registeredThenRemoved =
+            SignalState.empty
+            |> SignalState.register Signal.SIGINT (callback 1)
+            |> SignalState.unregister Signal.SIGINT (callback 1)
+
+        registeredThenRemoved |> shouldEqual SignalState.empty
 
     [<Test>]
     let ``unregister leaves pending entries queued, just non-deliverable`` () : unit =
@@ -120,7 +173,7 @@ module TestSignalState =
             SignalState.empty
             |> SignalState.register Signal.SIGINT (callback 1)
             |> SignalState.enqueue entry
-            |> SignalState.unregister Signal.SIGINT
+            |> SignalState.unregister Signal.SIGINT (callback 1)
 
         SignalState.pending s |> Seq.toList |> shouldEqual [ entry ]
         SignalState.tryDeliverable (liveThreads [ t0 ]) s |> shouldEqual None
@@ -139,12 +192,35 @@ module TestSignalState =
             |> SignalState.register Signal.SIGINT (callback 1)
 
         match SignalState.tryDeliverable (liveThreads [ t0 ]) s with
-        | Some (e, tid, h, s') ->
+        | Some (e, tid, hs, s') ->
             e |> shouldEqual entry
             tid |> shouldEqual t0
-            h |> shouldEqual (callback 1)
+            hs |> shouldEqual [ callback 1 ]
             SignalState.pending s' |> Seq.toList |> shouldEqual []
         | None -> failwith "expected deliverable entry once handler was registered"
+
+    [<Test>]
+    let ``tryDeliverable returns every handler in registration order`` () : unit =
+        // .NET dispatches in reverse registration order; the SignalState
+        // layer exposes the registration-order list and leaves the
+        // reversal to the dispatcher. Pinning the order here so a future
+        // refactor can't silently flip it.
+        let entry =
+            {
+                Signal = Signal.SIGINT
+                Target = ValueNone
+            }
+
+        let s =
+            SignalState.empty
+            |> SignalState.register Signal.SIGINT (callback 1)
+            |> SignalState.register Signal.SIGINT (callback 2)
+            |> SignalState.register Signal.SIGINT (callback 3)
+            |> SignalState.enqueue entry
+
+        match SignalState.tryDeliverable (liveThreads [ t0 ]) s with
+        | Some (_, _, hs, _) -> hs |> shouldEqual [ callback 1 ; callback 2 ; callback 3 ]
+        | None -> failwith "expected deliverable entry"
 
     [<Test>]
     let ``block then isBlocked`` () : unit =
@@ -322,10 +398,10 @@ module TestSignalState =
         // Live-thread order is deliberately scrambled to confirm the
         // implementation sorts internally rather than trusting input order.
         match SignalState.tryDeliverable (liveThreads [ t2 ; t0 ; t1 ]) s with
-        | Some (e, tid, h, s') ->
+        | Some (e, tid, hs, s') ->
             e |> shouldEqual entry
             tid |> shouldEqual t0
-            h |> shouldEqual (callback 1)
+            hs |> shouldEqual [ callback 1 ]
             SignalState.pending s' |> Seq.toList |> shouldEqual []
         | None -> failwith "expected deliverable entry"
 
@@ -435,7 +511,7 @@ module TestSignalState =
     type private Op =
         | MarkInitialized
         | Register of signal : Signal * handler : SignalHandler
-        | Unregister of signal : Signal
+        | Unregister of signal : Signal * handler : SignalHandler
         | Block of thread : ThreadId * signal : Signal
         | Unblock of thread : ThreadId * signal : Signal
         | Enqueue of entry : PendingSignal
@@ -443,10 +519,13 @@ module TestSignalState =
 
     /// Reference implementation: simple lists / maps, completely
     /// independent of the production module's internal representation.
+    /// Invariant: `Registrations` never contains an empty list as a value
+    /// — when the last handler for a signal is removed, the key is dropped
+    /// from the map, so absent/empty states are structurally identical.
     type private ReferenceState =
         {
             Initialized : bool
-            Registrations : Map<Signal, SignalHandler>
+            Registrations : Map<Signal, SignalHandler list>
             Blocked : Map<ThreadId, Set<Signal>>
             Pending : PendingSignal list
         }
@@ -465,7 +544,7 @@ module TestSignalState =
     let private referenceTryDeliverable
         (live : ThreadId list)
         (r : ReferenceState)
-        : (PendingSignal * ThreadId * SignalHandler * ReferenceState) option
+        : (PendingSignal * ThreadId * SignalHandler list * ReferenceState) option
         =
         let liveSet : Set<ThreadId> = Set.ofList live
 
@@ -489,19 +568,19 @@ module TestSignalState =
         let entries : PendingSignal[] = r.Pending |> List.toArray
         let mutable foundIdx : int = -1
         let mutable foundReceiver : ThreadId option = None
-        let mutable foundHandler : SignalHandler option = None
+        let mutable foundHandlers : SignalHandler list option = None
         let mutable i : int = 0
 
         while foundIdx < 0 && i < entries.Length do
             let entry = entries.[i]
 
             match Map.tryFind entry.Signal r.Registrations with
-            | Some h ->
+            | Some hs ->
                 match pickReceiver entry with
                 | Some tid ->
                     foundIdx <- i
                     foundReceiver <- Some tid
-                    foundHandler <- Some h
+                    foundHandlers <- Some hs
                 | None -> ()
             | None -> ()
 
@@ -519,11 +598,53 @@ module TestSignalState =
             Some (
                 entries.[foundIdx],
                 foundReceiver.Value,
-                foundHandler.Value,
+                foundHandlers.Value,
                 { r with
                     Pending = remaining
                 }
             )
+
+    /// Append the handler to the per-signal list; drop the key when the
+    /// list would otherwise be empty (it never is on insert, but unify the
+    /// invariant by writing the helper symmetrically).
+    let private refRegister (signal : Signal) (handler : SignalHandler) (r : ReferenceState) : ReferenceState =
+        let existing =
+            match Map.tryFind signal r.Registrations with
+            | None -> []
+            | Some hs -> hs
+
+        { r with
+            Registrations = Map.add signal (existing @ [ handler ]) r.Registrations
+        }
+
+    /// Remove the first match of `handler` (by structural equality) from
+    /// `signal`'s list; drop the key when the resulting list is empty.
+    let private refUnregister (signal : Signal) (handler : SignalHandler) (r : ReferenceState) : ReferenceState =
+        match Map.tryFind signal r.Registrations with
+        | None -> r
+        | Some hs ->
+            let mutable removed = false
+
+            let hs' =
+                hs
+                |> List.filter (fun h ->
+                    if not removed && h = handler then
+                        removed <- true
+                        false
+                    else
+                        true
+                )
+
+            if not removed then
+                r
+            elif List.isEmpty hs' then
+                { r with
+                    Registrations = Map.remove signal r.Registrations
+                }
+            else
+                { r with
+                    Registrations = Map.add signal hs' r.Registrations
+                }
 
     /// Advance both implementations by one op, asserting agreement on
     /// `tryDeliverable`'s full return tuple (since the next step's
@@ -536,16 +657,8 @@ module TestSignalState =
             { r with
                 Initialized = true
             }
-        | Op.Register (sig0, h) ->
-            SignalState.register sig0 h s,
-            { r with
-                Registrations = Map.add sig0 h r.Registrations
-            }
-        | Op.Unregister sig0 ->
-            SignalState.unregister sig0 s,
-            { r with
-                Registrations = Map.remove sig0 r.Registrations
-            }
+        | Op.Register (sig0, h) -> SignalState.register sig0 h s, refRegister sig0 h r
+        | Op.Unregister (sig0, h) -> SignalState.unregister sig0 h s, refUnregister sig0 h r
         | Op.Block (tid, sig0) ->
             let existing : Set<Signal> =
                 match Map.tryFind tid r.Blocked with
@@ -588,10 +701,10 @@ module TestSignalState =
 
             match actual, expected with
             | None, None -> s, r
-            | Some (e1, tid1, h1, s'), Some (e2, tid2, h2, r') ->
+            | Some (e1, tid1, hs1, s'), Some (e2, tid2, hs2, r') ->
                 e1 |> shouldEqual e2
                 tid1 |> shouldEqual tid2
-                h1 |> shouldEqual h2
+                hs1 |> shouldEqual hs2
                 s', r'
             | a, b -> failwith $"tryDeliverable disagreed: actual=%A{a}, reference=%A{b}"
 
@@ -600,6 +713,16 @@ module TestSignalState =
         SignalState.isInitialized s |> shouldEqual r.Initialized
         SignalState.registrations s |> shouldEqual r.Registrations
         SignalState.pending s |> Seq.toList |> shouldEqual r.Pending
+
+        for sig0 in allSignals do
+            let actualHandlers = SignalState.handlers sig0 s
+
+            let expectedHandlers =
+                match Map.tryFind sig0 r.Registrations with
+                | None -> []
+                | Some hs -> hs
+
+            actualHandlers |> shouldEqual expectedHandlers
 
         for tid in allThreads do
             for sig0 in allSignals do
@@ -633,7 +756,10 @@ module TestSignalState =
         elif kind < 25 then
             Op.Register (pick allSignals, callback (rng.Next 4))
         elif kind < 32 then
-            Op.Unregister (pick allSignals)
+            // Mix targeted unregister (often a no-op) with the "remove an
+            // actual registered handler" path. Using the same callback
+            // pool as Register keeps real hits frequent.
+            Op.Unregister (pick allSignals, callback (rng.Next 4))
         elif kind < 47 then
             Op.Block (pick allThreads, pick allSignals)
         elif kind < 57 then
@@ -665,6 +791,9 @@ module TestSignalState =
         let mutable observedSkipThenDeliver = 0
         let mutable observedDrainOfEmpty = 0
         let mutable observedDrainNoneNonEmpty = 0
+        let mutable observedMultiHandlerDelivery = 0
+        let mutable observedUnregisterRealHit = 0
+        let mutable observedMultiHandlerState = 0
 
         let property (NonNegativeInt seed : NonNegativeInt) : unit =
             let rng = System.Random seed
@@ -682,15 +811,25 @@ module TestSignalState =
                 match op with
                 | Op.DrainOne live ->
                     match referenceTryDeliverable live r with
-                    | Some (entry, _, _, _) ->
+                    | Some (entry, _, hs, _) ->
                         observedDeliveries <- observedDeliveries + 1
+
+                        if List.length hs > 1 then
+                            observedMultiHandlerDelivery <- observedMultiHandlerDelivery + 1
 
                         match r.Pending with
                         | head :: _ when head <> entry -> observedSkipThenDeliver <- observedSkipThenDeliver + 1
                         | _ -> ()
                     | None when r.Pending.IsEmpty -> observedDrainOfEmpty <- observedDrainOfEmpty + 1
                     | None -> observedDrainNoneNonEmpty <- observedDrainNoneNonEmpty + 1
+                | Op.Unregister (sig0, h) ->
+                    match Map.tryFind sig0 r.Registrations with
+                    | Some hs when List.contains h hs -> observedUnregisterRealHit <- observedUnregisterRealHit + 1
+                    | _ -> ()
                 | _ -> ()
+
+                if r.Registrations |> Map.exists (fun _ hs -> List.length hs > 1) then
+                    observedMultiHandlerState <- observedMultiHandlerState + 1
 
                 let s', r' = stepBoth op s r
                 s <- s'
@@ -702,10 +841,13 @@ module TestSignalState =
         // Distribution checks: the random walk must hit each load-bearing
         // path frequently enough that a regression would actually surface.
         // The thresholds are deliberately conservative — expected counts
-        // are in the hundreds, so requiring a few dozen guards against
-        // pathological non-coverage without becoming flaky on the lower
-        // tail of the seed distribution.
+        // are in the hundreds or thousands, so requiring a few dozen
+        // guards against pathological non-coverage without becoming flaky
+        // on the lower tail of the seed distribution.
         observedDeliveries |> shouldBeGreaterThan 100
         observedSkipThenDeliver |> shouldBeGreaterThan 20
         observedDrainOfEmpty |> shouldBeGreaterThan 20
         observedDrainNoneNonEmpty |> shouldBeGreaterThan 20
+        observedMultiHandlerDelivery |> shouldBeGreaterThan 20
+        observedUnregisterRealHit |> shouldBeGreaterThan 20
+        observedMultiHandlerState |> shouldBeGreaterThan 50
