@@ -94,17 +94,7 @@ module IlMachineStateExecution =
             else
                 None
 
-        // When dispatching through a variant interface (ECMA-335 §I.8.7), the MethodImpl's
-        // declaration may be a variance-compatible — not identical — instantiation of the
-        // call target's interface. In that case the body's parameter types are the
-        // declared interface's view (e.g. `IContravariant<object>.Set(object)`) while the
-        // call site has the relaxed view (`IContravariant<string>.Set(string)`), so an
-        // exact parameter-type comparison would wrongly reject the override. Allowing
-        // contravariant parameter assignability matches the variance rule for `in T`
-        // (call-site parameters are assignable to body parameters); `out T` interfaces
-        // never put `T` in parameter position, so this check reduces to equality there.
         let signatureMatchesTarget
-            (paramsAllowVariance : bool)
             (candidateAssembly : AssemblyName)
             (candidateTypeGenerics : ImmutableArray<ConcreteTypeHandle>)
             (candidateSignature : TypeMethodSignature<TypeDefn>)
@@ -143,38 +133,25 @@ module IlMachineStateExecution =
                 | MethodReturnType.Void, MethodReturnType.Returns _
                 | MethodReturnType.Returns _, MethodReturnType.Void -> state, false
 
-            if not retAssignable then
-                state, false
-            elif not paramsAllowVariance then
-                state, candidateSignature.ParameterTypes = methodToCall.Signature.ParameterTypes
-            elif
-                candidateSignature.ParameterTypes.Length
-                <> methodToCall.Signature.ParameterTypes.Length
-            then
-                state, false
-            else
-                let mutable state = state
-                let mutable allMatch = true
-                let mutable i = 0
+            state,
+            retAssignable
+            && candidateSignature.ParameterTypes = methodToCall.Signature.ParameterTypes
 
-                while allMatch && i < candidateSignature.ParameterTypes.Length do
-                    let candParam = candidateSignature.ParameterTypes.[i]
-                    let targetParam = methodToCall.Signature.ParameterTypes.[i]
-
-                    if candParam = targetParam then
-                        i <- i + 1
-                    else
-                        let state', ok =
-                            isAssignableFrom loggerFactory baseClassTypes targetParam candParam state
-
-                        state <- state'
-                        allMatch <- ok
-                        i <- i + 1
-
-                state, allMatch
-
+        // When dispatching through a variant interface (ECMA-335 §I.8.7), the MethodImpl's
+        // declaration may name a variance-compatible — not identical — instantiation of the
+        // call target's interface. The candidate's signature has been substituted with the
+        // declaration's view (e.g. `IContravariant<object>.Set(object)`) while methodToCall
+        // holds the dispatch view (`IContravariant<string>.Set(string)`), so a literal
+        // parameter-type comparison would wrongly reject the override.
+        //
+        // Instead of relaxing the signature comparison — which can match the wrong overload
+        // when an interface has overloads with assignable parameters (e.g. both `M(object)`
+        // and `M(string)`) — identify the slot by its underlying MethodDefinitionHandle.
+        // Both `meth.Handle` and `methodToCall.Handle` resolve to the same MethodDef in the
+        // interface's assembly when they name the same virtual slot under variance
+        // substitution, regardless of how the surrounding type generics differ.
         let methodReferenceMatchesTarget
-            (paramsAllowVariance : bool)
+            (varianceInPlay : bool)
             (candidateTypeGenerics : ImmutableArray<ConcreteTypeHandle>)
             (meth : WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>)
             (state : IlMachineState)
@@ -182,13 +159,10 @@ module IlMachineStateExecution =
             =
             if meth.Name <> methodToCall.Name then
                 state, false
+            elif varianceInPlay then
+                state, meth.Handle = methodToCall.Handle
             else
-                signatureMatchesTarget
-                    paramsAllowVariance
-                    meth.DeclaringType.Assembly
-                    candidateTypeGenerics
-                    meth.Signature
-                    state
+                signatureMatchesTarget meth.DeclaringType.Assembly candidateTypeGenerics meth.Signature state
 
         let methodMatches
             (candidateTypeGenerics : ImmutableArray<ConcreteTypeHandle>)
@@ -221,7 +195,7 @@ module IlMachineStateExecution =
             else
 
             let state, matches =
-                signatureMatchesTarget false meth.DeclaringType.Assembly candidateTypeGenerics meth.Signature state
+                signatureMatchesTarget meth.DeclaringType.Assembly candidateTypeGenerics meth.Signature state
 
             if matches then
                 Some (meth, Some meth.Name = interfaceExplicitNamedMethod), state
