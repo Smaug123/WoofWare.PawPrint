@@ -64,6 +64,8 @@ module NativeQCall =
             "EventPipeInternal_WaitForSessionSignal",
             NativeEventPipe.tryExecuteQCall "EventPipeInternal_WaitForSessionSignal"
             "Signature_Init", NativeSignature.tryExecuteQCall "Signature_Init"
+            "Signature_GetCustomModifiersAtOffset",
+            NativeSignature.tryExecuteQCall "Signature_GetCustomModifiersAtOffset"
             "Array_CreateInstance", NativeArray.tryExecuteQCall "Array_CreateInstance"
             "Enum_GetValuesAndNames", NativeEnum.tryExecuteQCall "Enum_GetValuesAndNames"
             "AssemblyNative_GetResource", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetResource"
