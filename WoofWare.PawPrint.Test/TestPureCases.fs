@@ -58,19 +58,7 @@ module TestPureCases =
 
     let expectsUnhandledException = [ "UnhandledException.cs" ] |> Set.ofList
 
-    let customExitCodes =
-        [
-            "NoOp.cs", 1
-            "BasicLock.cs", 1
-            "MonitorEnterRefBool.cs", 1
-            "ContendedMonitorEnter.cs", 99
-            "MonitorPulseWait.cs", 42
-            "MonitorWaitReentrant.cs", 7
-            "ExceptionWithNoOpFinally.cs", 3
-            "ExceptionWithNoOpCatch.cs", 10
-            "Threads.cs", 3
-        ]
-        |> Map.ofList
+    let customExitCodes = [ "ExceptionWithNoOpFinally.cs", 3 ] |> Map.ofList
 
     let allPure =
         assy.GetManifestResourceNames ()
