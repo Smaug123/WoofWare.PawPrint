@@ -13,6 +13,8 @@ module NativeQCall =
             "QCall_GetGCHandleForTypeHandle", NativeGcHandle.tryExecuteQCall "QCall_GetGCHandleForTypeHandle"
             "QCall_FreeGCHandleForTypeHandle", NativeGcHandle.tryExecuteQCall "QCall_FreeGCHandleForTypeHandle"
             "MarshalNative_SizeOfHelper", NativeMarshal.tryExecuteQCall "MarshalNative_SizeOfHelper"
+            "MarshalNative_TryGetStructMarshalStub",
+            NativeMarshal.tryExecuteQCall "MarshalNative_TryGetStructMarshalStub"
             "Buffer_MemMove", NativeBuffer.tryExecuteQCall "Buffer_MemMove"
             "ExceptionNative_GetMessageFromNativeResources",
             NativeException.tryExecuteQCall "ExceptionNative_GetMessageFromNativeResources"
