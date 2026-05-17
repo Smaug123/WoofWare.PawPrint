@@ -519,16 +519,33 @@ module EvalStackValueComparisons =
             // equal when they reference the same concrete type. Only Concrete and array handles
             // have MethodTables in CoreCLR; Byref/Pointer/FunctionPointer are TypeDescs and never
             // alias a MethodTablePtr (otherwise e.g. `typeof(int*)` would compare equal to a
-            // MethodTablePtr synthesised for the same handle).
-            | NativeIntSource.MethodTablePtr h1, NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed h2)
-            | NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed h2), NativeIntSource.MethodTablePtr h1 ->
-                match h2 with
-                | ConcreteTypeHandle.Concrete _
-                | ConcreteTypeHandle.OneDimArrayZero _
-                | ConcreteTypeHandle.Array _ -> h1 = h2
-                | ConcreteTypeHandle.Byref _
-                | ConcreteTypeHandle.Pointer _
-                | ConcreteTypeHandle.FunctionPointer _ -> false
+            // MethodTablePtr synthesised for the same handle). The OpenGenericTypeDefinition
+            // case aliases the typedef's canonical MethodTable address with the same TypeHandle.
+            | NativeIntSource.MethodTablePtr t1, NativeIntSource.TypeHandlePtr t2
+            | NativeIntSource.TypeHandlePtr t2, NativeIntSource.MethodTablePtr t1 ->
+                match t1, t2 with
+                | RuntimeTypeHandleTarget.Closed h1, RuntimeTypeHandleTarget.Closed h2 ->
+                    match h2 with
+                    | ConcreteTypeHandle.Concrete _
+                    | ConcreteTypeHandle.OneDimArrayZero _
+                    | ConcreteTypeHandle.Array _ -> h1 = h2
+                    | ConcreteTypeHandle.Byref _
+                    | ConcreteTypeHandle.Pointer _
+                    | ConcreteTypeHandle.FunctionPointer _ -> false
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition i1,
+                  RuntimeTypeHandleTarget.OpenGenericTypeDefinition i2 -> i1 = i2
+                | RuntimeTypeHandleTarget.Closed _, RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _, RuntimeTypeHandleTarget.Closed _ ->
+                    // The closed instantiation has its own MT distinct from the typedef's canonical MT.
+                    false
+                | RuntimeTypeHandleTarget.GenericParameter _, _
+                | RuntimeTypeHandleTarget.MethodGenericParameter _, _
+                | _, RuntimeTypeHandleTarget.GenericParameter _
+                | _, RuntimeTypeHandleTarget.MethodGenericParameter _ ->
+                    // A bare generic parameter has no MethodTable; this combination should
+                    // not arise from any legitimate construction.
+                    failwith
+                        $"CEQ: MethodTablePtr/TypeHandlePtr with generic-parameter target has no MethodTable identity: %O{t1} vs %O{t2}"
             | NativeIntSource.ManagedPointer f1, NativeIntSource.ManagedPointer f2 ->
                 // Match the `EvalStackValue.ManagedPointer` vs `ManagedPointer`
                 // arm below: trailing `ReinterpretAs` projections are address-

@@ -330,7 +330,14 @@ module internal UnaryMetadataFieldOps =
                     failwith
                         $"TODO: ldfld {field.DeclaringType.Namespace}.{field.DeclaringType.Name}::{field.Name} through RuntimeTypeHandleTarget %O{methodTableFor}"
             | EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr methodTableFor) ->
-                match MethodTableProjection.tryProjectField loggerFactory baseClassTypes field methodTableFor state with
+                match
+                    MethodTableProjection.tryProjectFieldForRuntimeTypeHandleTarget
+                        loggerFactory
+                        baseClassTypes
+                        field
+                        methodTableFor
+                        state
+                with
                 | Some (value, state) -> IlMachineState.pushToEvalStack value thread state
                 | None ->
                     failwith

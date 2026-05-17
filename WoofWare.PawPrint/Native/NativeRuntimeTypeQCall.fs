@@ -1397,20 +1397,17 @@ module NativeRuntimeTypeQCall =
                 match typeHandleTarget with
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
                     // CoreCLR's RuntimeTypeHandle::GetFields walks the canonical
-                    // (open-generic) MethodTable's FieldDescs, so a closed instantiation
-                    // and its open definition would both yield the same FieldDesc set.
-                    // PawPrint's getOrAllocateField is intended to normalise the declaring
-                    // type's generics to a canonical form so the registry ids match,
-                    // matching that contract; today it does not yet handle generic
-                    // declaring types end-to-end (see walkFieldsOfTypeDefinition's
-                    // doc-comment) so exercising this path on a generic class still
-                    // crashes deeper down.
+                    // (open-generic) MethodTable's FieldDescs. The resulting handles
+                    // carry `OpenGenericTypeDefinition` as the declaring target —
+                    // observably distinct from the closed-instantiation handles a
+                    // `typeof(G<int>)` walk would produce.
                     walkFieldsOfTypeDefinition
                         ctx.LoggerFactory
                         ctx.BaseClassTypes
                         operation
                         identity.Assembly
                         identity.TypeDefinition.Get
+                        (RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity)
                         state
                 | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
                     // The wrapper asserts !IsGenericVariable(type) before reaching us, so

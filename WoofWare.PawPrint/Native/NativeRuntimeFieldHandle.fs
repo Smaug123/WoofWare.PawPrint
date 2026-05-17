@@ -48,14 +48,23 @@ module NativeRuntimeFieldHandle =
         =
         let assembly, fieldInfo = getFieldForFieldHandle operation fieldHandle state
 
-        let declaringTypeHandle = fieldHandle.GetDeclaringTypeHandle ()
-
+        // RVA fields live on non-generic declaring types — `[FieldOffset]`/RVA
+        // initialisers cannot reference a generic typedef parameter. With the
+        // canonical FieldHandle declaring type model, "non-generic" means
+        // `Closed` (a generic declaring type would be `OpenGenericTypeDefinition`,
+        // for which RVA layout is not even definable). Reject other shapes
+        // loudly rather than silently fabricating empty generics.
         let typeGenerics =
-            match AllConcreteTypes.lookup declaringTypeHandle state.ConcreteTypes with
-            | Some declaringType -> declaringType.Generics
-            | None ->
+            match fieldHandle.GetDeclaringTypeHandle () with
+            | RuntimeTypeHandleTarget.Closed declaringTypeHandle ->
+                match AllConcreteTypes.lookup declaringTypeHandle state.ConcreteTypes with
+                | Some declaringType -> declaringType.Generics
+                | None ->
+                    failwith
+                        $"%s{operation}: declaring type handle %O{declaringTypeHandle} was not concretized, so RVA field size cannot be computed"
+            | other ->
                 failwith
-                    $"%s{operation}: declaring type handle %O{declaringTypeHandle} was not concretized, so RVA field size cannot be computed"
+                    $"%s{operation}: RVA field's declaring type is %O{other}; expected a Closed concrete type. RVA fields cannot live on a generic typedef."
 
         IlMachineState.peByteRangeForFieldRva loggerFactory baseClassTypes assembly fieldInfo typeGenerics state
 
@@ -145,13 +154,11 @@ module NativeRuntimeFieldHandle =
             // (runtimehandles.cpp:2192) is an FCall returning
             // pField->GetApproxEnclosingMethodTable() — the canonical MethodTable for
             // the field's declaring type. Under shared-generic codegen the canonical
-            // form is the open instantiation; PawPrint does not share generic
-            // instantiations, so the FieldHandle's stored DeclaringType is already
-            // the closed concrete type and is at least as precise as CoreCLR's
-            // result. The managed wrapper RuntimeFieldHandle.GetApproxDeclaringType
-            // (RuntimeHandles.cs:1523) hands the pointer to
-            // RuntimeTypeHandle.GetRuntimeType, which our MethodTablePtr
-            // representation already feeds via the TypeHandle registry.
+            // form is the open instantiation. With PawPrint's per-canonical
+            // FieldHandle model, the stored DeclaringType is `Closed` for non-generic
+            // declaring types and `OpenGenericTypeDefinition` for generic ones.
+            // `NativeIntSource.MethodTablePtr` carries the full `RuntimeTypeHandleTarget`,
+            // so the open-generic case surfaces directly.
             let operation = "RuntimeFieldHandle.GetApproxDeclaringMethodTable"
 
             let fieldHandle =

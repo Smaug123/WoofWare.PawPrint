@@ -132,4 +132,91 @@ module NativeMarshal =
                     IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 size.Size)) ctx.Thread state
 
                 NativeHandlerResult.completed state |> Some
+        | "MarshalNative_TryGetStructMarshalStub",
+          "System.Private.CoreLib",
+          "System.Runtime.InteropServices",
+          "Marshal",
+          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePointer (ConcreteFunctionPointer _)
+            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.UIntPtr) ],
+          // The CoreLib declaration is `[return: MarshalAs(UnmanagedType.Bool)] bool`, which
+          // the QCall PInvoke stub presents to us as an Int32 return (Win32 BOOL is 4 bytes).
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            let operation = "MarshalNative_TryGetStructMarshalStub"
+
+            let methodTableArg = instruction.Arguments.[0] |> EvalStackValue.ofCliType
+            let typeHandle = NativeCall.methodTableOfEvalStackValue operation methodTableArg
+
+            let stubOutPtr =
+                NativeCall.managedPointerOfPointerArgument operation "structMarshalStub" instruction.Arguments.[1]
+
+            let sizeOutPtr =
+                NativeCall.managedPointerOfPointerArgument operation "size" instruction.Arguments.[2]
+
+            let zero, state =
+                IlMachineState.cliTypeZeroOfHandle state ctx.BaseClassTypes typeHandle
+
+            // CoreCLR's `MarshalNative_TryGetStructMarshalStub` (marshalnative.cpp:99-145)
+            // has three branches: blittable (memmove fast path, *stub = NULL, *size = native
+            // size, return TRUE), has-layout-non-blittable (synthesised IL stub, return TRUE),
+            // and no-layout (return FALSE so managed Marshal throws ArgumentException).
+            // This implementation handles only the first arm, and only for the strict subset
+            // we are confident matches CoreCLR exactly: structs whose fields are recursively
+            // plain numeric (Int8..Float64). Anything else — IntPtr/UIntPtr fields, enums,
+            // [MarshalAs] descriptors, Bool/Char/ObjectRef fields, AutoLayout types, classes,
+            // etc. — surfaces a host TODO. Each future widening (FALSE for no-layout types,
+            // stub-synthesis exceptions for has-layout-non-blittable types, IntPtr fields
+            // with verified provenance, [MarshalAs] descriptor handling, ...) wants its own
+            // motivating PawPrint test before being added to the classifier.
+            let rec isStrictlyNumericBlittable (t : CliType) : bool =
+                match t with
+                // NativeInt (IntPtr/UIntPtr) values carry provenance in PawPrint that the byte
+                // model rejects; CoreCLR happily memmoves the integer-width bits regardless.
+                // Excluded from the allowlist until we have explicit byte-copyability gating.
+                | CliType.Numeric (CliNumericType.NativeInt _) -> false
+                | CliType.Numeric _ -> true
+                | CliType.Bool _
+                | CliType.Char _
+                | CliType.ObjectRef _
+                | CliType.RuntimePointer _ -> false
+                | CliType.ValueType vt ->
+                    match vt._Storage with
+                    // RawBytes-backed value types are not the typical struct-with-fields
+                    // shape; conservatively reject so we don't quietly accept primitive
+                    // wrappers whose CoreCLR marshal size diverges from the byte image.
+                    | CliValueTypeStorage.RawBytes _ -> false
+                    | CliValueTypeStorage.Fields storage ->
+                        storage.Fields
+                        |> List.forall (fun field -> isStrictlyNumericBlittable field.Contents)
+
+            if isStrictlyNumericBlittable zero then
+                // The eventual `*structMarshalStub` we write here is null: the blittable path
+                // tells CoreLib to take the `SpanHelpers.Memmove` fast path
+                // (marshalnative.cpp:99-145).
+                let zeroNativeInt =
+                    CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
+
+                // For the strictly-numeric subset, CoreCLR's marshal size and PawPrint's
+                // managed CLI size coincide: each field's managed width equals its native
+                // width, sequential layout uses natural alignment, and no `[MarshalAs]`
+                // resizing is in play.
+                let size = CliType.SizeOf zero
+
+                let state =
+                    IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state stubOutPtr zeroNativeInt
+
+                let state =
+                    IlMachineState.writeManagedByrefWithBase
+                        ctx.BaseClassTypes
+                        state
+                        sizeOutPtr
+                        (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim (int64 size.Size))))
+
+                let state =
+                    IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 1)) ctx.Thread state
+
+                NativeHandlerResult.completed state |> Some
+            else
+                failwith
+                    $"TODO %s{operation}: only strictly-numeric blittable structs are supported by this QCall today; type %O{typeHandle} has fields outside that allowlist (see comment for the deferred cases)"
         | _ -> None

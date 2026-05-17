@@ -8,12 +8,20 @@ type FieldHandle =
     private
         {
             AssemblyFullName : string
-            DeclaringType : ConcreteTypeHandle
+            /// The declaring type observed at allocation time. CoreCLR's
+            /// `typeof(G&lt;int&gt;).GetField(...).FieldHandle` is observably *not*
+            /// interchangeable with `typeof(G&lt;&gt;).GetField(...).FieldHandle` —
+            /// each carries its own instantiation context and `FieldInfo.GetFieldFromHandle`
+            /// rejects a mismatched declaring `RuntimeTypeHandle`. Mirror that here by
+            /// keying on the full `RuntimeTypeHandleTarget` the caller supplied: a closed
+            /// instantiation gets `Closed`; the open generic definition gets
+            /// `OpenGenericTypeDefinition`; and the two yield distinct registry ids.
+            DeclaringType : RuntimeTypeHandleTarget
             FieldHandle : ComparableFieldDefinitionHandle
         }
 
     member this.GetAssemblyFullName () : string = this.AssemblyFullName
-    member this.GetDeclaringTypeHandle () : ConcreteTypeHandle = this.DeclaringType
+    member this.GetDeclaringTypeHandle () : RuntimeTypeHandleTarget = this.DeclaringType
     member this.GetFieldDefinitionHandle () : ComparableFieldDefinitionHandle = this.FieldHandle
 
 type FieldHandleRegistry =
@@ -61,17 +69,31 @@ module FieldHandleRegistry =
         | TypeDefn.Void -> false
 
     /// Returns a (struct) System.RuntimeFieldHandle, with its contents (reference type) freshly allocated if necessary.
+    /// `declaringType` must be either `Closed` (a fully concrete declaring type — non-generic or
+    /// a particular closed instantiation) or `OpenGenericTypeDefinition` (the open generic typedef,
+    /// e.g. for `typeof(Foo&lt;&gt;).GetField`). Distinct targets allocate distinct registry ids,
+    /// matching CoreCLR's per-instantiation `RuntimeFieldHandle` identity. Type-parameter targets
+    /// cannot own a field and are rejected.
     let getOrAllocate
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (allConcreteTypes : AllConcreteTypes)
         (allocState : 'allocState)
         (allocate : CliValueType -> 'allocState -> ManagedHeapAddress * 'allocState)
         (declaringAssy : AssemblyName)
-        (declaringType : ConcreteTypeHandle)
+        (declaringType : RuntimeTypeHandleTarget)
         (handle : FieldDefinitionHandle)
         (reg : FieldHandleRegistry)
         : CliType * FieldHandleRegistry * 'allocState
         =
+        match declaringType with
+        | RuntimeTypeHandleTarget.Closed _
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> ()
+        | RuntimeTypeHandleTarget.GenericParameter _
+        | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
+            // Generic-parameter declaring types cannot own a field: fields live on the
+            // type that mentions the parameter, not on the parameter itself.
+            failwith
+                $"FieldHandleRegistry.getOrAllocate: declaring type must be Closed or OpenGenericTypeDefinition, got %O{declaringType}"
 
         let runtimeFieldHandle (runtimeFieldInfoStub : ManagedHeapAddress) =
             // RuntimeFieldHandle is a struct; it contains one field, an IRuntimeFieldInfo
