@@ -379,7 +379,7 @@ module IlMachineRuntimeMetadata =
     /// definition identity for continued identity-walking (when true). A method generic
     /// parameter has no legitimate appearance in a type definition's base or interfaces,
     /// but treating it as unbound is the safe default.
-    let rec private containsAnyGenericParameter (ty : TypeDefn) : bool =
+    let rec containsAnyGenericParameter (ty : TypeDefn) : bool =
         match ty with
         | TypeDefn.GenericTypeParameter _
         | TypeDefn.GenericMethodParameter _ -> true
