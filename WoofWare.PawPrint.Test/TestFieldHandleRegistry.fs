@@ -38,6 +38,12 @@ public class DerivedWithField : BaseWithField
 {
     public int DerivedData = 4;
 }
+
+public class GenericHolder<T>
+{
+    public T Value;
+    public static int StaticCount;
+}
 """
 
     type private FieldHandleFixture =
@@ -313,6 +319,60 @@ public class DerivedWithField : BaseWithField
 
         originalResolved.GetFieldDefinitionHandle().Get
         |> shouldEqual fixture.Field.Handle
+
+    [<Test>]
+    let ``Field handle on generic declaring type canonicalises to OpenGenericTypeDefinition`` () : unit =
+        // Regression: getOrAllocateField used to map the typedef's generic parameters onto
+        // TypeDefn.GenericTypeParameter placeholders and then concretise with empty typeGenerics,
+        // raising IndexOutOfRangeException. The fix mirrors CoreCLR's per-canonical FieldDesc
+        // semantics: the FieldHandle's declaring type is OpenGenericTypeDefinition for any
+        // generic declaring type, regardless of which closed instantiation the caller observed.
+        let fixture = makeFieldHandleFixture ()
+
+        let genericField =
+            fixture.Assembly.Fields.Values
+            |> Seq.find (fun field -> field.DeclaringType.Name = "GenericHolder`1" && field.Name = "Value")
+
+        let _, state = getOrAllocateField fixture genericField fixture.State
+
+        let registeredHandle =
+            state.FieldHandles
+            |> FieldHandleRegistry.resolveFieldFromId 1L
+            |> Option.defaultWith (fun () -> failwith "Expected a freshly allocated FieldHandle at id 1")
+
+        registeredHandle.GetFieldDefinitionHandle().Get
+        |> shouldEqual genericField.Handle
+
+        match registeredHandle.GetDeclaringTypeHandle () with
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+            identity |> shouldEqual genericField.DeclaringType.Identity
+        | other ->
+            failwithf
+                "Expected OpenGenericTypeDefinition for a generic declaring type, got %A. CoreCLR's per-canonical FieldDesc model requires one FieldDesc per generic typedef, shared across closed instantiations."
+                other
+
+    [<Test>]
+    let ``Field handle on generic declaring type is reused across allocations`` () : unit =
+        // Canonical sharing: calling getOrAllocateField twice for the same field on a generic
+        // declaring type must return the same FieldHandle id (and the same RuntimeFieldInfoStub
+        // address). This is what makes `typeof(Foo<>).GetField(...).FieldHandle` and
+        // `typeof(Foo<int>).GetField(...).FieldHandle` agree under the canonical model.
+        let fixture = makeFieldHandleFixture ()
+
+        let genericField =
+            fixture.Assembly.Fields.Values
+            |> Seq.find (fun field -> field.DeclaringType.Name = "GenericHolder`1" && field.Name = "StaticCount")
+
+        let firstHandle, state = getOrAllocateField fixture genericField fixture.State
+        let secondHandle, state = getOrAllocateField fixture genericField state
+
+        let firstAddr = runtimeFieldInfoStubAddress firstHandle
+        let secondAddr = runtimeFieldInfoStubAddress secondHandle
+
+        secondAddr |> shouldEqual firstAddr
+
+        fieldHandleIdAtAddress secondAddr state
+        |> shouldEqual (fieldHandleIdAtAddress firstAddr state)
 
     let private requiredTopLevelType
         (assembly : DumpedAssembly)

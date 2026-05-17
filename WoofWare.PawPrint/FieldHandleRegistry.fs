@@ -8,12 +8,21 @@ type FieldHandle =
     private
         {
             AssemblyFullName : string
-            DeclaringType : ConcreteTypeHandle
+            /// CoreCLR's FieldDesc is per-canonical: one FieldDesc per generic type
+            /// definition, shared across all closed instantiations. We mirror that
+            /// by canonicalising the declaring type before allocation — a non-generic
+            /// declaring type becomes `Closed`, and a generic declaring type collapses
+            /// to its `OpenGenericTypeDefinition` identity rather than a particular
+            /// instantiation. This keeps the registry's key set in 1:1 correspondence
+            /// with the metadata `FieldDefinitionHandle` × generic-typedef pair and
+            /// makes lookups by `(declaring typedef, field handle)` total even when
+            /// the caller only has the open form (e.g. `typeof(Foo&lt;&gt;).GetField`).
+            DeclaringType : RuntimeTypeHandleTarget
             FieldHandle : ComparableFieldDefinitionHandle
         }
 
     member this.GetAssemblyFullName () : string = this.AssemblyFullName
-    member this.GetDeclaringTypeHandle () : ConcreteTypeHandle = this.DeclaringType
+    member this.GetDeclaringTypeHandle () : RuntimeTypeHandleTarget = this.DeclaringType
     member this.GetFieldDefinitionHandle () : ComparableFieldDefinitionHandle = this.FieldHandle
 
 type FieldHandleRegistry =
@@ -61,17 +70,30 @@ module FieldHandleRegistry =
         | TypeDefn.Void -> false
 
     /// Returns a (struct) System.RuntimeFieldHandle, with its contents (reference type) freshly allocated if necessary.
+    /// `declaringType` must be canonicalised per CoreCLR's FieldDesc model: a non-generic
+    /// declaring type as `Closed`, a generic declaring type as `OpenGenericTypeDefinition`.
+    /// Passing a closed instantiation of a generic declaring type would defeat the canonical
+    /// sharing and is rejected.
     let getOrAllocate
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (allConcreteTypes : AllConcreteTypes)
         (allocState : 'allocState)
         (allocate : CliValueType -> 'allocState -> ManagedHeapAddress * 'allocState)
         (declaringAssy : AssemblyName)
-        (declaringType : ConcreteTypeHandle)
+        (declaringType : RuntimeTypeHandleTarget)
         (handle : FieldDefinitionHandle)
         (reg : FieldHandleRegistry)
         : CliType * FieldHandleRegistry * 'allocState
         =
+        match declaringType with
+        | RuntimeTypeHandleTarget.Closed _
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> ()
+        | RuntimeTypeHandleTarget.GenericParameter _
+        | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
+            // Generic-parameter declaring types cannot own a field: fields live on the
+            // type that mentions the parameter, not on the parameter itself.
+            failwith
+                $"FieldHandleRegistry.getOrAllocate: declaring type must be Closed or OpenGenericTypeDefinition, got %O{declaringType}"
 
         let runtimeFieldHandle (runtimeFieldInfoStub : ManagedHeapAddress) =
             // RuntimeFieldHandle is a struct; it contains one field, an IRuntimeFieldInfo

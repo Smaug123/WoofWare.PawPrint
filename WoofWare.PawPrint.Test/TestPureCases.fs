@@ -18,9 +18,9 @@ module TestPureCases =
     let unimplemented =
         [
             "AdvancedStructLayout.cs" // past MarshalNative_SizeOfHelper for ByValTStr and SystemNative_Malloc / SystemNative_Free / Marshal.AllocHGlobal / FreeHGlobal; now blocked downstream at the unimplemented MarshalNative_TryGetStructMarshalStub QCall (CoreLib's Marshal.StructureToPtr path)
-            "GetFieldOnOpenGenericTypeDefinition.cs" // RuntimeTypeHandle.GetFields now dispatches the OpenGenericTypeDefinition arm correctly, but getOrAllocateField (IlMachineRuntimeMetadata.fs:107) maps the field's declaring generics to TypeDefn.GenericTypeParameter placeholders and then concretizes with empty typeGenerics, throwing IndexOutOfRangeException; the same latent bug affects closed generic declaring types too (see UnaryMetadataTokenOps.fs:230 TODO)
-            "LdtokenField.cs" // QCall wiring for RuntimeTypeHandle.GetFields on open generic type definitions is now in place, but exercising it (Test 5: typeof(GenericClass<>).GetField) hits the same getOrAllocateField IndexOutOfRangeException as GetFieldOnOpenGenericTypeDefinition.cs above
             "Threads.cs" // past ThreadNative_InformThreadNameChange (Thread.Name setter); now blocked on unimplemented PAL call libSystem.Native!SystemNative_GetLowResolutionTimestamp (.Sys::GetLowResolutionTimestamp, used by the Task/ThreadPool scheduler)
+            "GetFieldOnOpenGenericTypeDefinition.cs" // FieldHandle declaring-type canonicalisation is fixed; now blocked on the BCL's RuntimeType.GetFieldCandidates walk reaching MethodTable::ParentMethodTable for the OpenGenericTypeDefinition target — the projection only handles Closed today.
+            "LdtokenField.cs" // Test 5 hits typeof(GenericClass<>).GetField("GenericField"), which goes through the same MethodTable::ParentMethodTable projection on an OpenGenericTypeDefinition target as GetFieldOnOpenGenericTypeDefinition.cs.
         ]
         |> Set.ofList
 

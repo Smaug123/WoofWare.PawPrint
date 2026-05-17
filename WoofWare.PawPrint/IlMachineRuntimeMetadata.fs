@@ -114,20 +114,39 @@ module IlMachineRuntimeMetadata =
         =
         let field = state.LoadedAssembly(declaringAssy).Value.Fields.[fieldHandle]
 
-        // For LdToken, we need to convert GenericParamFromMetadata to TypeDefn
-        // When we don't have generic context, we use the generic type parameters directly
-        let declaringTypeWithGenerics =
-            field.DeclaringType
-            |> ConcreteType.mapGeneric (fun _index (param, _metadata) ->
-                TypeDefn.GenericTypeParameter param.SequenceNumber
-            )
-
+        // Mirror CoreCLR's per-canonical FieldDesc model: one FieldHandle per
+        // (generic typedef, field) pair, not per closed instantiation. A non-generic
+        // declaring type is registered as `Closed` (which still requires
+        // concretization so the resulting handle can be used wherever the closed
+        // handle is needed, e.g. `MethodTablePtr`); a generic declaring type is
+        // registered as `OpenGenericTypeDefinition` without instantiating its
+        // parameters. This avoids the old IndexOutOfRangeException path where
+        // `concretizeFieldDeclaringType` substituted `GenericTypeParameter`
+        // placeholders into an empty `typeGenerics` array, and matches CoreCLR's
+        // sharing semantics so that
+        // `typeof(Foo<>).GetField(...).FieldHandle` and
+        // `typeof(Foo<int>).GetField(...).FieldHandle` agree.
         let declaringType, state =
-            IlMachineTypeResolution.concretizeFieldDeclaringType
-                loggerFactory
-                baseClassTypes
-                declaringTypeWithGenerics
-                state
+            if field.DeclaringType.Generics.IsEmpty then
+                let ctx : TypeConcretization.ConcretizationContext<_> =
+                    {
+                        ConcreteTypes = state.ConcreteTypes
+                        LoadedAssemblies = state._LoadedAssemblies
+                        BaseTypes = baseClassTypes
+                    }
+
+                let handle, ctx =
+                    TypeConcretization.concretizeTypeDefinition ctx field.DeclaringType.Identity
+
+                let state =
+                    { state with
+                        ConcreteTypes = ctx.ConcreteTypes
+                        _LoadedAssemblies = ctx.LoadedAssemblies
+                    }
+
+                RuntimeTypeHandleTarget.Closed handle, state
+            else
+                RuntimeTypeHandleTarget.OpenGenericTypeDefinition field.DeclaringType.Identity, state
 
         let state, runtimeFieldInfoStub =
             TypeDefn.FromDefinition (
