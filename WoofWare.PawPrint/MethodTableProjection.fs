@@ -904,16 +904,18 @@ module internal MethodTableProjection =
                         $"MethodTable::AuxiliaryData projection refused for TypeDesc target %O{methodTableFor}: generic parameters have no MethodTable in CoreCLR"
             | "ParentMethodTable" ->
                 match methodTableFor with
-                | RuntimeTypeHandleTarget.Closed handle ->
+                | RuntimeTypeHandleTarget.Closed _
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
                     let state, parent =
-                        IlMachineState.resolveBaseConcreteType loggerFactory baseClassTypes state handle
+                        IlMachineState.resolveBaseRuntimeTypeHandleTarget
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            methodTableFor
 
                     let result =
                         match parent with
-                        | Some parentHandle ->
-                            CliType.RuntimePointer (
-                                CliRuntimePointer.MethodTablePtr (RuntimeTypeHandleTarget.Closed parentHandle)
-                            )
+                        | Some parentTarget -> CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr parentTarget)
                         | None ->
                             // CoreCLR sets ParentMethodTable to null at System.Object; the cast-walk
                             // loops in CastHelpers (e.g. IsInstanceOfClass, ChkCastClassSpecial) check
@@ -921,8 +923,6 @@ module internal MethodTableProjection =
                             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
 
                     Some (result, state)
-                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
-                    failwith $"TODO: MethodTable::ParentMethodTable projection for %O{methodTableFor}"
                 | RuntimeTypeHandleTarget.GenericParameter _
                 | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
                     failwith

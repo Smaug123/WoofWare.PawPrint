@@ -373,6 +373,109 @@ module IlMachineRuntimeMetadata =
 
                     state, Some baseHandle
 
+    /// True iff `ty` references any `GenericTypeParameter` / `GenericMethodParameter`. The
+    /// open-generic source cast walk uses this to decide whether a base/interface edge can be
+    /// materialised to a closed `ConcreteTypeHandle` (when false) or only stripped to its
+    /// definition identity for continued identity-walking (when true). A method generic
+    /// parameter has no legitimate appearance in a type definition's base or interfaces,
+    /// but treating it as unbound is the safe default.
+    let rec private containsAnyGenericParameter (ty : TypeDefn) : bool =
+        match ty with
+        | TypeDefn.GenericTypeParameter _
+        | TypeDefn.GenericMethodParameter _ -> true
+        | TypeDefn.Array (element, _)
+        | TypeDefn.Pinned element
+        | TypeDefn.Pointer element
+        | TypeDefn.Byref element
+        | TypeDefn.OneDimensionalArrayLowerBoundZero element -> containsAnyGenericParameter element
+        | TypeDefn.Modified (original, modifier, _) ->
+            containsAnyGenericParameter original || containsAnyGenericParameter modifier
+        | TypeDefn.GenericInstantiation (generic, args) ->
+            containsAnyGenericParameter generic
+            || (args |> Seq.exists containsAnyGenericParameter)
+        | TypeDefn.FunctionPointer signature ->
+            let returnContains =
+                match signature.ReturnType with
+                | MethodReturnType.Void -> false
+                | MethodReturnType.Returns ret -> containsAnyGenericParameter ret
+
+            returnContains
+            || (signature.ParameterTypes |> List.exists containsAnyGenericParameter)
+        | TypeDefn.PrimitiveType _
+        | TypeDefn.FromReference _
+        | TypeDefn.FromDefinition _
+        | TypeDefn.Void -> false
+
+    /// Given a `RuntimeTypeHandleTarget`, resolve and return its parent's
+    /// `RuntimeTypeHandleTarget`. Returns `None` only at `System.Object`.
+    ///
+    /// `Closed` defers to `resolveBaseConcreteType` and rewraps as `Closed`.
+    ///
+    /// `OpenGenericTypeDefinition` represents CoreCLR's canonical MethodTable
+    /// for a generic typedef (i.e. `G<__Canon>`). Its parent MT is the parent
+    /// type after substituting `__Canon` for each of `G`'s parameters. The
+    /// case where the base type doesn't mention `G`'s parameters at all (e.g.
+    /// `class G<T> : object`, `class G<T> : Base<int>`) is fully closed and
+    /// concretizes with no generics. The shared-base case (e.g.
+    /// `class G<T> : Base<T>` → parent is `Base<__Canon>` →
+    /// `OpenGenericTypeDefinition Base`) is not yet implemented and surfaces
+    /// loudly; the immediate callers (`MethodTable::ParentMethodTable` lookups
+    /// driven by reflection on open typedefs) only exercise the closed-parent
+    /// case today.
+    ///
+    /// `GenericParameter` and `MethodGenericParameter` are TypeDescs in
+    /// CoreCLR and carry no MethodTable; asking for their parent is a bug.
+    let resolveBaseRuntimeTypeHandleTarget
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (target : RuntimeTypeHandleTarget)
+        : IlMachineState * RuntimeTypeHandleTarget option
+        =
+        match target with
+        | RuntimeTypeHandleTarget.Closed handle ->
+            let state, parent =
+                resolveBaseConcreteType loggerFactory baseClassTypes state handle
+
+            state, parent |> Option.map RuntimeTypeHandleTarget.Closed
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+            let assy =
+                match state.LoadedAssembly identity.Assembly with
+                | Some assembly -> assembly
+                | None ->
+                    failwith
+                        $"resolveBaseRuntimeTypeHandleTarget: assembly %s{identity.AssemblyFullName} not loaded for open generic typedef %O{identity.TypeDefinition.Get}"
+
+            let typeInfo = assy.TypeDefs.[identity.TypeDefinition.Get]
+
+            match typeInfo.BaseType with
+            | None -> state, None
+            | Some baseTypeInfo ->
+                let state, baseAssy, baseTypeDefn =
+                    resolveBaseTypeInfo loggerFactory baseClassTypes state assy baseTypeInfo
+
+                if containsAnyGenericParameter baseTypeDefn then
+                    failwith
+                        $"TODO: resolveBaseRuntimeTypeHandleTarget for open generic typedef %O{identity.TypeDefinition.Get} in %s{identity.AssemblyFullName}: base type %O{baseTypeDefn} references generic parameters (shared/canonical parent); only closed parents are supported today"
+                else
+                    let state, baseHandle =
+                        IlMachineTypeResolution.concretizeType
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            baseAssy.Name
+                            ImmutableArray.Empty
+                            ImmutableArray.Empty
+                            baseTypeDefn
+
+                    state, Some (RuntimeTypeHandleTarget.Closed baseHandle)
+        | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
+            failwith
+                $"resolveBaseRuntimeTypeHandleTarget: refused for generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}: TypeDescs have no MethodTable in CoreCLR"
+        | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+            failwith
+                $"resolveBaseRuntimeTypeHandleTarget: refused for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}: TypeDescs have no MethodTable in CoreCLR"
+
     /// Collect ALL instance fields from the entire type hierarchy for a given ConcreteTypeHandle,
     /// walking from base to derived (base class fields appear first in the returned list).
     let rec collectAllInstanceFields
@@ -1596,39 +1699,6 @@ module IlMachineRuntimeMetadata =
         | ConcreteTypeHandle.Byref _
         | ConcreteTypeHandle.Pointer _
         | ConcreteTypeHandle.FunctionPointer _ -> walk state objType
-
-    /// True iff `ty` references any `GenericTypeParameter` / `GenericMethodParameter`. The
-    /// open-generic source cast walk uses this to decide whether a base/interface edge can be
-    /// materialised to a closed `ConcreteTypeHandle` (when false) or only stripped to its
-    /// definition identity for continued identity-walking (when true). A method generic
-    /// parameter has no legitimate appearance in a type definition's base or interfaces,
-    /// but treating it as unbound is the safe default.
-    let rec private containsAnyGenericParameter (ty : TypeDefn) : bool =
-        match ty with
-        | TypeDefn.GenericTypeParameter _
-        | TypeDefn.GenericMethodParameter _ -> true
-        | TypeDefn.Array (element, _)
-        | TypeDefn.Pinned element
-        | TypeDefn.Pointer element
-        | TypeDefn.Byref element
-        | TypeDefn.OneDimensionalArrayLowerBoundZero element -> containsAnyGenericParameter element
-        | TypeDefn.Modified (original, modifier, _) ->
-            containsAnyGenericParameter original || containsAnyGenericParameter modifier
-        | TypeDefn.GenericInstantiation (generic, args) ->
-            containsAnyGenericParameter generic
-            || (args |> Seq.exists containsAnyGenericParameter)
-        | TypeDefn.FunctionPointer signature ->
-            let returnContains =
-                match signature.ReturnType with
-                | MethodReturnType.Void -> false
-                | MethodReturnType.Returns ret -> containsAnyGenericParameter ret
-
-            returnContains
-            || (signature.ParameterTypes |> List.exists containsAnyGenericParameter)
-        | TypeDefn.PrimitiveType _
-        | TypeDefn.FromReference _
-        | TypeDefn.FromDefinition _
-        | TypeDefn.Void -> false
 
     /// Apply a `TypeDefn` substitution to every `GenericTypeParameter` reference inside `ty`.
     /// This is purely syntactic; assembly identifiers and primitives pass through unchanged.
