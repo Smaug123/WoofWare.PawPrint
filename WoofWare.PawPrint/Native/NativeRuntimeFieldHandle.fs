@@ -130,6 +130,45 @@ module NativeRuntimeFieldHandle =
                     state
 
             NativeHandlerResult.completed state |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeFieldHandle",
+          "GetApproxDeclaringMethodTable",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeFieldHandleInternal", generics) ],
+          MethodReturnType.Returns (ConcretePointer (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                                                       "System.Runtime.CompilerServices",
+                                                                                       "MethodTable",
+                                                                                       methodTableGenerics))) when
+            generics.IsEmpty && methodTableGenerics.IsEmpty
+            ->
+            // CoreCLR's RuntimeFieldHandle::GetApproxDeclaringMethodTable
+            // (runtimehandles.cpp:2192) is an FCall returning
+            // pField->GetApproxEnclosingMethodTable() — the canonical MethodTable for
+            // the field's declaring type. Under shared-generic codegen the canonical
+            // form is the open instantiation; PawPrint does not share generic
+            // instantiations, so the FieldHandle's stored DeclaringType is already
+            // the closed concrete type and is at least as precise as CoreCLR's
+            // result. The managed wrapper RuntimeFieldHandle.GetApproxDeclaringType
+            // (RuntimeHandles.cs:1523) hands the pointer to
+            // RuntimeTypeHandle.GetRuntimeType, which our MethodTablePtr
+            // representation already feeds via the TypeHandle registry.
+            let operation = "RuntimeFieldHandle.GetApproxDeclaringMethodTable"
+
+            let fieldHandle =
+                // CoreCLR asserts !field.IsNullHandle() at the managed caller; fault
+                // loudly here, matching the sibling GetAttributes precedent above.
+                fieldHandleOfRuntimeFieldHandleInternal operation state instruction.Arguments.[0]
+                |> Option.defaultWith (fun () -> failwith $"%s{operation}: null field handle")
+
+            let declaringTypeHandle = fieldHandle.GetDeclaringTypeHandle ()
+
+            let state =
+                IlMachineState.pushToEvalStack'
+                    (EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr declaringTypeHandle))
+                    ctx.Thread
+                    state
+
+            NativeHandlerResult.completed state |> Some
         | _ -> None
 
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
