@@ -19,8 +19,8 @@ module TestPureCases =
         [
             "AdvancedStructLayout.cs" // past MarshalNative_SizeOfHelper for ByValTStr and SystemNative_Malloc / SystemNative_Free / Marshal.AllocHGlobal / FreeHGlobal; now blocked downstream at the unimplemented MarshalNative_TryGetStructMarshalStub QCall (CoreLib's Marshal.StructureToPtr path)
             "Threads.cs" // past ThreadNative_InformThreadNameChange (Thread.Name setter); now blocked on unimplemented PAL call libSystem.Native!SystemNative_GetLowResolutionTimestamp (.Sys::GetLowResolutionTimestamp, used by the Task/ThreadPool scheduler)
-            "GetFieldOnOpenGenericTypeDefinition.cs" // FieldHandle declaring-type canonicalisation is fixed; now blocked on the BCL's RuntimeType.GetFieldCandidates walk reaching MethodTable::ParentMethodTable for the OpenGenericTypeDefinition target — the projection only handles Closed today.
-            "LdtokenField.cs" // Test 5 hits typeof(GenericClass<>).GetField("GenericField"), which goes through the same MethodTable::ParentMethodTable projection on an OpenGenericTypeDefinition target as GetFieldOnOpenGenericTypeDefinition.cs.
+            "GetFieldOnOpenGenericTypeDefinition.cs" // FieldHandle declaring-type canonicalisation and MethodTable::ParentMethodTable for OpenGenericTypeDefinition targets are both fixed; now blocked downstream on the RuntimeTypeHandle_GetInterfaces QCall, whose interface walk is built on closed ConcreteTypeHandle and rejects OpenGenericTypeDefinition targets.
+            "LdtokenField.cs" // Test 5 hits typeof(GenericClass<>).GetField("GenericField"), which goes through the same RuntimeTypeHandle_GetInterfaces QCall on an OpenGenericTypeDefinition target as GetFieldOnOpenGenericTypeDefinition.cs.
         ]
         |> Set.ofList
 

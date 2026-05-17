@@ -178,6 +178,9 @@ module IlMachineState =
 
     let resolveBaseConcreteType = IlMachineRuntimeMetadata.resolveBaseConcreteType
 
+    let resolveBaseRuntimeTypeHandleTarget =
+        IlMachineRuntimeMetadata.resolveBaseRuntimeTypeHandleTarget
+
     let collectAllInstanceFields = IlMachineRuntimeMetadata.collectAllInstanceFields
 
     let allocateManagedString = IlMachineRuntimeMetadata.allocateManagedString
