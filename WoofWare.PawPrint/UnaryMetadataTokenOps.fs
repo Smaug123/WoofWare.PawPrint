@@ -227,9 +227,41 @@ module internal UnaryMetadataTokenOps =
         let state =
             match metadataToken with
             | MetadataToken.FieldDefinition h ->
-                // TODO: how do we know what concrete type this is a field on?
+                let field = activeAssy.Fields.[h]
+
+                if not field.DeclaringType.Generics.IsEmpty then
+                    // ldtoken FieldDef on a generic declaring type would need to substitute the
+                    // surrounding method's type generics into the field's declaring type to
+                    // produce a closed RuntimeFieldHandle (or an OpenGenericTypeDefinition handle
+                    // when the surrounding method itself is open). This mirrors the existing
+                    // MethodDef pattern, which fails loudly until that wiring is added.
+                    failwith
+                        $"TODO: ldtoken FieldDef on a generic declaring type requires substituting the surrounding method instantiation; got %O{field}"
+
+                let ctx : TypeConcretization.ConcretizationContext<_> =
+                    {
+                        ConcreteTypes = state.ConcreteTypes
+                        LoadedAssemblies = state._LoadedAssemblies
+                        BaseTypes = baseClassTypes
+                    }
+
+                let closedDeclaringHandle, ctx =
+                    TypeConcretization.concretizeTypeDefinition ctx field.DeclaringType.Identity
+
+                let state =
+                    { state with
+                        ConcreteTypes = ctx.ConcreteTypes
+                        _LoadedAssemblies = ctx.LoadedAssemblies
+                    }
+
                 let runtimeFieldHandle, state =
-                    IlMachineState.getOrAllocateField loggerFactory baseClassTypes activeAssy.Name h state
+                    IlMachineState.getOrAllocateField
+                        loggerFactory
+                        baseClassTypes
+                        activeAssy.Name
+                        (RuntimeTypeHandleTarget.Closed closedDeclaringHandle)
+                        h
+                        state
 
                 IlMachineState.pushToEvalStack runtimeFieldHandle thread state
             | MetadataToken.MethodDef h ->

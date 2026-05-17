@@ -103,51 +103,22 @@ module IlMachineRuntimeMetadata =
 
         result, state
 
-    /// Returns a System.RuntimeFieldHandle.
+    /// Returns a System.RuntimeFieldHandle for the given field, observed on
+    /// `declaringType`. The caller is responsible for supplying the correct
+    /// instantiation context: in CoreCLR, `typeof(G<int>).GetField(...).FieldHandle`
+    /// and `typeof(G<>).GetField(...).FieldHandle` are observably different — each
+    /// carries its own declaring `RuntimeTypeHandle` — so this helper preserves the
+    /// distinction by keying on the full target. Type-parameter targets are rejected
+    /// by the registry because they cannot own a field.
     let getOrAllocateField
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (declaringAssy : AssemblyName)
+        (declaringType : RuntimeTypeHandleTarget)
         (fieldHandle : FieldDefinitionHandle)
         (state : IlMachineState)
         : CliType * IlMachineState
         =
-        let field = state.LoadedAssembly(declaringAssy).Value.Fields.[fieldHandle]
-
-        // Mirror CoreCLR's per-canonical FieldDesc model: one FieldHandle per
-        // (generic typedef, field) pair, not per closed instantiation. A non-generic
-        // declaring type is registered as `Closed` (which still requires
-        // concretization so the resulting handle can be used wherever the closed
-        // handle is needed, e.g. `MethodTablePtr`); a generic declaring type is
-        // registered as `OpenGenericTypeDefinition` without instantiating its
-        // parameters. This avoids the old IndexOutOfRangeException path where
-        // `concretizeFieldDeclaringType` substituted `GenericTypeParameter`
-        // placeholders into an empty `typeGenerics` array, and matches CoreCLR's
-        // sharing semantics so that
-        // `typeof(Foo<>).GetField(...).FieldHandle` and
-        // `typeof(Foo<int>).GetField(...).FieldHandle` agree.
-        let declaringType, state =
-            if field.DeclaringType.Generics.IsEmpty then
-                let ctx : TypeConcretization.ConcretizationContext<_> =
-                    {
-                        ConcreteTypes = state.ConcreteTypes
-                        LoadedAssemblies = state._LoadedAssemblies
-                        BaseTypes = baseClassTypes
-                    }
-
-                let handle, ctx =
-                    TypeConcretization.concretizeTypeDefinition ctx field.DeclaringType.Identity
-
-                let state =
-                    { state with
-                        ConcreteTypes = ctx.ConcreteTypes
-                        _LoadedAssemblies = ctx.LoadedAssemblies
-                    }
-
-                RuntimeTypeHandleTarget.Closed handle, state
-            else
-                RuntimeTypeHandleTarget.OpenGenericTypeDefinition field.DeclaringType.Identity, state
-
         let state, runtimeFieldInfoStub =
             TypeDefn.FromDefinition (
                 ResolvedTypeIdentity.ofTypeDefinition

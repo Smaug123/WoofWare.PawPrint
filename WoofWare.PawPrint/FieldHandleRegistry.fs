@@ -8,15 +8,14 @@ type FieldHandle =
     private
         {
             AssemblyFullName : string
-            /// CoreCLR's FieldDesc is per-canonical: one FieldDesc per generic type
-            /// definition, shared across all closed instantiations. We mirror that
-            /// by canonicalising the declaring type before allocation — a non-generic
-            /// declaring type becomes `Closed`, and a generic declaring type collapses
-            /// to its `OpenGenericTypeDefinition` identity rather than a particular
-            /// instantiation. This keeps the registry's key set in 1:1 correspondence
-            /// with the metadata `FieldDefinitionHandle` × generic-typedef pair and
-            /// makes lookups by `(declaring typedef, field handle)` total even when
-            /// the caller only has the open form (e.g. `typeof(Foo&lt;&gt;).GetField`).
+            /// The declaring type observed at allocation time. CoreCLR's
+            /// `typeof(G&lt;int&gt;).GetField(...).FieldHandle` is observably *not*
+            /// interchangeable with `typeof(G&lt;&gt;).GetField(...).FieldHandle` —
+            /// each carries its own instantiation context and `FieldInfo.GetFieldFromHandle`
+            /// rejects a mismatched declaring `RuntimeTypeHandle`. Mirror that here by
+            /// keying on the full `RuntimeTypeHandleTarget` the caller supplied: a closed
+            /// instantiation gets `Closed`; the open generic definition gets
+            /// `OpenGenericTypeDefinition`; and the two yield distinct registry ids.
             DeclaringType : RuntimeTypeHandleTarget
             FieldHandle : ComparableFieldDefinitionHandle
         }
@@ -70,10 +69,11 @@ module FieldHandleRegistry =
         | TypeDefn.Void -> false
 
     /// Returns a (struct) System.RuntimeFieldHandle, with its contents (reference type) freshly allocated if necessary.
-    /// `declaringType` must be canonicalised per CoreCLR's FieldDesc model: a non-generic
-    /// declaring type as `Closed`, a generic declaring type as `OpenGenericTypeDefinition`.
-    /// Passing a closed instantiation of a generic declaring type would defeat the canonical
-    /// sharing and is rejected.
+    /// `declaringType` must be either `Closed` (a fully concrete declaring type — non-generic or
+    /// a particular closed instantiation) or `OpenGenericTypeDefinition` (the open generic typedef,
+    /// e.g. for `typeof(Foo&lt;&gt;).GetField`). Distinct targets allocate distinct registry ids,
+    /// matching CoreCLR's per-instantiation `RuntimeFieldHandle` identity. Type-parameter targets
+    /// cannot own a field and are rejected.
     let getOrAllocate
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (allConcreteTypes : AllConcreteTypes)
