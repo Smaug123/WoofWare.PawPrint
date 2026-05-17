@@ -214,3 +214,6 @@ module IlMachineState =
 
     let isRuntimeTypeHandleTargetAssignableTo =
         IlMachineRuntimeMetadata.isRuntimeTypeHandleTargetAssignableTo
+
+    let containsAnyGenericParameter =
+        IlMachineRuntimeMetadata.containsAnyGenericParameter

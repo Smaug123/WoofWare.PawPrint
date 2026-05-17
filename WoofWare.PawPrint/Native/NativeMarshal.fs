@@ -153,21 +153,42 @@ module NativeMarshal =
             let sizeOutPtr =
                 NativeCall.managedPointerOfPointerArgument operation "size" instruction.Arguments.[2]
 
-            let zero, state =
-                IlMachineState.cliTypeZeroOfHandle state ctx.BaseClassTypes typeHandle
-
             // CoreCLR's `MarshalNative_TryGetStructMarshalStub` (marshalnative.cpp:99-145)
             // has three branches: blittable (memmove fast path, *stub = NULL, *size = native
             // size, return TRUE), has-layout-non-blittable (synthesised IL stub, return TRUE),
             // and no-layout (return FALSE so managed Marshal throws ArgumentException).
-            // This implementation handles only the first arm, and only for the strict subset
-            // we are confident matches CoreCLR exactly: structs whose fields are recursively
-            // plain numeric (Int8..Float64). Anything else — IntPtr/UIntPtr fields, enums,
-            // [MarshalAs] descriptors, Bool/Char/ObjectRef fields, AutoLayout types, classes,
-            // etc. — surfaces a host TODO. Each future widening (FALSE for no-layout types,
-            // stub-synthesis exceptions for has-layout-non-blittable types, IntPtr fields
-            // with verified provenance, [MarshalAs] descriptor handling, ...) wants its own
-            // motivating PawPrint test before being added to the classifier.
+            // This implementation handles the no-layout arm (AutoLayout types, which covers
+            // `System.Object` and ordinary classes without `[StructLayout]`, as well as value
+            // types explicitly marked `[StructLayout(LayoutKind.Auto)]`), and the first arm
+            // for the strict subset we are confident matches CoreCLR exactly: structs whose
+            // fields are recursively plain numeric (Int8..Float64). Anything else —
+            // IntPtr/UIntPtr fields, enums, [MarshalAs] descriptors, Bool/Char/ObjectRef
+            // fields, has-layout-non-blittable structs, etc. — surfaces a host TODO. Each
+            // future widening wants its own motivating PawPrint test before being added to
+            // the classifier.
+
+            if CliValueType.IsAutoLayoutHandle state.ConcreteTypes state._LoadedAssemblies typeHandle then
+                // No-layout branch: write *stub = NULL, *size = 0, return FALSE so the
+                // managed `Marshal.StructureToPtr` / `PtrToStructureHelper` / `DestroyStructure`
+                // wrappers throw `ArgumentException` (resource `Argument_MustHaveLayoutOrBeBlittable`).
+                let zeroNativeInt =
+                    CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
+
+                let state =
+                    IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state stubOutPtr zeroNativeInt
+
+                let state =
+                    IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state sizeOutPtr zeroNativeInt
+
+                let state =
+                    IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 0)) ctx.Thread state
+
+                NativeHandlerResult.completed state |> Some
+            else
+
+            let zero, state =
+                IlMachineState.cliTypeZeroOfHandle state ctx.BaseClassTypes typeHandle
+
             let rec isStrictlyNumericBlittable (t : CliType) : bool =
                 match t with
                 // NativeInt (IntPtr/UIntPtr) values carry provenance in PawPrint that the byte
