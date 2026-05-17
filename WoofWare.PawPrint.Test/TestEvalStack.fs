@@ -37,7 +37,7 @@ module TestEvalStack =
 
     [<Test>]
     let ``toCliTypeCoerced RuntimePointer target preserves method table pointer provenance`` () : unit =
-        let typeHandle = ConcreteTypeHandle.Concrete 42
+        let typeHandle = RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete 42)
 
         match
             EvalStackValue.toCliTypeCoerced
@@ -49,7 +49,7 @@ module TestEvalStack =
 
     [<Test>]
     let ``RuntimePointer carrying method table pointer flattens back to native int`` () : unit =
-        let typeHandle = ConcreteTypeHandle.Concrete 42
+        let typeHandle = RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete 42)
 
         match EvalStackValue.ofCliType (CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr typeHandle)) with
         | EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr actual) when actual = typeHandle -> ()
@@ -106,13 +106,19 @@ module TestEvalStack =
     [<Test>]
     let ``ceq compares method table pointers by concrete type identity`` () : unit =
         let methodTable =
-            EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr (ConcreteTypeHandle.Concrete 42))
+            EvalStackValue.NativeInt (
+                NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete 42))
+            )
 
         let sameMethodTable =
-            EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr (ConcreteTypeHandle.Concrete 42))
+            EvalStackValue.NativeInt (
+                NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete 42))
+            )
 
         let otherMethodTable =
-            EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr (ConcreteTypeHandle.Concrete 43))
+            EvalStackValue.NativeInt (
+                NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete 43))
+            )
 
         let sameRuntimeTypeHandle =
             EvalStackValue.NativeInt (
@@ -139,7 +145,7 @@ module TestEvalStack =
             ConcreteTypeHandle.OneDimArrayZero (ConcreteTypeHandle.Concrete 42)
 
         let arrayMethodTable =
-            EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr arrayHandle)
+            EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed arrayHandle))
 
         let arrayRuntimeTypeHandle =
             EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed arrayHandle))
@@ -149,7 +155,7 @@ module TestEvalStack =
         let pointerHandle = ConcreteTypeHandle.Pointer (ConcreteTypeHandle.Concrete 42)
 
         let pointerMethodTable =
-            EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr pointerHandle)
+            EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed pointerHandle))
 
         let pointerRuntimeTypeHandle =
             EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed pointerHandle))
@@ -157,7 +163,7 @@ module TestEvalStack =
         let byrefHandle = ConcreteTypeHandle.Byref (ConcreteTypeHandle.Concrete 42)
 
         let byrefMethodTable =
-            EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr byrefHandle)
+            EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed byrefHandle))
 
         let byrefRuntimeTypeHandle =
             EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed byrefHandle))
@@ -207,7 +213,10 @@ module TestEvalStack =
         // identity ops, so this case fails loudly until ceq is taught to look it up.
         let widened =
             EvalStackValue.Int64 (
-                Int64Source.WidenedNativeInt (NativeIntSource.MethodTablePtr (ConcreteTypeHandle.Concrete 42), true)
+                Int64Source.WidenedNativeInt (
+                    NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete 42)),
+                    true
+                )
             )
 
         let hashBits = EvalStackValue.Int64 (Int64Source.OpaqueHashBits 4L)

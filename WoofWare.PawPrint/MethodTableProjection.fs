@@ -878,7 +878,12 @@ module internal MethodTableProjection =
                 | RuntimeTypeHandleTarget.Closed handle ->
                     match tryArrayElement handle with
                     | Some (element, _) ->
-                        Some (CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr element), state)
+                        Some (
+                            CliType.RuntimePointer (
+                                CliRuntimePointer.MethodTablePtr (RuntimeTypeHandleTarget.Closed element)
+                            ),
+                            state
+                        )
                     | None -> failwith $"TODO: MethodTable::ElementType projection for non-array type %O{handle}"
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
                     failwith $"TODO: MethodTable::ElementType projection for %O{methodTableFor}"
@@ -905,7 +910,10 @@ module internal MethodTableProjection =
 
                     let result =
                         match parent with
-                        | Some parentHandle -> CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr parentHandle)
+                        | Some parentHandle ->
+                            CliType.RuntimePointer (
+                                CliRuntimePointer.MethodTablePtr (RuntimeTypeHandleTarget.Closed parentHandle)
+                            )
                         | None ->
                             // CoreCLR sets ParentMethodTable to null at System.Object; the cast-walk
                             // loops in CastHelpers (e.g. IsInstanceOfClass, ChkCastClassSpecial) check

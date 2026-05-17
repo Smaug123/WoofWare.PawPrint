@@ -706,7 +706,11 @@ public class GenericHolder<T>
         // as a NativeInt MethodTablePtr because the .NET 10 wrapper resolves the RuntimeType
         // to a MethodTable before invoking the QCall.
         let methodTableArg =
-            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.MethodTablePtr declaringTypeHandle))
+            CliType.Numeric (
+                CliNumericType.NativeInt (
+                    NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed declaringTypeHandle)
+                )
+            )
 
         let methodArgs =
             ImmutableArray.CreateRange

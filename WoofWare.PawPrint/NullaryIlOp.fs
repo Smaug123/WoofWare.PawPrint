@@ -789,7 +789,9 @@ module NullaryIlOp =
                 let state =
                     state
                     |> IlMachineState.pushToEvalStack
-                        (CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr firstArg))
+                        (CliType.RuntimePointer (
+                            CliRuntimePointer.MethodTablePtr (RuntimeTypeHandleTarget.Closed firstArg)
+                        ))
                         currentThread
                     |> IlMachineState.advanceProgramCounter currentThread
 

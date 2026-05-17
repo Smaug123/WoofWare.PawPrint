@@ -256,7 +256,9 @@ module TestCliTypeBytes =
             [
                 cliField
                     "Ptr"
-                    (CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr int32Handle))
+                    (CliType.RuntimePointer (
+                        CliRuntimePointer.MethodTablePtr (RuntimeTypeHandleTarget.Closed int32Handle)
+                    ))
                     (Some 0)
                     intPtrHandle
             ]
@@ -308,7 +310,9 @@ module TestCliTypeBytes =
                 cliField "Obj" (CliType.ObjectRef None) (Some 0) objectHandle
                 cliField
                     "Ptr"
-                    (CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr int32Handle))
+                    (CliType.RuntimePointer (
+                        CliRuntimePointer.MethodTablePtr (RuntimeTypeHandleTarget.Closed int32Handle)
+                    ))
                     (Some 8)
                     intPtrHandle
             ]
@@ -334,7 +338,7 @@ module TestCliTypeBytes =
                 )
             )
             NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed int32Handle)
-            NativeIntSource.MethodTablePtr int32Handle
+            NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed int32Handle)
             NativeIntSource.MethodTableAuxiliaryDataPtr (RuntimeTypeHandleTarget.Closed int32Handle)
             NativeIntSource.MethodHandlePtr 1234L
             NativeIntSource.FieldHandlePtr 1234L
@@ -355,7 +359,11 @@ module TestCliTypeBytes =
                 Gen.constant (rawSizedValueType 8)
                 Gen.constant (fieldBackedBoolValueType ())
                 Gen.constant (CliType.ObjectRef None)
-                Gen.constant (CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr int32Handle))
+                Gen.constant (
+                    CliType.RuntimePointer (
+                        CliRuntimePointer.MethodTablePtr (RuntimeTypeHandleTarget.Closed int32Handle)
+                    )
+                )
                 Gen.constant (objectReferenceValueType () |> CliType.ValueType)
                 Gen.constant (runtimePointerValueType () |> CliType.ValueType)
                 nonByteRenderableNativeIntSources ()
@@ -499,7 +507,9 @@ module TestCliTypeBytes =
         CliType.ByteAddressability (CliType.ObjectRef None)
         |> shouldEqual (CliByteAddressability.Rejected CliByteAddressabilityRejection.ObjectReference)
 
-        CliType.ByteAddressability (CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr int32Handle))
+        CliType.ByteAddressability (
+            CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr (RuntimeTypeHandleTarget.Closed int32Handle))
+        )
         |> shouldEqual (CliByteAddressability.Rejected CliByteAddressabilityRejection.RuntimePointer)
 
         let objectValueType = objectReferenceValueType ()
@@ -589,7 +599,8 @@ module TestCliTypeBytes =
         let cases =
             [
                 CliType.ObjectRef None, "object reference"
-                CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr int32Handle), "runtime pointer"
+                CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr (RuntimeTypeHandleTarget.Closed int32Handle)),
+                "runtime pointer"
                 objectReferenceValueType () |> CliType.ValueType, "value type containing object references"
                 runtimePointerValueType () |> CliType.ValueType, "value type containing runtime pointers"
             ]

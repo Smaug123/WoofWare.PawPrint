@@ -157,11 +157,8 @@ module NativeRuntimeFieldHandle =
             // form is the open instantiation. With PawPrint's per-canonical
             // FieldHandle model, the stored DeclaringType is `Closed` for non-generic
             // declaring types and `OpenGenericTypeDefinition` for generic ones.
-            // `MethodTablePtr` currently only carries a closed `ConcreteTypeHandle`;
-            // widening it to a `RuntimeTypeHandleTarget` (so the open case can be
-            // handed back) is a larger refactor, and the open case isn't yet
-            // exercised by any consumer. Fail loudly there rather than silently
-            // synthesising a closed instantiation.
+            // `NativeIntSource.MethodTablePtr` carries the full `RuntimeTypeHandleTarget`,
+            // so the open-generic case surfaces directly.
             let operation = "RuntimeFieldHandle.GetApproxDeclaringMethodTable"
 
             let fieldHandle =
@@ -170,12 +167,7 @@ module NativeRuntimeFieldHandle =
                 fieldHandleOfRuntimeFieldHandleInternal operation state instruction.Arguments.[0]
                 |> Option.defaultWith (fun () -> failwith $"%s{operation}: null field handle")
 
-            let declaringTypeHandle =
-                match fieldHandle.GetDeclaringTypeHandle () with
-                | RuntimeTypeHandleTarget.Closed handle -> handle
-                | other ->
-                    failwith
-                        $"TODO: %s{operation} does not yet support a non-Closed declaring type %O{other}; widening NativeIntSource.MethodTablePtr to RuntimeTypeHandleTarget is required to surface the open-generic MethodTable"
+            let declaringTypeHandle = fieldHandle.GetDeclaringTypeHandle ()
 
             let state =
                 IlMachineState.pushToEvalStack'

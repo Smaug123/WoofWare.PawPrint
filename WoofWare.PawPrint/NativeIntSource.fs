@@ -93,7 +93,15 @@ type NativeIntSource =
     | ManagedPointer of ManagedPointerSource
     | FunctionPointer of MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
     | TypeHandlePtr of RuntimeTypeHandleTarget
-    | MethodTablePtr of ConcreteTypeHandle
+    /// `MethodTable*` for a runtime type. The payload widens to
+    /// `RuntimeTypeHandleTarget` so the open-generic typedef's canonical
+    /// MethodTable (`OpenGenericTypeDefinition`) can be expressed alongside
+    /// the closed instantiation MethodTable (`Closed`). TypeDesc cases
+    /// (`GenericParameter` / `MethodGenericParameter`) never own a real
+    /// MethodTable and must be rejected at producer sites; consumers that
+    /// require a closed `ConcreteTypeHandle` (e.g. fixed-instantiation
+    /// reflection paths) match `Closed` explicitly and fail loudly otherwise.
+    | MethodTablePtr of RuntimeTypeHandleTarget
     | MethodTableAuxiliaryDataPtr of RuntimeTypeHandleTarget
     /// Synthetic `MethodTable*** PerInstInfo` pointer for a generic instantiation.
     /// First `ldind` step yields `PerInstDictPtr` of the same handle (the
@@ -347,7 +355,9 @@ type CliRuntimePointer =
     | TypeHandlePtr of RuntimeTypeHandleTarget
     | FieldRegistryHandle of int64
     | MethodRegistryHandle of int64
-    | MethodTablePtr of ConcreteTypeHandle
+    /// See `NativeIntSource.MethodTablePtr` for the contract; the
+    /// eval-stack-flattened counterpart is `NativeIntSource.MethodTablePtr`.
+    | MethodTablePtr of RuntimeTypeHandleTarget
     | MethodTableAuxiliaryDataPtr of RuntimeTypeHandleTarget
     /// See `NativeIntSource.PerInstInfoPtr`. The eval-stack-flattened
     /// counterpart is `NativeIntSource.PerInstInfoPtr`.
