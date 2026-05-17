@@ -17,15 +17,20 @@ public class Program
         // treats `IntPtr` / `UIntPtr` fields as blittable: it memmoves the
         // integer-width bits regardless of the value's provenance. PawPrint's
         // strict-numeric classifier rejects all `NativeInt` today because its
-        // byte model can't render non-`Verbatim` provenance (function pointers,
-        // type handles, etc.). The central `CliByteAddressability` classifier
-        // is the right gate: it already accepts `Verbatim` and null managed-
-        // pointer provenance, which is exactly the case CoreCLR memmoves.
+        // byte model can't render non-`Verbatim` `NativeIntSource` provenance
+        // (function pointers, type handles, etc.) via `CliNumericType.ToBytes`.
         //
-        // This test exercises the loosened classifier on the case it's meant
-        // to cover: handle-typed fields whose values come from integer
-        // literals (Verbatim provenance) flow through the blittable path
-        // intact.
+        // A type-level "accept" decision can't be made by inspecting the
+        // zero value's provenance: any user struct may hold a non-`Verbatim`
+        // `IntPtr` (e.g. `obj.GetType().TypeHandle.Value`), which would crash
+        // the downstream memmove path. The classifier therefore stays
+        // rejection-only until the byte-rendering layer can serialise every
+        // `NativeIntSource` variant (a separate piece of work).
+        //
+        // This test is parked in `unimplemented` as the motivating case for
+        // that future widening: the literal `IntPtr` values below carry
+        // `Verbatim` provenance, so once both the classifier and `ToBytes`
+        // widen together, this becomes a passing end-to-end test.
         IntPtr handle = (IntPtr)0x1234567890ABCDEFL;
         UIntPtr uhandle = (UIntPtr)0xFEDCBA9876543210UL;
         var s = new WithIntPtrs { Id = 7, Handle = handle, UHandle = uhandle };

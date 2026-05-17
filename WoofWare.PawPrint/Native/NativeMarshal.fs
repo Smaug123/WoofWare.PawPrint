@@ -161,12 +161,11 @@ module NativeMarshal =
             // `System.Object` and ordinary classes without `[StructLayout]`, as well as value
             // types explicitly marked `[StructLayout(LayoutKind.Auto)]`), and the first arm
             // for the strict subset we are confident matches CoreCLR exactly: structs whose
-            // fields are recursively byte-copyable primitives (Int8..Float64, plus IntPtr/UIntPtr
-            // values with `Verbatim` or null managed-pointer provenance). Anything else —
-            // enums, [MarshalAs] descriptors, Bool/Char/ObjectRef fields, DateTime fields,
-            // has-layout-non-blittable structs, etc. — surfaces a host TODO. Each future
-            // widening wants its own motivating PawPrint test before being added to the
-            // classifier.
+            // fields are recursively plain numeric (Int8..Float64). Anything else —
+            // IntPtr/UIntPtr fields, enums, [MarshalAs] descriptors, Bool/Char/ObjectRef
+            // fields, has-layout-non-blittable structs, etc. — surfaces a host TODO. Each
+            // future widening wants its own motivating PawPrint test before being added to
+            // the classifier.
 
             if CliValueType.IsAutoLayoutHandle state.ConcreteTypes state._LoadedAssemblies typeHandle then
                 // No-layout branch: write *stub = NULL, *size = 0, return FALSE so the
@@ -192,23 +191,11 @@ module NativeMarshal =
 
             let rec isStrictlyNumericBlittable (t : CliType) : bool =
                 match t with
-                | CliType.Numeric _ ->
-                    // Gate every numeric leaf on the central byte-copyability classifier.
-                    // CoreCLR memmoves the integer-width bits regardless of provenance, but
-                    // PawPrint's byte model refuses to render non-`Verbatim` `NativeInt`
-                    // sources (function pointers, type handles, etc.) and non-`Verbatim`
-                    // `Int64` sources (`WidenedNativeInt`, `OpaqueHashBits`,
-                    // `SyntheticCrossArrayOffset`) — those would `failwith` at
-                    // `CliNumericType.ToBytes` if the memmove fast path tried to serialise
-                    // them. Accept exactly what `CliType.ByteAddressability` accepts so the
-                    // classifier and the downstream byte emission can never disagree.
-                    match CliType.ByteAddressability t with
-                    | CliByteAddressability.ByteAddressable -> true
-                    | CliByteAddressability.Rejected _ -> false
-                // Bool and Char are byte-addressable in the CLI sense (1 / 2 bytes), but
-                // their marshal sizes diverge (`bool` -> 4-byte Win32 BOOL, `char` depends
-                // on the declaring type's `CharSet`). Stay rejected here until the QCall
-                // arm grows the size-adjustment / stub synthesis to honour the divergence.
+                // NativeInt (IntPtr/UIntPtr) values carry provenance in PawPrint that the byte
+                // model rejects; CoreCLR happily memmoves the integer-width bits regardless.
+                // Excluded from the allowlist until we have explicit byte-copyability gating.
+                | CliType.Numeric (CliNumericType.NativeInt _) -> false
+                | CliType.Numeric _ -> true
                 | CliType.Bool _
                 | CliType.Char _
                 | CliType.ObjectRef _
@@ -232,36 +219,14 @@ module NativeMarshal =
                     if isDateTime then
                         false
                     else
-                        // Gate handle-flavoured single-field wrappers up front. CoreCLR's
-                        // marshaller refuses to lay these out: `RuntimeTypeHandle`,
-                        // `RuntimeMethodHandle`, and `RuntimeFieldHandle` carry a managed
-                        // reference (`m_type`/`m_value`/`m_ptr`) and are caught by the
-                        // recursive `ObjectRef` arm below — but `RuntimeMethodHandleInternal`
-                        // and `RuntimeFieldHandleInternal` wrap a bare `IntPtr` whose
-                        // provenance after `zeroOf` is `Verbatim`/`Null`, and `ByReference<T>`
-                        // wraps a managed pointer — both would otherwise sneak through the
-                        // widened `Verbatim`-accepting gate. CoreCLR rejects all of these
-                        // with `TypeLoadException` ("Invalid managed/unmanaged type
-                        // combination") because none have a valid unmanaged layout. Only
-                        // `FlattenToNativeInt` (IntPtr/UIntPtr) is genuinely blittable; the
-                        // other flatten-kinds plus `EnumLike` (enums marshal as their
-                        // underlying integer) fall through to the field walk, which handles
-                        // them correctly via the `value__` integer field.
-                        match vt.PrimitiveLikeKind with
-                        | Some PrimitiveLikeKind.FlattenToObjectRef
-                        | Some PrimitiveLikeKind.FlattenToRuntimePointer
-                        | Some PrimitiveLikeKind.FlattenToManagedPointer -> false
-                        | Some PrimitiveLikeKind.FlattenToNativeInt
-                        | Some PrimitiveLikeKind.EnumLike
-                        | None ->
-                            match vt._Storage with
-                            // RawBytes-backed value types are not the typical struct-with-fields
-                            // shape; conservatively reject so we don't quietly accept primitive
-                            // wrappers whose CoreCLR marshal size diverges from the byte image.
-                            | CliValueTypeStorage.RawBytes _ -> false
-                            | CliValueTypeStorage.Fields storage ->
-                                storage.Fields
-                                |> List.forall (fun field -> isStrictlyNumericBlittable field.Contents)
+                        match vt._Storage with
+                        // RawBytes-backed value types are not the typical struct-with-fields
+                        // shape; conservatively reject so we don't quietly accept primitive
+                        // wrappers whose CoreCLR marshal size diverges from the byte image.
+                        | CliValueTypeStorage.RawBytes _ -> false
+                        | CliValueTypeStorage.Fields storage ->
+                            storage.Fields
+                            |> List.forall (fun field -> isStrictlyNumericBlittable field.Contents)
 
             if isStrictlyNumericBlittable zero then
                 // The eventual `*structMarshalStub` we write here is null: the blittable path
