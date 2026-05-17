@@ -465,8 +465,13 @@ module NativeSignature =
                     modifierHandles.Count
                     state
 
+            // CoreCLR fills the result array via `SetAt(--cMods, ...)`, counting
+            // down from `count - 1`, so the first matching modifier in scan order
+            // lands at the last index and the last at index 0. Mirror that
+            // ordering exactly: reflection callers comparing array contents
+            // against real .NET expect the modifiers in reverse-of-scan order.
             let state =
-                ((state, 0), modifierHandles)
+                ((state, modifierHandles.Count - 1), modifierHandles)
                 ||> Seq.fold (fun (state, index) eh ->
                     let token = MetadataToken.ofEntityHandle eh
 
@@ -499,7 +504,7 @@ module NativeSignature =
                     let state =
                         IlMachineState.setArrayValue arrayAddr (CliType.ObjectRef (Some runtimeTypeAddr)) index state
 
-                    state, index + 1
+                    state, index - 1
                 )
                 |> fst
 
