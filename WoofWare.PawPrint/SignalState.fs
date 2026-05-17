@@ -39,7 +39,15 @@ type SignalState =
             Initialized : bool
             Registrations : Map<Signal, SignalHandler>
             Blocked : Map<ThreadId, Set<Signal>>
-            Pending : ImmutableQueue<PendingSignal>
+            /// Pending entries in FIFO order (head = next candidate for
+            /// dispatch). A plain list rather than `ImmutableQueue<T>`
+            /// because the queue type uses reference equality, which would
+            /// break the structural equality `EmulatedKernel` relies on for
+            /// deterministic state comparison. Enqueue is O(n) on append,
+            /// which is fine: signal queues are tiny in practice (typically
+            /// 0–3 entries) and PawPrint trades performance for determinism
+            /// throughout.
+            Pending : PendingSignal list
         }
 
 [<RequireQualifiedAccess>]
@@ -49,7 +57,7 @@ module SignalState =
             Initialized = false
             Registrations = Map.empty
             Blocked = Map.empty
-            Pending = ImmutableQueue.Empty
+            Pending = []
         }
 
     let isInitialized (state : SignalState) : bool = state.Initialized
@@ -143,11 +151,11 @@ module SignalState =
     /// elsewhere if they want it.
     let enqueue (entry : PendingSignal) (state : SignalState) : SignalState =
         { state with
-            Pending = state.Pending.Enqueue entry
+            Pending = state.Pending @ [ entry ]
         }
 
-    /// Snapshot of the pending queue, in FIFO order.
-    let pending (state : SignalState) : ImmutableQueue<PendingSignal> = state.Pending
+    /// Snapshot of the pending queue, in FIFO order (head = next candidate).
+    let pending (state : SignalState) : PendingSignal list = state.Pending
 
     /// Walk the pending queue in FIFO order and return the first entry that
     /// can be delivered now. An entry is deliverable iff:
@@ -183,8 +191,6 @@ module SignalState =
                     None
             | ValueNone -> sortedLive |> List.tryFind (fun tid -> not (isBlocked tid entry.Signal state))
 
-        let entries : PendingSignal list = state.Pending |> Seq.toList
-
         let rec scan (skipped : PendingSignal list) (rest : PendingSignal list) =
             match rest with
             | [] -> None
@@ -197,16 +203,13 @@ module SignalState =
                     | Some tid ->
                         let remaining : PendingSignal list = List.rev skipped @ tail
 
-                        let pending' : ImmutableQueue<PendingSignal> =
-                            (ImmutableQueue.Empty, remaining) ||> List.fold (fun q e -> q.Enqueue e)
-
                         Some (
                             head,
                             tid,
                             handler,
                             { state with
-                                Pending = pending'
+                                Pending = remaining
                             }
                         )
 
-        scan [] entries
+        scan [] state.Pending

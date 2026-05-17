@@ -219,6 +219,64 @@ module TestSignalState =
         SignalState.pending s |> Seq.toList |> shouldEqual [ e ; e ]
 
     [<Test>]
+    let ``structural equality survives a non-empty pending queue`` () : unit =
+        // Regression guard for a previous representation that stored
+        // `Pending` as `ImmutableQueue<T>`: that container uses reference
+        // equality, so two independently-built states with identical
+        // contents would compare unequal once the queue was non-empty.
+        // `EmulatedKernel` (which embeds `SignalState`) is compared
+        // structurally for deterministic state dedup; this test pins
+        // down that the contract holds across every operation that
+        // touches the queue.
+        let entryA =
+            {
+                Signal = Signal.SIGINT
+                Target = ValueNone
+            }
+
+        let entryB =
+            {
+                Signal = Signal.SIGHUP
+                Target = ValueSome t1
+            }
+
+        let buildA () =
+            SignalState.empty
+            |> SignalState.register Signal.SIGINT (callback 1)
+            |> SignalState.block t0 Signal.SIGTERM
+            |> SignalState.enqueue entryA
+            |> SignalState.enqueue entryB
+
+        let buildB () =
+            SignalState.empty
+            |> SignalState.register Signal.SIGINT (callback 1)
+            |> SignalState.block t0 Signal.SIGTERM
+            |> SignalState.enqueue entryA
+            |> SignalState.enqueue entryB
+
+        let a = buildA ()
+        let b = buildB ()
+        a |> shouldEqual b
+        hash a |> shouldEqual (hash b)
+
+        // The state after delivery must also compare equal to an
+        // independently-rebuilt equivalent — exercises the path where
+        // tryDeliverable rebuilds the pending list from a skipped/tail
+        // split.
+        let drainedFromA =
+            match SignalState.tryDeliverable (liveThreads [ t0 ; t1 ]) a with
+            | Some (_, _, _, s') -> s'
+            | None -> failwith "expected deliverable entry from buildA"
+
+        let drainedFromB =
+            match SignalState.tryDeliverable (liveThreads [ t0 ; t1 ]) b with
+            | Some (_, _, _, s') -> s'
+            | None -> failwith "expected deliverable entry from buildB"
+
+        drainedFromA |> shouldEqual drainedFromB
+        hash drainedFromA |> shouldEqual (hash drainedFromB)
+
+    [<Test>]
     let ``tryDeliverable returns None when nothing is pending`` () : unit =
         SignalState.tryDeliverable (liveThreads [ t0 ]) SignalState.empty
         |> shouldEqual None
