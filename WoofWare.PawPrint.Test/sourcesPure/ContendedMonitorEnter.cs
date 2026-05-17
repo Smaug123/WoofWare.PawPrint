@@ -24,7 +24,7 @@ namespace HelloWorldApp
                 shared = 7;
             }
             t.Join();
-            return shared;
+            return shared == 99 ? 0 : 1;
         }
     }
 }

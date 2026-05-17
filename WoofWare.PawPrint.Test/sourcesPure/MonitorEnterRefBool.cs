@@ -12,9 +12,8 @@ class MonitorEnterRefBool
         object lockObj = new object();
         bool taken = false;
         Monitor.Enter(lockObj, ref taken);
-        int result = taken ? 1 : 0;
         if (taken) Monitor.Exit(lockObj);
-        // taken should be true after Monitor.Enter, so result should be 1.
-        return result;
+        // taken should be true after Monitor.Enter.
+        return taken ? 0 : 1;
     }
 }
