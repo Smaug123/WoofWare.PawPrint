@@ -19,25 +19,28 @@ type PendingSignal =
 ///   * `Initialized` — has the BCL invoked
 ///     `SystemNative_InitializeTerminalAndSignalHandling` yet? Several
 ///     console paths gate work behind this flag.
-///   * `Registrations` — the per-signal dispatch target. A signal that is
-///     not in this map has no handler installed; pending entries for such
-///     signals stay queued (the consumer decides whether to drop or wait
-///     for a registration).
+///   * `Enabled` — the set of signals the BCL has asked libSystem.Native to
+///     deliver to managed code via `SystemNative_EnablePosixSignalHandling`.
+///     This mirrors the enable bits that the real native side keeps; the
+///     mapping from signals to managed handlers lives in the simulated
+///     managed heap (the BCL maintains its own `static Dictionary<int, ...>`
+///     keyed by signo), and is none of this module's concern. A pending
+///     entry whose signal is not enabled stays queued; the consumer decides
+///     whether to drop or wait for an enable.
 ///   * `Blocked` — per-thread sigprocmask. A signal in a thread's set is
 ///     blocked for that thread and cannot be delivered to it.
 ///   * `Pending` — FIFO queue of generated signals waiting for dispatch.
 ///
 /// The `EmulatedKernel.Signals` field carries an instance of this type per
 /// simulated process, but no code dispatches signals out of it yet —
-/// downstream slices will plug in the harness-side injection point, the
-/// between-instruction delivery hook, and the native P/Invoke arms that
-/// register and block. The data shape itself is exercised end-to-end by
-/// property tests against a reference oracle.
+/// downstream slices will plug in the harness-side injection point and the
+/// between-instruction delivery hook. The data shape itself is exercised
+/// end-to-end by property tests against a reference oracle.
 type SignalState =
     private
         {
             Initialized : bool
-            Registrations : Map<Signal, SignalHandler>
+            Enabled : Set<Signal>
             Blocked : Map<ThreadId, Set<Signal>>
             /// Pending entries in FIFO order (head = next candidate for
             /// dispatch). A plain list rather than `ImmutableQueue<T>`
@@ -55,7 +58,7 @@ module SignalState =
     let empty : SignalState =
         {
             Initialized = false
-            Registrations = Map.empty
+            Enabled = Set.empty
             Blocked = Map.empty
             Pending = []
         }
@@ -73,27 +76,34 @@ module SignalState =
                 Initialized = true
             }
 
-    let tryGetHandler (signal : Signal) (state : SignalState) : SignalHandler option =
-        Map.tryFind signal state.Registrations
+    let isEnabled (signal : Signal) (state : SignalState) : bool = Set.contains signal state.Enabled
 
-    let registrations (state : SignalState) : Map<Signal, SignalHandler> = state.Registrations
+    let enabled (state : SignalState) : Set<Signal> = state.Enabled
 
-    /// Install or replace the handler for `signal`. POSIX permits exactly
-    /// one disposition per signal at a time; a second `register` overwrites
-    /// the first.
-    let register (signal : Signal) (handler : SignalHandler) (state : SignalState) : SignalState =
-        { state with
-            Registrations = Map.add signal handler state.Registrations
-        }
+    /// Mark `signal` as enabled for managed dispatch. Idempotent: a second
+    /// `enable` of an already-enabled signal is a no-op. Mirrors
+    /// `SystemNative_EnablePosixSignalHandling` on the C side, which flips
+    /// a per-signo enable bit; the actual handler dictionary lives on the
+    /// simulated managed heap.
+    let enable (signal : Signal) (state : SignalState) : SignalState =
+        if Set.contains signal state.Enabled then
+            state
+        else
+            { state with
+                Enabled = Set.add signal state.Enabled
+            }
 
-    /// Remove the handler for `signal`. After this, pending entries for the
-    /// signal remain queued (a future `register` will make them deliverable)
-    /// but `tryDeliverable` will not dispatch them in the meantime. No-op if
-    /// no handler was installed.
-    let unregister (signal : Signal) (state : SignalState) : SignalState =
-        { state with
-            Registrations = Map.remove signal state.Registrations
-        }
+    /// Clear the enable bit for `signal`. No-op if not enabled. Pending
+    /// entries for the signal remain queued (a future `enable` makes them
+    /// deliverable) but `tryDeliverable` will not dispatch them in the
+    /// meantime.
+    let disable (signal : Signal) (state : SignalState) : SignalState =
+        if Set.contains signal state.Enabled then
+            { state with
+                Enabled = Set.remove signal state.Enabled
+            }
+        else
+            state
 
     let isBlocked (thread : ThreadId) (signal : Signal) (state : SignalState) : bool =
         match Map.tryFind thread state.Blocked with
@@ -159,7 +169,7 @@ module SignalState =
 
     /// Walk the pending queue in FIFO order and return the first entry that
     /// can be delivered now. An entry is deliverable iff:
-    ///   * a handler is registered for its `Signal`;
+    ///   * its `Signal` is enabled (the BCL has asked for managed dispatch);
     ///   * either it is `pthread_kill`-directed at a thread that is live and
     ///     not blocking the signal, or
     ///   * it is process-directed (`Target = ValueNone`) and at least one
@@ -175,7 +185,7 @@ module SignalState =
     let tryDeliverable
         (liveThreads : ImmutableArray<ThreadId>)
         (state : SignalState)
-        : (PendingSignal * ThreadId * SignalHandler * SignalState) option
+        : (PendingSignal * ThreadId * SignalState) option
         =
         let liveSet : Set<ThreadId> = liveThreads |> Seq.toList |> Set.ofList
 
@@ -195,9 +205,9 @@ module SignalState =
             match rest with
             | [] -> None
             | head :: tail ->
-                match Map.tryFind head.Signal state.Registrations with
-                | None -> scan (head :: skipped) tail
-                | Some handler ->
+                if not (Set.contains head.Signal state.Enabled) then
+                    scan (head :: skipped) tail
+                else
                     match pickReceiver head with
                     | None -> scan (head :: skipped) tail
                     | Some tid ->
@@ -206,7 +216,6 @@ module SignalState =
                         Some (
                             head,
                             tid,
-                            handler,
                             { state with
                                 Pending = remaining
                             }

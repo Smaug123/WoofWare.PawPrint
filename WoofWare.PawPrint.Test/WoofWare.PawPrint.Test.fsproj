@@ -68,6 +68,7 @@
     <Compile Include="TestDebuggerServer.fs" />
     <Compile Include="TestBclIntrinsicStaticFields.fs" />
     <Compile Include="TestLowLevelMonitor.fs" />
+    <Compile Include="TestSignal.fs" />
     <Compile Include="TestSignalState.fs" />
     <Compile Include="TestWaitHandle.fs" />
     <Compile Include="TestSyncBlockMonitor.fs" />
