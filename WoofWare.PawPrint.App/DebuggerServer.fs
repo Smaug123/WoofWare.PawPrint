@@ -111,6 +111,7 @@ module DebuggerServer =
             writer.WriteNumber ("handle", handle)
             writer.WriteEndObject ()
         | ThreadStatus.Terminated -> writer.WriteStringValue "terminated"
+        | ThreadStatus.Parked -> writer.WriteStringValue "parked"
 
     let private writeFrameProperties
         (writer : Utf8JsonWriter)

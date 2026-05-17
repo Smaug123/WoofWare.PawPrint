@@ -524,20 +524,31 @@ module NativeSystemNative =
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
             // The real native side configures the controlling terminal, sets
             // up a self-pipe, and installs a dedicated signal-dispatch worker
-            // thread. PawPrint has no terminal and dispatches signals
-            // deterministically out of `SignalState`; this entry point's only
-            // observable effect on the kernel is flipping `Signals.Initialized`,
-            // which the BCL uses as a "have we set up yet?" gate. Real native
-            // code returns 0 on setup failure (e.g. EBADF from tcgetattr on a
-            // headless process); PawPrint always reports success because there
-            // is no underlying syscall that could fail. The call is idempotent
-            // for the same reason `SignalState.markInitialized` is — the BCL
-            // may invoke this from several initializers across its surface.
-            state.MapKernel (fun kernel ->
-                { kernel with
-                    Signals = SignalState.markInitialized kernel.Signals
-                }
-            )
+            // thread (via `pthread_create(..., SignalHandlerLoop, ...)`).
+            // PawPrint has no terminal but mirrors the dedicated-thread shape:
+            // on first init we allocate a fresh `ThreadId` for the
+            // signal dispatcher and park it (status `ThreadStatus.Parked`),
+            // recording its id in `Signals.Init`. A future slice will wake
+            // that thread out of `Parked` to actually invoke handlers.
+            // The call is idempotent: a second invocation preserves the
+            // already-allocated dispatcher (BCL initializers may run more
+            // than once across the surface). Real native code returns 0 on
+            // setup failure (e.g. EBADF from tcgetattr on a headless
+            // process); PawPrint always reports success because there is no
+            // underlying syscall that could fail.
+            let state =
+                if SignalState.isInitialized state.Kernel.Signals then
+                    state
+                else
+                    let state, dispatcher = IlMachineState.allocateParkedThread state
+
+                    state.MapKernel (fun kernel ->
+                        { kernel with
+                            Signals = SignalState.markInitialized dispatcher kernel.Signals
+                        }
+                    )
+
+            state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some

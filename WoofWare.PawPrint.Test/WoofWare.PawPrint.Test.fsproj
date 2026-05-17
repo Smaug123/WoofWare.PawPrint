@@ -71,6 +71,7 @@
     <Compile Include="TestSignal.fs" />
     <Compile Include="TestSignalState.fs" />
     <Compile Include="TestSignalHandler.fs" />
+    <Compile Include="TestSignalDispatcherThread.fs" />
     <Compile Include="TestWaitHandle.fs" />
     <Compile Include="TestSyncBlockMonitor.fs" />
     <Compile Include="TestPureCases.fs" />

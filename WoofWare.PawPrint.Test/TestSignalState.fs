@@ -66,13 +66,19 @@ module TestSignalState =
 
     [<Test>]
     let ``markInitialized is idempotent and structurally stable`` () : unit =
-        let once = SignalState.empty |> SignalState.markInitialized
-        let twice = once |> SignalState.markInitialized
+        let dispatcher = ThreadId 42
+        let other = ThreadId 99
+        let once = SignalState.empty |> SignalState.markInitialized dispatcher
+        let twice = once |> SignalState.markInitialized other
         SignalState.isInitialized once |> shouldEqual true
+        SignalState.signalThread once |> shouldEqual (Some dispatcher)
         // A second mark must not mutate the state's identity; downstream code
         // that compares states for equality (e.g. dedup hashing in the
-        // debugger) relies on this.
+        // debugger) relies on this. The dispatcher recorded on first init must
+        // also survive — a re-init must not orphan the previously-allocated
+        // signal thread by overwriting its id.
         twice |> shouldEqual once
+        SignalState.signalThread twice |> shouldEqual (Some dispatcher)
 
     [<Test>]
     let ``enable flips a signal's bit on`` () : unit =
@@ -527,6 +533,16 @@ module TestSignalState =
                 }
             )
 
+    /// Fixed `ThreadId` standing in for the signal-dispatcher thread in
+    /// property runs. The property test does not model thread allocation,
+    /// so any stable id will do — the oracle compares against `Initialized`
+    /// (a `bool`) rather than the dispatcher id, and a second
+    /// `MarkInitialized` op in a run must not change the recorded id
+    /// (see `SignalState.markInitialized`'s idempotency contract). Using a
+    /// constant guarantees both branches stay aligned across the random
+    /// sequence.
+    let private propertyDispatcher : ThreadId = ThreadId 0
+
     /// Advance both implementations by one op, asserting agreement on
     /// `tryDeliverable`'s full return tuple (since the next step's
     /// observable state alone cannot always distinguish a divergence in
@@ -534,7 +550,7 @@ module TestSignalState =
     let private stepBoth (op : Op) (s : SignalState) (r : ReferenceState) : SignalState * ReferenceState =
         match op with
         | Op.MarkInitialized ->
-            SignalState.markInitialized s,
+            SignalState.markInitialized propertyDispatcher s,
             { r with
                 Initialized = true
             }

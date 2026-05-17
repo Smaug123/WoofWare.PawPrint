@@ -91,6 +91,8 @@ module IlMachineState =
 
     let allocateUnstartedThread = IlMachineThreadState.allocateUnstartedThread
 
+    let allocateParkedThread = IlMachineThreadState.allocateParkedThread
+
     let startUnstartedThread = IlMachineThreadState.startUnstartedThread
 
     let allocateArray = IlMachineThreadState.allocateArray

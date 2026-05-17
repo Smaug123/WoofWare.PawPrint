@@ -73,6 +73,26 @@ type ThreadStatus =
     /// This thread has executed its final `ret`; it will never run again. Its state is kept
     /// only so other threads can observe termination (e.g. to satisfy Join).
     | Terminated
+    /// PawPrint-internal auxiliary thread: it exists for kernel-side
+    /// bookkeeping rather than to run guest IL, and the scheduler never
+    /// picks it. The dispatcher thread spawned by
+    /// `SystemNative_InitializeTerminalAndSignalHandling` is the current
+    /// (and only) inhabitant: mirrors real CoreCLR's `SignalHandlerLoop`
+    /// pthread, which the runtime owns and the guest never names.
+    ///
+    /// The semantic difference from `NotStarted` is that no managed
+    /// `Thread` heap object backs a `Parked` thread — there is no
+    /// `Thread.Start` call that will ever fire to flip it to `Runnable`.
+    /// A future slice that wires signal-dispatch will introduce an
+    /// explicit transition out of `Parked` (driven by the signal
+    /// subsystem, not by guest IL); for now `Parked` is permanent for
+    /// the run.
+    ///
+    /// Permanently-`Parked` threads do not cause spurious deadlock
+    /// detection because the driver short-circuits to `NormalExit` as
+    /// soon as the entry thread terminates; the scheduler is never
+    /// asked to find another `Runnable` thread after that point.
+    | Parked
 
 type ThreadState =
     {
