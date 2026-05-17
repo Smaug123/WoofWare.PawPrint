@@ -178,7 +178,7 @@ public sealed class GenericFieldHost<T>
                 state
                 (fun fields state -> IlMachineState.allocateManagedObject runtimeFieldInfoStubHandle fields state)
                 fixture.Assembly.Name
-                closedHostHandle
+                (RuntimeTypeHandleTarget.Closed closedHostHandle)
                 fixture.Field.Handle
                 state.FieldHandles
 

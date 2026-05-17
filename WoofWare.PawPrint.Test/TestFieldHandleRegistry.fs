@@ -38,6 +38,12 @@ public class DerivedWithField : BaseWithField
 {
     public int DerivedData = 4;
 }
+
+public class GenericHolder<T>
+{
+    public T Value;
+    public static int StaticCount;
+}
 """
 
     type private FieldHandleFixture =
@@ -130,10 +136,38 @@ public class DerivedWithField : BaseWithField
         (state : IlMachineState)
         : CliType * IlMachineState
         =
+        // Derive the declaring target the same way callers in the runtime do: closed
+        // instantiation for a non-generic declaring type, open generic definition when the
+        // declaring type still has unbound parameters. Tests that need a specific target —
+        // e.g. asserting OpenGenericTypeDefinition on a closed `G<int>` instantiation — should
+        // call `IlMachineState.getOrAllocateField` directly.
+        let declaringTarget, state =
+            if field.DeclaringType.Generics.IsEmpty then
+                let ctx : TypeConcretization.ConcretizationContext<_> =
+                    {
+                        ConcreteTypes = state.ConcreteTypes
+                        LoadedAssemblies = state._LoadedAssemblies
+                        BaseTypes = fixture.BaseClassTypes
+                    }
+
+                let handle, ctx =
+                    TypeConcretization.concretizeTypeDefinition ctx field.DeclaringType.Identity
+
+                let state =
+                    { state with
+                        ConcreteTypes = ctx.ConcreteTypes
+                        _LoadedAssemblies = ctx.LoadedAssemblies
+                    }
+
+                RuntimeTypeHandleTarget.Closed handle, state
+            else
+                RuntimeTypeHandleTarget.OpenGenericTypeDefinition field.DeclaringType.Identity, state
+
         IlMachineState.getOrAllocateField
             fixture.LoggerFactory
             fixture.BaseClassTypes
             fixture.Assembly.Name
+            declaringTarget
             field.Handle
             state
 
@@ -313,6 +347,149 @@ public class DerivedWithField : BaseWithField
 
         originalResolved.GetFieldDefinitionHandle().Get
         |> shouldEqual fixture.Field.Handle
+
+    [<Test>]
+    let ``Field handle on open generic declaring type records OpenGenericTypeDefinition`` () : unit =
+        // Regression: getOrAllocateField used to map the typedef's generic parameters onto
+        // TypeDefn.GenericTypeParameter placeholders and then concretise with empty typeGenerics,
+        // raising IndexOutOfRangeException. After the fix the caller threads the declaring target
+        // through; the test helper supplies OpenGenericTypeDefinition for a still-open declaring
+        // type, mirroring `typeof(Foo<>).GetField(...).FieldHandle` in CoreCLR.
+        let fixture = makeFieldHandleFixture ()
+
+        let genericField =
+            fixture.Assembly.Fields.Values
+            |> Seq.find (fun field -> field.DeclaringType.Name = "GenericHolder`1" && field.Name = "Value")
+
+        let _, state = getOrAllocateField fixture genericField fixture.State
+
+        let registeredHandle =
+            state.FieldHandles
+            |> FieldHandleRegistry.resolveFieldFromId 1L
+            |> Option.defaultWith (fun () -> failwith "Expected a freshly allocated FieldHandle at id 1")
+
+        registeredHandle.GetFieldDefinitionHandle().Get
+        |> shouldEqual genericField.Handle
+
+        match registeredHandle.GetDeclaringTypeHandle () with
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+            identity |> shouldEqual genericField.DeclaringType.Identity
+        | other ->
+            failwithf
+                "Expected OpenGenericTypeDefinition for the open generic declaring type, got %A. The helper passes OpenGenericTypeDefinition for callers that observe the field via `typeof(Foo<>).GetField(...)`."
+                other
+
+    [<Test>]
+    let ``Closed and open declaring targets for the same field allocate distinct handles`` () : unit =
+        // CoreCLR distinguishes `typeof(Foo<int>).GetField(...).FieldHandle` from
+        // `typeof(Foo<>).GetField(...).FieldHandle`: `FieldInfo.GetFieldFromHandle` rejects a
+        // mismatched declaring `RuntimeTypeHandle` between the two. Mirror that here: feeding
+        // the same FieldDefinitionHandle with two distinct `RuntimeTypeHandleTarget` values must
+        // allocate two distinct `FieldHandle` ids.
+        let fixture = makeFieldHandleFixture ()
+
+        let genericField =
+            fixture.Assembly.Fields.Values
+            |> Seq.find (fun field -> field.DeclaringType.Name = "GenericHolder`1" && field.Name = "Value")
+
+        let openTarget =
+            RuntimeTypeHandleTarget.OpenGenericTypeDefinition genericField.DeclaringType.Identity
+
+        let openFieldHandle, state =
+            IlMachineState.getOrAllocateField
+                fixture.LoggerFactory
+                fixture.BaseClassTypes
+                fixture.Assembly.Name
+                openTarget
+                genericField.Handle
+                fixture.State
+
+        // Build `GenericHolder<int>` as a closed instantiation, mirroring what
+        // `typeof(GenericHolder<int>)` would yield in the guest.
+        let int32Defn =
+            DumpedAssembly.typeInfoToTypeDefn'
+                fixture.BaseClassTypes
+                state._LoadedAssemblies
+                fixture.BaseClassTypes.Int32
+
+        let openHolderDefn =
+            TypeDefn.FromDefinition (
+                genericField.DeclaringType.Identity,
+                System.Reflection.Metadata.SignatureTypeKind.Class
+            )
+
+        let closedHolderDefn =
+            TypeDefn.GenericInstantiation (openHolderDefn, ImmutableArray.Create int32Defn)
+
+        let state, closedHolderHandle =
+            IlMachineState.concretizeType
+                fixture.LoggerFactory
+                fixture.BaseClassTypes
+                state
+                fixture.Assembly.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                closedHolderDefn
+
+        let closedTarget = RuntimeTypeHandleTarget.Closed closedHolderHandle
+
+        let closedFieldHandle, state =
+            IlMachineState.getOrAllocateField
+                fixture.LoggerFactory
+                fixture.BaseClassTypes
+                fixture.Assembly.Name
+                closedTarget
+                genericField.Handle
+                state
+
+        let openAddr = runtimeFieldInfoStubAddress openFieldHandle
+        let closedAddr = runtimeFieldInfoStubAddress closedFieldHandle
+
+        closedAddr |> shouldNotEqual openAddr
+
+        let openId = fieldHandleIdAtAddress openAddr state
+        let closedId = fieldHandleIdAtAddress closedAddr state
+        closedId |> shouldNotEqual openId
+
+        let resolveOpen =
+            FieldHandleRegistry.resolveFieldFromId openId state.FieldHandles
+            |> Option.defaultWith (fun () -> failwith $"Could not resolve open field handle id %d{openId}")
+
+        let resolveClosed =
+            FieldHandleRegistry.resolveFieldFromId closedId state.FieldHandles
+            |> Option.defaultWith (fun () -> failwith $"Could not resolve closed field handle id %d{closedId}")
+
+        match resolveOpen.GetDeclaringTypeHandle () with
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+            identity |> shouldEqual genericField.DeclaringType.Identity
+        | other -> failwithf "Expected OpenGenericTypeDefinition, got %A" other
+
+        match resolveClosed.GetDeclaringTypeHandle () with
+        | RuntimeTypeHandleTarget.Closed handle -> handle |> shouldEqual closedHolderHandle
+        | other -> failwithf "Expected Closed concrete handle, got %A" other
+
+    [<Test>]
+    let ``Field handle on open generic declaring type is stable across allocations`` () : unit =
+        // Calling getOrAllocateField twice with the same declaring target must return the same
+        // FieldHandle id (and the same RuntimeFieldInfoStub address). This guarantees that
+        // repeated `typeof(Foo<>).GetField(...).FieldHandle` lookups in the guest are equal, and
+        // that separate calls into the same QCall path share allocations.
+        let fixture = makeFieldHandleFixture ()
+
+        let genericField =
+            fixture.Assembly.Fields.Values
+            |> Seq.find (fun field -> field.DeclaringType.Name = "GenericHolder`1" && field.Name = "StaticCount")
+
+        let firstHandle, state = getOrAllocateField fixture genericField fixture.State
+        let secondHandle, state = getOrAllocateField fixture genericField state
+
+        let firstAddr = runtimeFieldInfoStubAddress firstHandle
+        let secondAddr = runtimeFieldInfoStubAddress secondHandle
+
+        secondAddr |> shouldEqual firstAddr
+
+        fieldHandleIdAtAddress secondAddr state
+        |> shouldEqual (fieldHandleIdAtAddress firstAddr state)
 
     let private requiredTopLevelType
         (assembly : DumpedAssembly)

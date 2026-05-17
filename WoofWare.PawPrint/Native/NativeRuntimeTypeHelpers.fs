@@ -135,22 +135,19 @@ module NativeRuntimeTypeHelpers =
     /// Enumerate the non-literal fields declared by a `(assembly, typeDef)` pair,
     /// materialising each as a field-handle registry id (the int64 the BCL writes
     /// into the buffer). Instance fields are listed before statics; literals are
-    /// excluded. The declaring-type instantiation is intentionally not threaded
-    /// through here: `getOrAllocateField` is responsible for normalising it to a
-    /// canonical form so the same id is produced regardless of whether the caller
-    /// has an open or closed view, matching CoreCLR's per-canonical-MT FieldDesc
-    /// semantics. Today `getOrAllocateField` does not yet handle generic
-    /// declaring types correctly — it remaps the field's generics to canonical
-    /// placeholders and then concretizes them with an empty type-generics
-    /// context, which throws `IndexOutOfRangeException`; the GetFields wiring
-    /// above is correct, but exercising it on a generic declaring type requires
-    /// fixing that follow-up.
+    /// excluded. `declaringTarget` is the `RuntimeTypeHandleTarget` to record on
+    /// each allocated `FieldHandle`: callers walking a closed type pass the
+    /// `Closed` handle of that instantiation; callers walking an open generic
+    /// typedef pass `OpenGenericTypeDefinition`. CoreCLR observably distinguishes
+    /// these (`typeof(G<int>).GetField(...).FieldHandle` is incompatible with
+    /// `typeof(G<>)`'s) so the two cases produce distinct registry ids.
     let walkFieldsOfTypeDefinition
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (operation : string)
         (declaringAssemblyName : AssemblyName)
         (declaringTypeDefinition : System.Reflection.Metadata.TypeDefinitionHandle)
+        (declaringTarget : RuntimeTypeHandleTarget)
         (state : IlMachineState)
         : IlMachineState * int64 list
         =
@@ -175,7 +172,13 @@ module NativeRuntimeTypeHelpers =
         ((state, []), fields)
         ||> List.fold (fun (state, ids) field ->
             let runtimeFieldHandle, state =
-                IlMachineState.getOrAllocateField loggerFactory baseClassTypes declaringAssemblyName field.Handle state
+                IlMachineState.getOrAllocateField
+                    loggerFactory
+                    baseClassTypes
+                    declaringAssemblyName
+                    declaringTarget
+                    field.Handle
+                    state
 
             let stubAddress = runtimeFieldInfoStubAddress operation state runtimeFieldHandle
 
@@ -223,6 +226,7 @@ module NativeRuntimeTypeHelpers =
                 operation
                 concreteType.Assembly
                 concreteType.Definition.Get
+                (RuntimeTypeHandleTarget.Closed typeHandle)
                 state
 
     let nominalCorElementType
