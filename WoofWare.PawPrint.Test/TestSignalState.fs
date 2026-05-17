@@ -8,9 +8,10 @@ open NUnit.Framework
 open WoofWare.PawPrint
 
 /// Property-based and unit tests for the deterministic `SignalState` data
-/// model. `SignalState` has no consumer in the simulator yet — these tests
-/// pin down its behaviour in isolation so the downstream slices (dispatch,
-/// harness injection, native handler arms) can build on a known-good shape.
+/// model. `SignalState` has no full dispatcher in the simulator yet — these
+/// tests pin down its behaviour in isolation so the downstream slices
+/// (dispatch, harness injection, native handler arms) can build on a
+/// known-good shape.
 ///
 /// The property test runs a random sequence of operations through both the
 /// production module and a structurally-different reference oracle, then
@@ -49,23 +50,19 @@ module TestSignalState =
             Signal.Other 99
         ]
 
-    let private addr (n : int) : ManagedHeapAddress = ManagedHeapAddress n
-
-    let private callback (n : int) : SignalHandler = SignalHandler.PosixCallback (addr n)
-
     let private liveThreads (threads : ThreadId list) : ImmutableArray<ThreadId> = threads |> ImmutableArray.CreateRange
 
     // ------------------------- Unit tests ------------------------- //
 
     [<Test>]
-    let ``empty has nothing registered, nothing blocked, nothing pending`` () : unit =
+    let ``empty has nothing enabled, nothing blocked, nothing pending`` () : unit =
         let s = SignalState.empty
         SignalState.isInitialized s |> shouldEqual false
-        SignalState.tryGetHandler Signal.SIGINT s |> shouldEqual None
+        SignalState.isEnabled Signal.SIGINT s |> shouldEqual false
         SignalState.isBlocked t0 Signal.SIGINT s |> shouldEqual false
         SignalState.blockedFor t0 s |> shouldEqual Set.empty
         SignalState.pending s |> Seq.toList |> shouldEqual []
-        SignalState.registrations s |> shouldEqual Map.empty
+        SignalState.enabled s |> shouldEqual Set.empty
 
     [<Test>]
     let ``markInitialized is idempotent and structurally stable`` () : unit =
@@ -78,38 +75,50 @@ module TestSignalState =
         twice |> shouldEqual once
 
     [<Test>]
-    let ``register installs handler`` () : unit =
-        let s = SignalState.empty |> SignalState.register Signal.SIGINT (callback 1)
-        SignalState.tryGetHandler Signal.SIGINT s |> shouldEqual (Some (callback 1))
+    let ``enable flips a signal's bit on`` () : unit =
+        let s = SignalState.empty |> SignalState.enable Signal.SIGINT
+        SignalState.isEnabled Signal.SIGINT s |> shouldEqual true
+        SignalState.isEnabled Signal.SIGHUP s |> shouldEqual false
+        SignalState.enabled s |> shouldEqual (Set.singleton Signal.SIGINT)
 
     [<Test>]
-    let ``register replaces an existing handler`` () : unit =
+    let ``enable is idempotent`` () : unit =
+        let once = SignalState.empty |> SignalState.enable Signal.SIGINT
+        let twice = once |> SignalState.enable Signal.SIGINT
+        twice |> shouldEqual once
+
+    [<Test>]
+    let ``disable clears a previously enabled signal`` () : unit =
         let s =
             SignalState.empty
-            |> SignalState.register Signal.SIGINT (callback 1)
-            |> SignalState.register Signal.SIGINT (callback 2)
+            |> SignalState.enable Signal.SIGINT
+            |> SignalState.disable Signal.SIGINT
 
-        SignalState.tryGetHandler Signal.SIGINT s |> shouldEqual (Some (callback 2))
-
-    [<Test>]
-    let ``unregister removes an installed handler`` () : unit =
-        let s =
-            SignalState.empty
-            |> SignalState.register Signal.SIGINT (callback 1)
-            |> SignalState.unregister Signal.SIGINT
-
-        SignalState.tryGetHandler Signal.SIGINT s |> shouldEqual None
+        SignalState.isEnabled Signal.SIGINT s |> shouldEqual false
 
     [<Test>]
-    let ``unregister of an absent handler is a no-op`` () : unit =
-        let s = SignalState.empty |> SignalState.unregister Signal.SIGINT
+    let ``disable of an unenabled signal is a no-op`` () : unit =
+        let s = SignalState.empty |> SignalState.disable Signal.SIGINT
         s |> shouldEqual SignalState.empty
 
     [<Test>]
-    let ``unregister leaves pending entries queued, just non-deliverable`` () : unit =
+    let ``enable then disable collapses to the empty state`` () : unit =
+        // Mirrors the unblock/empty-mask collapse: an enable followed by a
+        // matching disable must be structurally identical to never having
+        // enabled. Without this, state dedup in the debugger would
+        // distinguish two semantically-equivalent states.
+        let enabledThenDisabled =
+            SignalState.empty
+            |> SignalState.enable Signal.SIGINT
+            |> SignalState.disable Signal.SIGINT
+
+        enabledThenDisabled |> shouldEqual SignalState.empty
+
+    [<Test>]
+    let ``disable leaves pending entries queued, just non-deliverable`` () : unit =
         // POSIX semantics: removing the disposition while a signal is
         // pending doesn't drop the signal — it remains queued and becomes
-        // deliverable again if a handler is re-installed.
+        // deliverable again if the signal is re-enabled.
         let entry =
             {
                 Signal = Signal.SIGINT
@@ -118,15 +127,15 @@ module TestSignalState =
 
         let s =
             SignalState.empty
-            |> SignalState.register Signal.SIGINT (callback 1)
+            |> SignalState.enable Signal.SIGINT
             |> SignalState.enqueue entry
-            |> SignalState.unregister Signal.SIGINT
+            |> SignalState.disable Signal.SIGINT
 
         SignalState.pending s |> Seq.toList |> shouldEqual [ entry ]
         SignalState.tryDeliverable (liveThreads [ t0 ]) s |> shouldEqual None
 
     [<Test>]
-    let ``register after enqueue makes a queued signal deliverable`` () : unit =
+    let ``enable after enqueue makes a queued signal deliverable`` () : unit =
         let entry =
             {
                 Signal = Signal.SIGINT
@@ -136,15 +145,14 @@ module TestSignalState =
         let s =
             SignalState.empty
             |> SignalState.enqueue entry
-            |> SignalState.register Signal.SIGINT (callback 1)
+            |> SignalState.enable Signal.SIGINT
 
         match SignalState.tryDeliverable (liveThreads [ t0 ]) s with
-        | Some (e, tid, h, s') ->
+        | Some (e, tid, s') ->
             e |> shouldEqual entry
             tid |> shouldEqual t0
-            h |> shouldEqual (callback 1)
             SignalState.pending s' |> Seq.toList |> shouldEqual []
-        | None -> failwith "expected deliverable entry once handler was registered"
+        | None -> failwith "expected deliverable entry once signal was enabled"
 
     [<Test>]
     let ``block then isBlocked`` () : unit =
@@ -242,14 +250,14 @@ module TestSignalState =
 
         let buildA () =
             SignalState.empty
-            |> SignalState.register Signal.SIGINT (callback 1)
+            |> SignalState.enable Signal.SIGINT
             |> SignalState.block t0 Signal.SIGTERM
             |> SignalState.enqueue entryA
             |> SignalState.enqueue entryB
 
         let buildB () =
             SignalState.empty
-            |> SignalState.register Signal.SIGINT (callback 1)
+            |> SignalState.enable Signal.SIGINT
             |> SignalState.block t0 Signal.SIGTERM
             |> SignalState.enqueue entryA
             |> SignalState.enqueue entryB
@@ -265,12 +273,12 @@ module TestSignalState =
         // split.
         let drainedFromA =
             match SignalState.tryDeliverable (liveThreads [ t0 ; t1 ]) a with
-            | Some (_, _, _, s') -> s'
+            | Some (_, _, s') -> s'
             | None -> failwith "expected deliverable entry from buildA"
 
         let drainedFromB =
             match SignalState.tryDeliverable (liveThreads [ t0 ; t1 ]) b with
-            | Some (_, _, _, s') -> s'
+            | Some (_, _, s') -> s'
             | None -> failwith "expected deliverable entry from buildB"
 
         drainedFromA |> shouldEqual drainedFromB
@@ -282,7 +290,7 @@ module TestSignalState =
         |> shouldEqual None
 
     [<Test>]
-    let ``tryDeliverable returns None when no handler is registered`` () : unit =
+    let ``tryDeliverable returns None when the signal is not enabled`` () : unit =
         let s =
             SignalState.empty
             |> SignalState.enqueue
@@ -297,7 +305,7 @@ module TestSignalState =
     let ``tryDeliverable returns None when there are no live threads`` () : unit =
         let s =
             SignalState.empty
-            |> SignalState.register Signal.SIGINT (callback 1)
+            |> SignalState.enable Signal.SIGINT
             |> SignalState.enqueue
                 {
                     Signal = Signal.SIGINT
@@ -316,16 +324,15 @@ module TestSignalState =
 
         let s =
             SignalState.empty
-            |> SignalState.register Signal.SIGINT (callback 1)
+            |> SignalState.enable Signal.SIGINT
             |> SignalState.enqueue entry
 
         // Live-thread order is deliberately scrambled to confirm the
         // implementation sorts internally rather than trusting input order.
         match SignalState.tryDeliverable (liveThreads [ t2 ; t0 ; t1 ]) s with
-        | Some (e, tid, h, s') ->
+        | Some (e, tid, s') ->
             e |> shouldEqual entry
             tid |> shouldEqual t0
-            h |> shouldEqual (callback 1)
             SignalState.pending s' |> Seq.toList |> shouldEqual []
         | None -> failwith "expected deliverable entry"
 
@@ -333,7 +340,7 @@ module TestSignalState =
     let ``tryDeliverable skips the lowest thread if it is blocking the signal`` () : unit =
         let s =
             SignalState.empty
-            |> SignalState.register Signal.SIGINT (callback 1)
+            |> SignalState.enable Signal.SIGINT
             |> SignalState.block t0 Signal.SIGINT
             |> SignalState.enqueue
                 {
@@ -342,14 +349,14 @@ module TestSignalState =
                 }
 
         match SignalState.tryDeliverable (liveThreads [ t0 ; t1 ; t2 ]) s with
-        | Some (_, tid, _, _) -> tid |> shouldEqual t1
+        | Some (_, tid, _) -> tid |> shouldEqual t1
         | None -> failwith "expected deliverable entry"
 
     [<Test>]
     let ``tryDeliverable returns None when every live thread blocks the signal`` () : unit =
         let s =
             SignalState.empty
-            |> SignalState.register Signal.SIGINT (callback 1)
+            |> SignalState.enable Signal.SIGINT
             |> SignalState.block t0 Signal.SIGINT
             |> SignalState.block t1 Signal.SIGINT
             |> SignalState.enqueue
@@ -366,7 +373,7 @@ module TestSignalState =
         // targeted at t0 must stay queued, not get delivered to t1.
         let s =
             SignalState.empty
-            |> SignalState.register Signal.SIGINT (callback 1)
+            |> SignalState.enable Signal.SIGINT
             |> SignalState.block t0 Signal.SIGINT
             |> SignalState.enqueue
                 {
@@ -380,7 +387,7 @@ module TestSignalState =
     let ``tryDeliverable for a targeted dead thread is held`` () : unit =
         let s =
             SignalState.empty
-            |> SignalState.register Signal.SIGINT (callback 1)
+            |> SignalState.enable Signal.SIGINT
             |> SignalState.enqueue
                 {
                     Signal = Signal.SIGINT
@@ -391,7 +398,7 @@ module TestSignalState =
 
     [<Test>]
     let ``tryDeliverable preserves the FIFO order of skipped entries`` () : unit =
-        // Three entries: (1) no handler installed, (2) targeted at a thread
+        // Three entries: (1) signal not enabled, (2) targeted at a thread
         // blocking it, (3) process-directed and deliverable to t1. The
         // returned state must contain entries (1) and (2) in their original
         // order; only entry (3) is removed.
@@ -415,14 +422,14 @@ module TestSignalState =
 
         let s =
             SignalState.empty
-            |> SignalState.register Signal.SIGINT (callback 1)
+            |> SignalState.enable Signal.SIGINT
             |> SignalState.block t0 Signal.SIGINT
             |> SignalState.enqueue head
             |> SignalState.enqueue middle
             |> SignalState.enqueue tail
 
         match SignalState.tryDeliverable (liveThreads [ t0 ; t1 ]) s with
-        | Some (e, tid, _, s') ->
+        | Some (e, tid, s') ->
             e |> shouldEqual tail
             tid |> shouldEqual t1
             SignalState.pending s' |> Seq.toList |> shouldEqual [ head ; middle ]
@@ -434,19 +441,19 @@ module TestSignalState =
     /// maps to exactly one public method on the API.
     type private Op =
         | MarkInitialized
-        | Register of signal : Signal * handler : SignalHandler
-        | Unregister of signal : Signal
+        | Enable of signal : Signal
+        | Disable of signal : Signal
         | Block of thread : ThreadId * signal : Signal
         | Unblock of thread : ThreadId * signal : Signal
         | Enqueue of entry : PendingSignal
         | DrainOne of live : ThreadId list
 
-    /// Reference implementation: simple lists / maps, completely
+    /// Reference implementation: simple lists / sets / maps, completely
     /// independent of the production module's internal representation.
     type private ReferenceState =
         {
             Initialized : bool
-            Registrations : Map<Signal, SignalHandler>
+            Enabled : Set<Signal>
             Blocked : Map<ThreadId, Set<Signal>>
             Pending : PendingSignal list
         }
@@ -454,7 +461,7 @@ module TestSignalState =
     let private referenceEmpty : ReferenceState =
         {
             Initialized = false
-            Registrations = Map.empty
+            Enabled = Set.empty
             Blocked = Map.empty
             Pending = []
         }
@@ -465,7 +472,7 @@ module TestSignalState =
     let private referenceTryDeliverable
         (live : ThreadId list)
         (r : ReferenceState)
-        : (PendingSignal * ThreadId * SignalHandler * ReferenceState) option
+        : (PendingSignal * ThreadId * ReferenceState) option
         =
         let liveSet : Set<ThreadId> = Set.ofList live
 
@@ -489,21 +496,17 @@ module TestSignalState =
         let entries : PendingSignal[] = r.Pending |> List.toArray
         let mutable foundIdx : int = -1
         let mutable foundReceiver : ThreadId option = None
-        let mutable foundHandler : SignalHandler option = None
         let mutable i : int = 0
 
         while foundIdx < 0 && i < entries.Length do
             let entry = entries.[i]
 
-            match Map.tryFind entry.Signal r.Registrations with
-            | Some h ->
+            if Set.contains entry.Signal r.Enabled then
                 match pickReceiver entry with
                 | Some tid ->
                     foundIdx <- i
                     foundReceiver <- Some tid
-                    foundHandler <- Some h
                 | None -> ()
-            | None -> ()
 
             i <- i + 1
 
@@ -519,7 +522,6 @@ module TestSignalState =
             Some (
                 entries.[foundIdx],
                 foundReceiver.Value,
-                foundHandler.Value,
                 { r with
                     Pending = remaining
                 }
@@ -536,15 +538,15 @@ module TestSignalState =
             { r with
                 Initialized = true
             }
-        | Op.Register (sig0, h) ->
-            SignalState.register sig0 h s,
+        | Op.Enable sig0 ->
+            SignalState.enable sig0 s,
             { r with
-                Registrations = Map.add sig0 h r.Registrations
+                Enabled = Set.add sig0 r.Enabled
             }
-        | Op.Unregister sig0 ->
-            SignalState.unregister sig0 s,
+        | Op.Disable sig0 ->
+            SignalState.disable sig0 s,
             { r with
-                Registrations = Map.remove sig0 r.Registrations
+                Enabled = Set.remove sig0 r.Enabled
             }
         | Op.Block (tid, sig0) ->
             let existing : Set<Signal> =
@@ -588,18 +590,20 @@ module TestSignalState =
 
             match actual, expected with
             | None, None -> s, r
-            | Some (e1, tid1, h1, s'), Some (e2, tid2, h2, r') ->
+            | Some (e1, tid1, s'), Some (e2, tid2, r') ->
                 e1 |> shouldEqual e2
                 tid1 |> shouldEqual tid2
-                h1 |> shouldEqual h2
                 s', r'
             | a, b -> failwith $"tryDeliverable disagreed: actual=%A{a}, reference=%A{b}"
 
     /// Compare every observable accessor; the accessors are the contract.
     let private assertEquivalent (s : SignalState) (r : ReferenceState) : unit =
         SignalState.isInitialized s |> shouldEqual r.Initialized
-        SignalState.registrations s |> shouldEqual r.Registrations
+        SignalState.enabled s |> shouldEqual r.Enabled
         SignalState.pending s |> Seq.toList |> shouldEqual r.Pending
+
+        for sig0 in allSignals do
+            SignalState.isEnabled sig0 s |> shouldEqual (Set.contains sig0 r.Enabled)
 
         for tid in allThreads do
             for sig0 in allSignals do
@@ -631,9 +635,9 @@ module TestSignalState =
         if kind < 5 then
             Op.MarkInitialized
         elif kind < 25 then
-            Op.Register (pick allSignals, callback (rng.Next 4))
+            Op.Enable (pick allSignals)
         elif kind < 32 then
-            Op.Unregister (pick allSignals)
+            Op.Disable (pick allSignals)
         elif kind < 47 then
             Op.Block (pick allThreads, pick allSignals)
         elif kind < 57 then
@@ -682,7 +686,7 @@ module TestSignalState =
                 match op with
                 | Op.DrainOne live ->
                     match referenceTryDeliverable live r with
-                    | Some (entry, _, _, _) ->
+                    | Some (entry, _, _) ->
                         observedDeliveries <- observedDeliveries + 1
 
                         match r.Pending with
