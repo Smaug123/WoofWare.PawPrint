@@ -109,6 +109,27 @@ module TestImpureCases =
                         |> shouldEqual 0
                     )
             }
+            {
+                // Exercises the SystemNative_Close / SystemNative_Dup handler
+                // pair end-to-end against the PawPrint FileDescriptorRegistry:
+                // close of an invalid fd, close of a freshly-duped fd, the
+                // double-close EBADF path, and the lowest-free gap-fill after
+                // a close. This used to live in sourcesPure for cross-runtime
+                // validation, but the real CLR's multi-threaded fd activity
+                // races our close + dup window in the NUnit test process, so
+                // it now runs as an impure (PawPrint-only) test where the
+                // interpreter's deterministic single-threaded fd table makes
+                // the assertions stable. The registry-level invariants are
+                // still independently covered by TestFileDescriptorRegistry's
+                // property tests; this test verifies the wiring from the
+                // P/Invoke handler through to the registry.
+                FileName = "SystemNativeClose.cs"
+                ExpectedReturnCode = 0
+                Environment = Map.empty
+                ExpectsUnhandledException = false
+                NativeImpls = NativeImpls.PassThru ()
+                AssertTerminalState = None
+            }
         ]
 
     let runTest (case : EndToEndTestCase) : unit =
