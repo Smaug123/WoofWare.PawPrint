@@ -47,18 +47,31 @@ open System.Collections.Immutable
 [<RequireQualifiedAccess>]
 module SignalDispatch =
 
-    /// Pull the live, non-dispatcher thread ids out of state. A thread counts
-    /// as live iff its status is not `Terminated`: the dispatcher itself is
-    /// `Parked` and would otherwise satisfy `tryDeliverable`'s "no blocker"
-    /// test vacuously (its `Blocked` entry is empty), which would let a
-    /// process-directed signal designate the dispatcher as its receiver.
-    /// That's not what we want — the dispatcher runs the handler *for* a
-    /// receiver, it isn't itself the receiver.
+    /// Pull the eligible-receiver thread ids out of state. A thread is
+    /// only eligible to *receive* a signal if there's a kernel-level thread
+    /// behind it: in PawPrint terms, the managed `Thread` has at least one
+    /// live frame. That rules out `Terminated` (final frames are kept for
+    /// post-mortem inspection, but the thread is gone), `NotStarted` (the
+    /// managed `Thread` object exists but `Start` hasn't been called, so
+    /// the OS thread does not exist yet), and `Parked` (PawPrint-internal
+    /// auxiliary threads like the dispatcher itself, which never run guest
+    /// IL). We delegate that "has a live frame" check to the existing
+    /// `ThreadStatus.hasNoActiveFrame` classifier — the same predicate the
+    /// rest of the runtime uses before dereferencing per-thread frame data
+    /// — so a new frameless `ThreadStatus` variant is automatically also
+    /// excluded from the receiver candidate set.
+    ///
+    /// The explicit `tid <> dispatcher` exclusion is therefore redundant
+    /// today (the dispatcher is `Parked`, so `hasNoActiveFrame` already
+    /// drops it), but is kept because it documents a load-bearing
+    /// architectural invariant: the dispatcher runs the handler *for* a
+    /// receiver and is never itself a candidate, even if a future change
+    /// gave the dispatcher live frames between handler invocations.
     let private liveExcludingDispatcher (dispatcher : ThreadId) (state : IlMachineState) : ImmutableArray<ThreadId> =
         let builder = ImmutableArray.CreateBuilder<ThreadId> ()
 
         for KeyValue (tid, ts) in state.ThreadState do
-            if tid <> dispatcher && ts.Status <> ThreadStatus.Terminated then
+            if tid <> dispatcher && not (ThreadStatus.hasNoActiveFrame ts.Status) then
                 builder.Add tid
 
         builder.ToImmutable ()
@@ -70,8 +83,10 @@ module SignalDispatch =
     /// `signo` is the Linux signal number from `Signal.toLinuxSigno`;
     /// `posixSignalEnumValue` is the negative enum identity from
     /// `Signal.toPosixSignalEnum` for the modelled cross-platform signals or
-    /// the positive raw signo otherwise (matching real CoreCLR's
-    /// `SignalCodeToPosixSignal` behaviour at the C side).
+    /// `PosixSignalInvalid` (0) for signals with no managed enum value
+    /// (matching real CoreCLR `pal_signal.c`, which overwrites the
+    /// out-parameter with `PosixSignalInvalid` when
+    /// `TryConvertSignalCodeToPosixSignal` returns `false`).
     let private buildArgs (signal : Signal) : ImmutableArray<CliType> =
         let signo = Signal.toLinuxSigno signal
         let posixEnum = Signal.toPosixSignalEnum signal

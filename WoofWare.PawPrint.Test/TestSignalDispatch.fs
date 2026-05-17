@@ -506,3 +506,98 @@ module TestSignalDispatch =
         dispatcherTs.MethodStates.Count |> shouldEqual 0
         dispatcherTs.ActiveMethodState |> shouldEqual (FrameId -1)
         dispatcherTs.NextFrameId |> shouldEqual 0
+
+    [<Test>]
+    let ``trySpawnHandler passes PosixSignalInvalid (0) for signals with no managed enum`` () : unit =
+        // Real CoreCLR's `pal_signal.c` overwrites the `PosixSignal` callback
+        // argument with `PosixSignalInvalid` (0) when the signo has no
+        // negative `PosixSignal` enum value (SIGABRT, SIGUSR1, SIGUSR2,
+        // SIGPIPE, and arbitrary `(PosixSignal)rawSigno` casts). The first
+        // `signo` argument still carries the raw Linux signo. PawPrint must
+        // match — passing the raw signo here instead of 0 would feed the
+        // handler a `PosixSignal` value the real runtime never produces.
+        let state, dispatcher, _ = preparedState ()
+        let runnableSibling = ThreadId 99
+
+        let state =
+            { state with
+                ThreadState =
+                    state.ThreadState
+                    |> Map.add runnableSibling (stubThreadState ThreadStatus.Runnable)
+            }
+
+        let state =
+            state.MapKernel (fun kernel ->
+                { kernel with
+                    Signals =
+                        kernel.Signals
+                        |> SignalState.enable Signal.SIGABRT
+                        |> SignalState.enqueue
+                            {
+                                Signal = Signal.SIGABRT
+                                Target = ValueNone
+                            }
+                }
+            )
+
+        let state' = SignalDispatch.trySpawnHandler baseClassTypes state
+
+        let dispatcherTs = state'.ThreadState |> Map.find dispatcher
+        let frame = dispatcherTs.MethodStates |> Map.find dispatcherTs.ActiveMethodState
+
+        frame.Arguments.Length |> shouldEqual 2
+        // signo: SIGABRT's Linux signo is 6.
+        frame.Arguments.[0] |> shouldEqual (CliType.Numeric (CliNumericType.Int32 6))
+        // posix enum: SIGABRT has no `PosixSignal` enum identity, so the
+        // dispatcher must pass `PosixSignalInvalid` (0).
+        frame.Arguments.[1] |> shouldEqual (CliType.Numeric (CliNumericType.Int32 0))
+
+    [<Test>]
+    let ``trySpawnHandler does not consider NotStarted threads eligible receivers`` () : unit =
+        // A managed `Thread` that has been constructed but never `Start`ed
+        // has no kernel-level thread behind it: no OS thread exists to
+        // receive the signal. PawPrint mirrors that by classifying
+        // `NotStarted` threads as frameless via `ThreadStatus.hasNoActiveFrame`
+        // and excluding them from the receiver candidate set. Set up a world
+        // where the only non-dispatcher thread is `NotStarted` and assert the
+        // pending signal is treated as non-deliverable (queue intact, frame
+        // not spawned).
+        let state, dispatcher, _ = preparedState ()
+        let notStartedSibling = ThreadId 99
+
+        let state =
+            { state with
+                ThreadState =
+                    state.ThreadState
+                    |> Map.add notStartedSibling (stubThreadState ThreadStatus.NotStarted)
+            }
+
+        let state =
+            state.MapKernel (fun kernel ->
+                { kernel with
+                    Signals =
+                        kernel.Signals
+                        |> SignalState.enable Signal.SIGINT
+                        |> SignalState.enqueue
+                            {
+                                Signal = Signal.SIGINT
+                                Target = ValueNone
+                            }
+                }
+            )
+
+        let state' = SignalDispatch.trySpawnHandler baseClassTypes state
+
+        let dispatcherTs = state'.ThreadState |> Map.find dispatcher
+        dispatcherTs.Status |> shouldEqual ThreadStatus.Parked
+        dispatcherTs.MethodStates.Count |> shouldEqual 0
+
+        state'.Kernel.Signals
+        |> SignalState.pending
+        |> shouldEqual
+            [
+                {
+                    Signal = Signal.SIGINT
+                    Target = ValueNone
+                }
+            ]
