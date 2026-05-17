@@ -1,6 +1,7 @@
 namespace WoofWare.PawPrint
 
 open System
+open System.Reflection.Metadata
 
 [<RequireQualifiedAccess>]
 module IlMachineManagedByref =
@@ -626,12 +627,22 @@ module IlMachineManagedByref =
                 failwith $"PE byte-view read needs loaded assembly %s{peByteRange.AssemblyFullName}"
             )
 
-        let sectionData =
-            assembly.PeReader.GetSectionData peByteRange.RelativeVirtualAddress
+        let bytes =
+            match peByteRange.Source with
+            | PeByteRangePointerSource.FieldRva _
+            | PeByteRangePointerSource.ManagedResource _ ->
+                let sectionData =
+                    assembly.PeReader.GetSectionData peByteRange.RelativeVirtualAddress
 
-        let mutable reader = sectionData.GetReader ()
-        reader.Offset <- byteOffset
-        let bytes = reader.ReadBytes targetSize
+                let mutable reader = sectionData.GetReader ()
+                reader.Offset <- byteOffset
+                reader.ReadBytes targetSize
+            | PeByteRangePointerSource.FieldSignatureBlob field ->
+                let mdReader = assembly.PeReader.GetMetadataReader ()
+                let fieldDef = mdReader.GetFieldDefinition field.Get
+                let mutable blobReader = mdReader.GetBlobReader fieldDef.Signature
+                blobReader.Offset <- byteOffset
+                blobReader.ReadBytes targetSize
 
         CliType.ofBytesLike targetTemplate bytes
 
