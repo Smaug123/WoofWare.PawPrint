@@ -616,6 +616,37 @@ module NativeSystemNative =
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
+        | Some "SystemNative_SetPosixSignalHandler", [ ConcreteFunctionPointer _ ], MethodReturnType.Void ->
+            // The BCL calls this exactly once from
+            // `PosixSignalRegistration.Initialize` with `&OnPosixSignal`,
+            // a function-pointer-typed `delegate* unmanaged<int, PosixSignal, int>`.
+            // Real native code stashes the raw pointer into a global
+            // (`g_posixSignalHandler`) and the signal-handling thread later
+            // invokes it after a signal is queued. PawPrint just records the
+            // managed identity of the target method on `SignalState` — the
+            // forthcoming signal-delivery slice reads it back at dispatch
+            // time. We refuse anything other than a real
+            // `NativeIntSource.FunctionPointer`: any other tag means the
+            // value didn't come from `Ldftn` on a managed method, so we
+            // have no callable identity to record and silently dropping it
+            // would let the BCL register handlers that the simulator can
+            // never invoke.
+            let operation = "SystemNative_SetPosixSignalHandler"
+
+            let mi =
+                match CliType.unwrapPrimitiveLikeDeep instruction.Arguments.[0] with
+                | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer mi)) -> mi
+                | other ->
+                    failwith
+                        $"%s{operation}: expected FunctionPointer argument (from Ldftn on the managed signal callback), got %O{other}"
+
+            state.MapKernel (fun kernel ->
+                { kernel with
+                    Signals = SignalState.setHandler (SignalHandler.ofMethodInfo mi) kernel.Signals
+                }
+            )
+            |> NativeHandlerResult.completed
+            |> Some
         | Some "SystemNative_DisablePosixSignalHandling",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Void ->

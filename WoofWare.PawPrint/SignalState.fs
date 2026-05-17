@@ -13,6 +13,56 @@ type PendingSignal =
         Target : ThreadId voption
     }
 
+/// Identity of the managed callback the BCL installed via
+/// `SystemNative_SetPosixSignalHandler(&OnPosixSignal)`. Wraps the
+/// `MethodInfo` of the target so a later signal-delivery slice has the
+/// call site pre-resolved — no need to round-trip through raw pointer
+/// bits.
+///
+/// The wrapper exists purely so `SignalState` keeps clean structural
+/// equality: `MethodInfo<_,_,_>` carries `ImmutableArray` fields and a
+/// `MethodBody` DU whose payloads use reference equality, so naked
+/// `MethodInfo` equality is unstable. `MethodInfo.NominallyEqual` is the
+/// stable identity contract (assembly + type identity + type generics +
+/// method handle + method generics) and is exactly what we need here:
+/// two `SignalHandler`s denote the same callback iff they would dispatch
+/// to the same managed method. Mirrors the same pattern used by
+/// `NativeIntSource.FunctionPointer`'s custom equality at the eval-stack
+/// layer.
+[<CustomEquality>]
+[<NoComparison>]
+type SignalHandler =
+    private
+        {
+            Method : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+        }
+
+    member this.MethodInfo : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> =
+        this.Method
+
+    override this.Equals (other : obj) : bool =
+        match other with
+        | :? SignalHandler as other -> MethodInfo.NominallyEqual this.Method other.Method
+        | _ -> false
+
+    override this.GetHashCode () : int =
+        hash (
+            this.Method.DeclaringType.Identity,
+            this.Method.DeclaringType.Generics,
+            this.Method.Handle,
+            this.Method.Generics
+        )
+
+[<RequireQualifiedAccess>]
+module SignalHandler =
+    let ofMethodInfo (mi : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>) : SignalHandler =
+        {
+            Method = mi
+        }
+
+    let methodInfo (handler : SignalHandler) : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> =
+        handler.Method
+
 /// Pure, deterministic model of the simulator's signal-handling state.
 ///
 /// The shape is deliberately small:
@@ -30,6 +80,14 @@ type PendingSignal =
 ///   * `Blocked` — per-thread sigprocmask. A signal in a thread's set is
 ///     blocked for that thread and cannot be delivered to it.
 ///   * `Pending` — FIFO queue of generated signals waiting for dispatch.
+///   * `Handler` — the BCL-supplied dispatch callback (the function
+///     pointer passed to `SystemNative_SetPosixSignalHandler`, in
+///     practice `PosixSignalRegistration.OnPosixSignal`). `None` until
+///     the BCL installs one; on a real Unix box the native side leaves
+///     `g_posixSignalHandler` NULL until the first
+///     `SetPosixSignalHandler` call and ignores delivered signals while
+///     it remains so. PawPrint will mirror that semantics once signal
+///     delivery is wired.
 ///
 /// The `EmulatedKernel.Signals` field carries an instance of this type per
 /// simulated process, but no code dispatches signals out of it yet —
@@ -51,6 +109,7 @@ type SignalState =
             /// 0–3 entries) and PawPrint trades performance for determinism
             /// throughout.
             Pending : PendingSignal list
+            Handler : SignalHandler option
         }
 
 [<RequireQualifiedAccess>]
@@ -61,6 +120,7 @@ module SignalState =
             Enabled = Set.empty
             Blocked = Map.empty
             Pending = []
+            Handler = None
         }
 
     let isInitialized (state : SignalState) : bool = state.Initialized
@@ -75,6 +135,26 @@ module SignalState =
             { state with
                 Initialized = true
             }
+
+    /// The currently-installed dispatch callback, or `None` if the BCL
+    /// has not yet called `SystemNative_SetPosixSignalHandler`. PawPrint
+    /// has no signal delivery wired yet, so this is purely a record of
+    /// what the BCL asked for; later slices will read it at the moment
+    /// of dispatch.
+    let handler (state : SignalState) : SignalHandler option = state.Handler
+
+    /// Install (or replace) the BCL-supplied signal-dispatch callback.
+    /// The real native side stores the pointer into `g_posixSignalHandler`
+    /// unconditionally, overwriting any prior value — which CoreLib only
+    /// ever does once from `PosixSignalRegistration.Initialize`, but the
+    /// underlying contract is "last writer wins". Two calls with the same
+    /// nominal handler are equality-equal via `SignalHandler.Equals` even
+    /// though the second one re-constructs the wrapper, so the state
+    /// transition is idempotent in practice.
+    let setHandler (handler : SignalHandler) (state : SignalState) : SignalState =
+        { state with
+            Handler = Some handler
+        }
 
     let isEnabled (signal : Signal) (state : SignalState) : bool = Set.contains signal state.Enabled
 
