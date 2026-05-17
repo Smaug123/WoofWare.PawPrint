@@ -13,7 +13,7 @@ namespace HelloWorldApp
         {
             try
             {
-                return ReallyMain(args);
+                return ReallyMain(args) == 10 ? 0 : 1;
             }
             catch
             {

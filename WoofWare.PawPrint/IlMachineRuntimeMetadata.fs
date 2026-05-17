@@ -103,32 +103,22 @@ module IlMachineRuntimeMetadata =
 
         result, state
 
-    /// Returns a System.RuntimeFieldHandle.
+    /// Returns a System.RuntimeFieldHandle for the given field, observed on
+    /// `declaringType`. The caller is responsible for supplying the correct
+    /// instantiation context: in CoreCLR, `typeof(G<int>).GetField(...).FieldHandle`
+    /// and `typeof(G<>).GetField(...).FieldHandle` are observably different — each
+    /// carries its own declaring `RuntimeTypeHandle` — so this helper preserves the
+    /// distinction by keying on the full target. Type-parameter targets are rejected
+    /// by the registry because they cannot own a field.
     let getOrAllocateField
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (declaringAssy : AssemblyName)
+        (declaringType : RuntimeTypeHandleTarget)
         (fieldHandle : FieldDefinitionHandle)
         (state : IlMachineState)
         : CliType * IlMachineState
         =
-        let field = state.LoadedAssembly(declaringAssy).Value.Fields.[fieldHandle]
-
-        // For LdToken, we need to convert GenericParamFromMetadata to TypeDefn
-        // When we don't have generic context, we use the generic type parameters directly
-        let declaringTypeWithGenerics =
-            field.DeclaringType
-            |> ConcreteType.mapGeneric (fun _index (param, _metadata) ->
-                TypeDefn.GenericTypeParameter param.SequenceNumber
-            )
-
-        let declaringType, state =
-            IlMachineTypeResolution.concretizeFieldDeclaringType
-                loggerFactory
-                baseClassTypes
-                declaringTypeWithGenerics
-                state
-
         let state, runtimeFieldInfoStub =
             TypeDefn.FromDefinition (
                 ResolvedTypeIdentity.ofTypeDefinition

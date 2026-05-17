@@ -66,10 +66,19 @@ module PointerHashSynthesis =
     /// `TypeHandlePtr (Closed _)` collapses here, so the two encodings
     /// produce identical synthesised bits — that contract is required by
     /// the `ceq`/`cgtUn`/`cltUn` paths in `EvalStackValueComparisons` and
-    /// by the cast-cache hash pipeline.
+    /// by the cast-cache hash pipeline. The same aliasing rule applies for
+    /// `OpenGenericTypeDefinition`: the canonical MethodTable for the
+    /// typedef is the same address as the typedef's `TypeHandle`.
     let private canonicalKey (src : NativeIntSource) : CanonicalPointerKey =
         match src with
-        | NativeIntSource.MethodTablePtr h -> CanonicalPointerKey.MethodTable h
+        | NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed handle) ->
+            CanonicalPointerKey.MethodTable handle
+        | NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ as target) ->
+            CanonicalPointerKey.TypeHandle target
+        | NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.GenericParameter _ as target)
+        | NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.MethodGenericParameter _ as target) ->
+            failwith
+                $"PointerHashSynthesis.canonicalKey: MethodTablePtr(%O{target}) has no MethodTable identity (generic parameters are TypeDescs in CoreCLR)"
         | NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed handle as target) ->
             match handle with
             | ConcreteTypeHandle.Concrete _

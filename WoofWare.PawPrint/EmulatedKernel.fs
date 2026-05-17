@@ -388,6 +388,14 @@ type EmulatedKernel =
         /// of this default at startup, and tests can pass their own overlay
         /// via `Program.run`.
         Environment : Map<string, string>
+        /// Pure data model of the simulated process's signal disposition,
+        /// per-thread sigprocmasks, and pending-signal queue. Populated by
+        /// future slices: nothing in the simulator dispatches signals yet,
+        /// so the field stays at `SignalState.empty` across every run today.
+        /// Held on `EmulatedKernel` (rather than per-thread) because POSIX
+        /// signal disposition is process-wide; the per-thread piece lives
+        /// inside `SignalState.Blocked`.
+        Signals : SignalState
     }
 
 /// Deterministic non-cryptographic PRNG that backs
@@ -478,6 +486,7 @@ module EmulatedKernel =
             NonCryptoRandomState = NonCryptoRandom.initialState
             OutputLog = ImmutableArray<OutputLogEntry>.Empty
             Environment = defaultEnvironment
+            Signals = SignalState.empty
         }
 
     /// Overlay the supplied environment variables on top of the kernel's

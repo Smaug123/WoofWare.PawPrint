@@ -17,10 +17,10 @@ module TestPureCases =
 
     let unimplemented =
         [
-            "AdvancedStructLayout.cs" // past MarshalNative_TryGetStructMarshalStub for the strictly-numeric blittable struct (Marshal.StructureToPtr now hits the SpanHelpers.Memmove fast path); now blocked downstream in Unsafe.ByteOffset, which doesn't yet support a `Pointer(...)` ManagedPointerSource (one of the byrefs comes from `&*(byte*)ptr` over an AllocHGlobal IntPtr)
-            "LdtokenField.cs" // past Buffer's reflection-cache copy (cell-aware path); now blocked on the next reflection-cache step at unimplemented InternalCall RuntimeFieldHandle::GetApproxDeclaringMethodTable
-            "InterfaceDispatch.cs" // expected: 0; was: 1024
+            "AdvancedStructLayout.cs" // past MarshalNative_SizeOfHelper for ByValTStr and SystemNative_Malloc / SystemNative_Free / Marshal.AllocHGlobal / FreeHGlobal; now blocked downstream at the unimplemented MarshalNative_TryGetStructMarshalStub QCall (CoreLib's Marshal.StructureToPtr path)
             "Threads.cs" // past ThreadNative_InformThreadNameChange (Thread.Name setter); now blocked on unimplemented PAL call libSystem.Native!SystemNative_GetLowResolutionTimestamp (.Sys::GetLowResolutionTimestamp, used by the Task/ThreadPool scheduler)
+            "GetFieldOnOpenGenericTypeDefinition.cs" // FieldHandle declaring-type canonicalisation is fixed; now blocked on the BCL's RuntimeType.GetFieldCandidates walk reaching MethodTable::ParentMethodTable for the OpenGenericTypeDefinition target — the projection only handles Closed today.
+            "LdtokenField.cs" // Test 5 hits typeof(GenericClass<>).GetField("GenericField"), which goes through the same MethodTable::ParentMethodTable projection on an OpenGenericTypeDefinition target as GetFieldOnOpenGenericTypeDefinition.cs.
         ]
         |> Set.ofList
 
@@ -58,19 +58,7 @@ module TestPureCases =
 
     let expectsUnhandledException = [ "UnhandledException.cs" ] |> Set.ofList
 
-    let customExitCodes =
-        [
-            "NoOp.cs", 1
-            "BasicLock.cs", 1
-            "MonitorEnterRefBool.cs", 1
-            "ContendedMonitorEnter.cs", 99
-            "MonitorPulseWait.cs", 42
-            "MonitorWaitReentrant.cs", 7
-            "ExceptionWithNoOpFinally.cs", 3
-            "ExceptionWithNoOpCatch.cs", 10
-            "Threads.cs", 3
-        ]
-        |> Map.ofList
+    let customExitCodes = [ "ExceptionWithNoOpFinally.cs", 3 ] |> Map.ofList
 
     let allPure =
         assy.GetManifestResourceNames ()

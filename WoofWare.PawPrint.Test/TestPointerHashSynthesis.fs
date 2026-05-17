@@ -18,7 +18,8 @@ module TestPointerHashSynthesis =
 
     [<Test>]
     let ``same source materialised twice returns same bits and bumps counter only once`` () : unit =
-        let src = NativeIntSource.MethodTablePtr (ConcreteTypeHandle.Concrete 42)
+        let src =
+            NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete 42))
 
         let bits1, counters1 = materialise src PointerHashCounters.empty
         counters1.NextCounter |> shouldEqual 1UL
@@ -31,8 +32,11 @@ module TestPointerHashSynthesis =
 
     [<Test>]
     let ``distinct sources get distinct bits`` () : unit =
-        let a = NativeIntSource.MethodTablePtr (ConcreteTypeHandle.Concrete 1)
-        let b = NativeIntSource.MethodTablePtr (ConcreteTypeHandle.Concrete 2)
+        let a =
+            NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete 1))
+
+        let b =
+            NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete 2))
 
         let bitsA, counters = materialise a PointerHashCounters.empty
         let bitsB, counters = materialise b counters
@@ -45,8 +49,8 @@ module TestPointerHashSynthesis =
     let ``order-stable assignment - same sequence on two fresh fixtures produces same bits`` () : unit =
         let sources : NativeIntSource list =
             [
-                NativeIntSource.MethodTablePtr (ConcreteTypeHandle.Concrete 7)
-                NativeIntSource.MethodTablePtr (ConcreteTypeHandle.Concrete 8)
+                NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete 7))
+                NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete 8))
                 NativeIntSource.TypeHandlePtr (
                     RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Pointer (ConcreteTypeHandle.Concrete 9))
                 )
@@ -69,8 +73,11 @@ module TestPointerHashSynthesis =
 
     [<Test>]
     let ``registration order assigns counters in order; first-registered gets smaller bits`` () : unit =
-        let a = NativeIntSource.MethodTablePtr (ConcreteTypeHandle.Concrete 11)
-        let b = NativeIntSource.MethodTablePtr (ConcreteTypeHandle.Concrete 12)
+        let a =
+            NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete 11))
+
+        let b =
+            NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete 12))
 
         // First registration in any sequence gets counter 0 → bits = ((0+1) <<< 2) | 0 = 4.
         let bitsAAlone, _ = materialise a PointerHashCounters.empty
@@ -99,7 +106,7 @@ module TestPointerHashSynthesis =
     [<Test>]
     let ``MethodTablePtr and TypeHandlePtr(Closed _) alias for Concrete shape`` () : unit =
         let handle = ConcreteTypeHandle.Concrete 99
-        let mtSrc = NativeIntSource.MethodTablePtr handle
+        let mtSrc = NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed handle)
         let thSrc = NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed handle)
 
         let bitsMt, counters = materialise mtSrc PointerHashCounters.empty
@@ -116,7 +123,9 @@ module TestPointerHashSynthesis =
         let handle = ConcreteTypeHandle.OneDimArrayZero (ConcreteTypeHandle.Concrete 5)
 
         let bitsMt, counters =
-            materialise (NativeIntSource.MethodTablePtr handle) PointerHashCounters.empty
+            materialise
+                (NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed handle))
+                PointerHashCounters.empty
 
         let bitsTh, counters =
             materialise (NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed handle)) counters
@@ -129,7 +138,9 @@ module TestPointerHashSynthesis =
         let handle = ConcreteTypeHandle.Array (ConcreteTypeHandle.Concrete 3, 2)
 
         let bitsMt, counters =
-            materialise (NativeIntSource.MethodTablePtr handle) PointerHashCounters.empty
+            materialise
+                (NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed handle))
+                PointerHashCounters.empty
 
         let bitsTh, counters =
             materialise (NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed handle)) counters
@@ -145,7 +156,9 @@ module TestPointerHashSynthesis =
         let pointerHandle = ConcreteTypeHandle.Pointer element
 
         let bitsMt, counters =
-            materialise (NativeIntSource.MethodTablePtr element) PointerHashCounters.empty
+            materialise
+                (NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed element))
+                PointerHashCounters.empty
 
         let bitsTh, counters =
             materialise (NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed pointerHandle)) counters
@@ -156,7 +169,9 @@ module TestPointerHashSynthesis =
     [<Test>]
     let ``low bits are clear for MethodTablePtr`` () : unit =
         let bits, _ =
-            materialise (NativeIntSource.MethodTablePtr (ConcreteTypeHandle.Concrete 7)) PointerHashCounters.empty
+            materialise
+                (NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete 7)))
+                PointerHashCounters.empty
 
         bits &&& 3L |> shouldEqual 0L
 
@@ -165,7 +180,9 @@ module TestPointerHashSynthesis =
         let handle = ConcreteTypeHandle.OneDimArrayZero (ConcreteTypeHandle.Concrete 7)
 
         let bits, _ =
-            materialise (NativeIntSource.MethodTablePtr handle) PointerHashCounters.empty
+            materialise
+                (NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed handle))
+                PointerHashCounters.empty
 
         bits &&& 3L |> shouldEqual 0L
 
@@ -292,9 +309,14 @@ module TestPointerHashSynthesis =
         // AssemblyHandle, ModuleHandle, MetadataImportHandle.
         let sources : NativeIntSource list =
             [
-                for i in 0..9 -> NativeIntSource.MethodTablePtr (ConcreteTypeHandle.Concrete i)
                 for i in 0..9 ->
-                    NativeIntSource.MethodTablePtr (ConcreteTypeHandle.OneDimArrayZero (ConcreteTypeHandle.Concrete i))
+                    NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete i))
+                for i in 0..9 ->
+                    NativeIntSource.MethodTablePtr (
+                        RuntimeTypeHandleTarget.Closed (
+                            ConcreteTypeHandle.OneDimArrayZero (ConcreteTypeHandle.Concrete i)
+                        )
+                    )
                 for i in 0..9 ->
                     NativeIntSource.TypeHandlePtr (
                         RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Pointer (ConcreteTypeHandle.Concrete i))
@@ -334,7 +356,7 @@ module TestPointerHashSynthesis =
     [<Test>]
     let ``aliased encodings materialised separately do not double-bump the counter`` () : unit =
         let handle = ConcreteTypeHandle.Concrete 50
-        let mt = NativeIntSource.MethodTablePtr handle
+        let mt = NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed handle)
         let th = NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed handle)
 
         // Register the alias under one encoding, then via the other; total assigned should remain 1.
@@ -349,7 +371,7 @@ module TestPointerHashSynthesis =
     [<Test>]
     let ``MethodTableAuxiliaryDataPtr is canonicalised distinctly from MethodTablePtr`` () : unit =
         let handle = ConcreteTypeHandle.Concrete 77
-        let mt = NativeIntSource.MethodTablePtr handle
+        let mt = NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed handle)
 
         let aux =
             NativeIntSource.MethodTableAuxiliaryDataPtr (RuntimeTypeHandleTarget.Closed handle)

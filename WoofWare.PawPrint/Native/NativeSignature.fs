@@ -71,17 +71,29 @@ module NativeSignature =
         let assembly, fieldInfo =
             NativeRuntimeFieldHandle.getFieldForFieldHandle operation fieldHandle state
 
-        let declaringTypeHandle = fieldHandle.GetDeclaringTypeHandle ()
-
-        // FieldHandle is the metadata identity paired with the closed declaring type seen by the
-        // reflection caller; use that closed type for generic substitution rather than trusting the
-        // separate declaringType argument that CoreLib passes through unchanged.
+        // FieldHandle's declaring type is canonicalised per CoreCLR's per-canonical
+        // FieldDesc model: `Closed` for non-generic declaring types,
+        // `OpenGenericTypeDefinition` for generic ones. For closed declaring types
+        // we have a real generic-argument vector to substitute into the field
+        // signature; for the open form we don't, and a field whose signature
+        // depends on a type generic parameter cannot be concretised to a single
+        // `Closed` runtime type. The signature concretisation path therefore only
+        // succeeds when either the declaring type is `Closed` or the field's type
+        // does not reference its declaring type's generics. We pass empty
+        // generics in the open case and let `concretizeType` fault with its own
+        // diagnostic if the field signature actually needs them.
         let typeGenerics =
-            match AllConcreteTypes.lookup declaringTypeHandle state.ConcreteTypes with
-            | Some declaringType -> declaringType.Generics
-            | None ->
+            match fieldHandle.GetDeclaringTypeHandle () with
+            | RuntimeTypeHandleTarget.Closed declaringTypeHandle ->
+                match AllConcreteTypes.lookup declaringTypeHandle state.ConcreteTypes with
+                | Some declaringType -> declaringType.Generics
+                | None ->
+                    failwith
+                        $"%s{operation}: declaring type handle %O{declaringTypeHandle} was not concretized, so field signature cannot be resolved"
+            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> ImmutableArray.Empty
+            | other ->
                 failwith
-                    $"%s{operation}: declaring type handle %O{declaringTypeHandle} was not concretized, so field signature cannot be resolved"
+                    $"%s{operation}: field declaring type %O{other} cannot host a field; expected Closed or OpenGenericTypeDefinition"
 
         let state, fieldType =
             IlMachineState.concretizeType

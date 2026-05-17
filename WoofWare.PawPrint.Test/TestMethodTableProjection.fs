@@ -236,7 +236,8 @@ public interface IOpenInterface<T>
             {
                 Id = FieldId.named "Ptr"
                 Name = "Ptr"
-                Contents = CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr intHandle)
+                Contents =
+                    CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr (RuntimeTypeHandleTarget.Closed intHandle))
                 Offset = Some 0
                 Type = intPtrHandle
                 MarshallingDescriptor = None
@@ -902,7 +903,7 @@ public unsafe struct PointerWrapper
             )
             functionPointerSource ()
             NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed (handleFor bct.Int32))
-            NativeIntSource.MethodTablePtr (handleFor bct.Int32)
+            NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed (handleFor bct.Int32))
             NativeIntSource.MethodTableAuxiliaryDataPtr (RuntimeTypeHandleTarget.Closed (handleFor bct.Int32))
             NativeIntSource.MethodHandlePtr 1234L
             NativeIntSource.FieldHandlePtr 5678L
@@ -1043,7 +1044,9 @@ public unsafe struct PointerWrapper
         let state =
             state
             |> IlMachineState.pushToEvalStack'
-                (EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr intArrayHandle))
+                (EvalStackValue.NativeInt (
+                    NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed intArrayHandle)
+                ))
                 thread
 
         let state, whatWeDid =
@@ -1198,7 +1201,9 @@ public unsafe struct PointerWrapper
         let intHandle = handleFor bct.Int32
 
         project "ElementType" (ConcreteTypeHandle.OneDimArrayZero intHandle)
-        |> shouldEqual (CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr intHandle))
+        |> shouldEqual (
+            CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr (RuntimeTypeHandleTarget.Closed intHandle))
+        )
 
     [<Test>]
     let ``AuxiliaryData preserves MethodTable auxiliary-data pointer provenance`` () : unit =
@@ -1374,7 +1379,9 @@ public unsafe struct PointerWrapper
         let state =
             state
             |> IlMachineState.pushToEvalStack'
-                (EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr nullableIntHandle))
+                (EvalStackValue.NativeInt (
+                    NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed nullableIntHandle)
+                ))
                 thread
 
         let state, whatWeDid =
@@ -1441,7 +1448,9 @@ public unsafe struct PointerWrapper
             | other -> failwith $"Expected stepped execution, got %O{other}"
 
         IlMachineState.peekEvalStack thread state
-        |> shouldEqual (Some (EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr intHandle)))
+        |> shouldEqual (
+            Some (EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed intHandle)))
+        )
 
         state.ThreadState.[thread].MethodState.IlOpIndex
         |> shouldEqual (IlOp.NumberOfBytes op)

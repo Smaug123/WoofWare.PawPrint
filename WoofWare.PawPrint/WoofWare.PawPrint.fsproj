@@ -36,6 +36,8 @@
     <Compile Include="TypeResolution.fs" />
     <Compile Include="HardwareIntrinsicsProfile.fs" />
     <Compile Include="DebuggerState.fs" />
+    <Compile Include="Signal.fs" />
+    <Compile Include="SignalState.fs" />
     <Compile Include="EmulatedKernel.fs" />
     <Compile Include="IlMachineStateModel.fs" />
     <Compile Include="IlMachineTypeResolution.fs" />

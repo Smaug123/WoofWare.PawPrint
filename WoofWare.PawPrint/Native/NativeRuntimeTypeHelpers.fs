@@ -1,6 +1,7 @@
 namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
+open System.Reflection
 open Microsoft.Extensions.Logging
 
 module NativeRuntimeTypeHelpers =
@@ -131,6 +132,67 @@ module NativeRuntimeTypeHelpers =
             | other -> failwith $"%s{operation}: expected RuntimeFieldHandle.m_ptr object ref, got %O{other}"
         | other -> failwith $"%s{operation}: expected RuntimeFieldHandle value type, got %O{other}"
 
+    /// Enumerate the non-literal fields declared by a `(assembly, typeDef)` pair,
+    /// materialising each as a field-handle registry id (the int64 the BCL writes
+    /// into the buffer). Instance fields are listed before statics; literals are
+    /// excluded. `declaringTarget` is the `RuntimeTypeHandleTarget` to record on
+    /// each allocated `FieldHandle`: callers walking a closed type pass the
+    /// `Closed` handle of that instantiation; callers walking an open generic
+    /// typedef pass `OpenGenericTypeDefinition`. CoreCLR observably distinguishes
+    /// these (`typeof(G<int>).GetField(...).FieldHandle` is incompatible with
+    /// `typeof(G<>)`'s) so the two cases produce distinct registry ids.
+    let walkFieldsOfTypeDefinition
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (declaringAssemblyName : AssemblyName)
+        (declaringTypeDefinition : System.Reflection.Metadata.TypeDefinitionHandle)
+        (declaringTarget : RuntimeTypeHandleTarget)
+        (state : IlMachineState)
+        : IlMachineState * int64 list
+        =
+        let assembly =
+            state.LoadedAssembly declaringAssemblyName
+            |> Option.defaultWith (fun () ->
+                failwith
+                    $"%s{operation}: assembly for declaring type is not loaded: %s{declaringAssemblyName.FullName}"
+            )
+
+        let typeInfo = assembly.TypeDefs.[declaringTypeDefinition]
+
+        let fields =
+            typeInfo.Fields
+            |> List.filter (fun field -> not (field.Attributes.HasFlag System.Reflection.FieldAttributes.Literal))
+
+        let instanceFields, staticFields =
+            fields |> List.partition (fun field -> not field.IsStatic)
+
+        let fields = instanceFields @ staticFields
+
+        ((state, []), fields)
+        ||> List.fold (fun (state, ids) field ->
+            let runtimeFieldHandle, state =
+                IlMachineState.getOrAllocateField
+                    loggerFactory
+                    baseClassTypes
+                    declaringAssemblyName
+                    declaringTarget
+                    field.Handle
+                    state
+
+            let stubAddress = runtimeFieldInfoStubAddress operation state runtimeFieldHandle
+
+            let fieldHandleId =
+                FieldHandleRegistry.resolveFieldIdFromAddress stubAddress state.FieldHandles
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"%s{operation}: RuntimeFieldInfoStub %O{stubAddress} was not present in the field handle registry"
+                )
+
+            state, fieldHandleId :: ids
+        )
+        |> fun (state, ids) -> state, List.rev ids
+
     /// Enumerate the non-literal fields of a closed runtime type handle, materialising
     /// each as a field-handle registry id (the int64 the BCL writes into the buffer).
     /// Mirrors CoreCLR's `RuntimeTypeHandle::GetFields` walk on a `MethodTable*`: instance
@@ -158,46 +220,14 @@ module NativeRuntimeTypeHelpers =
                     failwith $"%s{operation}: concrete type handle was not registered: %O{typeHandle}"
                 )
 
-            let assembly =
-                state.LoadedAssembly concreteType.Assembly
-                |> Option.defaultWith (fun () ->
-                    failwith
-                        $"%s{operation}: assembly for concrete type is not loaded: %s{concreteType.Assembly.FullName}"
-                )
-
-            let typeInfo = assembly.TypeDefs.[concreteType.Definition.Get]
-
-            let fields =
-                typeInfo.Fields
-                |> List.filter (fun field -> not (field.Attributes.HasFlag System.Reflection.FieldAttributes.Literal))
-
-            let instanceFields, staticFields =
-                fields |> List.partition (fun field -> not field.IsStatic)
-
-            let fields = instanceFields @ staticFields
-
-            ((state, []), fields)
-            ||> List.fold (fun (state, ids) field ->
-                let runtimeFieldHandle, state =
-                    IlMachineState.getOrAllocateField
-                        loggerFactory
-                        baseClassTypes
-                        concreteType.Assembly
-                        field.Handle
-                        state
-
-                let stubAddress = runtimeFieldInfoStubAddress operation state runtimeFieldHandle
-
-                let fieldHandleId =
-                    FieldHandleRegistry.resolveFieldIdFromAddress stubAddress state.FieldHandles
-                    |> Option.defaultWith (fun () ->
-                        failwith
-                            $"%s{operation}: RuntimeFieldInfoStub %O{stubAddress} was not present in the field handle registry"
-                    )
-
-                state, fieldHandleId :: ids
-            )
-            |> fun (state, ids) -> state, List.rev ids
+            walkFieldsOfTypeDefinition
+                loggerFactory
+                baseClassTypes
+                operation
+                concreteType.Assembly
+                concreteType.Definition.Get
+                (RuntimeTypeHandleTarget.Closed typeHandle)
+                state
 
     let nominalCorElementType
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
