@@ -18,7 +18,8 @@ module TestPureCases =
     let unimplemented =
         [
             "AdvancedStructLayout.cs" // past MarshalNative_SizeOfHelper for ByValTStr and SystemNative_Malloc / SystemNative_Free / Marshal.AllocHGlobal / FreeHGlobal; now blocked downstream at the unimplemented MarshalNative_TryGetStructMarshalStub QCall (CoreLib's Marshal.StructureToPtr path)
-            "LdtokenField.cs" // past Buffer's reflection-cache copy (cell-aware path); now blocked on the next reflection-cache step at unimplemented InternalCall RuntimeFieldHandle::GetApproxDeclaringMethodTable
+            "GetFieldOnOpenGenericTypeDefinition.cs" // RuntimeTypeHandle.GetFields now dispatches the OpenGenericTypeDefinition arm correctly, but getOrAllocateField (IlMachineRuntimeMetadata.fs:107) maps the field's declaring generics to TypeDefn.GenericTypeParameter placeholders and then concretizes with empty typeGenerics, throwing IndexOutOfRangeException; the same latent bug affects closed generic declaring types too (see UnaryMetadataTokenOps.fs:230 TODO)
+            "LdtokenField.cs" // QCall wiring for RuntimeTypeHandle.GetFields on open generic type definitions is now in place, but exercising it (Test 5: typeof(GenericClass<>).GetField) hits the same getOrAllocateField IndexOutOfRangeException as GetFieldOnOpenGenericTypeDefinition.cs above
             "Threads.cs" // past ThreadNative_InformThreadNameChange (Thread.Name setter); now blocked on unimplemented PAL call libSystem.Native!SystemNative_GetLowResolutionTimestamp (.Sys::GetLowResolutionTimestamp, used by the Task/ThreadPool scheduler)
         ]
         |> Set.ofList
@@ -57,19 +58,7 @@ module TestPureCases =
 
     let expectsUnhandledException = [ "UnhandledException.cs" ] |> Set.ofList
 
-    let customExitCodes =
-        [
-            "NoOp.cs", 1
-            "BasicLock.cs", 1
-            "MonitorEnterRefBool.cs", 1
-            "ContendedMonitorEnter.cs", 99
-            "MonitorPulseWait.cs", 42
-            "MonitorWaitReentrant.cs", 7
-            "ExceptionWithNoOpFinally.cs", 3
-            "ExceptionWithNoOpCatch.cs", 10
-            "Threads.cs", 3
-        ]
-        |> Map.ofList
+    let customExitCodes = [ "ExceptionWithNoOpFinally.cs", 3 ] |> Map.ofList
 
     let allPure =
         assy.GetManifestResourceNames ()

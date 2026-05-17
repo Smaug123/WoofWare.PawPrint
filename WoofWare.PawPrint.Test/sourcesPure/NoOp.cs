@@ -6,7 +6,7 @@ namespace HelloWorldApp
     {
         static int Main(string[] args)
         {
-            return 1;
+            return 0;
         }
     }
 }
