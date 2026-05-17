@@ -2,22 +2,32 @@ using System;
 using System.Runtime.InteropServices;
 
 // Exercises the SystemNative_Close PawPrint handler directly via a P/Invoke
-// stub, without depending on `SafeFileHandle` marshalling. The CLR runtime
-// dispatches this to the real libSystem.Native shim; PawPrint intercepts the
-// call and routes it through FileDescriptorRegistry.
+// stub, without depending on `SafeFileHandle` marshalling. PawPrint intercepts
+// the call and routes it through FileDescriptorRegistry.
 //
-// This test must pass on both the real runtime and PawPrint, so it asserts
-// only invariants that hold on every Unix kernel:
+// This is an *impure* test: it runs only inside PawPrint, never against the
+// real CLR. The assertions below — particularly the lowest-free gap-fill and
+// the double-close-returns-EBADF cases — only hold when the fd table is not
+// being mutated concurrently by anything else in the host process. The real
+// CLR test harness lives inside a multi-threaded NUnit process where parallel
+// tests and runtime background threads (GC, finalizer, ThreadPool I/O) can
+// open or close fds at arbitrary moments; on Linux CI this raced our close +
+// dup window and flaked the test, and worse could let our double-close
+// actually close another thread's fd if it had reused the freed slot.
+// PawPrint's interpreter is single-threaded and deterministic, so the exact
+// POSIX semantics are stable here.
+//
+// The assertions:
 //   * close of an invalid fd returns -1
 //   * close of a freshly-duped fd returns 0
 //   * a second close of the same fd returns -1 (the slot is gone)
-//   * after close-then-dup, the freed fd is the one POSIX allocates next
+//   * after close-then-dup, the freed fd is the one allocated next
 //     (lowest non-negative integer not in use)
 //
-// The test deliberately never closes fd 0/1/2 — on the real CLR that would
-// detach the test process from its stdin/stdout/stderr and corrupt the test
-// runner's output. The registry unit tests in TestFileDescriptorRegistry
-// cover close semantics over std-stream fds directly.
+// The test deliberately never closes fd 0/1/2 — on PawPrint that would remove
+// the stdin/stdout/stderr entries from the simulated fd table.
+// `TestFileDescriptorRegistry` covers close over std-stream fds directly,
+// alongside property tests for the lowest-free invariant.
 class Program
 {
     [DllImport("libSystem.Native", EntryPoint = "SystemNative_Close")]
