@@ -201,14 +201,32 @@ module NativeMarshal =
                 | CliType.ObjectRef _
                 | CliType.RuntimePointer _ -> false
                 | CliType.ValueType vt ->
-                    match vt._Storage with
-                    // RawBytes-backed value types are not the typical struct-with-fields
-                    // shape; conservatively reject so we don't quietly accept primitive
-                    // wrappers whose CoreCLR marshal size diverges from the byte image.
-                    | CliValueTypeStorage.RawBytes _ -> false
-                    | CliValueTypeStorage.Fields storage ->
-                        storage.Fields
-                        |> List.forall (fun field -> isStrictlyNumericBlittable field.Contents)
+                    // DateTime is structurally a single `ulong _dateData` and would otherwise
+                    // qualify as strictly numeric, but CoreCLR's `MarshalInfo` (mlinfo.cpp:1747)
+                    // special-cases DateTime fields as `MARSHAL_TYPE_DATE`: 8 bytes of OADate
+                    // (`dt.ToOADate()` as a little-endian IEEE-754 double), NOT the managed
+                    // `_dateData` byte image. The memmove fast path would silently emit the
+                    // wrong bytes, so reject here and let the outer arm surface the existing
+                    // TODO failwith. Implementing the OADate conversion belongs in a future
+                    // PR that synthesises the has-layout-non-blittable IL stub.
+                    let isDateTime =
+                        CliValueType.IsHostKnownDateTime
+                            state.ConcreteTypes
+                            state._LoadedAssemblies
+                            ctx.BaseClassTypes
+                            vt
+
+                    if isDateTime then
+                        false
+                    else
+                        match vt._Storage with
+                        // RawBytes-backed value types are not the typical struct-with-fields
+                        // shape; conservatively reject so we don't quietly accept primitive
+                        // wrappers whose CoreCLR marshal size diverges from the byte image.
+                        | CliValueTypeStorage.RawBytes _ -> false
+                        | CliValueTypeStorage.Fields storage ->
+                            storage.Fields
+                            |> List.forall (fun field -> isStrictlyNumericBlittable field.Contents)
 
             if isStrictlyNumericBlittable zero then
                 // The eventual `*structMarshalStub` we write here is null: the blittable path

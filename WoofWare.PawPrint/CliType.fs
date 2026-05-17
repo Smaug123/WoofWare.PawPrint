@@ -1199,8 +1199,11 @@ and CliValueType =
     /// a DateTime-typed field to `MARSHAL_TYPE_DATE` (8 bytes) at `mlinfo.cpp:1747`, BEFORE the
     /// AutoLayout rejection in the same classifier — so a sequential struct can embed DateTime
     /// even though `DateTime` itself is declared `[StructLayout(LayoutKind.Auto)]`. Callers use
-    /// this to honour the shortcut on the field walk and skip recursion into DateTime's storage.
-    static member private IsHostKnownDateTime
+    /// this both to honour the shortcut on the field-size walk and to reject DateTime fields
+    /// from the strict-numeric blittable arm of `MarshalNative_TryGetStructMarshalStub` (whose
+    /// memmove fast path would otherwise silently emit the managed `_dateData` bytes instead
+    /// of the OADate native form).
+    static member IsHostKnownDateTime
         (concreteTypes : AllConcreteTypes)
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
         (corelib : BaseClassTypes<DumpedAssembly>)

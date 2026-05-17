@@ -20,6 +20,7 @@ module TestPureCases =
             "AdvancedStructLayout.cs" // past MarshalNative_SizeOfHelper for ByValTStr and SystemNative_Malloc / SystemNative_Free / Marshal.AllocHGlobal / FreeHGlobal; now blocked downstream at the unimplemented MarshalNative_TryGetStructMarshalStub QCall (CoreLib's Marshal.StructureToPtr path)
             "Threads.cs" // past ThreadNative_InformThreadNameChange (Thread.Name setter); now blocked on unimplemented PAL call libSystem.Native!SystemNative_GetLowResolutionTimestamp (.Sys::GetLowResolutionTimestamp, used by the Task/ThreadPool scheduler)
             "LdtokenField.cs" // Test 5's typeof(GenericClass<>).GetField path now passes; the test now reaches an unrelated downstream blocker, the InternalCall System.Signature::GetParameterOffsetInternal.
+            "MarshalStructureToPtrDateTimeField.cs" // MarshalNative_TryGetStructMarshalStub doesn't yet synthesise an IL stub for has-layout-non-blittable structs; CoreCLR writes an 8-byte OADate (`MARSHAL_TYPE_DATE`) for a `DateTime` field, but PawPrint currently rejects the struct loudly rather than memmove-ing the managed `_dateData` bytes. Real implementation needs the OADate-conversion stub.
         ]
         |> Set.ofList
 
