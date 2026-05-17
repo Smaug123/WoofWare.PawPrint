@@ -30,6 +30,15 @@ module Errno =
     /// real runtime.
     let EFAULT : int = 14
 
+    /// `EINVAL` — Invalid argument. Returned by `sigaction(2)` when the
+    /// caller asks to install a handler for an uncatchable signal
+    /// (`SIGKILL` or `SIGSTOP`). PawPrint surfaces this through
+    /// `SystemNative_EnablePosixSignalHandling`, which the BCL's
+    /// `PosixSignalRegistration.Create` reads via
+    /// `Marshal.GetLastSystemError` to throw a meaningful error to the
+    /// guest. Value matches Linux and Darwin (both define it as 22).
+    let EINVAL : int = 22
+
     /// `ERANGE` — Result too large / out of range. Used by PawPrint's
     /// `SystemNative_Write` / `SystemNative_Read` shims when the caller
     /// supplies a negative `bufferSize`, matching the behaviour of

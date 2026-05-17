@@ -162,6 +162,28 @@ module TestSignal =
         Signal.ofPlatformSigno (Signal.linuxSignalMax + 1) |> shouldEqual ValueNone
 
     [<Test>]
+    let ``isUncatchable flags SIGKILL and SIGSTOP and nothing else`` () : unit =
+        // The POSIX standard names exactly two uncatchable signals: SIGKILL
+        // (Linux signo 9) and SIGSTOP (Linux signo 19). The kernel rejects
+        // `sigaction` for either with `EINVAL`. Neither is in PawPrint's
+        // modelled signal set, so they only ever arrive as `Signal.Other n`.
+        Signal.isUncatchable (Signal.Other 9) |> shouldEqual true // SIGKILL
+        Signal.isUncatchable (Signal.Other 19) |> shouldEqual true // SIGSTOP
+
+        // Every modelled signal can be caught — that's the whole point of
+        // installing a handler. Iterate to assert the negative case without
+        // hard-coding the modelled set twice.
+        for signal, _signo in modelledSignals do
+            Signal.isUncatchable signal |> shouldEqual false
+
+        // Other `Other` values (signos that just happen to fall outside the
+        // modelled set, but are still catchable) must not be flagged.
+        Signal.isUncatchable (Signal.Other 4) |> shouldEqual false // SIGILL
+        Signal.isUncatchable (Signal.Other 11) |> shouldEqual false // SIGSEGV
+        Signal.isUncatchable (Signal.Other 8) |> shouldEqual false // SIGFPE
+        Signal.isUncatchable (Signal.Other 64) |> shouldEqual false
+
+    [<Test>]
     let ``ofPosixSignalEnum and toLinuxSigno round-trip through GetPlatformSignalNumber semantics`` () : unit =
         // Simulates the full GetPlatformSignalNumber arm:
         //   raw -> Signal.ofPosixSignalEnum -> toLinuxSigno -> signo

@@ -588,6 +588,25 @@ module NativeSystemNative =
             | ValueNone ->
                 failwith
                     $"%s{operation}: refusing to enable out-of-range signo %d{signo} (signos arriving here must lie within (0, Signal.linuxSignalMax]; this looks like a guest bypassing SystemNative_GetPlatformSignalNumber)"
+            | ValueSome signal when Signal.isUncatchable signal ->
+                // Real native code calls `sigaction(signo, ...)` which the
+                // kernel rejects with `EINVAL` for `SIGKILL` (9) and
+                // `SIGSTOP` (19). `InstallSignalHandler` returns false and
+                // `SystemNative_EnablePosixSignalHandling` propagates 0 with
+                // `errno = EINVAL`, which `PosixSignalRegistration.Create`
+                // then reads via `Marshal.GetLastSystemError` to throw. We
+                // mirror exactly that: leave the enable bit clear, set
+                // errno, push 0. Don't fail loud here — uncatchable signals
+                // are a documented BCL-observable failure mode, not a
+                // simulator bug.
+                state.MapKernel (fun kernel ->
+                    { kernel with
+                        LastSystemError = Errno.EINVAL
+                    }
+                )
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
             | ValueSome signal ->
                 state.MapKernel (fun kernel ->
                     { kernel with

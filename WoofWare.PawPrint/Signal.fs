@@ -91,6 +91,20 @@ module Signal =
         | 28 -> ValueSome Signal.SIGWINCH
         | _ -> ValueNone
 
+    /// Signals that cannot be caught, blocked, or ignored on POSIX. The
+    /// kernel rejects `sigaction(SIGKILL, ...)` / `sigaction(SIGSTOP, ...)`
+    /// with `EINVAL`, so `SystemNative_EnablePosixSignalHandling` returns
+    /// `false` (install failed) and `PosixSignalRegistration.Create` throws
+    /// rather than recording an impossible handler. PawPrint mirrors this
+    /// at the seam; the simulator never delivers either signal, regardless
+    /// of what's in the pending queue, because no one can legally install
+    /// a handler for them.
+    let isUncatchable (signal : Signal) : bool =
+        match signal with
+        | Signal.Other 9 -> true // SIGKILL
+        | Signal.Other 19 -> true // SIGSTOP
+        | _ -> false
+
     /// Map a positive native signo to a domain `Signal`. Modelled signos
     /// produce their named case; unmodelled-but-valid signos (positive and
     /// `<= linuxSignalMax`) round-trip through `Signal.Other` so the seam
