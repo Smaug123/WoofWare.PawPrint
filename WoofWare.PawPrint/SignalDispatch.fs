@@ -49,29 +49,40 @@ module SignalDispatch =
 
     /// Pull the eligible-receiver thread ids out of state. A thread is
     /// only eligible to *receive* a signal if there's a kernel-level thread
-    /// behind it: in PawPrint terms, the managed `Thread` has at least one
-    /// live frame. That rules out `Terminated` (final frames are kept for
-    /// post-mortem inspection, but the thread is gone), `NotStarted` (the
-    /// managed `Thread` object exists but `Start` hasn't been called, so
-    /// the OS thread does not exist yet), and `Parked` (PawPrint-internal
-    /// auxiliary threads like the dispatcher itself, which never run guest
-    /// IL). We delegate that "has a live frame" check to the existing
-    /// `ThreadStatus.hasNoActiveFrame` classifier — the same predicate the
-    /// rest of the runtime uses before dereferencing per-thread frame data
-    /// — so a new frameless `ThreadStatus` variant is automatically also
-    /// excluded from the receiver candidate set.
+    /// behind it. In PawPrint terms three states correspond to "no OS
+    /// thread":
     ///
-    /// The explicit `tid <> dispatcher` exclusion is therefore redundant
-    /// today (the dispatcher is `Parked`, so `hasNoActiveFrame` already
-    /// drops it), but is kept because it documents a load-bearing
-    /// architectural invariant: the dispatcher runs the handler *for* a
-    /// receiver and is never itself a candidate, even if a future change
-    /// gave the dispatcher live frames between handler invocations.
+    ///   * `NotStarted` — the managed `Thread` object exists but `Start`
+    ///     hasn't been called, so the OS thread does not exist yet.
+    ///   * `Parked` — PawPrint-internal auxiliary threads (the dispatcher
+    ///     itself is the only inhabitant today); these never run guest IL
+    ///     and have no OS-level identity for the kernel to deliver a signal
+    ///     to.
+    ///   * `Terminated` — the thread has exited; its final frames are
+    ///     intentionally retained so other threads can observe state for
+    ///     `Join`, but the OS thread is gone.
+    ///
+    /// `NotStarted` and `Parked` are both classified as `hasNoActiveFrame`,
+    /// so the `not hasNoActiveFrame` arm covers them and a new frameless
+    /// `ThreadStatus` variant is automatically excluded. `Terminated`
+    /// retains its frames (so `hasNoActiveFrame` returns `false` for it),
+    /// hence the explicit `<> Terminated` arm.
+    ///
+    /// The explicit `tid <> dispatcher` exclusion is redundant today (the
+    /// dispatcher is `Parked`, so `hasNoActiveFrame` already drops it),
+    /// but is kept because it documents a load-bearing architectural
+    /// invariant: the dispatcher runs the handler *for* a receiver and
+    /// is never itself a candidate, even if a future change gave the
+    /// dispatcher live frames between handler invocations.
     let private liveExcludingDispatcher (dispatcher : ThreadId) (state : IlMachineState) : ImmutableArray<ThreadId> =
         let builder = ImmutableArray.CreateBuilder<ThreadId> ()
 
         for KeyValue (tid, ts) in state.ThreadState do
-            if tid <> dispatcher && not (ThreadStatus.hasNoActiveFrame ts.Status) then
+            if
+                tid <> dispatcher
+                && ts.Status <> ThreadStatus.Terminated
+                && not (ThreadStatus.hasNoActiveFrame ts.Status)
+            then
                 builder.Add tid
 
         builder.ToImmutable ()

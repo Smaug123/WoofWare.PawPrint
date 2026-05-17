@@ -553,6 +553,56 @@ module TestSignalDispatch =
         frame.Arguments.[1] |> shouldEqual (CliType.Numeric (CliNumericType.Int32 0))
 
     [<Test>]
+    let ``trySpawnHandler does not consider Terminated threads eligible receivers`` () : unit =
+        // A `Terminated` thread is not signal-eligible: its OS-level thread
+        // has exited, even though its final frames are intentionally
+        // retained for `Join` observers. This means
+        // `ThreadStatus.hasNoActiveFrame` returns `false` for a terminated
+        // thread, and a naive "has a live frame" filter would mistakenly
+        // include it. Set up a world where the only non-dispatcher thread
+        // is `Terminated` and assert the pending signal is treated as
+        // non-deliverable.
+        let state, dispatcher, _ = preparedState ()
+        let terminatedSibling = ThreadId 99
+
+        let state =
+            { state with
+                ThreadState =
+                    state.ThreadState
+                    |> Map.add terminatedSibling (stubThreadState ThreadStatus.Terminated)
+            }
+
+        let state =
+            state.MapKernel (fun kernel ->
+                { kernel with
+                    Signals =
+                        kernel.Signals
+                        |> SignalState.enable Signal.SIGINT
+                        |> SignalState.enqueue
+                            {
+                                Signal = Signal.SIGINT
+                                Target = ValueNone
+                            }
+                }
+            )
+
+        let state' = SignalDispatch.trySpawnHandler baseClassTypes state
+
+        let dispatcherTs = state'.ThreadState |> Map.find dispatcher
+        dispatcherTs.Status |> shouldEqual ThreadStatus.Parked
+        dispatcherTs.MethodStates.Count |> shouldEqual 0
+
+        state'.Kernel.Signals
+        |> SignalState.pending
+        |> shouldEqual
+            [
+                {
+                    Signal = Signal.SIGINT
+                    Target = ValueNone
+                }
+            ]
+
+    [<Test>]
     let ``trySpawnHandler does not consider NotStarted threads eligible receivers`` () : unit =
         // A managed `Thread` that has been constructed but never `Start`ed
         // has no kernel-level thread behind it: no OS thread exists to
