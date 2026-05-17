@@ -90,7 +90,6 @@
     <Compile Include="Native\NativeMetadataImport.fs" />
     <Compile Include="Native\NativeRuntimeFieldHandle.fs" />
     <Compile Include="Native\NativeRuntimeMethodHandle.fs" />
-    <Compile Include="Native\NativeSignature.fs" />
     <Compile Include="Native\NativeRuntimeHelpers.fs" />
     <Compile Include="Native\NativeMarshal.fs" />
     <Compile Include="Native\NativeGcHandle.fs" />
@@ -98,6 +97,7 @@
     <Compile Include="Native\NativeBuffer.fs" />
     <Compile Include="Native\NativeException.fs" />
     <Compile Include="Native\NativeRuntimeTypeHelpers.fs" />
+    <Compile Include="Native\NativeSignature.fs" />
     <Compile Include="Native\NativeRuntimeTypeQCall.fs" />
     <Compile Include="Native\NativeRuntimeTypeFCall.fs" />
     <Compile Include="Native\NativeRuntimeType.fs" />

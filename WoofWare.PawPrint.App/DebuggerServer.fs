@@ -111,6 +111,7 @@ module DebuggerServer =
             writer.WriteNumber ("handle", handle)
             writer.WriteEndObject ()
         | ThreadStatus.Terminated -> writer.WriteStringValue "terminated"
+        | ThreadStatus.Parked -> writer.WriteStringValue "parked"
 
     let private writeFrameProperties
         (writer : Utf8JsonWriter)
@@ -149,15 +150,16 @@ module DebuggerServer =
         writer.WritePropertyName "status"
         writeThreadStatus writer threadState.Status
 
-        match threadState.Status with
-        | ThreadStatus.NotStarted ->
-            // A pre-`Start` Thread has no frames yet; the ActiveMethodState/MethodState
-            // accessors would crash. Surface the absence explicitly rather than
-            // skipping the keys, so consumers see a consistent shape.
+        if ThreadStatus.hasNoActiveFrame threadState.Status then
+            // A frameless thread (pre-`Start`, or a kernel-owned Parked
+            // dispatcher) has no live frame; the ActiveMethodState/MethodState
+            // accessors would crash on the sentinel `FrameId -1`. Surface the
+            // absence explicitly rather than skipping the keys, so consumers
+            // see a consistent shape.
             writer.WriteNull "activeAssembly"
             writer.WriteNull "activeFrame"
             writer.WriteNull "activeFrameSummary"
-        | _ ->
+        else
             writer.WriteString ("activeAssembly", threadState.ActiveAssembly.FullName)
             writer.WriteNumber ("activeFrame", frameIdValue threadState.ActiveMethodState)
             writer.WritePropertyName "activeFrameSummary"
@@ -463,11 +465,10 @@ module DebuggerServer =
             writer.WritePropertyName "status"
             writeThreadStatus writer threadState.Status
 
-            match threadState.Status with
-            | ThreadStatus.NotStarted ->
+            if ThreadStatus.hasNoActiveFrame threadState.Status then
                 writer.WriteNull "activeAssembly"
                 writer.WriteNull "activeFrame"
-            | _ ->
+            else
                 writer.WriteString ("activeAssembly", threadState.ActiveAssembly.FullName)
                 writer.WriteNumber ("activeFrame", frameIdValue threadState.ActiveMethodState)
 
@@ -545,13 +546,12 @@ module DebuggerServer =
             writer.WritePropertyName "status"
             writeThreadStatus writer threadState.Status
 
-            match threadState.Status with
-            | ThreadStatus.NotStarted ->
+            if ThreadStatus.hasNoActiveFrame threadState.Status then
                 writer.WriteNull "activeAssembly"
                 writer.WriteNull "activeFrame"
                 writer.WriteNumber ("frameCount", frames.Length)
                 writer.WriteNull "activeFrameSummary"
-            | _ ->
+            else
                 writer.WriteString ("activeAssembly", threadState.ActiveAssembly.FullName)
                 writer.WriteNumber ("activeFrame", frameIdValue threadState.ActiveMethodState)
                 writer.WriteNumber ("frameCount", frames.Length)
@@ -634,13 +634,14 @@ module DebuggerServer =
             writer.WriteStartObject ()
             writer.WriteString ("error", $"thread %d{threadIdValue threadId} does not exist")
             writer.WriteEndObject ()
-        | Some threadState when threadState.Status = ThreadStatus.NotStarted ->
-            // No frames have been pushed yet; there is no active method whose IL
-            // we could disassemble. Report this rather than dereferencing the
+        | Some threadState when ThreadStatus.hasNoActiveFrame threadState.Status ->
+            // No frame has been pushed yet (pre-`Start`, or a kernel-owned
+            // Parked dispatcher); there is no active method whose IL we
+            // could disassemble. Report this rather than dereferencing the
             // sentinel ActiveMethodState.
             writer.WriteStartObject ()
             writer.WriteNumber ("thread", threadIdValue threadId)
-            writer.WriteString ("error", $"thread %d{threadIdValue threadId} has not been started")
+            writer.WriteString ("error", $"thread %d{threadIdValue threadId} has no active frame")
             writer.WriteEndObject ()
         | Some threadState ->
             let frameId = threadState.ActiveMethodState

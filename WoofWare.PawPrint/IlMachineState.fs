@@ -52,6 +52,9 @@ module IlMachineState =
     let peByteRangeForEmbeddedManifestResource =
         IlMachineTypeResolution.peByteRangeForEmbeddedManifestResource
 
+    let peByteRangeForFieldSignatureBlob =
+        IlMachineTypeResolution.peByteRangeForFieldSignatureBlob
+
     let peByteRangePointer = IlMachineTypeResolution.peByteRangePointer
 
     let getFrame = IlMachineThreadState.getFrame
@@ -90,6 +93,8 @@ module IlMachineState =
     let addThread = IlMachineThreadState.addThread
 
     let allocateUnstartedThread = IlMachineThreadState.allocateUnstartedThread
+
+    let allocateParkedThread = IlMachineThreadState.allocateParkedThread
 
     let startUnstartedThread = IlMachineThreadState.startUnstartedThread
 
