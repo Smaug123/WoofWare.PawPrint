@@ -1396,8 +1396,22 @@ module NativeRuntimeTypeQCall =
             let state, fieldHandleIds =
                 match typeHandleTarget with
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
-                    failwith
-                        $"TODO: %s{operation} for open generic type definition %O{identity}; expected behavior is to enumerate the canonical type's non-literal fields"
+                    // CoreCLR's RuntimeTypeHandle::GetFields walks the canonical
+                    // (open-generic) MethodTable's FieldDescs, so a closed instantiation
+                    // and its open definition would both yield the same FieldDesc set.
+                    // PawPrint's getOrAllocateField is intended to normalise the declaring
+                    // type's generics to a canonical form so the registry ids match,
+                    // matching that contract; today it does not yet handle generic
+                    // declaring types end-to-end (see walkFieldsOfTypeDefinition's
+                    // doc-comment) so exercising this path on a generic class still
+                    // crashes deeper down.
+                    walkFieldsOfTypeDefinition
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        operation
+                        identity.Assembly
+                        identity.TypeDefinition.Get
+                        state
                 | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
                     // The wrapper asserts !IsGenericVariable(type) before reaching us, so
                     // PawPrint should never see this case. Surface it loudly if it does.
