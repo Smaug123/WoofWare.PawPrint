@@ -12,6 +12,13 @@ type PeByteRangePointerSource =
     /// ECMA-335 4-byte length prefix; PeByteRangePointer.Size is the decoded
     /// payload length, not including that prefix.
     | ManagedResource of resourceName : string
+    /// The COR signature blob for a field definition (ECMA II.23.2.4),
+    /// stored in the metadata stream's #Blob heap rather than in a section.
+    /// `PeByteRangePointer.Size` is the blob's length; the RVA field has no
+    /// PE-section meaning for this variant and is set to 0. Bytes are read
+    /// via the assembly's `MetadataReader.GetBlobBytes` rather than through
+    /// `PeReader.GetSectionData`.
+    | FieldSignatureBlob of field : ComparableFieldDefinitionHandle
 
 type PeByteRangePointer =
     {
@@ -26,6 +33,7 @@ type PeByteRangePointer =
             match this.Source with
             | PeByteRangePointerSource.FieldRva field -> $"field %O{field.Get}"
             | PeByteRangePointerSource.ManagedResource resourceName -> $"managed resource %s{resourceName}"
+            | PeByteRangePointerSource.FieldSignatureBlob field -> $"field signature blob for %O{field.Get}"
 
         $"<PE data %s{this.AssemblyFullName} %s{source} at %d{this.RelativeVirtualAddress} size %d{this.Size}>"
 

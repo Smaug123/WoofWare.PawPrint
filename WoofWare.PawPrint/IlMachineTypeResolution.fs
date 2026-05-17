@@ -670,6 +670,29 @@ module IlMachineTypeResolution =
             Size = resource.PayloadLength
         }
 
+    /// PE byte range pointer over the COR signature blob bytes for a field
+    /// definition (ECMA II.23.2.4). The blob lives in the metadata stream's
+    /// #Blob heap rather than in a section, so `RelativeVirtualAddress` is
+    /// fixed at 0 for this variant; readers must dispatch on
+    /// `PeByteRangePointerSource.FieldSignatureBlob` and resolve the bytes via
+    /// the assembly's `MetadataReader.GetBlobReader` rather than through
+    /// `PeReader.GetSectionData`.
+    let peByteRangeForFieldSignatureBlob
+        (assembly : DumpedAssembly)
+        (fieldHandle : FieldDefinitionHandle)
+        : PeByteRangePointer
+        =
+        let mdReader = assembly.PeReader.GetMetadataReader ()
+        let fieldDef = mdReader.GetFieldDefinition fieldHandle
+        let blobReader = mdReader.GetBlobReader fieldDef.Signature
+
+        {
+            AssemblyFullName = assembly.Name.FullName
+            Source = PeByteRangePointerSource.FieldSignatureBlob (ComparableFieldDefinitionHandle.Make fieldHandle)
+            RelativeVirtualAddress = 0
+            Size = blobReader.Length
+        }
+
     let peByteRangePointer
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
