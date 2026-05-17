@@ -18,12 +18,15 @@ module TestImpureCases =
     let unimplemented =
         [
             // `Console.WriteLine("Hello, world!")` triggers lazy initialisation of `Console.Out`,
-            // which descends Console::get_Out → ConsolePal::OpenStandardOutput → Interop+Sys::Dup.
-            // PawPrint now intercepts SystemNative_Dup via FileDescriptorRegistry and
-            // SystemNative_Write via the same handler family, so both the std-stream open path and
-            // the actual byte-emitting call are implemented; the WriteLine flow now blocks
-            // downstream on the unimplemented libSystem.Globalization.Native P/Invoke
-            // `GlobalizationNative_LoadICU` during CultureInfo initialisation.
+            // which descends Console::get_Out → ConsolePal::OpenStandardOutput → Interop+Sys::Dup,
+            // then ConsolePal::EnsureInitializedCore → Interop.Sys.InitializeTerminalAndSignalHandling.
+            // PawPrint now intercepts SystemNative_Dup via FileDescriptorRegistry, SystemNative_Write
+            // via the same handler family, and SystemNative_InitializeTerminalAndSignalHandling as a
+            // no-op success (matching the WASI variant — we model neither termios nor signals). The
+            // WriteLine flow now blocks downstream on the unimplemented libSystem.Native P/Invoke
+            // `SystemNative_IsATty`, called from `Console.IsOutputRedirected` to decide whether to
+            // open a SyncTextWriter around stdout or a plain StreamWriter; until it lands the guest
+            // cannot fall through to the byte-emitting `Write` call this test is meant to exercise.
             {
                 FileName = "WriteLine.cs"
                 ExpectedReturnCode = 1

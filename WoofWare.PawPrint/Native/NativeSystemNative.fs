@@ -88,6 +88,32 @@ module NativeSystemNative =
             // PawPrint does not model Unix file flags. Report that hidden flags
             // are unsupported so CoreLib follows the portable attribute path.
             pushInt32 0 ctx |> Some
+        | Some "SystemNative_InitializeTerminalAndSignalHandling",
+          [],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            // Real `SystemNative_InitializeTerminalAndSignalHandling` (in
+            // `pal_console.c`) is a one-shot mutex-guarded initialiser that
+            // snapshots termios via `tcgetattr` and installs the master
+            // SIGINT/SIGQUIT/SIGCHLD/SIGWINCH handler. PawPrint models neither
+            // termios (our std streams have no terminal state — see
+            // FileDescriptorRegistry) nor signals (see SystemNative_Close's
+            // comment for the project-wide stance). The WASI variant of the
+            // same native function returns `true` unconditionally for exactly
+            // the same reason: nothing to initialise.
+            //
+            // Per-signal handler registrations (RegisterForCtrlC,
+            // SetTerminalInvalidationHandler, PosixSignalRegistration.Register)
+            // are not implemented yet; when the first such arm lands, this
+            // function will flip a `SignalState.Initialized` bit that the
+            // registration arms assert. Until then there is no consumer for
+            // such state, so we do not grow the kernel speculatively.
+            //
+            // The BCL P/Invoke uses `SetLastError = true` and reads
+            // `Marshal.GetLastSystemError()` only on the failure path
+            // (`ConsolePal.Unix.cs:884` throws `Win32Exception` iff this
+            // returns false), so `LastSystemError` does not need to be
+            // touched on the success path.
+            pushInt32 1 ctx |> Some
         | Some "SystemNative_GetErrNo",
           [],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
