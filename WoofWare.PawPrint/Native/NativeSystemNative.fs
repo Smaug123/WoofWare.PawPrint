@@ -14,6 +14,27 @@ module NativeSystemNative =
         |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 value) ctx.Thread
         |> NativeHandlerResult.completed
 
+    /// Matches the parameter type that `Interop.Sys.GetPlatformSignalNumber`
+    /// declares. The BCL's LibraryImport source generator preserves the
+    /// `PosixSignal` enum in the P/Invoke stub signature (the enum is
+    /// blittable, so no conversion thunk is emitted), so PawPrint sees the
+    /// enum-typed parameter — not a plain `Int32`. The C-side stub
+    /// `static partial extern int __PInvoke(PosixSignal signal)` is what
+    /// PawPrint dispatches on. Other guests may take the same entry point
+    /// via a hand-rolled `[DllImport]` declaring `int` directly (e.g. the
+    /// unit-test stub in `sourcesPure/SystemNativeGetPlatformSignalNumber.cs`),
+    /// so we accept either shape — the underlying `int32Argument` decode
+    /// peels enum boxing via `unwrapPrimitiveLikeDeep` and produces the same
+    /// raw value either way.
+    let private (|PosixSignalParam|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) : unit option =
+        match handle with
+        | ConcretePrimitive concreteTypes PrimitiveType.Int32 -> Some ()
+        | ConcreteType concreteTypes ("System.Private.CoreLib",
+                                      "System.Runtime.InteropServices",
+                                      "PosixSignal",
+                                      generics) when generics.IsEmpty -> Some ()
+        | _ -> None
+
     /// Decode an `nint`-shaped Unix file-descriptor argument. CoreLib passes
     /// fds across the SystemNative boundary as plain `IntPtr` values (the low
     /// 32 bits of `SafeFileHandle.handle`); PawPrint represents these as
@@ -521,17 +542,21 @@ module NativeSystemNative =
             |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_GetPlatformSignalNumber",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          [ PosixSignalParam state.ConcreteTypes ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
             // Real native code keys off the host's <signal.h>; PawPrint always
             // uses the Linux signo table (see `Signal.toLinuxSigno`) so a
             // simulation trace is byte-for-byte identical across host OSes.
-            // PosixSignal values the simulator doesn't model — both unrecognised
-            // cross-platform negatives and positive signos outside the modelled
-            // set — map to 0, which `PosixSignalRegistration.Register` promotes
-            // to an `ArgumentOutOfRangeException`, matching the real native
-            // semantics where unknown signals fall through to the trailing
-            // `return 0;` in `SystemNative_GetPlatformSignalNumber`.
+            // Unmodelled cross-platform negatives and out-of-range positives
+            // (outside `(0, Signal.linuxSignalMax]`) both map to 0 — which
+            // `PosixSignalRegistration.Register` promotes to an
+            // `ArgumentOutOfRangeException`, matching the real native semantics
+            // where unknown signals fall through to the trailing `return 0;`
+            // in `SystemNative_GetPlatformSignalNumber`. Positive signos within
+            // range that PawPrint doesn't name still round-trip via
+            // `Signal.Other`, so a guest that casts `(PosixSignal)4` for SIGILL
+            // gets `4` back, matching the C-side check
+            // `if (signal > 0 && signal <= GetSignalMax()) return signal;`.
             let raw =
                 NativeCall.int32Argument "SystemNative_GetPlatformSignalNumber" instruction.Arguments.[0]
 
@@ -549,18 +574,20 @@ module NativeSystemNative =
             // by `PosixSignalRegistration`'s `s_registrations`); this arm only
             // touches the kernel-side enable set. By contract, the BCL only
             // calls this with signos that `SystemNative_GetPlatformSignalNumber`
-            // returned non-zero for, so a signo arriving here must round-trip
-            // through `Signal.ofLinuxSigno` — anything else indicates a guest
-            // bypassing the standard registration path with a hand-rolled
+            // returned non-zero for, so a signo arriving here must lie within
+            // `(0, Signal.linuxSignalMax]` (modelled signals get a named case;
+            // unmodelled-but-valid signos round-trip via `Signal.Other` so the
+            // kernel still tracks the enable bit) — anything else indicates a
+            // guest bypassing the standard registration path with a hand-rolled
             // P/Invoke, and we fail loudly rather than silently dropping the
             // request. Real native code asserts `signalCode > 0 && <= GetSignalMax()`.
             let operation = "SystemNative_EnablePosixSignalHandling"
             let signo = NativeCall.int32Argument operation instruction.Arguments.[0]
 
-            match Signal.ofLinuxSigno signo with
+            match Signal.ofPlatformSigno signo with
             | ValueNone ->
                 failwith
-                    $"%s{operation}: refusing to enable unmodelled signo %d{signo} (signos arriving here should have round-tripped through SystemNative_GetPlatformSignalNumber, which only returns signos PawPrint models)"
+                    $"%s{operation}: refusing to enable out-of-range signo %d{signo} (signos arriving here must lie within (0, Signal.linuxSignalMax]; this looks like a guest bypassing SystemNative_GetPlatformSignalNumber)"
             | ValueSome signal ->
                 state.MapKernel (fun kernel ->
                     { kernel with
@@ -578,15 +605,16 @@ module NativeSystemNative =
             // restores the prior `sigaction` disposition; PawPrint has no
             // installed disposition to restore, so the only kernel-visible
             // effect is the cleared bit. Same round-trip contract as enable:
-            // an unmodelled signo arriving here is a guest bypassing
+            // an out-of-range signo arriving here (outside
+            // `(0, Signal.linuxSignalMax]`) is a guest bypassing
             // `GetPlatformSignalNumber`, and we surface the divergence.
             let operation = "SystemNative_DisablePosixSignalHandling"
             let signo = NativeCall.int32Argument operation instruction.Arguments.[0]
 
-            match Signal.ofLinuxSigno signo with
+            match Signal.ofPlatformSigno signo with
             | ValueNone ->
                 failwith
-                    $"%s{operation}: refusing to disable unmodelled signo %d{signo} (signos arriving here should have round-tripped through SystemNative_GetPlatformSignalNumber, which only returns signos PawPrint models)"
+                    $"%s{operation}: refusing to disable out-of-range signo %d{signo} (signos arriving here must lie within (0, Signal.linuxSignalMax]; this looks like a guest bypassing SystemNative_GetPlatformSignalNumber)"
             | ValueSome signal ->
                 state.MapKernel (fun kernel ->
                     { kernel with

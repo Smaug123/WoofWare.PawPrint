@@ -122,10 +122,44 @@ module TestSignal =
         Signal.ofPosixSignalEnum -11 |> shouldEqual ValueNone
         Signal.ofPosixSignalEnum -100 |> shouldEqual ValueNone
         Signal.ofPosixSignalEnum System.Int32.MinValue |> shouldEqual ValueNone
-        // Positive signos PawPrint doesn't model also fail — same path as
-        // ofLinuxSigno's ValueNone branch.
+        // Positive signos beyond `linuxSignalMax` (Linux's SIGRTMAX = 64) sit
+        // outside any kernel's table and fail the same way real native code
+        // does — the `if (signal > 0 && signal <= GetSignalMax()) return signal;`
+        // branch falls through to `return 0;`.
+        Signal.ofPosixSignalEnum 65 |> shouldEqual ValueNone
         Signal.ofPosixSignalEnum 100 |> shouldEqual ValueNone
         Signal.ofPosixSignalEnum System.Int32.MaxValue |> shouldEqual ValueNone
+
+    [<Test>]
+    let ``ofPosixSignalEnum preserves raw identity for valid unmodelled positives`` () : unit =
+        // Mirrors the real native semantics: when a guest casts an arbitrary
+        // native signo to `PosixSignal` (e.g. `(PosixSignal)4` for SIGILL or
+        // `(PosixSignal)11` for SIGSEGV), `SystemNative_GetPlatformSignalNumber`
+        // returns the raw value unchanged when it sits within `GetSignalMax()`.
+        // PawPrint preserves identity via `Signal.Other`, so the value round-
+        // trips back across the seam and `PosixSignalRegistration.Register`
+        // accepts the registration instead of throwing.
+        Signal.ofPosixSignalEnum 4 |> shouldEqual (ValueSome (Signal.Other 4)) // SIGILL
+        Signal.ofPosixSignalEnum 5 |> shouldEqual (ValueSome (Signal.Other 5)) // SIGTRAP
+        Signal.ofPosixSignalEnum 7 |> shouldEqual (ValueSome (Signal.Other 7)) // SIGBUS
+        Signal.ofPosixSignalEnum 11 |> shouldEqual (ValueSome (Signal.Other 11)) // SIGSEGV
+        // Boundary: `linuxSignalMax` (SIGRTMAX on Linux) is the highest accepted value.
+        Signal.ofPosixSignalEnum Signal.linuxSignalMax
+        |> shouldEqual (ValueSome (Signal.Other Signal.linuxSignalMax))
+
+    [<Test>]
+    let ``ofPlatformSigno agrees with ofPosixSignalEnum on positive inputs`` () : unit =
+        // `ofPlatformSigno` is the helper the enable/disable arms use to
+        // accept a signo arriving from `GetPlatformSignalNumber`. It must
+        // produce the same `Signal` identity that the enum-side helper would
+        // have constructed, otherwise the enable bit would key on a different
+        // case than the registration request.
+        for signo in 1 .. Signal.linuxSignalMax do
+            Signal.ofPlatformSigno signo |> shouldEqual (Signal.ofPosixSignalEnum signo)
+
+        Signal.ofPlatformSigno 0 |> shouldEqual ValueNone
+        Signal.ofPlatformSigno -1 |> shouldEqual ValueNone
+        Signal.ofPlatformSigno (Signal.linuxSignalMax + 1) |> shouldEqual ValueNone
 
     [<Test>]
     let ``ofPosixSignalEnum and toLinuxSigno round-trip through GetPlatformSignalNumber semantics`` () : unit =
@@ -150,6 +184,18 @@ module TestSignal =
         for _signal, signo in modelledSignals do
             armBehaviour signo |> shouldEqual signo
 
+        // Unmodelled-but-valid positive signos round-trip via `Signal.Other`:
+        // `armBehaviour 4` is the SIGILL case from the Codex finding — the
+        // guest casts `(PosixSignal)4`, the arm must return 4, and the BCL
+        // forwards 4 unchanged to `EnablePosixSignalHandling`.
+        armBehaviour 4 |> shouldEqual 4
+        armBehaviour 11 |> shouldEqual 11
+        armBehaviour Signal.linuxSignalMax |> shouldEqual Signal.linuxSignalMax
+
         armBehaviour 0 |> shouldEqual 0
         armBehaviour -11 |> shouldEqual 0
+        // Just past SIGRTMAX, the arm returns 0 — same path as the real native
+        // `if (signal > 0 && signal <= GetSignalMax()) return signal;` falling
+        // through to `return 0;`.
+        armBehaviour (Signal.linuxSignalMax + 1) |> shouldEqual 0
         armBehaviour 100 |> shouldEqual 0

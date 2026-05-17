@@ -38,6 +38,16 @@ type Signal =
 
 [<RequireQualifiedAccess>]
 module Signal =
+    /// Highest signal number the simulator accepts at the P/Invoke seam.
+    /// Matches Linux's `SIGRTMAX` on every modern glibc build (the real
+    /// native side reads `GetSignalMax()` from `<signal.h>`, which expands
+    /// to `SIGRTMAX` whenever that macro is defined). Used as the ceiling
+    /// for the "is this a plausible native signo?" check: a guest can pass
+    /// a `(PosixSignal)42` and PawPrint will round-trip the raw value
+    /// through `Signal.Other`, but a `(PosixSignal)200` is firmly outside
+    /// any kernel's table and returns 0 like the real native function.
+    let linuxSignalMax : int = 64
+
     /// Map a domain `Signal` to its Linux native signo. PawPrint uses the
     /// Linux table on every host, so simulation traces don't depend on the
     /// host OS. Callers crossing the P/Invoke seam must use this — never the
@@ -81,6 +91,25 @@ module Signal =
         | 28 -> ValueSome Signal.SIGWINCH
         | _ -> ValueNone
 
+    /// Map a positive native signo to a domain `Signal`. Modelled signos
+    /// produce their named case; unmodelled-but-valid signos (positive and
+    /// `<= linuxSignalMax`) round-trip through `Signal.Other` so the seam
+    /// preserves identity — matching the real native semantics, where
+    /// `SystemNative_GetPlatformSignalNumber` returns the raw value when
+    /// `signal > 0 && signal <= GetSignalMax()` and `PosixSignalRegistration`
+    /// then forwards it to `Enable/DisablePosixSignalHandling` unchanged.
+    /// Values outside `(0, linuxSignalMax]` return `ValueNone`; callers
+    /// translate that to the "unknown signal" sentinel (0 for the BCL
+    /// boundary, `ArgumentOutOfRangeException` higher up).
+    let ofPlatformSigno (signo : int) : Signal voption =
+        match ofLinuxSigno signo with
+        | ValueSome signal -> ValueSome signal
+        | ValueNone ->
+            if signo > 0 && signo <= linuxSignalMax then
+                ValueSome (Signal.Other signo)
+            else
+                ValueNone
+
     /// Map a managed `PosixSignal` enum value (as the BCL passes it across
     /// the seam) to a domain `Signal`. The managed enum uses negative
     /// values for cross-platform identities and positive values when the
@@ -100,5 +129,4 @@ module Signal =
         | -8 -> ValueSome Signal.SIGTTIN
         | -9 -> ValueSome Signal.SIGTTOU
         | -10 -> ValueSome Signal.SIGTSTP
-        | n when n > 0 -> ofLinuxSigno n
-        | _ -> ValueNone
+        | n -> ofPlatformSigno n

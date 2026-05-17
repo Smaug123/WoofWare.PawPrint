@@ -46,6 +46,16 @@ class Program
         // Unix, so this is safe on every supported host.
         if (GetPlatformSignalNumber(2) != 2) return 8;
 
+        // Unmodelled-but-valid native signos must also round-trip — this is
+        // what guests rely on when they cast a raw signo to PosixSignal and
+        // hand it to PosixSignalRegistration.Create. SIGILL (4) and SIGSEGV
+        // (11) agree on both Linux and macOS; neither is in PawPrint's
+        // modelled set, but both sit well within GetSignalMax(), so the real
+        // native code returns them unchanged and PawPrint must too (via
+        // Signal.Other).
+        if (GetPlatformSignalNumber(4) != 4) return 11;  // SIGILL
+        if (GetPlatformSignalNumber(11) != 11) return 12; // SIGSEGV
+
         // Zero is the "unknown signal" sentinel: GetPlatformSignalNumber
         // returns 0 for any input it doesn't recognise, which the BCL then
         // promotes to ArgumentOutOfRangeException.
