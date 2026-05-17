@@ -137,7 +137,21 @@ module IlMachineStateExecution =
             retAssignable
             && candidateSignature.ParameterTypes = methodToCall.Signature.ParameterTypes
 
+        // When dispatching through a variant interface (ECMA-335 §I.8.7), the MethodImpl's
+        // declaration may name a variance-compatible — not identical — instantiation of the
+        // call target's interface. The candidate's signature has been substituted with the
+        // declaration's view (e.g. `IContravariant<object>.Set(object)`) while methodToCall
+        // holds the dispatch view (`IContravariant<string>.Set(string)`), so a literal
+        // parameter-type comparison would wrongly reject the override.
+        //
+        // Instead of relaxing the signature comparison — which can match the wrong overload
+        // when an interface has overloads with assignable parameters (e.g. both `M(object)`
+        // and `M(string)`) — identify the slot by its underlying MethodDefinitionHandle.
+        // Both `meth.Handle` and `methodToCall.Handle` resolve to the same MethodDef in the
+        // interface's assembly when they name the same virtual slot under variance
+        // substitution, regardless of how the surrounding type generics differ.
         let methodReferenceMatchesTarget
+            (varianceInPlay : bool)
             (candidateTypeGenerics : ImmutableArray<ConcreteTypeHandle>)
             (meth : WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>)
             (state : IlMachineState)
@@ -145,6 +159,8 @@ module IlMachineStateExecution =
             =
             if meth.Name <> methodToCall.Name then
                 state, false
+            elif varianceInPlay then
+                state, meth.Handle = methodToCall.Handle
             else
                 signatureMatchesTarget meth.DeclaringType.Assembly candidateTypeGenerics meth.Signature state
 
@@ -312,9 +328,79 @@ module IlMachineStateExecution =
                             failwith
                                 $"MethodImpl declaration for %s{currentTypeInfo.Namespace}.%s{currentTypeInfo.Name} referenced generic MethodDef %s{declaration.Name} without concrete type arguments"
 
+                    // A MethodImpl binds a Body to the specific virtual slot identified by its
+                    // Declaration: ECMA-335 II.22.27 keys the slot on (declaring type, member).
+                    // Name + signature alone is not enough — two unrelated interfaces can share
+                    // a shape (e.g. `IReader.Read()` and `IScanner.Read()`), so we also require
+                    // the declaration's declaring type to match the dispatch target.
+                    //
+                    // For variant interfaces (ECMA-335 §I.8.7) a MethodImpl on `IFoo<X>` also
+                    // satisfies dispatch through `IFoo<Y>` when `IFoo<X>` is variance-assignable
+                    // to `IFoo<Y>` (e.g. `ICovariant<string>` satisfies `ICovariant<object>`),
+                    // so we defer same-TypeDef generic comparisons to the assignability walk
+                    // rather than insisting on exact-argument equality.
+                    //
+                    // The declaration's declaring-type instantiation may not yet be in the
+                    // ConcreteTypes registry (e.g. `ICovariant<object> obj = new CovariantImpl();
+                    // obj.Get()` only concretizes the call target `ICovariant<object>`, not the
+                    // body's declared interface `ICovariant<string>`). Register it on demand so
+                    // the variance check is not silently skipped.
+                    let ensureRegistered
+                        (state : IlMachineState)
+                        (identity : ResolvedTypeIdentity)
+                        (ns : string)
+                        (name : string)
+                        (generics : ImmutableArray<ConcreteTypeHandle>)
+                        : IlMachineState * ConcreteTypeHandle
+                        =
+                        match AllConcreteTypes.findExistingConcreteType state.ConcreteTypes identity generics with
+                        | Some handle -> state, handle
+                        | None ->
+                            let ct = ConcreteType.makeFromIdentity identity ns name generics
+                            let handle, newConcreteTypes = AllConcreteTypes.add ct state.ConcreteTypes
+
+                            { state with
+                                ConcreteTypes = newConcreteTypes
+                            },
+                            handle
+
+                    // declarationTypeMatches is true when the MethodImpl's declared interface
+                    // matches the dispatch target; varianceInPlay tracks whether the match
+                    // relied on generic variance (vs identical instantiations), so we know to
+                    // relax the parameter check accordingly.
+                    let state, declarationTypeMatches, varianceInPlay =
+                        if declaration.DeclaringType.Identity <> methodToCall.DeclaringType.Identity then
+                            state, false, false
+                        elif declarationTypeGenerics = methodToCall.DeclaringType.Generics then
+                            state, true, false
+                        else
+                            let state, fromH =
+                                ensureRegistered
+                                    state
+                                    declaration.DeclaringType.Identity
+                                    declaration.DeclaringType.Namespace
+                                    declaration.DeclaringType.Name
+                                    declarationTypeGenerics
+
+                            let state, toH =
+                                ensureRegistered
+                                    state
+                                    methodToCall.DeclaringType.Identity
+                                    methodToCall.DeclaringType.Namespace
+                                    methodToCall.DeclaringType.Name
+                                    methodToCall.DeclaringType.Generics
+
+                            let state, matches = isAssignableFrom loggerFactory baseClassTypes fromH toH state
+
+                            state, matches, matches
+
+                    if not declarationTypeMatches then
+                        state, acc
+                    else
+
                     let matches, state =
                         let state, matches =
-                            methodReferenceMatchesTarget declarationTypeGenerics declaration state
+                            methodReferenceMatchesTarget varianceInPlay declarationTypeGenerics declaration state
 
                         matches, state
 
