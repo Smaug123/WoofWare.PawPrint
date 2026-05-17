@@ -1228,23 +1228,25 @@ and CliValueType =
         | ConcreteTypeHandle.Pointer _
         | ConcreteTypeHandle.FunctionPointer _ -> false
 
-    /// True iff `vt`'s declared type carries `LayoutKind.Auto` in its `TypeAttributes.LayoutMask`.
-    /// CoreCLR rejects top-level `Marshal.SizeOf<T>()` when `T` is AutoLayout (`fieldmarshaler.cpp:309`
-    /// — `IsStructMarshalable` returns false because `HasLayout()` is false for AutoLayout types),
-    /// regardless of whether the struct happens to be blittable in practice. We mirror that rejection
-    /// at the top-level marshal-size entry; field-level use is gated separately so host-known
-    /// AutoLayout types (DateTime) can still appear as fields via their dedicated shortcut.
+    /// True iff `handle`'s declared type carries `LayoutKind.Auto` in its
+    /// `TypeAttributes.LayoutMask`. This is the CoreCLR `HasLayout() == false` predicate:
+    /// it covers reference types without `[StructLayout]` (whose default is AutoLayout) as
+    /// well as value types explicitly marked `[StructLayout(LayoutKind.Auto)]`.
+    /// CoreCLR rejects top-level `Marshal.SizeOf<T>()` and returns FALSE from
+    /// `MarshalNative_TryGetStructMarshalStub` for any such type (`fieldmarshaler.cpp:309`,
+    /// `marshalnative.cpp:99`).
     /// Returns `false` for synthetic handles (arrays, byrefs, pointers, function pointers) and for
-    /// handles whose backing TypeInfo can't be found — those don't have a CLR `LayoutKind` to honour.
-    static member private IsAutoLayout
+    /// handles whose backing TypeInfo can't be found — those don't have a CLR `LayoutKind` to honour
+    /// and callers must classify them through a different path.
+    static member IsAutoLayoutHandle
         (concreteTypes : AllConcreteTypes)
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
-        (vt : CliValueType)
+        (handle : ConcreteTypeHandle)
         : bool
         =
-        match vt._Declared with
+        match handle with
         | ConcreteTypeHandle.Concrete _ ->
-            match AllConcreteTypes.lookup vt._Declared concreteTypes with
+            match AllConcreteTypes.lookup handle concreteTypes with
             | None -> false
             | Some concreteType ->
                 match assemblies.TryGetValue concreteType.Assembly.FullName with
@@ -1261,6 +1263,18 @@ and CliValueType =
         | ConcreteTypeHandle.Byref _
         | ConcreteTypeHandle.Pointer _
         | ConcreteTypeHandle.FunctionPointer _ -> false
+
+    /// True iff `vt`'s declared type carries `LayoutKind.Auto`. Convenience wrapper around
+    /// `IsAutoLayoutHandle` for the field/struct marshal-size walk; field-level use is gated
+    /// separately so host-known AutoLayout types (DateTime) can still appear as fields via
+    /// their dedicated shortcut.
+    static member private IsAutoLayout
+        (concreteTypes : AllConcreteTypes)
+        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (vt : CliValueType)
+        : bool
+        =
+        CliValueType.IsAutoLayoutHandle concreteTypes assemblies vt._Declared
 
     /// Compute the unmanaged size of a single field, consulting `[MarshalAs(...)]` descriptors
     /// and the declaring type's `CharSet`. Without a descriptor, falls back to the managed
