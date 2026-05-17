@@ -63,12 +63,43 @@ module SignalHandler =
     let methodInfo (handler : SignalHandler) : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> =
         handler.Method
 
+/// Initialisation state of the simulator's signal subsystem. Mirrors
+/// real CoreCLR's lazy setup: the C side spins up a dedicated
+/// `SignalHandlerLoop` pthread the first time
+/// `SystemNative_InitializeTerminalAndSignalHandling` runs. PawPrint
+/// follows that contract by allocating a single Parked dispatcher
+/// `ThreadId` at the same moment and stashing it here. Encoding the
+/// pair as a DU rather than `Initialized : bool + DispatcherThread :
+/// ThreadId option` makes the load-bearing invariant — "the dispatcher
+/// thread exists iff signal handling is initialised" — unrepresentable
+/// to violate. Idempotent re-initialisation is a transition this DU
+/// observes (the existing dispatcher is preserved); the QCall site
+/// must check `isInitialized` before allocating a thread, otherwise a
+/// second init call would mint a dead second dispatcher.
+[<RequireQualifiedAccess>]
+type SignalInitState =
+    /// Signal handling has not yet been set up; no dispatcher thread
+    /// exists. `SignalState.empty` starts here.
+    | NotInitialized
+    /// The BCL has invoked
+    /// `SystemNative_InitializeTerminalAndSignalHandling` at least
+    /// once; `dispatcher` is the `ThreadId` of the PawPrint-internal
+    /// signal-dispatch thread allocated at that moment. The thread
+    /// lives in `IlMachineState.ThreadState` with status
+    /// `ThreadStatus.Parked`; a future slice will introduce a wakeup
+    /// edge that transitions it to `Runnable` to actually invoke a
+    /// handler. Until then the dispatcher thread is a placeholder
+    /// that pins down the structural shape ahead of dispatch wiring.
+    | Initialized of dispatcher : ThreadId
+
 /// Pure, deterministic model of the simulator's signal-handling state.
 ///
 /// The shape is deliberately small:
-///   * `Initialized` — has the BCL invoked
-///     `SystemNative_InitializeTerminalAndSignalHandling` yet? Several
-///     console paths gate work behind this flag.
+///   * `Init` — has the BCL invoked
+///     `SystemNative_InitializeTerminalAndSignalHandling` yet, and
+///     which `ThreadId` is the dispatcher? Several console paths gate
+///     work behind initialisation; downstream signal-delivery slices
+///     read the dispatcher id off this field.
 ///   * `Enabled` — the set of signals the BCL has asked libSystem.Native to
 ///     deliver to managed code via `SystemNative_EnablePosixSignalHandling`.
 ///     This mirrors the enable bits that the real native side keeps; the
@@ -97,7 +128,7 @@ module SignalHandler =
 type SignalState =
     private
         {
-            Initialized : bool
+            Init : SignalInitState
             Enabled : Set<Signal>
             Blocked : Map<ThreadId, Set<Signal>>
             /// Pending entries in FIFO order (head = next candidate for
@@ -116,24 +147,44 @@ type SignalState =
 module SignalState =
     let empty : SignalState =
         {
-            Initialized = false
+            Init = SignalInitState.NotInitialized
             Enabled = Set.empty
             Blocked = Map.empty
             Pending = []
             Handler = None
         }
 
-    let isInitialized (state : SignalState) : bool = state.Initialized
+    let isInitialized (state : SignalState) : bool =
+        match state.Init with
+        | SignalInitState.NotInitialized -> false
+        | SignalInitState.Initialized _ -> true
 
-    /// Idempotent: a second call is a no-op. Mirrors the BCL behaviour where
-    /// `EnsureInitialized` may run more than once across the BCL surface but
-    /// the underlying signal apparatus is set up exactly once.
-    let markInitialized (state : SignalState) : SignalState =
-        if state.Initialized then
-            state
-        else
+    /// `Some dispatcher` once signal handling has been initialised, where
+    /// `dispatcher` is the `ThreadId` of the PawPrint-internal Parked
+    /// signal-dispatch thread spawned at that moment. `None` until the BCL
+    /// first calls `SystemNative_InitializeTerminalAndSignalHandling`.
+    /// Mirrors real CoreCLR's `SignalHandlerLoop` pthread, which is
+    /// created at the same point in startup.
+    let signalThread (state : SignalState) : ThreadId option =
+        match state.Init with
+        | SignalInitState.NotInitialized -> None
+        | SignalInitState.Initialized dispatcher -> Some dispatcher
+
+    /// Idempotent: a second call preserves the existing dispatcher
+    /// `ThreadId` and does *not* swap in the caller-supplied one. The
+    /// caller is expected to guard with `isInitialized` and skip thread
+    /// allocation entirely on the second call; the idempotency here is a
+    /// defence in depth so a defensive caller does not accidentally
+    /// orphan an already-allocated dispatcher thread. Mirrors the BCL
+    /// behaviour where `EnsureInitialized` may run more than once across
+    /// the BCL surface but the underlying signal apparatus is set up
+    /// exactly once.
+    let markInitialized (dispatcher : ThreadId) (state : SignalState) : SignalState =
+        match state.Init with
+        | SignalInitState.Initialized _ -> state
+        | SignalInitState.NotInitialized ->
             { state with
-                Initialized = true
+                Init = SignalInitState.Initialized dispatcher
             }
 
     /// The currently-installed dispatch callback, or `None` if the BCL

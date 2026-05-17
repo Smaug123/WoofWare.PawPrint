@@ -141,12 +141,12 @@ module TestSignalHandler =
 
         let stateA =
             SignalState.empty
-            |> SignalState.markInitialized
+            |> SignalState.markInitialized (ThreadId 42)
             |> SignalState.setHandler (SignalHandler.ofMethodInfo methodA)
 
         let stateB =
             SignalState.empty
-            |> SignalState.markInitialized
+            |> SignalState.markInitialized (ThreadId 42)
             |> SignalState.setHandler (SignalHandler.ofMethodInfo methodB)
 
         stateA |> shouldEqual stateB

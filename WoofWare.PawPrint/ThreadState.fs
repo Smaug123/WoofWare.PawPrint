@@ -73,6 +73,59 @@ type ThreadStatus =
     /// This thread has executed its final `ret`; it will never run again. Its state is kept
     /// only so other threads can observe termination (e.g. to satisfy Join).
     | Terminated
+    /// PawPrint-internal auxiliary thread: it exists for kernel-side
+    /// bookkeeping rather than to run guest IL, and the scheduler never
+    /// picks it. The dispatcher thread spawned by
+    /// `SystemNative_InitializeTerminalAndSignalHandling` is the current
+    /// (and only) inhabitant: mirrors real CoreCLR's `SignalHandlerLoop`
+    /// pthread, which the runtime owns and the guest never names.
+    ///
+    /// The semantic difference from `NotStarted` is that no managed
+    /// `Thread` heap object backs a `Parked` thread — there is no
+    /// `Thread.Start` call that will ever fire to flip it to `Runnable`.
+    /// A future slice that wires signal-dispatch will introduce an
+    /// explicit transition out of `Parked` (driven by the signal
+    /// subsystem, not by guest IL); for now `Parked` is permanent for
+    /// the run.
+    ///
+    /// Permanently-`Parked` threads do not cause spurious deadlock
+    /// detection because the driver short-circuits to `NormalExit` as
+    /// soon as the entry thread terminates; the scheduler is never
+    /// asked to find another `Runnable` thread after that point.
+    | Parked
+
+[<RequireQualifiedAccess>]
+module ThreadStatus =
+    /// True iff the thread's `ActiveMethodState` references no live frame
+    /// — i.e. the sentinel `FrameId -1` set up by `allocateUnstartedThread`
+    /// / `allocateParkedThread` is still in place. Callers reading
+    /// `threadState.MethodState` / `ActiveAssembly` / `ActiveMethodState`
+    /// must check this first to avoid dereferencing the sentinel and
+    /// crashing.
+    ///
+    /// `Terminated` is *not* frame-less: a terminating thread keeps its
+    /// final frames around so other threads can observe state for Join
+    /// (and so the debugger can show what was running when the thread
+    /// ended). The set is therefore exactly `NotStarted` and `Parked`,
+    /// the two states a thread enters before any IL has executed on it.
+    ///
+    /// Implemented as a fully-enumerated match (not `| _ -> false`) so a
+    /// new frameless `ThreadStatus` variant fires an exhaustiveness
+    /// error here instead of silently masking bugs in the dozens of
+    /// callers that read frame data behind this guard.
+    let hasNoActiveFrame (status : ThreadStatus) : bool =
+        match status with
+        | ThreadStatus.NotStarted -> true
+        | ThreadStatus.Parked -> true
+        | ThreadStatus.Runnable -> false
+        | ThreadStatus.Terminated -> false
+        | ThreadStatus.BlockedOnJoin _ -> false
+        | ThreadStatus.BlockedOnClassInit _ -> false
+        | ThreadStatus.BlockedOnMonitorAcquire _ -> false
+        | ThreadStatus.BlockedOnMonitorWait _ -> false
+        | ThreadStatus.BlockedOnSyncBlockAcquire _ -> false
+        | ThreadStatus.BlockedOnSyncBlockWait _ -> false
+        | ThreadStatus.BlockedOnWaitHandle _ -> false
 
 type ThreadState =
     {

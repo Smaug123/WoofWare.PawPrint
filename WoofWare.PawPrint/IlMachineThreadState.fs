@@ -388,6 +388,43 @@ module IlMachineThreadState =
 
         newState, thread
 
+    /// Allocate a fresh `ThreadId` for a PawPrint-internal auxiliary
+    /// thread (currently the signal dispatcher spawned by
+    /// `SystemNative_InitializeTerminalAndSignalHandling`). The thread
+    /// has no managed `Thread` heap mirror — it is not entered in
+    /// `ManagedThreadObjects` — and its `ThreadState` is frameless with
+    /// status `ThreadStatus.Parked`, so the scheduler never picks it.
+    /// `ActiveMethodState` points at a sentinel `FrameId` that is not
+    /// live in the empty `MethodStates` map, mirroring the
+    /// `allocateUnstartedThread` shape: any attempt to dereference it
+    /// crashes loudly rather than executing arbitrary IL on an
+    /// unprepared thread.
+    ///
+    /// A future slice that wires signal dispatch will introduce an
+    /// explicit transition out of `Parked` (driven by the signal
+    /// subsystem, not by guest IL); until then a thread allocated here
+    /// remains `Parked` for the lifetime of the run.
+    let allocateParkedThread (state : IlMachineState) : IlMachineState * ThreadId =
+        let thread = ThreadId state.NextThreadId
+
+        let parkedState : ThreadState =
+            {
+                MethodStates = Map.empty
+                NextFrameId = 0
+                ActiveMethodState = FrameId -1
+                Status = ThreadStatus.Parked
+                IsBackground = false
+                Name = None
+            }
+
+        let newState =
+            { state with
+                NextThreadId = state.NextThreadId + 1
+                ThreadState = state.ThreadState |> Map.add thread parkedState
+            }
+
+        newState, thread
+
     /// Populate the bottom frame of a `NotStarted` thread with the user's
     /// delegate target and flip its status to `Runnable`. The thread was
     /// previously allocated by `allocateUnstartedThread` at `Thread.Initialize`
