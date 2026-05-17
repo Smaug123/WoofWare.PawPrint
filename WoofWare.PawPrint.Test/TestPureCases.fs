@@ -21,6 +21,7 @@ module TestPureCases =
             "Threads.cs" // past ThreadNative_InformThreadNameChange (Thread.Name setter); now blocked on unimplemented PAL call libSystem.Native!SystemNative_GetLowResolutionTimestamp (.Sys::GetLowResolutionTimestamp, used by the Task/ThreadPool scheduler)
             "LdtokenField.cs" // Test 5's typeof(GenericClass<>).GetField path now passes; the test now reaches an unrelated downstream blocker, the InternalCall System.Signature::GetParameterOffsetInternal.
             "MarshalStructureToPtrDateTimeField.cs" // MarshalNative_TryGetStructMarshalStub doesn't yet synthesise an IL stub for has-layout-non-blittable structs; CoreCLR writes an 8-byte OADate (`MARSHAL_TYPE_DATE`) for a `DateTime` field, but PawPrint currently rejects the struct loudly rather than memmove-ing the managed `_dateData` bytes. Real implementation needs the OADate-conversion stub.
+            "MarshalStructureToPtrIntPtrField.cs" // The TryGetStructMarshalStub QCall classifier now accepts IntPtr/UIntPtr fields (Verbatim provenance) and returns TRUE + null stub + correct size, but CoreLib's downstream `SpanHelpers.Memmove` fast path calls `Unsafe.ByteOffset` on a byref shape PawPrint doesn't yet model. The classifier change is observable: previously the QCall arm failed with the "strictly-numeric blittable" TODO, now it falls through to the Unsafe.ByteOffset TODO inside the memmove.
         ]
         |> Set.ofList
 
