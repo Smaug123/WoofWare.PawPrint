@@ -148,6 +148,17 @@ module Program =
                     )
             }
 
+        // Drive the signal-dispatcher state machine before the scheduler
+        // picks its next thread. If a pending signal is deliverable and
+        // the dispatcher is currently Parked, this flips it to Runnable
+        // and installs a handler-invocation bottom frame; the scheduler
+        // then picks the dispatcher up on the same tick. If nothing is
+        // deliverable, this is a no-op and the next tick re-polls.
+        let prepared =
+            { prepared with
+                State = SignalDispatch.trySpawnHandler prepared.BaseClassTypes prepared.State
+            }
+
         match Scheduler.chooseNext prepared.LastRan prepared.State with
         | None ->
             // No Runnable threads and the entry thread didn't hit its ret. Every
@@ -160,6 +171,25 @@ module Program =
             | ExecutionResult.Terminated (state, terminatingThread) ->
                 if terminatingThread = prepared.EntryThread then
                     ProgramStepOutcome.Completed (RunOutcome.NormalExit (state, prepared.EntryThread))
+                elif SignalState.signalThread state.Kernel.Signals = Some terminatingThread then
+                    // The kernel-owned signal-dispatch thread's handler frame
+                    // has returned past its bottom; `Ret` surfaces that as a
+                    // `Terminated` outcome because the bottom frame has no
+                    // `ReturnState`. Reset the dispatcher to its idle Parked
+                    // shape so the next deliverable signal can wake it again,
+                    // and let the loop continue: this thread isn't *really*
+                    // terminated, the dispatcher is just between handler
+                    // invocations.
+                    let state = SignalDispatch.reParkAfterHandler terminatingThread state
+
+                    ProgramStepOutcome.InstructionStepped (
+                        { prepared with
+                            State = state
+                            LastRan = terminatingThread
+                        },
+                        terminatingThread,
+                        WhatWeDid.Executed
+                    )
                 else
                     let state = Scheduler.onThreadTerminated terminatingThread state
 

@@ -144,3 +144,31 @@ module Signal =
         | -9 -> ValueSome Signal.SIGTTOU
         | -10 -> ValueSome Signal.SIGTSTP
         | n -> ofPlatformSigno n
+
+    /// Canonical inverse of `ofPosixSignalEnum`: the `PosixSignal` enum value
+    /// that the dispatcher should hand to the registered handler as its
+    /// second argument. Modelled cross-platform signals produce their
+    /// negative enum identity (so `SIGINT -> -2` round-trips through
+    /// `ofPosixSignalEnum`); `Signal.Other` carries the raw positive signo
+    /// the guest originally cast through. Signals modelled by `Signal` but
+    /// without a managed `PosixSignal` enum identity (SIGPIPE, SIGABRT,
+    /// SIGUSR1, SIGUSR2) fall back to their positive Linux signo, matching
+    /// the real native side's `SignalCodeToPosixSignal` which returns the
+    /// raw signo whenever the lookup table has no negative entry.
+    let toPosixSignalEnum (signal : Signal) : int =
+        match signal with
+        | Signal.SIGHUP -> -1
+        | Signal.SIGINT -> -2
+        | Signal.SIGQUIT -> -3
+        | Signal.SIGTERM -> -4
+        | Signal.SIGCHLD -> -5
+        | Signal.SIGCONT -> -6
+        | Signal.SIGWINCH -> -7
+        | Signal.SIGTTIN -> -8
+        | Signal.SIGTTOU -> -9
+        | Signal.SIGTSTP -> -10
+        | Signal.SIGABRT -> toLinuxSigno Signal.SIGABRT
+        | Signal.SIGUSR1 -> toLinuxSigno Signal.SIGUSR1
+        | Signal.SIGUSR2 -> toLinuxSigno Signal.SIGUSR2
+        | Signal.SIGPIPE -> toLinuxSigno Signal.SIGPIPE
+        | Signal.Other rawSignal -> rawSignal

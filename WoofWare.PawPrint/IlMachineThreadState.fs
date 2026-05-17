@@ -425,6 +425,87 @@ module IlMachineThreadState =
 
         newState, thread
 
+    /// Populate the bottom frame of a `Parked` signal-dispatcher thread
+    /// with a handler-invocation method state, and flip its status to
+    /// `Runnable`. Symmetric to `startUnstartedThread`, but for the
+    /// kernel-owned dispatcher allocated by `allocateParkedThread`:
+    /// the thread was sitting frameless with `Status = Parked` and
+    /// `ActiveMethodState = FrameId -1`, and the signal-dispatch
+    /// subsystem has now decided to wake it onto a handler. Fails loud
+    /// if the thread is missing, not in `Parked` status (concurrent
+    /// dispatch on the single dispatcher would be a logic error), or
+    /// already has live frames (a previous re-park should have cleared
+    /// them).
+    let startParkedDispatcher
+        (thread : ThreadId)
+        (newMethodState : MethodState)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        let existing =
+            state.ThreadState
+            |> Map.tryFind thread
+            |> Option.defaultWith (fun () -> failwith $"startParkedDispatcher: thread {thread} has no ThreadState")
+
+        match existing.Status with
+        | ThreadStatus.Parked -> ()
+        | other ->
+            failwith
+                $"startParkedDispatcher: thread {thread} is in status %O{other}, expected Parked. The dispatcher is only ever woken from Parked; finding it in another state indicates either concurrent dispatch (the caller forgot to gate on Parked) or a missed re-park after a previous handler returned."
+
+        if not (Map.isEmpty existing.MethodStates) then
+            failwith
+                $"startParkedDispatcher: thread {thread} unexpectedly has live frames before dispatch; a prior re-park should have cleared them."
+
+        let started =
+            existing
+            |> ThreadState.replaceFrames newMethodState
+            |> fun ts ->
+                { ts with
+                    Status = ThreadStatus.Runnable
+                }
+
+        { state with
+            ThreadState = state.ThreadState |> Map.add thread started
+        }
+
+    /// Inverse of `startParkedDispatcher`: a handler frame on the signal
+    /// dispatcher has just `ret`urned past its bottom (`Ret` surfaced as
+    /// `ExecutionResult.Terminated`, because the bottom frame has no
+    /// `ReturnState`). Clear the now-stale `MethodStates`, reset
+    /// `ActiveMethodState` to the sentinel `FrameId -1`, and flip
+    /// `Runnable -> Parked`, mirroring the shape `allocateParkedThread`
+    /// left the thread in originally. Drops the int handler return value
+    /// (left on the bottom frame's eval stack) on the floor — its
+    /// real-CLR meaning (0 = run default disposition, 1 = consumed) is
+    /// not yet modelled. Fails loud if the thread isn't actually the
+    /// dispatcher in a post-`ret` shape.
+    let reParkDispatcher (thread : ThreadId) (state : IlMachineState) : IlMachineState =
+        let existing =
+            state.ThreadState
+            |> Map.tryFind thread
+            |> Option.defaultWith (fun () -> failwith $"reParkDispatcher: thread {thread} has no ThreadState")
+
+        match existing.Status with
+        | ThreadStatus.Runnable -> ()
+        | other ->
+            failwith
+                $"reParkDispatcher: thread {thread} is in status %O{other}, expected Runnable (a handler frame should have been mid-execution before its bottom `ret`)."
+
+        let parked : ThreadState =
+            {
+                MethodStates = Map.empty
+                NextFrameId = 0
+                ActiveMethodState = FrameId -1
+                Status = ThreadStatus.Parked
+                IsBackground = existing.IsBackground
+                Name = existing.Name
+            }
+
+        { state with
+            ThreadState = state.ThreadState |> Map.add thread parked
+        }
+
     /// Populate the bottom frame of a `NotStarted` thread with the user's
     /// delegate target and flip its status to `Runnable`. The thread was
     /// previously allocated by `allocateUnstartedThread` at `Thread.Initialize`
