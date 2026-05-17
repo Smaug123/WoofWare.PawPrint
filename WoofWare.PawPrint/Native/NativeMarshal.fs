@@ -232,14 +232,36 @@ module NativeMarshal =
                     if isDateTime then
                         false
                     else
-                        match vt._Storage with
-                        // RawBytes-backed value types are not the typical struct-with-fields
-                        // shape; conservatively reject so we don't quietly accept primitive
-                        // wrappers whose CoreCLR marshal size diverges from the byte image.
-                        | CliValueTypeStorage.RawBytes _ -> false
-                        | CliValueTypeStorage.Fields storage ->
-                            storage.Fields
-                            |> List.forall (fun field -> isStrictlyNumericBlittable field.Contents)
+                        // Gate handle-flavoured single-field wrappers up front. CoreCLR's
+                        // marshaller refuses to lay these out: `RuntimeTypeHandle`,
+                        // `RuntimeMethodHandle`, and `RuntimeFieldHandle` carry a managed
+                        // reference (`m_type`/`m_value`/`m_ptr`) and are caught by the
+                        // recursive `ObjectRef` arm below — but `RuntimeMethodHandleInternal`
+                        // and `RuntimeFieldHandleInternal` wrap a bare `IntPtr` whose
+                        // provenance after `zeroOf` is `Verbatim`/`Null`, and `ByReference<T>`
+                        // wraps a managed pointer — both would otherwise sneak through the
+                        // widened `Verbatim`-accepting gate. CoreCLR rejects all of these
+                        // with `TypeLoadException` ("Invalid managed/unmanaged type
+                        // combination") because none have a valid unmanaged layout. Only
+                        // `FlattenToNativeInt` (IntPtr/UIntPtr) is genuinely blittable; the
+                        // other flatten-kinds plus `EnumLike` (enums marshal as their
+                        // underlying integer) fall through to the field walk, which handles
+                        // them correctly via the `value__` integer field.
+                        match vt.PrimitiveLikeKind with
+                        | Some PrimitiveLikeKind.FlattenToObjectRef
+                        | Some PrimitiveLikeKind.FlattenToRuntimePointer
+                        | Some PrimitiveLikeKind.FlattenToManagedPointer -> false
+                        | Some PrimitiveLikeKind.FlattenToNativeInt
+                        | Some PrimitiveLikeKind.EnumLike
+                        | None ->
+                            match vt._Storage with
+                            // RawBytes-backed value types are not the typical struct-with-fields
+                            // shape; conservatively reject so we don't quietly accept primitive
+                            // wrappers whose CoreCLR marshal size diverges from the byte image.
+                            | CliValueTypeStorage.RawBytes _ -> false
+                            | CliValueTypeStorage.Fields storage ->
+                                storage.Fields
+                                |> List.forall (fun field -> isStrictlyNumericBlittable field.Contents)
 
             if isStrictlyNumericBlittable zero then
                 // The eventual `*structMarshalStub` we write here is null: the blittable path
