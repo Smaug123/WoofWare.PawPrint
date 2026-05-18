@@ -113,19 +113,33 @@ module internal CellAwareCopy =
     /// Coarse storage discriminator used purely to decide whether two byrefs
     /// *could* share underlying storage when `byteLocation` cannot derive a
     /// flat byte offset (e.g. `Field`-projected residuals on either flat or
-    /// heap-rooted byrefs). Heap-backed roots are bucketed by their heap
-    /// address so an overlapping `Memmove` over a boxed value or a class's
-    /// struct field doesn't slip through to the silent forward path.
+    /// heap-rooted byrefs). Distinct keys mean the byrefs cannot alias under
+    /// PawPrint's model; equal keys mean an overlapping `Memmove` is
+    /// undecidable from the byref shape alone and the analyser must fail
+    /// loud.
+    ///
+    /// Indexed flat roots (array element, string char) carry their index so
+    /// that disjoint cross-element copies like `arr[0].A` ↔ `arr[1].A` get
+    /// distinct keys. Folding the trailing `Field` projection into a flat
+    /// byte offset would let `byteLocation` decide direction directly, but
+    /// until that machinery is wired the index discriminator is what keeps
+    /// disjoint same-array copies on the cell-aware fast path. Heap-backed
+    /// roots are bucketed by their heap address so an overlapping `Memmove`
+    /// over a boxed value or a class's struct field doesn't slip through to
+    /// the silent forward path (two distinct heap allocations have distinct
+    /// addresses and thus distinct keys).
     [<RequireQualifiedAccess>]
     type private SharedStorageKey =
+        | ArrayCell of arr : ManagedHeapAddress * index : int
+        | StringChar of str : ManagedHeapAddress * charIndex : int
         | Flat of ByteStorageIdentity
-        | Heap of ManagedHeapAddress
+        | HeapObject of ManagedHeapAddress
         | RuntimeTypeAux of RuntimeTypeHandleTarget
 
     let private sharedStorageKeyOfRoot (root : ByrefRoot) : SharedStorageKey =
         match root with
-        | ByrefRoot.ArrayElement (arr, _) -> SharedStorageKey.Flat (ByteStorageIdentity.Array arr)
-        | ByrefRoot.StringCharAt (str, _) -> SharedStorageKey.Flat (ByteStorageIdentity.String str)
+        | ByrefRoot.ArrayElement (arr, index) -> SharedStorageKey.ArrayCell (arr, index)
+        | ByrefRoot.StringCharAt (str, charIndex) -> SharedStorageKey.StringChar (str, charIndex)
         | ByrefRoot.PeByteRange peByteRange -> SharedStorageKey.Flat (ByteStorageIdentity.PeByteRange peByteRange)
         | ByrefRoot.StackMemoryByte (thread, frame, block, _) ->
             SharedStorageKey.Flat (ByteStorageIdentity.StackMemory (thread, frame, block))
@@ -139,8 +153,8 @@ module internal CellAwareCopy =
         // A boxed value and a field of the same heap object share the same
         // heap allocation; either kind of byref to the same address can
         // alias the other's bytes.
-        | ByrefRoot.HeapValue addr -> SharedStorageKey.Heap addr
-        | ByrefRoot.HeapObjectField (addr, _) -> SharedStorageKey.Heap addr
+        | ByrefRoot.HeapValue addr -> SharedStorageKey.HeapObject addr
+        | ByrefRoot.HeapObjectField (addr, _) -> SharedStorageKey.HeapObject addr
         | ByrefRoot.MethodTableExposedClassObject decl -> SharedStorageKey.RuntimeTypeAux decl
 
     /// Storage discriminator of a byref. Returns `None` for non-byref pointers
