@@ -1209,6 +1209,16 @@ module internal IntrinsicHelpers =
                 | ManagedPointerSource.Null, _ -> failwith $"%s{operation}: refusing nonzero byte copy from null source"
                 | _, ManagedPointerSource.Null ->
                     failwith $"%s{operation}: refusing nonzero byte copy to null destination"
+                | _ when sourcePtr = destPtr ->
+                    // CoreCLR's `SpanHelpers.Memmove` short-circuits perfectly
+                    // overlapping buffers (`Unsafe.AreSame(ref dest, ref src)`)
+                    // without copying — see SpanHelpers.ByteMemOps.cs:230. We
+                    // match that behaviour here so self-copies of spans whose
+                    // backing cells aren't byte-renderable (provenance-carrying
+                    // `NativeInt`s, field-projected residuals whose flat byte
+                    // offset is undecidable) don't trip the cell-aware path
+                    // for a copy that has no observable effect.
+                    state
                 | _ ->
 
                 // The shared cell-aware primitive preserves non-byte-addressable
