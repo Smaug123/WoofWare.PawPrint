@@ -350,6 +350,33 @@ type EmulatedKernel =
         /// pure model self-contained and means tests can drive the strategy
         /// without spinning up a real driver.
         StepCounter : int64
+        /// Deterministic virtual clock the simulated process observes, in
+        /// monotonic milliseconds-since-boot. Read by
+        /// `SystemNative_GetLowResolutionTimestamp` (the PAL backing
+        /// `Environment.TickCount64` on Unix) and intended to be the single
+        /// source of truth for every elapsed-time computation the guest
+        /// performs — `SystemNative_GetTimestamp` (nanoseconds) and any
+        /// future `DateTime.UtcNow` shim will derive from the same field
+        /// rather than maintain a parallel clock.
+        ///
+        /// The driver loop advances this by 1 ms each time it increments
+        /// `StepCounter`, so the guest sees one wall-clock millisecond per
+        /// scheduler tick. That makes elapsed-time polling loops like
+        /// `while (TickCount64 - start &lt; N)` terminate in O(N) ticks —
+        /// the absolute rate is "very slow computer" by wall-clock
+        /// standards but exact bit-for-bit reproducibility is the goal,
+        /// not realism.
+        ///
+        /// Reading the field never mutates it: the BCL's `TickCount64`
+        /// observers stay pure, and the consistency property "two threads
+        /// reading on the same tick observe the same value" falls out of
+        /// the scheduler being the sole writer. Deliberately *not* derived
+        /// from `StepCounter`: a future PR adding deadline-aware waits
+        /// will want to jump the clock forward to the next deadline when
+        /// no thread is Runnable, and that jump must not require a
+        /// matching jump in `StepCounter` (which would skew the spurious-
+        /// wakeup schedule).
+        VirtualClockMs : int64
         /// Deterministic state for the splitmix64 PRNG that backs
         /// `SystemNative_GetNonCryptographicallySecureRandomBytes`. Real
         /// CoreCLR fills this buffer from `arc4random_buf` /
@@ -483,6 +510,7 @@ module EmulatedKernel =
             SpuriousWakeup = SpuriousWakeupStrategy.Disabled
             SyncBlockSpuriousWakeup = SyncBlockSpuriousWakeupStrategy.Disabled
             StepCounter = 0L
+            VirtualClockMs = 0L
             NonCryptoRandomState = NonCryptoRandom.initialState
             OutputLog = ImmutableArray<OutputLogEntry>.Empty
             Environment = defaultEnvironment

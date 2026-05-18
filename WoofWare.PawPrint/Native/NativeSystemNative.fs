@@ -113,6 +113,21 @@ module NativeSystemNative =
           [],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
             pushInt32 state.Kernel.LastSystemError ctx |> Some
+        | Some "SystemNative_GetLowResolutionTimestamp",
+          [],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int64) ->
+            // PAL entry behind `Environment.TickCount64` on Unix. Real
+            // CoreCLR returns `clock_gettime(CLOCK_MONOTONIC_COARSE)`
+            // converted to milliseconds; PawPrint substitutes the
+            // deterministic virtual clock the scheduler maintains so the
+            // result is bit-for-bit reproducible. Read-only: the
+            // scheduler is the sole writer of `VirtualClockMs`.
+            state
+            |> IlMachineState.pushToEvalStack'
+                (EvalStackValue.Int64 (Int64Source.Verbatim state.Kernel.VirtualClockMs))
+                ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
         | Some "SystemNative_SetErrNo",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Void ->
