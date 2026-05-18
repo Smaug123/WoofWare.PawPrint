@@ -1160,24 +1160,20 @@ module internal IntrinsicHelpers =
                     failwith $"%s{operation}: refusing nonzero byte copy to null destination"
                 | _ ->
 
-                let byteType = byteConcreteType operation baseClassTypes state
-                let mutable state = state
-
-                // cpblk is undefined for overlapping ranges (ECMA-335 III.3.30), so a
-                // forward byte-by-byte copy is per-spec correct here; we don't need the
-                // Memmove-style overlap handling that Buffer.Memmove offers callers.
-                for i = 0 to byteCount - 1 do
-                    let src =
-                        ManagedPointerByteView.addByteOffset baseClassTypes state byteType i sourcePtr
-
-                    let dest =
-                        ManagedPointerByteView.addByteOffset baseClassTypes state byteType i destPtr
-
-                    let value =
-                        IlMachineState.readManagedByrefBytesAs baseClassTypes state src byteTemplate
-
-                    state <- IlMachineState.writeManagedByrefBytesOrTypedCell baseClassTypes state dest value
-
-                state
+                // cpblk is undefined for overlapping ranges (ECMA-335 III.3.30),
+                // so a forward walk is per-spec correct; we don't need the
+                // Memmove-style overlap handling. The shared cell-aware primitive
+                // preserves non-byte-addressable cell shapes (object references,
+                // runtime pointers, value-types containing those) and
+                // non-`Verbatim` numeric provenance (e.g. `TypeHandlePtr`-tagged
+                // `IntPtr`s) that the byte-walk fallback cannot serialise.
+                CellAwareCopy.copy
+                    baseClassTypes
+                    operation
+                    CellAwareCopyPolicy.CpblkForward
+                    state
+                    destPtr
+                    sourcePtr
+                    byteCount
 
         state |> IlMachineState.advanceProgramCounter currentThread

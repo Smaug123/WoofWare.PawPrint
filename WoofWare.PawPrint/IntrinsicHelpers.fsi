@@ -96,9 +96,10 @@ module internal IntrinsicHelpers =
         state : IlMachineState ->
             IlMachineState
 
-    /// Execute the `Unsafe.CopyBlock` / `Unsafe.CopyBlockUnaligned` JIT intrinsics, performing
-    /// a forward byte-by-byte copy between managed pointers (cpblk has undefined behaviour on
-    /// overlap per ECMA-335 III.3.30, so no overlap detection is performed).
+    /// Execute the `Unsafe.CopyBlock` / `Unsafe.CopyBlockUnaligned` JIT intrinsics. Drives the
+    /// shared cell-aware copy primitive forwards (cpblk has undefined behaviour on overlap per
+    /// ECMA-335 III.3.30, so no overlap detection is performed); the cell-aware path preserves
+    /// non-byte-addressable cell shapes and non-`Verbatim` numeric provenance through the copy.
     val executeUnsafeCopyBlock :
         baseClassTypes : BaseClassTypes<DumpedAssembly> ->
         currentThread : ThreadId ->
