@@ -40,22 +40,14 @@ module TestPureCases =
             { empty with
                 System_Environment = System_Environment.passThru
             }
-        ]
-        |> Map.ofList
-
-    let unimplementedMockTests : Map<string, NativeImpls> =
-        let empty = MockEnv.make ()
-
-        [
-            // Past the initobj generic-method-parameter bug; now blocks on the
-            // unimplemented JIT intrinsic System.Numerics.Vector`1.get_IsSupported(),
-            // reached from a LINQ/SIMD codepath in the BCL.
             "ResizeArray.cs",
             { empty with
                 System_Environment = System_Environment.passThru
             }
         ]
         |> Map.ofList
+
+    let unimplementedMockTests : Map<string, NativeImpls> = Map.empty
 
     let expectsUnhandledException = [ "UnhandledException.cs" ] |> Set.ofList
 
