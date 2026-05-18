@@ -110,7 +110,37 @@ module internal CellAwareCopy =
         | ManagedPointerSource.Byref (ByrefRoot.HeapObjectField _, _)
         | ManagedPointerSource.Byref (ByrefRoot.MethodTableExposedClassObject _, _) -> None
 
+    /// Storage identity derived from a byref root alone, ignoring projections.
+    /// Used to decide whether two byrefs *could* share flat byte storage when
+    /// `byteLocation` cannot compute a precise offset (e.g. `Field`-projected
+    /// residuals). Returns `None` for heap-rooted byrefs (`HeapValue`,
+    /// `HeapObjectField`, `MethodTableExposedClassObject`); those are not
+    /// modelled as flat byte storage here and the overlap analysis declines.
+    let private byteStorageOfRoot (root : ByrefRoot) : ByteStorageIdentity option =
+        match root with
+        | ByrefRoot.ArrayElement (arr, _) -> Some (ByteStorageIdentity.Array arr)
+        | ByrefRoot.StringCharAt (str, _) -> Some (ByteStorageIdentity.String str)
+        | ByrefRoot.PeByteRange peByteRange -> Some (ByteStorageIdentity.PeByteRange peByteRange)
+        | ByrefRoot.StackMemoryByte (thread, frame, block, _) ->
+            Some (ByteStorageIdentity.StackMemory (thread, frame, block))
+        | ByrefRoot.NativeMemoryByte (block, _) -> Some (ByteStorageIdentity.NativeMemory block)
+        | ByrefRoot.LocalVariable (thread, frame, local) -> Some (ByteStorageIdentity.StackLocal (thread, frame, local))
+        | ByrefRoot.Argument (thread, frame, arg) -> Some (ByteStorageIdentity.StackArgument (thread, frame, arg))
+        | ByrefRoot.StaticField (declaringType, field) -> Some (ByteStorageIdentity.StaticField (declaringType, field))
+        | ByrefRoot.HeapValue _
+        | ByrefRoot.HeapObjectField _
+        | ByrefRoot.MethodTableExposedClassObject _ -> None
+
+    /// Storage identity of a byref (root only). Returns `None` for non-byref
+    /// pointers and for byrefs whose root has no flat byte storage model.
+    let private storageOfByref (ptr : ManagedPointerSource) : ByteStorageIdentity option =
+        match ptr with
+        | ManagedPointerSource.Byref (root, _) -> byteStorageOfRoot root
+        | ManagedPointerSource.Null
+        | ManagedPointerSource.NativeIntPlaceholder _ -> None
+
     let private shouldCopyBackwards
+        (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (src : ManagedPointerSource)
@@ -121,7 +151,27 @@ module internal CellAwareCopy =
         match byteLocation baseClassTypes state src, byteLocation baseClassTypes state dest with
         | Some (srcStorage, srcOffset), Some (destStorage, destOffset) when srcStorage = destStorage ->
             srcOffset < destOffset && destOffset < srcOffset + int64 byteCount
-        | _ -> false
+        | Some _, Some _ ->
+            // Distinct flat byte storages — disjoint, no overlap is possible.
+            false
+        | _ ->
+            // `byteLocation` could not compute a precise flat byte offset for
+            // at least one side (e.g. residual `Field` projections, or a
+            // heap-rooted byref). If the byrefs nonetheless share root
+            // storage, we cannot determine the safe direction for `Memmove`
+            // semantics, so we must fail loud rather than silently picking a
+            // forward loop that could corrupt overlapping writes.
+            match storageOfByref src, storageOfByref dest with
+            | Some s, Some d when s = d ->
+                failwith
+                    $"%s{operation}: cannot determine overlap direction for byrefs sharing storage %O{s} (residual projections lack a flat byte offset). src=%O{src}, dest=%O{dest}, byteCount=%d{byteCount}"
+            | _ ->
+                // Either at least one root has no flat byte-storage model
+                // (heap-rooted byref) or the roots' storages are distinct.
+                // Heap-rooted overlap is not currently analysed here; the
+                // forward loop matches the pre-existing behaviour for that
+                // case. Distinct storages cannot overlap.
+                false
 
     /// All residual projections must be plain `Field` projections. The
     /// fast-path uses `readManagedByref` on the residual, which dispatches
@@ -332,7 +382,7 @@ module internal CellAwareCopy =
         let backwards =
             match policy with
             | CellAwareCopyPolicy.CpblkForward -> false
-            | CellAwareCopyPolicy.Memmove -> shouldCopyBackwards baseClassTypes state src dest byteCount
+            | CellAwareCopyPolicy.Memmove -> shouldCopyBackwards operation baseClassTypes state src dest byteCount
 
         if backwards then
             let mutable i = byteCount - 1
