@@ -120,20 +120,26 @@ module internal CellAwareCopy =
     ///
     /// Indexed flat roots (array element, string char) carry their index so
     /// that disjoint cross-element copies like `arr[0].A` ↔ `arr[1].A` get
-    /// distinct keys. Folding the trailing `Field` projection into a flat
-    /// byte offset would let `byteLocation` decide direction directly, but
-    /// until that machinery is wired the index discriminator is what keeps
-    /// disjoint same-array copies on the cell-aware fast path. Heap-backed
-    /// roots are bucketed by their heap address so an overlapping `Memmove`
-    /// over a boxed value or a class's struct field doesn't slip through to
-    /// the silent forward path (two distinct heap allocations have distinct
-    /// addresses and thus distinct keys).
+    /// distinct keys. `HeapObjectField` carries its `FieldId` for the same
+    /// reason: `ref box.A` and `ref box.B` directly address different fields
+    /// of the same instance, and even though both byrefs target heap
+    /// allocation `box`, the byrefs themselves are guaranteed disjoint by
+    /// construction. `HeapValue` (a whole boxed value) is its own bucket
+    /// keyed by address; a boxed value and a class-instance field byref
+    /// cannot share an address (each heap allocation has a single object
+    /// kind), and two byrefs into the same boxed value reach through the
+    /// same `HeapValue` root regardless of which interior field they
+    /// project. Folding `Field` projections into a flat byte offset would
+    /// let `byteLocation` decide direction precisely even for sibling-field
+    /// copies through a `HeapValue` root or via projection chains beyond
+    /// the immediate `HeapObjectField`; that's still future work.
     [<RequireQualifiedAccess>]
     type private SharedStorageKey =
         | ArrayCell of arr : ManagedHeapAddress * index : int
         | StringChar of str : ManagedHeapAddress * charIndex : int
         | Flat of ByteStorageIdentity
-        | HeapObject of ManagedHeapAddress
+        | HeapValue of ManagedHeapAddress
+        | HeapObjectField of obj : ManagedHeapAddress * field : FieldId
         | RuntimeTypeAux of RuntimeTypeHandleTarget
 
     let private sharedStorageKeyOfRoot (root : ByrefRoot) : SharedStorageKey =
@@ -150,11 +156,8 @@ module internal CellAwareCopy =
             SharedStorageKey.Flat (ByteStorageIdentity.StackArgument (thread, frame, arg))
         | ByrefRoot.StaticField (declaringType, field) ->
             SharedStorageKey.Flat (ByteStorageIdentity.StaticField (declaringType, field))
-        // A boxed value and a field of the same heap object share the same
-        // heap allocation; either kind of byref to the same address can
-        // alias the other's bytes.
-        | ByrefRoot.HeapValue addr -> SharedStorageKey.HeapObject addr
-        | ByrefRoot.HeapObjectField (addr, _) -> SharedStorageKey.HeapObject addr
+        | ByrefRoot.HeapValue addr -> SharedStorageKey.HeapValue addr
+        | ByrefRoot.HeapObjectField (addr, field) -> SharedStorageKey.HeapObjectField (addr, field)
         | ByrefRoot.MethodTableExposedClassObject decl -> SharedStorageKey.RuntimeTypeAux decl
 
     /// Storage discriminator of a byref. Returns `None` for non-byref pointers
