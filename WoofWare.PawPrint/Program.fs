@@ -326,27 +326,44 @@ module Program =
         // clock would advance 1 ms per tick *only when there's something
         // to step*, but there is nothing to step.
         //
+        // The fallback loops because a single fire may not make any
+        // thread Runnable: `LowLevelMonitor.fireTimeout` moves a waiter
+        // out of `WaitQueue`, but if the monitor is still owned by a
+        // separate thread (which itself may be parked on a *later*
+        // deadline), the waiter becomes `BlockedOnMonitorAcquire` rather
+        // than `Runnable`. Stopping after one jump in that shape would
+        // declare deadlock even though the owner's later finite wait can
+        // still resolve and release the monitor. Each iteration either
+        // produces a Runnable thread (terminating the loop) or strictly
+        // advances `VirtualClockMs` to the next outstanding deadline; the
+        // set of finite-deadline threads is finite and monotonically
+        // shrinks (no fire creates a new deadline), so the loop
+        // terminates.
+        //
         // Only `VirtualClockMs` is advanced (not `StepCounter`), so the
         // spurious-wakeup schedule is untouched. A jump-driven wake is
         // not a scheduler tick — it is the resolution of a timeout that
         // would otherwise be invisible.
-        let prepared =
-            match Scheduler.chooseNext prepared.LastRan prepared.State with
-            | Some _ -> prepared
+        let rec advanceUntilRunnableOrQuiescent (state : IlMachineState) : IlMachineState =
+            match Scheduler.chooseNext prepared.LastRan state with
+            | Some _ -> state
             | None ->
-                match nextDeadline prepared.State with
-                | None -> prepared
+                match nextDeadline state with
+                | None -> state
                 | Some target ->
                     let state =
-                        prepared.State.MapKernel (fun kernel ->
+                        state.MapKernel (fun kernel ->
                             { kernel with
                                 VirtualClockMs = max kernel.VirtualClockMs target
                             }
                         )
 
-                    { prepared with
-                        State = fireExpiredDeadlines state
-                    }
+                    advanceUntilRunnableOrQuiescent (fireExpiredDeadlines state)
+
+        let prepared =
+            { prepared with
+                State = advanceUntilRunnableOrQuiescent prepared.State
+            }
 
         match Scheduler.chooseNext prepared.LastRan prepared.State with
         | None ->
