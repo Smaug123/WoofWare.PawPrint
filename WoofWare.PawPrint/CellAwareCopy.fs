@@ -110,32 +110,45 @@ module internal CellAwareCopy =
         | ManagedPointerSource.Byref (ByrefRoot.HeapObjectField _, _)
         | ManagedPointerSource.Byref (ByrefRoot.MethodTableExposedClassObject _, _) -> None
 
-    /// Storage identity derived from a byref root alone, ignoring projections.
-    /// Used to decide whether two byrefs *could* share flat byte storage when
-    /// `byteLocation` cannot compute a precise offset (e.g. `Field`-projected
-    /// residuals). Returns `None` for heap-rooted byrefs (`HeapValue`,
-    /// `HeapObjectField`, `MethodTableExposedClassObject`); those are not
-    /// modelled as flat byte storage here and the overlap analysis declines.
-    let private byteStorageOfRoot (root : ByrefRoot) : ByteStorageIdentity option =
-        match root with
-        | ByrefRoot.ArrayElement (arr, _) -> Some (ByteStorageIdentity.Array arr)
-        | ByrefRoot.StringCharAt (str, _) -> Some (ByteStorageIdentity.String str)
-        | ByrefRoot.PeByteRange peByteRange -> Some (ByteStorageIdentity.PeByteRange peByteRange)
-        | ByrefRoot.StackMemoryByte (thread, frame, block, _) ->
-            Some (ByteStorageIdentity.StackMemory (thread, frame, block))
-        | ByrefRoot.NativeMemoryByte (block, _) -> Some (ByteStorageIdentity.NativeMemory block)
-        | ByrefRoot.LocalVariable (thread, frame, local) -> Some (ByteStorageIdentity.StackLocal (thread, frame, local))
-        | ByrefRoot.Argument (thread, frame, arg) -> Some (ByteStorageIdentity.StackArgument (thread, frame, arg))
-        | ByrefRoot.StaticField (declaringType, field) -> Some (ByteStorageIdentity.StaticField (declaringType, field))
-        | ByrefRoot.HeapValue _
-        | ByrefRoot.HeapObjectField _
-        | ByrefRoot.MethodTableExposedClassObject _ -> None
+    /// Coarse storage discriminator used purely to decide whether two byrefs
+    /// *could* share underlying storage when `byteLocation` cannot derive a
+    /// flat byte offset (e.g. `Field`-projected residuals on either flat or
+    /// heap-rooted byrefs). Heap-backed roots are bucketed by their heap
+    /// address so an overlapping `Memmove` over a boxed value or a class's
+    /// struct field doesn't slip through to the silent forward path.
+    [<RequireQualifiedAccess>]
+    type private SharedStorageKey =
+        | Flat of ByteStorageIdentity
+        | Heap of ManagedHeapAddress
+        | RuntimeTypeAux of RuntimeTypeHandleTarget
 
-    /// Storage identity of a byref (root only). Returns `None` for non-byref
-    /// pointers and for byrefs whose root has no flat byte storage model.
-    let private storageOfByref (ptr : ManagedPointerSource) : ByteStorageIdentity option =
+    let private sharedStorageKeyOfRoot (root : ByrefRoot) : SharedStorageKey =
+        match root with
+        | ByrefRoot.ArrayElement (arr, _) -> SharedStorageKey.Flat (ByteStorageIdentity.Array arr)
+        | ByrefRoot.StringCharAt (str, _) -> SharedStorageKey.Flat (ByteStorageIdentity.String str)
+        | ByrefRoot.PeByteRange peByteRange -> SharedStorageKey.Flat (ByteStorageIdentity.PeByteRange peByteRange)
+        | ByrefRoot.StackMemoryByte (thread, frame, block, _) ->
+            SharedStorageKey.Flat (ByteStorageIdentity.StackMemory (thread, frame, block))
+        | ByrefRoot.NativeMemoryByte (block, _) -> SharedStorageKey.Flat (ByteStorageIdentity.NativeMemory block)
+        | ByrefRoot.LocalVariable (thread, frame, local) ->
+            SharedStorageKey.Flat (ByteStorageIdentity.StackLocal (thread, frame, local))
+        | ByrefRoot.Argument (thread, frame, arg) ->
+            SharedStorageKey.Flat (ByteStorageIdentity.StackArgument (thread, frame, arg))
+        | ByrefRoot.StaticField (declaringType, field) ->
+            SharedStorageKey.Flat (ByteStorageIdentity.StaticField (declaringType, field))
+        // A boxed value and a field of the same heap object share the same
+        // heap allocation; either kind of byref to the same address can
+        // alias the other's bytes.
+        | ByrefRoot.HeapValue addr -> SharedStorageKey.Heap addr
+        | ByrefRoot.HeapObjectField (addr, _) -> SharedStorageKey.Heap addr
+        | ByrefRoot.MethodTableExposedClassObject decl -> SharedStorageKey.RuntimeTypeAux decl
+
+    /// Storage discriminator of a byref. Returns `None` for non-byref pointers
+    /// (`Null`, `NativeIntPlaceholder`) which cannot participate in shared
+    /// storage with another byref under PawPrint's model.
+    let private sharedStorageKey (ptr : ManagedPointerSource) : SharedStorageKey option =
         match ptr with
-        | ManagedPointerSource.Byref (root, _) -> byteStorageOfRoot root
+        | ManagedPointerSource.Byref (root, _) -> Some (sharedStorageKeyOfRoot root)
         | ManagedPointerSource.Null
         | ManagedPointerSource.NativeIntPlaceholder _ -> None
 
@@ -158,19 +171,17 @@ module internal CellAwareCopy =
             // `byteLocation` could not compute a precise flat byte offset for
             // at least one side (e.g. residual `Field` projections, or a
             // heap-rooted byref). If the byrefs nonetheless share root
-            // storage, we cannot determine the safe direction for `Memmove`
-            // semantics, so we must fail loud rather than silently picking a
-            // forward loop that could corrupt overlapping writes.
-            match storageOfByref src, storageOfByref dest with
+            // storage (flat, heap-allocated, or MT auxiliary cell), we
+            // cannot determine the safe direction for `Memmove` semantics,
+            // so we must fail loud rather than silently picking a forward
+            // loop that could corrupt overlapping writes.
+            match sharedStorageKey src, sharedStorageKey dest with
             | Some s, Some d when s = d ->
                 failwith
-                    $"%s{operation}: cannot determine overlap direction for byrefs sharing storage %O{s} (residual projections lack a flat byte offset). src=%O{src}, dest=%O{dest}, byteCount=%d{byteCount}"
+                    $"%s{operation}: cannot determine overlap direction for byrefs sharing storage %A{s} (residual projections lack a flat byte offset). src=%O{src}, dest=%O{dest}, byteCount=%d{byteCount}"
             | _ ->
-                // Either at least one root has no flat byte-storage model
-                // (heap-rooted byref) or the roots' storages are distinct.
-                // Heap-rooted overlap is not currently analysed here; the
-                // forward loop matches the pre-existing behaviour for that
-                // case. Distinct storages cannot overlap.
+                // Distinct storage discriminators or a non-byref endpoint —
+                // overlap is impossible under the model.
                 false
 
     /// All residual projections must be plain `Field` projections. The
