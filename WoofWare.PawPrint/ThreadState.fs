@@ -69,7 +69,19 @@ type ThreadStatus =
     /// thread it resumes with `WAIT_OBJECT_0` already on the evaluation stack.
     /// Single-handle blocking only; multi-handle wait will need a separate
     /// variant carrying a list plus a wait-all/wait-any flag.
-    | BlockedOnWaitHandle of handle : WaitHandleId
+    ///
+    /// `deadlineMs = None` is an infinite wait (Win32 `INFINITE` / managed
+    /// `Timeout.Infinite`); `Some ms` is a finite timeout, expressed as the
+    /// absolute virtual-clock millisecond at which the wait expires. When
+    /// `VirtualClockMs` advances to that point and the thread is still
+    /// parked, the driver fires a timeout wake (`WaitHandle.fireTimeout`):
+    /// the thread is dequeued from the handle's `WaitQueue`, the
+    /// `WAIT_OBJECT_0` slot pushed at park time is rewritten to
+    /// `WAIT_TIMEOUT`, and the status flips back to `Runnable`. Storing the
+    /// deadline in the status itself (rather than alongside in a separate
+    /// map) makes the invariant "no deadline once Runnable again" structural
+    /// — a wake naturally forgets it.
+    | BlockedOnWaitHandle of handle : WaitHandleId * deadlineMs : int64 option
     /// This thread has executed its final `ret`; it will never run again. Its state is kept
     /// only so other threads can observe termination (e.g. to satisfy Join).
     | Terminated

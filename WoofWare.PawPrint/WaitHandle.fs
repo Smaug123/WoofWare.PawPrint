@@ -29,14 +29,18 @@ namespace WoofWare.PawPrint
 /// higher-level guest primitives (`LowLevelLifoSemaphore`,
 /// `PortableThreadPool`) depend on.
 ///
-/// Timeouts: non-zero finite timeouts on `WaitHandle_WaitOneCore` /
-/// `WaitHandle_WaitOnePrioritized` are not implemented today, for the
-/// same reason `LowLevelMonitor.TimedWait` is not — PawPrint has no
-/// virtual clock. Calls with a non-zero finite timeout fail loud in
-/// the native handler. The zero-timeout case is fully deterministic
-/// (`tryWaitOne`): it does not park, never touches the queue, and
-/// returns `WAIT_OBJECT_0` or `WAIT_TIMEOUT` depending on whether the
-/// fast path applied.
+/// Timeouts: finite timeouts on `WaitHandle_WaitOneCore` /
+/// `WaitHandle_WaitOnePrioritized` are supported through the
+/// virtual-clock plumbing in `EmulatedKernel.VirtualClockMs`. The
+/// native handler converts a millisecond timeout into an absolute
+/// deadline against `VirtualClockMs` and threads it through `waitOne` /
+/// `waitOnePrioritized`; if the slow path fires, the deadline is
+/// recorded on the parked thread's `BlockedOnWaitHandle` status. The
+/// driver loop fires `fireTimeout` for any thread whose deadline has
+/// elapsed, which dequeues the thread, rewrites the park-time
+/// `WAIT_OBJECT_0` slot on its eval stack to `WAIT_TIMEOUT`, and flips
+/// it back to `Runnable`. The zero-timeout case is still routed
+/// through `tryWaitOne` (fully deterministic, no park).
 ///
 /// Abandoned-mutex propagation: full support (rewriting the wake-time
 /// return value of already-blocked waiters when their owner thread
@@ -275,10 +279,15 @@ module WaitHandle =
 
     /// Internal: kind-private semaphore waitOne. Used by the kind
     /// dispatcher in `waitOne` and the property tests that exercise the
-    /// semaphore path directly.
+    /// semaphore path directly. `deadlineMs` is the absolute virtual-clock
+    /// millisecond at which the wait expires (or `None` for an infinite
+    /// wait); the value is recorded on the parked thread's `BlockedOn
+    /// WaitHandle` status when the slow path fires, so the driver loop's
+    /// deadline-firing pass knows when to time the wait out.
     let private waitOneSemaphore
         (thread : ThreadId)
         (id : WaitHandleId)
+        (deadlineMs : int64 option)
         (semaphore : SemaphoreState)
         (state : IlMachineState)
         : WaitOutcome
@@ -286,6 +295,9 @@ module WaitHandle =
         if semaphore.Count > 0 then
             // Fast path: consume one unit and stay Runnable. The new
             // count is in `[0, Maximum - 1]`, preserving the invariant.
+            // The deadline is irrelevant on the fast path; the wait
+            // never blocked, so there is no parked-thread record to
+            // attach it to.
             let semaphore =
                 { semaphore with
                     Count = semaphore.Count - 1
@@ -305,15 +317,18 @@ module WaitHandle =
 
             state
             |> writeHandle id (WaitHandleState.Semaphore semaphore)
-            |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnWaitHandle id)
+            |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnWaitHandle (id, deadlineMs))
             |> WaitOutcome.Blocked
 
     /// Internal: kind-private mutex waitOne. Re-entrant on owner; the
     /// `Free wasAbandoned=true` transition produces `AcquiredAbandoned`
-    /// and clears the flag.
+    /// and clears the flag. `deadlineMs` is recorded on the parked
+    /// thread's status when the slow path fires (held by another thread);
+    /// the fast paths do not consult it.
     let private waitOneMutex
         (thread : ThreadId)
         (id : WaitHandleId)
+        (deadlineMs : int64 option)
         (mutex : MutexState)
         (state : IlMachineState)
         : WaitOutcome
@@ -349,17 +364,18 @@ module WaitHandle =
 
             state
             |> writeHandle id (WaitHandleState.Mutex mutex)
-            |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnWaitHandle id)
+            |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnWaitHandle (id, deadlineMs))
             |> WaitOutcome.Blocked
 
     /// Internal: kind-private event waitOne. Acquiring a signalled `Auto`
     /// event consumes the signal (clears `Signaled`); acquiring a
     /// signalled `Manual` event leaves it signalled (every concurrent
     /// waiter passes through). On an unsignalled event the thread parks
-    /// at the FIFO tail.
+    /// at the FIFO tail with `deadlineMs` recorded on its status.
     let private waitOneEvent
         (thread : ThreadId)
         (id : WaitHandleId)
+        (deadlineMs : int64 option)
         (event : EventState)
         (state : IlMachineState)
         : WaitOutcome
@@ -386,7 +402,7 @@ module WaitHandle =
 
             state
             |> writeHandle id (WaitHandleState.Event event)
-            |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnWaitHandle id)
+            |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnWaitHandle (id, deadlineMs))
             |> WaitOutcome.Blocked
 
     /// Try to take ownership of `id` on behalf of `thread`. Dispatches
@@ -394,23 +410,39 @@ module WaitHandle =
     ///
     ///  - Semaphore: decrement the count if positive; otherwise park at
     ///    the FIFO tail of `WaitQueue` and flip the thread's status to
-    ///    `BlockedOnWaitHandle`.
+    ///    `BlockedOnWaitHandle (id, deadlineMs)`.
     ///  - Mutex: re-entrant fast path on the owning thread; take the
     ///    free mutex (producing `AcquiredAbandoned` iff the abandoned
     ///    flag was set, clearing it); otherwise park at the FIFO tail.
+    ///  - Event: signalled events fast-path (consuming the signal for
+    ///    `Auto`); unsignalled events park at the FIFO tail.
+    ///
+    /// `deadlineMs` is the absolute virtual-clock millisecond at which a
+    /// finite timeout expires, or `None` for an infinite wait. The fast
+    /// paths ignore it; only the slow paths thread it through to the
+    /// parked thread's status, where the driver loop's deadline-firing
+    /// pass picks it up.
     ///
     /// The IL `WaitOne` site advances in every case (the native handler
     /// returns `Stepped/Executed` for all three outcomes). When a parked
-    /// thread is later woken, its `WAIT_OBJECT_0` slot has already been
-    /// pushed onto its eval stack at park time — see the
-    /// abandoned-mutex-propagation note on the module docstring.
-    let waitOne (thread : ThreadId) (id : WaitHandleId) (state : IlMachineState) : WaitOutcome =
+    /// thread is later signal-woken, its `WAIT_OBJECT_0` slot has
+    /// already been pushed onto its eval stack at park time; if instead
+    /// its deadline fires first, `fireTimeout` rewrites that slot to
+    /// `WAIT_TIMEOUT` — see the abandoned-mutex-propagation note on the
+    /// module docstring for why signal-side rewrite isn't symmetric.
+    let waitOne
+        (thread : ThreadId)
+        (id : WaitHandleId)
+        (deadlineMs : int64 option)
+        (state : IlMachineState)
+        : WaitOutcome
+        =
         let handle = lookup id state
 
         match handle with
-        | WaitHandleState.Semaphore semaphore -> waitOneSemaphore thread id semaphore state
-        | WaitHandleState.Mutex mutex -> waitOneMutex thread id mutex state
-        | WaitHandleState.Event event -> waitOneEvent thread id event state
+        | WaitHandleState.Semaphore semaphore -> waitOneSemaphore thread id deadlineMs semaphore state
+        | WaitHandleState.Mutex mutex -> waitOneMutex thread id deadlineMs mutex state
+        | WaitHandleState.Event event -> waitOneEvent thread id deadlineMs event state
 
     /// Non-blocking probe used to model the zero-timeout `WaitOne(0)`
     /// path. CoreCLR's contract for a zero millisecond timeout: try the
@@ -514,8 +546,16 @@ module WaitHandle =
     /// fairness contract is LIFO over the kernel semaphore's FIFO base.
     ///
     /// The fast path is identical to `waitOne`: priority only matters
-    /// when the call has to block.
-    let waitOnePrioritized (thread : ThreadId) (id : WaitHandleId) (state : IlMachineState) : WaitOutcome =
+    /// when the call has to block. `deadlineMs` propagates to the parked
+    /// thread's status when the slow path fires, and is ignored on the
+    /// fast path for the same reason as `waitOne`.
+    let waitOnePrioritized
+        (thread : ThreadId)
+        (id : WaitHandleId)
+        (deadlineMs : int64 option)
+        (state : IlMachineState)
+        : WaitOutcome
+        =
         let handle = lookup id state
         let semaphore = expectSemaphore "WaitHandle.waitOnePrioritized" id handle
 
@@ -540,7 +580,7 @@ module WaitHandle =
 
             state
             |> writeHandle id (WaitHandleState.Semaphore semaphore)
-            |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnWaitHandle id)
+            |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnWaitHandle (id, deadlineMs))
             |> WaitOutcome.Blocked
 
     /// Increment the semaphore by `releaseCount`, waking up to that many
@@ -796,3 +836,89 @@ module WaitHandle =
                 WaitHandles = kernel.WaitHandles |> Map.remove id
             }
         )
+
+    /// Wake `thread` because its finite-timeout wait against handle `id`
+    /// has expired against the virtual clock. The thread must currently
+    /// be parked at this handle's wait queue (the driver only calls
+    /// this for threads observed in `BlockedOnWaitHandle (id, Some _)`,
+    /// so a mismatch here indicates a scheduler-side bug). Effects:
+    ///
+    ///  - Remove `thread` from whichever kind-specific `WaitQueue` it
+    ///    sits in. A semaphore's queue is FIFO; a prioritized waiter
+    ///    sits at the head. Either way the entry's position is opaque
+    ///    to the timeout — we filter by identity.
+    ///  - Rewrite the top of the thread's active frame's eval stack from
+    ///    the `WAIT_OBJECT_0` slot the slow-path push installed at park
+    ///    time to `WAIT_TIMEOUT (0x102)`. The IL `WaitOne` call site has
+    ///    already advanced past itself; the BCL's wrapper reads this
+    ///    value back from the QCall return and compares against
+    ///    `WaitHandle.WaitTimeout = 0x102` to return `false`.
+    ///  - Flip the thread's status back to `Runnable`. The deadline is
+    ///    implicitly forgotten — the new status carries no deadline
+    ///    field, which is exactly the invariant the variant encodes.
+    ///
+    /// Why pop-then-push rather than peek-and-mutate: the eval stack
+    /// surface only exposes push/pop primitives, and popping the
+    /// previously-pushed slot before pushing the timeout slot keeps the
+    /// stack depth invariant across the wake (no net change in depth,
+    /// just the top value).
+    let fireTimeout (thread : ThreadId) (id : WaitHandleId) (state : IlMachineState) : IlMachineState =
+        let handle = lookup id state
+
+        let state =
+            match handle with
+            | WaitHandleState.Semaphore semaphore ->
+                let newQueue = semaphore.WaitQueue |> List.filter (fun t -> t <> thread)
+
+                if List.length newQueue = List.length semaphore.WaitQueue then
+                    failwith
+                        $"WaitHandle.fireTimeout: thread %O{thread} is not in semaphore %O{id}'s wait queue; the scheduler observed a deadline on a thread the handle does not know about."
+
+                writeHandle
+                    id
+                    (WaitHandleState.Semaphore
+                        { semaphore with
+                            WaitQueue = newQueue
+                        })
+                    state
+            | WaitHandleState.Mutex mutex ->
+                let newQueue = mutex.WaitQueue |> List.filter (fun t -> t <> thread)
+
+                if List.length newQueue = List.length mutex.WaitQueue then
+                    failwith
+                        $"WaitHandle.fireTimeout: thread %O{thread} is not in mutex %O{id}'s wait queue; the scheduler observed a deadline on a thread the handle does not know about."
+
+                writeHandle
+                    id
+                    (WaitHandleState.Mutex
+                        { mutex with
+                            WaitQueue = newQueue
+                        })
+                    state
+            | WaitHandleState.Event event ->
+                let newQueue = event.WaitQueue |> List.filter (fun t -> t <> thread)
+
+                if List.length newQueue = List.length event.WaitQueue then
+                    failwith
+                        $"WaitHandle.fireTimeout: thread %O{thread} is not in event %O{id}'s wait queue; the scheduler observed a deadline on a thread the handle does not know about."
+
+                writeHandle
+                    id
+                    (WaitHandleState.Event
+                        { event with
+                            WaitQueue = newQueue
+                        })
+                    state
+
+        // Rewrite the park-time `WAIT_OBJECT_0 = 0` slot to `WAIT_TIMEOUT
+        // = 0x102`. The slow-path waitOne / waitOnePrioritized pushed
+        // `WAIT_OBJECT_0` because the slow path could not know in advance
+        // whether the wake would be a signal (keep the value) or a
+        // timeout (rewrite); choosing the optimistic value at park time
+        // makes signal-wake free.
+        let _, state = IlMachineState.popEvalStack thread state
+
+        let state =
+            IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0x102) thread state
+
+        Scheduler.setThreadStatus thread ThreadStatus.Runnable state
