@@ -167,6 +167,25 @@ module AppProgram =
                     -2146232797
                 else
                     134
+            | RunOutcome.SignalTerminated (state, signal) ->
+                // pal_signal.c's Terminate branch restores the original
+                // sigaction and calls `kill(g_pid, signalCode)`, so the
+                // host shell observes the process as having exited with
+                // the POSIX-conventional code `128 + signo`. Mirror that
+                // here so guests that install a signal handler and
+                // forward to the default disposition observe the same
+                // shell-level exit code as a real .NET process.
+                drainStandardStreams state
+                let signo = Signal.toLinuxSigno signal
+
+                logger.LogInformation (
+                    "Guest terminated by POSIX signal {SignalName} (signo {Signo}); exiting with code {ExitCode}",
+                    sprintf "%O" signal,
+                    signo,
+                    128 + signo
+                )
+
+                128 + signo
             | RunOutcome.GuestUnhandledException (state, _thread, exn) ->
                 drainStandardStreams state
 

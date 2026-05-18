@@ -163,6 +163,7 @@ module TestImpureCases =
                 | RunOutcome.FailFast (_, _, message) ->
                     let m = message |> Option.defaultValue "<no message>"
                     failwith $"Guest called Environment.FailFast: %s{m}"
+                | RunOutcome.SignalTerminated (_, signal) -> failwith $"Guest was terminated by POSIX signal %O{signal}"
                 | RunOutcome.NormalExit (state, thread) -> state, thread
                 | RunOutcome.ProcessExit (state, thread) -> state, thread
 

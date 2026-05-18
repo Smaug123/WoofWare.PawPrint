@@ -23,6 +23,7 @@ module TestProgramDebugger =
         | ExitCode of int
         | GuestUnhandledException
         | FailFast of message : string option
+        | SignalTerminated of Signal
 
     let private sourceForExitCode (exitCode : int) : string =
         $"""
@@ -79,6 +80,7 @@ class Program
             | EvalStackValue.Int32 i :: _ -> OutcomeSignature.ExitCode i
             | other -> failwith $"Expected int32 exit stack, got %O{other}"
         | RunOutcome.FailFast (_, _, message) -> OutcomeSignature.FailFast message
+        | RunOutcome.SignalTerminated (_, signal) -> OutcomeSignature.SignalTerminated signal
         | RunOutcome.GuestUnhandledException _ -> OutcomeSignature.GuestUnhandledException
 
     let private stepToCompletion

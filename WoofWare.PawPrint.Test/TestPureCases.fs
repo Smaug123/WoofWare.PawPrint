@@ -169,6 +169,9 @@ module TestPureCases =
                     let m = message |> Option.defaultValue "<no message>"
 
                     failwith $"PawPrint guest called Environment.FailFast for %s{case.FileName}: %s{m}"
+                | _, RunOutcome.SignalTerminated (_, signal) ->
+                    failwith
+                        $"PawPrint guest was terminated by POSIX signal %O{signal} for %s{case.FileName}; this test does not exercise signal-driven termination"
                 | _, RunOutcome.ProcessExit _ -> failwith "unreachable: normalised away above"
             )
 
@@ -250,6 +253,8 @@ class Program
                 | RunOutcome.FailFast (_, _, message) ->
                     let m = message |> Option.defaultValue "<no message>"
                     failwith $"expected normal exit, got Environment.FailFast: %s{m}"
+                | RunOutcome.SignalTerminated (_, signal) ->
+                    failwith $"expected normal exit, got POSIX signal termination: %O{signal}"
                 | RunOutcome.GuestUnhandledException (_, _, exn) ->
                     failwith $"guest threw unhandled exception: %O{exn.ExceptionObject}"
             )
@@ -312,6 +317,8 @@ class Program
                 | RunOutcome.FailFast (_, _, message) ->
                     let m = message |> Option.defaultValue "<no message>"
                     failwith $"expected normal exit, got Environment.FailFast: %s{m}"
+                | RunOutcome.SignalTerminated (_, signal) ->
+                    failwith $"expected normal exit, got POSIX signal termination: %O{signal}"
                 | RunOutcome.GuestUnhandledException (_, _, exn) ->
                     failwith $"guest threw unhandled exception: %O{exn.ExceptionObject}"
             )
@@ -368,6 +375,8 @@ class Program
                 | RunOutcome.FailFast (_, _, message) ->
                     let m = message |> Option.defaultValue "<no message>"
                     failwith $"expected normal exit, got Environment.FailFast: %s{m}"
+                | RunOutcome.SignalTerminated (_, signal) ->
+                    failwith $"expected normal exit, got POSIX signal termination: %O{signal}"
                 | RunOutcome.GuestUnhandledException (_, _, exn) ->
                     failwith $"guest threw unhandled exception: %O{exn.ExceptionObject}"
             )
@@ -413,6 +422,8 @@ class Program
                 | RunOutcome.FailFast (_, _, message) ->
                     let m = message |> Option.defaultValue "<no message>"
                     failwith $"expected normal exit, got Environment.FailFast: %s{m}"
+                | RunOutcome.SignalTerminated (_, signal) ->
+                    failwith $"expected normal exit, got POSIX signal termination: %O{signal}"
                 | RunOutcome.GuestUnhandledException (_, _, exn) ->
                     failwith $"guest threw unhandled exception: %O{exn.ExceptionObject}"
             )
@@ -450,6 +461,8 @@ class Program
                 | RunOutcome.FailFast (_, _, message) -> message |> shouldEqual (Some "boom")
                 | RunOutcome.NormalExit _ -> failwith "expected FailFast, got normal exit"
                 | RunOutcome.ProcessExit _ -> failwith "expected FailFast, got process exit"
+                | RunOutcome.SignalTerminated (_, signal) ->
+                    failwith $"expected FailFast, got POSIX signal termination: %O{signal}"
                 | RunOutcome.GuestUnhandledException (_, _, exn) ->
                     failwith $"expected FailFast, got guest unhandled exception: %O{exn.ExceptionObject}"
             )

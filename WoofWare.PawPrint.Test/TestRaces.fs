@@ -46,5 +46,7 @@ module TestRaces =
         | RunOutcome.FailFast (_, _, message) ->
             let m = message |> Option.defaultValue "<no message>"
             failwith $"PawPrint guest called Environment.FailFast: %s{m}"
+        | RunOutcome.SignalTerminated (_, signal) ->
+            failwith $"PawPrint guest was terminated by POSIX signal %O{signal}"
         | RunOutcome.GuestUnhandledException (_, _, exn) ->
             failwith $"guest threw unhandled exception: %O{exn.ExceptionObject}"
