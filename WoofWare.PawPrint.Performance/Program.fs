@@ -177,6 +177,8 @@ type StackHeavyProgramBenchmarks () =
         | RunOutcome.FailFast (_, _, message) ->
             let m = message |> Option.defaultValue "<no message>"
             failwith $"PawPrint guest called Environment.FailFast: %s{m}"
+        | RunOutcome.SignalTerminated (_, signal) ->
+            failwith $"PawPrint guest was terminated by POSIX signal %O{signal} during benchmark"
         | RunOutcome.GuestUnhandledException (_, _, exn) ->
             failwith $"PawPrint threw an unhandled guest exception: %O{exn.ExceptionObject}"
 

@@ -246,6 +246,18 @@ type ExecutionResult =
     /// and so callers can surface the abort to the host (logs, non-zero exit) rather than
     /// reporting a clean exit.
     | FailFast of IlMachineState * abortingThread : ThreadId * message : string option
+    /// A non-cancelled signal handler reached the kernel-default
+    /// `Terminate` disposition, so the simulated process exits with the
+    /// signal's identity. Mirrors `pal_signal.c`'s
+    /// `SystemNative_HandleNonCanceledPosixSignal` Terminate branch,
+    /// where the native code restores the original `sigaction` and calls
+    /// `kill(g_pid, signalCode)` to let the kernel terminate the process
+    /// with the signal-default exit status (POSIX convention: exit code
+    /// `128 + signo`). Carries no `ThreadId` because POSIX
+    /// `kill(pid, sig)` is process-global; there is no single owning
+    /// thread for this termination. The App layer derives the exit code
+    /// from `Signal.toLinuxSigno`.
+    | SignalTerminated of IlMachineState * signal : Signal
     | Stepped of IlMachineState * WhatWeDid * StepEffect
     | UnhandledException of
         IlMachineState *
@@ -334,6 +346,16 @@ type RunOutcome =
     /// because FailFast is semantically an abort, not a clean exit — finalizers do not
     /// run on real CoreCLR, and the host typically reports a non-zero/abort exit.
     | FailFast of IlMachineState * abortingThread : ThreadId * message : string option
+    /// The simulation was terminated by a POSIX signal whose
+    /// registered handler(s) did not cancel the default disposition,
+    /// and whose kernel default is `Terminate`. Carries the originating
+    /// `Signal` so the host can compute the POSIX-conventional exit
+    /// code `128 + Signal.toLinuxSigno signal` and surface the cause
+    /// for diagnostics. No `ThreadId` because process-level signal
+    /// termination is not attributable to a single thread (the real
+    /// native code calls `kill(g_pid, signalCode)`, which tears down
+    /// the whole process).
+    | SignalTerminated of IlMachineState * signal : Signal
     | GuestUnhandledException of
         IlMachineState *
         terminatingThread : ThreadId *
@@ -439,8 +461,9 @@ module NativeHandlerResult =
     ///
     /// * `Stepped(state, WhatWeDid.Executed, effect)` — the handler ran a normal step;
     ///   routed to `Completed(state, effect)` so the dispatcher pops the native frame.
-    /// * `Terminated`, `ProcessExit`, `FailFast`, `UnhandledException` — terminating
-    ///   outcomes wrapped in `NativeHandlerResult.Terminating` so the dispatcher surfaces
+    /// * `Terminated`, `ProcessExit`, `FailFast`, `SignalTerminated`,
+    ///   `UnhandledException` — terminating outcomes wrapped in
+    ///   `NativeHandlerResult.Terminating` so the dispatcher surfaces
     ///   them verbatim to the run loop, bypassing frame management.
     ///
     /// Any `Stepped` value with a `WhatWeDid` other than `Executed` is rejected as a logic
@@ -458,4 +481,5 @@ module NativeHandlerResult =
         | ExecutionResult.Terminated _
         | ExecutionResult.ProcessExit _
         | ExecutionResult.FailFast _
+        | ExecutionResult.SignalTerminated _
         | ExecutionResult.UnhandledException _ -> NativeHandlerResult.Terminating executionResult

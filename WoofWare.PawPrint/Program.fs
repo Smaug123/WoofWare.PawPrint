@@ -204,6 +204,8 @@ module Program =
                 ProgramStepOutcome.Completed (RunOutcome.ProcessExit (state, exitingThread))
             | ExecutionResult.FailFast (state, abortingThread, message) ->
                 ProgramStepOutcome.Completed (RunOutcome.FailFast (state, abortingThread, message))
+            | ExecutionResult.SignalTerminated (state, signal) ->
+                ProgramStepOutcome.Completed (RunOutcome.SignalTerminated (state, signal))
             | ExecutionResult.UnhandledException (state, terminatingThread, exn) ->
                 ProgramStepOutcome.Completed (RunOutcome.GuestUnhandledException (state, terminatingThread, exn))
             | ExecutionResult.Stepped (state, whatWeDid, _) ->
@@ -493,6 +495,12 @@ module Program =
         | RunOutcome.FailFast _ as outcome ->
             // A worker started during cctor pumping called Environment.FailFast; the
             // process has aborted. Propagate rather than pressing on into Main.
+            ProgramStartResult.CompletedBeforeMain outcome
+        | RunOutcome.SignalTerminated _ as outcome ->
+            // A non-cancelled signal handler reached the kernel-default
+            // Terminate disposition during cctor pumping. Same shape as
+            // ProcessExit: the simulated process is gone, so propagate
+            // rather than pressing on into Main.
             ProgramStartResult.CompletedBeforeMain outcome
         | RunOutcome.NormalExit (state, _) ->
 

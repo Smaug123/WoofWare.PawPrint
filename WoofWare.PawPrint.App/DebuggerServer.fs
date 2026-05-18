@@ -251,6 +251,11 @@ module DebuggerServer =
             match message with
             | Some m -> writer.WriteString ("message", m)
             | None -> writer.WriteNull "message"
+        | RunOutcome.SignalTerminated (_state, signal) ->
+            writer.WriteString ("kind", "signalTerminated")
+            writer.WriteString ("signal", sprintf "%O" signal)
+            writer.WriteNumber ("signo", Signal.toLinuxSigno signal)
+            writer.WriteNumber ("exitCode", 128 + Signal.toLinuxSigno signal)
         | RunOutcome.GuestUnhandledException (_, thread, exn) ->
             writer.WriteString ("kind", "guestUnhandledException")
             writer.WriteNumber ("thread", threadIdValue thread)
@@ -279,6 +284,7 @@ module DebuggerServer =
         | SessionState.Finished (RunOutcome.NormalExit (state, _), _)
         | SessionState.Finished (RunOutcome.ProcessExit (state, _), _)
         | SessionState.Finished (RunOutcome.FailFast (state, _, _), _)
+        | SessionState.Finished (RunOutcome.SignalTerminated (state, _), _)
         | SessionState.Finished (RunOutcome.GuestUnhandledException (state, _, _), _) -> state
         | SessionState.Deadlocked (prepared, _, _) -> prepared.State
 
@@ -329,6 +335,7 @@ module DebuggerServer =
                 | RunOutcome.NormalExit _ -> "normal exit"
                 | RunOutcome.ProcessExit _ -> "process exit"
                 | RunOutcome.FailFast _ -> "fail fast"
+                | RunOutcome.SignalTerminated _ -> "signal terminated"
                 | RunOutcome.GuestUnhandledException _ -> "guest unhandled exception"
 
             {

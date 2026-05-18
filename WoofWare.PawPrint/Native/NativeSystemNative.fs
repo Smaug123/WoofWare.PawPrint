@@ -704,8 +704,20 @@ module NativeSystemNative =
                     // is not relevant to PawPrint, which has no terminal).
                     NativeHandlerResult.completed state |> Some
                 | DefaultDisposition.Terminate ->
-                    failwith
-                        $"%s{operation}: signal-driven process termination is not yet modelled (signo %d{signo}, signal %O{signal}); a follow-up slice will surface this as a RunOutcome rather than silently no-op'ing."
+                    // Mirrors `pal_signal.c`'s Terminate branch, which
+                    // restores the original `sigaction` and calls
+                    // `kill(g_pid, signalCode)` to let the kernel
+                    // terminate the process with the signal-default
+                    // exit status. PawPrint surfaces this as a
+                    // dedicated `SignalTerminated` outcome so the App
+                    // layer can compute the POSIX-conventional exit
+                    // code (`128 + Signal.toLinuxSigno signal`) and
+                    // distinguish signal-driven termination from a
+                    // managed `Environment.Exit` call carrying the
+                    // same exit code.
+                    ExecutionResult.SignalTerminated (state, signal)
+                    |> NativeHandlerResult.ofExecutionResult
+                    |> Some
         | Some "SystemNative_DisablePosixSignalHandling",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Void ->
