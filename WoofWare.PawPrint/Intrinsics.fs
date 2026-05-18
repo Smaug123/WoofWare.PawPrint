@@ -692,6 +692,20 @@ module Intrinsics =
                 executeInt64 methodToCall.Name state |> Some
             | _ -> None
 
+        | "System.Private.CoreLib", "Interlocked", "MemoryBarrier" ->
+            // [Intrinsic][MethodImpl(MethodImplOptions.InternalCall)]
+            // public static extern void MemoryBarrier();
+            // PawPrint single-steps a deterministic virtual CPU, so there is no
+            // host memory reordering for a fence to constrain. The no-op is
+            // correct here for the same reason as the `volatile.` IL prefix
+            // (NullaryIlOp.fs) and Volatile.{Read,Write}Barrier (below).
+            // https://github.com/dotnet/runtime/blob/HEAD/src/libraries/System.Private.CoreLib/src/System/Threading/Interlocked.cs
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [], MethodReturnType.Void -> ()
+            | _ -> failwith $"Interlocked.MemoryBarrier: unexpected signature %A{methodToCall.Signature}"
+
+            state |> IlMachineState.advanceProgramCounter currentThread |> Some
+
         | "System.Private.CoreLib", "Interlocked", "CompareExchange" ->
             // The native-int-shaped overloads need their own path: the shipped IL wrappers do
             // `Unsafe.As<_, long>` and delegate to the Int64 overload, which would destroy our
