@@ -1041,6 +1041,66 @@ module TestLowLevelMonitor =
         topOfStack t2 state |> shouldEqual (EvalStackValue.Int32 0)
 
     [<Test>]
+    let ``fireTimeout in WaitQueue head-first order preserves FIFO across same-tick expiries`` () : unit =
+        // Pin the contract that `Program.fireExpiredDeadlines` must
+        // respect: when two TimedWait waiters on the same monitor expire
+        // in the same virtual-clock tick, firing them in WaitQueue order
+        // gives ownership to the FIFO head. The bug we're guarding
+        // against: iterating threads by ThreadId would let a later-parked
+        // waiter with a smaller id (the *tail* of WaitQueue here) steal
+        // the monitor by firing first against the unowned monitor.
+        //
+        // Setup t1 parks *after* t2 so WaitQueue = [t2; t1]. Then firing
+        // in WaitQueue order yields t2 as owner.
+        let state = baseStateWithFrames () |> withRealThreads [ t1 ; t2 ]
+        let id, state = LowLevelMonitor.create state
+        let state = state |> parkInTimedWait t2 id 50L
+        let state = state |> parkInTimedWait t1 id 50L
+
+        (monitorOf id state).WaitQueue |> shouldEqual [ t2 ; t1 ]
+
+        // Fire in WaitQueue order (head first).
+        let state = LowLevelMonitor.fireTimeout t2 id state
+        let state = LowLevelMonitor.fireTimeout t1 id state
+
+        let m = monitorOf id state
+        m.Owner |> shouldEqual (Some t2)
+        m.AcquireQueue |> shouldEqual [ t1 ]
+        m.WaitQueue |> shouldEqual []
+        statusOf t2 state |> shouldEqual ThreadStatus.Runnable
+        statusOf t1 state |> shouldEqual (ThreadStatus.BlockedOnMonitorAcquire id)
+        topOfStack t2 state |> shouldEqual (EvalStackValue.Int32 0)
+        topOfStack t1 state |> shouldEqual (EvalStackValue.Int32 0)
+
+    [<Test>]
+    let ``fireTimeout in ThreadId order (not WaitQueue order) reverses FIFO — guards against scheduler bug`` () : unit =
+        // Companion to the test above: explicitly demonstrate that firing
+        // in ThreadId order — which is what the unsorted `Map.toSeq`
+        // dispatch would do — violates FIFO. This is the bug
+        // `Program.fireExpiredDeadlines` must avoid by sorting its
+        // expired list by monitor-WaitQueue position. The assertion is
+        // the *broken* outcome; if a future change accidentally drops
+        // the sort, this test still passes but its sibling above starts
+        // documenting the contract that was lost.
+        let state = baseStateWithFrames () |> withRealThreads [ t1 ; t2 ]
+        let id, state = LowLevelMonitor.create state
+        // Same setup as the previous test: WaitQueue = [t2; t1].
+        let state = state |> parkInTimedWait t2 id 50L
+        let state = state |> parkInTimedWait t1 id 50L
+
+        // Fire in ThreadId order (tail first).
+        let state = LowLevelMonitor.fireTimeout t1 id state
+        let state = LowLevelMonitor.fireTimeout t2 id state
+
+        let m = monitorOf id state
+        // t1 stole the monitor by firing first; t2 (the original head)
+        // is now queued behind. This is the FIFO violation.
+        m.Owner |> shouldEqual (Some t1)
+        m.AcquireQueue |> shouldEqual [ t2 ]
+        statusOf t1 state |> shouldEqual ThreadStatus.Runnable
+        statusOf t2 state |> shouldEqual (ThreadStatus.BlockedOnMonitorAcquire id)
+
+    [<Test>]
     let ``fireTimeout leaves other threads' eval stacks untouched`` () : unit =
         // Cross-thread isolation: rewriting t0's stack must not perturb
         // t1's stack. (The IlMachineState eval-stack helpers are keyed on

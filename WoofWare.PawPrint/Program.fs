@@ -118,10 +118,25 @@ module Program =
     /// the handle's wait queue and rewrites `WAIT_OBJECT_0 → WAIT_TIMEOUT`;
     /// LowLevelMonitor moves the waiter from `WaitQueue` to `AcquireQueue`
     /// — granting ownership directly if the monitor is unowned — and
-    /// rewrites `Int32 1 → Int32 0`). Sorting by deadline isn't necessary
-    /// here — every fired wake produces an isolated state change against
-    /// a disjoint primitive / thread, and a thread can only be in one
-    /// queue.
+    /// rewrites `Int32 1 → Int32 0`).
+    ///
+    /// Fire order matters for `LowLevelMonitor`. When two TimedWait
+    /// waiters on the same monitor expire in the same tick,
+    /// `fireTimeout` grants ownership to whichever fires first against
+    /// the unowned monitor — so iterating `state.ThreadState` (a Map
+    /// keyed on ThreadId) would let a later-parked waiter with a smaller
+    /// thread id steal the monitor from the FIFO head. We sort
+    /// `MonitorWait` entries by their position in the owning monitor's
+    /// `WaitQueue` so that the head fires first, matching the FIFO
+    /// contract enforced everywhere else in the monitor state machine
+    /// (release, signalRelease, applySpuriousWakeups AlwaysAll).
+    ///
+    /// Cross-primitive ordering is irrelevant — each fire touches a
+    /// disjoint primitive/thread — so `WaitHandle` entries are ordered
+    /// last and by ThreadId, which is deterministic and matches the
+    /// pre-fix behaviour for the subsystem where order is unobservable.
+    /// Queue positions are computed against the input state, before any
+    /// fires mutate `WaitQueue`s.
     let private fireExpiredDeadlines (state : IlMachineState) : IlMachineState =
         let now = state.Kernel.VirtualClockMs
 
@@ -134,6 +149,33 @@ module Program =
                 | _ -> None
             )
             |> Seq.toList
+
+        let monitorQueuePosition (LowLevelMonitorId mid as monitorId : LowLevelMonitorId) (thread : ThreadId) : int =
+            let monitor = Map.find monitorId state.Kernel.LowLevelMonitors
+
+            match List.tryFindIndex (fun t -> t = thread) monitor.WaitQueue with
+            | Some i -> i
+            | None ->
+                failwith
+                    $"fireExpiredDeadlines: thread %O{thread} has BlockedOnMonitorWait status against monitor #%i{mid} but is not in its WaitQueue %A{monitor.WaitQueue}; structural invariant violated."
+
+        // Sort key: monitor entries first (group=0), then by monitor id,
+        // then by WaitQueue position so the FIFO head of any contested
+        // monitor fires before its successors. WaitHandle entries
+        // (group=1) follow in (handle id, thread id) order — order within
+        // a handle is unobservable for timeout fires, so ThreadId gives
+        // a stable, deterministic break.
+        let sortKey ((tid, kind) : ThreadId * FiredDeadline) : int * int * int =
+            match kind with
+            | FiredDeadline.MonitorWait monitorId ->
+                let (LowLevelMonitorId mid) = monitorId
+                0, mid, monitorQueuePosition monitorId tid
+            | FiredDeadline.WaitHandle handleId ->
+                let (WaitHandleId hid) = handleId
+                let (ThreadId t) = tid
+                1, hid, t
+
+        let expired = expired |> List.sortBy sortKey
 
         expired
         |> List.fold
