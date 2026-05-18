@@ -144,6 +144,17 @@ module Program =
                     state.MapKernel (fun kernel ->
                         { kernel with
                             StepCounter = kernel.StepCounter + 1L
+                            // One wall-clock millisecond per scheduler
+                            // tick — see `EmulatedKernel.VirtualClockMs`
+                            // for why the rate is "very slow computer"
+                            // by realism standards but bit-for-bit
+                            // deterministic. Bumping in lock-step with
+                            // `StepCounter` keeps both clocks pure
+                            // functions of "how many scheduler ticks
+                            // have elapsed", which is what tests rely
+                            // on when driving the strategies without a
+                            // real driver.
+                            VirtualClockMs = kernel.VirtualClockMs + 1L
                         }
                     )
             }
