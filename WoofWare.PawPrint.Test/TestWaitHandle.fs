@@ -199,7 +199,7 @@ module TestWaitHandle =
         let state = baseState () |> withThreads [ t0 ]
         let id, state = WaitHandle.createSemaphore 2 5 state
 
-        let state = WaitHandle.waitOne t0 id state |> acquired
+        let state = WaitHandle.waitOne t0 id None state |> acquired
 
         let s = semaphoreOf id state
         s.Count |> shouldEqual 1
@@ -211,30 +211,30 @@ module TestWaitHandle =
         let state = baseState () |> withThreads [ t0 ; t1 ]
         let id, state = WaitHandle.createSemaphore 0 5 state
 
-        let state = WaitHandle.waitOne t0 id state |> blocked
-        let state = WaitHandle.waitOne t1 id state |> blocked
+        let state = WaitHandle.waitOne t0 id None state |> blocked
+        let state = WaitHandle.waitOne t1 id None state |> blocked
 
         let s = semaphoreOf id state
         s.Count |> shouldEqual 0
         s.WaitQueue |> shouldEqual [ t0 ; t1 ]
-        statusOf t0 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
-        statusOf t1 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
+        statusOf t0 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle (id, None))
+        statusOf t1 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle (id, None))
 
     [<Test>]
     let ``waitOne fast path drives count to zero in sequence`` () : unit =
         let state = baseState () |> withThreads [ t0 ; t1 ; t2 ]
         let id, state = WaitHandle.createSemaphore 2 5 state
-        let state = WaitHandle.waitOne t0 id state |> acquired
-        let state = WaitHandle.waitOne t1 id state |> acquired
+        let state = WaitHandle.waitOne t0 id None state |> acquired
+        let state = WaitHandle.waitOne t1 id None state |> acquired
         // Count is now 0; t2 must block.
-        let state = WaitHandle.waitOne t2 id state |> blocked
+        let state = WaitHandle.waitOne t2 id None state |> blocked
 
         let s = semaphoreOf id state
         s.Count |> shouldEqual 0
         s.WaitQueue |> shouldEqual [ t2 ]
         statusOf t0 state |> shouldEqual ThreadStatus.Runnable
         statusOf t1 state |> shouldEqual ThreadStatus.Runnable
-        statusOf t2 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
+        statusOf t2 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle (id, None))
 
     // -------------------------------------------------------------------
     // tryWaitOne — non-blocking probe used by zero-timeout WaitOne(0)
@@ -279,7 +279,7 @@ module TestWaitHandle =
         let state = baseState () |> withThreads [ t0 ]
         let id, state = WaitHandle.createSemaphore 2 5 state
 
-        let state = WaitHandle.waitOnePrioritized t0 id state |> acquired
+        let state = WaitHandle.waitOnePrioritized t0 id None state |> acquired
 
         let s = semaphoreOf id state
         s.Count |> shouldEqual 1
@@ -295,17 +295,17 @@ module TestWaitHandle =
         let state = baseState () |> withThreads [ t0 ; t1 ; t2 ]
         let id, state = WaitHandle.createSemaphore 0 5 state
 
-        let state = WaitHandle.waitOnePrioritized t0 id state |> blocked
-        let state = WaitHandle.waitOnePrioritized t1 id state |> blocked
-        let state = WaitHandle.waitOnePrioritized t2 id state |> blocked
+        let state = WaitHandle.waitOnePrioritized t0 id None state |> blocked
+        let state = WaitHandle.waitOnePrioritized t1 id None state |> blocked
+        let state = WaitHandle.waitOnePrioritized t2 id None state |> blocked
 
         let s = semaphoreOf id state
         s.Count |> shouldEqual 0
         // Latest-arrived prioritized waiter is at head; oldest is at tail.
         s.WaitQueue |> shouldEqual [ t2 ; t1 ; t0 ]
-        statusOf t0 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
-        statusOf t1 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
-        statusOf t2 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
+        statusOf t0 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle (id, None))
+        statusOf t1 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle (id, None))
+        statusOf t2 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle (id, None))
 
     [<Test>]
     let ``releaseSemaphore wakes prioritized waiters in LIFO order`` () : unit =
@@ -315,20 +315,20 @@ module TestWaitHandle =
         let state = baseState () |> withThreads [ t0 ; t1 ; t2 ]
         let id, state = WaitHandle.createSemaphore 0 5 state
 
-        let state = WaitHandle.waitOnePrioritized t0 id state |> blocked
-        let state = WaitHandle.waitOnePrioritized t1 id state |> blocked
-        let state = WaitHandle.waitOnePrioritized t2 id state |> blocked
+        let state = WaitHandle.waitOnePrioritized t0 id None state |> blocked
+        let state = WaitHandle.waitOnePrioritized t1 id None state |> blocked
+        let state = WaitHandle.waitOnePrioritized t2 id None state |> blocked
 
         let _, state = WaitHandle.releaseSemaphore id 1 state
 
         statusOf t2 state |> shouldEqual ThreadStatus.Runnable
-        statusOf t1 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
-        statusOf t0 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
+        statusOf t1 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle (id, None))
+        statusOf t0 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle (id, None))
 
         let _, state = WaitHandle.releaseSemaphore id 1 state
 
         statusOf t1 state |> shouldEqual ThreadStatus.Runnable
-        statusOf t0 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
+        statusOf t0 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle (id, None))
 
         let _, state = WaitHandle.releaseSemaphore id 1 state
 
@@ -343,9 +343,9 @@ module TestWaitHandle =
         let state = baseState () |> withThreads [ t0 ; t1 ; t2 ]
         let id, state = WaitHandle.createSemaphore 0 5 state
 
-        let state = WaitHandle.waitOne t0 id state |> blocked
-        let state = WaitHandle.waitOne t1 id state |> blocked
-        let state = WaitHandle.waitOnePrioritized t2 id state |> blocked
+        let state = WaitHandle.waitOne t0 id None state |> blocked
+        let state = WaitHandle.waitOne t1 id None state |> blocked
+        let state = WaitHandle.waitOnePrioritized t2 id None state |> blocked
 
         let s = semaphoreOf id state
         // t2 is at the head; t0 and t1 preserve their FIFO ordering behind.
@@ -354,8 +354,8 @@ module TestWaitHandle =
         let _, state = WaitHandle.releaseSemaphore id 1 state
 
         statusOf t2 state |> shouldEqual ThreadStatus.Runnable
-        statusOf t0 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
-        statusOf t1 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
+        statusOf t0 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle (id, None))
+        statusOf t1 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle (id, None))
 
     [<Test>]
     let ``Property: releaseSemaphore wakes prioritized waiters in LIFO registration order`` () : unit =
@@ -367,7 +367,7 @@ module TestWaitHandle =
 
             let state =
                 threads
-                |> List.fold (fun s tid -> WaitHandle.waitOnePrioritized tid id s |> blocked) state
+                |> List.fold (fun s tid -> WaitHandle.waitOnePrioritized tid id None s |> blocked) state
 
             // LIFO over prioritized waiters: latest registration wakes first.
             let expectedWakeOrder = List.rev threads
@@ -418,8 +418,8 @@ module TestWaitHandle =
     let ``releaseSemaphore wakes a single FIFO-head waiter via direct handoff`` () : unit =
         let state = baseState () |> withThreads [ t0 ; t1 ]
         let id, state = WaitHandle.createSemaphore 0 5 state
-        let state = WaitHandle.waitOne t0 id state |> blocked
-        let state = WaitHandle.waitOne t1 id state |> blocked
+        let state = WaitHandle.waitOne t0 id None state |> blocked
+        let state = WaitHandle.waitOne t1 id None state |> blocked
 
         let result, state = WaitHandle.releaseSemaphore id 1 state
 
@@ -430,16 +430,16 @@ module TestWaitHandle =
         s.Count |> shouldEqual 0
         s.WaitQueue |> shouldEqual [ t1 ]
         statusOf t0 state |> shouldEqual ThreadStatus.Runnable
-        statusOf t1 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
+        statusOf t1 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle (id, None))
 
     [<Test>]
     let ``releaseSemaphore N wakes min(N, K) FIFO-head waiters and leaves N-K units accumulated`` () : unit =
         let state = baseState () |> withThreads [ t0 ; t1 ; t2 ; t3 ]
 
         let id, state = WaitHandle.createSemaphore 0 10 state
-        let state = WaitHandle.waitOne t0 id state |> blocked
-        let state = WaitHandle.waitOne t1 id state |> blocked
-        let state = WaitHandle.waitOne t2 id state |> blocked
+        let state = WaitHandle.waitOne t0 id None state |> blocked
+        let state = WaitHandle.waitOne t1 id None state |> blocked
+        let state = WaitHandle.waitOne t2 id None state |> blocked
         // Release 5 with 3 waiters: wakes all three; (5 - 3) = 2 units
         // accumulate in Count.
         let result, state = WaitHandle.releaseSemaphore id 5 state
@@ -457,11 +457,11 @@ module TestWaitHandle =
         let state = baseState () |> withThreads [ t0 ; t1 ; t2 ; t3 ; t4 ]
 
         let id, state = WaitHandle.createSemaphore 0 10 state
-        let state = WaitHandle.waitOne t0 id state |> blocked
-        let state = WaitHandle.waitOne t1 id state |> blocked
-        let state = WaitHandle.waitOne t2 id state |> blocked
-        let state = WaitHandle.waitOne t3 id state |> blocked
-        let state = WaitHandle.waitOne t4 id state |> blocked
+        let state = WaitHandle.waitOne t0 id None state |> blocked
+        let state = WaitHandle.waitOne t1 id None state |> blocked
+        let state = WaitHandle.waitOne t2 id None state |> blocked
+        let state = WaitHandle.waitOne t3 id None state |> blocked
+        let state = WaitHandle.waitOne t4 id None state |> blocked
 
         let result, state = WaitHandle.releaseSemaphore id 2 state
 
@@ -473,9 +473,9 @@ module TestWaitHandle =
         s.WaitQueue |> shouldEqual [ t2 ; t3 ; t4 ]
         statusOf t0 state |> shouldEqual ThreadStatus.Runnable
         statusOf t1 state |> shouldEqual ThreadStatus.Runnable
-        statusOf t2 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
-        statusOf t3 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
-        statusOf t4 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
+        statusOf t2 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle (id, None))
+        statusOf t3 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle (id, None))
+        statusOf t4 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle (id, None))
 
     [<Test>]
     let ``releaseSemaphore rejects overflow and leaves state unchanged`` () : unit =
@@ -546,7 +546,7 @@ module TestWaitHandle =
                 threads
                 |> List.fold
                     (fun s tid ->
-                        let s = WaitHandle.waitOne tid id s |> acquired
+                        let s = WaitHandle.waitOne tid id None s |> acquired
                         let _, s = WaitHandle.releaseSemaphore id 1 s
                         s
                     )
@@ -575,7 +575,8 @@ module TestWaitHandle =
             let id, state = WaitHandle.createSemaphore 0 k state
 
             let state =
-                threads |> List.fold (fun s tid -> WaitHandle.waitOne tid id s |> blocked) state
+                threads
+                |> List.fold (fun s tid -> WaitHandle.waitOne tid id None s |> blocked) state
 
             // Snapshot the queue before any releases.
             let expectedWakeOrder = (semaphoreOf id state).WaitQueue
@@ -637,7 +638,7 @@ module TestWaitHandle =
     let ``close fails loud with parked waiters`` () : unit =
         let state = baseState () |> withThreads [ t0 ]
         let id, state = WaitHandle.createSemaphore 0 5 state
-        let state = WaitHandle.waitOne t0 id state |> blocked
+        let state = WaitHandle.waitOne t0 id None state |> blocked
 
         let exn =
             Assert.Throws<System.Exception> (fun () -> WaitHandle.close id state |> ignore)
@@ -662,7 +663,7 @@ module TestWaitHandle =
         let state = WaitHandle.close id state
 
         let exn =
-            Assert.Throws<System.Exception> (fun () -> WaitHandle.waitOne t0 id state |> ignore)
+            Assert.Throws<System.Exception> (fun () -> WaitHandle.waitOne t0 id None state |> ignore)
 
         exn.Message |> shouldContainText "not registered"
 
@@ -715,7 +716,7 @@ module TestWaitHandle =
             match statusOf tid state with
             | ThreadStatus.BlockedOnWaitHandle _ -> state, waited, released
             | _ ->
-                let outcome = WaitHandle.waitOne tid id state
+                let outcome = WaitHandle.waitOne tid id None state
 
                 match outcome with
                 | WaitHandle.WaitOutcome.Acquired s -> s, waited + 1, released
@@ -829,7 +830,7 @@ module TestWaitHandle =
         let state = baseState () |> withThreads [ t0 ]
         let id, state = WaitHandle.createMutex false t0 state
 
-        let state = WaitHandle.waitOne t0 id state |> acquired
+        let state = WaitHandle.waitOne t0 id None state |> acquired
 
         let m = mutexOf id state
         m.Ownership |> shouldEqual (MutexOwnership.Held (t0, 1))
@@ -841,9 +842,9 @@ module TestWaitHandle =
         let state = baseState () |> withThreads [ t0 ]
         let id, state = WaitHandle.createMutex false t0 state
 
-        let state = WaitHandle.waitOne t0 id state |> acquired
-        let state = WaitHandle.waitOne t0 id state |> acquired
-        let state = WaitHandle.waitOne t0 id state |> acquired
+        let state = WaitHandle.waitOne t0 id None state |> acquired
+        let state = WaitHandle.waitOne t0 id None state |> acquired
+        let state = WaitHandle.waitOne t0 id None state |> acquired
 
         let m = mutexOf id state
         m.Ownership |> shouldEqual (MutexOwnership.Held (t0, 3))
@@ -854,15 +855,15 @@ module TestWaitHandle =
         let state = baseState () |> withThreads [ t0 ; t1 ; t2 ]
         let id, state = WaitHandle.createMutex true t0 state
 
-        let state = WaitHandle.waitOne t1 id state |> blocked
-        let state = WaitHandle.waitOne t2 id state |> blocked
+        let state = WaitHandle.waitOne t1 id None state |> blocked
+        let state = WaitHandle.waitOne t2 id None state |> blocked
 
         let m = mutexOf id state
         m.Ownership |> shouldEqual (MutexOwnership.Held (t0, 1))
         m.WaitQueue |> shouldEqual [ t1 ; t2 ]
         statusOf t0 state |> shouldEqual ThreadStatus.Runnable
-        statusOf t1 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
-        statusOf t2 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
+        statusOf t1 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle (id, None))
+        statusOf t2 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle (id, None))
 
     [<Test>]
     let ``releaseMutex by owner without waiters marks the mutex free`` () : unit =
@@ -880,8 +881,8 @@ module TestWaitHandle =
     let ``releaseMutex unwinds recursion before releasing`` () : unit =
         let state = baseState () |> withThreads [ t0 ]
         let id, state = WaitHandle.createMutex true t0 state
-        let state = WaitHandle.waitOne t0 id state |> acquired
-        let state = WaitHandle.waitOne t0 id state |> acquired
+        let state = WaitHandle.waitOne t0 id None state |> acquired
+        let state = WaitHandle.waitOne t0 id None state |> acquired
 
         let _, state = WaitHandle.releaseMutex t0 id state
         (mutexOf id state).Ownership |> shouldEqual (MutexOwnership.Held (t0, 2))
@@ -896,8 +897,8 @@ module TestWaitHandle =
     let ``releaseMutex with waiters hands ownership directly to the FIFO head`` () : unit =
         let state = baseState () |> withThreads [ t0 ; t1 ; t2 ]
         let id, state = WaitHandle.createMutex true t0 state
-        let state = WaitHandle.waitOne t1 id state |> blocked
-        let state = WaitHandle.waitOne t2 id state |> blocked
+        let state = WaitHandle.waitOne t1 id None state |> blocked
+        let state = WaitHandle.waitOne t2 id None state |> blocked
 
         let result, state = WaitHandle.releaseMutex t0 id state
 
@@ -909,7 +910,7 @@ module TestWaitHandle =
         m.WaitQueue |> shouldEqual [ t2 ]
         statusOf t0 state |> shouldEqual ThreadStatus.Runnable
         statusOf t1 state |> shouldEqual ThreadStatus.Runnable
-        statusOf t2 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
+        statusOf t2 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle (id, None))
 
     [<Test>]
     let ``releaseMutex by a non-owner returns NotOwner and leaves state unchanged`` () : unit =
@@ -944,7 +945,7 @@ module TestWaitHandle =
 
             let state =
                 [ 1..depth ]
-                |> List.fold (fun s _ -> WaitHandle.waitOne t0 id s |> acquired) state
+                |> List.fold (fun s _ -> WaitHandle.waitOne t0 id None s |> acquired) state
 
             (mutexOf id state).Ownership = MutexOwnership.Held (t0, depth)
             && let state =
@@ -1026,7 +1027,7 @@ module TestWaitHandle =
         let id, state = WaitHandle.createMutex false t0 state
         let state = installAbandonedMutex id state
 
-        let state = WaitHandle.waitOne t0 id state |> acquiredAbandoned
+        let state = WaitHandle.waitOne t0 id None state |> acquiredAbandoned
 
         let m = mutexOf id state
         m.Ownership |> shouldEqual (MutexOwnership.Held (t0, 1))
@@ -1051,7 +1052,7 @@ module TestWaitHandle =
         let state = baseState () |> withThreads [ t0 ]
         let id, state = WaitHandle.createMutex false t0 state
         let state = installAbandonedMutex id state
-        let state = WaitHandle.waitOne t0 id state |> acquiredAbandoned
+        let state = WaitHandle.waitOne t0 id None state |> acquiredAbandoned
 
         let _, state = WaitHandle.releaseMutex t0 id state
 
@@ -1084,7 +1085,7 @@ module TestWaitHandle =
     let ``close fails loud on a mutex with parked waiters`` () : unit =
         let state = baseState () |> withThreads [ t0 ; t1 ]
         let id, state = WaitHandle.createMutex true t0 state
-        let state = WaitHandle.waitOne t1 id state |> blocked
+        let state = WaitHandle.waitOne t1 id None state |> blocked
 
         let exn =
             Assert.Throws<System.Exception> (fun () -> WaitHandle.close id state |> ignore)
@@ -1114,7 +1115,7 @@ module TestWaitHandle =
         let id, state = WaitHandle.createMutex false t0 state
 
         let exn =
-            Assert.Throws<System.Exception> (fun () -> WaitHandle.waitOnePrioritized t0 id state |> ignore)
+            Assert.Throws<System.Exception> (fun () -> WaitHandle.waitOnePrioritized t0 id None state |> ignore)
 
         exn.Message |> shouldContainText "Mutex"
 
@@ -1139,7 +1140,7 @@ module TestWaitHandle =
         let state = WaitHandle.close id state
 
         let exn =
-            Assert.Throws<System.Exception> (fun () -> WaitHandle.waitOne t0 id state |> ignore)
+            Assert.Throws<System.Exception> (fun () -> WaitHandle.waitOne t0 id None state |> ignore)
 
         exn.Message |> shouldContainText "not registered"
 
@@ -1234,7 +1235,7 @@ module TestWaitHandle =
         let state = baseState () |> withThreads [ t0 ]
         let id, state = WaitHandle.createEvent true EventResetMode.Manual state
 
-        let state = WaitHandle.waitOne t0 id state |> acquired
+        let state = WaitHandle.waitOne t0 id None state |> acquired
 
         let e = eventOf id state
         e.Signaled |> shouldEqual true
@@ -1246,7 +1247,7 @@ module TestWaitHandle =
         let state = baseState () |> withThreads [ t0 ]
         let id, state = WaitHandle.createEvent true EventResetMode.Auto state
 
-        let state = WaitHandle.waitOne t0 id state |> acquired
+        let state = WaitHandle.waitOne t0 id None state |> acquired
 
         let e = eventOf id state
         e.Signaled |> shouldEqual false
@@ -1258,24 +1259,24 @@ module TestWaitHandle =
         let state = baseState () |> withThreads [ t0 ; t1 ; t2 ]
         let id, state = WaitHandle.createEvent false EventResetMode.Manual state
 
-        let state = WaitHandle.waitOne t0 id state |> blocked
-        let state = WaitHandle.waitOne t1 id state |> blocked
-        let state = WaitHandle.waitOne t2 id state |> blocked
+        let state = WaitHandle.waitOne t0 id None state |> blocked
+        let state = WaitHandle.waitOne t1 id None state |> blocked
+        let state = WaitHandle.waitOne t2 id None state |> blocked
 
         let e = eventOf id state
         e.Signaled |> shouldEqual false
         e.WaitQueue |> shouldEqual [ t0 ; t1 ; t2 ]
-        statusOf t0 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
-        statusOf t1 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
-        statusOf t2 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
+        statusOf t0 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle (id, None))
+        statusOf t1 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle (id, None))
+        statusOf t2 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle (id, None))
 
     [<Test>]
     let ``waitOne on an unsignalled Auto event parks the caller at the FIFO tail`` () : unit =
         let state = baseState () |> withThreads [ t0 ; t1 ; t2 ]
         let id, state = WaitHandle.createEvent false EventResetMode.Auto state
 
-        let state = WaitHandle.waitOne t0 id state |> blocked
-        let state = WaitHandle.waitOne t1 id state |> blocked
+        let state = WaitHandle.waitOne t0 id None state |> blocked
+        let state = WaitHandle.waitOne t1 id None state |> blocked
 
         let e = eventOf id state
         e.Signaled |> shouldEqual false
@@ -1298,9 +1299,9 @@ module TestWaitHandle =
     let ``setEvent on a Manual event wakes every parked waiter and latches Signaled=true`` () : unit =
         let state = baseState () |> withThreads [ t0 ; t1 ; t2 ]
         let id, state = WaitHandle.createEvent false EventResetMode.Manual state
-        let state = WaitHandle.waitOne t0 id state |> blocked
-        let state = WaitHandle.waitOne t1 id state |> blocked
-        let state = WaitHandle.waitOne t2 id state |> blocked
+        let state = WaitHandle.waitOne t0 id None state |> blocked
+        let state = WaitHandle.waitOne t1 id None state |> blocked
+        let state = WaitHandle.waitOne t2 id None state |> blocked
 
         let state = WaitHandle.setEvent id state
 
@@ -1326,9 +1327,9 @@ module TestWaitHandle =
     let ``setEvent on an Auto event with waiters wakes only the FIFO head, Signaled stays false`` () : unit =
         let state = baseState () |> withThreads [ t0 ; t1 ; t2 ]
         let id, state = WaitHandle.createEvent false EventResetMode.Auto state
-        let state = WaitHandle.waitOne t0 id state |> blocked
-        let state = WaitHandle.waitOne t1 id state |> blocked
-        let state = WaitHandle.waitOne t2 id state |> blocked
+        let state = WaitHandle.waitOne t0 id None state |> blocked
+        let state = WaitHandle.waitOne t1 id None state |> blocked
+        let state = WaitHandle.waitOne t2 id None state |> blocked
 
         let state = WaitHandle.setEvent id state
 
@@ -1336,17 +1337,17 @@ module TestWaitHandle =
         e.Signaled |> shouldEqual false
         e.WaitQueue |> shouldEqual [ t1 ; t2 ]
         statusOf t0 state |> shouldEqual ThreadStatus.Runnable
-        statusOf t1 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
-        statusOf t2 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
+        statusOf t1 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle (id, None))
+        statusOf t2 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle (id, None))
 
     [<Test>]
     let ``repeated setEvent on Auto with a queue drains FIFO one at a time`` () : unit =
         let state = baseState () |> withThreads [ t0 ; t1 ; t2 ; t3 ]
         let id, state = WaitHandle.createEvent false EventResetMode.Auto state
-        let state = WaitHandle.waitOne t0 id state |> blocked
-        let state = WaitHandle.waitOne t1 id state |> blocked
-        let state = WaitHandle.waitOne t2 id state |> blocked
-        let state = WaitHandle.waitOne t3 id state |> blocked
+        let state = WaitHandle.waitOne t0 id None state |> blocked
+        let state = WaitHandle.waitOne t1 id None state |> blocked
+        let state = WaitHandle.waitOne t2 id None state |> blocked
+        let state = WaitHandle.waitOne t3 id None state |> blocked
 
         let state = WaitHandle.setEvent id state
         (eventOf id state).WaitQueue |> shouldEqual [ t1 ; t2 ; t3 ]
@@ -1394,7 +1395,7 @@ module TestWaitHandle =
         let state = WaitHandle.setEvent id state
         (eventOf id state).Signaled |> shouldEqual true
 
-        let state = WaitHandle.waitOne t0 id state |> acquired
+        let state = WaitHandle.waitOne t0 id None state |> acquired
 
         let e = eventOf id state
         e.Signaled |> shouldEqual false
@@ -1434,16 +1435,16 @@ module TestWaitHandle =
     let ``resetEvent on an unsignalled Manual event with parked waiters does not touch the queue`` () : unit =
         let state = baseState () |> withThreads [ t0 ; t1 ]
         let id, state = WaitHandle.createEvent false EventResetMode.Manual state
-        let state = WaitHandle.waitOne t0 id state |> blocked
-        let state = WaitHandle.waitOne t1 id state |> blocked
+        let state = WaitHandle.waitOne t0 id None state |> blocked
+        let state = WaitHandle.waitOne t1 id None state |> blocked
 
         let state = WaitHandle.resetEvent id state
 
         let e = eventOf id state
         e.Signaled |> shouldEqual false
         e.WaitQueue |> shouldEqual [ t0 ; t1 ]
-        statusOf t0 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
-        statusOf t1 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle id)
+        statusOf t0 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle (id, None))
+        statusOf t1 state |> shouldEqual (ThreadStatus.BlockedOnWaitHandle (id, None))
 
     // ---- tryWaitOne ----
 
@@ -1500,7 +1501,7 @@ module TestWaitHandle =
     let ``close fails loud on an event with parked waiters`` () : unit =
         let state = baseState () |> withThreads [ t0 ]
         let id, state = WaitHandle.createEvent false EventResetMode.Manual state
-        let state = WaitHandle.waitOne t0 id state |> blocked
+        let state = WaitHandle.waitOne t0 id None state |> blocked
 
         let exn =
             Assert.Throws<System.Exception> (fun () -> WaitHandle.close id state |> ignore)
@@ -1575,7 +1576,7 @@ module TestWaitHandle =
         let id, state = WaitHandle.createEvent false EventResetMode.Manual state
 
         let exn =
-            Assert.Throws<System.Exception> (fun () -> WaitHandle.waitOnePrioritized t0 id state |> ignore)
+            Assert.Throws<System.Exception> (fun () -> WaitHandle.waitOnePrioritized t0 id None state |> ignore)
 
         exn.Message |> shouldContainText "Event"
 
@@ -1610,7 +1611,7 @@ module TestWaitHandle =
         let state = WaitHandle.close id state
 
         let exn =
-            Assert.Throws<System.Exception> (fun () -> WaitHandle.waitOne t0 id state |> ignore)
+            Assert.Throws<System.Exception> (fun () -> WaitHandle.waitOne t0 id None state |> ignore)
 
         exn.Message |> shouldContainText "not registered"
 
@@ -1641,7 +1642,7 @@ module TestWaitHandle =
             match statusOf tid state with
             | ThreadStatus.BlockedOnWaitHandle _ -> state
             | _ ->
-                match WaitHandle.waitOne tid id state with
+                match WaitHandle.waitOne tid id None state with
                 | WaitHandle.WaitOutcome.Acquired s
                 | WaitHandle.WaitOutcome.Blocked s -> s
                 | WaitHandle.WaitOutcome.AcquiredAbandoned _ ->

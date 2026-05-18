@@ -261,13 +261,24 @@ module NativeWaitHandle =
         | other -> failwith $"%s{operation}: expected %s{argName} to be a pointer-shaped argument, got %O{other}"
 
     /// Drive the timeout dispatch shared by `WaitHandle_WaitOneCore`
-    /// and `WaitHandle_WaitOnePrioritized`: timeout = -1 (INFINITE)
-    /// blocks via `blockingWait`; timeout = 0 (the non-blocking probe
-    /// `WaitOne(0)` issues) takes the deterministic try-and-return path
-    /// via `tryWait`; any other finite timeout currently fails loud
-    /// (no virtual clock — same blocker as
-    /// `SystemNative_LowLevelMonitor_TimedWait`). Returns the new
-    /// `IlMachineState` and the Int32 return value the guest sees.
+    /// and `WaitHandle_WaitOnePrioritized`. Three cases:
+    ///
+    ///  - `timeout = -1` (INFINITE): pass `None` for the deadline, so a
+    ///    slow-path park records no deadline and the driver loop never
+    ///    fires a timeout.
+    ///  - `timeout = 0`: the non-blocking probe `WaitOne(0)` issues —
+    ///    routed through `tryWait`, which never parks and returns
+    ///    `WAIT_OBJECT_0` / `WAIT_ABANDONED` / `WAIT_TIMEOUT` inline.
+    ///  - `timeout > 0`: compute an absolute deadline as `VirtualClockMs
+    ///    + timeout` and thread it through `blockingWait`. The fast
+    ///    paths ignore the deadline; the slow path records it on the
+    ///    parked thread's `BlockedOnWaitHandle` status, and the driver
+    ///    loop's deadline-firing pass picks it up.
+    ///
+    /// Returns the new `IlMachineState` and the Int32 return value the
+    /// guest sees. Note that the `Blocked` outcome pushes `WAIT_OBJECT_0`
+    /// at park time even for a finite-timeout wait — the deadline-fire
+    /// path rewrites the slot to `WAIT_TIMEOUT` when it expires.
     ///
     /// `blockingWait` and `tryWait` are passed in separately rather
     /// than derived from a shared kind-generic primitive so that the
@@ -278,7 +289,7 @@ module NativeWaitHandle =
     let private dispatchWait
         (operation : string)
         (timeout : int)
-        (blockingWait : IlMachineState -> WaitHandle.WaitOutcome)
+        (blockingWait : int64 option -> IlMachineState -> WaitHandle.WaitOutcome)
         (tryWait : IlMachineState -> WaitHandle.TryWaitOutcome)
         (state : IlMachineState)
         : IlMachineState * int
@@ -291,7 +302,7 @@ module NativeWaitHandle =
             // `AcquiredAbandoned` returns `WAIT_ABANDONED`; `Blocked`
             // pushes `WAIT_OBJECT_0` at park time (see the
             // abandoned-mutex-propagation note in `WaitHandle.fs`).
-            match blockingWait state with
+            match blockingWait None state with
             | WaitHandle.WaitOutcome.Acquired state -> state, waitObjectZero
             | WaitHandle.WaitOutcome.AcquiredAbandoned state -> state, waitAbandoned
             | WaitHandle.WaitOutcome.Blocked state -> state, waitObjectZero
@@ -299,22 +310,38 @@ module NativeWaitHandle =
             // Zero-timeout: try the fast path, then return immediately.
             // CoreCLR returns `WAIT_OBJECT_0` / `WAIT_ABANDONED` if the
             // handle was signalled, else `WAIT_TIMEOUT`; the caller is
-            // never enqueued. Treating a zero-timeout as an
-            // unimplemented finite timeout would crash on a
-            // deterministic non-blocking probe (e.g. the `WaitOne(0)`
-            // poll pattern), which is the wrong envelope.
+            // never enqueued. Routing through `tryWait` rather than the
+            // finite-deadline path keeps the deterministic non-blocking
+            // probe entirely off the scheduler's deadline radar.
             match tryWait state with
             | WaitHandle.TryWaitOutcome.Acquired state -> state, waitObjectZero
             | WaitHandle.TryWaitOutcome.AcquiredAbandoned state -> state, waitAbandoned
             | WaitHandle.TryWaitOutcome.TimedOut state -> state, waitTimeout
-        else
-            // No virtual clock yet. Same envelope as `Monitor_Wait` /
-            // `SystemNative_LowLevelMonitor_TimedWait`: silently treating
-            // a finite timeout as Infinite would mask guest bugs that
-            // depend on timeout-based wakeups; treating it as immediate
-            // timeout would break the higher-level fairness contract.
+        elif timeout < 0 then
+            // The BCL's `WaitHandle.WaitOne(int)` wrapper validates that
+            // the only legal negative value is `-1 = INFINITE`; reaching
+            // the QCall with any other negative value means the wrapper
+            // was bypassed (guest bug). Fail loud rather than treating
+            // it as a 0 timeout (silent bug-masking) or as INFINITE
+            // (different deadlock surface).
             failwith
-                $"%s{operation}: finite timeout (%d{timeout} ms) is not yet implemented; PawPrint has no virtual clock. Guest code that depends on timed waits must be lifted onto a deterministic clock abstraction first."
+                $"%s{operation}: negative timeout %d{timeout} ms is not Infinite (-1); the BCL's WaitHandle.WaitOne(int) validates this argument before the QCall, so reaching here means the wrapper was bypassed."
+        else
+            // Finite positive timeout: compute an absolute deadline
+            // against the virtual clock. `VirtualClockMs` advances 1 ms
+            // per scheduler tick (per `Program.stepPrepared`), and the
+            // driver loop fires `WaitHandle.fireTimeout` when the clock
+            // reaches or passes a parked thread's deadline; if no other
+            // thread is Runnable, the driver also jumps the clock to
+            // the nearest pending deadline so the wait can resolve.
+            // `int64` keeps the addition safe even for
+            // `Int32.MaxValue` timeouts against a long-running clock.
+            let deadlineMs = state.Kernel.VirtualClockMs + int64 timeout
+
+            match blockingWait (Some deadlineMs) state with
+            | WaitHandle.WaitOutcome.Acquired state -> state, waitObjectZero
+            | WaitHandle.WaitOutcome.AcquiredAbandoned state -> state, waitAbandoned
+            | WaitHandle.WaitOutcome.Blocked state -> state, waitObjectZero
 
     /// Decode an optional `int*` out-pointer that may be `IntPtr.Zero`.
     /// `Some ptr` means we must write to `*ptr`; `None` means the
