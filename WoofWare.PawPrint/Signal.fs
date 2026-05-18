@@ -144,3 +144,36 @@ module Signal =
         | -9 -> ValueSome Signal.SIGTTOU
         | -10 -> ValueSome Signal.SIGTSTP
         | n -> ofPlatformSigno n
+
+    /// The `PosixSignal` enum value that the dispatcher should hand to the
+    /// registered handler as its second argument. Modelled cross-platform
+    /// signals produce their negative enum identity (so `SIGINT -> -2`
+    /// round-trips through `ofPosixSignalEnum`).
+    ///
+    /// Signals that have no managed `PosixSignal` enum identity (SIGPIPE,
+    /// SIGABRT, SIGUSR1, SIGUSR2, and arbitrary `Signal.Other` raw signos)
+    /// produce `PosixSignalInvalid` (0). This matches what the real CoreCLR
+    /// dispatcher actually passes: `pal_signal.c` calls
+    /// `TryConvertSignalCodeToPosixSignal`, and on its `false` return path
+    /// the caller overwrites the out-parameter with `PosixSignalInvalid`
+    /// before invoking `g_posixSignalHandler(signalCode, signal)`. The raw
+    /// positive signo the conversion helper writes for unmapped codes is
+    /// dropped on the floor by that overwrite — only the first `signo`
+    /// argument carries the raw signal number to the managed handler.
+    let toPosixSignalEnum (signal : Signal) : int =
+        match signal with
+        | Signal.SIGHUP -> -1
+        | Signal.SIGINT -> -2
+        | Signal.SIGQUIT -> -3
+        | Signal.SIGTERM -> -4
+        | Signal.SIGCHLD -> -5
+        | Signal.SIGCONT -> -6
+        | Signal.SIGWINCH -> -7
+        | Signal.SIGTTIN -> -8
+        | Signal.SIGTTOU -> -9
+        | Signal.SIGTSTP -> -10
+        | Signal.SIGABRT -> 0
+        | Signal.SIGUSR1 -> 0
+        | Signal.SIGUSR2 -> 0
+        | Signal.SIGPIPE -> 0
+        | Signal.Other _ -> 0

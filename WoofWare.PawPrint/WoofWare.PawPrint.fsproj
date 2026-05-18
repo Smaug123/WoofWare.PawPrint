@@ -117,6 +117,7 @@
     <Compile Include="Native\NativeSystemNative.fs" />
     <Compile Include="Native\NativeLowLevelMonitor.fs" />
     <Compile Include="Native\NativeDispatch.fs" />
+    <Compile Include="SignalDispatch.fs" />
     <Compile Include="AbstractMachine.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>

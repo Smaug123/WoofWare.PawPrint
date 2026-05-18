@@ -98,6 +98,10 @@ module IlMachineState =
 
     let startUnstartedThread = IlMachineThreadState.startUnstartedThread
 
+    let startParkedDispatcher = IlMachineThreadState.startParkedDispatcher
+
+    let reParkDispatcher = IlMachineThreadState.reParkDispatcher
+
     let allocateArray = IlMachineThreadState.allocateArray
 
     let allocateMultiDimArray = IlMachineThreadState.allocateMultiDimArray
