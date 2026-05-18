@@ -693,12 +693,14 @@ module Intrinsics =
             | _ -> None
 
         | "System.Private.CoreLib", "Interlocked", "MemoryBarrier" ->
-            // [Intrinsic][MethodImpl(MethodImplOptions.InternalCall)]
-            // public static extern void MemoryBarrier();
-            // PawPrint single-steps a deterministic virtual CPU, so there is no
-            // host memory reordering for a fence to constrain. The no-op is
-            // correct here for the same reason as the `volatile.` IL prefix
-            // (NullaryIlOp.fs) and Volatile.{Read,Write}Barrier (below).
+            // [Intrinsic] public static void MemoryBarrier() => MemoryBarrier();
+            // Same shape as Volatile.{Read,Write}Barrier (below): the managed body is
+            // infinite self-recursion and the JIT replaces the call with the
+            // appropriate processor fence. PawPrint single-steps a deterministic
+            // virtual CPU, so there is no host memory reordering for a fence to
+            // constrain; the no-op is correct for the same reason as the `volatile.`
+            // IL prefix (NullaryIlOp.fs). Cannot live in safeIntrinsics because the
+            // IL would loop forever.
             // https://github.com/dotnet/runtime/blob/HEAD/src/libraries/System.Private.CoreLib/src/System/Threading/Interlocked.cs
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [], MethodReturnType.Void -> ()
