@@ -18,7 +18,7 @@ module TestPureCases =
     let unimplemented =
         [
             "AdvancedStructLayout.cs" // past MarshalNative_SizeOfHelper for ByValTStr and SystemNative_Malloc / SystemNative_Free / Marshal.AllocHGlobal / FreeHGlobal; now blocked downstream at the unimplemented MarshalNative_TryGetStructMarshalStub QCall (CoreLib's Marshal.StructureToPtr path)
-            "Threads.cs" // past ClrConfig_GetConfigBoolValue now that AutoreleasePool's static-field init can read a "knob not set" answer; next blocker is the same TypeConcretization "Generic method parameter 0" failure that ResizeArray.cs hits (TypeConcretisation.fs:683, reached from an initobj at UnaryMetadataMemoryOps.fs:30)
+            "Threads.cs" // past the initobj generic-method-parameter bug; now blocks at IlMachineManagedByref.readReinterpretedByrefField (IlMachineManagedByref.fs:1204) when a TaskAwaiter ldfld of `m_task` tries to bytewise-reinterpret object-reference storage that PawPrint does not yet model
             "MarshalStructureToPtrDateTimeField.cs" // MarshalNative_TryGetStructMarshalStub doesn't yet synthesise an IL stub for has-layout-non-blittable structs; CoreCLR writes an 8-byte OADate (`MARSHAL_TYPE_DATE`) for a `DateTime` field, but PawPrint currently rejects the struct loudly rather than memmove-ing the managed `_dateData` bytes. Real implementation needs the OADate-conversion stub.
             "MarshalStructureToPtrIntPtrField.cs" // The TryGetStructMarshalStub QCall classifier still rejects IntPtr/UIntPtr fields outright. Byte-renderability of `NativeIntSource` is value-dependent (e.g. `TypeHandlePtr` from `obj.GetType().TypeHandle.Value` can't be serialised by `CliNumericType.ToBytes`), so a type-level "blittable" decision can't be honoured for every possible value. Parked here as the motivating end-to-end case for joint widening: once `ToBytes` handles every `NativeIntSource` variant, the classifier can widen too and this Verbatim-valued test should pass.
         ]
@@ -47,8 +47,9 @@ module TestPureCases =
         let empty = MockEnv.make ()
 
         [
-            // CurrentManagedThreadId now works; blocked downstream on TypeConcretization
-            // generic method parameter 0 from CollectionsMarshal.AsSpan initobj.
+            // Past the initobj generic-method-parameter bug; now blocks on the
+            // unimplemented JIT intrinsic System.Numerics.Vector`1.get_IsSupported(),
+            // reached from a LINQ/SIMD codepath in the BCL.
             "ResizeArray.cs",
             { empty with
                 System_Environment = System_Environment.passThru

@@ -34,7 +34,7 @@ module internal UnaryMetadataMemoryOps =
                 assy
                 targetType
                 declaringTypeGenerics
-                ImmutableArray.Empty
+                currentMethod.Generics
                 state
 
         let state =
