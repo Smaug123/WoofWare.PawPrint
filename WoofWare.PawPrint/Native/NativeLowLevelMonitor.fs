@@ -92,27 +92,68 @@ module NativeLowLevelMonitor =
           MethodReturnType.Void ->
             let operation = "SystemNative_LowLevelMonitor_Wait"
             let id = monitorOfArgument operation instruction.Arguments.[0]
-            let state = LowLevelMonitor.wait ctx.Thread id state
+            let state = LowLevelMonitor.wait ctx.Thread id None state
             NativeHandlerResult.completed state |> Some
 
         | Some "SystemNative_LowLevelMonitor_TimedWait",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
             ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
-            // PawPrint has no virtual clock, so we can't compute "did the
-            // wait time out before being signalled?" deterministically.
-            // Treating TimedWait as Wait (always block until signalled) would
-            // turn finite-timeout code into a quiet deadlock when no signal
-            // ever arrives; treating it as immediate timeout would break
-            // LowLevelLifoSemaphore's flow-control invariants. Fail loud so
-            // the missing primitive surfaces at the call site.
+            // The managed BCL marshals `bool` ↔ `Int32`: non-zero means
+            // signalled, zero means timed out. The wait *always* parks
+            // (no fast path — TimedWait is a condvar primitive, not a
+            // lock try), so we always push the optimistic `1` (signalled)
+            // at park time; if the deadline fires first,
+            // `LowLevelMonitor.fireTimeout` rewrites it to `0` on the
+            // way out. The IL site advances in both shapes; the
+            // resumption past the call site happens only after the
+            // monitor has been reacquired, mirroring
+            // `pthread_cond_timedwait`'s contract.
             let operation = "SystemNative_LowLevelMonitor_TimedWait"
-            let _ = monitorOfArgument operation instruction.Arguments.[0]
-
+            let id = monitorOfArgument operation instruction.Arguments.[0]
             let timeout = NativeCall.int32Argument operation instruction.Arguments.[1]
 
-            failwith
-                $"%s{operation}: timed wait (%d{timeout} ms) is not yet implemented; PawPrint has no virtual clock to compute timeout deterministically. Guest code that depends on timed waits must be lifted onto a deterministic clock abstraction first."
+            let deadlineMs =
+                if timeout = System.Threading.Timeout.Infinite then
+                    // The managed `LowLevelMonitor.Wait(int)` wrapper
+                    // routes `-1 → Wait()` rather than calling TimedWait,
+                    // so this branch is defensive: an infinite-timeout
+                    // TimedWait still works (signal-only wake, no
+                    // deadline firing), even if no current caller takes
+                    // this path.
+                    None
+                elif timeout < 0 then
+                    // `< -1` is rejected by the BCL wrapper before the
+                    // QCall; reaching here means the wrapper was bypassed
+                    // and the caller meant something we cannot infer. A
+                    // silent treat-as-infinite or treat-as-zero would
+                    // turn a guest bug into a different bug elsewhere.
+                    failwith
+                        $"%s{operation}: negative timeout %d{timeout} ms is not Infinite (-1); the BCL's LowLevelMonitor.Wait(int) validates this argument before the QCall, so reaching here means the wrapper was bypassed."
+                else
+                    // `timeout = 0` is legal (the BCL `LowLevelLifoSemaphore`
+                    // uses it as a "park then immediately timeout" probe).
+                    // Recording the deadline as the current clock value
+                    // means the next driver tick's `fireExpiredDeadlines`
+                    // pass will pull the thread out — observably an
+                    // immediate timeout against signal-poll-then-park.
+                    // `int64` keeps the addition safe for `Int32.MaxValue`
+                    // timeouts against a long-running clock.
+                    Some (state.Kernel.VirtualClockMs + int64 timeout)
+
+            // Push the optimistic `Int32 1` (signalled) onto the calling
+            // thread's eval stack *before* parking. Park flips the
+            // thread's status; the IL site advances past TimedWait when
+            // the native handler returns `Stepped/Executed`, so the
+            // pushed value sits on the parked thread's frame stack until
+            // it's eventually woken — at which point either the value
+            // is correct as-is (signal-wake) or it was rewritten to `0`
+            // by `fireTimeout` (deadline-wake).
+            let state =
+                state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) ctx.Thread
+
+            let state = LowLevelMonitor.wait ctx.Thread id deadlineMs state
+            NativeHandlerResult.completed state |> Some
 
         | Some "SystemNative_LowLevelMonitor_Signal_Release",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],

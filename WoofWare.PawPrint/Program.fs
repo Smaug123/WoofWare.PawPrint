@@ -75,36 +75,52 @@ module Program =
         |> Seq.map (fun (ThreadId i, ts) -> $"thread {i} in state {ts.Status}")
         |> String.concat "; "
 
+    /// Discriminator for a fired wait deadline: which subsystem owns the
+    /// parked thread, and therefore which `fireTimeout` implementation
+    /// must be called to wake it.
+    ///
+    /// Each subsystem reaches its waiters through a different queue and
+    /// each has its own contract for how the optimistic park-time eval
+    /// stack push is rewritten on timeout. PR 2c will add a
+    /// `SyncBlockWait` case for `Monitor.Wait`.
+    [<RequireQualifiedAccess>]
+    type private FiredDeadline =
+        | WaitHandle of handle : WaitHandleId
+        | MonitorWait of monitor : LowLevelMonitorId
+
     /// Project a thread status into its finite-timeout deadline against
     /// the virtual clock, if any. Threads with no deadline (Runnable,
     /// non-timed blocks, infinite waits) return `None`; threads parked
-    /// with a finite timeout return `Some absoluteVirtualClockMs`.
-    ///
-    /// Today only `BlockedOnWaitHandle` carries a deadline; the
-    /// extractor is structured so PR 2b/2c can add cases for
-    /// `BlockedOnMonitorWait` / `BlockedOnSyncBlockWait` without
-    /// rewiring the orchestrator below.
-    let private waitDeadline (status : ThreadStatus) : int64 option =
+    /// with a finite timeout return `Some (kind, absoluteVirtualClockMs)`.
+    /// The `kind` is what tells the deadline-firing path which
+    /// subsystem's `fireTimeout` to invoke. PR 2c will extend this
+    /// extractor with a `BlockedOnSyncBlockWait` case.
+    let private waitDeadline (status : ThreadStatus) : (FiredDeadline * int64) option =
         match status with
-        | ThreadStatus.BlockedOnWaitHandle (_, deadline) -> deadline
+        | ThreadStatus.BlockedOnWaitHandle (handle, Some deadline) -> Some (FiredDeadline.WaitHandle handle, deadline)
+        | ThreadStatus.BlockedOnMonitorWait (monitor, Some deadline) ->
+            Some (FiredDeadline.MonitorWait monitor, deadline)
+        | ThreadStatus.BlockedOnWaitHandle (_, None)
+        | ThreadStatus.BlockedOnMonitorWait (_, None)
         | ThreadStatus.Runnable
         | ThreadStatus.NotStarted
         | ThreadStatus.BlockedOnJoin _
         | ThreadStatus.BlockedOnClassInit _
         | ThreadStatus.BlockedOnMonitorAcquire _
-        | ThreadStatus.BlockedOnMonitorWait _
         | ThreadStatus.BlockedOnSyncBlockAcquire _
         | ThreadStatus.BlockedOnSyncBlockWait _
         | ThreadStatus.Terminated
         | ThreadStatus.Parked -> None
 
     /// Fire a timeout wake for every blocked-with-deadline thread whose
-    /// deadline is `<= state.Kernel.VirtualClockMs`. Each fire removes
-    /// the thread from its handle's wait queue, rewrites the slow-path
-    /// `WAIT_OBJECT_0` slot on its eval stack to `WAIT_TIMEOUT`, and
-    /// flips it back to `Runnable`. Sorting by deadline isn't necessary
+    /// deadline is `<= state.Kernel.VirtualClockMs`. Each fire routes
+    /// through the per-subsystem `fireTimeout` (WaitHandle dequeues from
+    /// the handle's wait queue and rewrites `WAIT_OBJECT_0 → WAIT_TIMEOUT`;
+    /// LowLevelMonitor moves the waiter from `WaitQueue` to `AcquireQueue`
+    /// — granting ownership directly if the monitor is unowned — and
+    /// rewrites `Int32 1 → Int32 0`). Sorting by deadline isn't necessary
     /// here — every fired wake produces an isolated state change against
-    /// a disjoint handle / thread, and a thread can only be in one
+    /// a disjoint primitive / thread, and a thread can only be in one
     /// queue.
     let private fireExpiredDeadlines (state : IlMachineState) : IlMachineState =
         let now = state.Kernel.VirtualClockMs
@@ -113,15 +129,20 @@ module Program =
             state.ThreadState
             |> Map.toSeq
             |> Seq.choose (fun (tid, ts) ->
-                match ts.Status with
-                | ThreadStatus.BlockedOnWaitHandle (handleId, Some deadline) when deadline <= now ->
-                    Some (tid, handleId)
+                match waitDeadline ts.Status with
+                | Some (kind, deadline) when deadline <= now -> Some (tid, kind)
                 | _ -> None
             )
             |> Seq.toList
 
         expired
-        |> List.fold (fun s (tid, handleId) -> WaitHandle.fireTimeout tid handleId s) state
+        |> List.fold
+            (fun s (tid, kind) ->
+                match kind with
+                | FiredDeadline.WaitHandle handleId -> WaitHandle.fireTimeout tid handleId s
+                | FiredDeadline.MonitorWait monitorId -> LowLevelMonitor.fireTimeout tid monitorId s
+            )
+            state
 
     /// The minimum wait deadline among currently-blocked threads, or
     /// `None` if no thread is parked with a finite timeout. Used by the
@@ -138,7 +159,7 @@ module Program =
     let private nextDeadline (state : IlMachineState) : int64 option =
         state.ThreadState
         |> Map.toSeq
-        |> Seq.choose (fun (_, ts) -> waitDeadline ts.Status)
+        |> Seq.choose (fun (_, ts) -> waitDeadline ts.Status |> Option.map snd)
         |> Seq.fold
             (fun acc d ->
                 match acc with

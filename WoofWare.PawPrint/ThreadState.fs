@@ -35,12 +35,27 @@ type ThreadStatus =
     /// queue is load-bearing for fairness of higher-level locks built on top of this
     /// primitive (e.g. `LowLevelLock`).
     | BlockedOnMonitorAcquire of monitor : LowLevelMonitorId
-    /// This thread called `SystemNative_LowLevelMonitor_Wait` and is sitting on the
-    /// monitor's wait queue with the monitor temporarily released. A subsequent
-    /// `Signal_Release` from another thread transitions the head of the wait queue
-    /// to `BlockedOnMonitorAcquire`; reacquisition then runs through the normal
-    /// acquire path.
-    | BlockedOnMonitorWait of monitor : LowLevelMonitorId
+    /// This thread called `SystemNative_LowLevelMonitor_Wait` (infinite
+    /// timeout) or `SystemNative_LowLevelMonitor_TimedWait` (finite
+    /// timeout) and is sitting on the monitor's wait queue with the
+    /// monitor temporarily released. A subsequent `Signal_Release` from
+    /// another thread transitions the head of the wait queue to
+    /// `BlockedOnMonitorAcquire`; reacquisition then runs through the
+    /// normal acquire path.
+    ///
+    /// `deadlineMs = None` is an infinite wait; `Some ms` is a finite
+    /// timeout, expressed as the absolute virtual-clock millisecond at
+    /// which the wait expires. When `VirtualClockMs` advances to that
+    /// point and the thread is still parked, the driver fires a timeout
+    /// wake (`LowLevelMonitor.fireTimeout`): the thread is dequeued from
+    /// the monitor's `WaitQueue`, moved to the `AcquireQueue` tail (or
+    /// granted ownership directly if the monitor is unowned), and the
+    /// `Int32 1` optimistic-signalled slot pushed at park time is
+    /// rewritten to `Int32 0` so the BCL's `TimedWait` returns `false`.
+    /// Storing the deadline in the status itself (rather than alongside
+    /// in a separate map) makes "no deadline once the wake has fired"
+    /// structural — the new status carries no deadline field.
+    | BlockedOnMonitorWait of monitor : LowLevelMonitorId * deadlineMs : int64 option
     /// This thread called `Monitor.Enter` (or its `TryEnter` cousin with a non-zero
     /// timeout) on an object whose SyncBlock is `Held` by a different thread, and
     /// is parked at the SyncBlock's `AcquireQueue`. The lock owner's eventual

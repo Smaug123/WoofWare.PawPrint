@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint.Test
 
+open System.Collections.Generic
 open System.Collections.Immutable
 open FsCheck
 open FsCheck.FSharp
@@ -75,6 +76,100 @@ module TestLowLevelMonitor =
     let private t1 = ThreadId 1
     let private t2 = ThreadId 2
     let private t3 = ThreadId 3
+
+    // ----- Real-frame test scaffolding -----
+    //
+    // `fireTimeout` rewrites the parked thread's top-of-eval-stack
+    // (`Int32 1 → Int32 0`), so any test that drives `fireTimeout` needs a
+    // thread with a live MethodState — the bare `stubThreadState` above is
+    // intentionally unusable for eval-stack mechanics.
+    //
+    // We borrow the pattern from `TestNullaryIlOp.fs`: build a real frame
+    // backed by `System.Object::ToString`, since any concretized method is
+    // sufficient (the IL body is never executed by these tests; only the
+    // EvaluationStack is observed).
+
+    let private baseClassTypes : BaseClassTypes<DumpedAssembly> =
+        Corelib.getBaseTypes corelib
+
+    let private loadedAssemblies : ImmutableDictionary<string, DumpedAssembly> =
+        ImmutableDictionary.CreateRange [ KeyValuePair (corelib.Name.FullName, corelib) ]
+
+    let private concreteTypes : AllConcreteTypes =
+        Corelib.concretizeAll loadedAssemblies baseClassTypes AllConcreteTypes.Empty
+
+    let private baseStateWithFrames () : IlMachineState =
+        { baseState () with
+            ConcreteTypes = concreteTypes
+        }
+
+    let private mintFrame (state : IlMachineState) : IlMachineState * MethodState =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let objectToString =
+            baseClassTypes.Object.Methods
+            |> List.find (fun method -> method.Name = "ToString" && method.Parameters.IsEmpty)
+
+        let state, signature =
+            TypeMethodSignature.map
+                state
+                (fun state ty ->
+                    IlMachineState.concretizeType
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        corelib.Name
+                        ImmutableArray.Empty
+                        ImmutableArray.Empty
+                        ty
+                )
+                objectToString.Signature
+
+        let method =
+            objectToString
+            |> MethodInfo.mapTypeGenerics (fun _ -> failwith "System.Object::ToString is not type-generic")
+            |> MethodInfo.mapMethodGenerics (fun _ _ -> failwith "System.Object::ToString is not method-generic")
+            |> MethodInfo.setMethodVars (MethodBody.Il (MethodInstructions.onlyRet ())) signature
+
+        let methodState =
+            match
+                MethodState.Empty
+                    state.ConcreteTypes
+                    baseClassTypes
+                    state._LoadedAssemblies
+                    corelib
+                    method
+                    ImmutableArray.Empty
+                    (ImmutableArray.Create (CliType.ObjectRef None))
+                    None
+            with
+            | Ok ms -> ms
+            | Error missing -> failwith $"Unexpected missing assembly references constructing test frame: %O{missing}"
+
+        state, methodState
+
+    /// Install a real `ThreadState` (single frame, status Runnable) for each
+    /// thread id. Each thread gets its own freshly constructed frame so that
+    /// eval-stack operations on one thread do not visibly bleed into
+    /// another.
+    let private withRealThreads (threads : ThreadId list) (state : IlMachineState) : IlMachineState =
+        let state, threadMap =
+            threads
+            |> List.fold
+                (fun (state : IlMachineState, acc : Map<ThreadId, ThreadState>) (tid : ThreadId) ->
+                    let state, methodState = mintFrame state
+                    state, acc |> Map.add tid (ThreadState.New methodState)
+                )
+                (state, Map.empty)
+
+        { state with
+            ThreadState = threadMap
+        }
+
+    let private topOfStack (thread : ThreadId) (state : IlMachineState) : EvalStackValue =
+        match IlMachineState.peekEvalStack thread state with
+        | Some v -> v
+        | None -> failwith $"thread %O{thread} has empty eval stack"
 
     [<Test>]
     let ``create mints distinct ids`` () : unit =
@@ -176,13 +271,13 @@ module TestLowLevelMonitor =
         let state = baseState () |> withThreads [ t0 ]
         let id, state = LowLevelMonitor.create state
         let state = LowLevelMonitor.acquire t0 id state |> acquired
-        let state = LowLevelMonitor.wait t0 id state
+        let state = LowLevelMonitor.wait t0 id None state
 
         let monitor = monitorOf id state
         monitor.Owner |> shouldEqual None
         monitor.AcquireQueue |> shouldEqual []
         monitor.WaitQueue |> shouldEqual [ t0 ]
-        statusOf t0 state |> shouldEqual (ThreadStatus.BlockedOnMonitorWait id)
+        statusOf t0 state |> shouldEqual (ThreadStatus.BlockedOnMonitorWait (id, None))
 
     [<Test>]
     let ``wait while AcquireQueue is non-empty transfers ownership to the head`` () : unit =
@@ -191,7 +286,7 @@ module TestLowLevelMonitor =
         let state = LowLevelMonitor.acquire t0 id state |> acquired
         let state = LowLevelMonitor.acquire t1 id state |> blocked
         let state = LowLevelMonitor.acquire t2 id state |> blocked
-        let state = LowLevelMonitor.wait t0 id state
+        let state = LowLevelMonitor.wait t0 id None state
 
         let monitor = monitorOf id state
         // Wait's release path transferred ownership to the
@@ -201,7 +296,7 @@ module TestLowLevelMonitor =
         monitor.WaitQueue |> shouldEqual [ t0 ]
         statusOf t1 state |> shouldEqual ThreadStatus.Runnable
         statusOf t2 state |> shouldEqual (ThreadStatus.BlockedOnMonitorAcquire id)
-        statusOf t0 state |> shouldEqual (ThreadStatus.BlockedOnMonitorWait id)
+        statusOf t0 state |> shouldEqual (ThreadStatus.BlockedOnMonitorWait (id, None))
 
     [<Test>]
     let ``signalRelease promotes wait-queue head to owner via the release path`` () : unit =
@@ -212,7 +307,7 @@ module TestLowLevelMonitor =
         // transfers ownership to t1, then t1 calls Wait.
         let state = LowLevelMonitor.acquire t1 id state |> blocked
         let state = LowLevelMonitor.release t0 id state
-        let state = LowLevelMonitor.wait t1 id state
+        let state = LowLevelMonitor.wait t1 id None state
         // Another thread acquires and signal-releases.
         let state = LowLevelMonitor.acquire t2 id state |> acquired
         let state = LowLevelMonitor.signalRelease t2 id state
@@ -233,7 +328,7 @@ module TestLowLevelMonitor =
         let id, state = LowLevelMonitor.create state
         // Park t1 in the wait queue: acquire then wait.
         let state = LowLevelMonitor.acquire t1 id state |> acquired
-        let state = LowLevelMonitor.wait t1 id state
+        let state = LowLevelMonitor.wait t1 id None state
         // t3 acquires uncontended; t2 then parks in the acquire queue.
         let state = LowLevelMonitor.acquire t3 id state |> acquired
         let state = LowLevelMonitor.acquire t2 id state |> blocked
@@ -318,7 +413,7 @@ module TestLowLevelMonitor =
         let state = baseState () |> withThreads [ t0 ]
         let id, state = LowLevelMonitor.create state
         let state = LowLevelMonitor.acquire t0 id state |> acquired
-        let state = LowLevelMonitor.wait t0 id state
+        let state = LowLevelMonitor.wait t0 id None state
 
         let exn =
             Assert.Throws<System.Exception> (fun () -> LowLevelMonitor.destroy id state |> ignore)
@@ -375,7 +470,7 @@ module TestLowLevelMonitor =
         let state = LowLevelMonitor.acquire t0 id state |> acquired
 
         let exn =
-            Assert.Throws<System.Exception> (fun () -> LowLevelMonitor.wait t1 id state |> ignore)
+            Assert.Throws<System.Exception> (fun () -> LowLevelMonitor.wait t1 id None state |> ignore)
 
         exn.Message |> shouldContainText "owned by"
 
@@ -484,7 +579,7 @@ module TestLowLevelMonitor =
     /// each Wait observes the monitor as currently owned.
     let private parkInWait (thread : ThreadId) (id : LowLevelMonitorId) (state : IlMachineState) : IlMachineState =
         let state = LowLevelMonitor.acquire thread id state |> acquired
-        LowLevelMonitor.wait thread id state
+        LowLevelMonitor.wait thread id None state
 
     [<Test>]
     let ``spuriousWake on free monitor grants ownership to the woken thread`` () : unit =
@@ -623,7 +718,7 @@ module TestLowLevelMonitor =
         m.WaitQueue |> shouldEqual [ t0 ]
         m.Owner |> shouldEqual (Some t1)
         statusOf t1 state5 |> shouldEqual ThreadStatus.Runnable
-        statusOf t0 state5 |> shouldEqual (ThreadStatus.BlockedOnMonitorWait id)
+        statusOf t0 state5 |> shouldEqual (ThreadStatus.BlockedOnMonitorWait (id, None))
 
     [<Test>]
     let ``applySpuriousWakeups Scripted fails loud on a stale waiter`` () : unit =
@@ -710,9 +805,9 @@ module TestLowLevelMonitor =
         let state = LowLevelMonitor.acquire t0 id state |> acquired
         let state = LowLevelMonitor.acquire t1 id state |> blocked
         // t0 waits — t1 inherits ownership; t0 joins the WaitQueue.
-        let state = LowLevelMonitor.wait t0 id state
+        let state = LowLevelMonitor.wait t0 id None state
         // t1 waits — Owner becomes None, WaitQueue = [t0; t1].
-        let state = LowLevelMonitor.wait t1 id state
+        let state = LowLevelMonitor.wait t1 id None state
 
         let state =
             LowLevelMonitor.applySpuriousWakeups SpuriousWakeupStrategy.AlwaysAll 0L state
@@ -767,3 +862,197 @@ module TestLowLevelMonitor =
             && Set.ofList (owners @ m.AcquireQueue) = Set.ofList beforeWaiters
 
         Check.One (config, property)
+
+    // ----- LowLevelMonitor.wait deadline plumbing -----
+    //
+    // `BlockedOnMonitorWait` now carries an optional deadline. The
+    // scheduler in `Program.fireExpiredDeadlines` keys off this option to
+    // decide whether the thread is a TimedWait waiter (finite Some) or
+    // an untimed `Wait` waiter (None). These tests pin the variant
+    // payload that is the load-bearing contract.
+
+    [<Test>]
+    let ``wait with no deadline records None on the BlockedOnMonitorWait status`` () : unit =
+        let state = baseState () |> withThreads [ t0 ]
+        let id, state = LowLevelMonitor.create state
+        let state = LowLevelMonitor.acquire t0 id state |> acquired
+
+        let state = LowLevelMonitor.wait t0 id None state
+
+        statusOf t0 state |> shouldEqual (ThreadStatus.BlockedOnMonitorWait (id, None))
+
+    [<Test>]
+    let ``wait with a finite deadline records Some on the BlockedOnMonitorWait status`` () : unit =
+        let state = baseState () |> withThreads [ t0 ]
+        let id, state = LowLevelMonitor.create state
+        let state = LowLevelMonitor.acquire t0 id state |> acquired
+
+        let state = LowLevelMonitor.wait t0 id (Some 1234L) state
+
+        statusOf t0 state
+        |> shouldEqual (ThreadStatus.BlockedOnMonitorWait (id, Some 1234L))
+
+    [<Test>]
+    let ``wait deadline is recorded even when the waiter inherits ownership transfer`` () : unit =
+        // t0 owns, t1 contends, then t0 waits — ownership transfers to t1
+        // and t0 joins the WaitQueue. The deadline payload must survive
+        // that transfer path (which writes the status from the
+        // empty-AcquireQueue branch of `wait`).
+        let state = baseState () |> withThreads [ t0 ; t1 ]
+        let id, state = LowLevelMonitor.create state
+        let state = LowLevelMonitor.acquire t0 id state |> acquired
+        let state = LowLevelMonitor.acquire t1 id state |> blocked
+
+        let state = LowLevelMonitor.wait t0 id (Some 9999L) state
+
+        statusOf t0 state
+        |> shouldEqual (ThreadStatus.BlockedOnMonitorWait (id, Some 9999L))
+
+        (monitorOf id state).Owner |> shouldEqual (Some t1)
+        (monitorOf id state).WaitQueue |> shouldEqual [ t0 ]
+
+    // ----- LowLevelMonitor.fireTimeout -----
+    //
+    // These tests need real frames so the eval-stack rewrite
+    // (`Int32 1 → Int32 0`) is observable. They simulate the
+    // park-time optimistic push by pushing `Int32 1` themselves before
+    // calling `fireTimeout`.
+
+    /// Park `thread` on `id` with a finite deadline and the park-time
+    /// optimistic `Int32 1` already on its eval stack, mirroring what
+    /// `SystemNative_LowLevelMonitor_TimedWait` does at the IL boundary.
+    let private parkInTimedWait
+        (thread : ThreadId)
+        (id : LowLevelMonitorId)
+        (deadlineMs : int64)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        let state = LowLevelMonitor.acquire thread id state |> acquired
+
+        let state = state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) thread
+
+        LowLevelMonitor.wait thread id (Some deadlineMs) state
+
+    [<Test>]
+    let ``fireTimeout on free monitor grants ownership and rewrites Int32 1 to Int32 0`` () : unit =
+        let state = baseStateWithFrames () |> withRealThreads [ t0 ]
+        let id, state = LowLevelMonitor.create state
+        let state = state |> parkInTimedWait t0 id 100L
+
+        // Sanity: t0 parked with the optimistic 1 sitting on its eval
+        // stack, monitor unowned, deadline recorded on Status.
+        statusOf t0 state
+        |> shouldEqual (ThreadStatus.BlockedOnMonitorWait (id, Some 100L))
+
+        (monitorOf id state).Owner |> shouldEqual None
+        (monitorOf id state).WaitQueue |> shouldEqual [ t0 ]
+        topOfStack t0 state |> shouldEqual (EvalStackValue.Int32 1)
+
+        let state = LowLevelMonitor.fireTimeout t0 id state
+
+        let m = monitorOf id state
+        m.Owner |> shouldEqual (Some t0)
+        m.AcquireQueue |> shouldEqual []
+        m.WaitQueue |> shouldEqual []
+        statusOf t0 state |> shouldEqual ThreadStatus.Runnable
+        // TimedWait returns 0 = timed out.
+        topOfStack t0 state |> shouldEqual (EvalStackValue.Int32 0)
+
+    [<Test>]
+    let ``fireTimeout on held monitor parks at AcquireQueue tail and rewrites Int32 1 to Int32 0`` () : unit =
+        // t0 timed-waits; t1 then owns. Firing t0's timeout must not let
+        // t0 steal the monitor — it queues behind t1.
+        let state = baseStateWithFrames () |> withRealThreads [ t0 ; t1 ]
+        let id, state = LowLevelMonitor.create state
+        let state = state |> parkInTimedWait t0 id 100L
+        let state = LowLevelMonitor.acquire t1 id state |> acquired
+
+        let state = LowLevelMonitor.fireTimeout t0 id state
+
+        let m = monitorOf id state
+        m.Owner |> shouldEqual (Some t1)
+        m.AcquireQueue |> shouldEqual [ t0 ]
+        m.WaitQueue |> shouldEqual []
+        statusOf t0 state |> shouldEqual (ThreadStatus.BlockedOnMonitorAcquire id)
+        statusOf t1 state |> shouldEqual ThreadStatus.Runnable
+        // The rewrite happens regardless of which reacquire path is taken;
+        // by the time t0 is selected by the scheduler past TimedWait's
+        // call site it will observe `0` on top of stack.
+        topOfStack t0 state |> shouldEqual (EvalStackValue.Int32 0)
+
+    [<Test>]
+    let ``fireTimeout fails loud when the thread is not in WaitQueue`` () : unit =
+        let state = baseStateWithFrames () |> withRealThreads [ t0 ]
+        let id, state = LowLevelMonitor.create state
+        let state = LowLevelMonitor.acquire t0 id state |> acquired
+        // t0 currently owns; not in WaitQueue. Calling fireTimeout here
+        // mirrors the structural-bug case the scheduler is supposed to
+        // surface: a deadline observed for a thread the monitor does not
+        // know about as a waiter.
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () -> LowLevelMonitor.fireTimeout t0 id state |> ignore)
+
+        exn.Message |> shouldContainText "WaitQueue"
+
+    [<Test>]
+    let ``fireTimeout preserves FIFO across multiple AcquireQueue parks`` () : unit =
+        // Two contenders already in AcquireQueue; t2 times out while
+        // parked in WaitQueue. The timeout-wake must push t2 to the
+        // *tail* of AcquireQueue, not the head, so an earlier owner
+        // hand-off doesn't accidentally jump t2 over t1.
+        let state = baseStateWithFrames () |> withRealThreads [ t0 ; t1 ; t2 ]
+        let id, state = LowLevelMonitor.create state
+        let state = LowLevelMonitor.acquire t0 id state |> acquired
+        let state = LowLevelMonitor.acquire t1 id state |> blocked
+        let state = state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) t2
+        let state = LowLevelMonitor.acquire t2 id state |> blocked
+        // Move t2 from AcquireQueue into WaitQueue via a wait-with-deadline:
+        // it must currently own the monitor to call wait, so first hand
+        // ownership over. Easiest path: release t0, let t1 take ownership,
+        // release t1, let t2 take ownership, then t2 waits.
+        let state = LowLevelMonitor.release t0 id state
+        // After release, t1 owns; t2 still queued.
+        (monitorOf id state).Owner |> shouldEqual (Some t1)
+        let state = LowLevelMonitor.release t1 id state
+        // After release, t2 owns; queue empty.
+        (monitorOf id state).Owner |> shouldEqual (Some t2)
+        // Now park t0 and t1 in AcquireQueue against t2's ownership.
+        let state = LowLevelMonitor.acquire t0 id state |> blocked
+        let state = LowLevelMonitor.acquire t1 id state |> blocked
+        // Finally, t2 waits with a deadline (TimedWait posture).
+        let state = LowLevelMonitor.wait t2 id (Some 5L) state
+        // After wait: ownership transfers to t0 (FIFO head of AcquireQueue),
+        // t1 still queued, t2 in WaitQueue.
+        let m = monitorOf id state
+        m.Owner |> shouldEqual (Some t0)
+        m.AcquireQueue |> shouldEqual [ t1 ]
+        m.WaitQueue |> shouldEqual [ t2 ]
+
+        let state = LowLevelMonitor.fireTimeout t2 id state
+
+        let m = monitorOf id state
+        m.Owner |> shouldEqual (Some t0)
+        // t2 must go to the tail, behind t1.
+        m.AcquireQueue |> shouldEqual [ t1 ; t2 ]
+        m.WaitQueue |> shouldEqual []
+        statusOf t2 state |> shouldEqual (ThreadStatus.BlockedOnMonitorAcquire id)
+        topOfStack t2 state |> shouldEqual (EvalStackValue.Int32 0)
+
+    [<Test>]
+    let ``fireTimeout leaves other threads' eval stacks untouched`` () : unit =
+        // Cross-thread isolation: rewriting t0's stack must not perturb
+        // t1's stack. (The IlMachineState eval-stack helpers are keyed on
+        // ThreadId, but pinning this contract guards against accidental
+        // sharing of MethodStates across threads.)
+        let state = baseStateWithFrames () |> withRealThreads [ t0 ; t1 ]
+        let id, state = LowLevelMonitor.create state
+        let state = state |> parkInTimedWait t0 id 100L
+        // t1 is Runnable with a sentinel value on its stack.
+        let state = state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 42) t1
+
+        let state = LowLevelMonitor.fireTimeout t0 id state
+
+        topOfStack t0 state |> shouldEqual (EvalStackValue.Int32 0)
+        topOfStack t1 state |> shouldEqual (EvalStackValue.Int32 42)

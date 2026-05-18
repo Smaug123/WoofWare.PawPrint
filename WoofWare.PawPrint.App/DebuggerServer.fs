@@ -90,10 +90,15 @@ module DebuggerServer =
             writer.WriteString ("kind", "blockedOnMonitorAcquire")
             writer.WriteNumber ("monitor", monitor)
             writer.WriteEndObject ()
-        | ThreadStatus.BlockedOnMonitorWait (LowLevelMonitorId monitor) ->
+        | ThreadStatus.BlockedOnMonitorWait (LowLevelMonitorId monitor, deadlineMs) ->
             writer.WriteStartObject ()
             writer.WriteString ("kind", "blockedOnMonitorWait")
             writer.WriteNumber ("monitor", monitor)
+
+            match deadlineMs with
+            | None -> ()
+            | Some ms -> writer.WriteNumber ("deadlineMs", ms)
+
             writer.WriteEndObject ()
         | ThreadStatus.BlockedOnSyncBlockAcquire lockObject ->
             writer.WriteStartObject ()
