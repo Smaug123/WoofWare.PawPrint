@@ -658,6 +658,54 @@ module NativeSystemNative =
             )
             |> NativeHandlerResult.completed
             |> Some
+        | Some "SystemNative_HandleNonCanceledPosixSignal",
+          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Void ->
+            // The BCL's managed `OnPosixSignal` calls this from a
+            // thread-pool worker after all registered handlers have run
+            // and none called `PosixSignalContext.Cancel = true`. Real
+            // native code runs the signal's kernel-default disposition:
+            // no-op for ignore/stop/continue defaults (SIGCHLD, SIGURG,
+            // SIGWINCH, SIGTSTP, SIGTTIN, SIGTTOU, SIGCONT), and for
+            // terminate-by-default signals it restores the original
+            // `sigaction` and re-raises so the process exits with the
+            // signal-default behaviour. PawPrint matches the no-op
+            // branches exactly (there is nothing to do) and refuses the
+            // terminate branch with a clear marker: signal-driven
+            // process termination is a follow-up slice that needs a
+            // `RunOutcome` variant or equivalent, not silently squashed
+            // here.
+            //
+            // By contract the BCL only calls this with signos that
+            // `SystemNative_GetPlatformSignalNumber` previously returned
+            // non-zero for, so a signo arriving here must lie within
+            // `(0, Signal.linuxSignalMax]` (modelled signals get a named
+            // case; unmodelled-but-valid signos round-trip via
+            // `Signal.Other`). Anything else indicates a guest bypassing
+            // the standard registration path and we fail loudly rather
+            // than silently dropping the request.
+            let operation = "SystemNative_HandleNonCanceledPosixSignal"
+            let signo = NativeCall.int32Argument operation instruction.Arguments.[0]
+
+            match Signal.ofPlatformSigno signo with
+            | ValueNone ->
+                failwith
+                    $"%s{operation}: refusing to handle out-of-range signo %d{signo} (signos arriving here must lie within (0, Signal.linuxSignalMax]; this looks like a guest bypassing SystemNative_GetPlatformSignalNumber)"
+            | ValueSome signal ->
+                match Signal.defaultDisposition signal with
+                | DefaultDisposition.Ignore
+                | DefaultDisposition.Stop
+                | DefaultDisposition.Continue ->
+                    // Nothing to do: the runtime cannot stop or continue
+                    // itself, and Ignore is literally a no-op. Matches
+                    // the per-signal no-op branches in `pal_signal.c`'s
+                    // `SystemNative_HandleNonCanceledPosixSignal` switch
+                    // (and the implicit terminal-reinit call on SIGCONT
+                    // is not relevant to PawPrint, which has no terminal).
+                    NativeHandlerResult.completed state |> Some
+                | DefaultDisposition.Terminate ->
+                    failwith
+                        $"%s{operation}: signal-driven process termination is not yet modelled (signo %d{signo}, signal %O{signal}); a follow-up slice will surface this as a RunOutcome rather than silently no-op'ing."
         | Some "SystemNative_DisablePosixSignalHandling",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Void ->

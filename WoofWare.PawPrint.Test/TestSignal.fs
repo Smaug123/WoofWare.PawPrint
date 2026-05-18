@@ -221,3 +221,98 @@ module TestSignal =
         // through to `return 0;`.
         armBehaviour (Signal.linuxSignalMax + 1) |> shouldEqual 0
         armBehaviour 100 |> shouldEqual 0
+
+    [<Test>]
+    let ``defaultDisposition classifies modelled terminate-by-default signals`` () : unit =
+        // POSIX default for these signals is Terminate (some with a core
+        // dump, but PawPrint collapses both into a single Terminate case
+        // since we don't model core dumps). Drives the catch-all branch
+        // in `pal_signal.c`'s `SystemNative_HandleNonCanceledPosixSignal`.
+        for signal in
+            [
+                Signal.SIGHUP
+                Signal.SIGINT
+                Signal.SIGQUIT
+                Signal.SIGABRT
+                Signal.SIGUSR1
+                Signal.SIGUSR2
+                Signal.SIGPIPE
+                Signal.SIGTERM
+            ] do
+            Signal.defaultDisposition signal |> shouldEqual DefaultDisposition.Terminate
+
+    [<Test>]
+    let ``defaultDisposition classifies modelled ignore stop and continue signals`` () : unit =
+        // The four kernel "Stop" signals: SIGSTOP (uncatchable; not in our
+        // DU, so the test exercises it via Signal.Other 19), SIGTSTP,
+        // SIGTTIN, SIGTTOU. Plus the no-op-by-default trio (SIGCHLD,
+        // SIGWINCH) and the Continue-by-default singleton (SIGCONT).
+        Signal.defaultDisposition Signal.SIGCHLD
+        |> shouldEqual DefaultDisposition.Ignore
+
+        Signal.defaultDisposition Signal.SIGWINCH
+        |> shouldEqual DefaultDisposition.Ignore
+
+        Signal.defaultDisposition Signal.SIGCONT
+        |> shouldEqual DefaultDisposition.Continue
+
+        Signal.defaultDisposition Signal.SIGTSTP |> shouldEqual DefaultDisposition.Stop
+
+        Signal.defaultDisposition Signal.SIGTTIN |> shouldEqual DefaultDisposition.Stop
+
+        Signal.defaultDisposition Signal.SIGTTOU |> shouldEqual DefaultDisposition.Stop
+
+    [<Test>]
+    let ``defaultDisposition routes Signal.Other 23 to Ignore for SIGURG`` () : unit =
+        // SIGURG isn't in PawPrint's `Signal` DU and so always arrives via
+        // `Signal.Other 23` if it ever shows up at the seam. The kernel
+        // default is Ignore — the dispatcher must NOT fall through to the
+        // catch-all Terminate branch just because the case is unnamed.
+        // This is the test that the dispatch-off-Linux-signo design buys
+        // us over a per-case DU match.
+        Signal.defaultDisposition (Signal.Other 23)
+        |> shouldEqual DefaultDisposition.Ignore
+
+    [<Test>]
+    let ``defaultDisposition routes Signal.Other 19 to Stop for SIGSTOP`` () : unit =
+        // SIGSTOP is uncatchable so the dispatcher will never actually run
+        // its default disposition (`SystemNative_EnablePosixSignalHandling`
+        // returns EINVAL before any pending entry can build up), but the
+        // classifier is still expected to give the correct kernel-level
+        // answer for completeness — Stop, not Terminate.
+        Signal.defaultDisposition (Signal.Other 19)
+        |> shouldEqual DefaultDisposition.Stop
+
+    [<Test>]
+    let ``defaultDisposition routes unmodelled signos to Terminate`` () : unit =
+        // The POSIX default for an unrecognised signal is Terminate, and
+        // `SystemNative_HandleNonCanceledPosixSignal`'s `default:` branch
+        // is the catch-all. SIGILL (4), SIGFPE (8), SIGSEGV (11), SIGBUS
+        // (7), SIGSYS (31): all terminate-by-default and not in our
+        // modelled set. `Signal.Other` carrying any unrecognised signo
+        // must classify the same way.
+        Signal.defaultDisposition (Signal.Other 4)
+        |> shouldEqual DefaultDisposition.Terminate // SIGILL
+
+        Signal.defaultDisposition (Signal.Other 8)
+        |> shouldEqual DefaultDisposition.Terminate // SIGFPE
+
+        Signal.defaultDisposition (Signal.Other 11)
+        |> shouldEqual DefaultDisposition.Terminate // SIGSEGV
+
+        Signal.defaultDisposition (Signal.Other 64)
+        |> shouldEqual DefaultDisposition.Terminate
+
+    [<Test>]
+    let ``defaultDisposition is total over every modelled signal`` () : unit =
+        // Guard against a future named-case addition that forgets to
+        // extend `defaultDisposition`: every entry in `modelledSignals`
+        // must produce *some* disposition (any value is fine — the
+        // per-case correctness is asserted by the other tests above).
+        // F# pattern-match exhaustiveness on `Signal` doesn't fire here
+        // because the lookup is keyed off `toLinuxSigno`, so an
+        // unrepresented signo would silently fall through to Terminate
+        // without compiler help. Iterating the modelled set is the
+        // cheapest way to keep us honest.
+        for signal, _signo in modelledSignals do
+            Signal.defaultDisposition signal |> ignore

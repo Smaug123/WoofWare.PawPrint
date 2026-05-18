@@ -36,6 +36,34 @@ type Signal =
     /// directly). Two `Other` values are equal iff their raw values match.
     | Other of rawSignal : int
 
+/// The kernel-level default action for a POSIX signal when no managed
+/// handler claims it. PawPrint mirrors the POSIX 1003.1 categories rather
+/// than collapsing everything to "terminate vs. no-op", so callers that
+/// want to render the disposition (e.g. trace output) retain the source
+/// information. `SystemNative_HandleNonCanceledPosixSignal` treats
+/// `Ignore`, `Stop`, and `Continue` all as no-ops in the dispatcher path
+/// — the runtime cannot stop or continue itself, and Ignore is literally
+/// nothing to do — but the classification is still load-bearing for
+/// future slices that want to render or assert the disposition.
+[<RequireQualifiedAccess>]
+type DefaultDisposition =
+    /// Kernel default is to terminate the process. PawPrint does not yet
+    /// model signal-driven process termination; the dispatcher path that
+    /// reaches this disposition fails loudly until a follow-up slice
+    /// wires it through to a `RunOutcome`.
+    | Terminate
+    /// Kernel default is to ignore the signal entirely. No state changes.
+    | Ignore
+    /// Kernel default is to suspend (stop) the process. PawPrint cannot
+    /// stop its own simulator threads from the inside, so this is a
+    /// no-op for `SystemNative_HandleNonCanceledPosixSignal` purposes —
+    /// the kernel-level distinction from `Ignore` is preserved so a
+    /// trace/UI consumer can still tell the two apart.
+    | Stop
+    /// Kernel default is to resume a stopped process. No state changes;
+    /// PawPrint has nothing to resume.
+    | Continue
+
 [<RequireQualifiedAccess>]
 module Signal =
     /// Highest signal number the simulator accepts at the P/Invoke seam.
@@ -177,3 +205,42 @@ module Signal =
         | Signal.SIGUSR2 -> 0
         | Signal.SIGPIPE -> 0
         | Signal.Other _ -> 0
+
+    /// The POSIX kernel-level default disposition for `signal`. Used by
+    /// `SystemNative_HandleNonCanceledPosixSignal` to decide whether the
+    /// dispatcher path should treat the signal as a no-op or fall through
+    /// to process termination, and (in a later slice) by the dispatcher's
+    /// handler-return-0 path that mirrors the same decision.
+    ///
+    /// The lookup keys off the Linux signo, not the `Signal` DU case
+    /// directly, so unmodelled-but-known signals carried as
+    /// `Signal.Other rawSigno` still classify correctly: `Signal.Other 23`
+    /// (SIGURG, signo 23 on Linux) returns `Ignore`, matching the kernel
+    /// default rather than falling through to the conservative
+    /// `Terminate` catch-all. Unknown signos that don't correspond to a
+    /// kernel default we recognise classify as `Terminate`, which is the
+    /// POSIX default for unrecognised signals and matches the trailing
+    /// `default:` branch in `pal_signal.c`'s
+    /// `SystemNative_HandleNonCanceledPosixSignal` switch.
+    let defaultDisposition (signal : Signal) : DefaultDisposition =
+        match toLinuxSigno signal with
+        // Ignore-by-default: SIGCHLD (17), SIGURG (23), SIGWINCH (28).
+        // SIGURG isn't in our `Signal` DU but reaches us via
+        // `Signal.Other 23`; surfacing it here keeps the disposition
+        // table source-of-truth for arbitrary signos.
+        | 17
+        | 23
+        | 28 -> DefaultDisposition.Ignore
+        // Stop-by-default: SIGSTOP (19, uncatchable; included for
+        // completeness), SIGTSTP (20), SIGTTIN (21), SIGTTOU (22).
+        | 19
+        | 20
+        | 21
+        | 22 -> DefaultDisposition.Stop
+        // Continue-by-default: SIGCONT (18).
+        | 18 -> DefaultDisposition.Continue
+        // Everything else terminates. Covers the modelled signals
+        // SIGHUP, SIGINT, SIGQUIT, SIGABRT, SIGUSR1, SIGUSR2, SIGPIPE,
+        // SIGTERM, plus arbitrary unrecognised signos. Matches the
+        // `default:` branch in `SystemNative_HandleNonCanceledPosixSignal`.
+        | _ -> DefaultDisposition.Terminate
