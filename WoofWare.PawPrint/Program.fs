@@ -75,6 +75,78 @@ module Program =
         |> Seq.map (fun (ThreadId i, ts) -> $"thread {i} in state {ts.Status}")
         |> String.concat "; "
 
+    /// Project a thread status into its finite-timeout deadline against
+    /// the virtual clock, if any. Threads with no deadline (Runnable,
+    /// non-timed blocks, infinite waits) return `None`; threads parked
+    /// with a finite timeout return `Some absoluteVirtualClockMs`.
+    ///
+    /// Today only `BlockedOnWaitHandle` carries a deadline; the
+    /// extractor is structured so PR 2b/2c can add cases for
+    /// `BlockedOnMonitorWait` / `BlockedOnSyncBlockWait` without
+    /// rewiring the orchestrator below.
+    let private waitDeadline (status : ThreadStatus) : int64 option =
+        match status with
+        | ThreadStatus.BlockedOnWaitHandle (_, deadline) -> deadline
+        | ThreadStatus.Runnable
+        | ThreadStatus.NotStarted
+        | ThreadStatus.BlockedOnJoin _
+        | ThreadStatus.BlockedOnClassInit _
+        | ThreadStatus.BlockedOnMonitorAcquire _
+        | ThreadStatus.BlockedOnMonitorWait _
+        | ThreadStatus.BlockedOnSyncBlockAcquire _
+        | ThreadStatus.BlockedOnSyncBlockWait _
+        | ThreadStatus.Terminated
+        | ThreadStatus.Parked -> None
+
+    /// Fire a timeout wake for every blocked-with-deadline thread whose
+    /// deadline is `<= state.Kernel.VirtualClockMs`. Each fire removes
+    /// the thread from its handle's wait queue, rewrites the slow-path
+    /// `WAIT_OBJECT_0` slot on its eval stack to `WAIT_TIMEOUT`, and
+    /// flips it back to `Runnable`. Sorting by deadline isn't necessary
+    /// here — every fired wake produces an isolated state change against
+    /// a disjoint handle / thread, and a thread can only be in one
+    /// queue.
+    let private fireExpiredDeadlines (state : IlMachineState) : IlMachineState =
+        let now = state.Kernel.VirtualClockMs
+
+        let expired =
+            state.ThreadState
+            |> Map.toSeq
+            |> Seq.choose (fun (tid, ts) ->
+                match ts.Status with
+                | ThreadStatus.BlockedOnWaitHandle (handleId, Some deadline) when deadline <= now ->
+                    Some (tid, handleId)
+                | _ -> None
+            )
+            |> Seq.toList
+
+        expired
+        |> List.fold (fun s (tid, handleId) -> WaitHandle.fireTimeout tid handleId s) state
+
+    /// The minimum wait deadline among currently-blocked threads, or
+    /// `None` if no thread is parked with a finite timeout. Used by the
+    /// driver loop's jump-to-deadline fallback: if no thread is Runnable
+    /// but at least one has a finite-timeout wait outstanding, advance
+    /// `VirtualClockMs` to the nearest such deadline so the wait can
+    /// resolve on the next pass.
+    ///
+    /// The clock-jump must not bump `StepCounter` — the spurious-wakeup
+    /// schedules are keyed on `StepCounter`, and a jump-driven tick is
+    /// deliberately *not* a real scheduler tick. Keeping the two clocks
+    /// separate is exactly why `VirtualClockMs` is its own field rather
+    /// than derived from `StepCounter`.
+    let private nextDeadline (state : IlMachineState) : int64 option =
+        state.ThreadState
+        |> Map.toSeq
+        |> Seq.choose (fun (_, ts) -> waitDeadline ts.Status)
+        |> Seq.fold
+            (fun acc d ->
+                match acc with
+                | None -> Some d
+                | Some a -> Some (min a d)
+            )
+            None
+
     let private logStepOutcome
         (logger : ILogger)
         (state : IlMachineState)
@@ -159,6 +231,19 @@ module Program =
                     )
             }
 
+        // After advancing `VirtualClockMs`, fire any wait deadlines that
+        // are now in the past. This runs every tick (not just on
+        // deadlock) so a timeout against a thread holding a release lock
+        // can still expire while other threads make progress: e.g.
+        // thread A is parked with a 50 ms timeout on a semaphore, and
+        // thread B is busy computing something else — A's deadline still
+        // fires when the clock reaches it, even though B keeps the
+        // scheduler from ever stalling.
+        let prepared =
+            { prepared with
+                State = fireExpiredDeadlines prepared.State
+            }
+
         // Drive the signal-dispatcher state machine before the scheduler
         // picks its next thread. If a pending signal is deliverable and
         // the dispatcher is currently Parked, this flips it to Runnable
@@ -169,6 +254,36 @@ module Program =
             { prepared with
                 State = SignalDispatch.trySpawnHandler prepared.BaseClassTypes prepared.State
             }
+
+        // Jump-to-deadline fallback: if no thread is Runnable but at
+        // least one is parked with a finite-timeout wait outstanding,
+        // advance `VirtualClockMs` to the nearest pending deadline and
+        // fire it. This is what keeps a guest like `WaitOne(50)` against
+        // an unsignalled handle from deadlocking — without the jump, the
+        // clock would advance 1 ms per tick *only when there's something
+        // to step*, but there is nothing to step.
+        //
+        // Only `VirtualClockMs` is advanced (not `StepCounter`), so the
+        // spurious-wakeup schedule is untouched. A jump-driven wake is
+        // not a scheduler tick — it is the resolution of a timeout that
+        // would otherwise be invisible.
+        let prepared =
+            match Scheduler.chooseNext prepared.LastRan prepared.State with
+            | Some _ -> prepared
+            | None ->
+                match nextDeadline prepared.State with
+                | None -> prepared
+                | Some target ->
+                    let state =
+                        prepared.State.MapKernel (fun kernel ->
+                            { kernel with
+                                VirtualClockMs = max kernel.VirtualClockMs target
+                            }
+                        )
+
+                    { prepared with
+                        State = fireExpiredDeadlines state
+                    }
 
         match Scheduler.chooseNext prepared.LastRan prepared.State with
         | None ->
