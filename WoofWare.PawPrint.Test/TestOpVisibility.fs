@@ -46,11 +46,18 @@ module TestOpVisibility =
             NullaryIlOp.Stloc_1
             NullaryIlOp.Ceq
             NullaryIlOp.Add
-            NullaryIlOp.Mul_ovf_un
+            NullaryIlOp.Sub
+            NullaryIlOp.Mul
+            NullaryIlOp.Neg
+            NullaryIlOp.Not
+            NullaryIlOp.And
+            NullaryIlOp.Or
+            NullaryIlOp.Xor
+            NullaryIlOp.Shl
+            NullaryIlOp.Shr
+            NullaryIlOp.Shr_un
             NullaryIlOp.Conv_I4
-            NullaryIlOp.Conv_ovf_i8_un
-            NullaryIlOp.Throw
-            NullaryIlOp.Rethrow
+            NullaryIlOp.Conv_r_un
             NullaryIlOp.Endfilter
             NullaryIlOp.Endfinally
             NullaryIlOp.Localloc
@@ -58,16 +65,18 @@ module TestOpVisibility =
             NullaryIlOp.Tail
             NullaryIlOp.Readonly
             NullaryIlOp.Refanytype
-            NullaryIlOp.Ckfinite
             NullaryIlOp.Arglist
             NullaryIlOp.Break
         ]
 
-    /// Nullary ops that touch the shared heap or dereference arbitrary
-    /// pointers. Listed exhaustively (modulo trivial expansion of the LdInd /
-    /// StInd / LdElem / StElem families) because each entry is load-bearing.
+    /// Nullary ops that touch the shared heap, dereference arbitrary pointers,
+    /// or raise a CLR-defined exception (which allocates an exception object
+    /// on the shared heap). Listed exhaustively (modulo trivial expansion of
+    /// the LdInd / StInd / LdElem / StElem families) because each entry is
+    /// load-bearing for the scheduler.
     let private nullaryGloballyVisible : NullaryIlOp list =
         [
+            // Heap / indirect access
             NullaryIlOp.LdLen
             NullaryIlOp.Ldind_ref
             NullaryIlOp.Ldind_i
@@ -115,6 +124,45 @@ module TestOpVisibility =
             NullaryIlOp.Stelem_ref
             NullaryIlOp.Cpblk
             NullaryIlOp.Initblk
+            // Trapping arithmetic / conversions: each may allocate a
+            // CLR-defined runtime exception (OverflowException,
+            // DivideByZeroException, ArithmeticException).
+            NullaryIlOp.Add_ovf
+            NullaryIlOp.Add_ovf_un
+            NullaryIlOp.Sub_ovf
+            NullaryIlOp.Sub_ovf_un
+            NullaryIlOp.Mul_ovf
+            NullaryIlOp.Mul_ovf_un
+            NullaryIlOp.Div
+            NullaryIlOp.Div_un
+            NullaryIlOp.Rem
+            NullaryIlOp.Rem_un
+            NullaryIlOp.Conv_ovf_i
+            NullaryIlOp.Conv_ovf_u
+            NullaryIlOp.Conv_ovf_i1
+            NullaryIlOp.Conv_ovf_i2
+            NullaryIlOp.Conv_ovf_i4
+            NullaryIlOp.Conv_ovf_i8
+            NullaryIlOp.Conv_ovf_u1
+            NullaryIlOp.Conv_ovf_u2
+            NullaryIlOp.Conv_ovf_u4
+            NullaryIlOp.Conv_ovf_u8
+            NullaryIlOp.Conv_ovf_i_un
+            NullaryIlOp.Conv_ovf_u_un
+            NullaryIlOp.Conv_ovf_i1_un
+            NullaryIlOp.Conv_ovf_i2_un
+            NullaryIlOp.Conv_ovf_i4_un
+            NullaryIlOp.Conv_ovf_i8_un
+            NullaryIlOp.Conv_ovf_u1_un
+            NullaryIlOp.Conv_ovf_u2_un
+            NullaryIlOp.Conv_ovf_u4_un
+            NullaryIlOp.Conv_ovf_u8_un
+            NullaryIlOp.Ckfinite
+            // Explicit raise / re-raise: Throw allocates an NRE if the
+            // operand is null; Rethrow reads through the active exception
+            // object on the shared heap.
+            NullaryIlOp.Throw
+            NullaryIlOp.Rethrow
         ]
 
     [<Test>]
@@ -216,13 +264,16 @@ module TestOpVisibility =
             UnaryMetadataTokenIlOp.Castclass
             UnaryMetadataTokenIlOp.Isinst
             UnaryMetadataTokenIlOp.Ldvirtftn
+            // Ldtoken allocates / mutates the runtime handle cache on first
+            // use (RuntimeTypeHandle / RuntimeFieldHandle / RuntimeMethodHandle
+            // objects are realised as heap objects with stable identity).
+            UnaryMetadataTokenIlOp.Ldtoken
         ]
 
     let private metadataThreadLocal : UnaryMetadataTokenIlOp list =
         [
             UnaryMetadataTokenIlOp.Ldftn
             UnaryMetadataTokenIlOp.Sizeof
-            UnaryMetadataTokenIlOp.Ldtoken
             UnaryMetadataTokenIlOp.Constrained
             UnaryMetadataTokenIlOp.Mkrefany
             UnaryMetadataTokenIlOp.Refanyval
@@ -263,8 +314,11 @@ module TestOpVisibility =
 
     [<Test>]
     let ``top-level classifier routes to unary-string classifier`` () : unit =
+        // Ldstr is globally visible because the first load of a literal
+        // allocates the managed String and mutates the interning table;
+        // later loads observe that shared object identity.
         OpVisibility.classify (IlOp.UnaryStringToken (UnaryStringTokenIlOp.Ldstr, stringToken))
-        |> shouldEqual Visibility.ThreadLocal
+        |> shouldEqual Visibility.GloballyVisible
 
     [<Test>]
     let ``Switch classifies ThreadLocal`` () : unit =

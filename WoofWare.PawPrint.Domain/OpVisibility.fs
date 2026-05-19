@@ -11,6 +11,13 @@ namespace WoofWare.PawPrint
 /// classify as `GloballyVisible`, but classifying a strictly-local op as
 /// `GloballyVisible` only costs schedule-space, not correctness.
 ///
+/// The rule we apply: an op is `GloballyVisible` if its IL semantics include
+/// either (a) heap allocation or mutation, or (b) raising a CLR-defined
+/// runtime exception as a normal outcome on guest-supplied values — because
+/// constructing the exception object is itself a heap allocation observable
+/// by other threads (allocation order / object identity is shared state).
+/// Anything else is `ThreadLocal`.
+///
 /// The classifier deliberately ignores runtime context (what's on the eval
 /// stack, where a pointer points, what a `Call` target does). That makes it a
 /// pure function of `IlOp` — cheap, easy to test exhaustively, and free of
@@ -65,25 +72,16 @@ module OpVisibility =
         | NullaryIlOp.Stloc_2
         | NullaryIlOp.Stloc_3 -> Visibility.ThreadLocal
 
-        // ---- Pure eval-stack comparisons and arithmetic ----
+        // ---- Pure eval-stack comparisons and non-trapping arithmetic ----
+        // No exception path on any input, so no allocation is possible.
         | NullaryIlOp.Ceq
         | NullaryIlOp.Cgt
         | NullaryIlOp.Cgt_un
         | NullaryIlOp.Clt
         | NullaryIlOp.Clt_un
         | NullaryIlOp.Sub
-        | NullaryIlOp.Sub_ovf
-        | NullaryIlOp.Sub_ovf_un
         | NullaryIlOp.Add
-        | NullaryIlOp.Add_ovf
-        | NullaryIlOp.Add_ovf_un
         | NullaryIlOp.Mul
-        | NullaryIlOp.Mul_ovf
-        | NullaryIlOp.Mul_ovf_un
-        | NullaryIlOp.Div
-        | NullaryIlOp.Div_un
-        | NullaryIlOp.Rem
-        | NullaryIlOp.Rem_un
         | NullaryIlOp.Neg
         | NullaryIlOp.Not
         | NullaryIlOp.Shr
@@ -104,38 +102,14 @@ module OpVisibility =
         | NullaryIlOp.Conv_U2
         | NullaryIlOp.Conv_U4
         | NullaryIlOp.Conv_U8
-        | NullaryIlOp.Conv_ovf_i
-        | NullaryIlOp.Conv_ovf_u
-        | NullaryIlOp.Conv_ovf_u1
-        | NullaryIlOp.Conv_ovf_u2
-        | NullaryIlOp.Conv_ovf_u4
-        | NullaryIlOp.Conv_ovf_u8
-        | NullaryIlOp.Conv_ovf_i1
-        | NullaryIlOp.Conv_ovf_i2
-        | NullaryIlOp.Conv_ovf_i4
-        | NullaryIlOp.Conv_ovf_i8
-        | NullaryIlOp.Conv_ovf_i_un
-        | NullaryIlOp.Conv_ovf_u_un
-        | NullaryIlOp.Conv_ovf_i1_un
-        | NullaryIlOp.Conv_ovf_u1_un
-        | NullaryIlOp.Conv_ovf_i2_un
-        | NullaryIlOp.Conv_ovf_u2_un
-        | NullaryIlOp.Conv_ovf_i4_un
-        | NullaryIlOp.Conv_ovf_u4_un
-        | NullaryIlOp.Conv_ovf_i8_un
-        | NullaryIlOp.Conv_ovf_u8_un
-        | NullaryIlOp.Conv_r_un
-        | NullaryIlOp.Ckfinite -> Visibility.ThreadLocal
+        | NullaryIlOp.Conv_r_un -> Visibility.ThreadLocal
 
-        // ---- Thread-local control / exception machinery ----
-        // Throw and Rethrow start unwinding the *current* thread's frames; the
-        // exception object's state is read by subsequent ldfld/etc., which will
-        // classify visible on their own. Endfilter/Endfinally are pure frame
-        // control. Localloc allocates on the thread's own stack.
+        // ---- Thread-local control / exception machinery that does not allocate ----
+        // Endfilter/Endfinally just transfer control within the thread's own
+        // exception dispatch state. Localloc allocates on the thread's own
+        // stack, not the shared managed heap.
         | NullaryIlOp.Endfilter
         | NullaryIlOp.Endfinally
-        | NullaryIlOp.Rethrow
-        | NullaryIlOp.Throw
         | NullaryIlOp.Localloc -> Visibility.ThreadLocal
 
         // ---- Prefixes; the modified op that follows is what carries effects ----
@@ -150,6 +124,55 @@ module OpVisibility =
         | NullaryIlOp.Break
         | NullaryIlOp.Arglist
         | NullaryIlOp.Refanytype -> Visibility.ThreadLocal
+
+        // ---- Trapping arithmetic / conversions / explicit raise ----
+        // Each of these may raise a CLR-defined runtime exception
+        // (OverflowException, DivideByZeroException, ArithmeticException,
+        // NullReferenceException) on guest-supplied values. Constructing the
+        // exception object is a heap allocation — observable allocation order
+        // and object identity are shared state, so by the rule stated at the
+        // top of this file these are GloballyVisible. Treating the op itself
+        // (rather than the exception-dispatch step) as the visible boundary
+        // means the scheduler doesn't need to know that an exception will be
+        // raised in order to schedule correctly.
+        | NullaryIlOp.Add_ovf
+        | NullaryIlOp.Add_ovf_un
+        | NullaryIlOp.Sub_ovf
+        | NullaryIlOp.Sub_ovf_un
+        | NullaryIlOp.Mul_ovf
+        | NullaryIlOp.Mul_ovf_un
+        | NullaryIlOp.Div
+        | NullaryIlOp.Div_un
+        | NullaryIlOp.Rem
+        | NullaryIlOp.Rem_un
+        | NullaryIlOp.Conv_ovf_i
+        | NullaryIlOp.Conv_ovf_u
+        | NullaryIlOp.Conv_ovf_i1
+        | NullaryIlOp.Conv_ovf_i2
+        | NullaryIlOp.Conv_ovf_i4
+        | NullaryIlOp.Conv_ovf_i8
+        | NullaryIlOp.Conv_ovf_u1
+        | NullaryIlOp.Conv_ovf_u2
+        | NullaryIlOp.Conv_ovf_u4
+        | NullaryIlOp.Conv_ovf_u8
+        | NullaryIlOp.Conv_ovf_i_un
+        | NullaryIlOp.Conv_ovf_u_un
+        | NullaryIlOp.Conv_ovf_i1_un
+        | NullaryIlOp.Conv_ovf_i2_un
+        | NullaryIlOp.Conv_ovf_i4_un
+        | NullaryIlOp.Conv_ovf_i8_un
+        | NullaryIlOp.Conv_ovf_u1_un
+        | NullaryIlOp.Conv_ovf_u2_un
+        | NullaryIlOp.Conv_ovf_u4_un
+        | NullaryIlOp.Conv_ovf_u8_un
+        | NullaryIlOp.Ckfinite -> Visibility.GloballyVisible
+
+        // Throw allocates a NullReferenceException when the operand is null
+        // (CLI I.12.4.2). Rethrow reads through the active exception object,
+        // which lives on the shared heap. Either way the op is a publication
+        // point.
+        | NullaryIlOp.Throw
+        | NullaryIlOp.Rethrow -> Visibility.GloballyVisible
 
         // ---- Heap / indirect access ----
         // Ldind_* and Stind_* dereference an arbitrary managed pointer; that
@@ -320,16 +343,23 @@ module OpVisibility =
         // Reads the vtable of the object on the stack.
         | UnaryMetadataTokenIlOp.Ldvirtftn -> Visibility.GloballyVisible
 
+        // Ldtoken pushes a RuntimeTypeHandle / RuntimeFieldHandle /
+        // RuntimeMethodHandle. In this runtime those handles are realised as
+        // managed objects on the shared heap, allocated and cached the first
+        // time the token is encountered (see executeLdtoken). First touch
+        // mutates shared state, and later touches observe the cached
+        // identity, so this is a heap-publication point either way.
+        | UnaryMetadataTokenIlOp.Ldtoken -> Visibility.GloballyVisible
+
         // Ldftn picks a method pointer from metadata; the load itself is
-        // pure (no object dereference). Sizeof and Ldtoken are constant pushes
-        // from immutable metadata. Constrained is a prefix on a following
+        // pure (no object dereference). Sizeof is a constant push from
+        // immutable metadata. Constrained is a prefix on a following
         // call/callvirt, which will classify visible. Mkrefany and Refanyval
         // shuffle a typed-reference struct on the stack without dereferencing
         // the address they carry; the next op that uses the address will be
         // visible.
         | UnaryMetadataTokenIlOp.Ldftn
         | UnaryMetadataTokenIlOp.Sizeof
-        | UnaryMetadataTokenIlOp.Ldtoken
         | UnaryMetadataTokenIlOp.Constrained
         | UnaryMetadataTokenIlOp.Mkrefany
         | UnaryMetadataTokenIlOp.Refanyval -> Visibility.ThreadLocal
@@ -337,12 +367,13 @@ module OpVisibility =
     /// See `Visibility` for the contract.
     let classifyUnaryString (op : UnaryStringTokenIlOp) : Visibility =
         match op with
-        // Ldstr resolves to the runtime's interned-string for a literal
-        // baked into the metadata. The interning table is logically immutable
-        // from the guest's perspective: the literal canonicalises to the same
-        // reference on every load, no other thread can change that mapping.
-        // Treat as thread-local.
-        | UnaryStringTokenIlOp.Ldstr -> Visibility.ThreadLocal
+        // Ldstr resolves a literal to a managed String object. The interning
+        // table is logically immutable from the guest's perspective, but the
+        // first time a literal is loaded the String object itself has to be
+        // allocated and the interning table mutated (see state.InternedStrings
+        // updates in executeLdstr). Subsequent loads observe that allocation's
+        // object identity, which is shared-heap state. GloballyVisible.
+        | UnaryStringTokenIlOp.Ldstr -> Visibility.GloballyVisible
 
     /// See `Visibility` for the contract.
     let classify (op : IlOp) : Visibility =
