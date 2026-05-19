@@ -15,27 +15,39 @@ open WoofWare.PawPrint.Test
 module TestImpureCases =
     let assy = typeof<RunResult>.Assembly
 
-    let unimplemented =
+    let unimplemented : EndToEndTestCase list = []
+
+    let cases : EndToEndTestCase list =
         [
-            // `Console.WriteLine("Hello, world!")` triggers lazy initialisation of `Console.Out`,
-            // which descends Console::get_Out → ConsolePal::OpenStandardOutput → Interop+Sys::Dup.
-            // PawPrint now intercepts SystemNative_Dup via FileDescriptorRegistry and
-            // SystemNative_Write via the same handler family, so both the std-stream open path and
-            // the actual byte-emitting call are implemented; the WriteLine flow now blocks
-            // downstream on the unimplemented libSystem.Globalization.Native P/Invoke
-            // `GlobalizationNative_LoadICU` during CultureInfo initialisation.
             {
+                // `Console.WriteLine("Hello, world!")` exercises the full
+                // BCL stdio stack end-to-end: `Console::get_Out` descends
+                // `ConsolePal::OpenStandardOutput → Interop.Sys.Dup`, then
+                // the `StreamWriter` flush descends `Interop.Sys.Write`.
+                // Both shims are intercepted by PawPrint's
+                // FileDescriptorRegistry / EmulatedKernel. We assert on
+                // the bytes the guest actually appended to the stdout
+                // log, not just the exit code — a regression in the
+                // encoder, the StreamWriter buffer, or the SystemNative
+                // pointer decode would not change the exit code (the
+                // `return 1;` runs unconditionally) but would corrupt
+                // these bytes.
                 FileName = "WriteLine.cs"
                 ExpectedReturnCode = 1
                 NativeImpls = NativeImpls.PassThru ()
                 Environment = Map.empty
                 ExpectsUnhandledException = false
-                AssertTerminalState = None
-            }
-        ]
+                AssertTerminalState =
+                    Some (fun state ->
+                        OutputLogEntry.bytesFor FileDescriptorRole.StandardOutput state.Kernel.OutputLog
+                        |> Seq.toArray
+                        |> shouldEqual (System.Text.Encoding.UTF8.GetBytes "Hello, world!\n")
 
-    let cases : EndToEndTestCase list =
-        [
+                        OutputLogEntry.bytesFor FileDescriptorRole.StandardError state.Kernel.OutputLog
+                        |> Seq.length
+                        |> shouldEqual 0
+                    )
+            }
             {
                 FileName = "InstaQuit.cs"
                 ExpectedReturnCode = 1
@@ -124,6 +136,21 @@ module TestImpureCases =
                 // property tests; this test verifies the wiring from the
                 // P/Invoke handler through to the registry.
                 FileName = "SystemNativeClose.cs"
+                ExpectedReturnCode = 0
+                Environment = Map.empty
+                ExpectsUnhandledException = false
+                NativeImpls = NativeImpls.PassThru ()
+                AssertTerminalState = None
+            }
+            {
+                // Exercises the SystemNative_IsATty PawPrint handler against
+                // standard fds, a freshly-duped fd, and a closed fd. Lives in
+                // sourcesImpure because the real CLR's IsATty answer depends
+                // on whether the test process happens to have a TTY attached
+                // to its standard streams, which races with how a developer
+                // happens to run NUnit; PawPrint's headless-process model
+                // makes the answer stable by construction.
+                FileName = "SystemNativeIsATty.cs"
                 ExpectedReturnCode = 0
                 Environment = Map.empty
                 ExpectsUnhandledException = false

@@ -30,6 +30,13 @@ module Errno =
     /// real runtime.
     let EFAULT : int = 14
 
+    /// `ENOTTY` — Inappropriate ioctl for device. Returned by `isatty(3)`
+    /// when the supplied fd is open but does not refer to a terminal.
+    /// PawPrint surfaces this through `SystemNative_IsATty`, which always
+    /// reports "not a terminal" for live fds because the simulated process
+    /// is headless. Value matches Linux and Darwin (both define it as 25).
+    let ENOTTY : int = 25
+
     /// `EINVAL` — Invalid argument. Returned by `sigaction(2)` when the
     /// caller asks to install a handler for an uncatchable signal
     /// (`SIGKILL` or `SIGSTOP`). PawPrint surfaces this through

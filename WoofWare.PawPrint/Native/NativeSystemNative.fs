@@ -254,6 +254,40 @@ module NativeSystemNative =
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 resultCode) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
+        | Some "SystemNative_IsATty",
+          [ ConcreteIntPtr state.ConcreteTypes ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            // `int32_t SystemNative_IsATty(intptr_t fd)` (pal_console.c:43)
+            // delegates to libc `isatty(3)`. PawPrint models a headless
+            // simulated process: no fd ever refers to a terminal, so we
+            // always return 0. CoreLib's only consumer is
+            // `ConsolePal.Unix.cs:IsHandleRedirected`, which therefore sees
+            // every standard stream as redirected — matching how this
+            // interpreter is run in practice (piped/captured output).
+            //
+            // errno mirrors libc: `ENOTTY` for live fds, `EBADF` for
+            // unknown fds. The BCL's `[LibraryImport]` wrapper for IsATty
+            // does not currently read this back, but a guest that calls
+            // the entry point directly may observe `LastSystemError` via
+            // `Marshal.GetLastSystemError`, so we set it honestly.
+            let fd = fdArgument "SystemNative_IsATty" instruction.Arguments.[0]
+
+            let errno =
+                match FileDescriptorRegistry.tryFind fd state.Kernel.FileDescriptors with
+                | Some _ -> Errno.ENOTTY
+                | None -> Errno.EBADF
+
+            let state =
+                state.MapKernel (fun kernel ->
+                    { kernel with
+                        LastSystemError = errno
+                    }
+                )
+
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
         | Some "SystemNative_Write",
           [ ConcreteIntPtr state.ConcreteTypes
             ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
