@@ -435,17 +435,23 @@ module internal IntrinsicHelpers =
 
     // PawPrint emulates a deterministic scalar virtual CPU: every hardware-intrinsic
     // family reports IsSupported = false so the BCL falls through to its scalar/portable
-    // path. The IL body of these `[Intrinsic]` getters is a recursive `return IsSupported;`
-    // stub that the JIT replaces with a constant; without an explicit fold here it would
-    // recurse forever. New ISAs landing in CoreLib must be added to this set.
+    // path. Most of the IL bodies are a recursive `return IsSupported;` stub that the JIT
+    // replaces with a constant; without an explicit fold here it would recurse forever.
+    // A few entries (e.g. `System.Numerics.Vector\`1`) have honest terminating bodies that
+    // would return `true` for primitive `T` — we still fold them to `false` here because the
+    // scalar profile has no implementation of the SIMD ops a `true` answer would commit us to.
+    // New ISAs landing in CoreLib must be added to this set.
     //
     // Coverage source: src/libraries/System.Private.CoreLib/src/System/Runtime/Intrinsics
-    // in the dotnet/runtime tree. Listing harmless-but-unmatched names is fine; the lookup
-    // is keyed off the fully qualified declaring type name, so types absent from the
-    // running CoreLib simply never trigger a match.
+    // (and System/Numerics for `Vector\`1`) in the dotnet/runtime tree. Listing
+    // harmless-but-unmatched names is fine; the lookup is keyed off the fully qualified
+    // declaring type name, so types absent from the running CoreLib simply never trigger a
+    // match.
     let scalarOnlyFalseIsSupportedIntrinsics =
         set
             [
+                // System.Numerics
+                "System.Numerics.Vector`1"
                 // System.Runtime.Intrinsics.Arm
                 "System.Runtime.Intrinsics.Arm.AdvSimd"
                 "System.Runtime.Intrinsics.Arm.AdvSimd.Arm64"

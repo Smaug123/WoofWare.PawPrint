@@ -18,7 +18,7 @@ module TestPureCases =
     let unimplemented =
         [
             "AdvancedStructLayout.cs" // past MarshalNative_SizeOfHelper for ByValTStr and SystemNative_Malloc / SystemNative_Free / Marshal.AllocHGlobal / FreeHGlobal; now blocked downstream at the unimplemented MarshalNative_TryGetStructMarshalStub QCall (CoreLib's Marshal.StructureToPtr path)
-            "Threads.cs" // past ClrConfig_GetConfigBoolValue now that AutoreleasePool's static-field init can read a "knob not set" answer; next blocker is the same TypeConcretization "Generic method parameter 0" failure that ResizeArray.cs hits (TypeConcretisation.fs:683, reached from an initobj at UnaryMetadataMemoryOps.fs:30)
+            "Threads.cs" // past the initobj generic-method-parameter bug; now blocks at IlMachineManagedByref.readReinterpretedByrefField (IlMachineManagedByref.fs:1204) when a TaskAwaiter ldfld of `m_task` tries to bytewise-reinterpret object-reference storage that PawPrint does not yet model
             "MarshalStructureToPtrDateTimeField.cs" // MarshalNative_TryGetStructMarshalStub doesn't yet synthesise an IL stub for has-layout-non-blittable structs; CoreCLR writes an 8-byte OADate (`MARSHAL_TYPE_DATE`) for a `DateTime` field, but PawPrint currently rejects the struct loudly rather than memmove-ing the managed `_dateData` bytes. Real implementation needs the OADate-conversion stub.
             "MarshalStructureToPtrIntPtrField.cs" // Classifier+Memmove widening now lets `Marshal.StructureToPtr` reach the byte copy for `IntPtr`/`UIntPtr` fields, but the subsequent `Marshal.ReadInt32(ptr, ofs)` (Marshal.cs:332) does `(int)addr & 0x3` as an alignment check, hitting `Conv_I4` of a managed pointer to a native memory block. Needs alignment-aware `Conv_I4`/`Conv_U4` on managed pointers (or equivalent) to land.
             "SpanMemmoveFieldProjectedOverlap.cs" // `CellAwareCopy.shouldCopyBackwards` now fails loud (rather than silently picking the forward loop) when overlap is undecidable and both byrefs share root storage. Folding `Field` projections into a flat byte offset would let this case decide direction correctly; until then this is a deliberate fail-loud diagnostic.
@@ -42,21 +42,14 @@ module TestPureCases =
             { empty with
                 System_Environment = System_Environment.passThru
             }
-        ]
-        |> Map.ofList
-
-    let unimplementedMockTests : Map<string, NativeImpls> =
-        let empty = MockEnv.make ()
-
-        [
-            // CurrentManagedThreadId now works; blocked downstream on TypeConcretization
-            // generic method parameter 0 from CollectionsMarshal.AsSpan initobj.
             "ResizeArray.cs",
             { empty with
                 System_Environment = System_Environment.passThru
             }
         ]
         |> Map.ofList
+
+    let unimplementedMockTests : Map<string, NativeImpls> = Map.empty
 
     let expectsUnhandledException = [ "UnhandledException.cs" ] |> Set.ofList
 
