@@ -112,10 +112,18 @@ module NativeMonitor =
             ->
             // .NET 10 QCall: Monitor.Wait(ObjectHandleOnStack obj, int millisecondsTimeout) -> bool.
             // Caller has already null-checked `obj` and clamped `timeout >= -1` in the managed
-            // wrapper. The return bool is `true` if a Pulse/PulseAll signalled us, `false` on
-            // timeout. We have no virtual clock, so finite non-zero timeouts fail loud; only
-            // -1 (Infinite) is supported. We always push `true` because in PawPrint a waiter
-            // can only be woken by a Pulse/PulseAll/spurious wake — never by a timeout.
+            // wrapper. LibraryImport's `[return: MarshalAs(UnmanagedType.Bool)]` produces a
+            // 4-byte BOOL in the PInvoke signature, so the QCall returns int32 (not the
+            // managed bool ABI): non-zero means signalled, zero means timed out.
+            //
+            // The call always parks the thread on the SyncBlock's WaitQueue; there is no
+            // fast path. Push the optimistic `Int32 1` (signalled) *before* parking, mirroring
+            // `SystemNative_LowLevelMonitor_TimedWait`: when the scheduler resumes this
+            // thread, the IL site is already past this call and the pushed value is consumed
+            // as the return. If the deadline fires first, `SyncBlockMonitor.fireTimeout`
+            // rewrites the slot to `Int32 0` (timed out). Pulse/PulseAll/spurious wakes leave
+            // the optimistic `1` in place — matching CoreCLR's contract that the boolean
+            // return is `signalReceived`, which is `true` for any non-timeout exit.
             let operation = "Monitor_Wait"
 
             if instruction.Arguments.Length <> 2 then
@@ -129,25 +137,37 @@ module NativeMonitor =
                 | CliType.Numeric (CliNumericType.Int32 i) -> i
                 | other -> failwith $"%s{operation}: expected int32 timeout, got %O{other}"
 
-            if timeout <> System.Threading.Timeout.Infinite then
-                // CoreCLR honours finite timeouts; PawPrint has no virtual clock yet. Silently
-                // treating finite timeouts as Infinite would hide guest bugs that depend on
-                // timeout-based wakeups. Same envelope as `LowLevelMonitor.timedWait` and
-                // `TryEnter_FastPath_WithTimeout`.
-                failwith
-                    $"TODO: Monitor_Wait with non-Infinite timeout %d{timeout}ms requires a virtual clock; not yet implemented"
+            let deadlineMs =
+                if timeout = System.Threading.Timeout.Infinite then
+                    // The managed `Monitor.Wait(obj)` overload routes through the same QCall
+                    // with `millisecondsTimeout = -1`; an infinite wait has no deadline and
+                    // wakes only via Pulse/PulseAll/spurious-wake.
+                    None
+                elif timeout < 0 then
+                    // `< -1` is rejected by the BCL wrapper (`Monitor.Wait(obj, int)`)
+                    // before reaching the QCall, so reaching here means the wrapper was
+                    // bypassed and the caller meant something we cannot infer. A silent
+                    // treat-as-infinite or treat-as-zero would turn a guest bug into a
+                    // different bug elsewhere.
+                    failwith
+                        $"%s{operation}: negative timeout %d{timeout} ms is not Infinite (-1); the BCL's Monitor.Wait(obj, int) validates this argument before the QCall, so reaching here means the wrapper was bypassed."
+                else
+                    // `timeout = 0` is legal: it parks then immediately fires on the next
+                    // driver tick's `fireExpiredDeadlines` pass — observably an immediate
+                    // timeout. `int64` keeps the addition safe for `Int32.MaxValue`
+                    // timeouts against a long-running clock.
+                    Some (state.Kernel.VirtualClockMs + int64 timeout)
 
-            let state = SyncBlockMonitor.wait ctx.Thread addr state
-
-            // LibraryImport's `[return: MarshalAs(UnmanagedType.Bool)]` produces a 4-byte BOOL
-            // in the PInvoke signature, so the QCall returns int32 (not the managed bool ABI).
-            // Push 1: when the scheduler resumes this thread, the IL pointer is already past
-            // this call site and the return value is consumed by the caller as "signal received".
-            // Spurious wakeups also return 1 (matches CoreCLR's contract: spurious wakeups are
-            // documented; the boolean return is `signalReceived`, which is `true` for any
-            // non-timeout exit).
+            // Push the optimistic `Int32 1` (signalled) onto the calling thread's eval stack
+            // *before* parking. Park flips the thread's status; the IL site advances past
+            // Monitor_Wait when the native handler returns Stepped/Executed, so the pushed
+            // value sits on the parked thread's frame stack until it's eventually woken —
+            // at which point either the value is correct as-is (signal/spurious wake) or it
+            // was rewritten to `Int32 0` by `SyncBlockMonitor.fireTimeout` (deadline wake).
             let state =
-                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 1)) ctx.Thread state
+                state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) ctx.Thread
+
+            let state = SyncBlockMonitor.wait ctx.Thread addr deadlineMs state
 
             NativeHandlerResult.completed state |> Some
 

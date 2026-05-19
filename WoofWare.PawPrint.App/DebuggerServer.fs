@@ -105,10 +105,15 @@ module DebuggerServer =
             writer.WriteString ("kind", "blockedOnSyncBlockAcquire")
             writer.WriteNumber ("lockObject", heapAddressValue lockObject)
             writer.WriteEndObject ()
-        | ThreadStatus.BlockedOnSyncBlockWait lockObject ->
+        | ThreadStatus.BlockedOnSyncBlockWait (lockObject, deadlineMs) ->
             writer.WriteStartObject ()
             writer.WriteString ("kind", "blockedOnSyncBlockWait")
             writer.WriteNumber ("lockObject", heapAddressValue lockObject)
+
+            match deadlineMs with
+            | None -> ()
+            | Some ms -> writer.WriteNumber ("deadlineMs", ms)
+
             writer.WriteEndObject ()
         | ThreadStatus.BlockedOnWaitHandle (WaitHandleId handle, deadlineMs) ->
             writer.WriteStartObject ()

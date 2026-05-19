@@ -81,34 +81,35 @@ module Program =
     ///
     /// Each subsystem reaches its waiters through a different queue and
     /// each has its own contract for how the optimistic park-time eval
-    /// stack push is rewritten on timeout. PR 2c will add a
-    /// `SyncBlockWait` case for `Monitor.Wait`.
+    /// stack push is rewritten on timeout.
     [<RequireQualifiedAccess>]
     type private FiredDeadline =
         | WaitHandle of handle : WaitHandleId
         | MonitorWait of monitor : LowLevelMonitorId
+        | SyncBlockWait of lockObject : ManagedHeapAddress
 
     /// Project a thread status into its finite-timeout deadline against
     /// the virtual clock, if any. Threads with no deadline (Runnable,
     /// non-timed blocks, infinite waits) return `None`; threads parked
     /// with a finite timeout return `Some (kind, absoluteVirtualClockMs)`.
     /// The `kind` is what tells the deadline-firing path which
-    /// subsystem's `fireTimeout` to invoke. PR 2c will extend this
-    /// extractor with a `BlockedOnSyncBlockWait` case.
+    /// subsystem's `fireTimeout` to invoke.
     let private waitDeadline (status : ThreadStatus) : (FiredDeadline * int64) option =
         match status with
         | ThreadStatus.BlockedOnWaitHandle (handle, Some deadline) -> Some (FiredDeadline.WaitHandle handle, deadline)
         | ThreadStatus.BlockedOnMonitorWait (monitor, Some deadline) ->
             Some (FiredDeadline.MonitorWait monitor, deadline)
+        | ThreadStatus.BlockedOnSyncBlockWait (lockObject, Some deadline) ->
+            Some (FiredDeadline.SyncBlockWait lockObject, deadline)
         | ThreadStatus.BlockedOnWaitHandle (_, None)
         | ThreadStatus.BlockedOnMonitorWait (_, None)
+        | ThreadStatus.BlockedOnSyncBlockWait (_, None)
         | ThreadStatus.Runnable
         | ThreadStatus.NotStarted
         | ThreadStatus.BlockedOnJoin _
         | ThreadStatus.BlockedOnClassInit _
         | ThreadStatus.BlockedOnMonitorAcquire _
         | ThreadStatus.BlockedOnSyncBlockAcquire _
-        | ThreadStatus.BlockedOnSyncBlockWait _
         | ThreadStatus.Terminated
         | ThreadStatus.Parked -> None
 
@@ -118,18 +119,20 @@ module Program =
     /// the handle's wait queue and rewrites `WAIT_OBJECT_0 → WAIT_TIMEOUT`;
     /// LowLevelMonitor moves the waiter from `WaitQueue` to `AcquireQueue`
     /// — granting ownership directly if the monitor is unowned — and
-    /// rewrites `Int32 1 → Int32 0`).
+    /// rewrites `Int32 1 → Int32 0`; SyncBlockMonitor does the same against
+    /// the managed-heap object's SyncBlock, preserving the snapshot
+    /// reentrancy depth carried in `WaitQueue`).
     ///
-    /// Fire order matters for `LowLevelMonitor`. When two TimedWait
-    /// waiters on the same monitor expire in the same tick,
+    /// Fire order matters for `LowLevelMonitor` and `SyncBlockMonitor`.
+    /// When two waiters on the same primitive expire in the same tick,
     /// `fireTimeout` grants ownership to whichever fires first against
-    /// the unowned monitor — so iterating `state.ThreadState` (a Map
+    /// the unowned primitive — so iterating `state.ThreadState` (a Map
     /// keyed on ThreadId) would let a later-parked waiter with a smaller
-    /// thread id steal the monitor from the FIFO head. We sort
-    /// `MonitorWait` entries by their position in the owning monitor's
-    /// `WaitQueue` so that the head fires first, matching the FIFO
-    /// contract enforced everywhere else in the monitor state machine
-    /// (release, signalRelease, applySpuriousWakeups AlwaysAll).
+    /// thread id steal the lock from the FIFO head. We sort entries by
+    /// their position in the owning primitive's `WaitQueue` so that the
+    /// head fires first, matching the FIFO contract enforced everywhere
+    /// else in the state machines (release, signalRelease,
+    /// pulse/pulseAll, applySpuriousWakeups AlwaysAll).
     ///
     /// Cross-primitive ordering is irrelevant — each fire touches a
     /// disjoint primitive/thread — so `WaitHandle` entries are ordered
@@ -159,21 +162,36 @@ module Program =
                 failwith
                     $"fireExpiredDeadlines: thread %O{thread} has BlockedOnMonitorWait status against monitor #%i{mid} but is not in its WaitQueue %A{monitor.WaitQueue}; structural invariant violated."
 
-        // Sort key: monitor entries first (group=0), then by monitor id,
-        // then by WaitQueue position so the FIFO head of any contested
-        // monitor fires before its successors. WaitHandle entries
-        // (group=1) follow in (handle id, thread id) order — order within
-        // a handle is unobservable for timeout fires, so ThreadId gives
-        // a stable, deterministic break.
+        let syncBlockQueuePosition (addr : ManagedHeapAddress) (thread : ThreadId) : int =
+            let block = IlMachineState.getSyncBlock addr state
+
+            match List.tryFindIndex (fun (t, _) -> t = thread) block.WaitQueue with
+            | Some i -> i
+            | None ->
+                failwith
+                    $"fireExpiredDeadlines: thread %O{thread} has BlockedOnSyncBlockWait status against object %O{addr} but is not in its WaitQueue %A{block.WaitQueue}; structural invariant violated."
+
+        // Sort key: LowLevelMonitor entries first (group=0), then
+        // SyncBlock entries (group=1), then WaitHandle entries (group=2).
+        // Within each subsystem-group, entries are keyed first by their
+        // primitive id (so distinct primitives are ordered deterministically
+        // but independently) and then by FIFO position in the primitive's
+        // wait queue (so the head of any contested primitive fires before
+        // its successors). For WaitHandle, queue order is unobservable
+        // for timeout fires, so ThreadId is used as a stable deterministic
+        // break.
         let sortKey ((tid, kind) : ThreadId * FiredDeadline) : int * int * int =
             match kind with
             | FiredDeadline.MonitorWait monitorId ->
                 let (LowLevelMonitorId mid) = monitorId
                 0, mid, monitorQueuePosition monitorId tid
+            | FiredDeadline.SyncBlockWait addr ->
+                let (ManagedHeapAddress aid) = addr
+                1, aid, syncBlockQueuePosition addr tid
             | FiredDeadline.WaitHandle handleId ->
                 let (WaitHandleId hid) = handleId
                 let (ThreadId t) = tid
-                1, hid, t
+                2, hid, t
 
         let expired = expired |> List.sortBy sortKey
 
@@ -183,6 +201,7 @@ module Program =
                 match kind with
                 | FiredDeadline.WaitHandle handleId -> WaitHandle.fireTimeout tid handleId s
                 | FiredDeadline.MonitorWait monitorId -> LowLevelMonitor.fireTimeout tid monitorId s
+                | FiredDeadline.SyncBlockWait addr -> SyncBlockMonitor.fireTimeout tid addr s
             )
             state
 
