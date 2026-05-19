@@ -2217,9 +2217,16 @@ module IlMachineManagedByref =
             // = x`), only the precise-write path succeeds because the
             // structural writer would fall through to
             // `reinterpretStorageBytes` on byte-unaddressable storage.
+            // Phase B requires storage to be a typed `ValueType` wrapper, so
+            // raw byte roots (`StackMemoryByte`, `NativeMemoryByte`) can
+            // never trigger it; `readRootValue` would also throw for them
+            // when no typed cell covers the root offset, so we must not
+            // probe those roots here.
             let isPhaseBNestedWrapperWrite () : bool =
-                match baseClassTypes, projs with
-                | Some bct, [ ByrefProjection.ReinterpretAs reinterpretTy ; ByrefProjection.Field field ] ->
+                match baseClassTypes, root, projs with
+                | Some bct,
+                  (ByrefRoot.HeapValue _ | ByrefRoot.HeapObjectField _ | ByrefRoot.ArrayElement _),
+                  [ ByrefProjection.ReinterpretAs reinterpretTy ; ByrefProjection.Field field ] ->
                     let storageValue = readRootValue state root
 
                     match classifyTransparentWrapper bct state storageValue reinterpretTy field with
