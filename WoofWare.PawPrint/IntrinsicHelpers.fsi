@@ -106,3 +106,14 @@ module internal IntrinsicHelpers =
         operation : string ->
         state : IlMachineState ->
             IlMachineState
+
+    /// Execute the `SpanHelpers.Memmove(ref byte, ref byte, nuint)` JIT intrinsic. Routes through
+    /// the shared cell-aware copy primitive with `Memmove` direction policy so cell-aligned
+    /// ranges anchored on cell-aware roots preserve non-`Verbatim` numeric provenance (e.g.
+    /// `TypeHandlePtr`-tagged `IntPtr`s) and non-byte-addressable cell shapes across the copy.
+    val executeSpanHelpersMemmove :
+        baseClassTypes : BaseClassTypes<DumpedAssembly> ->
+        currentThread : ThreadId ->
+        operation : string ->
+        state : IlMachineState ->
+            IlMachineState

@@ -1183,3 +1183,66 @@ module internal IntrinsicHelpers =
                     byteCount
 
         state |> IlMachineState.advanceProgramCounter currentThread
+
+    let executeSpanHelpersMemmove
+        (baseClassTypes : BaseClassTypes<_>)
+        (currentThread : ThreadId)
+        (operation : string)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        // `SpanHelpers.Memmove(ref byte dest, ref byte src, nuint len)` — stack
+        // order: destination (arg0) pushed first, source (arg1), byteCount
+        // (arg2) on top.
+        let byteCountArg, state = IlMachineState.popEvalStack currentThread state
+        let sourceArg, state = IlMachineState.popEvalStack currentThread state
+        let destArg, state = IlMachineState.popEvalStack currentThread state
+
+        let byteCount = byteCountOfStackValue operation byteCountArg
+
+        let state =
+            if byteCount = 0 then
+                state
+            else
+                // Accepts both strict managed byrefs and `NativeInt`-wrapped
+                // managed pointers (`ref *(byte*)ptr` patterns produced by
+                // `Marshal.StructureToPtr` / `Marshal.PtrToStructure` against
+                // `AllocHGlobal`'d memory; see Marshal.CoreCLR.cs:270, 295).
+                let sourcePtr = managedPointerOfPointerArgument operation sourceArg
+                let destPtr = managedPointerOfPointerArgument operation destArg
+
+                match sourcePtr, destPtr with
+                | ManagedPointerSource.Null, _ -> failwith $"%s{operation}: refusing nonzero byte copy from null source"
+                | _, ManagedPointerSource.Null ->
+                    failwith $"%s{operation}: refusing nonzero byte copy to null destination"
+                | _ when sourcePtr = destPtr ->
+                    // CoreCLR's `SpanHelpers.Memmove` short-circuits perfectly
+                    // overlapping buffers (`Unsafe.AreSame(ref dest, ref src)`)
+                    // without copying — see SpanHelpers.ByteMemOps.cs:230. We
+                    // match that behaviour here so self-copies of spans whose
+                    // backing cells aren't byte-renderable (provenance-carrying
+                    // `NativeInt`s, field-projected residuals whose flat byte
+                    // offset is undecidable) don't trip the cell-aware path
+                    // for a copy that has no observable effect.
+                    state
+                | _ ->
+
+                // The shared cell-aware primitive preserves non-byte-addressable
+                // cell shapes (object references, runtime pointers, value types
+                // containing those) and non-`Verbatim` numeric provenance (e.g.
+                // `TypeHandlePtr`-tagged `IntPtr`s) that the byte-walk fallback
+                // cannot serialise. `CellAwareCopyPolicy.Memmove` mirrors the
+                // BCL's overlap handling by walking backwards when src strictly
+                // precedes dest in the same flat byte storage, matching the
+                // intent of CoreCLR's `Memmove` (which P/Invokes into native
+                // memmove on overlap; see SpanHelpers.ByteMemOps.cs:37).
+                CellAwareCopy.copy
+                    baseClassTypes
+                    operation
+                    CellAwareCopyPolicy.Memmove
+                    state
+                    destPtr
+                    sourcePtr
+                    byteCount
+
+        state |> IlMachineState.advanceProgramCounter currentThread

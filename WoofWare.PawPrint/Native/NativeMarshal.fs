@@ -191,10 +191,22 @@ module NativeMarshal =
 
             let rec isStrictlyNumericBlittable (t : CliType) : bool =
                 match t with
-                // NativeInt (IntPtr/UIntPtr) values carry provenance in PawPrint that the byte
-                // model rejects; CoreCLR happily memmoves the integer-width bits regardless.
-                // Excluded from the allowlist until we have explicit byte-copyability gating.
-                | CliType.Numeric (CliNumericType.NativeInt _) -> false
+                // `NativeInt` cells carry provenance under PawPrint (e.g.
+                // `TypeHandlePtr` from `typeof(T).TypeHandle.Value`). CoreCLR
+                // memmoves the integer-width bits regardless, but PawPrint's
+                // byte model rejects non-`Verbatim` provenance because
+                // `CliNumericType.ToBytes` cannot serialise it. We accept
+                // `IntPtr`/`UIntPtr` here because the blittable arm returns a
+                // null stub, instructing CoreLib to call
+                // `SpanHelpers.Memmove(ref byte, ref byte, nuint)` — which
+                // PawPrint intercepts and routes through `CellAwareCopy.copy`,
+                // preserving whole-cell provenance when both endpoints anchor
+                // on cell-aware roots. The hazard that remains is value-level:
+                // a struct holding a non-`Verbatim` `IntPtr` marshalled to
+                // `AllocHGlobal`'d native memory (a byte-only endpoint) still
+                // falls back to the byte walk and surfaces the
+                // `validateByteAddressableCell` failure there, not here.
+                | CliType.Numeric (CliNumericType.NativeInt _) -> true
                 | CliType.Numeric _ -> true
                 | CliType.Bool _
                 | CliType.Char _
