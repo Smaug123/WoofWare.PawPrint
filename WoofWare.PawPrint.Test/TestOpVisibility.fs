@@ -48,15 +48,15 @@ module TestOpVisibility =
             NullaryIlOp.Cgt_un
             NullaryIlOp.Clt
             NullaryIlOp.Clt_un
-            NullaryIlOp.Conv_I
             NullaryIlOp.Conv_I4
             NullaryIlOp.Conv_I8
-            NullaryIlOp.Conv_U
             NullaryIlOp.Conv_R4
             NullaryIlOp.Conv_R8
+            NullaryIlOp.Conv_U1
+            NullaryIlOp.Conv_U2
+            NullaryIlOp.Conv_U4
+            NullaryIlOp.Conv_U8
             NullaryIlOp.Conv_r_un
-            NullaryIlOp.Endfilter
-            NullaryIlOp.Endfinally
             NullaryIlOp.Localloc
             NullaryIlOp.Volatile
             NullaryIlOp.Tail
@@ -178,6 +178,15 @@ module TestOpVisibility =
             NullaryIlOp.And
             NullaryIlOp.Or
             NullaryIlOp.Xor
+            // Conv_I / Conv_U anchor byte-views on plain array byrefs by
+            // reading `state.ManagedHeap.Arrays`.
+            NullaryIlOp.Conv_I
+            NullaryIlOp.Conv_U
+            // Endfilter on a rejecting filter, and Endfinally while
+            // propagating an exception, both continue exception dispatch
+            // which reads the heap exception object.
+            NullaryIlOp.Endfilter
+            NullaryIlOp.Endfinally
         ]
 
     [<Test>]

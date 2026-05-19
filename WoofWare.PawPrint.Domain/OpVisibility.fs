@@ -88,31 +88,32 @@ module OpVisibility =
         | NullaryIlOp.Clt
         | NullaryIlOp.Clt_un -> Visibility.ThreadLocal
 
-        // ---- Conversions ----
-        // Conv_* preserve `WidenedNativeInt` / `OpaqueHashBits` provenance
-        // rather than materialising hash bits, so they don't touch
-        // `PointerHashCounters`. The non-checked Conv_* variants don't raise
-        // (they truncate), so they're frame-local.
-        | NullaryIlOp.Conv_I
+        // ---- Conversions that don't touch shared state ----
+        // These Conv_* preserve `WidenedNativeInt` / `OpaqueHashBits`
+        // provenance rather than materialising hash bits, and don't read
+        // the managed heap. The non-checked variants don't raise (they
+        // truncate), so they're frame-local.
+        // `Conv_I` and `Conv_U`, by contrast, anchor byte-views on plain
+        // array byrefs by reading `state.ManagedHeap.Arrays`
+        // (`ManagedPointerByteView.anchorByteViewIfPlainArrayByref`); they
+        // are classified visible below.
         | NullaryIlOp.Conv_I1
         | NullaryIlOp.Conv_I2
         | NullaryIlOp.Conv_I4
         | NullaryIlOp.Conv_I8
         | NullaryIlOp.Conv_R4
         | NullaryIlOp.Conv_R8
-        | NullaryIlOp.Conv_U
         | NullaryIlOp.Conv_U1
         | NullaryIlOp.Conv_U2
         | NullaryIlOp.Conv_U4
         | NullaryIlOp.Conv_U8
         | NullaryIlOp.Conv_r_un -> Visibility.ThreadLocal
 
-        // ---- Thread-local control / exception machinery that does not allocate ----
-        // Endfilter/Endfinally just transfer control within the thread's own
-        // exception dispatch state. Localloc allocates on the thread's own
-        // stack, not the shared managed heap.
-        | NullaryIlOp.Endfilter
-        | NullaryIlOp.Endfinally
+        // ---- Thread-local control machinery ----
+        // Localloc allocates on the thread's own stack, not the shared
+        // managed heap. (Endfilter and Endfinally classify visible below,
+        // because the exception-propagation paths read the active
+        // exception object from the shared heap.)
         | NullaryIlOp.Localloc -> Visibility.ThreadLocal
 
         // ---- Prefixes; the modified op that follows is what carries effects ----
@@ -127,6 +128,25 @@ module OpVisibility =
         | NullaryIlOp.Break
         | NullaryIlOp.Arglist
         | NullaryIlOp.Refanytype -> Visibility.ThreadLocal
+
+        // ---- Conversions that touch the shared heap ----
+        // Conv_I / Conv_U convert a managed pointer to a native int and
+        // call `ManagedPointerByteView.anchorByteViewIfPlainArrayByref`,
+        // which reads `state.ManagedHeap.Arrays` to decide whether to
+        // anchor a byte-view projection. That's a shared-heap read, so
+        // these are publication points.
+        | NullaryIlOp.Conv_I
+        | NullaryIlOp.Conv_U -> Visibility.GloballyVisible
+
+        // ---- Exception-dispatch end ops ----
+        // Endfilter on a rejecting filter, and Endfinally while
+        // propagating an exception out of a finally / fault block, both
+        // continue exception dispatch — which reads the exception
+        // object's type from `state.ManagedHeap.NonArrayObjects` and may
+        // hand off to `dispatchException*`. Reading the heap is a
+        // publication point.
+        | NullaryIlOp.Endfilter
+        | NullaryIlOp.Endfinally -> Visibility.GloballyVisible
 
         // ---- Thread lifecycle ----
         // `Ret` is frame-local for nested returns, but bottom-frame `Ret`
