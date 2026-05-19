@@ -110,7 +110,67 @@ module internal CellAwareCopy =
         | ManagedPointerSource.Byref (ByrefRoot.HeapObjectField _, _)
         | ManagedPointerSource.Byref (ByrefRoot.MethodTableExposedClassObject _, _) -> None
 
+    /// Coarse storage discriminator used purely to decide whether two byrefs
+    /// *could* share underlying storage when `byteLocation` cannot derive a
+    /// flat byte offset (e.g. `Field`-projected residuals on either flat or
+    /// heap-rooted byrefs). Distinct keys mean the byrefs cannot alias under
+    /// PawPrint's model; equal keys mean an overlapping `Memmove` is
+    /// undecidable from the byref shape alone and the analyser must fail
+    /// loud.
+    ///
+    /// Indexed flat roots (array element, string char) carry their index so
+    /// that disjoint cross-element copies like `arr[0].A` ↔ `arr[1].A` get
+    /// distinct keys. `HeapObjectField` carries its `FieldId` for the same
+    /// reason: `ref box.A` and `ref box.B` directly address different fields
+    /// of the same instance, and even though both byrefs target heap
+    /// allocation `box`, the byrefs themselves are guaranteed disjoint by
+    /// construction. `HeapValue` (a whole boxed value) is its own bucket
+    /// keyed by address; a boxed value and a class-instance field byref
+    /// cannot share an address (each heap allocation has a single object
+    /// kind), and two byrefs into the same boxed value reach through the
+    /// same `HeapValue` root regardless of which interior field they
+    /// project. Folding `Field` projections into a flat byte offset would
+    /// let `byteLocation` decide direction precisely even for sibling-field
+    /// copies through a `HeapValue` root or via projection chains beyond
+    /// the immediate `HeapObjectField`; that's still future work.
+    [<RequireQualifiedAccess>]
+    type private SharedStorageKey =
+        | ArrayCell of arr : ManagedHeapAddress * index : int
+        | StringChar of str : ManagedHeapAddress * charIndex : int
+        | Flat of ByteStorageIdentity
+        | HeapValue of ManagedHeapAddress
+        | HeapObjectField of obj : ManagedHeapAddress * field : FieldId
+        | RuntimeTypeAux of RuntimeTypeHandleTarget
+
+    let private sharedStorageKeyOfRoot (root : ByrefRoot) : SharedStorageKey =
+        match root with
+        | ByrefRoot.ArrayElement (arr, index) -> SharedStorageKey.ArrayCell (arr, index)
+        | ByrefRoot.StringCharAt (str, charIndex) -> SharedStorageKey.StringChar (str, charIndex)
+        | ByrefRoot.PeByteRange peByteRange -> SharedStorageKey.Flat (ByteStorageIdentity.PeByteRange peByteRange)
+        | ByrefRoot.StackMemoryByte (thread, frame, block, _) ->
+            SharedStorageKey.Flat (ByteStorageIdentity.StackMemory (thread, frame, block))
+        | ByrefRoot.NativeMemoryByte (block, _) -> SharedStorageKey.Flat (ByteStorageIdentity.NativeMemory block)
+        | ByrefRoot.LocalVariable (thread, frame, local) ->
+            SharedStorageKey.Flat (ByteStorageIdentity.StackLocal (thread, frame, local))
+        | ByrefRoot.Argument (thread, frame, arg) ->
+            SharedStorageKey.Flat (ByteStorageIdentity.StackArgument (thread, frame, arg))
+        | ByrefRoot.StaticField (declaringType, field) ->
+            SharedStorageKey.Flat (ByteStorageIdentity.StaticField (declaringType, field))
+        | ByrefRoot.HeapValue addr -> SharedStorageKey.HeapValue addr
+        | ByrefRoot.HeapObjectField (addr, field) -> SharedStorageKey.HeapObjectField (addr, field)
+        | ByrefRoot.MethodTableExposedClassObject decl -> SharedStorageKey.RuntimeTypeAux decl
+
+    /// Storage discriminator of a byref. Returns `None` for non-byref pointers
+    /// (`Null`, `NativeIntPlaceholder`) which cannot participate in shared
+    /// storage with another byref under PawPrint's model.
+    let private sharedStorageKey (ptr : ManagedPointerSource) : SharedStorageKey option =
+        match ptr with
+        | ManagedPointerSource.Byref (root, _) -> Some (sharedStorageKeyOfRoot root)
+        | ManagedPointerSource.Null
+        | ManagedPointerSource.NativeIntPlaceholder _ -> None
+
     let private shouldCopyBackwards
+        (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (src : ManagedPointerSource)
@@ -121,7 +181,25 @@ module internal CellAwareCopy =
         match byteLocation baseClassTypes state src, byteLocation baseClassTypes state dest with
         | Some (srcStorage, srcOffset), Some (destStorage, destOffset) when srcStorage = destStorage ->
             srcOffset < destOffset && destOffset < srcOffset + int64 byteCount
-        | _ -> false
+        | Some _, Some _ ->
+            // Distinct flat byte storages — disjoint, no overlap is possible.
+            false
+        | _ ->
+            // `byteLocation` could not compute a precise flat byte offset for
+            // at least one side (e.g. residual `Field` projections, or a
+            // heap-rooted byref). If the byrefs nonetheless share root
+            // storage (flat, heap-allocated, or MT auxiliary cell), we
+            // cannot determine the safe direction for `Memmove` semantics,
+            // so we must fail loud rather than silently picking a forward
+            // loop that could corrupt overlapping writes.
+            match sharedStorageKey src, sharedStorageKey dest with
+            | Some s, Some d when s = d ->
+                failwith
+                    $"%s{operation}: cannot determine overlap direction for byrefs sharing storage %A{s} (residual projections lack a flat byte offset). src=%O{src}, dest=%O{dest}, byteCount=%d{byteCount}"
+            | _ ->
+                // Distinct storage discriminators or a non-byref endpoint —
+                // overlap is impossible under the model.
+                false
 
     /// All residual projections must be plain `Field` projections. The
     /// fast-path uses `readManagedByref` on the residual, which dispatches
@@ -332,7 +410,7 @@ module internal CellAwareCopy =
         let backwards =
             match policy with
             | CellAwareCopyPolicy.CpblkForward -> false
-            | CellAwareCopyPolicy.Memmove -> shouldCopyBackwards baseClassTypes state src dest byteCount
+            | CellAwareCopyPolicy.Memmove -> shouldCopyBackwards operation baseClassTypes state src dest byteCount
 
         if backwards then
             let mutable i = byteCount - 1

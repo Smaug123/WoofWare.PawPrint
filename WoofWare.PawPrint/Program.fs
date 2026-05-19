@@ -510,6 +510,18 @@ module Program =
         if mainMethodFromMetadata.Signature.GenericParameterCount > 0 then
             failwith "Refusing to execute generic main method"
 
+        let mainTakesStringArrayArg =
+            match mainMethodFromMetadata.Signature.ParameterTypes |> Seq.toList with
+            | [] -> false
+            | [ TypeDefn.OneDimensionalArrayLowerBoundZero (TypeDefn.PrimitiveType PrimitiveType.String) ] -> true
+            | _ ->
+                failwith
+                    "Main method must take no parameters or a single string[]; other signatures not yet implemented"
+
+        match mainMethodFromMetadata.Signature.ReturnType with
+        | MethodReturnType.Returns (TypeDefn.PrimitiveType PrimitiveType.Int32) -> ()
+        | _ -> failwith "Main method must return int32; other types not currently supported"
+
         let state =
             IlMachineState.initial loggerFactory dotnetRuntimeDirs dumped
             |> fun s -> s.MapKernel (EmulatedKernel.withEnvironment env)
@@ -629,7 +641,15 @@ module Program =
                         ImmutableArray.Empty
                         state
 
-                // Create the method state with the concretized method
+                // Create the method state with the concretized method.
+                // The body has been replaced with onlyRet, so these are placeholders whose
+                // length must match the method's parameter count.
+                let placeholderArgs =
+                    if mainTakesStringArrayArg then
+                        ImmutableArray.CreateRange [ CliType.ObjectRef None ]
+                    else
+                        ImmutableArray.Empty
+
                 match
                     MethodState.Empty
                         state.ConcreteTypes
@@ -638,7 +658,7 @@ module Program =
                         dumped
                         concretizedMainMethod
                         ImmutableArray.Empty
-                        (ImmutableArray.CreateRange [ CliType.ObjectRef None ])
+                        placeholderArgs
                         None
                 with
                 | Ok concretizedMeth -> IlMachineState.addThread concretizedMeth state, Some baseTypes
@@ -693,15 +713,12 @@ module Program =
 
         let state = loadInitialState state
 
-        let arrayAllocation, state =
-            match mainMethodFromMetadata.Signature.ParameterTypes |> Seq.toList with
-            | [ TypeDefn.OneDimensionalArrayLowerBoundZero (TypeDefn.PrimitiveType PrimitiveType.String) ] ->
-                allocateArgs loggerFactory argv baseClassTypes state
-            | _ -> failwith "Main method must take an array of strings; other signatures not yet implemented"
-
-        match mainMethodFromMetadata.Signature.ReturnType with
-        | MethodReturnType.Returns (TypeDefn.PrimitiveType PrimitiveType.Int32) -> ()
-        | _ -> failwith "Main method must return int32; other types not currently supported"
+        let mainArgs, state =
+            if mainTakesStringArrayArg then
+                let arrayAllocation, state = allocateArgs loggerFactory argv baseClassTypes state
+                ImmutableArray.Create (CliType.ofManagedObject arrayAllocation), state
+            else
+                ImmutableArray.Empty, state
 
         // We might be in the middle of class construction. Pump the static constructors to completion.
         // We haven't yet entered the main method!
@@ -744,7 +761,7 @@ module Program =
                     dumped
                     concretizedMainMethod
                     ImmutableArray.Empty
-                    (ImmutableArray.Create (CliType.ofManagedObject arrayAllocation))
+                    mainArgs
                     None
             with
             | Ok s -> s

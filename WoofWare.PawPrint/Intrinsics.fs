@@ -1403,6 +1403,23 @@ module Intrinsics =
                 let operation = $"Unsafe.%s{methodToCall.Name}"
                 executeUnsafeCopyBlock baseClassTypes currentThread operation state |> Some
             | _ -> None
+        | "System.Private.CoreLib", "SpanHelpers", "Memmove" ->
+            // `[Intrinsic] internal static void Memmove(ref byte dest, ref byte src, nuint len)`
+            // (SpanHelpers.ByteMemOps.cs:37). The managed body executes the platform-tuned
+            // byte/Block16 unrolled walk and P/Invokes into native memmove on overlap; both
+            // paths flow through PawPrint's byte-walk model, which cannot serialise non-`Verbatim`
+            // `NativeIntSource` provenance via `CliNumericType.ToBytes`. Routing the intrinsic
+            // through `CellAwareCopy.copy` with `Memmove` policy preserves whole-cell ranges
+            // (provenance, ObjectRef cells) when both endpoints anchor on cell-aware roots, and
+            // falls back to the byte walk for genuinely byte-addressable storage.
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
+                ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
+                ConcreteUIntPtr state.ConcreteTypes ],
+              MethodReturnType.Void ->
+                let operation = "SpanHelpers.Memmove"
+                executeSpanHelpersMemmove baseClassTypes currentThread operation state |> Some
+            | _ -> None
         | "System.Private.CoreLib", "String", "op_Implicit" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ par ], MethodReturnType.Returns ret ->

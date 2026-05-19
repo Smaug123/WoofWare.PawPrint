@@ -356,9 +356,10 @@ module IntrinsicMethodKeys =
             anyParams "System.Private.CoreLib" "System.Math" "Min"
             // https://github.com/dotnet/runtime/blob/d258af50034c192bf7f0a18856bf83d2903d98ae/src/libraries/System.Private.CoreLib/src/System/Buffer.cs#L150
             anyParams "System.Private.CoreLib" "System.Buffer" "Memmove"
-            // Managed fast paths use Unsafe.ReadUnaligned/WriteUnaligned; the native fallback remains
-            // a future boundary.
-            anyParams "System.Private.CoreLib" "System.SpanHelpers" "Memmove"
+            // Note: `System.SpanHelpers.Memmove(ref byte, ref byte, nuint)` is intercepted
+            // explicitly in `Intrinsics.fs` and routed through `CellAwareCopy.copy`, so it is
+            // deliberately omitted from the safe-intrinsic allowlist: the managed body's
+            // `Unsafe.ReadUnaligned<Block16>` walk would lose non-`Verbatim` cell provenance.
             // https://github.com/dotnet/runtime/blob/1c3221b63340d7f81dfd829f3bcd822e582324f6/src/libraries/System.Private.CoreLib/src/System/Threading/Thread.cs#L799
             pattern "System.Private.CoreLib" "System.Threading.Thread" "get_CurrentThread" []
             // IL body is `ldarg.0; ldfld _managedThreadId; ret` — pure field access.
