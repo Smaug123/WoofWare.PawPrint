@@ -213,6 +213,11 @@ type BaseClassTypes<'corelib> =
         /// `System.ByReference` (non-generic in modern corelibs) or `System.ByReference<T>` (older).
         /// Optional because not every supported corelib exposes it.
         ByReference : TypeInfo<GenericParamFromMetadata, TypeDefn> option
+        /// `System.Nullable\`1`. The open-generic TypeDef row; used to detect any
+        /// `Nullable<T>` instantiation by comparing `.Identity` against this field, since
+        /// `ConcreteType.Identity` ignores generic arguments. ECMA-335 III.4.16 mandates
+        /// special box/unbox semantics for this type.
+        Nullable : TypeInfo<GenericParamFromMetadata, TypeDefn>
         Exception : TypeInfo<GenericParamFromMetadata, TypeDefn>
         ArithmeticException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         DivideByZeroException : TypeInfo<GenericParamFromMetadata, TypeDefn>

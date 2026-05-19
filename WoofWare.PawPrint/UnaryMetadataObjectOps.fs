@@ -373,9 +373,7 @@ module internal UnaryMetadataObjectOps =
             state._LoadedAssemblies.[targetType.Assembly.FullName].TypeDefs.[targetType.Definition.Get]
 
         let isNullable =
-            targetType.Namespace = "System"
-            && targetType.Name = "Nullable`1"
-            && targetType.Assembly.FullName = baseClassTypes.Corelib.Name.FullName
+            InternalTypeKind.kind baseClassTypes targetType = InternalTypeKind.Nullable
 
         let toPush, state =
             if isNullable then
@@ -643,9 +641,7 @@ module internal UnaryMetadataObjectOps =
             state._LoadedAssemblies.[targetConcreteType.Assembly.FullName].TypeDefs.[targetConcreteType.Definition.Get]
 
         let isNullable =
-            targetConcreteType.Namespace = "System"
-            && targetConcreteType.Name = "Nullable`1"
-            && targetConcreteType.Assembly.FullName = baseClassTypes.Corelib.Name.FullName
+            InternalTypeKind.kind baseClassTypes targetConcreteType = InternalTypeKind.Nullable
 
         let isValueType =
             DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies targetDefn

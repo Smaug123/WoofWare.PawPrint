@@ -56,6 +56,7 @@ module NativeRuntimeTypeHelpers =
 
     let nativeIntElementPointer
         (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (buffer : ManagedPointerSource)
         (index : int)
         : ManagedPointerSource
@@ -78,7 +79,7 @@ module NativeRuntimeTypeHelpers =
             // The QCall signature mandates `Span<IntPtr>`; any other reinterpret type would mean
             // the buffer was constructed from a different element type and `nativeIntSize` striding
             // would be wrong, so surface the mismatch loudly rather than silently mis-striding.
-            if reinterpretTy.Namespace <> "System" || reinterpretTy.Name <> "IntPtr" then
+            if InternalTypeKind.kind baseClassTypes reinterpretTy <> InternalTypeKind.NativeInt then
                 failwith
                     $"%s{operation}: expected IntPtr-reinterpret on localloc buffer, got %s{reinterpretTy.Namespace}.%s{reinterpretTy.Name} in %O{buffer}"
 
@@ -107,7 +108,7 @@ module NativeRuntimeTypeHelpers =
         (value : int64)
         : IlMachineState
         =
-        let ptr = nativeIntElementPointer operation buffer index
+        let ptr = nativeIntElementPointer operation baseClassTypes buffer index
 
         IlMachineState.writeManagedByrefWithBase
             baseClassTypes
@@ -1188,7 +1189,7 @@ module NativeRuntimeTypeHelpers =
         (index : int)
         : ConcreteTypeHandle
         =
-        let ptr = nativeIntElementPointer operation buffer index
+        let ptr = nativeIntElementPointer operation baseClassTypes buffer index
 
         match
             IlMachineState.readManagedByref baseClassTypes state ptr
@@ -1381,10 +1382,7 @@ module NativeRuntimeTypeHelpers =
         =
         match nominalTypeInfoOfArgument state arg with
         | None -> false
-        | Some typeInfo ->
-            typeInfo.Namespace = "System"
-            && typeInfo.Name = "Nullable`1"
-            && typeInfo.Assembly.FullName = baseClassTypes.Corelib.Name.FullName
+        | Some typeInfo -> TypeInfo.NominallyEqual typeInfo baseClassTypes.Nullable
 
     /// True iff `arg` satisfies the `where T : new()` constraint:
     /// - value types implicitly satisfy it (every value type has a parameterless ctor);
