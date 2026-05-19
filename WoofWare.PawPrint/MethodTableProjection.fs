@@ -220,11 +220,7 @@ module internal MethodTableProjection =
         =
         if typeInfo.IsInterface then
             categoryInterface
-        elif
-            typeInfo.Assembly.FullName = baseClassTypes.Corelib.Name.FullName
-            && typeInfo.Namespace = "System"
-            && typeInfo.Name = "Nullable`1"
-        then
+        elif TypeInfo.NominallyEqual typeInfo baseClassTypes.Nullable then
             categoryNullable
         elif DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
             if isTruePrimitive baseClassTypes typeInfo then
@@ -948,9 +944,7 @@ module internal MethodTableProjection =
                         let concreteType, _ = concreteTypeInfoOrFail state handle
 
                         let isNullable =
-                            concreteType.Namespace = "System"
-                            && concreteType.Name = "Nullable`1"
-                            && concreteType.Assembly.FullName = baseClassTypes.Corelib.Name.FullName
+                            InternalTypeKind.kind baseClassTypes concreteType = InternalTypeKind.Nullable
 
                         if not isNullable then
                             failwith
