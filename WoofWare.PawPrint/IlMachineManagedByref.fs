@@ -2199,27 +2199,33 @@ module IlMachineManagedByref =
                 | None -> state
                 | Some updatedRoot -> writeRootValue state root updatedRoot
 
-            // A chain of exactly `[ReinterpretAs T, Field f]` is the single
-            // shape that the structural writer's `transparentWrapperFastPath`
-            // can classify as Phase A (storage is layout-compatible with the
-            // wrapper's only field) or Phase B (storage is itself a
-            // transparent offset-0 single-field wrapper of the same primitive,
-            // e.g. CoreLib's `Unsafe.As<TaskAwaiter<T>, TaskAwaiter>` motif).
-            // For Phase B on byte-addressable storage roots
-            // (HeapValue/HeapObjectField/ArrayElement) with a non-byte-
-            // renderable payload, the bytes-or-typed-cell writer's precise-
-            // write helpers fail the cross-constructor `sameCliConstructor`
-            // check (storage is a `ValueType` wrapper, newValue is an
-            // `ObjectRef`) and fall through to `CliType.ToBytes` on the
-            // ObjectRef — which refuses. Route the trigger shape through the
-            // structural writer instead so the classifier-driven elision
-            // applies uniformly. Phase A on these roots also flows through
-            // the structural writer here (it's equivalent to the precise
-            // fast path for ref↔ref writes) so the Phase A/B split lives in
-            // one place.
-            let isTransparentWrapperTriggerShape =
+            // Phase B nested-wrapper writes (storage is itself a transparent
+            // offset-0 single-field wrapper of the same primitive as the
+            // reinterpret target's only field, e.g. CoreLib's
+            // `Unsafe.As<TaskAwaiter<T>, TaskAwaiter>` motif) reach the
+            // bytes-or-typed-cell writer via the byte-addressable roots
+            // (HeapValue/HeapObjectField/ArrayElement). Its precise-write
+            // helpers reject the cross-constructor write (`ValueType`
+            // storage, `ObjectRef` payload) and the byte-scatter fallback
+            // hits `CliType.ToBytes` on the ObjectRef — which refuses.
+            // Re-route only the Phase B case to the structural writer,
+            // whose `transparentWrapperFastPath` handles it via the
+            // classifier's `ElideAsStorageInnerField` outcome. Phase A and
+            // NotTransparent stay on the existing precise-write path: for
+            // Phase A, both paths work; for NotTransparent (e.g.
+            // `Unsafe.As<object, StructWithMultipleFields>(ref h.Field).Obj
+            // = x`), only the precise-write path succeeds because the
+            // structural writer would fall through to
+            // `reinterpretStorageBytes` on byte-unaddressable storage.
+            let isPhaseBNestedWrapperWrite () : bool =
                 match baseClassTypes, projs with
-                | Some _, [ ByrefProjection.ReinterpretAs _ ; ByrefProjection.Field _ ] -> true
+                | Some bct, [ ByrefProjection.ReinterpretAs reinterpretTy ; ByrefProjection.Field field ] ->
+                    let storageValue = readRootValue state root
+
+                    match classifyTransparentWrapper bct state storageValue reinterpretTy field with
+                    | TransparentWrapperOutcome.ElideAsStorageInnerField _ -> true
+                    | TransparentWrapperOutcome.ElideAsField _
+                    | TransparentWrapperOutcome.NotTransparent -> false
                 | _ -> false
 
             match peeled, valueIsByteRenderable with
@@ -2231,7 +2237,7 @@ module IlMachineManagedByref =
                 // metadata) work here because the core never consults BCT
                 // unless a `Field` appears in the byte-view suffix.
                 writeManagedByrefBytesOrTypedCellCore baseClassTypes state src newValue
-            | ValueSome ([], _), false when isTransparentWrapperTriggerShape -> useStructuralWriter ()
+            | ValueSome ([], _), false when isPhaseBNestedWrapperWrite () -> useStructuralWriter ()
             | ValueSome ([], _), false ->
                 // Non-byte-renderable empty-prefix peel: the bytes-or-typed-cell
                 // writer can precise-write for the byte-addressable storage
