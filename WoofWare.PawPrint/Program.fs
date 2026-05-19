@@ -75,37 +75,68 @@ module Program =
         |> Seq.map (fun (ThreadId i, ts) -> $"thread {i} in state {ts.Status}")
         |> String.concat "; "
 
+    /// Discriminator for a fired wait deadline: which subsystem owns the
+    /// parked thread, and therefore which `fireTimeout` implementation
+    /// must be called to wake it.
+    ///
+    /// Each subsystem reaches its waiters through a different queue and
+    /// each has its own contract for how the optimistic park-time eval
+    /// stack push is rewritten on timeout. PR 2c will add a
+    /// `SyncBlockWait` case for `Monitor.Wait`.
+    [<RequireQualifiedAccess>]
+    type private FiredDeadline =
+        | WaitHandle of handle : WaitHandleId
+        | MonitorWait of monitor : LowLevelMonitorId
+
     /// Project a thread status into its finite-timeout deadline against
     /// the virtual clock, if any. Threads with no deadline (Runnable,
     /// non-timed blocks, infinite waits) return `None`; threads parked
-    /// with a finite timeout return `Some absoluteVirtualClockMs`.
-    ///
-    /// Today only `BlockedOnWaitHandle` carries a deadline; the
-    /// extractor is structured so PR 2b/2c can add cases for
-    /// `BlockedOnMonitorWait` / `BlockedOnSyncBlockWait` without
-    /// rewiring the orchestrator below.
-    let private waitDeadline (status : ThreadStatus) : int64 option =
+    /// with a finite timeout return `Some (kind, absoluteVirtualClockMs)`.
+    /// The `kind` is what tells the deadline-firing path which
+    /// subsystem's `fireTimeout` to invoke. PR 2c will extend this
+    /// extractor with a `BlockedOnSyncBlockWait` case.
+    let private waitDeadline (status : ThreadStatus) : (FiredDeadline * int64) option =
         match status with
-        | ThreadStatus.BlockedOnWaitHandle (_, deadline) -> deadline
+        | ThreadStatus.BlockedOnWaitHandle (handle, Some deadline) -> Some (FiredDeadline.WaitHandle handle, deadline)
+        | ThreadStatus.BlockedOnMonitorWait (monitor, Some deadline) ->
+            Some (FiredDeadline.MonitorWait monitor, deadline)
+        | ThreadStatus.BlockedOnWaitHandle (_, None)
+        | ThreadStatus.BlockedOnMonitorWait (_, None)
         | ThreadStatus.Runnable
         | ThreadStatus.NotStarted
         | ThreadStatus.BlockedOnJoin _
         | ThreadStatus.BlockedOnClassInit _
         | ThreadStatus.BlockedOnMonitorAcquire _
-        | ThreadStatus.BlockedOnMonitorWait _
         | ThreadStatus.BlockedOnSyncBlockAcquire _
         | ThreadStatus.BlockedOnSyncBlockWait _
         | ThreadStatus.Terminated
         | ThreadStatus.Parked -> None
 
     /// Fire a timeout wake for every blocked-with-deadline thread whose
-    /// deadline is `<= state.Kernel.VirtualClockMs`. Each fire removes
-    /// the thread from its handle's wait queue, rewrites the slow-path
-    /// `WAIT_OBJECT_0` slot on its eval stack to `WAIT_TIMEOUT`, and
-    /// flips it back to `Runnable`. Sorting by deadline isn't necessary
-    /// here — every fired wake produces an isolated state change against
-    /// a disjoint handle / thread, and a thread can only be in one
-    /// queue.
+    /// deadline is `<= state.Kernel.VirtualClockMs`. Each fire routes
+    /// through the per-subsystem `fireTimeout` (WaitHandle dequeues from
+    /// the handle's wait queue and rewrites `WAIT_OBJECT_0 → WAIT_TIMEOUT`;
+    /// LowLevelMonitor moves the waiter from `WaitQueue` to `AcquireQueue`
+    /// — granting ownership directly if the monitor is unowned — and
+    /// rewrites `Int32 1 → Int32 0`).
+    ///
+    /// Fire order matters for `LowLevelMonitor`. When two TimedWait
+    /// waiters on the same monitor expire in the same tick,
+    /// `fireTimeout` grants ownership to whichever fires first against
+    /// the unowned monitor — so iterating `state.ThreadState` (a Map
+    /// keyed on ThreadId) would let a later-parked waiter with a smaller
+    /// thread id steal the monitor from the FIFO head. We sort
+    /// `MonitorWait` entries by their position in the owning monitor's
+    /// `WaitQueue` so that the head fires first, matching the FIFO
+    /// contract enforced everywhere else in the monitor state machine
+    /// (release, signalRelease, applySpuriousWakeups AlwaysAll).
+    ///
+    /// Cross-primitive ordering is irrelevant — each fire touches a
+    /// disjoint primitive/thread — so `WaitHandle` entries are ordered
+    /// last and by ThreadId, which is deterministic and matches the
+    /// pre-fix behaviour for the subsystem where order is unobservable.
+    /// Queue positions are computed against the input state, before any
+    /// fires mutate `WaitQueue`s.
     let private fireExpiredDeadlines (state : IlMachineState) : IlMachineState =
         let now = state.Kernel.VirtualClockMs
 
@@ -113,15 +144,47 @@ module Program =
             state.ThreadState
             |> Map.toSeq
             |> Seq.choose (fun (tid, ts) ->
-                match ts.Status with
-                | ThreadStatus.BlockedOnWaitHandle (handleId, Some deadline) when deadline <= now ->
-                    Some (tid, handleId)
+                match waitDeadline ts.Status with
+                | Some (kind, deadline) when deadline <= now -> Some (tid, kind)
                 | _ -> None
             )
             |> Seq.toList
 
+        let monitorQueuePosition (LowLevelMonitorId mid as monitorId : LowLevelMonitorId) (thread : ThreadId) : int =
+            let monitor = Map.find monitorId state.Kernel.LowLevelMonitors
+
+            match List.tryFindIndex (fun t -> t = thread) monitor.WaitQueue with
+            | Some i -> i
+            | None ->
+                failwith
+                    $"fireExpiredDeadlines: thread %O{thread} has BlockedOnMonitorWait status against monitor #%i{mid} but is not in its WaitQueue %A{monitor.WaitQueue}; structural invariant violated."
+
+        // Sort key: monitor entries first (group=0), then by monitor id,
+        // then by WaitQueue position so the FIFO head of any contested
+        // monitor fires before its successors. WaitHandle entries
+        // (group=1) follow in (handle id, thread id) order — order within
+        // a handle is unobservable for timeout fires, so ThreadId gives
+        // a stable, deterministic break.
+        let sortKey ((tid, kind) : ThreadId * FiredDeadline) : int * int * int =
+            match kind with
+            | FiredDeadline.MonitorWait monitorId ->
+                let (LowLevelMonitorId mid) = monitorId
+                0, mid, monitorQueuePosition monitorId tid
+            | FiredDeadline.WaitHandle handleId ->
+                let (WaitHandleId hid) = handleId
+                let (ThreadId t) = tid
+                1, hid, t
+
+        let expired = expired |> List.sortBy sortKey
+
         expired
-        |> List.fold (fun s (tid, handleId) -> WaitHandle.fireTimeout tid handleId s) state
+        |> List.fold
+            (fun s (tid, kind) ->
+                match kind with
+                | FiredDeadline.WaitHandle handleId -> WaitHandle.fireTimeout tid handleId s
+                | FiredDeadline.MonitorWait monitorId -> LowLevelMonitor.fireTimeout tid monitorId s
+            )
+            state
 
     /// The minimum wait deadline among currently-blocked threads, or
     /// `None` if no thread is parked with a finite timeout. Used by the
@@ -138,7 +201,7 @@ module Program =
     let private nextDeadline (state : IlMachineState) : int64 option =
         state.ThreadState
         |> Map.toSeq
-        |> Seq.choose (fun (_, ts) -> waitDeadline ts.Status)
+        |> Seq.choose (fun (_, ts) -> waitDeadline ts.Status |> Option.map snd)
         |> Seq.fold
             (fun acc d ->
                 match acc with
@@ -263,27 +326,44 @@ module Program =
         // clock would advance 1 ms per tick *only when there's something
         // to step*, but there is nothing to step.
         //
+        // The fallback loops because a single fire may not make any
+        // thread Runnable: `LowLevelMonitor.fireTimeout` moves a waiter
+        // out of `WaitQueue`, but if the monitor is still owned by a
+        // separate thread (which itself may be parked on a *later*
+        // deadline), the waiter becomes `BlockedOnMonitorAcquire` rather
+        // than `Runnable`. Stopping after one jump in that shape would
+        // declare deadlock even though the owner's later finite wait can
+        // still resolve and release the monitor. Each iteration either
+        // produces a Runnable thread (terminating the loop) or strictly
+        // advances `VirtualClockMs` to the next outstanding deadline; the
+        // set of finite-deadline threads is finite and monotonically
+        // shrinks (no fire creates a new deadline), so the loop
+        // terminates.
+        //
         // Only `VirtualClockMs` is advanced (not `StepCounter`), so the
         // spurious-wakeup schedule is untouched. A jump-driven wake is
         // not a scheduler tick — it is the resolution of a timeout that
         // would otherwise be invisible.
-        let prepared =
-            match Scheduler.chooseNext prepared.LastRan prepared.State with
-            | Some _ -> prepared
+        let rec advanceUntilRunnableOrQuiescent (state : IlMachineState) : IlMachineState =
+            match Scheduler.chooseNext prepared.LastRan state with
+            | Some _ -> state
             | None ->
-                match nextDeadline prepared.State with
-                | None -> prepared
+                match nextDeadline state with
+                | None -> state
                 | Some target ->
                     let state =
-                        prepared.State.MapKernel (fun kernel ->
+                        state.MapKernel (fun kernel ->
                             { kernel with
                                 VirtualClockMs = max kernel.VirtualClockMs target
                             }
                         )
 
-                    { prepared with
-                        State = fireExpiredDeadlines state
-                    }
+                    advanceUntilRunnableOrQuiescent (fireExpiredDeadlines state)
+
+        let prepared =
+            { prepared with
+                State = advanceUntilRunnableOrQuiescent prepared.State
+            }
 
         match Scheduler.chooseNext prepared.LastRan prepared.State with
         | None ->

@@ -39,11 +39,20 @@ namespace WoofWare.PawPrint
 /// responsibility of `LowLevelLock`, layered on top of this primitive by the
 /// BCL.
 ///
-/// Timeouts: `TimedWait` is not implemented today. PawPrint has no virtual
-/// clock yet, and silently treating "wait N ms" as "wait forever" would
-/// turn flaky guest code into deterministic deadlock without obvious blame.
-/// Calls to `timedWait` therefore fail loud; see the P/Invoke handler in
-/// `NativeLowLevelMonitor.fs` for the failure site.
+/// Timeouts: `wait` accepts an optional absolute virtual-clock
+/// `deadlineMs`. `None` is the infinite-wait shape used by the void
+/// `SystemNative_LowLevelMonitor_Wait` entry point; `Some ms` is the
+/// finite-deadline shape used by `TimedWait`. The deadline is recorded
+/// on the waiter's `BlockedOnMonitorWait` status, where the driver
+/// loop's deadline-firing pass (`Program.fireExpiredDeadlines`) picks
+/// it up: when the clock reaches the deadline, `fireTimeout` (below)
+/// pulls the thread out of `WaitQueue` and routes it through the same
+/// reacquire path `signalRelease` uses, additionally rewriting the
+/// caller's `TimedWait` return slot from `Int32 1` (signalled) to
+/// `Int32 0` (timed out). Pure `wait` callers, which return `void` from
+/// `SystemNative_LowLevelMonitor_Wait`, do not push a return slot —
+/// hence `fireTimeout` is only safe against threads that were parked
+/// via the TimedWait path.
 ///
 /// Spurious wakeups: injected from outside this module under control of
 /// `EmulatedKernel.SpuriousWakeup`. The transition is `spuriousWake`
@@ -247,7 +256,20 @@ module LowLevelMonitor =
     /// the guest cannot observe a state in which it has released the
     /// monitor but has not yet been parked, because both happen in a single
     /// `wait` call.
-    let wait (thread : ThreadId) (id : LowLevelMonitorId) (state : IlMachineState) : IlMachineState =
+    ///
+    /// `deadlineMs = None` mirrors the infinite-timeout
+    /// `SystemNative_LowLevelMonitor_Wait` entry point: the thread will
+    /// only wake from a `Signal_Release` or a spurious wake. `Some ms`
+    /// is the finite-deadline shape used by `TimedWait`: the driver
+    /// loop will additionally fire `fireTimeout` if the clock reaches
+    /// `ms` before a signal arrives.
+    let wait
+        (thread : ThreadId)
+        (id : LowLevelMonitorId)
+        (deadlineMs : int64 option)
+        (state : IlMachineState)
+        : IlMachineState
+        =
         let monitor = lookup id state
 
         match monitor.Owner with
@@ -269,7 +291,7 @@ module LowLevelMonitor =
 
             state
             |> writeMonitor id monitor
-            |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnMonitorWait id)
+            |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnMonitorWait (id, deadlineMs))
 
         | head :: rest ->
             // Transfer ownership to the AcquireQueue head and park the
@@ -284,7 +306,7 @@ module LowLevelMonitor =
             state
             |> writeMonitor id monitor
             |> Scheduler.setThreadStatus head ThreadStatus.Runnable
-            |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnMonitorWait id)
+            |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnMonitorWait (id, deadlineMs))
 
     /// `Signal_Release` is the wakeup half of the condvar protocol. The
     /// caller must hold the monitor; the call wakes at most one thread
@@ -385,6 +407,72 @@ module LowLevelMonitor =
             state
             |> writeMonitor id monitor
             |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnMonitorAcquire id)
+
+    /// Fire the finite-timeout wake for `thread` parked on monitor `id`'s
+    /// `WaitQueue`. Only safe against TimedWait waiters — the
+    /// `BlockedOnMonitorWait` deadline is the discriminator, and only
+    /// TimedWait pushes the optimistic `Int32 1` slot that this function
+    /// rewrites to `Int32 0`. The wake routes the thread through the same
+    /// reacquire path as `signalRelease`/`spuriousWake` (take ownership
+    /// directly if the monitor is free, otherwise park at the AcquireQueue
+    /// tail), so on resumption the thread observes `0` from
+    /// `Interop.Sys.LowLevelMonitor_TimedWait` already re-owning the
+    /// monitor — mirroring `pthread_cond_timedwait`'s contract.
+    ///
+    /// Fails loud if `thread` is not in `id`'s `WaitQueue`. The only
+    /// caller is `Program.fireExpiredDeadlines`, which enumerates
+    /// `BlockedOnMonitorWait` statuses itself; a miss would mean a
+    /// signal-wake raced our enumeration without flipping the status, or
+    /// the deadline-firing path was reached for an untimed waiter — both
+    /// indicate a structural bug worth surfacing here rather than letting
+    /// the eval-stack pop misbehave silently.
+    let fireTimeout (thread : ThreadId) (id : LowLevelMonitorId) (state : IlMachineState) : IlMachineState =
+        let monitor = lookup id state
+
+        if not (List.contains thread monitor.WaitQueue) then
+            failwith
+                $"LowLevelMonitor %O{id}: cannot fire timeout for thread %O{thread} because it is not in WaitQueue (queue: %A{monitor.WaitQueue})."
+
+        let newWaitQueue = monitor.WaitQueue |> List.filter (fun t -> t <> thread)
+
+        let state =
+            match monitor.Owner with
+            | None ->
+                // Uncontended: the invariant guarantees AcquireQueue is empty,
+                // so we take ownership directly and become Runnable.
+                let monitor =
+                    { monitor with
+                        Owner = Some thread
+                        WaitQueue = newWaitQueue
+                    }
+
+                state
+                |> writeMonitor id monitor
+                |> Scheduler.setThreadStatus thread ThreadStatus.Runnable
+
+            | Some _ ->
+                // Contended: park at the AcquireQueue tail. Ownership will be
+                // handed to us atomically when our predecessor releases.
+                // Status flips from BlockedOnMonitorWait to
+                // BlockedOnMonitorAcquire — the deadline is implicitly
+                // forgotten because the new variant carries no deadline
+                // field. By the time we resume past TimedWait's call site we
+                // already own the monitor, matching pthread_cond_timedwait.
+                let monitor =
+                    { monitor with
+                        AcquireQueue = monitor.AcquireQueue @ [ thread ]
+                        WaitQueue = newWaitQueue
+                    }
+
+                state
+                |> writeMonitor id monitor
+                |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnMonitorAcquire id)
+
+        // Rewrite the park-time `Int32 1` (signalled) slot pushed by the
+        // TimedWait handler to `Int32 0` (timed out). Pop-then-push keeps
+        // the stack depth invariant across the wake.
+        let _, state = IlMachineState.popEvalStack thread state
+        IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) thread state
 
     /// SplitMix64-style hash, used to derive a deterministic per-waiter
     /// coin flip in `[0.0, 1.0)` from `(seed, tick, monitorId, threadId)`.
