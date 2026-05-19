@@ -1120,7 +1120,49 @@ module IlMachineManagedByref =
             | ByrefProjection.ByteOffset _ :: ByrefProjection.ReinterpretAs ty :: _
             | ByrefProjection.ReinterpretAs ty :: _ ->
                 let targetTemplate = zeroForConcreteType baseClassTypes state ty
-                readManagedByrefBytesAs baseClassTypes state src targetTemplate
+
+                // CoreLib hosts the captured ExecutionContext inside Task.m_stateObject
+                // (typed object?) and exposes it via `ref Unsafe.As<object?, ExecutionContext?>(ref m_stateObject)`.
+                // The resulting byref shape is `[..., ReinterpretAs RefType]` over storage
+                // whose immediate cell is an ObjectRef; a subsequent Ldind.ref then needs
+                // the stored reference unchanged. Object references are not byte-addressable
+                // in our value model, so routing this through the bytewise path would
+                // refuse. Mirror the write side's structural-write escape (see
+                // `useStructuralWriter` in `writeManagedByrefCore`) by short-circuiting
+                // here when the peeled byte offset is exactly zero and both the storage
+                // cell and the reinterpret target are reference-typed: return the cell
+                // unchanged. Non-zero offsets still fail loudly in the bytewise path —
+                // a mid-cell view of an ObjectRef has no defined meaning — and any other
+                // storage/target shape continues to route through the bytewise dispatcher.
+                //
+                // The elision is gated on the root having a typed cell. Byte-only roots
+                // (`StackMemoryByte`, `NativeMemoryByte`, `PeByteRange`) have no
+                // structural value to read — `readRootValue` would throw — and a
+                // `ReinterpretAs RefType` over them really does mean "read these bytes
+                // as a reference", which only the bytewise path can answer.
+                let isTypedCellRoot =
+                    match root with
+                    | ByrefRoot.StackMemoryByte _
+                    | ByrefRoot.NativeMemoryByte _
+                    | ByrefRoot.PeByteRange _ -> false
+                    | _ -> true
+
+                let elideAsObjectRefCell () : CliType option =
+                    if not isTypedCellRoot then
+                        None
+                    else
+                        match peelTrailingByteView (Some baseClassTypes) state projs with
+                        | ValueSome (structuralPrefix, 0) ->
+                            let cell = readProjectedValue (readRootValue state root) structuralPrefix
+
+                            match cell, targetTemplate with
+                            | CliType.ObjectRef _, CliType.ObjectRef _ -> Some cell
+                            | _ -> None
+                        | _ -> None
+
+                match elideAsObjectRefCell () with
+                | Some cell -> cell
+                | None -> readManagedByrefBytesAs baseClassTypes state src targetTemplate
             | ByrefProjection.ByteOffset n :: _ ->
                 failwith
                     $"ByteOffset %d{n} without a preceding ReinterpretAs in projection chain: %O{src} (this is an interpreter bug)"
