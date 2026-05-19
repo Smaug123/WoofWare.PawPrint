@@ -161,11 +161,13 @@ module NativeMarshal =
             // `System.Object` and ordinary classes without `[StructLayout]`, as well as value
             // types explicitly marked `[StructLayout(LayoutKind.Auto)]`), and the first arm
             // for the strict subset we are confident matches CoreCLR exactly: structs whose
-            // fields are recursively plain numeric (Int8..Float64). Anything else —
-            // IntPtr/UIntPtr fields, enums, [MarshalAs] descriptors, Bool/Char/ObjectRef
-            // fields, has-layout-non-blittable structs, etc. — surfaces a host TODO. Each
-            // future widening wants its own motivating PawPrint test before being added to
-            // the classifier.
+            // fields are recursively plain numeric (Int8..Float64), excluding host-known
+            // field-only special cases (DateTime, Decimal) that CoreCLR's `MarshalInfo`
+            // diverts to stub synthesis (`MARSHAL_TYPE_DATE`, `NFT_DECIMAL`). Anything else —
+            // enums, [MarshalAs] descriptors, Bool/Char/ObjectRef fields,
+            // has-layout-non-blittable structs, etc. — surfaces a host TODO. Each future
+            // widening wants its own motivating PawPrint test before being added to the
+            // classifier.
 
             if CliValueType.IsAutoLayoutHandle state.ConcreteTypes state._LoadedAssemblies typeHandle then
                 // No-layout branch: write *stub = NULL, *size = 0, return FALSE so the
@@ -189,7 +191,17 @@ module NativeMarshal =
             let zero, state =
                 IlMachineState.cliTypeZeroOfHandle state ctx.BaseClassTypes typeHandle
 
-            let rec isStrictlyNumericBlittable (t : CliType) : bool =
+            // The classifier is split into two functions to encode the top-level-vs-field
+            // distinction that CoreCLR's `MarshalInfo` makes. CoreCLR walks fields with
+            // `IsFieldBlittable`, which short-circuits DateTime to `MARSHAL_TYPE_DATE`
+            // (mlinfo.cpp:1747) and Decimal to marshal-stub synthesis (`NFT_DECIMAL` in
+            // fieldmarshaler.cpp); neither of those host-known types is byte-image compatible
+            // with its native form *when used as a field*, but their standalone byte images
+            // can coincide with the native form (Decimal's standalone is byte-identical;
+            // DateTime is filtered earlier by the AutoLayout gate). Top-level entry walks the
+            // outer struct's fields via `isBlittableField`; the field walker rejects the
+            // host-known special cases and recurses into nested structs via itself.
+            let rec isBlittableField (t : CliType) : bool =
                 match t with
                 // `NativeInt` cells carry provenance under PawPrint (e.g.
                 // `TypeHandlePtr` from `typeof(T).TypeHandle.Value`). CoreCLR
@@ -228,7 +240,25 @@ module NativeMarshal =
                             ctx.BaseClassTypes
                             vt
 
-                    if isDateTime then
+                    // Decimal is structurally four `Int32` fields (`flags`, `hi`, `lo`, `mid`)
+                    // and would otherwise recurse to true, but CoreCLR's `MarshalInfo` routes
+                    // Decimal fields through marshal-stub synthesis (`NFT_DECIMAL` in
+                    // fieldmarshaler.cpp): managed `Decimal` is 16 bytes with 4-byte field
+                    // alignment, native `DECIMAL` is 16 bytes with 8-byte alignment (its
+                    // `Lo64` union member is `ULONGLONG`). The outer struct's managed layout
+                    // therefore positions Decimal at a different offset than the native
+                    // layout — `{ int x; decimal d; }` is 20 bytes managed, 24 bytes native.
+                    // Memmoving would write into native padding. Reject here so the outer
+                    // arm surfaces the TODO failwith; real handling needs the Decimal
+                    // marshal stub and the matching 8-byte-aligned native layout.
+                    let isDecimal =
+                        CliValueType.IsHostKnownDecimal
+                            state.ConcreteTypes
+                            state._LoadedAssemblies
+                            ctx.BaseClassTypes
+                            vt
+
+                    if isDateTime || isDecimal then
                         false
                     else
                         match vt._Storage with
@@ -237,10 +267,28 @@ module NativeMarshal =
                         // wrappers whose CoreCLR marshal size diverges from the byte image.
                         | CliValueTypeStorage.RawBytes _ -> false
                         | CliValueTypeStorage.Fields storage ->
-                            storage.Fields
-                            |> List.forall (fun field -> isStrictlyNumericBlittable field.Contents)
+                            storage.Fields |> List.forall (fun field -> isBlittableField field.Contents)
 
-            if isStrictlyNumericBlittable zero then
+            let isStructStrictlyNumericBlittable (t : CliType) : bool =
+                match t with
+                | CliType.ValueType vt ->
+                    // Top-level: walk fields via the field-level classifier. Host-known
+                    // field-only rejections (Decimal) do not apply here because the outer
+                    // type's *own* declared type is what we're classifying. Top-level
+                    // DateTime is filtered earlier by `IsAutoLayoutHandle`; if it ever
+                    // reached us we'd want the same answer the field walker gives, so we
+                    // intentionally don't short-circuit it.
+                    match vt._Storage with
+                    | CliValueTypeStorage.RawBytes _ -> false
+                    | CliValueTypeStorage.Fields storage ->
+                        storage.Fields |> List.forall (fun field -> isBlittableField field.Contents)
+                | _ ->
+                    // Top-level primitive (e.g. `Marshal.StructureToPtr<int>`): defer to the
+                    // field walker. Primitives are unconditionally blittable; Bool/Char/etc.
+                    // are not — same semantics either way.
+                    isBlittableField t
+
+            if isStructStrictlyNumericBlittable zero then
                 // The eventual `*structMarshalStub` we write here is null: the blittable path
                 // tells CoreLib to take the `SpanHelpers.Memmove` fast path
                 // (marshalnative.cpp:99-145).

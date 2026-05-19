@@ -243,6 +243,14 @@ type BaseClassTypes<'corelib> =
         /// DateTime field to `MARSHAL_TYPE_DATE` (8 bytes) before the AutoLayout rejection
         /// triggers; reproducing that requires identifying DateTime nominally at marshal time.
         DateTime : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        /// `System.Decimal`. Host-known because CoreCLR's `MarshalInfo` routes Decimal fields
+        /// through marshal-stub synthesis (`NFT_DECIMAL` in `fieldmarshaler.cpp`) rather than
+        /// the memmove fast path: managed `Decimal` is 16 bytes with 4-byte field alignment,
+        /// but native `DECIMAL` is 16 bytes with 8-byte alignment (its `Lo64` union member is
+        /// `ULONGLONG`), so a sequential outer struct containing a `Decimal` field has a
+        /// different byte image managed vs native. Identifying Decimal nominally at marshal
+        /// time lets the classifier reject these fields before quietly emitting wrong bytes.
+        Decimal : TypeInfo<GenericParamFromMetadata, TypeDefn>
         /// `System.Collections.Generic.IList<T>`. The open generic definition. Used by the
         /// SZ-array → implicit-generic-interface carve-out (CoreCLR's
         /// `IsImplicitInterfaceOfSZArray`): a single-dimensional zero-bound array
