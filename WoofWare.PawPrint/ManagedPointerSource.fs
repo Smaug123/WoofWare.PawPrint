@@ -110,6 +110,17 @@ type ByrefRoot =
 
 /// Identity of a byte-addressable storage container. Offsets within the
 /// container are tracked separately.
+///
+/// `HeapObject` and `HeapObjectField` are not literally "byte arrays" — they
+/// identify a managed heap allocation (or a particular class field within
+/// one) as the shared origin for byte-offset reasoning. Two byrefs into the
+/// same boxed value reach through the same `HeapObject addr` regardless of
+/// which interior field they project; two byrefs through the same class
+/// field reach through the same `HeapObjectField (addr, field)`. Disjoint
+/// fields of the same class instance get distinct `HeapObjectField` keys,
+/// and a boxed value and a class-field byref cannot coexist on the same
+/// address (each heap allocation has a single object kind), so the two
+/// heap kinds never need to be reconciled against each other.
 [<RequireQualifiedAccess>]
 type ByteStorageIdentity =
     | Array of ManagedHeapAddress
@@ -120,6 +131,8 @@ type ByteStorageIdentity =
     | StackLocal of ThreadId * FrameId * uint16
     | StackArgument of ThreadId * FrameId * uint16
     | NativeMemory of NativeMemoryBlockId
+    | HeapObject of ManagedHeapAddress
+    | HeapObjectField of ManagedHeapAddress * FieldId
 
 [<RequireQualifiedAccess>]
 module ByteStorageIdentity =
@@ -133,6 +146,8 @@ module ByteStorageIdentity =
         | ByteStorageIdentity.StackLocal _ -> 5
         | ByteStorageIdentity.StackArgument _ -> 6
         | ByteStorageIdentity.NativeMemory _ -> 7
+        | ByteStorageIdentity.HeapObject _ -> 8
+        | ByteStorageIdentity.HeapObjectField _ -> 9
 
     let compare (left : ByteStorageIdentity) (right : ByteStorageIdentity) : int =
         match left, right with
@@ -151,6 +166,10 @@ module ByteStorageIdentity =
           ByteStorageIdentity.StackArgument (rightThread, rightFrame, rightArgument) ->
             Operators.compare (leftThread, leftFrame, leftArgument) (rightThread, rightFrame, rightArgument)
         | ByteStorageIdentity.NativeMemory left, ByteStorageIdentity.NativeMemory right -> Operators.compare left right
+        | ByteStorageIdentity.HeapObject left, ByteStorageIdentity.HeapObject right -> Operators.compare left right
+        | ByteStorageIdentity.HeapObjectField (leftAddr, leftField),
+          ByteStorageIdentity.HeapObjectField (rightAddr, rightField) ->
+            Operators.compare (leftAddr, leftField) (rightAddr, rightField)
         | _ -> Operators.compare (rank left) (rank right)
 
 /// A navigation step applied after reaching the byref root.
