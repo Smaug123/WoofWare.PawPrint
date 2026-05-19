@@ -271,6 +271,49 @@ public class TypesWithMembers
 
         state, metadataImportType, method
 
+    /// Look up a `MetadataImport` QCall stub by its `[LibraryImport]` entry-point name
+    /// rather than by its IL method name. The Roslyn LibraryImport source generator emits
+    /// a marshalling stub whose synthesised IL name (e.g. `<Enum>g____PInvoke|N_M`) carries
+    /// source-generator counters that drift across runtime builds; the entry-point name on
+    /// the `NativeImport` attribute is the stable identifier.
+    let private metadataImportQCallMethod
+        (fixture : MetadataImportFixture)
+        (state : IlMachineState)
+        (entryPointName : string)
+        : IlMachineState *
+          TypeInfo<GenericParamFromMetadata, TypeDefn> *
+          MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+        =
+        let metadataImportType =
+            requiredTopLevelType fixture.BaseClassTypes.Corelib "System.Reflection" "MetadataImport"
+
+        let rawMethod =
+            metadataImportType.Methods
+            |> List.filter (fun method ->
+                match method.NativeImport with
+                | Some import -> import.ModuleName = "QCall" && import.EntryPointName = entryPointName
+                | None -> false
+            )
+            |> function
+                | [ method ] -> method
+                | [] -> failwith $"MetadataImport QCall stub with entry point %s{entryPointName} was not found"
+                | methods ->
+                    failwith
+                        $"MetadataImport QCall stub with entry point %s{entryPointName} was ambiguous: %d{methods.Length} matches"
+
+        let state, method, _ =
+            ExecutionConcretization.concretizeMethodWithTypeGenerics
+                fixture.LoggerFactory
+                fixture.BaseClassTypes
+                ImmutableArray.Empty
+                rawMethod
+                None
+                fixture.BaseClassTypes.Corelib.Name
+                ImmutableArray.Empty
+                state
+
+        state, metadataImportType, method
+
     let private allocateInt32Buffer
         (fixture : MetadataImportFixture)
         (length : int)
@@ -430,7 +473,7 @@ public class TypesWithMembers
                 TargetType = metadataImportType
             }
 
-        match NativeMetadataImport.tryExecute ctx with
+        match NativeDispatch.tryExecute ctx with
         | Some (NativeHandlerResult.Completed (state, _)) -> state
         | Some result -> failwith $"unexpected MetadataImport execution result: %O{result}"
         | None -> failwith "MetadataImport native method did not match"
@@ -442,7 +485,7 @@ public class TypesWithMembers
         : int32 * int32 list * EnumResultStorage * IlMachineState
         =
         let state, metadataImportType, enumMethod =
-            metadataImportMethod fixture state "<Enum>g____PInvoke|8_0" 6
+            metadataImportQCallMethod fixture state "MetadataImport_Enum"
 
         let lengthOut, state = allocateInt32Out fixture -1 state
         let shortResult, state = allocateInt32Buffer fixture 16 0 state

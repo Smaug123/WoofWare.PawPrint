@@ -68,6 +68,7 @@ module NativeQCall =
             NativeSignature.tryExecuteQCall "Signature_GetCustomModifiersAtOffset"
             "Array_CreateInstance", NativeArray.tryExecuteQCall "Array_CreateInstance"
             "Enum_GetValuesAndNames", NativeEnum.tryExecuteQCall "Enum_GetValuesAndNames"
+            "MetadataImport_Enum", NativeMetadataImport.tryExecuteQCall "MetadataImport_Enum"
             "AssemblyNative_GetResource", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetResource"
             "AssemblyNative_GetTypeCore", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetTypeCore"
             "AssemblyNative_IsApplyUpdateSupported",
