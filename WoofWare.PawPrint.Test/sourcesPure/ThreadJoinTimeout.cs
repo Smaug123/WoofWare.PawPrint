@@ -35,6 +35,15 @@ namespace HelloWorldApp
                     Monitor.Wait(locker);
                 }
             });
+            // Mark background so the real-runtime oracle
+            // (`RealRuntime.executeWithRealRuntime` runs the compiled assembly
+            // in the NUnit test process) doesn't hang on a leaked foreground
+            // thread once Main returns: a foreground worker stuck in
+            // Monitor.Wait would keep the host process alive indefinitely.
+            // PawPrint's driver reports NormalExit as soon as the entry
+            // thread terminates and does not consult IsBackground, so this
+            // does not affect the interpreter side.
+            worker.IsBackground = true;
             worker.Start();
 
             if (worker.Join(50))

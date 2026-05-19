@@ -126,13 +126,25 @@ module NativeThreading =
 
         let targetThreadId = threadIdFromThreadAddr state "Thread.Join" threadAddr
 
-        // Self-join is an immediate deadlock: blocking ourselves on ourselves means
-        // no thread will ever wake us. The real CLR also hangs, but in PawPrint this
-        // would surface much later as a generic "no runnable threads" failure far
-        // from the actual Join call; report it at the cause site.
-        if targetThreadId = ctx.Thread then
+        // Infinite self-join is an unresolvable deadlock: blocking ourselves on
+        // ourselves means no thread will ever wake us, and unlike the finite case
+        // there is no deadline that can let us out. The real CLR also hangs; in
+        // PawPrint this would surface much later as a generic "no runnable
+        // threads" failure far from the actual Join call, so report it at the
+        // cause site.
+        //
+        // Finite (`> 0`) self-joins are *not* a deadlock under PawPrint's
+        // deadline machinery — they park on `BlockedOnJoin (self, Some d)` and
+        // get woken by `fireJoinTimeout` when the virtual clock reaches `d`,
+        // returning `false`. This matches CoreCLR: `Thread.CurrentThread.Join(50)`
+        // waits 50 ms and returns false. The non-blocking poll (`timeout = 0`)
+        // is also fine for self: `targetTerminated` is false for a running self,
+        // so we return false immediately without any status transition.
+        match deadlineMs with
+        | Some None when targetThreadId = ctx.Thread ->
             failwith
-                $"Thread.Join: thread {ctx.Thread} is attempting to join itself, which would deadlock. The real CLR also hangs on self-join; PawPrint reports this at the call site rather than as a downstream deadlock."
+                $"Thread.Join: thread {ctx.Thread} is attempting to join itself with an infinite timeout, which would deadlock. The real CLR also hangs on infinite self-join; PawPrint reports this at the call site rather than as a downstream deadlock. Use Thread.Join(int) with a finite timeout (or 0) if you want the call to return."
+        | _ -> ()
 
         let targetState =
             state.ThreadState
