@@ -339,6 +339,26 @@ module NativeIntSource =
     /// native ints and by the `Interlocked.CompareExchange(ref IntPtr, …)`
     /// intrinsic, which compares the slot's contents under CEQ semantics.
     let equalsForCli (a : NativeIntSource) (b : NativeIntSource) : bool =
+        // `Unsafe.AsRef<T>((void*)bits)` synthesises a placeholder byref
+        // carrying a literal bit pattern. C# casts between native-int and
+        // pointer shapes emit no `conv.i`/`conv.u`, so a slot containing the
+        // bits as a plain `Verbatim` and a value freshly produced by
+        // `Unsafe.AsPointer(ref Unsafe.AsRef<T>((void*)bits))` (which arrives
+        // as `ManagedPointer (NativeIntPlaceholder bits)`) must compare equal:
+        // they're the same numeric value, just routed through different
+        // shapes. Mirrors `unwrapPlaceholderForBitComparison` in
+        // `EvalStackValueComparisons`, but at the `NativeIntSource` layer so
+        // every caller (eval-stack `ceq`, Interlocked CAS, …) sees the same
+        // normalised view.
+        let unwrapPlaceholder (n : NativeIntSource) : NativeIntSource =
+            match n with
+            | NativeIntSource.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits) ->
+                NativeIntSource.Verbatim bits
+            | _ -> n
+
+        let a = unwrapPlaceholder a
+        let b = unwrapPlaceholder b
+
         match a, b with
         | NativeIntSource.FunctionPointer f1, NativeIntSource.FunctionPointer f2 -> MethodInfo.NominallyEqual f1 f2
         | NativeIntSource.TypeHandlePtr f1, NativeIntSource.TypeHandlePtr f2 -> f1 = f2
