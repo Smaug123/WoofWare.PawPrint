@@ -435,17 +435,23 @@ module internal IntrinsicHelpers =
 
     // PawPrint emulates a deterministic scalar virtual CPU: every hardware-intrinsic
     // family reports IsSupported = false so the BCL falls through to its scalar/portable
-    // path. The IL body of these `[Intrinsic]` getters is a recursive `return IsSupported;`
-    // stub that the JIT replaces with a constant; without an explicit fold here it would
-    // recurse forever. New ISAs landing in CoreLib must be added to this set.
+    // path. Most of the IL bodies are a recursive `return IsSupported;` stub that the JIT
+    // replaces with a constant; without an explicit fold here it would recurse forever.
+    // A few entries (e.g. `System.Numerics.Vector\`1`) have honest terminating bodies that
+    // would return `true` for primitive `T` — we still fold them to `false` here because the
+    // scalar profile has no implementation of the SIMD ops a `true` answer would commit us to.
+    // New ISAs landing in CoreLib must be added to this set.
     //
     // Coverage source: src/libraries/System.Private.CoreLib/src/System/Runtime/Intrinsics
-    // in the dotnet/runtime tree. Listing harmless-but-unmatched names is fine; the lookup
-    // is keyed off the fully qualified declaring type name, so types absent from the
-    // running CoreLib simply never trigger a match.
+    // (and System/Numerics for `Vector\`1`) in the dotnet/runtime tree. Listing
+    // harmless-but-unmatched names is fine; the lookup is keyed off the fully qualified
+    // declaring type name, so types absent from the running CoreLib simply never trigger a
+    // match.
     let scalarOnlyFalseIsSupportedIntrinsics =
         set
             [
+                // System.Numerics
+                "System.Numerics.Vector`1"
                 // System.Runtime.Intrinsics.Arm
                 "System.Runtime.Intrinsics.Arm.AdvSimd"
                 "System.Runtime.Intrinsics.Arm.AdvSimd.Arm64"
@@ -1160,24 +1166,20 @@ module internal IntrinsicHelpers =
                     failwith $"%s{operation}: refusing nonzero byte copy to null destination"
                 | _ ->
 
-                let byteType = byteConcreteType operation baseClassTypes state
-                let mutable state = state
-
-                // cpblk is undefined for overlapping ranges (ECMA-335 III.3.30), so a
-                // forward byte-by-byte copy is per-spec correct here; we don't need the
-                // Memmove-style overlap handling that Buffer.Memmove offers callers.
-                for i = 0 to byteCount - 1 do
-                    let src =
-                        ManagedPointerByteView.addByteOffset baseClassTypes state byteType i sourcePtr
-
-                    let dest =
-                        ManagedPointerByteView.addByteOffset baseClassTypes state byteType i destPtr
-
-                    let value =
-                        IlMachineState.readManagedByrefBytesAs baseClassTypes state src byteTemplate
-
-                    state <- IlMachineState.writeManagedByrefBytesOrTypedCell baseClassTypes state dest value
-
-                state
+                // cpblk is undefined for overlapping ranges (ECMA-335 III.3.30),
+                // so a forward walk is per-spec correct; we don't need the
+                // Memmove-style overlap handling. The shared cell-aware primitive
+                // preserves non-byte-addressable cell shapes (object references,
+                // runtime pointers, value-types containing those) and
+                // non-`Verbatim` numeric provenance (e.g. `TypeHandlePtr`-tagged
+                // `IntPtr`s) that the byte-walk fallback cannot serialise.
+                CellAwareCopy.copy
+                    baseClassTypes
+                    operation
+                    CellAwareCopyPolicy.CpblkForward
+                    state
+                    destPtr
+                    sourcePtr
+                    byteCount
 
         state |> IlMachineState.advanceProgramCounter currentThread

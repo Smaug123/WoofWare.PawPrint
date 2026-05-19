@@ -78,6 +78,10 @@ module NativeQCall =
             // assembly we execute presents this PAL entry point through QCall
             // import metadata.
             "GetEnvironmentVariableW", NativeKernel32.tryExecuteQCall "GetEnvironmentVariableW"
+            // `CLRConfig.GetConfigBoolValue` is a QCall on CoreCLR for internal
+            // knob lookups (e.g. `AutoreleasePool.EnableAutoreleasePool`). PawPrint
+            // answers "knob not set" deterministically; see #609 for deferred work.
+            "ClrConfig_GetConfigBoolValue", NativeClrConfig.tryExecuteQCall "ClrConfig_GetConfigBoolValue"
             // CoreCLR-on-Unix rebinds `Libraries.Kernel32` to `RuntimeHelpers.QCall`,
             // so the Win32-shaped Semaphore P/Invokes plus `CloseHandle` reach
             // the runtime as QCalls under their Win32 wide-string names.

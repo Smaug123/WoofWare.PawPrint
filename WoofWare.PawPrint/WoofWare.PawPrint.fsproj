@@ -55,6 +55,7 @@
     <Compile Include="ManagedPointerByteView.fs" />
     <Compile Include="BinaryArithmetic.fs" />
     <Compile Include="IntrinsicMethodKeys.fs" />
+    <Compile Include="CellAwareCopy.fs" />
     <Compile Include="IntrinsicHelpers.fsi" />
     <Compile Include="IntrinsicHelpers.fs" />
     <Compile Include="Intrinsics.fs" />
@@ -104,6 +105,7 @@
     <Compile Include="Native\NativeArray.fs" />
     <Compile Include="Native\NativeEnum.fs" />
     <Compile Include="Native\NativeKernel32.fs" />
+    <Compile Include="Native\NativeClrConfig.fs" />
     <Compile Include="Native\NativeWaitHandle.fs" />
     <Compile Include="Native\NativeRuntimeAssembly.fs" />
     <Compile Include="Native\NativeMetadataUpdater.fs" />

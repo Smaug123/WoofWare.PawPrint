@@ -18,7 +18,7 @@ module TestPureCases =
     let unimplemented =
         [
             "AdvancedStructLayout.cs" // past MarshalNative_SizeOfHelper for ByValTStr and SystemNative_Malloc / SystemNative_Free / Marshal.AllocHGlobal / FreeHGlobal; now blocked downstream at the unimplemented MarshalNative_TryGetStructMarshalStub QCall (CoreLib's Marshal.StructureToPtr path)
-            "Threads.cs" // past SystemNative_GetLowResolutionTimestamp now that the kernel has a virtual clock; next blocker is the unimplemented JIT intrinsic System.Threading.Interlocked.MemoryBarrier, hit from the Task/ThreadPool scheduler's barrier-on-publish path
+            "Threads.cs" // past the initobj generic-method-parameter bug; now blocks at IlMachineManagedByref.readReinterpretedByrefField (IlMachineManagedByref.fs:1204) when a TaskAwaiter ldfld of `m_task` tries to bytewise-reinterpret object-reference storage that PawPrint does not yet model
             "MarshalStructureToPtrDateTimeField.cs" // MarshalNative_TryGetStructMarshalStub doesn't yet synthesise an IL stub for has-layout-non-blittable structs; CoreCLR writes an 8-byte OADate (`MARSHAL_TYPE_DATE`) for a `DateTime` field, but PawPrint currently rejects the struct loudly rather than memmove-ing the managed `_dateData` bytes. Real implementation needs the OADate-conversion stub.
             "MarshalStructureToPtrIntPtrField.cs" // The TryGetStructMarshalStub QCall classifier still rejects IntPtr/UIntPtr fields outright. Byte-renderability of `NativeIntSource` is value-dependent (e.g. `TypeHandlePtr` from `obj.GetType().TypeHandle.Value` can't be serialised by `CliNumericType.ToBytes`), so a type-level "blittable" decision can't be honoured for every possible value. Parked here as the motivating end-to-end case for joint widening: once `ToBytes` handles every `NativeIntSource` variant, the classifier can widen too and this Verbatim-valued test should pass.
         ]
@@ -40,21 +40,14 @@ module TestPureCases =
             { empty with
                 System_Environment = System_Environment.passThru
             }
-        ]
-        |> Map.ofList
-
-    let unimplementedMockTests : Map<string, NativeImpls> =
-        let empty = MockEnv.make ()
-
-        [
-            // CurrentManagedThreadId now works; blocked downstream on TypeConcretization
-            // generic method parameter 0 from CollectionsMarshal.AsSpan initobj.
             "ResizeArray.cs",
             { empty with
                 System_Environment = System_Environment.passThru
             }
         ]
         |> Map.ofList
+
+    let unimplementedMockTests : Map<string, NativeImpls> = Map.empty
 
     let expectsUnhandledException = [ "UnhandledException.cs" ] |> Set.ofList
 
