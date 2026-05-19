@@ -87,6 +87,12 @@ module Program =
         | WaitHandle of handle : WaitHandleId
         | MonitorWait of monitor : LowLevelMonitorId
         | SyncBlockWait of lockObject : ManagedHeapAddress
+        /// `Thread.Join(int)` with a positive finite timeout. Carries no
+        /// payload because there is no per-primitive wait queue to
+        /// reference: the joiner is identified by the outer `(tid, kind)`
+        /// pair, and `Scheduler.fireJoinTimeout` reads its state directly
+        /// from the thread's status.
+        | JoinTimeout
 
     /// Project a thread status into its finite-timeout deadline against
     /// the virtual clock, if any. Threads with no deadline (Runnable,
@@ -101,12 +107,13 @@ module Program =
             Some (FiredDeadline.MonitorWait monitor, deadline)
         | ThreadStatus.BlockedOnSyncBlockWait (lockObject, Some deadline) ->
             Some (FiredDeadline.SyncBlockWait lockObject, deadline)
+        | ThreadStatus.BlockedOnJoin (_, Some deadline) -> Some (FiredDeadline.JoinTimeout, deadline)
         | ThreadStatus.BlockedOnWaitHandle (_, None)
         | ThreadStatus.BlockedOnMonitorWait (_, None)
         | ThreadStatus.BlockedOnSyncBlockWait (_, None)
+        | ThreadStatus.BlockedOnJoin (_, None)
         | ThreadStatus.Runnable
         | ThreadStatus.NotStarted
-        | ThreadStatus.BlockedOnJoin _
         | ThreadStatus.BlockedOnClassInit _
         | ThreadStatus.BlockedOnMonitorAcquire _
         | ThreadStatus.BlockedOnSyncBlockAcquire _
@@ -172,14 +179,17 @@ module Program =
                     $"fireExpiredDeadlines: thread %O{thread} has BlockedOnSyncBlockWait status against object %O{addr} but is not in its WaitQueue %A{block.WaitQueue}; structural invariant violated."
 
         // Sort key: LowLevelMonitor entries first (group=0), then
-        // SyncBlock entries (group=1), then WaitHandle entries (group=2).
-        // Within each subsystem-group, entries are keyed first by their
-        // primitive id (so distinct primitives are ordered deterministically
-        // but independently) and then by FIFO position in the primitive's
-        // wait queue (so the head of any contested primitive fires before
-        // its successors). For WaitHandle, queue order is unobservable
-        // for timeout fires, so ThreadId is used as a stable deterministic
-        // break.
+        // SyncBlock entries (group=1), then WaitHandle entries (group=2),
+        // then Join entries (group=3). Within each subsystem-group,
+        // entries are keyed first by their primitive id (so distinct
+        // primitives are ordered deterministically but independently)
+        // and then by FIFO position in the primitive's wait queue (so
+        // the head of any contested primitive fires before its
+        // successors). For WaitHandle, queue order is unobservable for
+        // timeout fires, so ThreadId is used as a stable deterministic
+        // break. Join has no per-primitive queue (the "primitive" is
+        // the target thread's status, with no joiner-side ordering),
+        // so ThreadId is the only deterministic break.
         let sortKey ((tid, kind) : ThreadId * FiredDeadline) : int * int * int =
             match kind with
             | FiredDeadline.MonitorWait monitorId ->
@@ -192,6 +202,9 @@ module Program =
                 let (WaitHandleId hid) = handleId
                 let (ThreadId t) = tid
                 2, hid, t
+            | FiredDeadline.JoinTimeout ->
+                let (ThreadId t) = tid
+                3, t, 0
 
         let expired = expired |> List.sortBy sortKey
 
@@ -202,6 +215,7 @@ module Program =
                 | FiredDeadline.WaitHandle handleId -> WaitHandle.fireTimeout tid handleId s
                 | FiredDeadline.MonitorWait monitorId -> LowLevelMonitor.fireTimeout tid monitorId s
                 | FiredDeadline.SyncBlockWait addr -> SyncBlockMonitor.fireTimeout tid addr s
+                | FiredDeadline.JoinTimeout -> Scheduler.fireJoinTimeout tid s
             )
             state
 

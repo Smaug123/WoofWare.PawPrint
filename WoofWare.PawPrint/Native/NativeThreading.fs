@@ -72,6 +72,28 @@ module NativeThreading =
     /// Core of the Thread.Join semantics shared between the pre-.NET 10 InternalCall and the
     /// .NET 10 ThreadNative_Join QCall. Returns the post-call state (with any necessary scheduler
     /// block applied) and the bool result the caller should push as Join's return value.
+    ///
+    /// `timeout` follows Thread.Join semantics: `-1` (Timeout.Infinite)
+    /// blocks until the target terminates; `0` is a non-blocking poll;
+    /// any other positive value is a finite wait expressed in
+    /// milliseconds. Negative values other than `-1` are rejected by the
+    /// BCL with `ArgumentOutOfRangeException` before reaching us; we
+    /// `failwith` because we cannot yet synthesise that exception, so
+    /// any reach here means the wrapper was bypassed.
+    ///
+    /// Finite-timeout handling mirrors the optimistic-push-then-rewrite
+    /// pattern used by `Monitor.Wait` / `LowLevelMonitor.TimedWait` /
+    /// `WaitHandle.WaitOne`: the caller pushes `true`/`Int32 1`
+    /// immediately after `executeJoinCore` returns, before the next
+    /// scheduler step. If the target terminates first,
+    /// `Scheduler.onThreadTerminated` flips the joiner back to Runnable
+    /// and the pushed `true` is consumed as Join's return value. If the
+    /// deadline fires first, `Scheduler.fireJoinTimeout` rewrites the
+    /// slot to `Int32 0` so Join returns `false`. Both code paths
+    /// (QCall: pushes `CliType.Numeric (Int32 1/0)`; InternalCall:
+    /// pushes `CliType.ofBool true/false`) project to
+    /// `EvalStackValue.Int32 1/0`, so a single Int32-rewrite suffices
+    /// in `fireJoinTimeout`.
     let private executeJoinCore
         (ctx : NativeCallContext)
         (state : IlMachineState)
@@ -79,22 +101,28 @@ module NativeThreading =
         (timeout : int)
         : IlMachineState * bool
         =
-        // `timeout` follows Thread.Join semantics: -1 (Timeout.Infinite) blocks
-        // until the target terminates, 0 is a non-blocking poll. Any other value
-        // is a finite wait, which PawPrint cannot honour because the scheduler
-        // doesn't model wall-clock time — a guest that relies on a Join(100) to
-        // fall through after a timeout would instead block forever here. Fail
-        // loud rather than silently diverging from guest semantics; once a
-        // virtual-clock story lands, replace this with the real finite-wait
-        // implementation. The CLR also rejects timeout < -1 with
-        // ArgumentOutOfRangeException; we can't synthesise that yet, so the
-        // same failwith covers it.
-        match timeout with
-        | -1
-        | 0 -> ()
-        | other ->
-            failwith
-                $"Thread.Join: millisecondsTimeout=%d{other} is not supported. Only -1 (Timeout.Infinite) and 0 (non-blocking poll) are implemented; finite timeouts require a virtual clock PawPrint does not yet model. Negative values other than -1 would raise ArgumentOutOfRangeException in the real CLR, which PawPrint doesn't synthesise yet."
+        let deadlineMs : int64 option option =
+            // `None` = caller passed `0` (non-blocking poll, no block at all).
+            // `Some None` = caller passed `-1` (infinite wait, block with no deadline).
+            // `Some (Some ms)` = caller passed `> 0` (finite timeout, block with deadline).
+            // Wrapping in an outer Option keeps the "did we even enter the blocking
+            // path?" question structurally distinct from the deadline value itself.
+            if timeout = 0 then
+                None
+            elif timeout = System.Threading.Timeout.Infinite then
+                Some None
+            elif timeout < 0 then
+                // `< -1` is rejected by the BCL wrappers (`Thread.Join(int)`)
+                // before reaching us, so reaching here means the wrapper was
+                // bypassed. A silent treat-as-infinite or treat-as-zero would
+                // turn a guest bug into a different bug elsewhere.
+                failwith
+                    $"Thread.Join: negative timeout %d{timeout} ms is not Infinite (-1); the BCL's Thread.Join(int) validates this argument before the call, so reaching here means the wrapper was bypassed."
+            else
+                // `timeout > 0` is the finite-wait case. `int64` keeps the addition
+                // safe against an `Int32.MaxValue` timeout against a long-running
+                // virtual clock.
+                Some (Some (state.Kernel.VirtualClockMs + int64 timeout))
 
         let targetThreadId = threadIdFromThreadAddr state "Thread.Join" threadAddr
 
@@ -128,20 +156,24 @@ module NativeThreading =
 
         let targetTerminated = targetState.Status = ThreadStatus.Terminated
 
-        match timeout with
-        | 0 -> state, targetTerminated
-        | _ ->
-            // The bool result is true regardless of whether we end up blocking: the
-            // -1 timeout is "wait forever", so the only way control flows past the
-            // join is via target termination, which always yields `true`. The
-            // caller's IL slot for Join's return is filled before we (possibly)
-            // block, so when the scheduler later flips us back to Runnable the
-            // pushed value is already sitting as Join's return value.
+        match deadlineMs with
+        | None ->
+            // timeout = 0: non-blocking poll. Result is whether the target is
+            // already terminated; no status transition.
+            state, targetTerminated
+        | Some maybeDeadline ->
+            // The bool result is the optimistic `true`: the only way control
+            // flows past the Join via target termination yields `true`, and a
+            // finite-deadline expiry will be rewritten to `false` by
+            // `Scheduler.fireJoinTimeout` (which pops the optimistic slot and
+            // pushes `Int32 0`). The caller pushes this value synchronously
+            // after we return — before the next scheduler step — so the
+            // optimistic slot is in place by the time any deadline could fire.
             let state =
                 if targetTerminated then
                     state
                 else
-                    Scheduler.blockOnJoin ctx.Thread targetThreadId state
+                    Scheduler.blockOnJoin ctx.Thread targetThreadId maybeDeadline state
 
             state, true
 
