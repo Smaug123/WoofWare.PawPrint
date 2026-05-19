@@ -99,6 +99,12 @@ module Program =
         /// pair, and `Scheduler.fireJoinTimeout` reads its state directly
         /// from the thread's status.
         | JoinTimeout
+        /// `Thread.Sleep(int)` with a positive finite timeout. Carries no
+        /// payload because sleep has no per-primitive wait queue and no
+        /// optimistic eval-stack push to rewrite (Sleep returns `void`).
+        /// `Scheduler.fireSleepTimeout` reads state directly from the
+        /// thread's status and flips it back to `Runnable`.
+        | SleepTimeout
 
     /// Project a thread status into its finite-timeout deadline against
     /// the virtual clock, if any. Threads with no deadline (Runnable,
@@ -116,11 +122,13 @@ module Program =
         | ThreadStatus.BlockedOnSyncBlockAcquire (lockObject, Some deadline) ->
             Some (FiredDeadline.SyncBlockAcquire lockObject, deadline)
         | ThreadStatus.BlockedOnJoin (_, Some deadline) -> Some (FiredDeadline.JoinTimeout, deadline)
+        | ThreadStatus.BlockedOnSleep (Some deadline) -> Some (FiredDeadline.SleepTimeout, deadline)
         | ThreadStatus.BlockedOnWaitHandle (_, None)
         | ThreadStatus.BlockedOnMonitorWait (_, None)
         | ThreadStatus.BlockedOnSyncBlockWait (_, None)
         | ThreadStatus.BlockedOnSyncBlockAcquire (_, None)
         | ThreadStatus.BlockedOnJoin (_, None)
+        | ThreadStatus.BlockedOnSleep None
         | ThreadStatus.Runnable
         | ThreadStatus.NotStarted
         | ThreadStatus.BlockedOnClassInit _
@@ -207,16 +215,17 @@ module Program =
         // Sort key: LowLevelMonitor entries first (group=0), then
         // SyncBlock wait entries (group=1), then SyncBlock acquire
         // entries (group=2), then WaitHandle entries (group=3), then
-        // Join entries (group=4). Within each subsystem-group, entries
-        // are keyed first by their primitive id (so distinct primitives
-        // are ordered deterministically but independently) and then by
-        // FIFO position in the primitive's queue (so the head of any
-        // contested primitive fires before its successors). For
-        // WaitHandle, queue order is unobservable for timeout fires, so
-        // ThreadId is used as a stable deterministic break. Join has no
+        // Join entries (group=4), then Sleep entries (group=5). Within
+        // each subsystem-group, entries are keyed first by their
+        // primitive id (so distinct primitives are ordered
+        // deterministically but independently) and then by FIFO position
+        // in the primitive's queue (so the head of any contested
+        // primitive fires before its successors). For WaitHandle, queue
+        // order is unobservable for timeout fires, so ThreadId is used
+        // as a stable deterministic break. Join and Sleep have no
         // per-primitive queue (the "primitive" is the target thread's
-        // status, with no joiner-side ordering), so ThreadId is the
-        // only deterministic break.
+        // status for Join, and the virtual clock itself for Sleep), so
+        // ThreadId is the only deterministic break.
         let sortKey ((tid, kind) : ThreadId * FiredDeadline) : int * int * int =
             match kind with
             | FiredDeadline.MonitorWait monitorId ->
@@ -235,6 +244,9 @@ module Program =
             | FiredDeadline.JoinTimeout ->
                 let (ThreadId t) = tid
                 4, t, 0
+            | FiredDeadline.SleepTimeout ->
+                let (ThreadId t) = tid
+                5, t, 0
 
         let expired = expired |> List.sortBy sortKey
 
@@ -247,6 +259,7 @@ module Program =
                 | FiredDeadline.SyncBlockWait addr -> SyncBlockMonitor.fireWaitTimeout tid addr s
                 | FiredDeadline.SyncBlockAcquire addr -> SyncBlockMonitor.fireAcquireTimeout tid addr s
                 | FiredDeadline.JoinTimeout -> Scheduler.fireJoinTimeout tid s
+                | FiredDeadline.SleepTimeout -> Scheduler.fireSleepTimeout tid s
             )
             state
 

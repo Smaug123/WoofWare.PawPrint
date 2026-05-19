@@ -606,6 +606,55 @@ module NativeThreading =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 0)) ctx.Thread state
 
             NativeHandlerResult.yielded state |> Some
+        | "ThreadNative_Sleep",
+          "System.Private.CoreLib",
+          "System.Threading",
+          "Thread",
+          "SleepInternal",
+          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Void ->
+            // .NET 10 CoreCLR routes `Thread.Sleep(int)` to `SleepInternal(int)`
+            // (a `[LibraryImport]` partial in `Thread.CoreCLR.cs`), which the
+            // runtime resolves as the `ThreadNative_Sleep` QCall
+            // (`comsynchronizable.cpp`). The BCL pre-validates the timeout
+            // (rejects values < -1 with `ArgumentOutOfRangeException`) and
+            // translates `Timeout.Infinite` (-1) and finite millisecond
+            // timeouts directly without any wide-string / handle marshalling.
+            // `Thread.Sleep(TimeSpan)` reaches the same partial via
+            // `WaitHandle.ToTimeoutMilliseconds`, so this single arm covers
+            // both overloads.
+            //
+            // PawPrint's deterministic scheduler advances `VirtualClockMs`
+            // one tick at a time; the actual wait is implemented by parking
+            // the thread in `BlockedOnSleep` with an absolute deadline
+            // (or `None` for `Timeout.Infinite`) and letting
+            // `Program.fireExpiredDeadlines` route through
+            // `Scheduler.fireSleepTimeout` once the virtual clock crosses
+            // the deadline. `Thread.Sleep(0)` is a no-op (BCL uses it as a
+            // yield hint; we have no preemption to invoke).
+            let operation = "ThreadNative_Sleep"
+
+            if instruction.Arguments.Length <> 1 then
+                failwith $"%s{operation}: expected one native argument, got %d{instruction.Arguments.Length}"
+
+            let millisecondsTimeout =
+                match instruction.Arguments.[0] |> CliType.unwrapPrimitiveLikeDeep with
+                | CliType.Numeric (CliNumericType.Int32 i) -> i
+                | other -> failwith $"%s{operation}: expected int32 millisecondsTimeout, got %O{other}"
+
+            let state =
+                if millisecondsTimeout = 0 then
+                    state
+                elif millisecondsTimeout = System.Threading.Timeout.Infinite then
+                    Scheduler.blockOnSleep ctx.Thread None state
+                elif millisecondsTimeout < 0 then
+                    failwith
+                        $"%s{operation}: negative timeout %d{millisecondsTimeout} ms is not Infinite (-1); the BCL Thread.Sleep call site is required to pre-validate this. Reaching here means the validation was bypassed (e.g. by a synthesised IL call) — bug in the caller."
+                else
+                    let deadline = state.Kernel.VirtualClockMs + int64 millisecondsTimeout
+                    Scheduler.blockOnSleep ctx.Thread (Some deadline) state
+
+            NativeHandlerResult.completed state |> Some
         | _ -> None
 
     let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =

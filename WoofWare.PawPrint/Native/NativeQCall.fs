@@ -45,6 +45,7 @@ module NativeQCall =
             "ThreadNative_GetIsBackground", NativeThreading.tryExecuteQCall "ThreadNative_GetIsBackground"
             "ThreadNative_InformThreadNameChange", NativeThreading.tryExecuteQCall "ThreadNative_InformThreadNameChange"
             "ThreadNative_YieldThread", NativeThreading.tryExecuteQCall "ThreadNative_YieldThread"
+            "ThreadNative_Sleep", NativeThreading.tryExecuteQCall "ThreadNative_Sleep"
             "Monitor_Wait", NativeMonitor.tryExecuteQCall "Monitor_Wait"
             "Monitor_Pulse", NativeMonitor.tryExecuteQCall "Monitor_Pulse"
             "Monitor_PulseAll", NativeMonitor.tryExecuteQCall "Monitor_PulseAll"
