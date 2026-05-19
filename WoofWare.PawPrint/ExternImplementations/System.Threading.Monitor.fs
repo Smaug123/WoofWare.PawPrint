@@ -46,11 +46,20 @@ module System_Threading_Monitor =
     /// `Runnable` already holding the lock — mirroring `LowLevelMonitor`'s
     /// ownership-transfer model so the IL after the `Enter` call site is correctly
     /// held.
+    ///
+    /// `deadlineMs = None` is an infinite acquire (`Monitor.Enter(obj)` /
+    /// `Monitor.TryEnter(obj, Timeout.Infinite)`); `Some ms` is a finite
+    /// positive timeout from the `TryEnter_Slowpath` route, expressed as
+    /// the absolute virtual-clock millisecond at which the timed acquire
+    /// expires. If the deadline fires while still queued,
+    /// `SyncBlockMonitor.fireAcquireTimeout` dequeues the thread without
+    /// transferring ownership.
     let private parkOnAcquireQueue
         (addr : ManagedHeapAddress)
         (thread : ThreadId)
         (block : SyncBlock)
         (locked : LockedSyncBlock)
+        (deadlineMs : int64 option)
         (state : IlMachineState)
         : IlMachineState
         =
@@ -61,7 +70,7 @@ module System_Threading_Monitor =
 
         state
         |> writeHeld addr block.WaitQueue locked
-        |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnSyncBlockAcquire addr)
+        |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnSyncBlockAcquire (addr, deadlineMs))
 
     /// .NET 10 InternalCall: Monitor.TryEnter_FastPath(obj) -> bool.
     /// Backs `Monitor.Enter(obj)`: the BCL's IL is "if (!TryEnter_FastPath(obj)) Enter_Slowpath(obj)",
@@ -111,23 +120,36 @@ module System_Threading_Monitor =
                         // BCL's `if (!TryEnter_FastPath(obj)) Enter_Slowpath(obj)` skips the
                         // Slowpath. This collapses Monitor.Enter's blocking semantics into the
                         // fast-path handler — PawPrint never needs the Enter_Slowpath QCall.
-                        parkOnAcquireQueue addr currentThread block locked state
+                        // Infinite (no-deadline) park: a `Monitor.Enter` waiter has no timeout.
+                        parkOnAcquireQueue addr currentThread block locked None state
 
         let state = IlMachineState.pushToEvalStack (CliType.ofBool true) currentThread state
 
         (state, WhatWeDid.Executed) |> ExecutionResult.stepped
 
     /// .NET 10 InternalCall: Monitor.TryEnter_FastPath_WithTimeout(obj, int32) -> EnterHelperResult.
-    /// Caller treats the result as: 0 (Contention) → return false; 1 (Entered) → return true;
-    /// 2 (UseSlowPath) → call Monitor.TryEnter_Slowpath. We never need the slowpath because
-    /// PawPrint can answer Free / SelfHeld / OtherHeld directly from the SyncBlock.
+    /// The BCL wrapper at `Monitor.TryEnter(obj, ms)` (and the `ref taken` overload) treats the
+    /// result as: `Entered` (1) → return true; `Contention` (0) AND `ms == 0` → return false;
+    /// anything else falls through to the `Monitor_TryEnter_Slowpath` QCall. So the `Contention`
+    /// → "return false" shortcut only applies for `timeout = 0`; positive finite timeouts must
+    /// either return `Entered` outright or `UseSlowPath` and let the slowpath park.
     ///
-    /// Contention with a non-zero timeout parks the caller in `BlockedOnSyncBlockAcquire`
-    /// and pushes `1` (Entered) onto the stack: the IL pointer advances past this call
-    /// site as part of returning `Executed`, and when ownership is later transferred to
-    /// us the resumed thread already holds the lock. Finite non-zero timeouts fail loud
-    /// because PawPrint has no virtual clock yet — `LowLevelMonitor.timedWait` makes the
-    /// same call and we keep both posture-consistent.
+    /// Behaviour by branch:
+    /// * Free or self-held → claim/reenter, push `Entered` (1).
+    /// * Contended, `timeout = 0` → push `Contention` (0); BCL shortcircuits to `false`.
+    /// * Contended, `timeout = -1` (Infinite) → park at the FIFO tail of `AcquireQueue` with
+    ///   no deadline and push `Entered` (1). When ownership is later transferred to us, the
+    ///   IL pointer is already past this call site and observes `Entered` ⇒ the BCL returns
+    ///   `true` without ever calling the slowpath. This collapses the infinite-blocking path
+    ///   into the fast-path handler — PawPrint never needs the slowpath for infinite timeouts.
+    /// * Contended, `timeout > 0` → push `UseSlowPath` (2) and do NOT park; the BCL's
+    ///   wrapper falls through to `Monitor_TryEnter_Slowpath`, which does the timed park.
+    ///   Pushing `Entered` here is unsound: it would commit us to "lock acquired" before
+    ///   the deadline fires, and there is no value we can rewrite the eval-stack slot to
+    ///   that would make the BCL return `false` directly (any non-`Entered`-with-non-zero-
+    ///   timeout result routes through the slowpath).
+    /// * Contended, `timeout < -1` → fail loud; the BCL's wrapper gates the QCall with
+    ///   `millisecondsTimeout >= -1`, so reaching here means the wrapper was bypassed.
     let TryEnter_FastPath_WithTimeout
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (currentThread : ThreadId)
@@ -171,24 +193,105 @@ module System_Threading_Monitor =
                         1, state
                     elif timeout = 0 then
                         // Non-blocking poll: report contention without waiting.
+                        // BCL shortcircuits Contention + ms=0 to `return false`.
                         0, state
                     elif timeout = System.Threading.Timeout.Infinite then
-                        // Blocking acquire: park at the FIFO tail and push "Entered" —
-                        // when the scheduler resumes us, ownership has been transferred
-                        // and the IL pointer is already past this call site.
-                        let state = parkOnAcquireQueue addr currentThread block locked state
+                        // Blocking acquire: park at the FIFO tail (no deadline)
+                        // and push `Entered` — when the scheduler resumes us, ownership
+                        // has been transferred and the IL pointer is already past this
+                        // call site. The BCL sees `Entered` and skips the slowpath.
+                        let state = parkOnAcquireQueue addr currentThread block locked None state
                         1, state
+                    elif timeout > 0 then
+                        // Positive finite timeout: push `UseSlowPath` (2) without
+                        // parking. The BCL wrapper falls through to
+                        // `Monitor_TryEnter_Slowpath`, which does the timed park.
+                        2, state
                     else
-                        // Finite non-zero timeout would require a virtual clock to honour;
-                        // silently treating it as Infinite would hide guest bugs. Same
-                        // envelope as `LowLevelMonitor.timedWait`.
+                        // `timeout < -1`. The BCL's `Monitor.TryEnter(obj, ms)` wrapper
+                        // gates the QCall behind `millisecondsTimeout >= -1`, so
+                        // reaching here means the wrapper was bypassed. Silently
+                        // treating it as Infinite or zero would hide guest bugs.
                         failwith
-                            $"TODO: Monitor.TryEnter_FastPath_WithTimeout with finite non-zero timeout %d{timeout}ms requires a virtual clock; not yet implemented"
+                            $"Monitor.TryEnter_FastPath_WithTimeout: negative timeout %d{timeout} ms is not Infinite (-1); the BCL's TryEnter(obj, int) wrapper validates this before the QCall, so reaching here means the wrapper was bypassed."
 
         let state =
             IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 result)) currentThread state
 
         (state, WhatWeDid.Executed) |> ExecutionResult.stepped
+
+    /// .NET 10 QCall: `Monitor_TryEnter_Slowpath(ObjectHandleOnStack obj, int millisecondsTimeout) -> int`.
+    /// The BCL wrapper treats the int return as bool (`0 = false`, anything else = true). Reached only
+    /// when the fast-path `TryEnter_FastPath_WithTimeout` returned `UseSlowPath` (2) — i.e. the lock was
+    /// contended with a positive finite timeout. We park the caller on the SyncBlock's `AcquireQueue`
+    /// with `Some deadline`, push optimistic `Int32 1` (acquired), and let one of two things resolve:
+    ///   * Ownership transfer (current owner's `Exit_FastPath` dequeues this thread): wakes Runnable
+    ///     with `Int32 1` on the stack — caller observes `true`.
+    ///   * Deadline fire (`SyncBlockMonitor.fireAcquireTimeout`): dequeues without transferring ownership
+    ///     and rewrites the optimistic `Int32 1` to `Int32 0` — caller observes `false`.
+    ///
+    /// `timeout = 0` and `timeout = -1` are unreachable from a compliant BCL caller because the
+    /// fast-path resolves both before falling through. `timeout < -1` is also wrapper-validated.
+    /// All three fail loud here.
+    let TryEnter_Slowpath
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (currentThread : ThreadId)
+        (addr : ManagedHeapAddress)
+        (timeout : int)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        let block = IlMachineState.getSyncBlock addr state
+
+        let state =
+            match block.Lock with
+            | SyncBlockLock.Free ->
+                // Fast-path would have answered `Entered` and BCL would never reach the
+                // slowpath, but the BCL wrapper unconditionally calls the slowpath after
+                // any non-`Entered` fast-path result, so a free-but-just-released-by-the-
+                // moment-the-slowpath-ran race is conceivable. Be robust: claim the lock.
+                let locked =
+                    {
+                        LockingThread = currentThread
+                        ReentrancyCount = 1
+                        AcquireQueue = []
+                    }
+
+                writeHeld addr block.WaitQueue locked state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) currentThread
+            | SyncBlockLock.Held locked ->
+                if locked.LockingThread = currentThread then
+                    // Reentrant: bump depth and report acquired. Mirrors the fast-path
+                    // self-held branch.
+                    let locked =
+                        { locked with
+                            ReentrancyCount = locked.ReentrancyCount + 1
+                        }
+
+                    writeHeld addr block.WaitQueue locked state
+                    |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) currentThread
+                elif timeout = 0 then
+                    failwith
+                        $"Monitor_TryEnter_Slowpath: unexpected timeout = 0 — the fast-path resolves Contention + ms=0 to `return false` without calling the slowpath; reaching here means the BCL wrapper was bypassed."
+                elif timeout = System.Threading.Timeout.Infinite then
+                    failwith
+                        $"Monitor_TryEnter_Slowpath: unexpected timeout = -1 (Infinite) — the fast-path parks-and-pushes Entered on infinite contention, so the BCL wrapper observes Entered and never falls through to the slowpath; reaching here means the wrapper was bypassed."
+                elif timeout < 0 then
+                    failwith
+                        $"Monitor_TryEnter_Slowpath: negative timeout %d{timeout} ms is not Infinite (-1); the BCL's TryEnter(obj, int) wrapper validates this before the QCall, so reaching here means the wrapper was bypassed."
+                else
+                    // Positive finite timeout, contended. Park with `Some deadline`
+                    // and push optimistic `Int32 1` (acquired). Resolution happens
+                    // via either ownership transfer (Exit_FastPath head dequeue) or
+                    // deadline fire (`SyncBlockMonitor.fireAcquireTimeout` rewrites
+                    // to `Int32 0`).
+                    let deadlineMs = state.Kernel.VirtualClockMs + int64 timeout
+
+                    state
+                    |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) currentThread
+                    |> parkOnAcquireQueue addr currentThread block locked (Some deadlineMs)
+
+        state
 
     /// .NET 10 InternalCall: Monitor.IsEnteredNative(obj) -> bool.
     /// Returns true if the SyncBlock for `obj` is held by the current thread.

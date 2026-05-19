@@ -83,7 +83,22 @@ type ThreadStatus =
     /// flipping that thread back to `Runnable` already holding the lock — mirroring
     /// the `LowLevelMonitor` ownership-transfer model so the resumed thread's IL
     /// continues past the `Enter` call site already owning the SyncBlock.
-    | BlockedOnSyncBlockAcquire of lockObject : ManagedHeapAddress
+    ///
+    /// `deadlineMs = None` is an infinite acquire (`Monitor.Enter(obj)` /
+    /// `Monitor.TryEnter(obj, Timeout.Infinite)`); `Some ms` is a finite
+    /// timeout (`Monitor.TryEnter(obj, ms)` with `ms > 0`), expressed as the
+    /// absolute virtual-clock millisecond at which the timed acquire expires.
+    /// Only the `TryEnter_Slowpath` path produces `Some _` — the fast-path
+    /// short-circuits zero-timeout contention and parks infinite-timeout
+    /// contention with `None` directly. When `VirtualClockMs` advances past
+    /// the deadline and the thread is still parked, the driver fires
+    /// `SyncBlockMonitor.fireAcquireTimeout`: the thread is dequeued from the
+    /// SyncBlock's `AcquireQueue`, the optimistic `Int32 1` (acquired) slot
+    /// pushed at park time is rewritten to `Int32 0` (timed out), and the
+    /// status flips back to `Runnable`. Storing the deadline in the status
+    /// itself rather than in a parallel map makes the invariant "no deadline
+    /// once Runnable again" structural — a wake naturally forgets it.
+    | BlockedOnSyncBlockAcquire of lockObject : ManagedHeapAddress * deadlineMs : int64 option
     /// This thread called `Monitor.Wait` on an object's SyncBlock and is parked at
     /// the SyncBlock's `WaitQueue` with the lock fully released. A subsequent
     /// `Monitor.Pulse` / `PulseAll` from another thread (or a spurious wake)
@@ -100,7 +115,7 @@ type ThreadStatus =
     /// (`Monitor.Wait(obj, ms)`), expressed as the absolute virtual-clock
     /// millisecond at which the wait expires. When `VirtualClockMs` advances
     /// past the deadline and the thread is still parked, the driver fires a
-    /// timeout wake (`SyncBlockMonitor.fireTimeout`): the thread is dequeued
+    /// timeout wake (`SyncBlockMonitor.fireWaitTimeout`): the thread is dequeued
     /// from the SyncBlock's `WaitQueue`, routed through the same reacquire
     /// path that `pulse`/`spuriousWake` use (carrying the snapshot depth into
     /// the new owner/AcquireQueue entry), and the optimistic `Int32 1`

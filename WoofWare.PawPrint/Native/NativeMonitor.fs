@@ -120,7 +120,7 @@ module NativeMonitor =
             // fast path. Push the optimistic `Int32 1` (signalled) *before* parking, mirroring
             // `SystemNative_LowLevelMonitor_TimedWait`: when the scheduler resumes this
             // thread, the IL site is already past this call and the pushed value is consumed
-            // as the return. If the deadline fires first, `SyncBlockMonitor.fireTimeout`
+            // as the return. If the deadline fires first, `SyncBlockMonitor.fireWaitTimeout`
             // rewrites the slot to `Int32 0` (timed out). Pulse/PulseAll/spurious wakes leave
             // the optimistic `1` in place — matching CoreCLR's contract that the boolean
             // return is `signalReceived`, which is `true` for any non-timeout exit.
@@ -163,7 +163,7 @@ module NativeMonitor =
             // Monitor_Wait when the native handler returns Stepped/Executed, so the pushed
             // value sits on the parked thread's frame stack until it's eventually woken —
             // at which point either the value is correct as-is (signal/spurious wake) or it
-            // was rewritten to `Int32 0` by `SyncBlockMonitor.fireTimeout` (deadline wake).
+            // was rewritten to `Int32 0` by `SyncBlockMonitor.fireWaitTimeout` (deadline wake).
             let state =
                 state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) ctx.Thread
 
@@ -213,6 +213,42 @@ module NativeMonitor =
                 addressFromObjectHandle operation ctx.BaseClassTypes state instruction.Arguments.[0]
 
             let state = SyncBlockMonitor.pulseAll ctx.Thread addr state
+            NativeHandlerResult.completed state |> Some
+
+        | "Monitor_TryEnter_Slowpath",
+          "System.Private.CoreLib",
+          "System.Threading",
+          "Monitor",
+          _,
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "ObjectHandleOnStack",
+                                              objectHandleGenerics)
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
+            objectHandleGenerics.IsEmpty
+            ->
+            // .NET 10 QCall: Monitor.TryEnter_Slowpath(ObjectHandleOnStack obj, int millisecondsTimeout) -> int.
+            // BCL wrapper treats the int return as bool (`0 = false`, anything else = true).
+            // Reached when the fast-path returns `UseSlowPath` (positive finite timeout on a
+            // contended lock). The slowpath parks with `Some deadline` and pushes the
+            // optimistic `Int32 1`; deadline fire rewrites it to `Int32 0`.
+            let operation = "Monitor_TryEnter_Slowpath"
+
+            if instruction.Arguments.Length <> 2 then
+                failwith $"%s{operation}: expected two native arguments, got %d{instruction.Arguments.Length}"
+
+            let addr =
+                addressFromObjectHandle operation ctx.BaseClassTypes state instruction.Arguments.[0]
+
+            let timeout =
+                match instruction.Arguments.[1] |> CliType.unwrapPrimitiveLike with
+                | CliType.Numeric (CliNumericType.Int32 i) -> i
+                | other -> failwith $"%s{operation}: expected int32 timeout, got %O{other}"
+
+            let state =
+                System_Threading_Monitor.TryEnter_Slowpath ctx.BaseClassTypes ctx.Thread addr timeout state
+
             NativeHandlerResult.completed state |> Some
 
         | _ -> None

@@ -78,14 +78,14 @@ module SyncBlockMonitor =
     /// with the snapshot, and fully releases the lock (transferring
     /// ownership to the AcquireQueue head if any, else setting Lock = Free).
     /// Caller's status flips to `BlockedOnSyncBlockWait`. Resumption is
-    /// driven by `pulse` / `pulseAll` / `spuriousWake` / `fireTimeout`, each
+    /// driven by `pulse` / `pulseAll` / `spuriousWake` / `fireWaitTimeout`, each
     /// of which moves the waiter to the AcquireQueue carrying the snapshot
     /// for depth restoration on re-acquire.
     ///
     /// `deadlineMs = None` is `Monitor.Wait(obj)` (infinite); `Some ms` is
     /// `Monitor.Wait(obj, timeout)` (finite). The deadline is the absolute
     /// virtual-clock millisecond at which the wait expires; on expiry the
-    /// driver fires `fireTimeout` which routes the waiter through the same
+    /// driver fires `fireWaitTimeout` which routes the waiter through the same
     /// reacquire path and rewrites the optimistic `Int32 1` slot pushed at
     /// park time to `Int32 0` (timed out).
     ///
@@ -176,7 +176,7 @@ module SyncBlockMonitor =
 
             state
             |> writeBlock addr (SyncBlockLock.Held locked) restWait
-            |> Scheduler.setThreadStatus waiter (ThreadStatus.BlockedOnSyncBlockAcquire addr)
+            |> Scheduler.setThreadStatus waiter (ThreadStatus.BlockedOnSyncBlockAcquire (addr, None))
 
     /// `Monitor.PulseAll`: caller must hold the lock; drains the entire
     /// `WaitQueue` onto the FIFO tail of `AcquireQueue`, preserving FIFO
@@ -210,7 +210,9 @@ module SyncBlockMonitor =
 
             waiters
             |> List.fold
-                (fun acc (tid, _) -> Scheduler.setThreadStatus tid (ThreadStatus.BlockedOnSyncBlockAcquire addr) acc)
+                (fun acc (tid, _) ->
+                    Scheduler.setThreadStatus tid (ThreadStatus.BlockedOnSyncBlockAcquire (addr, None)) acc
+                )
                 state
 
     /// Pull `thread` out of `addr`'s `WaitQueue` and route it through the
@@ -268,7 +270,7 @@ module SyncBlockMonitor =
 
             state
             |> writeBlock addr (SyncBlockLock.Held locked) newWaitQueue
-            |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnSyncBlockAcquire addr)
+            |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnSyncBlockAcquire (addr, None))
 
     /// Fire the finite-timeout wake for `thread` parked on `addr`'s
     /// `WaitQueue`. Routes the thread through the same reacquire path as
@@ -288,7 +290,7 @@ module SyncBlockMonitor =
     /// status, or the deadline-firing path was reached for an untimed
     /// waiter — both indicate a structural bug worth surfacing here
     /// rather than letting the eval-stack pop misbehave silently.
-    let fireTimeout (thread : ThreadId) (addr : ManagedHeapAddress) (state : IlMachineState) : IlMachineState =
+    let fireWaitTimeout (thread : ThreadId) (addr : ManagedHeapAddress) (state : IlMachineState) : IlMachineState =
         let block = readBlock addr state
 
         let entry = block.WaitQueue |> List.tryFind (fun (t, _) -> t = thread)
@@ -298,7 +300,7 @@ module SyncBlockMonitor =
             | Some (_, d) -> d
             | None ->
                 failwith
-                    $"SyncBlockMonitor.fireTimeout: cannot fire timeout for thread %O{thread} on object %O{addr} because it is not in WaitQueue (queue: %A{block.WaitQueue})."
+                    $"SyncBlockMonitor.fireWaitTimeout: cannot fire timeout for thread %O{thread} on object %O{addr} because it is not in WaitQueue (queue: %A{block.WaitQueue})."
 
         let newWaitQueue = block.WaitQueue |> List.filter (fun (t, _) -> t <> thread)
 
@@ -329,10 +331,58 @@ module SyncBlockMonitor =
 
                 state
                 |> writeBlock addr (SyncBlockLock.Held locked) newWaitQueue
-                |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnSyncBlockAcquire addr)
+                |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnSyncBlockAcquire (addr, None))
 
         // Rewrite the park-time `Int32 1` (signalled) slot pushed by the
         // Monitor_Wait handler to `Int32 0` (timed out). Pop-then-push
+        // keeps the stack depth invariant across the wake.
+        let _, state = IlMachineState.popEvalStack thread state
+        IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) thread state
+
+    /// Fire the finite-timeout wake for `thread` parked on `addr`'s
+    /// `AcquireQueue` from a timed `Monitor.TryEnter(obj, ms)` slowpath
+    /// call. Dequeues `thread` from the AcquireQueue (the lock owner does
+    /// NOT change — the head of the queue at fire time is still entitled
+    /// to ownership when the current owner's `Exit` lands), flips status
+    /// to `Runnable`, and rewrites the optimistic `Int32 1` (acquired)
+    /// slot pushed at park time by `TryEnter_Slowpath` to `Int32 0`
+    /// (timed out). The BCL's `TryEnter_Slowpath` return is treated as
+    /// `bool`: `Int32 0` ⇒ `false`, mirroring CoreCLR's contract.
+    ///
+    /// Fails loud if `thread` is not in `addr`'s `AcquireQueue`. The only
+    /// caller is `Program.fireExpiredDeadlines`, which selects threads
+    /// in `BlockedOnSyncBlockAcquire (_, Some _)` status; by the time
+    /// we are called, the thread is still parked, so it must still be
+    /// in the queue. A miss means a structural invariant has been
+    /// violated (e.g. `Exit_FastPath` dequeued without flipping the
+    /// status, or some other code path forgot to keep the queue and
+    /// the status in sync).
+    let fireAcquireTimeout (thread : ThreadId) (addr : ManagedHeapAddress) (state : IlMachineState) : IlMachineState =
+        let block = readBlock addr state
+
+        let locked =
+            match block.Lock with
+            | SyncBlockLock.Free ->
+                failwith
+                    $"SyncBlockMonitor.fireAcquireTimeout: SyncBlock for object %O{addr} is Free, but thread %O{thread} is parked in BlockedOnSyncBlockAcquire on it — the queue lives in the Held state and a parked acquirer implies Held. Structural invariant violation."
+            | SyncBlockLock.Held l -> l
+
+        if not (locked.AcquireQueue |> List.exists (fun (t, _) -> t = thread)) then
+            failwith
+                $"SyncBlockMonitor.fireAcquireTimeout: cannot fire timeout for thread %O{thread} on object %O{addr} because it is not in AcquireQueue (queue: %A{locked.AcquireQueue}). The deadline-firing path selected this thread based on its BlockedOnSyncBlockAcquire status; missing from the queue is a structural invariant violation."
+
+        let newAcquireQueue = locked.AcquireQueue |> List.filter (fun (t, _) -> t <> thread)
+
+        let locked =
+            { locked with
+                AcquireQueue = newAcquireQueue
+            }
+
+        let state = writeBlock addr (SyncBlockLock.Held locked) block.WaitQueue state
+        let state = Scheduler.setThreadStatus thread ThreadStatus.Runnable state
+
+        // Rewrite the park-time `Int32 1` (acquired) slot pushed by the
+        // TryEnter_Slowpath handler to `Int32 0` (timed out). Pop-then-push
         // keeps the stack depth invariant across the wake.
         let _, state = IlMachineState.popEvalStack thread state
         IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) thread state
