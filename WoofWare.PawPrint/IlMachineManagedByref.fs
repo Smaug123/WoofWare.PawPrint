@@ -1128,15 +1128,28 @@ module IlMachineManagedByref =
 
     /// Outcome of classifying the projection
     /// `[..., ReinterpretAs reinterpretTy, Field field]` over storage of some
-    /// `CliType` value. `ElideAsField` signals that the reinterpret target is a
-    /// transparent single-field wrapper whose only field is layout-compatible
-    /// with the storage, so reads return the storage cell and writes overwrite
-    /// the storage cell directly. `NotTransparent` means the access must go
-    /// through the bytewise reinterpret path; callers whose storage cannot be
-    /// byte-addressed (ObjectRef, today) must produce their own diagnostic in
-    /// that branch.
+    /// `CliType` value.
+    ///
+    /// `ElideAsField` (Phase A) signals that the reinterpret target is a
+    /// transparent offset-0 single-field wrapper whose only field is
+    /// layout-compatible with the storage value itself, so reads return the
+    /// storage cell and writes overwrite the storage cell directly.
+    ///
+    /// `ElideAsStorageInnerField` (Phase B) signals that *both* the reinterpret
+    /// target and the storage are transparent offset-0 single-field wrappers
+    /// of a layout-compatible primitive (the canonical example is the BCL
+    /// `Unsafe.As<TaskAwaiter<T>, TaskAwaiter>` motif, where both are
+    /// single-`object`-field structs). Reads return the storage's inner field;
+    /// writes replace only that inner field, preserving the outer wrapper.
+    /// The payload is the storage-side `FieldId` to access via
+    /// `CliType.getFieldById` / `withFieldSetById`.
+    ///
+    /// `NotTransparent` means the access must go through the bytewise
+    /// reinterpret path; callers whose storage cannot be byte-addressed
+    /// (ObjectRef, today) must produce their own diagnostic in that branch.
     type private TransparentWrapperOutcome =
         | ElideAsField of FieldId
+        | ElideAsStorageInnerField of FieldId
         | NotTransparent
 
     /// `true` iff a value of CliType `storage` can be read or written as if it
@@ -1170,18 +1183,39 @@ module IlMachineManagedByref =
             // `FieldsAt 0` lists every field that *starts* at offset 0; an
             // explicit-layout overlap there yields more than one, in which case
             // eliding through one field would silently leave an overlapping
-            // sibling stale on write. The size gates additionally rule out
-            // fields outside offset 0 by requiring the offset-0 field to span
-            // the whole wrapper. Raw-bytes storage returns `[]` from
+            // sibling stale on write. Combined with `targetSize = f.Size`, no
+            // field can start at any offset in `(0, targetSize)` without
+            // running past the wrapper, so the single offset-0 entry is the
+            // wrapper's full extent. Raw-bytes storage returns `[]` from
             // `TryFieldsAt` and so falls through to `NotTransparent`.
             match CliValueType.TryFieldsAt 0 cvt with
             | [ f ] when
                 f.Id = field
                 && f.Size = CliType.sizeOf f.Contents
                 && CliType.sizeOf targetTemplate = f.Size
-                && isLayoutCompatibleForElision storageValue f.Contents
                 ->
-                TransparentWrapperOutcome.ElideAsField field
+                // Phase A: storage IS layout-compatible with the field cell
+                // (the bare ObjectRef case, e.g. `Unsafe.As<object,
+                // ObjectWrapper>` on an `object` heap field).
+                if isLayoutCompatibleForElision storageValue f.Contents then
+                    TransparentWrapperOutcome.ElideAsField field
+                else
+                    // Phase B: storage is itself a transparent offset-0
+                    // single-field wrapper of a layout-compatible primitive
+                    // (the `Unsafe.As<TaskAwaiter<T>, TaskAwaiter>` motif).
+                    // The same size/single-offset-0-field gates apply
+                    // symmetrically on the storage side.
+                    match storageValue with
+                    | CliType.ValueType storageVt ->
+                        match CliValueType.TryFieldsAt 0 storageVt with
+                        | [ sf ] when
+                            sf.Size = CliType.sizeOf sf.Contents
+                            && CliType.sizeOf storageValue = sf.Size
+                            && isLayoutCompatibleForElision sf.Contents f.Contents
+                            ->
+                            TransparentWrapperOutcome.ElideAsStorageInnerField sf.Id
+                        | _ -> TransparentWrapperOutcome.NotTransparent
+                    | _ -> TransparentWrapperOutcome.NotTransparent
             | _ -> TransparentWrapperOutcome.NotTransparent
         | _ -> TransparentWrapperOutcome.NotTransparent
 
@@ -1211,7 +1245,10 @@ module IlMachineManagedByref =
 
                 match classifyTransparentWrapper baseClassTypes state storageValue reinterpretTy field with
                 | TransparentWrapperOutcome.ElideAsField _ when byteOffset = 0 -> storageValue
-                | TransparentWrapperOutcome.ElideAsField _ ->
+                | TransparentWrapperOutcome.ElideAsStorageInnerField innerId when byteOffset = 0 ->
+                    CliType.getFieldById innerId storageValue
+                | TransparentWrapperOutcome.ElideAsField _
+                | TransparentWrapperOutcome.ElideAsStorageInnerField _ ->
                     failwith
                         $"TODO: transparent-wrapper read of object-reference field %O{field} through %O{reinterpretTy} at byte offset %d{byteOffset}; object-reference interior byte views are not modelled"
                 | TransparentWrapperOutcome.NotTransparent ->
@@ -2042,6 +2079,18 @@ module IlMachineManagedByref =
                     | other ->
                         failwith
                             $"%s{operation}: assigning non-object value %s{describeCliStorage state other} to object-reference field %O{field} of single-instance-field wrapper"
+                | TransparentWrapperOutcome.ElideAsStorageInnerField innerId ->
+                    match newValue with
+                    | CliType.ObjectRef _ ->
+                        let updated = CliType.withFieldSetById innerId newValue storageValue
+
+                        if updated = storageValue then
+                            ValueSome None
+                        else
+                            ValueSome (Some updated)
+                    | other ->
+                        failwith
+                            $"%s{operation}: assigning non-object value %s{describeCliStorage state other} to object-reference inner field %O{innerId} of nested single-instance-field wrapper"
                 | TransparentWrapperOutcome.NotTransparent -> ValueNone
             | _ -> ValueNone
 
