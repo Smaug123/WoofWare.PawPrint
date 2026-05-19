@@ -14,7 +14,12 @@ module RealRuntime =
         let assy = System.Reflection.Assembly.Load assemblyBytes
 
         try
-            let result = assy.EntryPoint.Invoke ((null : obj), [| args |]) |> unbox<int>
+            let invokeArgs : obj[] =
+                match assy.EntryPoint.GetParameters().Length with
+                | 0 -> [||]
+                | _ -> [| box args |]
+
+            let result = assy.EntryPoint.Invoke ((null : obj), invokeArgs) |> unbox<int>
             RealRuntimeResult.NormalExit result
         with :? System.Reflection.TargetInvocationException as tie ->
             RealRuntimeResult.UnhandledException (tie.InnerException |> Option.ofObj |> Option.defaultValue (tie :> _))
