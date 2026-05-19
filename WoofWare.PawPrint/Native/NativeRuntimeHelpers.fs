@@ -117,6 +117,24 @@ module NativeRuntimeHelpers =
         | "System.Private.CoreLib",
           "System.Runtime.CompilerServices",
           "RuntimeHelpers",
+          "TryEnsureSufficientExecutionStack",
+          [],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) ->
+            // CoreCLR probes the native thread's stack guard pages; BCL callers (async
+            // resume, recursive parsers, `ConditionalWeakTable` rebuild, expression
+            // compilation, ...) use this as a "take the fast recursive path or fall back
+            // to an iterative one" decision. PawPrint has no native frame stack to
+            // exhaust — the abstract machine's frames live on the F# heap — so the
+            // honest answer is always "yes, sufficient." Returning `true` is also
+            // deterministic, which matters more here than modelling stack pressure.
+            // See issue #625 for the tracking discussion of a virtual frame-budget
+            // model that would also let us cover the BCL's iterative fallback paths.
+            let state = IlMachineState.pushToEvalStack (CliType.ofBool true) ctx.Thread state
+
+            NativeHandlerResult.completed state |> Some
+        | "System.Private.CoreLib",
+          "System.Runtime.CompilerServices",
+          "RuntimeHelpers",
           "TryGetHashCode",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
