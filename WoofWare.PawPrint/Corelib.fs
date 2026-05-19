@@ -116,6 +116,7 @@ module Corelib =
         let argumentException = findCorelibType corelib "System" "ArgumentException"
         let argumentNullException = findCorelibType corelib "System" "ArgumentNullException"
         let dateTime = findCorelibType corelib "System" "DateTime"
+        let decimal = findCorelibType corelib "System" "Decimal"
 
         let targetInvocationException =
             findCorelibType corelib "System.Reflection" "TargetInvocationException"
@@ -189,6 +190,7 @@ module Corelib =
             ArgumentException = argumentException
             ArgumentNullException = argumentNullException
             DateTime = dateTime
+            Decimal = decimal
             TargetInvocationException = targetInvocationException
             IListGeneric = iListGeneric
             IEnumerableGeneric = iEnumerableGeneric
