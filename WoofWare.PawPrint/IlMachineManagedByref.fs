@@ -880,7 +880,7 @@ module IlMachineManagedByref =
     /// returned shape via `EvalStackValue.ofCliType` (which flattens
     /// primitive-like wrappers) or an explicit
     /// `CliType.unwrapPrimitiveLikeDeep`.
-    let private zeroForConcreteType
+    let internal zeroForConcreteType
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (ty : ConcreteType<ConcreteTypeHandle>)
@@ -894,6 +894,43 @@ module IlMachineManagedByref =
 
         CliType.zeroOf state.ConcreteTypes state._LoadedAssemblies baseClassTypes handle
         |> fst
+
+    /// Forward walk through a `ByrefProjection` chain, accumulating a byte
+    /// offset. `Field` projections consult `templateThunk` for the current
+    /// type cursor (lazy, so chains containing no `Field` never resolve a
+    /// template); `ReinterpretAs` re-anchors the cursor via `templateFor`;
+    /// `ByteOffset` adds raw bytes and either terminates the walk or
+    /// re-anchors via the immediately following `ReinterpretAs`.
+    ///
+    /// A `ByteOffset` followed directly by a `Field` projection is a
+    /// construction-site invariant violation (the cursor would have no
+    /// type anchor); this raises a descriptive `failwith` so the caller
+    /// can decide whether to propagate the bug or degrade.
+    let internal walkProjectionByteOffset
+        (templateFor : ConcreteType<ConcreteTypeHandle> -> CliType)
+        (rootTemplate : unit -> CliType)
+        (projs : ByrefProjection list)
+        : int
+        =
+        let rec walk (templateThunk : unit -> CliType) (offset : int) (remaining : ByrefProjection list) : int =
+            match remaining with
+            | [] -> offset
+            | ByrefProjection.Field field :: rest ->
+                let template = templateThunk ()
+                let fieldOffset, _ = CliType.getFieldLayoutById field template
+                let fieldTemplate = CliType.getFieldById field template
+                walk (fun () -> fieldTemplate) (offset + fieldOffset) rest
+            | ByrefProjection.ReinterpretAs newReinTy :: rest -> walk (fun () -> templateFor newReinTy) offset rest
+            | ByrefProjection.ByteOffset n :: rest ->
+                match rest with
+                | [] -> offset + n
+                | ByrefProjection.ReinterpretAs _ :: _
+                | ByrefProjection.ByteOffset _ :: _ -> walk templateThunk (offset + n) rest
+                | ByrefProjection.Field _ :: _ ->
+                    failwith
+                        $"ByteOffset %d{n} followed by Field navigation without an intervening ReinterpretAs in projection chain: %A{projs} (this is an interpreter bug)"
+
+        walk rootTemplate 0 projs
 
     /// Split a projection chain at the first `ReinterpretAs` and collapse
     /// everything beyond that point into an accumulated byte offset. Once a
@@ -949,18 +986,11 @@ module IlMachineManagedByref =
         | None -> ValueNone
         | Some (structuralPrefix, firstReinTy, afterReinterpret) ->
             // Walk forward through the byte-view suffix, accumulating byte
-            // offset. The template anchoring the cursor is computed lazily
-            // via `templateThunk`: only `Field` projections consume it.
-            // Chained `ReinterpretAs` re-anchors the thunk to the new type;
-            // `ByteOffset` adds raw bytes and either terminates the walk or
-            // re-anchors via the immediately following `ReinterpretAs`. A
-            // `ByteOffset` followed by a `Field` would require navigating
-            // fields on a cursor with no type anchor and signals an
-            // interpreter bug at the construction site. Lazy evaluation
-            // means BCT is only consulted when a `Field` actually appears
-            // in the byte-view suffix, so the metadata-light call shapes
-            // (`[ReinterpretAs T]`, `[ReinterpretAs T; ByteOffset n]`) work
-            // with `baseClassTypes = None`.
+            // offset. Lazy template resolution means BCT is only consulted
+            // when a `Field` actually appears in the byte-view suffix, so
+            // the metadata-light call shapes (`[ReinterpretAs T]`,
+            // `[ReinterpretAs T; ByteOffset n]`) work with
+            // `baseClassTypes = None`.
             let templateFor (ty : ConcreteType<ConcreteTypeHandle>) : CliType =
                 match baseClassTypes with
                 | Some bct -> zeroForConcreteType bct state ty
@@ -968,25 +998,9 @@ module IlMachineManagedByref =
                     failwith
                         $"peelTrailingByteView: BaseClassTypes required to navigate `Field` projection after `ReinterpretAs` %s{ty.Namespace}.%s{ty.Name} in projection chain: %A{projs} (metadata-light entry points cannot resolve Field layout; pass BaseClassTypes via writeManagedByrefWithBase)"
 
-            let rec walk (templateThunk : unit -> CliType) (offset : int) (remaining : ByrefProjection list) : int =
-                match remaining with
-                | [] -> offset
-                | ByrefProjection.Field field :: rest ->
-                    let template = templateThunk ()
-                    let fieldOffset, _ = CliType.getFieldLayoutById field template
-                    let fieldTemplate = CliType.getFieldById field template
-                    walk (fun () -> fieldTemplate) (offset + fieldOffset) rest
-                | ByrefProjection.ReinterpretAs newReinTy :: rest -> walk (fun () -> templateFor newReinTy) offset rest
-                | ByrefProjection.ByteOffset n :: rest ->
-                    match rest with
-                    | [] -> offset + n
-                    | ByrefProjection.ReinterpretAs _ :: _
-                    | ByrefProjection.ByteOffset _ :: _ -> walk templateThunk (offset + n) rest
-                    | ByrefProjection.Field _ :: _ ->
-                        failwith
-                            $"ByteOffset %d{n} followed by Field navigation without an intervening ReinterpretAs in projection chain: %A{projs} (this is an interpreter bug)"
+            let totalOffset =
+                walkProjectionByteOffset templateFor (fun () -> templateFor firstReinTy) afterReinterpret
 
-            let totalOffset = walk (fun () -> templateFor firstReinTy) 0 afterReinterpret
             ValueSome (structuralPrefix, totalOffset)
 
     let readManagedByrefBytesAs
