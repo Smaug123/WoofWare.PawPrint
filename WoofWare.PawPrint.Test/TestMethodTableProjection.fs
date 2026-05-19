@@ -3531,6 +3531,53 @@ public unsafe struct PointerWrapper
         |> shouldEqual (CliType.ObjectRef (Some storedAddr))
 
     [<Test>]
+    let ``HeapObjectField byref with trailing ReinterpretAs RefType returns stored ObjectRef`` () : unit =
+        // CoreLib's async resume reaches the captured ExecutionContext by taking the
+        // address of `Task.m_stateObject` (typed `object?`, an ObjectRef field) and
+        // appending `ReinterpretAs ExecutionContext?` via `Unsafe.As<object?, ExecutionContext?>`.
+        // A subsequent Ldind.ref expects the stored reference unchanged. The byref machinery
+        // cannot byte-view an ObjectRef cell, so `readManagedByref` must short-circuit when the
+        // peeled byte offset is exactly zero and both the storage cell and the reinterpret
+        // target are ObjectRef. This pins that behaviour for a `HeapObjectField` root — the
+        // root that the async resume path actually produces, and the one whose byte-view
+        // dispatcher falls through to the rejecting bytewise fallback.
+        let state = state ()
+        let storedAddr, containerAddr, state = allocateReferenceObjectWithRefField state
+        let stringType = concreteTypeFor bct.String
+
+        let ptr =
+            ManagedPointerSource.Byref (
+                ByrefRoot.HeapObjectField (containerAddr, FieldId.named "Ref"),
+                [ ByrefProjection.ReinterpretAs stringType ]
+            )
+
+        IlMachineState.readManagedByref bct state ptr
+        |> shouldEqual (CliType.ObjectRef (Some storedAddr))
+
+    [<Test>]
+    let ``HeapObjectField byref with nonzero-offset ReinterpretAs RefType still rejects`` () : unit =
+        // Guard for the zero-offset gate on the ObjectRef short-circuit added alongside the
+        // test above. A mid-cell view of an object reference (offset 4 into an 8-byte
+        // ObjectRef) has no defined meaning in our value model: the cell is not byte-
+        // addressable, so the closest sensible answer is to refuse rather than to silently
+        // alias. The bytewise dispatcher's existing rejection covers this case; this test
+        // pins it so a future change to the elision predicate cannot widen the window.
+        let state = state ()
+        let _, containerAddr, state = allocateReferenceObjectWithRefField state
+        let stringType = concreteTypeFor bct.String
+
+        let ptr =
+            ManagedPointerSource.Byref (
+                ByrefRoot.HeapObjectField (containerAddr, FieldId.named "Ref"),
+                [ ByrefProjection.ReinterpretAs stringType ; ByrefProjection.ByteOffset 4 ]
+            )
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () -> IlMachineState.readManagedByref bct state ptr |> ignore)
+
+        ex.Message |> shouldContainText "refusing byte view"
+
+    [<Test>]
     let ``Heap object byte view preserves overlap semantics for byte-addressable fields`` () : unit =
         // Field-precise dispatch is gated on non-byte-addressability so that explicit-layout
         // overlap semantics remain authoritative for primitive cells. Setup: a heap object with
