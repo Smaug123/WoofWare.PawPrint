@@ -1439,6 +1439,21 @@ and CliValueType =
                     size, if packing = 0 then DEFAULT_STRUCT_ALIGNMENT else packing
                 | Layout.Default -> 0, DEFAULT_STRUCT_ALIGNMENT
 
+            // CoreCLR's `EEClassNativeLayoutInfo::CollectNativeLayoutFieldMetadataThrowing`
+            // (classlayoutinfo.cpp:984-988) bumps a computed native layout size of 0 to 1
+            // so the type has a distinct native address. This is universal post-processing
+            // and applies whether the zero came from an empty field list, all fields
+            // eliding to nothing, or an explicit `Size = 0` on the `[StructLayout]`. Apply
+            // here so every concrete return path through the marshal-size walk respects
+            // the same invariant.
+            let bumpZeroSized (size : SizeofResult) : SizeofResult =
+                if size.Size = 0 then
+                    { size with
+                        Size = 1
+                    }
+                else
+                    size
+
             let computeFinal (currentEnd : int) (maxAlign : int) : SizeofResult =
                 let alignment = max maxAlign 1
                 let error = currentEnd % alignment
@@ -1449,21 +1464,24 @@ and CliValueType =
                     else
                         currentEnd + (alignment - error)
 
-                {
-                    Size = max totalSize minimumSize
-                    Alignment = alignment
-                }
+                bumpZeroSized
+                    {
+                        Size = max totalSize minimumSize
+                        Alignment = alignment
+                    }
 
             let seqFields, nonSeqFields =
                 storage.Fields |> List.partition (fun field -> field.ConfiguredOffset.IsNone)
 
             match seqFields, nonSeqFields with
             | [], [] ->
-                Result.Ok
-                    {
-                        Size = minimumSize
-                        Alignment = 1
-                    }
+                Result.Ok (
+                    bumpZeroSized
+                        {
+                            Size = minimumSize
+                            Alignment = 1
+                        }
+                )
             | _ :: _, [] ->
                 (Result.Ok (0, 0), seqFields)
                 ||> List.fold (fun acc field ->
