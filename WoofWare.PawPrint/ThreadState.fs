@@ -22,8 +22,28 @@ type ThreadStatus =
     /// contribute to deadlock detection beyond appearing in the stuck-threads
     /// description.
     | NotStarted
-    /// This thread is blocked inside Thread.Join, waiting for the named thread to terminate.
-    | BlockedOnJoin of target : ThreadId
+    /// This thread is blocked inside `Thread.Join`, waiting for the named
+    /// thread to terminate. The wake comes from
+    /// `Scheduler.onThreadTerminated`, which sweeps every
+    /// `BlockedOnJoin (target, _)` whose `target` matches the terminating
+    /// thread and flips them back to `Runnable`.
+    ///
+    /// `deadlineMs = None` is an infinite wait (`Thread.Join()` /
+    /// `Thread.Join(-1)` / `Timeout.Infinite`); `Some ms` is a finite
+    /// timeout (`Thread.Join(int)` with a non-zero positive value),
+    /// expressed as the absolute virtual-clock millisecond at which the
+    /// wait expires. When `VirtualClockMs` advances past the deadline and
+    /// the thread is still parked, the driver fires a timeout wake
+    /// (`Scheduler.fireJoinTimeout`): the optimistic `Int32 1` slot
+    /// pushed at park time by the Join handler is rewritten to `Int32 0`
+    /// (so the BCL's `Join(int)` returns `false`), and the status flips
+    /// back to `Runnable`. Storing the deadline in the status itself
+    /// rather than in a parallel map makes the invariant "no deadline
+    /// once Runnable again" structural — a wake naturally forgets it.
+    /// `Thread.Join(0)` is a non-blocking poll handled at the call site
+    /// (no `BlockedOnJoin` transition); only `> 0` finite timeouts and
+    /// `-1` infinite reach this variant.
+    | BlockedOnJoin of target : ThreadId * deadlineMs : int64 option
     /// This thread tried to access a type whose .cctor is currently being run by another
     /// thread. Per ECMA-335 II.10.5.3.3 it must wait for that thread to finish initialising
     /// the type before it can proceed.
