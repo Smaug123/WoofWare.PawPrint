@@ -2199,6 +2199,29 @@ module IlMachineManagedByref =
                 | None -> state
                 | Some updatedRoot -> writeRootValue state root updatedRoot
 
+            // A chain of exactly `[ReinterpretAs T, Field f]` is the single
+            // shape that the structural writer's `transparentWrapperFastPath`
+            // can classify as Phase A (storage is layout-compatible with the
+            // wrapper's only field) or Phase B (storage is itself a
+            // transparent offset-0 single-field wrapper of the same primitive,
+            // e.g. CoreLib's `Unsafe.As<TaskAwaiter<T>, TaskAwaiter>` motif).
+            // For Phase B on byte-addressable storage roots
+            // (HeapValue/HeapObjectField/ArrayElement) with a non-byte-
+            // renderable payload, the bytes-or-typed-cell writer's precise-
+            // write helpers fail the cross-constructor `sameCliConstructor`
+            // check (storage is a `ValueType` wrapper, newValue is an
+            // `ObjectRef`) and fall through to `CliType.ToBytes` on the
+            // ObjectRef — which refuses. Route the trigger shape through the
+            // structural writer instead so the classifier-driven elision
+            // applies uniformly. Phase A on these roots also flows through
+            // the structural writer here (it's equivalent to the precise
+            // fast path for ref↔ref writes) so the Phase A/B split lives in
+            // one place.
+            let isTransparentWrapperTriggerShape =
+                match baseClassTypes, projs with
+                | Some _, [ ByrefProjection.ReinterpretAs _ ; ByrefProjection.Field _ ] -> true
+                | _ -> false
+
             match peeled, valueIsByteRenderable with
             | ValueSome (_, _), true ->
                 // Byte-renderable values flow through the bytes-or-typed-cell
@@ -2208,6 +2231,7 @@ module IlMachineManagedByref =
                 // metadata) work here because the core never consults BCT
                 // unless a `Field` appears in the byte-view suffix.
                 writeManagedByrefBytesOrTypedCellCore baseClassTypes state src newValue
+            | ValueSome ([], _), false when isTransparentWrapperTriggerShape -> useStructuralWriter ()
             | ValueSome ([], _), false ->
                 // Non-byte-renderable empty-prefix peel: the bytes-or-typed-cell
                 // writer can precise-write for the byte-addressable storage
