@@ -54,15 +54,73 @@ module internal CellAwareCopy =
             ptr
             (CliType.Numeric (CliNumericType.UInt8 value))
 
-    let private projectionByteOffset (projs : ByrefProjection list) : int64 option =
-        let rec loop (byteOffset : int64) (projs : ByrefProjection list) : int64 option =
-            match projs with
-            | [] -> Some byteOffset
-            | ByrefProjection.ReinterpretAs _ :: rest -> loop byteOffset rest
-            | ByrefProjection.ByteOffset offset :: rest -> loop (byteOffset + int64 offset) rest
-            | ByrefProjection.Field _ :: _ -> None
+    /// Lazy resolution of the root's `CliType` template. Used by
+    /// `tryProjectionByteOffset` only when a `Field` projection appears in
+    /// the chain. Variants whose `Field`-projection layout cannot be
+    /// resolved (e.g. `PeByteRange`, `MethodTableExposedClassObject`) or
+    /// where no typed cell starts at the root byte offset
+    /// (`StackMemoryByte` / `NativeMemoryByte`) raise — the caller wraps
+    /// in try/with and degrades to the coarse `SharedStorageKey` path.
+    let private rootTemplate (state : IlMachineState) (root : ByrefRoot) : CliType =
+        match root with
+        | ByrefRoot.LocalVariable (thread, frame, local) ->
+            (IlMachineThreadState.getFrame thread frame state).LocalVariables.[int<uint16> local]
+        | ByrefRoot.Argument (thread, frame, arg) ->
+            (IlMachineThreadState.getFrame thread frame state).Arguments.[int<uint16> arg]
+        | ByrefRoot.HeapValue addr -> CliType.ValueType (ManagedHeap.get addr state.ManagedHeap).Contents
+        | ByrefRoot.HeapObjectField (addr, field) ->
+            ManagedHeap.get addr state.ManagedHeap
+            |> AllocatedNonArrayObject.DereferenceFieldById field
+        | ByrefRoot.ArrayElement (arr, index) -> IlMachineThreadState.getArrayValue arr index state
+        | ByrefRoot.StaticField (ty, field) ->
+            match IlMachineManagedByref.getStatic ty field state with
+            | Some value -> value
+            | None ->
+                failwith
+                    $"rootTemplate: static field byref %O{field.Get} on %O{ty} was read before its static slot was initialised"
+        | ByrefRoot.StringCharAt _ ->
+            // A char is a single UTF-16 unit; no `Field` projection makes
+            // sense on it. The caller's try/with degrades to `None`.
+            failwith "rootTemplate: StringCharAt root has no Field-projectable template"
+        | ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset) ->
+            let pool = IlMachineThreadState.getStackMemoryPool thread frame state
 
-        loop 0L projs
+            match StackMemoryPool.tryFindCellCovering block byteOffset pool with
+            | Some (cellOffset, cell) when cellOffset = byteOffset -> cell
+            | _ ->
+                failwith
+                    $"rootTemplate: no typed cell starts at byte offset %d{byteOffset} of stack memory block %O{block}"
+        | ByrefRoot.NativeMemoryByte (block, byteOffset) ->
+            match NativeMemoryPool.tryFindCellCovering block byteOffset state.Kernel.NativeMemoryPool with
+            | Some (cellOffset, cell) when cellOffset = byteOffset -> cell
+            | _ ->
+                failwith
+                    $"rootTemplate: no typed cell starts at byte offset %d{byteOffset} of native memory block %O{block}"
+        | ByrefRoot.PeByteRange _ -> failwith "rootTemplate: PeByteRange root has no Field-projectable template"
+        | ByrefRoot.MethodTableExposedClassObject _ ->
+            failwith "rootTemplate: MethodTableExposedClassObject is a single object reference"
+
+    /// Fold a projection chain to a byte offset relative to the root's
+    /// storage origin. Returns `None` for any chain whose offset can't be
+    /// computed (missing template, unsupported projection shape, missing
+    /// concrete type for a `ReinterpretAs` target, etc.); the caller
+    /// degrades to the coarse `SharedStorageKey` path.
+    let private tryProjectionByteOffset
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (root : ByrefRoot)
+        (projs : ByrefProjection list)
+        : int64 option
+        =
+        let templateFor (ty : ConcreteType<ConcreteTypeHandle>) : CliType =
+            IlMachineManagedByref.zeroForConcreteType baseClassTypes state ty
+
+        let rootTemplateThunk () = rootTemplate state root
+
+        try
+            Some (int64 (IlMachineManagedByref.walkProjectionByteOffset templateFor rootTemplateThunk projs))
+        with _ ->
+            None
 
     let private byteLocation
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -73,66 +131,62 @@ module internal CellAwareCopy =
         match ptr with
         | ManagedPointerSource.Null -> None
         | ManagedPointerSource.NativeIntPlaceholder _ -> None
-        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), projs) ->
-            projectionByteOffset projs
+        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index) as root, projs) ->
+            tryProjectionByteOffset baseClassTypes state root projs
             |> Option.map (fun byteOffset ->
                 ByteStorageIdentity.Array arr,
                 ManagedPointerByteView.arrayBytePosition baseClassTypes state arr index byteOffset
             )
-        | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), projs) ->
-            projectionByteOffset projs
+        | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex) as root, projs) ->
+            tryProjectionByteOffset baseClassTypes state root projs
             |> Option.map (fun byteOffset -> ByteStorageIdentity.String str, int64 charIndex * 2L + byteOffset)
-        | ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange, projs) ->
-            projectionByteOffset projs
+        | ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange as root, projs) ->
+            tryProjectionByteOffset baseClassTypes state root projs
             |> Option.map (fun byteOffset -> ByteStorageIdentity.PeByteRange peByteRange, byteOffset)
-        | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, rootByteOffset), projs) ->
-            projectionByteOffset projs
+        | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, rootByteOffset) as root, projs) ->
+            tryProjectionByteOffset baseClassTypes state root projs
             |> Option.map (fun byteOffset ->
                 ByteStorageIdentity.StackMemory (thread, frame, block), int64 rootByteOffset + byteOffset
             )
-        | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, rootByteOffset), projs) ->
-            projectionByteOffset projs
+        | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, rootByteOffset) as root, projs) ->
+            tryProjectionByteOffset baseClassTypes state root projs
             |> Option.map (fun byteOffset -> ByteStorageIdentity.NativeMemory block, int64 rootByteOffset + byteOffset)
-        | ManagedPointerSource.Byref (ByrefRoot.LocalVariable (thread, frame, local), projs) ->
-            projectionByteOffset projs
+        | ManagedPointerSource.Byref (ByrefRoot.LocalVariable (thread, frame, local) as root, projs) ->
+            tryProjectionByteOffset baseClassTypes state root projs
             |> Option.map (fun byteOffset -> ByteStorageIdentity.StackLocal (thread, frame, local), byteOffset)
-        | ManagedPointerSource.Byref (ByrefRoot.Argument (thread, frame, arg), projs) ->
-            projectionByteOffset projs
+        | ManagedPointerSource.Byref (ByrefRoot.Argument (thread, frame, arg) as root, projs) ->
+            tryProjectionByteOffset baseClassTypes state root projs
             |> Option.map (fun byteOffset -> ByteStorageIdentity.StackArgument (thread, frame, arg), byteOffset)
-        | ManagedPointerSource.Byref (ByrefRoot.StaticField (declaringType, field), projs) ->
-            projectionByteOffset projs
+        | ManagedPointerSource.Byref (ByrefRoot.StaticField (declaringType, field) as root, projs) ->
+            tryProjectionByteOffset baseClassTypes state root projs
             |> Option.map (fun byteOffset -> ByteStorageIdentity.StaticField (declaringType, field), byteOffset)
-        // These roots do not expose a stable flat byte coordinate here. The
-        // supported Buffer_MemMove overlap paths are flat byte-storage-backed;
-        // if aliased overlap on these roots appears, extend this model rather
-        // than guessing a projection.
-        | ManagedPointerSource.Byref (ByrefRoot.HeapValue _, _)
-        | ManagedPointerSource.Byref (ByrefRoot.HeapObjectField _, _)
+        | ManagedPointerSource.Byref (ByrefRoot.HeapValue addr as root, projs) ->
+            tryProjectionByteOffset baseClassTypes state root projs
+            |> Option.map (fun byteOffset -> ByteStorageIdentity.HeapObject addr, byteOffset)
+        | ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (addr, field) as root, projs) ->
+            tryProjectionByteOffset baseClassTypes state root projs
+            |> Option.map (fun byteOffset -> ByteStorageIdentity.HeapObjectField (addr, field), byteOffset)
+        // The MethodTable auxiliary cell is a single object reference;
+        // `Field` projections are nonsensical on it, and overlap reasoning
+        // through it has no flat byte coordinate.
         | ManagedPointerSource.Byref (ByrefRoot.MethodTableExposedClassObject _, _) -> None
 
     /// Coarse storage discriminator used purely to decide whether two byrefs
     /// *could* share underlying storage when `byteLocation` cannot derive a
-    /// flat byte offset (e.g. `Field`-projected residuals on either flat or
-    /// heap-rooted byrefs). Distinct keys mean the byrefs cannot alias under
-    /// PawPrint's model; equal keys mean an overlapping `Memmove` is
-    /// undecidable from the byref shape alone and the analyser must fail
-    /// loud.
+    /// flat byte offset (e.g. an unresolved concrete-type for a
+    /// `ReinterpretAs` target, or a `StackMemoryByte` whose root offset has
+    /// no covering typed cell). `byteLocation` now folds `Field` projections
+    /// into a precise byte offset whenever the root template is available,
+    /// so the fallback path here is reached only when that resolution
+    /// fails; equal keys then mean an overlapping `Memmove` is undecidable
+    /// from the byref shape alone and the analyser must fail loud.
     ///
     /// Indexed flat roots (array element, string char) carry their index so
     /// that disjoint cross-element copies like `arr[0].A` ↔ `arr[1].A` get
     /// distinct keys. `HeapObjectField` carries its `FieldId` for the same
-    /// reason: `ref box.A` and `ref box.B` directly address different fields
-    /// of the same instance, and even though both byrefs target heap
-    /// allocation `box`, the byrefs themselves are guaranteed disjoint by
-    /// construction. `HeapValue` (a whole boxed value) is its own bucket
-    /// keyed by address; a boxed value and a class-instance field byref
-    /// cannot share an address (each heap allocation has a single object
-    /// kind), and two byrefs into the same boxed value reach through the
-    /// same `HeapValue` root regardless of which interior field they
-    /// project. Folding `Field` projections into a flat byte offset would
-    /// let `byteLocation` decide direction precisely even for sibling-field
-    /// copies through a `HeapValue` root or via projection chains beyond
-    /// the immediate `HeapObjectField`; that's still future work.
+    /// reason. `HeapValue` (a whole boxed value) is its own bucket keyed by
+    /// address; a boxed value and a class-instance field byref cannot share
+    /// an address (each heap allocation has a single object kind).
     [<RequireQualifiedAccess>]
     type private SharedStorageKey =
         | ArrayCell of arr : ManagedHeapAddress * index : int
