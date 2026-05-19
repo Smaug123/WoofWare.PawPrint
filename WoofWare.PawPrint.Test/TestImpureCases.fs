@@ -130,6 +130,21 @@ module TestImpureCases =
                 NativeImpls = NativeImpls.PassThru ()
                 AssertTerminalState = None
             }
+            {
+                // Exercises the SystemNative_IsATty PawPrint handler against
+                // standard fds, a freshly-duped fd, and a closed fd. Lives in
+                // sourcesImpure because the real CLR's IsATty answer depends
+                // on whether the test process happens to have a TTY attached
+                // to its standard streams, which races with how a developer
+                // happens to run NUnit; PawPrint's headless-process model
+                // makes the answer stable by construction.
+                FileName = "SystemNativeIsATty.cs"
+                ExpectedReturnCode = 0
+                Environment = Map.empty
+                ExpectsUnhandledException = false
+                NativeImpls = NativeImpls.PassThru ()
+                AssertTerminalState = None
+            }
         ]
 
     let runTest (case : EndToEndTestCase) : unit =
