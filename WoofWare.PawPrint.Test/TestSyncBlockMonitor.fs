@@ -294,8 +294,8 @@ module TestSyncBlockMonitor =
                     Lock = SyncBlockLock.Held held
                     WaitQueue = []
                 }
-            |> Scheduler.setThreadStatus t1 (ThreadStatus.BlockedOnSyncBlockAcquire addr)
-            |> Scheduler.setThreadStatus t2 (ThreadStatus.BlockedOnSyncBlockAcquire addr)
+            |> Scheduler.setThreadStatus t1 (ThreadStatus.BlockedOnSyncBlockAcquire (addr, None))
+            |> Scheduler.setThreadStatus t2 (ThreadStatus.BlockedOnSyncBlockAcquire (addr, None))
 
         let state = SyncBlockMonitor.wait t0 addr None state
 
@@ -311,7 +311,9 @@ module TestSyncBlockMonitor =
 
         block.WaitQueue |> shouldEqual [ t0, 1 ]
         statusOf t1 state |> shouldEqual ThreadStatus.Runnable
-        statusOf t2 state |> shouldEqual (ThreadStatus.BlockedOnSyncBlockAcquire addr)
+
+        statusOf t2 state
+        |> shouldEqual (ThreadStatus.BlockedOnSyncBlockAcquire (addr, None))
 
         statusOf t0 state
         |> shouldEqual (ThreadStatus.BlockedOnSyncBlockWait (addr, None))
@@ -340,7 +342,7 @@ module TestSyncBlockMonitor =
                     Lock = SyncBlockLock.Held held
                     WaitQueue = []
                 }
-            |> Scheduler.setThreadStatus t1 (ThreadStatus.BlockedOnSyncBlockAcquire addr)
+            |> Scheduler.setThreadStatus t1 (ThreadStatus.BlockedOnSyncBlockAcquire (addr, None))
 
         let state = SyncBlockMonitor.wait t0 addr None state
 
@@ -412,7 +414,9 @@ module TestSyncBlockMonitor =
 
         block.WaitQueue |> shouldEqual []
         statusOf t0 state |> shouldEqual ThreadStatus.Runnable
-        statusOf t1 state |> shouldEqual (ThreadStatus.BlockedOnSyncBlockAcquire addr)
+
+        statusOf t1 state
+        |> shouldEqual (ThreadStatus.BlockedOnSyncBlockAcquire (addr, None))
 
     [<Test>]
     let ``pulse appends to existing AcquireQueue tail (FIFO)`` () : unit =
@@ -439,7 +443,7 @@ module TestSyncBlockMonitor =
                     Lock = SyncBlockLock.Held held
                 }
             |> Scheduler.setThreadStatus t0 ThreadStatus.Runnable
-            |> Scheduler.setThreadStatus t2 (ThreadStatus.BlockedOnSyncBlockAcquire addr)
+            |> Scheduler.setThreadStatus t2 (ThreadStatus.BlockedOnSyncBlockAcquire (addr, None))
 
         let state = SyncBlockMonitor.pulse t0 addr state
 
@@ -467,9 +471,15 @@ module TestSyncBlockMonitor =
         | SyncBlockLock.Free -> failwith "PulseAll must not release the lock"
 
         block.WaitQueue |> shouldEqual []
-        statusOf t1 state |> shouldEqual (ThreadStatus.BlockedOnSyncBlockAcquire addr)
-        statusOf t2 state |> shouldEqual (ThreadStatus.BlockedOnSyncBlockAcquire addr)
-        statusOf t3 state |> shouldEqual (ThreadStatus.BlockedOnSyncBlockAcquire addr)
+
+        statusOf t1 state
+        |> shouldEqual (ThreadStatus.BlockedOnSyncBlockAcquire (addr, None))
+
+        statusOf t2 state
+        |> shouldEqual (ThreadStatus.BlockedOnSyncBlockAcquire (addr, None))
+
+        statusOf t3 state
+        |> shouldEqual (ThreadStatus.BlockedOnSyncBlockAcquire (addr, None))
 
     [<Test>]
     let ``pulseAll on empty wait queue is a no-op`` () : unit =
@@ -572,7 +582,10 @@ module TestSyncBlockMonitor =
         | SyncBlockLock.Free -> failwith "Held lock must remain Held"
 
         block.WaitQueue |> shouldEqual []
-        statusOf t0 state |> shouldEqual (ThreadStatus.BlockedOnSyncBlockAcquire addr)
+
+        statusOf t0 state
+        |> shouldEqual (ThreadStatus.BlockedOnSyncBlockAcquire (addr, None))
+
         statusOf t1 state |> shouldEqual ThreadStatus.Runnable
 
     [<Test>]
@@ -637,8 +650,12 @@ module TestSyncBlockMonitor =
 
         block.WaitQueue |> shouldEqual []
         statusOf t0 state |> shouldEqual ThreadStatus.Runnable
-        statusOf t1 state |> shouldEqual (ThreadStatus.BlockedOnSyncBlockAcquire addr)
-        statusOf t2 state |> shouldEqual (ThreadStatus.BlockedOnSyncBlockAcquire addr)
+
+        statusOf t1 state
+        |> shouldEqual (ThreadStatus.BlockedOnSyncBlockAcquire (addr, None))
+
+        statusOf t2 state
+        |> shouldEqual (ThreadStatus.BlockedOnSyncBlockAcquire (addr, None))
 
     [<Test>]
     let ``applySpuriousWakeups AlwaysAll processes objects in ascending address order`` () : unit =
@@ -845,7 +862,7 @@ module TestSyncBlockMonitor =
                 && l.AcquireQueue = expectedQueue
                 && block.WaitQueue = []
                 && waiters
-                   |> List.forall (fun tid -> statusOf tid state = ThreadStatus.BlockedOnSyncBlockAcquire addr)
+                   |> List.forall (fun tid -> statusOf tid state = ThreadStatus.BlockedOnSyncBlockAcquire (addr, None))
             | SyncBlockLock.Free -> false
 
         Check.One (config, property)
@@ -1057,7 +1074,7 @@ module TestSyncBlockMonitor =
                     Lock = SyncBlockLock.Held held
                     WaitQueue = []
                 }
-            |> Scheduler.setThreadStatus t1 (ThreadStatus.BlockedOnSyncBlockAcquire addr)
+            |> Scheduler.setThreadStatus t1 (ThreadStatus.BlockedOnSyncBlockAcquire (addr, None))
 
         let state = SyncBlockMonitor.wait t0 addr (Some 9999L) state
 
@@ -1116,7 +1133,7 @@ module TestSyncBlockMonitor =
         block.WaitQueue |> shouldEqual [ t0, 5 ]
         topOfStack t0 state |> shouldEqual (EvalStackValue.Int32 1)
 
-        let state = SyncBlockMonitor.fireTimeout t0 addr state
+        let state = SyncBlockMonitor.fireWaitTimeout t0 addr state
 
         let block = syncBlockOf addr state
 
@@ -1147,7 +1164,7 @@ module TestSyncBlockMonitor =
         let state = state |> parkInTimedWaitAtDepth t0 3 addr 100L
         let state = forceHeld t1 1 addr state
 
-        let state = SyncBlockMonitor.fireTimeout t0 addr state
+        let state = SyncBlockMonitor.fireWaitTimeout t0 addr state
 
         let block = syncBlockOf addr state
 
@@ -1159,7 +1176,10 @@ module TestSyncBlockMonitor =
         | SyncBlockLock.Free -> failwith "expected Held after fireTimeout against held lock"
 
         block.WaitQueue |> shouldEqual []
-        statusOf t0 state |> shouldEqual (ThreadStatus.BlockedOnSyncBlockAcquire addr)
+
+        statusOf t0 state
+        |> shouldEqual (ThreadStatus.BlockedOnSyncBlockAcquire (addr, None))
+
         statusOf t1 state |> shouldEqual ThreadStatus.Runnable
         topOfStack t0 state |> shouldEqual (EvalStackValue.Int32 0)
 
@@ -1173,7 +1193,7 @@ module TestSyncBlockMonitor =
         // have been observed for a status the SyncBlock does not back.
 
         let exn =
-            Assert.Throws<System.Exception> (fun () -> SyncBlockMonitor.fireTimeout t0 addr state |> ignore)
+            Assert.Throws<System.Exception> (fun () -> SyncBlockMonitor.fireWaitTimeout t0 addr state |> ignore)
 
         exn.Message |> shouldContainText "WaitQueue"
 
@@ -1202,8 +1222,8 @@ module TestSyncBlockMonitor =
                     Lock = SyncBlockLock.Held held
                     WaitQueue = []
                 }
-            |> Scheduler.setThreadStatus t0 (ThreadStatus.BlockedOnSyncBlockAcquire addr)
-            |> Scheduler.setThreadStatus t1 (ThreadStatus.BlockedOnSyncBlockAcquire addr)
+            |> Scheduler.setThreadStatus t0 (ThreadStatus.BlockedOnSyncBlockAcquire (addr, None))
+            |> Scheduler.setThreadStatus t1 (ThreadStatus.BlockedOnSyncBlockAcquire (addr, None))
 
         // t2 calls Wait(deadline): pushes optimistic 1 then parks; ownership
         // transfers to t0 (FIFO head of AcquireQueue) at fresh depth 1.
@@ -1220,7 +1240,7 @@ module TestSyncBlockMonitor =
 
         block.WaitQueue |> shouldEqual [ t2, 1 ]
 
-        let state = SyncBlockMonitor.fireTimeout t2 addr state
+        let state = SyncBlockMonitor.fireWaitTimeout t2 addr state
 
         let block = syncBlockOf addr state
 
@@ -1232,7 +1252,10 @@ module TestSyncBlockMonitor =
         | SyncBlockLock.Free -> failwith "expected Held after fireTimeout"
 
         block.WaitQueue |> shouldEqual []
-        statusOf t2 state |> shouldEqual (ThreadStatus.BlockedOnSyncBlockAcquire addr)
+
+        statusOf t2 state
+        |> shouldEqual (ThreadStatus.BlockedOnSyncBlockAcquire (addr, None))
+
         topOfStack t2 state |> shouldEqual (EvalStackValue.Int32 0)
 
     [<Test>]
@@ -1253,8 +1276,8 @@ module TestSyncBlockMonitor =
         (syncBlockOf addr state).WaitQueue |> shouldEqual [ (t2, 1) ; (t1, 1) ]
 
         // Fire in WaitQueue order (head first).
-        let state = SyncBlockMonitor.fireTimeout t2 addr state
-        let state = SyncBlockMonitor.fireTimeout t1 addr state
+        let state = SyncBlockMonitor.fireWaitTimeout t2 addr state
+        let state = SyncBlockMonitor.fireWaitTimeout t1 addr state
 
         let block = syncBlockOf addr state
 
@@ -1267,7 +1290,10 @@ module TestSyncBlockMonitor =
 
         block.WaitQueue |> shouldEqual []
         statusOf t2 state |> shouldEqual ThreadStatus.Runnable
-        statusOf t1 state |> shouldEqual (ThreadStatus.BlockedOnSyncBlockAcquire addr)
+
+        statusOf t1 state
+        |> shouldEqual (ThreadStatus.BlockedOnSyncBlockAcquire (addr, None))
+
         topOfStack t2 state |> shouldEqual (EvalStackValue.Int32 0)
         topOfStack t1 state |> shouldEqual (EvalStackValue.Int32 0)
 
@@ -1285,8 +1311,8 @@ module TestSyncBlockMonitor =
         let state = state |> parkInTimedWait t1 addr 50L
 
         // Fire in ThreadId order (tail first).
-        let state = SyncBlockMonitor.fireTimeout t1 addr state
-        let state = SyncBlockMonitor.fireTimeout t2 addr state
+        let state = SyncBlockMonitor.fireWaitTimeout t1 addr state
+        let state = SyncBlockMonitor.fireWaitTimeout t2 addr state
 
         let block = syncBlockOf addr state
 
@@ -1299,7 +1325,9 @@ module TestSyncBlockMonitor =
         | SyncBlockLock.Free -> failwith "expected Held"
 
         statusOf t1 state |> shouldEqual ThreadStatus.Runnable
-        statusOf t2 state |> shouldEqual (ThreadStatus.BlockedOnSyncBlockAcquire addr)
+
+        statusOf t2 state
+        |> shouldEqual (ThreadStatus.BlockedOnSyncBlockAcquire (addr, None))
 
     [<Test>]
     let ``fireTimeout preserves snapshot depth across ownership-transfer reacquire`` () : unit =
@@ -1312,7 +1340,7 @@ module TestSyncBlockMonitor =
         let state = state |> parkInTimedWaitAtDepth t0 7 addr 100L
         let state = forceHeld t1 1 addr state
 
-        let state = SyncBlockMonitor.fireTimeout t0 addr state
+        let state = SyncBlockMonitor.fireWaitTimeout t0 addr state
 
         match (syncBlockOf addr state).Lock with
         | SyncBlockLock.Held l -> l.AcquireQueue |> shouldEqual [ (t0, Some 7) ]
@@ -1328,7 +1356,180 @@ module TestSyncBlockMonitor =
         // t1 is Runnable with a sentinel value on its stack.
         let state = state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 42) t1
 
-        let state = SyncBlockMonitor.fireTimeout t0 addr state
+        let state = SyncBlockMonitor.fireWaitTimeout t0 addr state
 
         topOfStack t0 state |> shouldEqual (EvalStackValue.Int32 0)
         topOfStack t1 state |> shouldEqual (EvalStackValue.Int32 42)
+
+    // -------------------------------------------------------------------
+    // fireAcquireTimeout — Monitor.TryEnter(obj, ms) slowpath deadlines
+    // -------------------------------------------------------------------
+
+    /// Drive `acquirer` into `BlockedOnSyncBlockAcquire (addr, Some deadlineMs)`,
+    /// queued behind `owner`, with the optimistic `Int32 1` on `acquirer`'s eval
+    /// stack — mirroring the state `TryEnter_Slowpath` leaves the caller in when
+    /// the lock was contended.
+    let private parkInTimedAcquire
+        (owner : ThreadId)
+        (acquirer : ThreadId)
+        (addr : ManagedHeapAddress)
+        (deadlineMs : int64)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        let state = forceHeld owner 1 addr state
+        let block = syncBlockOf addr state
+
+        let locked =
+            match block.Lock with
+            | SyncBlockLock.Held l -> l
+            | SyncBlockLock.Free -> failwith "parkInTimedAcquire: forceHeld returned Free"
+
+        let locked =
+            { locked with
+                AcquireQueue = locked.AcquireQueue @ [ (acquirer, None) ]
+            }
+
+        state
+        |> IlMachineState.setSyncBlock
+            addr
+            {
+                Lock = SyncBlockLock.Held locked
+                WaitQueue = block.WaitQueue
+            }
+        |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) acquirer
+        |> Scheduler.setThreadStatus acquirer (ThreadStatus.BlockedOnSyncBlockAcquire (addr, Some deadlineMs))
+
+    [<Test>]
+    let ``fireAcquireTimeout dequeues without transferring ownership and rewrites Int32 1 to Int32 0`` () : unit =
+        // t0 holds; t1 parked in AcquireQueue with a 100ms deadline.
+        // Firing t1's deadline must remove t1 from the queue, leave t0
+        // still owning at the same depth, and rewrite t1's optimistic
+        // `Int32 1` (acquired) to `Int32 0` (timed out). t1 flips to
+        // Runnable.
+        let state = baseStateWithFrames () |> withRealThreads [ t0 ; t1 ]
+        let addr, state = allocateHeapObject state
+        let state = state |> parkInTimedAcquire t0 t1 addr 100L
+
+        // Sanity: t1 parked with deadline, t0 holds, optimistic 1 on t1's stack.
+        statusOf t1 state
+        |> shouldEqual (ThreadStatus.BlockedOnSyncBlockAcquire (addr, Some 100L))
+
+        let block = syncBlockOf addr state
+
+        match block.Lock with
+        | SyncBlockLock.Held l ->
+            l.LockingThread |> shouldEqual t0
+            l.AcquireQueue |> shouldEqual [ (t1, None) ]
+        | SyncBlockLock.Free -> failwith "expected Held before fire"
+
+        topOfStack t1 state |> shouldEqual (EvalStackValue.Int32 1)
+
+        let state = SyncBlockMonitor.fireAcquireTimeout t1 addr state
+
+        let block = syncBlockOf addr state
+
+        match block.Lock with
+        | SyncBlockLock.Held l ->
+            // Ownership unchanged — fireAcquireTimeout MUST NOT transfer
+            // the lock; the timed waiter just gives up.
+            l.LockingThread |> shouldEqual t0
+            l.ReentrancyCount |> shouldEqual 1
+            l.AcquireQueue |> shouldEqual []
+        | SyncBlockLock.Free -> failwith "expected Held after fireAcquireTimeout"
+
+        block.WaitQueue |> shouldEqual []
+        statusOf t1 state |> shouldEqual ThreadStatus.Runnable
+        statusOf t0 state |> shouldEqual ThreadStatus.Runnable
+        // TryEnter_Slowpath observes Int32 0 ⇒ BCL returns false.
+        topOfStack t1 state |> shouldEqual (EvalStackValue.Int32 0)
+
+    [<Test>]
+    let ``fireAcquireTimeout preserves FIFO among other queued acquirers`` () : unit =
+        // t0 holds; t1 then t2 parked in AcquireQueue. Only t1's deadline
+        // fires (t2's is later). t2 must remain in the queue at the same
+        // position (head, now that t1 is gone) — its `None` snapshot and
+        // status untouched.
+        let state = baseStateWithFrames () |> withRealThreads [ t0 ; t1 ; t2 ]
+        let addr, state = allocateHeapObject state
+        let state = state |> parkInTimedAcquire t0 t1 addr 50L
+        // Add t2 to the queue without a deadline (mirrors `Monitor.Enter`).
+        let block = syncBlockOf addr state
+
+        let locked =
+            match block.Lock with
+            | SyncBlockLock.Held l -> l
+            | SyncBlockLock.Free -> failwith "expected Held"
+
+        let state =
+            state
+            |> IlMachineState.setSyncBlock
+                addr
+                {
+                    Lock =
+                        SyncBlockLock.Held
+                            { locked with
+                                AcquireQueue = locked.AcquireQueue @ [ (t2, None) ]
+                            }
+                    WaitQueue = block.WaitQueue
+                }
+            |> Scheduler.setThreadStatus t2 (ThreadStatus.BlockedOnSyncBlockAcquire (addr, None))
+
+        let state = SyncBlockMonitor.fireAcquireTimeout t1 addr state
+
+        match (syncBlockOf addr state).Lock with
+        | SyncBlockLock.Held l ->
+            l.LockingThread |> shouldEqual t0
+            // t2 stays at the head (now the only entry).
+            l.AcquireQueue |> shouldEqual [ (t2, None) ]
+        | SyncBlockLock.Free -> failwith "expected Held"
+
+        statusOf t1 state |> shouldEqual ThreadStatus.Runnable
+
+        statusOf t2 state
+        |> shouldEqual (ThreadStatus.BlockedOnSyncBlockAcquire (addr, None))
+
+        topOfStack t1 state |> shouldEqual (EvalStackValue.Int32 0)
+
+    [<Test>]
+    let ``fireAcquireTimeout fails loud when the thread is not in AcquireQueue`` () : unit =
+        // t0 holds; t1 is NOT in the AcquireQueue. Reaching the fire path
+        // for such a thread indicates a structural bug — the deadline-
+        // enumeration step in Program.fireExpiredDeadlines selects on
+        // BlockedOnSyncBlockAcquire status, so a thread in that status
+        // must still be queued.
+        let state = baseStateWithFrames () |> withRealThreads [ t0 ; t1 ]
+        let addr, state = allocateHeapObject state
+        let state = forceHeld t0 1 addr state
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () -> SyncBlockMonitor.fireAcquireTimeout t1 addr state |> ignore)
+
+        exn.Message |> shouldContainText "AcquireQueue"
+
+    [<Test>]
+    let ``fireAcquireTimeout fails loud when the SyncBlock is Free`` () : unit =
+        // Free SyncBlock has no AcquireQueue; reaching the fire path
+        // means a parked acquirer outlived its lock owner — a structural
+        // invariant violation worth surfacing.
+        let state = baseStateWithFrames () |> withRealThreads [ t0 ]
+        let addr, state = allocateHeapObject state
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () -> SyncBlockMonitor.fireAcquireTimeout t0 addr state |> ignore)
+
+        exn.Message |> shouldContainText "Free"
+
+    [<Test>]
+    let ``fireAcquireTimeout leaves other threads' eval stacks untouched`` () : unit =
+        // Cross-thread isolation: rewriting t1's stack must not perturb t0's.
+        let state = baseStateWithFrames () |> withRealThreads [ t0 ; t1 ]
+        let addr, state = allocateHeapObject state
+        let state = state |> parkInTimedAcquire t0 t1 addr 100L
+        // t0 has its own sentinel value on its stack.
+        let state = state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 42) t0
+
+        let state = SyncBlockMonitor.fireAcquireTimeout t1 addr state
+
+        topOfStack t1 state |> shouldEqual (EvalStackValue.Int32 0)
+        topOfStack t0 state |> shouldEqual (EvalStackValue.Int32 42)

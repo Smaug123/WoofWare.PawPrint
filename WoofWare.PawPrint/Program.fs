@@ -87,6 +87,12 @@ module Program =
         | WaitHandle of handle : WaitHandleId
         | MonitorWait of monitor : LowLevelMonitorId
         | SyncBlockWait of lockObject : ManagedHeapAddress
+        /// `Monitor.TryEnter(obj, ms)` slowpath park on a contended
+        /// SyncBlock with a finite positive timeout. The waiter sits on
+        /// the SyncBlock's `AcquireQueue` (not its `WaitQueue`), and
+        /// `SyncBlockMonitor.fireAcquireTimeout` dequeues + rewrites the
+        /// optimistic `Int32 1` push to `Int32 0`.
+        | SyncBlockAcquire of lockObject : ManagedHeapAddress
         /// `Thread.Join(int)` with a positive finite timeout. Carries no
         /// payload because there is no per-primitive wait queue to
         /// reference: the joiner is identified by the outer `(tid, kind)`
@@ -99,7 +105,7 @@ module Program =
     /// non-timed blocks, infinite waits) return `None`; threads parked
     /// with a finite timeout return `Some (kind, absoluteVirtualClockMs)`.
     /// The `kind` is what tells the deadline-firing path which
-    /// subsystem's `fireTimeout` to invoke.
+    /// subsystem's fire function to invoke.
     let private waitDeadline (status : ThreadStatus) : (FiredDeadline * int64) option =
         match status with
         | ThreadStatus.BlockedOnWaitHandle (handle, Some deadline) -> Some (FiredDeadline.WaitHandle handle, deadline)
@@ -107,38 +113,44 @@ module Program =
             Some (FiredDeadline.MonitorWait monitor, deadline)
         | ThreadStatus.BlockedOnSyncBlockWait (lockObject, Some deadline) ->
             Some (FiredDeadline.SyncBlockWait lockObject, deadline)
+        | ThreadStatus.BlockedOnSyncBlockAcquire (lockObject, Some deadline) ->
+            Some (FiredDeadline.SyncBlockAcquire lockObject, deadline)
         | ThreadStatus.BlockedOnJoin (_, Some deadline) -> Some (FiredDeadline.JoinTimeout, deadline)
         | ThreadStatus.BlockedOnWaitHandle (_, None)
         | ThreadStatus.BlockedOnMonitorWait (_, None)
         | ThreadStatus.BlockedOnSyncBlockWait (_, None)
+        | ThreadStatus.BlockedOnSyncBlockAcquire (_, None)
         | ThreadStatus.BlockedOnJoin (_, None)
         | ThreadStatus.Runnable
         | ThreadStatus.NotStarted
         | ThreadStatus.BlockedOnClassInit _
         | ThreadStatus.BlockedOnMonitorAcquire _
-        | ThreadStatus.BlockedOnSyncBlockAcquire _
         | ThreadStatus.Terminated
         | ThreadStatus.Parked -> None
 
     /// Fire a timeout wake for every blocked-with-deadline thread whose
     /// deadline is `<= state.Kernel.VirtualClockMs`. Each fire routes
-    /// through the per-subsystem `fireTimeout` (WaitHandle dequeues from
+    /// through a per-subsystem fire function (WaitHandle dequeues from
     /// the handle's wait queue and rewrites `WAIT_OBJECT_0 → WAIT_TIMEOUT`;
     /// LowLevelMonitor moves the waiter from `WaitQueue` to `AcquireQueue`
     /// — granting ownership directly if the monitor is unowned — and
-    /// rewrites `Int32 1 → Int32 0`; SyncBlockMonitor does the same against
-    /// the managed-heap object's SyncBlock, preserving the snapshot
-    /// reentrancy depth carried in `WaitQueue`).
+    /// rewrites `Int32 1 → Int32 0`; `SyncBlockMonitor.fireWaitTimeout`
+    /// does the same against the managed-heap object's SyncBlock,
+    /// preserving the snapshot reentrancy depth carried in `WaitQueue`;
+    /// `SyncBlockMonitor.fireAcquireTimeout` dequeues a slowpath
+    /// `TryEnter(obj, ms)` waiter from the SyncBlock's `AcquireQueue`
+    /// and rewrites `Int32 1 → Int32 0` without changing ownership).
     ///
-    /// Fire order matters for `LowLevelMonitor` and `SyncBlockMonitor`.
-    /// When two waiters on the same primitive expire in the same tick,
-    /// `fireTimeout` grants ownership to whichever fires first against
-    /// the unowned primitive — so iterating `state.ThreadState` (a Map
-    /// keyed on ThreadId) would let a later-parked waiter with a smaller
-    /// thread id steal the lock from the FIFO head. We sort entries by
-    /// their position in the owning primitive's `WaitQueue` so that the
-    /// head fires first, matching the FIFO contract enforced everywhere
-    /// else in the state machines (release, signalRelease,
+    /// Fire order matters for `LowLevelMonitor` and `SyncBlockMonitor`
+    /// wait-timeout fires. When two waiters on the same primitive expire
+    /// in the same tick, the fire grants ownership to whichever fires
+    /// first against the unowned primitive — so iterating
+    /// `state.ThreadState` (a Map keyed on ThreadId) would let a
+    /// later-parked waiter with a smaller thread id steal the lock from
+    /// the FIFO head. We sort entries by their position in the owning
+    /// primitive's `WaitQueue` (or `AcquireQueue`, for acquire-timeouts)
+    /// so that the head fires first, matching the FIFO contract enforced
+    /// everywhere else in the state machines (release, signalRelease,
     /// pulse/pulseAll, applySpuriousWakeups AlwaysAll).
     ///
     /// Cross-primitive ordering is irrelevant — each fire touches a
@@ -169,7 +181,7 @@ module Program =
                 failwith
                     $"fireExpiredDeadlines: thread %O{thread} has BlockedOnMonitorWait status against monitor #%i{mid} but is not in its WaitQueue %A{monitor.WaitQueue}; structural invariant violated."
 
-        let syncBlockQueuePosition (addr : ManagedHeapAddress) (thread : ThreadId) : int =
+        let syncBlockWaitQueuePosition (addr : ManagedHeapAddress) (thread : ThreadId) : int =
             let block = IlMachineState.getSyncBlock addr state
 
             match List.tryFindIndex (fun (t, _) -> t = thread) block.WaitQueue with
@@ -178,18 +190,33 @@ module Program =
                 failwith
                     $"fireExpiredDeadlines: thread %O{thread} has BlockedOnSyncBlockWait status against object %O{addr} but is not in its WaitQueue %A{block.WaitQueue}; structural invariant violated."
 
+        let syncBlockAcquireQueuePosition (addr : ManagedHeapAddress) (thread : ThreadId) : int =
+            let block = IlMachineState.getSyncBlock addr state
+
+            match block.Lock with
+            | SyncBlockLock.Free ->
+                failwith
+                    $"fireExpiredDeadlines: thread %O{thread} has BlockedOnSyncBlockAcquire status against object %O{addr} but its SyncBlock is Free; structural invariant violated (acquire queue only exists when Held)."
+            | SyncBlockLock.Held locked ->
+                match List.tryFindIndex (fun (t, _) -> t = thread) locked.AcquireQueue with
+                | Some i -> i
+                | None ->
+                    failwith
+                        $"fireExpiredDeadlines: thread %O{thread} has BlockedOnSyncBlockAcquire status against object %O{addr} but is not in its AcquireQueue %A{locked.AcquireQueue}; structural invariant violated."
+
         // Sort key: LowLevelMonitor entries first (group=0), then
-        // SyncBlock entries (group=1), then WaitHandle entries (group=2),
-        // then Join entries (group=3). Within each subsystem-group,
-        // entries are keyed first by their primitive id (so distinct
-        // primitives are ordered deterministically but independently)
-        // and then by FIFO position in the primitive's wait queue (so
-        // the head of any contested primitive fires before its
-        // successors). For WaitHandle, queue order is unobservable for
-        // timeout fires, so ThreadId is used as a stable deterministic
-        // break. Join has no per-primitive queue (the "primitive" is
-        // the target thread's status, with no joiner-side ordering),
-        // so ThreadId is the only deterministic break.
+        // SyncBlock wait entries (group=1), then SyncBlock acquire
+        // entries (group=2), then WaitHandle entries (group=3), then
+        // Join entries (group=4). Within each subsystem-group, entries
+        // are keyed first by their primitive id (so distinct primitives
+        // are ordered deterministically but independently) and then by
+        // FIFO position in the primitive's queue (so the head of any
+        // contested primitive fires before its successors). For
+        // WaitHandle, queue order is unobservable for timeout fires, so
+        // ThreadId is used as a stable deterministic break. Join has no
+        // per-primitive queue (the "primitive" is the target thread's
+        // status, with no joiner-side ordering), so ThreadId is the
+        // only deterministic break.
         let sortKey ((tid, kind) : ThreadId * FiredDeadline) : int * int * int =
             match kind with
             | FiredDeadline.MonitorWait monitorId ->
@@ -197,14 +224,17 @@ module Program =
                 0, mid, monitorQueuePosition monitorId tid
             | FiredDeadline.SyncBlockWait addr ->
                 let (ManagedHeapAddress aid) = addr
-                1, aid, syncBlockQueuePosition addr tid
+                1, aid, syncBlockWaitQueuePosition addr tid
+            | FiredDeadline.SyncBlockAcquire addr ->
+                let (ManagedHeapAddress aid) = addr
+                2, aid, syncBlockAcquireQueuePosition addr tid
             | FiredDeadline.WaitHandle handleId ->
                 let (WaitHandleId hid) = handleId
                 let (ThreadId t) = tid
-                2, hid, t
+                3, hid, t
             | FiredDeadline.JoinTimeout ->
                 let (ThreadId t) = tid
-                3, t, 0
+                4, t, 0
 
         let expired = expired |> List.sortBy sortKey
 
@@ -214,7 +244,8 @@ module Program =
                 match kind with
                 | FiredDeadline.WaitHandle handleId -> WaitHandle.fireTimeout tid handleId s
                 | FiredDeadline.MonitorWait monitorId -> LowLevelMonitor.fireTimeout tid monitorId s
-                | FiredDeadline.SyncBlockWait addr -> SyncBlockMonitor.fireTimeout tid addr s
+                | FiredDeadline.SyncBlockWait addr -> SyncBlockMonitor.fireWaitTimeout tid addr s
+                | FiredDeadline.SyncBlockAcquire addr -> SyncBlockMonitor.fireAcquireTimeout tid addr s
                 | FiredDeadline.JoinTimeout -> Scheduler.fireJoinTimeout tid s
             )
             state

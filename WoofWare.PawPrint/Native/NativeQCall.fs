@@ -47,6 +47,7 @@ module NativeQCall =
             "Monitor_Wait", NativeMonitor.tryExecuteQCall "Monitor_Wait"
             "Monitor_Pulse", NativeMonitor.tryExecuteQCall "Monitor_Pulse"
             "Monitor_PulseAll", NativeMonitor.tryExecuteQCall "Monitor_PulseAll"
+            "Monitor_TryEnter_Slowpath", NativeMonitor.tryExecuteQCall "Monitor_TryEnter_Slowpath"
             "DebugDebugger_IsManagedDebuggerAttached",
             NativeDebugger.tryExecuteQCall "DebugDebugger_IsManagedDebuggerAttached"
             "EventPipeInternal_Enable", NativeEventPipe.tryExecuteQCall "EventPipeInternal_Enable"
