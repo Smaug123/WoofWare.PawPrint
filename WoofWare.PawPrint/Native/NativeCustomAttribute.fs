@@ -355,6 +355,8 @@ module NativeCustomAttribute =
                     NativeHandlerResult.throwingTypeInitializationException state |> Some
                 | WhatWeDid.SuspendedForManagedCall ->
                     failwith "logic error: ensureTypeInitialised cannot suspend for an arbitrary managed call"
+                | WhatWeDid.VoluntaryYield ->
+                    failwith "logic error: ensureTypeInitialised cannot produce a VoluntaryYield"
                 | WhatWeDid.Executed ->
 
                 let updatedCursor =
