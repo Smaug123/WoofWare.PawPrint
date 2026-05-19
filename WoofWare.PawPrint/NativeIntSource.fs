@@ -329,6 +329,222 @@ module NativeIntSource =
         | NativeIntSource.OpaqueHashBits bits -> bits >= 0L
         | NativeIntSource.ManagedPointer _ -> true
 
+    /// CEQ semantics on `NativeIntSource` pairs: matches the
+    /// `native int × native int` arm of ECMA Table III.4. Distinct from the
+    /// type's structural `Equals` because (a) `Verbatim 0L` and
+    /// `ManagedPointer Null` are both the value zero so must compare equal
+    /// despite structural inequality, and (b) `MethodTablePtr` and
+    /// `TypeHandlePtr` for the same handle alias (CoreCLR encodes them as the
+    /// same address for non-TypeDesc types). Used by `ceq` on eval-stack
+    /// native ints and by the `Interlocked.CompareExchange(ref IntPtr, …)`
+    /// intrinsic, which compares the slot's contents under CEQ semantics.
+    let equalsForCli (a : NativeIntSource) (b : NativeIntSource) : bool =
+        // `Unsafe.AsRef<T>((void*)bits)` synthesises a placeholder byref
+        // carrying a literal bit pattern. C# casts between native-int and
+        // pointer shapes emit no `conv.i`/`conv.u`, so a slot containing the
+        // bits as a plain `Verbatim` and a value freshly produced by
+        // `Unsafe.AsPointer(ref Unsafe.AsRef<T>((void*)bits))` (which arrives
+        // as `ManagedPointer (NativeIntPlaceholder bits)`) must compare equal:
+        // they're the same numeric value, just routed through different
+        // shapes. Mirrors `unwrapPlaceholderForBitComparison` in
+        // `EvalStackValueComparisons`, but at the `NativeIntSource` layer so
+        // every caller (eval-stack `ceq`, Interlocked CAS, …) sees the same
+        // normalised view.
+        let unwrapPlaceholder (n : NativeIntSource) : NativeIntSource =
+            match n with
+            | NativeIntSource.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits) ->
+                NativeIntSource.Verbatim bits
+            | _ -> n
+
+        let a = unwrapPlaceholder a
+        let b = unwrapPlaceholder b
+
+        match a, b with
+        | NativeIntSource.FunctionPointer f1, NativeIntSource.FunctionPointer f2 -> MethodInfo.NominallyEqual f1 f2
+        | NativeIntSource.TypeHandlePtr f1, NativeIntSource.TypeHandlePtr f2 -> f1 = f2
+        | NativeIntSource.MethodTablePtr f1, NativeIntSource.MethodTablePtr f2 -> f1 = f2
+        | NativeIntSource.MethodTableAuxiliaryDataPtr f1, NativeIntSource.MethodTableAuxiliaryDataPtr f2 -> f1 = f2
+        | NativeIntSource.PerInstInfoPtr f1, NativeIntSource.PerInstInfoPtr f2 -> f1 = f2
+        | NativeIntSource.PerInstDictPtr f1, NativeIntSource.PerInstDictPtr f2 -> f1 = f2
+        | NativeIntSource.MethodHandlePtr f1, NativeIntSource.MethodHandlePtr f2 -> f1 = f2
+        | NativeIntSource.FieldHandlePtr f1, NativeIntSource.FieldHandlePtr f2 -> f1 = f2
+        | NativeIntSource.AssemblyHandle f1, NativeIntSource.AssemblyHandle f2 -> f1 = f2
+        | NativeIntSource.ModuleHandle f1, NativeIntSource.ModuleHandle f2 -> f1 = f2
+        | NativeIntSource.MetadataImportHandle f1, NativeIntSource.MetadataImportHandle f2 -> f1 = f2
+        | NativeIntSource.GcHandlePtr f1, NativeIntSource.GcHandlePtr f2 -> f1 = f2
+        | NativeIntSource.EventPipeProviderPtr f1, NativeIntSource.EventPipeProviderPtr f2 -> f1 = f2
+        | NativeIntSource.EventPipeEventPtr f1, NativeIntSource.EventPipeEventPtr f2 -> f1 = f2
+        | NativeIntSource.LowLevelMonitorPtr f1, NativeIntSource.LowLevelMonitorPtr f2 -> f1 = f2
+        | NativeIntSource.WaitHandlePtr f1, NativeIntSource.WaitHandlePtr f2 -> f1 = f2
+        | NativeIntSource.Verbatim f1, NativeIntSource.Verbatim f2 -> f1 = f2
+        | NativeIntSource.SyntheticCrossArrayOffset _, NativeIntSource.SyntheticCrossArrayOffset _
+        | NativeIntSource.Verbatim _, NativeIntSource.SyntheticCrossArrayOffset _
+        | NativeIntSource.SyntheticCrossArrayOffset _, NativeIntSource.Verbatim _ -> failwith "TODO: ceq"
+        // Synthesised pointer-hash bits compare as raw int64 bit patterns:
+        // they're deterministic numeric content, so structural equality on
+        // the bits is correct. Across-tag (vs Verbatim) the same applies.
+        | NativeIntSource.OpaqueHashBits b1, NativeIntSource.OpaqueHashBits b2 -> b1 = b2
+        | NativeIntSource.OpaqueHashBits bits, NativeIntSource.Verbatim v
+        | NativeIntSource.Verbatim v, NativeIntSource.OpaqueHashBits bits -> bits = v
+        | NativeIntSource.OpaqueHashBits _, NativeIntSource.SyntheticCrossArrayOffset _
+        | NativeIntSource.SyntheticCrossArrayOffset _, NativeIntSource.OpaqueHashBits _ ->
+            failwith "TODO: ceq of synthesised hash bits against cross-array offset"
+        // OpaqueHashBits vs a real handle pointer is genuinely ambiguous:
+        // an identity bit op such as `((ulong)h) ^ 0UL` or `((ulong)h) | 0UL`
+        // round-trips the handle's materialised bits into an
+        // OpaqueHashBits carrier, so the answer depends on whether those
+        // bits equal the handle's synthesised address. Resolving correctly
+        // requires reading the `PointerHashCounters` map, which `ceq` does
+        // not thread today. Fail loudly rather than fall through to the
+        // handle-kind catch-all (which would return a fixed `false` even
+        // for the same handle). Mirrors the Int64
+        // WidenedNativeInt × OpaqueHashBits case above.
+        | NativeIntSource.OpaqueHashBits _, NativeIntSource.FunctionPointer _
+        | NativeIntSource.FunctionPointer _, NativeIntSource.OpaqueHashBits _
+        | NativeIntSource.OpaqueHashBits _, NativeIntSource.TypeHandlePtr _
+        | NativeIntSource.TypeHandlePtr _, NativeIntSource.OpaqueHashBits _
+        | NativeIntSource.OpaqueHashBits _, NativeIntSource.MethodTablePtr _
+        | NativeIntSource.MethodTablePtr _, NativeIntSource.OpaqueHashBits _
+        | NativeIntSource.OpaqueHashBits _, NativeIntSource.MethodTableAuxiliaryDataPtr _
+        | NativeIntSource.MethodTableAuxiliaryDataPtr _, NativeIntSource.OpaqueHashBits _
+        | NativeIntSource.OpaqueHashBits _, NativeIntSource.PerInstInfoPtr _
+        | NativeIntSource.PerInstInfoPtr _, NativeIntSource.OpaqueHashBits _
+        | NativeIntSource.OpaqueHashBits _, NativeIntSource.PerInstDictPtr _
+        | NativeIntSource.PerInstDictPtr _, NativeIntSource.OpaqueHashBits _
+        | NativeIntSource.OpaqueHashBits _, NativeIntSource.MethodHandlePtr _
+        | NativeIntSource.MethodHandlePtr _, NativeIntSource.OpaqueHashBits _
+        | NativeIntSource.OpaqueHashBits _, NativeIntSource.FieldHandlePtr _
+        | NativeIntSource.FieldHandlePtr _, NativeIntSource.OpaqueHashBits _
+        | NativeIntSource.OpaqueHashBits _, NativeIntSource.AssemblyHandle _
+        | NativeIntSource.AssemblyHandle _, NativeIntSource.OpaqueHashBits _
+        | NativeIntSource.OpaqueHashBits _, NativeIntSource.ModuleHandle _
+        | NativeIntSource.ModuleHandle _, NativeIntSource.OpaqueHashBits _
+        | NativeIntSource.OpaqueHashBits _, NativeIntSource.MetadataImportHandle _
+        | NativeIntSource.MetadataImportHandle _, NativeIntSource.OpaqueHashBits _
+        | NativeIntSource.OpaqueHashBits _, NativeIntSource.GcHandlePtr _
+        | NativeIntSource.GcHandlePtr _, NativeIntSource.OpaqueHashBits _
+        | NativeIntSource.OpaqueHashBits _, NativeIntSource.EventPipeProviderPtr _
+        | NativeIntSource.EventPipeProviderPtr _, NativeIntSource.OpaqueHashBits _
+        | NativeIntSource.OpaqueHashBits _, NativeIntSource.EventPipeEventPtr _
+        | NativeIntSource.EventPipeEventPtr _, NativeIntSource.OpaqueHashBits _
+        | NativeIntSource.OpaqueHashBits _, NativeIntSource.LowLevelMonitorPtr _
+        | NativeIntSource.LowLevelMonitorPtr _, NativeIntSource.OpaqueHashBits _
+        | NativeIntSource.OpaqueHashBits _, NativeIntSource.WaitHandlePtr _
+        | NativeIntSource.WaitHandlePtr _, NativeIntSource.OpaqueHashBits _ ->
+            failwith
+                $"TODO (CEQ): synthesised hash bits vs handle pointer requires materialising the handle's bits through PointerHashCounters; got {a} vs {b}"
+        // CoreCLR's TypeHandle wraps either a MethodTable* (when !IsTypeDesc) or a tagged
+        // TypeDesc*; for non-TypeDesc handles the inner pointer IS the MethodTable address.
+        // Patterns like `RuntimeHelpers.GetMethodTable(obj) == TypeHandleOf<T>().AsMethodTable()`
+        // (CastHelpers, RuntimeType.IsEnum/IsDelegate) require the two encodings to compare
+        // equal when they reference the same concrete type. Only Concrete and array handles
+        // have MethodTables in CoreCLR; Byref/Pointer/FunctionPointer are TypeDescs and never
+        // alias a MethodTablePtr (otherwise e.g. `typeof(int*)` would compare equal to a
+        // MethodTablePtr synthesised for the same handle). The OpenGenericTypeDefinition
+        // case aliases the typedef's canonical MethodTable address with the same TypeHandle.
+        | NativeIntSource.MethodTablePtr t1, NativeIntSource.TypeHandlePtr t2
+        | NativeIntSource.TypeHandlePtr t2, NativeIntSource.MethodTablePtr t1 ->
+            match t1, t2 with
+            | RuntimeTypeHandleTarget.Closed h1, RuntimeTypeHandleTarget.Closed h2 ->
+                match h2 with
+                | ConcreteTypeHandle.Concrete _
+                | ConcreteTypeHandle.OneDimArrayZero _
+                | ConcreteTypeHandle.Array _ -> h1 = h2
+                | ConcreteTypeHandle.Byref _
+                | ConcreteTypeHandle.Pointer _
+                | ConcreteTypeHandle.FunctionPointer _ -> false
+            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition i1, RuntimeTypeHandleTarget.OpenGenericTypeDefinition i2 ->
+                i1 = i2
+            | RuntimeTypeHandleTarget.Closed _, RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _, RuntimeTypeHandleTarget.Closed _ ->
+                // The closed instantiation has its own MT distinct from the typedef's canonical MT.
+                false
+            | RuntimeTypeHandleTarget.GenericParameter _, _
+            | RuntimeTypeHandleTarget.MethodGenericParameter _, _
+            | _, RuntimeTypeHandleTarget.GenericParameter _
+            | _, RuntimeTypeHandleTarget.MethodGenericParameter _ ->
+                // A bare generic parameter has no MethodTable; this combination should
+                // not arise from any legitimate construction.
+                failwith
+                    $"CEQ: MethodTablePtr/TypeHandlePtr with generic-parameter target has no MethodTable identity: %O{t1} vs %O{t2}"
+        | NativeIntSource.ManagedPointer f1, NativeIntSource.ManagedPointer f2 ->
+            // Match the `EvalStackValue.ManagedPointer` vs `ManagedPointer`
+            // arm below: trailing `ReinterpretAs` projections are address-
+            // preserving, so a byref converted to a native int via
+            // `conv.u` / `Unsafe.AsPointer` must compare equal to the same
+            // byref whose type view was changed by an `Unsafe.As`. Refuse
+            // the comparison on non-trailing `ReinterpretAs` for the same
+            // reason as the direct byref-ceq arm.
+            ManagedPointerSource.ceqNormalised
+                "native-int-wrapped byref"
+                (ManagedPointerSource.unsafeAssumeNormalisedForComparison f1)
+                (ManagedPointerSource.unsafeAssumeNormalisedForComparison f2)
+        | NativeIntSource.Verbatim _, NativeIntSource.ManagedPointer _
+        | NativeIntSource.ManagedPointer _, NativeIntSource.Verbatim _
+        | NativeIntSource.SyntheticCrossArrayOffset _, NativeIntSource.ManagedPointer _
+        | NativeIntSource.ManagedPointer _, NativeIntSource.SyntheticCrossArrayOffset _ ->
+            let z1 = isZero a
+            let z2 = isZero b
+
+            if z1 && z2 then
+                true
+            elif z1 <> z2 then
+                false
+            else
+                failwith $"TODO (CEQ): mixed nativeint representations, {a} vs {b}"
+        // Distinct opaque handle kinds have distinct non-null bit patterns, so never alias.
+        | NativeIntSource.FunctionPointer _, _
+        | _, NativeIntSource.FunctionPointer _
+        | NativeIntSource.TypeHandlePtr _, _
+        | _, NativeIntSource.TypeHandlePtr _
+        | NativeIntSource.MethodTablePtr _, _
+        | _, NativeIntSource.MethodTablePtr _
+        | NativeIntSource.MethodTableAuxiliaryDataPtr _, _
+        | _, NativeIntSource.MethodTableAuxiliaryDataPtr _
+        | NativeIntSource.PerInstInfoPtr _, _
+        | _, NativeIntSource.PerInstInfoPtr _
+        | NativeIntSource.PerInstDictPtr _, _
+        | _, NativeIntSource.PerInstDictPtr _
+        | NativeIntSource.MethodHandlePtr _, _
+        | _, NativeIntSource.MethodHandlePtr _
+        | NativeIntSource.FieldHandlePtr _, _
+        | _, NativeIntSource.FieldHandlePtr _
+        | NativeIntSource.AssemblyHandle _, _
+        | _, NativeIntSource.AssemblyHandle _
+        | NativeIntSource.ModuleHandle _, _
+        | _, NativeIntSource.ModuleHandle _
+        | NativeIntSource.MetadataImportHandle _, _
+        | _, NativeIntSource.MetadataImportHandle _
+        | NativeIntSource.GcHandlePtr _, _
+        | _, NativeIntSource.GcHandlePtr _
+        | NativeIntSource.EventPipeProviderPtr _, _
+        | _, NativeIntSource.EventPipeProviderPtr _
+        | NativeIntSource.EventPipeEventPtr _, _
+        | _, NativeIntSource.EventPipeEventPtr _
+        | NativeIntSource.LowLevelMonitorPtr _, _
+        | _, NativeIntSource.LowLevelMonitorPtr _
+        | NativeIntSource.WaitHandlePtr _, _
+        | _, NativeIntSource.WaitHandlePtr _ -> false
+        // OpaqueHashBits vs ManagedPointer: every other OpaqueHashBits
+        // pairing is handled above (vs Verbatim/OpaqueHashBits, vs
+        // SyntheticCrossArrayOffset, and vs the various handle kinds);
+        // this is the remaining case. Hash bits equal a byref iff both
+        // are null; non-zero hash bits vs a non-null byref is genuinely
+        // ambiguous (we don't know the byref's numeric address), so
+        // fail loudly rather than silently returning a fixed answer.
+        // Mirrors the Verbatim × ManagedPointer arm above.
+        | NativeIntSource.OpaqueHashBits _, NativeIntSource.ManagedPointer _
+        | NativeIntSource.ManagedPointer _, NativeIntSource.OpaqueHashBits _ ->
+            let z1 = isZero a
+            let z2 = isZero b
+
+            if z1 && z2 then
+                true
+            elif z1 <> z2 then
+                false
+            else
+                failwith $"TODO (CEQ): synthesised hash bits vs managed pointer, both non-null: {a} vs {b}"
+
     /// True if a < b.
     let isLess (a : NativeIntSource) (b : NativeIntSource) : bool =
         match a, b with
