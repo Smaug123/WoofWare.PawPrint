@@ -75,6 +75,8 @@ module NativeRuntimeHelpers =
                         // Another thread owns this type's .cctor lock. Yield so the scheduler
                         // can run that thread to completion before re-entering.
                         NativeHandlerResult.blockedOnClassInit blockedBy state |> Some
+                    | WhatWeDid.VoluntaryYield ->
+                        failwith "logic error: ensureTypeInitialised cannot produce a VoluntaryYield"
         | _ -> None
 
     /// Identity hash for a managed object reference. Heap addresses are positive and

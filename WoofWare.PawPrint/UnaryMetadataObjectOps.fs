@@ -245,6 +245,7 @@ module internal UnaryMetadataObjectOps =
         | WhatWeDid.SuspendedForManagedCall ->
             failwith "logic error: ensureTypeInitialised cannot suspend for an arbitrary managed call"
         | WhatWeDid.ThrowingTypeInitializationException -> state, WhatWeDid.ThrowingTypeInitializationException
+        | WhatWeDid.VoluntaryYield -> failwith "logic error: ensureTypeInitialised cannot produce a VoluntaryYield"
         | WhatWeDid.Executed ->
 
         let ctorAssembly = state.LoadedAssembly ctor.DeclaringType.Assembly |> Option.get

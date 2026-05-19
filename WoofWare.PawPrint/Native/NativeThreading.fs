@@ -554,6 +554,58 @@ module NativeThreading =
                 }
 
             NativeHandlerResult.completed state |> Some
+        | "ThreadNative_YieldThread",
+          "System.Private.CoreLib",
+          "System.Threading",
+          "Thread",
+          // LibraryImport's source generator synthesises the stub name as
+          // `<YieldInternal>g____PInvoke|N_M` with SDK-version-unstable counters,
+          // so we discard the IL method name and rely on the entry-point and
+          // signature shape (zero parameters, Interop.BOOL return) for matching.
+          // Same precedent as `ThreadNative_InformThreadNameChange` and
+          // `Environment_FailFast`.
+          _,
+          [],
+          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "", "BOOL", boolGenerics)) when
+            boolGenerics.IsEmpty
+            ->
+            // .NET 10 QCall backing `Thread.Yield()`:
+            //   public static bool Yield() => YieldInternal() != Interop.BOOL.FALSE;
+            // CoreCLR's native implementation calls `__SwitchToThread(0, ...)` and
+            // returns whether the OS actually switched away from the caller.
+            //
+            // Return-value contract. We push `Interop.BOOL.FALSE` (Int32 0)
+            // unconditionally. A truthful TRUE would require evidence that the
+            // scheduler is honouring the yield by running a different thread
+            // before this caller observes the return — and PawPrint's current
+            // `Scheduler.chooseNext` is *permitted* to schedule another thread
+            // under round-robin but is not *required* to as a consequence of
+            // VoluntaryYield (its signature is `(lastRan, state)` and it doesn't
+            // see the previous outcome). Claiming TRUE based on a runnable-set
+            // scan would therefore lie under that contract. Returning FALSE is
+            // honest: PawPrint has not yet modelled a guaranteed successful
+            // switch. The BCL's common callers (`SpinWait.SpinOnceCore`,
+            // `LowLevelSpinWaiter.SpinWaitForCondition`) discard this boolean
+            // and escalate via `Thread.Sleep` anyway, so the choice does not
+            // affect forward progress on the canonical Task.Run spin path.
+            //
+            // Why `NativeHandlerResult.yielded` rather than `completed`. The
+            // yield *intent* — that the guest asked the scheduler to consider
+            // running someone else — is preserved as `WhatWeDid.VoluntaryYield`,
+            // a distinct signal at the driver/scheduler boundary even though
+            // today's policy treats it identically to `Executed`. A future
+            // fuzz/pruning harness can branch on the variant (e.g. to weight
+            // voluntary interleavings differently or to constrain the next-
+            // thread choice) without revisiting the QCall surface.
+            let operation = "ThreadNative_YieldThread"
+
+            if instruction.Arguments.Length <> 0 then
+                failwith $"%s{operation}: expected zero native arguments, got %d{instruction.Arguments.Length}"
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 0)) ctx.Thread state
+
+            NativeHandlerResult.yielded state |> Some
         | _ -> None
 
     let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =

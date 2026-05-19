@@ -287,6 +287,11 @@ module Program =
                 "Executed one step; active assembly: {ActiveAssembly}",
                 state.ActiveAssembly(thread).Name.Name
             )
+        | WhatWeDid.VoluntaryYield ->
+            logger.LogTrace (
+                "Executed one step (voluntary yield requested); active assembly: {ActiveAssembly}",
+                state.ActiveAssembly(thread).Name.Name
+            )
         | WhatWeDid.SuspendedForClassInit ->
             logger.LogTrace "Suspended execution of current method for class initialisation."
         | WhatWeDid.SuspendedForManagedCall ->
@@ -833,6 +838,14 @@ module Program =
         | WhatWeDid.BlockedOnClassInit _ -> failwith "logic error: surely this thread can't be blocked on class init"
         | WhatWeDid.ThrowingTypeInitializationException ->
             failwith "TypeInitializationException during entry point type initialisation"
+        | WhatWeDid.VoluntaryYield ->
+            // ensureTypeInitialised drives cctor execution, which has no path to a
+            // yield primitive: voluntary yields are produced by native handlers like
+            // `ThreadNative_YieldThread`, never by a synthetic cctor step. If this
+            // arm ever fires, the cctor pipeline has acquired a producer we didn't
+            // anticipate, and the entry-point sequencer needs to decide explicitly
+            // whether to honour the yield before running Main.
+            failwith "logic error: ensureTypeInitialised cannot produce a VoluntaryYield"
         | WhatWeDid.Executed -> ()
 
         ProgramStartResult.Ready

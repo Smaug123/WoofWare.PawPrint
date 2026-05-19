@@ -282,6 +282,7 @@ module Scheduler =
     let onWorkerSpawned (worker : ThreadId) (initOutcome : WhatWeDid) (state : IlMachineState) : IlMachineState =
         match initOutcome with
         | WhatWeDid.Executed
+        | WhatWeDid.VoluntaryYield
         | WhatWeDid.SuspendedForClassInit
         | WhatWeDid.SuspendedForManagedCall
         | WhatWeDid.ThrowingTypeInitializationException ->
@@ -293,10 +294,11 @@ module Scheduler =
             // callee first, then re-enter the native handler), or the cached
             // TypeInitializationException was dispatched onto the worker's frames
             // (ThrowingTypeInit — the worker will run the exception handler /
-            // terminate on its next step). In all four cases the worker stays Runnable.
-            // SuspendedForManagedCall isn't reachable from `ensureTypeInitialised`
-            // (which is what feeds this entry point) today, but listing it explicitly
-            // keeps the match exhaustive and documents the intended treatment.
+            // terminate on its next step). In every case the worker stays Runnable.
+            // SuspendedForManagedCall and VoluntaryYield aren't reachable from
+            // `ensureTypeInitialised` (which is what feeds this entry point) today,
+            // but listing them explicitly keeps the match exhaustive and documents
+            // the intended treatment.
             state
         | WhatWeDid.BlockedOnClassInit blocker ->
             // Another thread is mid-init of the worker's declaring type. StartInternal
@@ -328,7 +330,15 @@ module Scheduler =
     /// policy, which is only true after this refactor.
     let onStepOutcome (ran : ThreadId) (outcome : WhatWeDid) (state : IlMachineState) : IlMachineState =
         match outcome with
-        | WhatWeDid.Executed ->
+        // VoluntaryYield is identical in its scheduler effect to Executed: the yielder
+        // made forward progress, so any thread parked BlockedOnClassInit on `ran` must
+        // be woken to re-check its blocker. The hint (that the guest *asked* to yield)
+        // is preserved for the driver-loop boundary — `chooseNext`'s current signature
+        // doesn't consume the previous outcome, so the round-robin policy is hint-
+        // insensitive today, but the variant exists so a future fuzz/pruning policy
+        // can branch here without a wider refactor.
+        | WhatWeDid.Executed
+        | WhatWeDid.VoluntaryYield ->
             let threadState =
                 state.ThreadState
                 |> Map.map (fun _ ts ->

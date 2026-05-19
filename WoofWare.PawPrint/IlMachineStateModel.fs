@@ -190,6 +190,17 @@ type WhatWeDid =
     /// A TypeInitializationException was thrown into the guest because a .cctor previously failed.
     /// The state has already been updated with exception dispatch (handler search and frame unwinding).
     | ThrowingTypeInitializationException
+    /// The thread completed a step (no frame change, no suspension) and the guest explicitly
+    /// requested that the scheduler consider running another thread before resuming this one
+    /// (e.g. `Thread.Yield()`). Under today's scheduling policy this has the same observable
+    /// effect as `Executed`: `Scheduler.chooseNext`'s signature is `(lastRan, state)` and does
+    /// not consume the previous outcome, so the round-robin policy is hint-insensitive. The
+    /// variant exists so a future fuzz/pruning policy at the driver/scheduler boundary can
+    /// distinguish voluntary yields from forced context switches (e.g. for coverage weighting,
+    /// or to constrain the next-thread choice). Surfacing the hint to `chooseNext` itself is
+    /// a separate later change — either widen its signature, or carry the last outcome on
+    /// the state — neither of which this variant alone prescribes.
+    | VoluntaryYield
 
 /// An externally-observable side-effect that a single interpreter step requests
 /// from the driver (the imperative shell around the functional core). The
@@ -278,6 +289,13 @@ type NativeHandlerResult =
     /// Native handler ran to completion. Dispatcher pops the native frame and reports
     /// `WhatWeDid.Executed` to the Scheduler.
     | Completed of IlMachineState * StepEffect
+    /// Native handler ran to completion AND explicitly requested a scheduler yield (the
+    /// canonical caller is `Thread.Yield()` / `ThreadNative_YieldThread`). Dispatcher pops
+    /// the native frame and reports `WhatWeDid.VoluntaryYield` to the Scheduler. Semantically
+    /// equivalent to `Completed` for frame-management purposes; distinct so the guest's
+    /// yield intent reaches the scheduler boundary unmangled — see `WhatWeDid.VoluntaryYield`
+    /// for the longer-term motivation.
+    | Yielded of IlMachineState * StepEffect
     /// Native handler synchronously pushed a managed callee on top of itself for re-entry:
     /// the handler will be invoked again after the callee returns, typically via re-entry
     /// markers placed on the eval stack so the handler can distinguish first entry from
@@ -398,6 +416,15 @@ module NativeHandlerResult =
     let completedWith (effect : StepEffect) (state : IlMachineState) : NativeHandlerResult =
         NativeHandlerResult.Completed (state, effect)
 
+    /// Native handler completed normally AND requested a scheduler yield. Use this only
+    /// for genuine yield primitives (today: `ThreadNative_YieldThread`). The dispatcher
+    /// pops the native frame and reports `WhatWeDid.VoluntaryYield`. Handlers that simply
+    /// finish — even ones that touched shared state — should use `completed`; the yield
+    /// signal is reserved for the guest-requested hint, not derived from the handler's
+    /// side-effects.
+    let yielded (state : IlMachineState) : NativeHandlerResult =
+        NativeHandlerResult.Yielded (state, StepEffect.NoEffect)
+
     /// Native handler pushed a managed callee on top of itself for re-entry. The
     /// handler will be re-invoked on a future step (typically distinguishing first
     /// entry from re-entry via markers placed on the eval stack).
@@ -447,6 +474,13 @@ module NativeHandlerResult =
     let tryEarlyReturn ((state, whatWeDid) : IlMachineState * WhatWeDid) : NativeHandlerResult option =
         match whatWeDid with
         | WhatWeDid.Executed -> None
+        // A sub-call that voluntarily yielded did make forward progress, so the
+        // calling native handler should continue exactly as for Executed. The yield
+        // hint is meaningful only at the dispatcher/scheduler boundary; it does not
+        // bubble up as a sub-call control-flow signal because the handler's own
+        // outcome is what the dispatcher records, and the handler can decide for
+        // itself whether to yield (via `NativeHandlerResult.yielded`) when it returns.
+        | WhatWeDid.VoluntaryYield -> None
         | WhatWeDid.SuspendedForClassInit -> Some (suspendedForClassInit state)
         | WhatWeDid.BlockedOnClassInit blockedBy -> Some (blockedOnClassInit blockedBy state)
         | WhatWeDid.ThrowingTypeInitializationException -> Some (throwingTypeInitializationException state)
@@ -470,8 +504,12 @@ module NativeHandlerResult =
     /// error: ExternImpls are not authorised to drive cctor / managed-call / exception
     /// re-entry directly, because those decisions require structural support (re-entry
     /// markers, `dispatchAsExceptionOnReturn` arming) that ExternImpls don't have access to.
-    /// Such cases should instead use the dedicated `NativeHandlerResult` constructors from
-    /// the native handler that called the ExternImpl.
+    /// `VoluntaryYield` is rejected here for the same structural-boundary reason: the yield
+    /// signal is produced at the native-handler return shape via `NativeHandlerResult.Yielded`,
+    /// not threaded back through `ExecutionResult`. If an ExternImpl ever needs to yield, the
+    /// right answer is a dedicated `NativeHandlerResult.yielded` at the native handler that
+    /// called it. Such cases should instead use the dedicated `NativeHandlerResult`
+    /// constructors from the native handler that called the ExternImpl.
     let ofExecutionResult (executionResult : ExecutionResult) : NativeHandlerResult =
         match executionResult with
         | ExecutionResult.Stepped (state, WhatWeDid.Executed, effect) -> NativeHandlerResult.Completed (state, effect)
