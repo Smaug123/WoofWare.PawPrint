@@ -4,6 +4,26 @@ namespace HelloWorldApp
 {
     class Program
     {
+        static object locker = new object();
+        static object barrier = new object();
+        static bool workerHolds = false;
+
+        static void Worker()
+        {
+            lock (locker)
+            {
+                // Publish "I hold `locker`" through a flag-guarded barrier
+                // pulse so a pulse delivered before Main is parked isn't
+                // dropped.
+                lock (barrier)
+                {
+                    workerHolds = true;
+                    Monitor.Pulse(barrier);
+                }
+                // Fall out of the lock — release `locker`.
+            }
+        }
+
         static int Main(string[] args)
         {
             // Monitor.TryEnter(obj, ms) with a large positive finite timeout
@@ -21,27 +41,21 @@ namespace HelloWorldApp
             // deadline never fires; `Exit_FastPath`'s ownership-transfer
             // dequeues Main and flips it to Runnable with the optimistic 1
             // intact.
-            object locker = new object();
-            object barrier = new object();
+            Thread worker = new Thread(Worker);
 
-            Thread worker = new Thread(() =>
-            {
-                lock (locker)
-                {
-                    // Tell Main we hold `locker`.
-                    lock (barrier)
-                    {
-                        Monitor.Pulse(barrier);
-                    }
-                    // Release `locker` by falling out of the lock.
-                }
-            });
-            worker.Start();
-
-            // Wait until the worker has acquired `locker`.
+            // Acquire `barrier` *before* starting the worker so the worker
+            // cannot pulse before we are parked: if the worker runs first
+            // it will block on `lock (barrier)` until our `Monitor.Wait`
+            // releases the lock. The shared `workerHolds` flag also guards
+            // against spurious wakes and against the pulse running while
+            // we are still inside the lock but before the Wait.
             lock (barrier)
             {
-                Monitor.Wait(barrier);
+                worker.Start();
+                while (!workerHolds)
+                {
+                    Monitor.Wait(barrier);
+                }
             }
 
             // Worker now holds `locker` momentarily, then releases.
