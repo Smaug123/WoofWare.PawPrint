@@ -12,10 +12,17 @@ namespace WoofWare.PawPrint
 /// `GloballyVisible` only costs schedule-space, not correctness.
 ///
 /// The rule we apply: an op is `GloballyVisible` if its IL semantics include
-/// either (a) heap allocation or mutation, or (b) raising a CLR-defined
-/// runtime exception as a normal outcome on guest-supplied values — because
-/// constructing the exception object is itself a heap allocation observable
-/// by other threads (allocation order / object identity is shared state).
+/// any of
+///  (a) reading or writing the shared managed heap, statics, sync primitives
+///      or arbitrary indirection;
+///  (b) reading or writing shared interpreter/scheduler state — for example
+///      mutating `state.PointerHashCounters` from `WidenedNativeInt` operands
+///      (the counter-assignment order is guest-observable through
+///      `OpaqueHashBits`), or transitioning a thread out of `Runnable` /
+///      out of existence and waking joiners;
+///  (c) raising a CLR-defined runtime exception as a normal outcome on
+///      guest-supplied values — constructing the exception object is itself
+///      a heap allocation, and its identity is observable by other threads.
 /// Anything else is `ThreadLocal`.
 ///
 /// The classifier deliberately ignores runtime context (what's on the eval
@@ -55,7 +62,6 @@ module OpVisibility =
         | NullaryIlOp.Ldloc_3
         | NullaryIlOp.Pop
         | NullaryIlOp.Dup
-        | NullaryIlOp.Ret
         | NullaryIlOp.LdcI4_0
         | NullaryIlOp.LdcI4_1
         | NullaryIlOp.LdcI4_2
@@ -72,24 +78,21 @@ module OpVisibility =
         | NullaryIlOp.Stloc_2
         | NullaryIlOp.Stloc_3 -> Visibility.ThreadLocal
 
-        // ---- Pure eval-stack comparisons and non-trapping arithmetic ----
-        // No exception path on any input, so no allocation is possible.
+        // ---- Pure eval-stack comparisons ----
+        // Comparisons read both operands but don't materialise any pointer-hash
+        // bits (see `EvalStackValueComparisons.ceq`/etc.), so they don't
+        // mutate `PointerHashCounters` and aren't a publication point.
         | NullaryIlOp.Ceq
         | NullaryIlOp.Cgt
         | NullaryIlOp.Cgt_un
         | NullaryIlOp.Clt
-        | NullaryIlOp.Clt_un
-        | NullaryIlOp.Sub
-        | NullaryIlOp.Add
-        | NullaryIlOp.Mul
-        | NullaryIlOp.Neg
-        | NullaryIlOp.Not
-        | NullaryIlOp.Shr
-        | NullaryIlOp.Shr_un
-        | NullaryIlOp.Shl
-        | NullaryIlOp.And
-        | NullaryIlOp.Or
-        | NullaryIlOp.Xor
+        | NullaryIlOp.Clt_un -> Visibility.ThreadLocal
+
+        // ---- Conversions ----
+        // Conv_* preserve `WidenedNativeInt` / `OpaqueHashBits` provenance
+        // rather than materialising hash bits, so they don't touch
+        // `PointerHashCounters`. The non-checked Conv_* variants don't raise
+        // (they truncate), so they're frame-local.
         | NullaryIlOp.Conv_I
         | NullaryIlOp.Conv_I1
         | NullaryIlOp.Conv_I2
@@ -124,6 +127,37 @@ module OpVisibility =
         | NullaryIlOp.Break
         | NullaryIlOp.Arglist
         | NullaryIlOp.Refanytype -> Visibility.ThreadLocal
+
+        // ---- Thread lifecycle ----
+        // `Ret` is frame-local for nested returns, but bottom-frame `Ret`
+        // terminates the thread, which mutates `state.ThreadState` to
+        // `Terminated` and wakes any `Join`-blocked thread. This classifier
+        // is context-free and cannot distinguish nested returns from
+        // termination returns, so it has to assume the visible case.
+        | NullaryIlOp.Ret -> Visibility.GloballyVisible
+
+        // ---- Arithmetic that may materialise pointer-hash bits ----
+        // When either operand is an `Int64Source.WidenedNativeInt`, the
+        // arithmetic path in `BinaryArithmetic.execute` (and the unary
+        // helpers in `NullaryIlOp` for `Neg` / `Not` / shifts) materialises
+        // the hash bits via `PointerHashSynthesis.materialiseHashBits`,
+        // which mutates `state.PointerHashCounters`. The order in which two
+        // threads consume that counter is guest-observable through the
+        // resulting `OpaqueHashBits`, so these ops are publication points.
+        // The classifier is context-free and cannot tell which `Int64Source`
+        // variant is on the stack, so by the conservative-when-in-doubt
+        // contract all of these classify visible.
+        | NullaryIlOp.Add
+        | NullaryIlOp.Sub
+        | NullaryIlOp.Mul
+        | NullaryIlOp.Neg
+        | NullaryIlOp.Not
+        | NullaryIlOp.Shl
+        | NullaryIlOp.Shr
+        | NullaryIlOp.Shr_un
+        | NullaryIlOp.And
+        | NullaryIlOp.Or
+        | NullaryIlOp.Xor -> Visibility.GloballyVisible
 
         // ---- Trapping arithmetic / conversions / explicit raise ----
         // Each of these may raise a CLR-defined runtime exception
@@ -351,18 +385,23 @@ module OpVisibility =
         // identity, so this is a heap-publication point either way.
         | UnaryMetadataTokenIlOp.Ldtoken -> Visibility.GloballyVisible
 
+        // Refanyval reads the typed-reference struct's embedded type tag and
+        // throws InvalidCastException if it doesn't match the metadata token
+        // (CLI III.4.20). By the same rule that makes Throw / the _ovf family
+        // visible, allocating an InvalidCastException is heap publication.
+        | UnaryMetadataTokenIlOp.Refanyval -> Visibility.GloballyVisible
+
         // Ldftn picks a method pointer from metadata; the load itself is
         // pure (no object dereference). Sizeof is a constant push from
         // immutable metadata. Constrained is a prefix on a following
-        // call/callvirt, which will classify visible. Mkrefany and Refanyval
-        // shuffle a typed-reference struct on the stack without dereferencing
-        // the address they carry; the next op that uses the address will be
-        // visible.
+        // call/callvirt, which will classify visible. Mkrefany packages a
+        // typed-reference struct on the stack from a managed pointer +
+        // type token, without dereferencing the address it carries; the
+        // next op that uses the address will be visible.
         | UnaryMetadataTokenIlOp.Ldftn
         | UnaryMetadataTokenIlOp.Sizeof
         | UnaryMetadataTokenIlOp.Constrained
-        | UnaryMetadataTokenIlOp.Mkrefany
-        | UnaryMetadataTokenIlOp.Refanyval -> Visibility.ThreadLocal
+        | UnaryMetadataTokenIlOp.Mkrefany -> Visibility.ThreadLocal
 
     /// See `Visibility` for the contract.
     let classifyUnaryString (op : UnaryStringTokenIlOp) : Visibility =

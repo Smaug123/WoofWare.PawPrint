@@ -40,23 +40,20 @@ module TestOpVisibility =
             NullaryIlOp.Ldloc_2
             NullaryIlOp.Pop
             NullaryIlOp.Dup
-            NullaryIlOp.Ret
             NullaryIlOp.LdcI4_5
             NullaryIlOp.LdNull
             NullaryIlOp.Stloc_1
             NullaryIlOp.Ceq
-            NullaryIlOp.Add
-            NullaryIlOp.Sub
-            NullaryIlOp.Mul
-            NullaryIlOp.Neg
-            NullaryIlOp.Not
-            NullaryIlOp.And
-            NullaryIlOp.Or
-            NullaryIlOp.Xor
-            NullaryIlOp.Shl
-            NullaryIlOp.Shr
-            NullaryIlOp.Shr_un
+            NullaryIlOp.Cgt
+            NullaryIlOp.Cgt_un
+            NullaryIlOp.Clt
+            NullaryIlOp.Clt_un
+            NullaryIlOp.Conv_I
             NullaryIlOp.Conv_I4
+            NullaryIlOp.Conv_I8
+            NullaryIlOp.Conv_U
+            NullaryIlOp.Conv_R4
+            NullaryIlOp.Conv_R8
             NullaryIlOp.Conv_r_un
             NullaryIlOp.Endfilter
             NullaryIlOp.Endfinally
@@ -163,6 +160,24 @@ module TestOpVisibility =
             // object on the shared heap.
             NullaryIlOp.Throw
             NullaryIlOp.Rethrow
+            // Bottom-frame Ret terminates the thread, mutating
+            // `state.ThreadState` and waking any joiner. The classifier
+            // can't tell bottom-frame from nested.
+            NullaryIlOp.Ret
+            // Arithmetic that may materialise `WidenedNativeInt` operands
+            // into the shared `PointerHashCounters`; counter-assignment
+            // order is guest-observable.
+            NullaryIlOp.Add
+            NullaryIlOp.Sub
+            NullaryIlOp.Mul
+            NullaryIlOp.Neg
+            NullaryIlOp.Not
+            NullaryIlOp.Shl
+            NullaryIlOp.Shr
+            NullaryIlOp.Shr_un
+            NullaryIlOp.And
+            NullaryIlOp.Or
+            NullaryIlOp.Xor
         ]
 
     [<Test>]
@@ -268,6 +283,9 @@ module TestOpVisibility =
             // use (RuntimeTypeHandle / RuntimeFieldHandle / RuntimeMethodHandle
             // objects are realised as heap objects with stable identity).
             UnaryMetadataTokenIlOp.Ldtoken
+            // Refanyval allocates an InvalidCastException when the typed
+            // reference's embedded type doesn't match the metadata token.
+            UnaryMetadataTokenIlOp.Refanyval
         ]
 
     let private metadataThreadLocal : UnaryMetadataTokenIlOp list =
@@ -276,7 +294,6 @@ module TestOpVisibility =
             UnaryMetadataTokenIlOp.Sizeof
             UnaryMetadataTokenIlOp.Constrained
             UnaryMetadataTokenIlOp.Mkrefany
-            UnaryMetadataTokenIlOp.Refanyval
         ]
 
     [<Test>]
