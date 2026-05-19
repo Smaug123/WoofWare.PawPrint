@@ -375,49 +375,29 @@ module NativeMetadataImport =
 
         valueType, state
 
-    let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
+    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
 
+        // The executing-method name is deliberately omitted from the match. CoreLib declares
+        // `MetadataImport.Enum` with `[LibraryImport(RuntimeHelpers.QCall, EntryPoint =
+        // "MetadataImport_Enum")]`, so Roslyn emits a marshalling stub whose synthesised
+        // name (`<Enum>g____PInvoke|N_M`) carries source-generator counters that drift
+        // whenever neighbouring members are reordered. The entry-point name plus the
+        // parameter/return signature shape are stable and disambiguate the QCall on their
+        // own. Same approach as `NativeCustomAttribute.tryExecuteQCall`.
         match
+            entryPoint,
             ctx.TargetAssembly.Name.Name,
             ctx.TargetType.Namespace,
             ctx.TargetType.Name,
-            instruction.ExecutingMethod.Name,
             instruction.ExecutingMethod.Signature.ParameterTypes,
             instruction.ExecutingMethod.Signature.ReturnType
         with
-        | "System.Private.CoreLib",
+        | "MetadataImport_Enum",
+          "System.Private.CoreLib",
           "System.Reflection",
           "MetadataImport",
-          "GetMetadataImport",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                              "System.Reflection",
-                                              "RuntimeModule",
-                                              runtimeModuleGenerics) ],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr) when
-            runtimeModuleGenerics.IsEmpty
-            ->
-            let operation = "MetadataImport.GetMetadataImport"
-            let state = IlMachineState.loadArgument ctx.Thread 0 state
-            let runtimeModuleRef, state = IlMachineState.popEvalStack ctx.Thread state
-
-            let assemblyFullName =
-                moduleHandleOfRuntimeModuleRef operation state runtimeModuleRef
-
-            // CoreCLR returns an IMDInternalImport pointer distinct from RuntimeModule.m_pData.
-            // PawPrint preserves that handle-domain split while using the same module identity payload.
-            let state =
-                IlMachineState.pushToEvalStack'
-                    (EvalStackValue.NativeInt (NativeIntSource.MetadataImportHandle assemblyFullName))
-                    ctx.Thread
-                    state
-
-            NativeHandlerResult.completed state |> Some
-        | "System.Private.CoreLib",
-          "System.Reflection",
-          "MetadataImport",
-          "<Enum>g____PInvoke|8_0",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
             ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
             ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
@@ -484,6 +464,47 @@ module NativeMetadataImport =
                             (CliType.ObjectRef (Some resultArrayAddr))
 
             let state = writeInt32AtPointer ctx.BaseClassTypes state lengthOut values.Length
+
+            NativeHandlerResult.completed state |> Some
+        | _ -> None
+
+    let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
+        let state = ctx.State
+        let instruction = ctx.Instruction
+
+        match
+            ctx.TargetAssembly.Name.Name,
+            ctx.TargetType.Namespace,
+            ctx.TargetType.Name,
+            instruction.ExecutingMethod.Name,
+            instruction.ExecutingMethod.Signature.ParameterTypes,
+            instruction.ExecutingMethod.Signature.ReturnType
+        with
+        | "System.Private.CoreLib",
+          "System.Reflection",
+          "MetadataImport",
+          "GetMetadataImport",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Reflection",
+                                              "RuntimeModule",
+                                              runtimeModuleGenerics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr) when
+            runtimeModuleGenerics.IsEmpty
+            ->
+            let operation = "MetadataImport.GetMetadataImport"
+            let state = IlMachineState.loadArgument ctx.Thread 0 state
+            let runtimeModuleRef, state = IlMachineState.popEvalStack ctx.Thread state
+
+            let assemblyFullName =
+                moduleHandleOfRuntimeModuleRef operation state runtimeModuleRef
+
+            // CoreCLR returns an IMDInternalImport pointer distinct from RuntimeModule.m_pData.
+            // PawPrint preserves that handle-domain split while using the same module identity payload.
+            let state =
+                IlMachineState.pushToEvalStack'
+                    (EvalStackValue.NativeInt (NativeIntSource.MetadataImportHandle assemblyFullName))
+                    ctx.Thread
+                    state
 
             NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib",
