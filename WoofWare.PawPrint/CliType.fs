@@ -1231,6 +1231,47 @@ and CliValueType =
         | ConcreteTypeHandle.Pointer _
         | ConcreteTypeHandle.FunctionPointer _ -> false
 
+    /// True iff `vt`'s declared type is `System.Decimal`. CoreCLR's `MarshalInfo` routes a
+    /// Decimal-typed *field* through marshal-stub synthesis (`NFT_DECIMAL` in
+    /// `fieldmarshaler.cpp`) rather than treating it as memmove-blittable: managed `Decimal`
+    /// is 16 bytes with 4-byte field alignment, but native `DECIMAL` is 16 bytes with 8-byte
+    /// alignment (its `Lo64` union member is `ULONGLONG`), so a sequential outer struct
+    /// containing a `Decimal` field is laid out differently managed vs native. Structurally,
+    /// `Decimal` looks like a plain sequential struct of four `Int32` fields, so PawPrint can't
+    /// distinguish it without a nominal name match. This predicate is intended for the
+    /// **field-level** rejection inside `MarshalNative_TryGetStructMarshalStub`'s classifier;
+    /// it deliberately does not gate `Marshal.SizeOf<Decimal>()` or top-level
+    /// `Marshal.StructureToPtr<decimal>` (where managed and native byte images of standalone
+    /// Decimal happen to coincide — `flags` decomposes byte-for-byte to
+    /// `wReserved+scale+sign`).
+    static member IsHostKnownDecimal
+        (concreteTypes : AllConcreteTypes)
+        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (vt : CliValueType)
+        : bool
+        =
+        match vt._Declared with
+        | ConcreteTypeHandle.Concrete _ ->
+            match AllConcreteTypes.lookup vt._Declared concreteTypes with
+            | None -> false
+            | Some concreteType ->
+                if
+                    concreteType.Assembly.FullName = corelib.Corelib.Name.FullName
+                    && concreteType.Generics.IsEmpty
+                then
+                    let typeDef =
+                        assemblies.[concreteType.Assembly.FullName].TypeDefs.[concreteType.Definition.Get]
+
+                    TypeInfo.NominallyEqual typeDef corelib.Decimal
+                else
+                    false
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ -> false
+
     /// True iff `handle`'s declared type carries `LayoutKind.Auto` in its
     /// `TypeAttributes.LayoutMask`. This is the CoreCLR `HasLayout() == false` predicate:
     /// it covers reference types without `[StructLayout]` (whose default is AutoLayout) as
