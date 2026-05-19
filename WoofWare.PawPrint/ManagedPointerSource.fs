@@ -719,6 +719,28 @@ module ManagedPointerSource =
                 | _ -> false
             )
 
+    /// CEQ semantics for two normalised byref sources. Trailing address-
+    /// preserving `ReinterpretAs` projections are stripped before comparison,
+    /// so `Unsafe.As`-style type-view changes don't break identity. A non-
+    /// trailing `ReinterpretAs` (e.g. reinterpret-then-field) would need a
+    /// bytewise layout comparison, which we don't model — fail loudly rather
+    /// than silently returning a wrong answer. `context` is folded into the
+    /// failure message so callers can identify which boundary refused.
+    let ceqNormalised
+        (context : string)
+        (p1 : NormalisedManagedPointerSource)
+        (p2 : NormalisedManagedPointerSource)
+        : bool
+        =
+        let (NormalisedManagedPointerSource raw1) = p1
+        let (NormalisedManagedPointerSource raw2) = p2
+
+        if hasNonTrailingReinterpret p1 || hasNonTrailingReinterpret p2 then
+            failwith
+                $"TODO (CEQ): %s{context} with `ReinterpretAs` followed by `Field` needs a bytewise layout comparison; got %O{raw1} vs %O{raw2}"
+
+        stripTrailingReinterprets p1 = stripTrailingReinterprets p2
+
 [<RequireQualifiedAccess>]
 module NormalisedManagedPointerSource =
     let value (NormalisedManagedPointerSource src) : ManagedPointerSource = src

@@ -788,14 +788,8 @@ module Intrinsics =
                         failwith
                             $"Interlocked.CompareExchange(ref native-int,...): expected NativeInt at byref target, got %O{other}"
 
-                // Two representations of zero exist (`Verbatim 0L` for constructed zero native
-                // ints and `ManagedPointer Null` for default-initialised IntPtr/UIntPtr); treat
-                // them as equal, matching native-int `ceq` semantics.
-                let nativeIntEq (a : NativeIntSource) (b : NativeIntSource) : bool =
-                    EvalStackValueComparisons.ceq (EvalStackValue.NativeInt a) (EvalStackValue.NativeInt b)
-
                 let state =
-                    if nativeIntEq currentSrc comparandSrc then
+                    if NativeIntSource.equalsForCli currentSrc comparandSrc then
                         let newValue =
                             EvalStackValue.toCliTypeCoerced currentValue (EvalStackValue.NativeInt valueSrc)
 

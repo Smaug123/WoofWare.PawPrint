@@ -772,9 +772,7 @@ module NullaryIlOp =
                         failwith $"Ldind on PerInstDictPtr: handle %O{handle} was not registered in AllConcreteTypes"
 
                 let isNullable =
-                    concreteType.Namespace = "System"
-                    && concreteType.Name = "Nullable`1"
-                    && concreteType.Assembly.FullName = corelib.Corelib.Name.FullName
+                    InternalTypeKind.kind corelib concreteType = InternalTypeKind.Nullable
 
                 if not isNullable then
                     failwith

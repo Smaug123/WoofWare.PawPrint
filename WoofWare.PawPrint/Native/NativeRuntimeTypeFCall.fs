@@ -590,9 +590,7 @@ module NativeRuntimeTypeFCall =
                 | ConcreteTypeHandle.Concrete _ ->
                     match AllConcreteTypes.lookup targetHandle state.ConcreteTypes with
                     | Some targetCt when
-                        targetCt.Namespace = "System"
-                        && targetCt.Name = "Nullable`1"
-                        && targetCt.Assembly.FullName = ctx.BaseClassTypes.Corelib.Name.FullName
+                        InternalTypeKind.kind ctx.BaseClassTypes targetCt = InternalTypeKind.Nullable
                         && targetCt.Generics.Length = 1
                         ->
                         targetCt.Generics.[0] = sourceHandle
