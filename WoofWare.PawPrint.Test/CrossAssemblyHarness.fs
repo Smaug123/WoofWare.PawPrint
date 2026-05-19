@@ -134,8 +134,14 @@ module CrossAssemblyHarness =
         try
             let entry : Reflection.Assembly = loadContext.LoadFromAssemblyPath entryPath
             let entryPoint : Reflection.MethodInfo = entry.EntryPoint
-            let mainArgs : string[] = [||]
-            let invokeArgs : obj[] = [| mainArgs :> obj |]
+
+            let invokeArgs : obj[] =
+                match entryPoint.GetParameters().Length with
+                | 0 -> [||]
+                | _ ->
+                    let mainArgs : string[] = [||]
+                    [| mainArgs :> obj |]
+
             let result : obj = entryPoint.Invoke ((null : obj), invokeArgs)
             unbox<int> result
         finally
