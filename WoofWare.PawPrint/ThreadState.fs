@@ -74,7 +74,21 @@ type ThreadStatus =
     /// the snapshotted depth and the IL resumes past the `Wait` call site already
     /// re-owning the lock. Parallel with `BlockedOnMonitorWait` but for managed
     /// SyncBlocks rather than `LowLevelMonitor`.
-    | BlockedOnSyncBlockWait of lockObject : ManagedHeapAddress
+    ///
+    /// `deadlineMs = None` is an infinite wait (`Monitor.Wait(obj)` / managed
+    /// `Timeout.Infinite`); `Some ms` is a finite timeout
+    /// (`Monitor.Wait(obj, ms)`), expressed as the absolute virtual-clock
+    /// millisecond at which the wait expires. When `VirtualClockMs` advances
+    /// past the deadline and the thread is still parked, the driver fires a
+    /// timeout wake (`SyncBlockMonitor.fireTimeout`): the thread is dequeued
+    /// from the SyncBlock's `WaitQueue`, routed through the same reacquire
+    /// path that `pulse`/`spuriousWake` use (carrying the snapshot depth into
+    /// the new owner/AcquireQueue entry), and the optimistic `Int32 1`
+    /// (signalled) slot pushed at park time is rewritten to `Int32 0`
+    /// (timed out). Storing the deadline in the status itself rather than
+    /// in a parallel map makes the invariant "no deadline once Runnable
+    /// again" structural — a wake naturally forgets it.
+    | BlockedOnSyncBlockWait of lockObject : ManagedHeapAddress * deadlineMs : int64 option
     /// This thread called `WaitHandle.WaitOne` (via the `WaitHandle_WaitOneCore`
     /// QCall) on a wait handle whose count was zero / unsignalled, and is
     /// parked at the handle's FIFO `WaitQueue`. A subsequent state change that

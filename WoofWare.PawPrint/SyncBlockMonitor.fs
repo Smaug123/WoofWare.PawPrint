@@ -78,14 +78,27 @@ module SyncBlockMonitor =
     /// with the snapshot, and fully releases the lock (transferring
     /// ownership to the AcquireQueue head if any, else setting Lock = Free).
     /// Caller's status flips to `BlockedOnSyncBlockWait`. Resumption is
-    /// driven by `pulse` / `pulseAll` / `spuriousWake`, each of which moves
-    /// the waiter to the AcquireQueue carrying the snapshot for depth
-    /// restoration on re-acquire.
+    /// driven by `pulse` / `pulseAll` / `spuriousWake` / `fireTimeout`, each
+    /// of which moves the waiter to the AcquireQueue carrying the snapshot
+    /// for depth restoration on re-acquire.
+    ///
+    /// `deadlineMs = None` is `Monitor.Wait(obj)` (infinite); `Some ms` is
+    /// `Monitor.Wait(obj, timeout)` (finite). The deadline is the absolute
+    /// virtual-clock millisecond at which the wait expires; on expiry the
+    /// driver fires `fireTimeout` which routes the waiter through the same
+    /// reacquire path and rewrites the optimistic `Int32 1` slot pushed at
+    /// park time to `Int32 0` (timed out).
     ///
     /// Atomicity: from the guest's perspective, Wait is a single operation
     /// — the caller cannot observe a state in which it has released the
     /// lock but has not yet been parked, because both happen in one call.
-    let wait (thread : ThreadId) (addr : ManagedHeapAddress) (state : IlMachineState) : IlMachineState =
+    let wait
+        (thread : ThreadId)
+        (addr : ManagedHeapAddress)
+        (deadlineMs : int64 option)
+        (state : IlMachineState)
+        : IlMachineState
+        =
         let block = readBlock addr state
 
         let locked =
@@ -128,7 +141,7 @@ module SyncBlockMonitor =
             | None -> state
             | Some nextOwner -> Scheduler.setThreadStatus nextOwner ThreadStatus.Runnable state
 
-        Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnSyncBlockWait addr) state
+        Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnSyncBlockWait (addr, deadlineMs)) state
 
     /// `Monitor.Pulse`: caller must hold the lock; wakes at most one waiter
     /// from the FIFO head of `WaitQueue`. The woken waiter is moved to the
@@ -256,6 +269,73 @@ module SyncBlockMonitor =
             state
             |> writeBlock addr (SyncBlockLock.Held locked) newWaitQueue
             |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnSyncBlockAcquire addr)
+
+    /// Fire the finite-timeout wake for `thread` parked on `addr`'s
+    /// `WaitQueue`. Routes the thread through the same reacquire path as
+    /// `pulse`/`spuriousWake` (take ownership directly with the snapshot
+    /// depth restored if the lock is Free, otherwise park at the
+    /// AcquireQueue tail as `Some depth`), then rewrites the optimistic
+    /// `Int32 1` (signalled) slot pushed at park time by the
+    /// `Monitor_Wait` QCall handler to `Int32 0` (timed out). On
+    /// resumption past the `Wait` call site the thread already re-owns
+    /// the lock at its snapshot depth and observes `false` from
+    /// `Monitor.Wait(obj, timeout)` — mirroring CoreCLR's contract.
+    ///
+    /// Fails loud if `thread` is not in `addr`'s `WaitQueue`. The only
+    /// caller is `Program.fireExpiredDeadlines`, which enumerates
+    /// `BlockedOnSyncBlockWait` statuses itself; a miss would mean a
+    /// pulse/spurious wake raced our enumeration without flipping the
+    /// status, or the deadline-firing path was reached for an untimed
+    /// waiter — both indicate a structural bug worth surfacing here
+    /// rather than letting the eval-stack pop misbehave silently.
+    let fireTimeout (thread : ThreadId) (addr : ManagedHeapAddress) (state : IlMachineState) : IlMachineState =
+        let block = readBlock addr state
+
+        let entry = block.WaitQueue |> List.tryFind (fun (t, _) -> t = thread)
+
+        let depth =
+            match entry with
+            | Some (_, d) -> d
+            | None ->
+                failwith
+                    $"SyncBlockMonitor.fireTimeout: cannot fire timeout for thread %O{thread} on object %O{addr} because it is not in WaitQueue (queue: %A{block.WaitQueue})."
+
+        let newWaitQueue = block.WaitQueue |> List.filter (fun (t, _) -> t <> thread)
+
+        let state =
+            match block.Lock with
+            | SyncBlockLock.Free ->
+                // Uncontended: take ownership directly with the snapshot depth restored.
+                let locked =
+                    {
+                        LockingThread = thread
+                        ReentrancyCount = depth
+                        AcquireQueue = []
+                    }
+
+                state
+                |> writeBlock addr (SyncBlockLock.Held locked) newWaitQueue
+                |> Scheduler.setThreadStatus thread ThreadStatus.Runnable
+
+            | SyncBlockLock.Held locked ->
+                // Contended: park at the AcquireQueue tail carrying the
+                // snapshot. Ownership will be handed to us atomically when
+                // our predecessor releases; ReentrancyCount is restored
+                // from the `Some depth` snapshot at transfer time.
+                let locked =
+                    { locked with
+                        AcquireQueue = locked.AcquireQueue @ [ (thread, Some depth) ]
+                    }
+
+                state
+                |> writeBlock addr (SyncBlockLock.Held locked) newWaitQueue
+                |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnSyncBlockAcquire addr)
+
+        // Rewrite the park-time `Int32 1` (signalled) slot pushed by the
+        // Monitor_Wait handler to `Int32 0` (timed out). Pop-then-push
+        // keeps the stack depth invariant across the wake.
+        let _, state = IlMachineState.popEvalStack thread state
+        IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) thread state
 
     /// SplitMix64-style hash, deriving a per-(tick, addr, thread) coin flip
     /// in `[0.0, 1.0)`. Replayability comes from the function being a pure

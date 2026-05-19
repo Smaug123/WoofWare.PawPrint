@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint.Test
 
+open System.Collections.Generic
 open System.Collections.Immutable
 open FsCheck
 open FsCheck.FSharp
@@ -135,7 +136,7 @@ module TestSyncBlockMonitor =
         : IlMachineState
         =
         let state = forceHeld thread depth addr state
-        SyncBlockMonitor.wait thread addr state
+        SyncBlockMonitor.wait thread addr None state
 
     let private parkInWait (thread : ThreadId) (addr : ManagedHeapAddress) (state : IlMachineState) : IlMachineState =
         parkInWaitAtDepth thread 1 addr state
@@ -144,6 +145,99 @@ module TestSyncBlockMonitor =
     let private t1 = ThreadId 1
     let private t2 = ThreadId 2
     let private t3 = ThreadId 3
+
+    // ----- Real-frame test scaffolding -----
+    //
+    // `fireTimeout` rewrites the parked thread's top-of-eval-stack
+    // (`Int32 1 → Int32 0`), so any test that drives `fireTimeout` needs
+    // a thread with a live MethodState — the bare `stubThreadState`
+    // above is intentionally unusable for eval-stack mechanics.
+    //
+    // We borrow the pattern from `TestLowLevelMonitor`/`TestNullaryIlOp`:
+    // build a real frame backed by `System.Object::ToString`, since any
+    // concretized method is sufficient (the IL body is never executed by
+    // these tests; only the EvaluationStack is observed).
+
+    let private baseClassTypes : BaseClassTypes<DumpedAssembly> =
+        Corelib.getBaseTypes corelib
+
+    let private loadedAssemblies : ImmutableDictionary<string, DumpedAssembly> =
+        ImmutableDictionary.CreateRange [ KeyValuePair (corelib.Name.FullName, corelib) ]
+
+    let private concreteTypes : AllConcreteTypes =
+        Corelib.concretizeAll loadedAssemblies baseClassTypes AllConcreteTypes.Empty
+
+    let private baseStateWithFrames () : IlMachineState =
+        { baseState () with
+            ConcreteTypes = concreteTypes
+        }
+
+    let private mintFrame (state : IlMachineState) : IlMachineState * MethodState =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let objectToString =
+            baseClassTypes.Object.Methods
+            |> List.find (fun method -> method.Name = "ToString" && method.Parameters.IsEmpty)
+
+        let state, signature =
+            TypeMethodSignature.map
+                state
+                (fun state ty ->
+                    IlMachineState.concretizeType
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        corelib.Name
+                        ImmutableArray.Empty
+                        ImmutableArray.Empty
+                        ty
+                )
+                objectToString.Signature
+
+        let method =
+            objectToString
+            |> MethodInfo.mapTypeGenerics (fun _ -> failwith "System.Object::ToString is not type-generic")
+            |> MethodInfo.mapMethodGenerics (fun _ _ -> failwith "System.Object::ToString is not method-generic")
+            |> MethodInfo.setMethodVars (MethodBody.Il (MethodInstructions.onlyRet ())) signature
+
+        let methodState =
+            match
+                MethodState.Empty
+                    state.ConcreteTypes
+                    baseClassTypes
+                    state._LoadedAssemblies
+                    corelib
+                    method
+                    ImmutableArray.Empty
+                    (ImmutableArray.Create (CliType.ObjectRef None))
+                    None
+            with
+            | Ok ms -> ms
+            | Error missing -> failwith $"Unexpected missing assembly references constructing test frame: %O{missing}"
+
+        state, methodState
+
+    /// Install a real `ThreadState` (single frame, status Runnable) for each
+    /// thread id. Each thread gets its own freshly constructed frame so that
+    /// eval-stack operations on one thread do not visibly bleed into another.
+    let private withRealThreads (threads : ThreadId list) (state : IlMachineState) : IlMachineState =
+        let state, threadMap =
+            threads
+            |> List.fold
+                (fun (state : IlMachineState, acc : Map<ThreadId, ThreadState>) (tid : ThreadId) ->
+                    let state, methodState = mintFrame state
+                    state, acc |> Map.add tid (ThreadState.New methodState)
+                )
+                (state, Map.empty)
+
+        { state with
+            ThreadState = threadMap
+        }
+
+    let private topOfStack (thread : ThreadId) (state : IlMachineState) : EvalStackValue =
+        match IlMachineState.peekEvalStack thread state with
+        | Some v -> v
+        | None -> failwith $"thread %O{thread} has empty eval stack"
 
     // -------------------------------------------------------------------
     // Wait — basic shape
@@ -155,12 +249,14 @@ module TestSyncBlockMonitor =
         let addr, state = allocateHeapObject state
         let state = forceHeld t0 1 addr state
 
-        let state = SyncBlockMonitor.wait t0 addr state
+        let state = SyncBlockMonitor.wait t0 addr None state
 
         let block = syncBlockOf addr state
         block.Lock |> shouldEqual SyncBlockLock.Free
         block.WaitQueue |> shouldEqual [ t0, 1 ]
-        statusOf t0 state |> shouldEqual (ThreadStatus.BlockedOnSyncBlockWait addr)
+
+        statusOf t0 state
+        |> shouldEqual (ThreadStatus.BlockedOnSyncBlockWait (addr, None))
 
     [<Test>]
     let ``wait snapshots the caller's reentrancy depth verbatim`` () : unit =
@@ -168,7 +264,7 @@ module TestSyncBlockMonitor =
         let addr, state = allocateHeapObject state
         let state = forceHeld t0 7 addr state
 
-        let state = SyncBlockMonitor.wait t0 addr state
+        let state = SyncBlockMonitor.wait t0 addr None state
 
         // The whole point of carrying the snapshot is that the depth restored
         // on resume matches the depth the caller had at the Wait call site.
@@ -201,7 +297,7 @@ module TestSyncBlockMonitor =
             |> Scheduler.setThreadStatus t1 (ThreadStatus.BlockedOnSyncBlockAcquire addr)
             |> Scheduler.setThreadStatus t2 (ThreadStatus.BlockedOnSyncBlockAcquire addr)
 
-        let state = SyncBlockMonitor.wait t0 addr state
+        let state = SyncBlockMonitor.wait t0 addr None state
 
         let block = syncBlockOf addr state
 
@@ -216,7 +312,9 @@ module TestSyncBlockMonitor =
         block.WaitQueue |> shouldEqual [ t0, 1 ]
         statusOf t1 state |> shouldEqual ThreadStatus.Runnable
         statusOf t2 state |> shouldEqual (ThreadStatus.BlockedOnSyncBlockAcquire addr)
-        statusOf t0 state |> shouldEqual (ThreadStatus.BlockedOnSyncBlockWait addr)
+
+        statusOf t0 state
+        |> shouldEqual (ThreadStatus.BlockedOnSyncBlockWait (addr, None))
 
     [<Test>]
     let ``wait restores reentrancy depth on FIFO ownership transfer from snapshot`` () : unit =
@@ -244,7 +342,7 @@ module TestSyncBlockMonitor =
                 }
             |> Scheduler.setThreadStatus t1 (ThreadStatus.BlockedOnSyncBlockAcquire addr)
 
-        let state = SyncBlockMonitor.wait t0 addr state
+        let state = SyncBlockMonitor.wait t0 addr None state
 
         match (syncBlockOf addr state).Lock with
         | SyncBlockLock.Held l ->
@@ -259,7 +357,7 @@ module TestSyncBlockMonitor =
         let state = forceHeld t0 1 addr state
 
         let exn =
-            Assert.Throws<System.Exception> (fun () -> SyncBlockMonitor.wait t1 addr state |> ignore)
+            Assert.Throws<System.Exception> (fun () -> SyncBlockMonitor.wait t1 addr None state |> ignore)
 
         exn.Message |> shouldContainText "does not own"
 
@@ -269,7 +367,7 @@ module TestSyncBlockMonitor =
         let addr, state = allocateHeapObject state
 
         let exn =
-            Assert.Throws<System.Exception> (fun () -> SyncBlockMonitor.wait t0 addr state |> ignore)
+            Assert.Throws<System.Exception> (fun () -> SyncBlockMonitor.wait t0 addr None state |> ignore)
 
         exn.Message |> shouldContainText "Free"
 
@@ -603,7 +701,9 @@ module TestSyncBlockMonitor =
 
         block.WaitQueue |> shouldEqual [ t0, 1 ]
         statusOf t1 state5 |> shouldEqual ThreadStatus.Runnable
-        statusOf t0 state5 |> shouldEqual (ThreadStatus.BlockedOnSyncBlockWait addr)
+
+        statusOf t0 state5
+        |> shouldEqual (ThreadStatus.BlockedOnSyncBlockWait (addr, None))
 
     [<Test>]
     let ``applySpuriousWakeups Scripted fails loud on a stale waiter`` () : unit =
@@ -900,3 +1000,335 @@ module TestSyncBlockMonitor =
             && snapshotsPreserved
 
         Check.One (config, property)
+
+    // -------------------------------------------------------------------
+    // wait deadline plumbing
+    //
+    // `BlockedOnSyncBlockWait` now carries an optional deadline. The
+    // scheduler in `Program.fireExpiredDeadlines` keys off this option to
+    // decide whether the thread is a `Monitor.Wait(obj, timeout)` waiter
+    // (finite Some) or an untimed `Monitor.Wait(obj)` waiter (None).
+    // -------------------------------------------------------------------
+
+    [<Test>]
+    let ``wait with no deadline records None on the BlockedOnSyncBlockWait status`` () : unit =
+        let state = baseState () |> withThreads [ t0 ]
+        let addr, state = allocateHeapObject state
+        let state = forceHeld t0 1 addr state
+
+        let state = SyncBlockMonitor.wait t0 addr None state
+
+        statusOf t0 state
+        |> shouldEqual (ThreadStatus.BlockedOnSyncBlockWait (addr, None))
+
+    [<Test>]
+    let ``wait with a finite deadline records Some on the BlockedOnSyncBlockWait status`` () : unit =
+        let state = baseState () |> withThreads [ t0 ]
+        let addr, state = allocateHeapObject state
+        let state = forceHeld t0 1 addr state
+
+        let state = SyncBlockMonitor.wait t0 addr (Some 1234L) state
+
+        statusOf t0 state
+        |> shouldEqual (ThreadStatus.BlockedOnSyncBlockWait (addr, Some 1234L))
+
+    [<Test>]
+    let ``wait deadline is recorded even when the waiter inherits ownership transfer`` () : unit =
+        // t0 owns; t1 is parked in AcquireQueue; t0 calls Wait(deadline).
+        // Ownership transfers to t1 and t0 joins the WaitQueue carrying its
+        // snapshot. The deadline payload must survive the transfer path
+        // (which writes the status from the same branch as the no-transfer
+        // case).
+        let state = baseState () |> withThreads [ t0 ; t1 ]
+        let addr, state = allocateHeapObject state
+
+        let held : LockedSyncBlock =
+            {
+                LockingThread = t0
+                ReentrancyCount = 1
+                AcquireQueue = [ (t1, None) ]
+            }
+
+        let state =
+            state
+            |> IlMachineState.setSyncBlock
+                addr
+                {
+                    Lock = SyncBlockLock.Held held
+                    WaitQueue = []
+                }
+            |> Scheduler.setThreadStatus t1 (ThreadStatus.BlockedOnSyncBlockAcquire addr)
+
+        let state = SyncBlockMonitor.wait t0 addr (Some 9999L) state
+
+        statusOf t0 state
+        |> shouldEqual (ThreadStatus.BlockedOnSyncBlockWait (addr, Some 9999L))
+
+        statusOf t1 state |> shouldEqual ThreadStatus.Runnable
+        (syncBlockOf addr state).WaitQueue |> shouldEqual [ t0, 1 ]
+
+    // -------------------------------------------------------------------
+    // fireTimeout
+    //
+    // These tests need real frames so the eval-stack rewrite
+    // (`Int32 1 → Int32 0`) is observable. They simulate the
+    // park-time optimistic push by pushing `Int32 1` themselves before
+    // calling `fireTimeout`.
+    // -------------------------------------------------------------------
+
+    /// Park `thread` on `addr` with the given snapshot depth, a finite
+    /// deadline, and the park-time optimistic `Int32 1` already on its
+    /// eval stack — mirroring what the `Monitor_Wait` QCall handler does
+    /// at the IL boundary.
+    let private parkInTimedWaitAtDepth
+        (thread : ThreadId)
+        (depth : int)
+        (addr : ManagedHeapAddress)
+        (deadlineMs : int64)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        let state = forceHeld thread depth addr state
+        let state = state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) thread
+        SyncBlockMonitor.wait thread addr (Some deadlineMs) state
+
+    let private parkInTimedWait
+        (thread : ThreadId)
+        (addr : ManagedHeapAddress)
+        (deadlineMs : int64)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        parkInTimedWaitAtDepth thread 1 addr deadlineMs state
+
+    [<Test>]
+    let ``fireTimeout on free SyncBlock takes ownership at snapshot depth and rewrites Int32 1 to Int32 0`` () : unit =
+        let state = baseStateWithFrames () |> withRealThreads [ t0 ]
+        let addr, state = allocateHeapObject state
+        let state = state |> parkInTimedWaitAtDepth t0 5 addr 100L
+
+        // Sanity: t0 parked at depth 5, lock Free, optimistic 1 on stack.
+        statusOf t0 state
+        |> shouldEqual (ThreadStatus.BlockedOnSyncBlockWait (addr, Some 100L))
+
+        let block = syncBlockOf addr state
+        block.Lock |> shouldEqual SyncBlockLock.Free
+        block.WaitQueue |> shouldEqual [ t0, 5 ]
+        topOfStack t0 state |> shouldEqual (EvalStackValue.Int32 1)
+
+        let state = SyncBlockMonitor.fireTimeout t0 addr state
+
+        let block = syncBlockOf addr state
+
+        match block.Lock with
+        | SyncBlockLock.Held l ->
+            l.LockingThread |> shouldEqual t0
+            // Depth restored from the snapshot — the resumed IL after Wait
+            // must observe the same nesting it had at the call site.
+            l.ReentrancyCount |> shouldEqual 5
+            l.AcquireQueue |> shouldEqual []
+        | SyncBlockLock.Free -> failwith "expected Held after fireTimeout against free lock"
+
+        block.WaitQueue |> shouldEqual []
+        statusOf t0 state |> shouldEqual ThreadStatus.Runnable
+        // Monitor.Wait returns false (Int32 0) = timed out.
+        topOfStack t0 state |> shouldEqual (EvalStackValue.Int32 0)
+
+    [<Test>]
+    let ``fireTimeout on held SyncBlock parks at AcquireQueue tail with Some depth and rewrites Int32 1 to Int32 0``
+        ()
+        : unit
+        =
+        // t0 timed-waits at depth 3; t1 then takes ownership. Firing t0's
+        // timeout must not let t0 steal the lock — it queues behind t1
+        // with its snapshot preserved as `Some 3`.
+        let state = baseStateWithFrames () |> withRealThreads [ t0 ; t1 ]
+        let addr, state = allocateHeapObject state
+        let state = state |> parkInTimedWaitAtDepth t0 3 addr 100L
+        let state = forceHeld t1 1 addr state
+
+        let state = SyncBlockMonitor.fireTimeout t0 addr state
+
+        let block = syncBlockOf addr state
+
+        match block.Lock with
+        | SyncBlockLock.Held l ->
+            l.LockingThread |> shouldEqual t1
+            l.ReentrancyCount |> shouldEqual 1
+            l.AcquireQueue |> shouldEqual [ (t0, Some 3) ]
+        | SyncBlockLock.Free -> failwith "expected Held after fireTimeout against held lock"
+
+        block.WaitQueue |> shouldEqual []
+        statusOf t0 state |> shouldEqual (ThreadStatus.BlockedOnSyncBlockAcquire addr)
+        statusOf t1 state |> shouldEqual ThreadStatus.Runnable
+        topOfStack t0 state |> shouldEqual (EvalStackValue.Int32 0)
+
+    [<Test>]
+    let ``fireTimeout fails loud when the thread is not in WaitQueue`` () : unit =
+        let state = baseStateWithFrames () |> withRealThreads [ t0 ]
+        let addr, state = allocateHeapObject state
+        let state = forceHeld t0 1 addr state
+        // t0 owns; it is not in the WaitQueue. Reaching `fireTimeout` for
+        // such a thread indicates a structural bug — the deadline must
+        // have been observed for a status the SyncBlock does not back.
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () -> SyncBlockMonitor.fireTimeout t0 addr state |> ignore)
+
+        exn.Message |> shouldContainText "WaitQueue"
+
+    [<Test>]
+    let ``fireTimeout preserves FIFO across multiple AcquireQueue parks`` () : unit =
+        // Two contenders already in AcquireQueue; t2 times out while
+        // parked in WaitQueue. The timeout-wake must push t2 to the
+        // *tail* of AcquireQueue, not the head, so an earlier owner
+        // hand-off doesn't accidentally jump t2 over t1.
+        let state = baseStateWithFrames () |> withRealThreads [ t0 ; t1 ; t2 ]
+        let addr, state = allocateHeapObject state
+
+        // Force t2 to own at depth 1 with t0 and t1 queued behind.
+        let held : LockedSyncBlock =
+            {
+                LockingThread = t2
+                ReentrancyCount = 1
+                AcquireQueue = [ (t0, None) ; (t1, None) ]
+            }
+
+        let state =
+            state
+            |> IlMachineState.setSyncBlock
+                addr
+                {
+                    Lock = SyncBlockLock.Held held
+                    WaitQueue = []
+                }
+            |> Scheduler.setThreadStatus t0 (ThreadStatus.BlockedOnSyncBlockAcquire addr)
+            |> Scheduler.setThreadStatus t1 (ThreadStatus.BlockedOnSyncBlockAcquire addr)
+
+        // t2 calls Wait(deadline): pushes optimistic 1 then parks; ownership
+        // transfers to t0 (FIFO head of AcquireQueue) at fresh depth 1.
+        let state = state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) t2
+        let state = SyncBlockMonitor.wait t2 addr (Some 5L) state
+
+        let block = syncBlockOf addr state
+
+        match block.Lock with
+        | SyncBlockLock.Held l ->
+            l.LockingThread |> shouldEqual t0
+            l.AcquireQueue |> shouldEqual [ (t1, None) ]
+        | SyncBlockLock.Free -> failwith "expected Held after wait transfers ownership"
+
+        block.WaitQueue |> shouldEqual [ t2, 1 ]
+
+        let state = SyncBlockMonitor.fireTimeout t2 addr state
+
+        let block = syncBlockOf addr state
+
+        match block.Lock with
+        | SyncBlockLock.Held l ->
+            l.LockingThread |> shouldEqual t0
+            // t2 lands at the *tail*, behind t1.
+            l.AcquireQueue |> shouldEqual [ (t1, None) ; (t2, Some 1) ]
+        | SyncBlockLock.Free -> failwith "expected Held after fireTimeout"
+
+        block.WaitQueue |> shouldEqual []
+        statusOf t2 state |> shouldEqual (ThreadStatus.BlockedOnSyncBlockAcquire addr)
+        topOfStack t2 state |> shouldEqual (EvalStackValue.Int32 0)
+
+    [<Test>]
+    let ``fireTimeout in WaitQueue head-first order preserves FIFO across same-tick expiries`` () : unit =
+        // Pin the contract that `Program.fireExpiredDeadlines` must
+        // respect: when two `Monitor.Wait` waiters on the same SyncBlock
+        // expire in the same virtual-clock tick, firing them in
+        // WaitQueue order gives ownership to the FIFO head. The bug we
+        // guard against is iterating threads by ThreadId, which would
+        // let a later-parked waiter with a smaller id steal the lock.
+        //
+        // Setup: t1 parks *after* t2 so WaitQueue = [(t2, 1); (t1, 1)].
+        let state = baseStateWithFrames () |> withRealThreads [ t1 ; t2 ]
+        let addr, state = allocateHeapObject state
+        let state = state |> parkInTimedWait t2 addr 50L
+        let state = state |> parkInTimedWait t1 addr 50L
+
+        (syncBlockOf addr state).WaitQueue |> shouldEqual [ (t2, 1) ; (t1, 1) ]
+
+        // Fire in WaitQueue order (head first).
+        let state = SyncBlockMonitor.fireTimeout t2 addr state
+        let state = SyncBlockMonitor.fireTimeout t1 addr state
+
+        let block = syncBlockOf addr state
+
+        match block.Lock with
+        | SyncBlockLock.Held l ->
+            l.LockingThread |> shouldEqual t2
+            l.ReentrancyCount |> shouldEqual 1
+            l.AcquireQueue |> shouldEqual [ (t1, Some 1) ]
+        | SyncBlockLock.Free -> failwith "expected Held after timeouts grant ownership"
+
+        block.WaitQueue |> shouldEqual []
+        statusOf t2 state |> shouldEqual ThreadStatus.Runnable
+        statusOf t1 state |> shouldEqual (ThreadStatus.BlockedOnSyncBlockAcquire addr)
+        topOfStack t2 state |> shouldEqual (EvalStackValue.Int32 0)
+        topOfStack t1 state |> shouldEqual (EvalStackValue.Int32 0)
+
+    [<Test>]
+    let ``fireTimeout in ThreadId order (not WaitQueue order) reverses FIFO — guards against scheduler bug`` () : unit =
+        // Companion to the test above: explicitly demonstrate that firing
+        // in ThreadId order — which is what unsorted `Map.toSeq` dispatch
+        // would do — violates FIFO. This is the bug
+        // `Program.fireExpiredDeadlines` must avoid by sorting its
+        // expired list by SyncBlock-WaitQueue position.
+        let state = baseStateWithFrames () |> withRealThreads [ t1 ; t2 ]
+        let addr, state = allocateHeapObject state
+        // Same setup as the previous test: WaitQueue = [(t2, 1); (t1, 1)].
+        let state = state |> parkInTimedWait t2 addr 50L
+        let state = state |> parkInTimedWait t1 addr 50L
+
+        // Fire in ThreadId order (tail first).
+        let state = SyncBlockMonitor.fireTimeout t1 addr state
+        let state = SyncBlockMonitor.fireTimeout t2 addr state
+
+        let block = syncBlockOf addr state
+
+        match block.Lock with
+        | SyncBlockLock.Held l ->
+            // t1 stole the lock by firing first; t2 (the original head)
+            // is now queued behind. This is the FIFO violation.
+            l.LockingThread |> shouldEqual t1
+            l.AcquireQueue |> shouldEqual [ (t2, Some 1) ]
+        | SyncBlockLock.Free -> failwith "expected Held"
+
+        statusOf t1 state |> shouldEqual ThreadStatus.Runnable
+        statusOf t2 state |> shouldEqual (ThreadStatus.BlockedOnSyncBlockAcquire addr)
+
+    [<Test>]
+    let ``fireTimeout preserves snapshot depth across ownership-transfer reacquire`` () : unit =
+        // Re-park scenario: t0 originally Wait()s at depth 7. While
+        // parked, the lock is held by t1. When t0's deadline fires,
+        // its `Some 7` snapshot must land in the AcquireQueue tail so
+        // that t1's eventual Exit transfers ownership back at depth 7.
+        let state = baseStateWithFrames () |> withRealThreads [ t0 ; t1 ]
+        let addr, state = allocateHeapObject state
+        let state = state |> parkInTimedWaitAtDepth t0 7 addr 100L
+        let state = forceHeld t1 1 addr state
+
+        let state = SyncBlockMonitor.fireTimeout t0 addr state
+
+        match (syncBlockOf addr state).Lock with
+        | SyncBlockLock.Held l -> l.AcquireQueue |> shouldEqual [ (t0, Some 7) ]
+        | SyncBlockLock.Free -> failwith "expected Held"
+
+    [<Test>]
+    let ``fireTimeout leaves other threads' eval stacks untouched`` () : unit =
+        // Cross-thread isolation: rewriting t0's stack must not perturb
+        // t1's stack.
+        let state = baseStateWithFrames () |> withRealThreads [ t0 ; t1 ]
+        let addr, state = allocateHeapObject state
+        let state = state |> parkInTimedWait t0 addr 100L
+        // t1 is Runnable with a sentinel value on its stack.
+        let state = state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 42) t1
+
+        let state = SyncBlockMonitor.fireTimeout t0 addr state
+
+        topOfStack t0 state |> shouldEqual (EvalStackValue.Int32 0)
+        topOfStack t1 state |> shouldEqual (EvalStackValue.Int32 42)
