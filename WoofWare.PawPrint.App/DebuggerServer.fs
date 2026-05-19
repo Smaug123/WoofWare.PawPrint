@@ -75,10 +75,15 @@ module DebuggerServer =
         match status with
         | ThreadStatus.Runnable -> writer.WriteStringValue "runnable"
         | ThreadStatus.NotStarted -> writer.WriteStringValue "notStarted"
-        | ThreadStatus.BlockedOnJoin target ->
+        | ThreadStatus.BlockedOnJoin (target, deadlineMs) ->
             writer.WriteStartObject ()
             writer.WriteString ("kind", "blockedOnJoin")
             writer.WriteNumber ("targetThread", threadIdValue target)
+
+            match deadlineMs with
+            | None -> ()
+            | Some ms -> writer.WriteNumber ("deadlineMs", ms)
+
             writer.WriteEndObject ()
         | ThreadStatus.BlockedOnClassInit blocker ->
             writer.WriteStartObject ()

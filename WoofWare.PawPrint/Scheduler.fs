@@ -67,10 +67,22 @@ module Scheduler =
                     ))
         }
 
-    /// Transition `blocked` from Runnable to BlockedOnJoin target. Called from the
-    /// Thread.Join intrinsic in AbstractMachine; exposed here so the set of places
-    /// that mutate ThreadStatus stays small and auditable.
-    let blockOnJoin (blocked : ThreadId) (target : ThreadId) (state : IlMachineState) : IlMachineState =
+    /// Transition `blocked` from Runnable to `BlockedOnJoin (target, deadlineMs)`.
+    /// Called from the `Thread.Join` intrinsic; exposed here so the set of places
+    /// that mutate `ThreadStatus` stays small and auditable.
+    ///
+    /// `deadlineMs = None` is an infinite wait (`Thread.Join()` /
+    /// `Thread.Join(-1)`); `Some ms` is a finite timeout, expressed as the
+    /// absolute virtual-clock millisecond at which the wait expires. The
+    /// deadline-firing path in `Program.fireExpiredDeadlines` routes such
+    /// threads through `fireJoinTimeout` below.
+    let blockOnJoin
+        (blocked : ThreadId)
+        (target : ThreadId)
+        (deadlineMs : int64 option)
+        (state : IlMachineState)
+        : IlMachineState
+        =
         { state with
             ThreadState =
                 state.ThreadState
@@ -78,10 +90,47 @@ module Scheduler =
                     blocked
                     (Option.map (fun s ->
                         { s with
-                            Status = ThreadStatus.BlockedOnJoin target
+                            Status = ThreadStatus.BlockedOnJoin (target, deadlineMs)
                         }
                     ))
         }
+
+    /// Fire a deadline expiry for a thread parked in
+    /// `BlockedOnJoin (_, Some _)`. Mirrors the `fireTimeout` family in
+    /// `WaitHandle` / `LowLevelMonitor` / `SyncBlockMonitor`, but Join has
+    /// no per-primitive wait queue — the "primitive" is just the target
+    /// thread's status — so there is nothing to dequeue. We:
+    ///
+    ///  1. Pop the optimistic `Int32 1` slot pushed by `executeJoinCore`
+    ///     at park time and push `Int32 0` in its place. The QCall
+    ///     (`ThreadNative_Join`) returns `int32`; the InternalCall
+    ///     (`Thread.Join(int)`) returns `bool`, but `CliType.ofBool`
+    ///     normalises both to `EvalStackValue.Int32` on the eval stack,
+    ///     so a single rewrite handles both call paths uniformly.
+    ///  2. Flip the status back to `Runnable`. The new status carries no
+    ///     deadline field, so the deadline is implicitly forgotten —
+    ///     exactly the invariant the variant encodes.
+    ///
+    /// Fails loud if `thread` is not actually parked in `BlockedOnJoin`
+    /// with a finite deadline: the only caller is
+    /// `Program.fireExpiredDeadlines`, which enumerates the statuses
+    /// itself, so a miss would indicate the deadline-firing path was
+    /// reached for an untimed waiter — a structural bug worth surfacing
+    /// here rather than silently popping a stack slot that doesn't
+    /// belong to a Join optimistic-push.
+    let fireJoinTimeout (thread : ThreadId) (state : IlMachineState) : IlMachineState =
+        match state.ThreadState |> Map.tryFind thread with
+        | None -> failwith $"Scheduler.fireJoinTimeout: thread %O{thread} has no ThreadState."
+        | Some ts ->
+            match ts.Status with
+            | ThreadStatus.BlockedOnJoin (_, Some _) -> ()
+            | other ->
+                failwith
+                    $"Scheduler.fireJoinTimeout: thread %O{thread} is not parked in BlockedOnJoin with a finite deadline (status: %O{other}); the scheduler observed a join deadline against a thread the join machinery does not know about."
+
+        let _, state = IlMachineState.popEvalStack thread state
+        let state = IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) thread state
+        setThreadStatus thread ThreadStatus.Runnable state
 
     /// Record that `terminated` has finished executing its final `ret`.
     /// - Flips its own status to Terminated.
@@ -201,7 +250,16 @@ module Scheduler =
                 ))
             |> Map.map (fun _ ts ->
                 match ts.Status with
-                | ThreadStatus.BlockedOnJoin target when target = terminated ->
+                | ThreadStatus.BlockedOnJoin (target, _) when target = terminated ->
+                    // Wake any joiner blocked on the terminating thread, regardless
+                    // of whether its wait was infinite or finite. The new Runnable
+                    // status carries no deadline, so a still-outstanding deadline
+                    // is naturally forgotten — the next `fireExpiredDeadlines`
+                    // pass projects `Runnable` to `None` in `waitDeadline` and
+                    // moves on. The optimistic `Int32 1` pushed at park time
+                    // stays on the eval stack as the Join's return value,
+                    // mirroring CoreCLR's contract that Join returns `true`
+                    // whenever control flows past it via target termination.
                     { ts with
                         Status = ThreadStatus.Runnable
                     }
