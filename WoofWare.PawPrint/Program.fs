@@ -427,9 +427,14 @@ module Program =
         // not a scheduler tick — it is the resolution of a timeout that
         // would otherwise be invisible.
         let rec advanceUntilRunnableOrQuiescent (state : IlMachineState) : IlMachineState =
-            match Scheduler.chooseNext prepared.LastRan state with
-            | Some _ -> state
-            | None ->
+            // Use the policy-independent existence check rather than calling
+            // `chooseNext` and discarding its returned state: a stochastic
+            // policy would otherwise advance its RNG once per deadline-jump
+            // probe, perturbing the scheduling stream without ever observing
+            // the result.
+            if Scheduler.hasAnyRunnable state then
+                state
+            else
                 match nextDeadline state with
                 | None -> state
                 | Some target ->
@@ -447,7 +452,19 @@ module Program =
                 State = advanceUntilRunnableOrQuiescent prepared.State
             }
 
-        match Scheduler.chooseNext prepared.LastRan prepared.State with
+        let scheduledState, scheduledChoice =
+            Scheduler.chooseNext prepared.LastRan prepared.State
+
+        // Adopt the scheduler-updated state before stepping so that any RNG
+        // advancement the policy performed is reflected in the run-forward
+        // state — otherwise replaying the same seed would diverge on the
+        // first stochastic decision.
+        let prepared =
+            { prepared with
+                State = scheduledState
+            }
+
+        match scheduledChoice with
         | None ->
             // No Runnable threads and the entry thread didn't hit its ret. Every
             // remaining thread is blocked, so progress is impossible.

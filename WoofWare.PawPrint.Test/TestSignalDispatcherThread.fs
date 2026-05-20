@@ -113,7 +113,7 @@ module TestSignalDispatcherThread =
                         ]
             }
 
-        Scheduler.chooseNext (ThreadId -1) state |> shouldEqual (Some runnable)
+        Scheduler.chooseNext (ThreadId -1) state |> snd |> shouldEqual (Some runnable)
 
     [<Test>]
     let ``scheduler returns None when only Parked threads exist`` () : unit =
@@ -135,4 +135,4 @@ module TestSignalDispatcherThread =
                         ]
             }
 
-        Scheduler.chooseNext (ThreadId -1) state |> shouldEqual None
+        Scheduler.chooseNext (ThreadId -1) state |> snd |> shouldEqual None
