@@ -82,6 +82,7 @@
     <Compile Include="TestSchedulerVoluntaryYield.fs" />
     <Compile Include="TestSchedulerPct.fs" />
     <Compile Include="TestPureCases.fs" />
+    <Compile Include="TestFSharpPureCases.fs" />
     <Compile Include="TestImpureCases.fs" />
     <Compile Include="TestRaces.fs" />
   </ItemGroup>

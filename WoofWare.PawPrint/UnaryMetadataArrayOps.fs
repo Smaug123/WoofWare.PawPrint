@@ -294,6 +294,12 @@ module internal UnaryMetadataArrayOps =
                         state
 
                 state, assy, ty
+            | MetadataToken.TypeReference refHandle ->
+                // A bare TypeRef in a Ldelem token is a closed type name: parametric
+                // element types reach ldelem through TypeSpec (e.g. ldelem !!T encodes
+                // a TypeSpec wrapping a GenericTypeParameter), so the generic-args
+                // array here is always empty.
+                IlMachineTypeResolution.resolveType loggerFactory refHandle ImmutableArray.Empty activeAssy state
             | x -> failwith $"TODO: Ldelem element type resolution unimplemented for {x}"
 
         let index, state = IlMachineState.popEvalStack thread state
