@@ -50,9 +50,13 @@ module TestFSharpPureCases =
                 |> Option.ofObj
                 |> Option.defaultWith (fun () -> failwith "Process.Start returned null for dotnet publish")
 
-            let stdout = proc.StandardOutput.ReadToEnd ()
-            let stderr = proc.StandardError.ReadToEnd ()
+            // Read both pipes concurrently so a chatty child can't deadlock by filling
+            // the stderr buffer while we're blocked draining stdout (or vice versa).
+            let stdoutTask = proc.StandardOutput.ReadToEndAsync ()
+            let stderrTask = proc.StandardError.ReadToEndAsync ()
             proc.WaitForExit ()
+            let stdout = stdoutTask.GetAwaiter().GetResult ()
+            let stderr = stderrTask.GetAwaiter().GetResult ()
 
             if proc.ExitCode <> 0 then
                 failwith
@@ -71,6 +75,11 @@ module TestFSharpPureCases =
     // PawPrint cannot yet allocate string argv (Program.allocateArgs is unimplemented),
     // so all F# test cases that require argv dispatch are unimplemented for now.
     let unimplemented : Set<string> = Set.ofList []
+
+    // F# test cases that legitimately throw under both runtimes. Without this set, a test
+    // that crashes both runtimes would silently pass — see TestPureCases.fs for the same
+    // mechanism. Add a case here only when the throw is the intended observable.
+    let expectsUnhandledException : Set<string> = Set.empty
 
     let private runTest (testCaseName : string) : unit =
         let image = loadImage ()
@@ -112,7 +121,10 @@ module TestFSharpPureCases =
                         | ret -> failwith $"expected program to return an int, but it returned %O{ret}"
 
                 pawPrintExitCode |> shouldEqual exitCode
-            | RealRuntimeResult.UnhandledException _, RunOutcome.GuestUnhandledException _ -> ()
+            | RealRuntimeResult.UnhandledException _, RunOutcome.GuestUnhandledException _ ->
+                if not (expectsUnhandledException.Contains testCaseName) then
+                    failwith
+                        $"Both runtimes threw unhandled exceptions for %s{testCaseName}, but this test was not expected to throw. Add to expectsUnhandledException if intentional."
             | RealRuntimeResult.NormalExit exitCode, RunOutcome.GuestUnhandledException (_, _, exn) ->
                 failwith
                     $"Real runtime exited normally with code %d{exitCode}, but PawPrint threw unhandled exception: %O{exn.ExceptionObject}"
