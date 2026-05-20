@@ -1,5 +1,6 @@
 namespace WoofWare.Pawprint.Test
 
+open System
 open System.Collections.Immutable
 open System.Diagnostics
 open System.IO
@@ -14,16 +15,33 @@ open WoofWare.PawPrint.Test
 [<Parallelizable(ParallelScope.All)>]
 module TestFSharpPureCases =
 
+    type private TestAssemblyMarker = class end
+
     let private rid = RuntimeInformation.RuntimeIdentifier
 
-    // Normalise: in the Nix sandbox the F# compiler can bake `__SOURCE_DIRECTORY__`
-    // with a doubled separator (e.g. `/_//WoofWare.PawPrint.Test`). MSBuild's CLI
-    // parser then mis-classifies the resulting `/_//.../foo.fsproj` path as an
-    // unknown switch and rejects it before parsing project arguments. GetFullPath
-    // collapses the duplicate separators and resolves the `..` segment so the path
-    // we hand to dotnet publish is a clean absolute path.
+    // We cannot use __SOURCE_DIRECTORY__: when ContinuousIntegrationBuild is set
+    // (Directory.Build.props turns it on whenever GITHUB_ACTION is non-empty), the
+    // F# compiler remaps source paths to a deterministic `/_/` prefix that has no
+    // relationship to the runtime filesystem. Instead, walk up from the test
+    // assembly's on-disk location until we find WoofWare.PawPrint.slnx, then
+    // resolve the sibling FSharpPureCases project from there.
+    let private repoRoot : string =
+        let testAssemblyDir =
+            Path.GetDirectoryName typeof<TestAssemblyMarker>.Assembly.Location
+
+        let rec walk (dir : string) : string =
+            if String.IsNullOrEmpty dir then
+                failwith
+                    $"Could not locate WoofWare.PawPrint.slnx by walking up from %s{testAssemblyDir}; cannot determine F# test project directory."
+            elif File.Exists (Path.Combine (dir, "WoofWare.PawPrint.slnx")) then
+                dir
+            else
+                walk (Path.GetDirectoryName dir)
+
+        walk testAssemblyDir
+
     let private projectDir =
-        Path.GetFullPath (Path.Combine (__SOURCE_DIRECTORY__, "..", "WoofWare.PawPrint.Test.FSharpPureCases"))
+        Path.Combine (repoRoot, "WoofWare.PawPrint.Test.FSharpPureCases")
 
     let private projectFile =
         Path.Combine (projectDir, "WoofWare.PawPrint.Test.FSharpPureCases.fsproj")
@@ -38,8 +56,7 @@ module TestFSharpPureCases =
     let private publishOnce : Lazy<unit> =
         lazy
             if not (File.Exists projectFile) then
-                failwith
-                    $"Cannot publish F# test cases: project file %s{projectFile} does not exist. (__SOURCE_DIRECTORY__ at compile time was %s{__SOURCE_DIRECTORY__}.)"
+                failwith $"Cannot publish F# test cases: project file %s{projectFile} does not exist."
 
             let psi = ProcessStartInfo "dotnet"
             psi.ArgumentList.Add "publish"
