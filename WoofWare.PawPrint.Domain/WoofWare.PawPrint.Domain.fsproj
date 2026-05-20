@@ -9,6 +9,7 @@
         <Compile Include="StringToken.fs" />
         <Compile Include="Constants.fs" />
         <Compile Include="ImmutableArray.fs" />
+        <Compile Include="NonCryptoRandom.fs" />
         <Compile Include="Tokens.fs" />
         <Compile Include="TypeRef.fs" />
         <Compile Include="IlOp.fs" />

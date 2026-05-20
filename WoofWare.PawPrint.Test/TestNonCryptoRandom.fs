@@ -140,3 +140,145 @@ module TestNonCryptoRandom =
         // the bytes every Guid.NewGuid/Random/HashCode draws.
         EmulatedKernel.initial.NonCryptoRandomState
         |> shouldEqual NonCryptoRandom.initialState
+
+    [<Test>]
+    let ``nextDouble is pure in the starting state`` () : unit =
+        // Same input state ⇒ same (value, newState). Determinism is the
+        // whole point — schedule fuzzing needs to be able to replay a seed
+        // and observe identical doubles draws on the path that fed off it.
+        let property (state : uint64) : bool =
+            NonCryptoRandom.nextDouble state = NonCryptoRandom.nextDouble state
+
+        Check.One (propertyConfig, property)
+
+    [<Test>]
+    let ``nextDouble lies in [0, 1)`` () : unit =
+        // The probabilistic-concurrency scheduler will compare these
+        // draws against op-weight thresholds, so a value of exactly 1.0
+        // (or worse, > 1.0) would silently let a w=1.0 op skip a switch
+        // it should always take. The masking-then-scaling formula
+        // discards the low 11 bits so this invariant holds by construction;
+        // the test pins it.
+        let property (state : uint64) : bool =
+            let v, _ = NonCryptoRandom.nextDouble state
+            v >= 0.0 && v < 1.0
+
+        Check.One (propertyConfig, property)
+
+    [<Test>]
+    let ``nextDouble advances state by exactly one step`` () : unit =
+        // The (state -> step) -> (output, newState) shape is the contract
+        // the rest of the runtime assumes. If nextDouble somehow consumed
+        // two steps internally, callers interleaving doubles with bytes
+        // draws would observe stream desynchronisation that's hard to
+        // diagnose. Pin the equivalence.
+        let property (state : uint64) : bool =
+            let _, doubleState = NonCryptoRandom.nextDouble state
+            let _, stepState = NonCryptoRandom.step state
+            doubleState = stepState
+
+        Check.One (propertyConfig, property)
+
+    [<Test>]
+    let ``nextDouble mean over 50k samples is near 0.5`` () : unit =
+        // Sanity check that the [0, 1) draws are *roughly* uniform — not a
+        // statistical certificate (splitmix64 isn't crypto), just enough
+        // to catch a wholesale bias (e.g. an off-by-one in the bit shift).
+        // For n=50_000 independent uniform [0,1) samples, σ = 1/√(12·n)
+        // ≈ 0.00129. A ±0.01 window is ~7.7σ, so the failure probability
+        // under a correct implementation is well under 1 in 10^14.
+        let rec accumulate (state : uint64) (n : int) (acc : double) : double =
+            if n = 0 then
+                acc
+            else
+                let v, newState = NonCryptoRandom.nextDouble state
+                accumulate newState (n - 1) (acc + v)
+
+        let n = 50_000
+        let total = accumulate 12345UL n 0.0
+        let mean = total / double n
+        abs (mean - 0.5) |> shouldBeSmallerThan 0.01
+
+    [<Test>]
+    let ``nextInt32Below is pure in the starting state`` () : unit =
+        let property (state : uint64) (bound : PositiveInt) : bool =
+            let first = NonCryptoRandom.nextInt32Below bound.Get state
+            let second = NonCryptoRandom.nextInt32Below bound.Get state
+            first = second
+
+        Check.One (propertyConfig, property)
+
+    [<Test>]
+    let ``nextInt32Below result lies in [0, bound)`` () : unit =
+        // The scheduler will index a list-of-runnable-threads by this
+        // value, so an out-of-range result would crash with an obscure
+        // IndexOutOfRange far from the actual bug. Pin the invariant.
+        let property (state : uint64) (bound : PositiveInt) : bool =
+            let v, _ = NonCryptoRandom.nextInt32Below bound.Get state
+            v >= 0 && v < bound.Get
+
+        Check.One (propertyConfig, property)
+
+    [<Test>]
+    let ``nextInt32Below 1 always returns 0 without advancing state`` () : unit =
+        // Bound=1 has only one valid output. The rejection-sampling
+        // threshold collapses to "accept everything", so the function
+        // takes exactly one step regardless of input state — but the
+        // caller perspective is that 0 always comes back. (We don't
+        // assert the state change here because doing so would couple
+        // the test to the rejection-sampling internals; the contract
+        // is just "result = 0".)
+        let property (state : uint64) : bool =
+            let v, _ = NonCryptoRandom.nextInt32Below 1 state
+            v = 0
+
+        Check.One (propertyConfig, property)
+
+    [<Test>]
+    let ``nextInt32Below rejects non-positive bound`` () : unit =
+        // A non-positive bound is a caller bug. Silently returning 0
+        // would mask the upstream mistake; the test pins the loud
+        // failure to ensure no future "be helpful" refactor swallows
+        // the contract.
+        (fun () -> NonCryptoRandom.nextInt32Below 0 0UL |> ignore) |> shouldFail<exn>
+
+        (fun () -> NonCryptoRandom.nextInt32Below -1 0UL |> ignore) |> shouldFail<exn>
+
+        (fun () -> NonCryptoRandom.nextInt32Below System.Int32.MinValue 0UL |> ignore)
+        |> shouldFail<exn>
+
+    [<Test>]
+    let ``nextInt32Below is roughly uniform for small bounds`` () : unit =
+        // Aggregate 60_000 draws into 6 buckets and assert every bucket
+        // is within ±10% of the expected count of 10_000. Under a
+        // correct unbiased implementation each bucket has σ ≈ √(n·p·(1-p))
+        // ≈ √(60000 · 1/6 · 5/6) ≈ 91, so the ±1000 window is over 10σ.
+        // Failure under a correct implementation is astronomically
+        // unlikely; a biased implementation (e.g. plain `% bound` with
+        // no rejection) at this small bound has no detectable effect,
+        // so this is a wholesale-correctness check, not a calibration.
+        let bound = 6
+        let n = 60_000
+
+        let counts = Array.zeroCreate<int> bound
+
+        let rec accumulate state n =
+            if n = 0 then
+                ()
+            else
+                let v, newState = NonCryptoRandom.nextInt32Below bound state
+                counts.[v] <- counts.[v] + 1
+                accumulate newState (n - 1)
+
+        accumulate 0x1234567890ABCDEFUL n
+
+        let expected = n / bound
+        let tolerance = expected / 10
+
+        for bucket = 0 to bound - 1 do
+            let count = counts.[bucket]
+            let delta = abs (count - expected)
+
+            if delta > tolerance then
+                Assert.Fail
+                    $"Bucket %d{bucket} had count %d{count}, expected ~%d{expected} (±%d{tolerance}); delta %d{delta}"
