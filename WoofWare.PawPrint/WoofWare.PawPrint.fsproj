@@ -113,6 +113,7 @@
     <Compile Include="Native\NativeThreading.fs" />
     <Compile Include="Native\NativeDebugger.fs" />
     <Compile Include="Native\NativeEventPipe.fs" />
+    <Compile Include="Native\NativeEventSource.fs" />
     <Compile Include="Native\NativeCustomAttribute.fs" />
     <Compile Include="Native\NativeQCall.fs" />
     <Compile Include="Native\NativeType.fs" />

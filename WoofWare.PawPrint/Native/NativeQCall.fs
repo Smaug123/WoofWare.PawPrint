@@ -66,6 +66,13 @@ module NativeQCall =
             "EventPipeInternal_SignalSession", NativeEventPipe.tryExecuteQCall "EventPipeInternal_SignalSession"
             "EventPipeInternal_WaitForSessionSignal",
             NativeEventPipe.tryExecuteQCall "EventPipeInternal_WaitForSessionSignal"
+            // `XplatEventLogger` QCalls, present only in Linux-built CoreLibs
+            // (FEATURE_EVENTSOURCE_XPLAT). PawPrint never connects to an
+            // external tracing consumer, so the deterministic answers are
+            // "no knob set" / "logging disabled" / "no-op".
+            "EventSource_GetClrConfig", NativeEventSource.tryExecuteQCall "EventSource_GetClrConfig"
+            "IsEventSourceLoggingEnabled", NativeEventSource.tryExecuteQCall "IsEventSourceLoggingEnabled"
+            "LogEventSource", NativeEventSource.tryExecuteQCall "LogEventSource"
             "Signature_Init", NativeSignature.tryExecuteQCall "Signature_Init"
             "Signature_GetCustomModifiersAtOffset",
             NativeSignature.tryExecuteQCall "Signature_GetCustomModifiersAtOffset"
