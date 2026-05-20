@@ -1,14 +1,13 @@
 namespace WoofWare.Pawprint.Test
 
-open System
 open System.Collections.Immutable
+open System.Diagnostics
 open System.IO
 open System.Runtime.InteropServices
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
-open WoofWare.PawPrint.ExternImplementations
 open WoofWare.PawPrint.Test
 
 [<TestFixture>]
@@ -17,32 +16,61 @@ module TestFSharpPureCases =
 
     let private rid = RuntimeInformation.RuntimeIdentifier
 
+    let private projectDir =
+        Path.Combine (__SOURCE_DIRECTORY__, "..", "WoofWare.PawPrint.Test.FSharpPureCases")
+
+    let private projectFile =
+        Path.Combine (projectDir, "WoofWare.PawPrint.Test.FSharpPureCases.fsproj")
+
+    // Output goes to a path we control so the test isn't coupled to the project's TargetFramework.
     let private publishDir =
-        Path.Combine (
-            __SOURCE_DIRECTORY__,
-            "..",
-            "WoofWare.PawPrint.Test.FSharpPureCases",
-            "bin",
-            "Release",
-            "net9.0",
-            rid,
-            "publish"
-        )
+        Path.Combine (projectDir, "bin", "Release", "pawprint-test-publish", rid)
 
     let private dllPath =
         Path.Combine (publishDir, "WoofWare.PawPrint.Test.FSharpPureCases.dll")
 
-    let private loadImage () : byte array =
-        if not (File.Exists dllPath) then
-            Assert.Inconclusive "F# test cases not published; run dotnet publish first"
+    let private publishOnce : Lazy<unit> =
+        lazy
+            let psi = ProcessStartInfo "dotnet"
+            psi.ArgumentList.Add "publish"
+            psi.ArgumentList.Add "--configuration"
+            psi.ArgumentList.Add "Release"
+            psi.ArgumentList.Add "--self-contained"
+            psi.ArgumentList.Add "--runtime"
+            psi.ArgumentList.Add rid
+            psi.ArgumentList.Add "--output"
+            psi.ArgumentList.Add publishDir
+            psi.ArgumentList.Add projectFile
+            psi.RedirectStandardOutput <- true
+            psi.RedirectStandardError <- true
+            psi.UseShellExecute <- false
 
+            use proc =
+                Process.Start psi
+                |> Option.ofObj
+                |> Option.defaultWith (fun () -> failwith "Process.Start returned null for dotnet publish")
+
+            let stdout = proc.StandardOutput.ReadToEnd ()
+            let stderr = proc.StandardError.ReadToEnd ()
+            proc.WaitForExit ()
+
+            if proc.ExitCode <> 0 then
+                failwith
+                    $"dotnet publish failed with exit code %d{proc.ExitCode} for %s{projectFile}.\nSTDOUT:\n%s{stdout}\nSTDERR:\n%s{stderr}"
+
+            if not (File.Exists dllPath) then
+                failwith
+                    $"dotnet publish completed but %s{dllPath} does not exist.\nSTDOUT:\n%s{stdout}\nSTDERR:\n%s{stderr}"
+
+    let private loadImage () : byte array =
+        publishOnce.Force ()
         File.ReadAllBytes dllPath
 
     let testCases : string list = [ "Placeholder" ; "CeqBranch" ]
 
     // PawPrint cannot yet allocate string argv (Program.allocateArgs is unimplemented),
     // so all F# test cases that require argv dispatch are unimplemented for now.
-    let unimplemented : Set<string> = Set.ofList [ "Placeholder" ; "CeqBranch" ]
+    let unimplemented : Set<string> = Set.ofList [ ]
 
     let private runTest (testCaseName : string) : unit =
         let image = loadImage ()
@@ -61,7 +89,7 @@ module TestFSharpPureCases =
             let realResult = RealRuntime.executeWithRealRuntime [| testCaseName |] image
 
             let pawPrintResult =
-                Program.run loggerFactory (Some dllPath) peImage dotnetRuntimes (MockEnv.make ()) [ testCaseName ]
+                Program.run loggerFactory (Some dllPath) peImage dotnetRuntimes (MockEnv.make ()) Map.empty None [ testCaseName ]
 
             match realResult, pawPrintResult with
             | RealRuntimeResult.NormalExit exitCode, RunOutcome.NormalExit (terminalState, terminatingThread) ->
@@ -89,6 +117,12 @@ module TestFSharpPureCases =
 
                 failwith
                     $"Real runtime threw unhandled %s{realExn.GetType().Name}, but PawPrint exited normally (code: %O{pawPrintExitCode})"
+            | _, RunOutcome.FailFast _ ->
+                failwith "PawPrint called Environment.FailFast; the real runtime can't have done so or the test harness would be gone"
+            | _, RunOutcome.ProcessExit _ ->
+                failwith "PawPrint called Environment.Exit; the real runtime can't have done so or the test harness would be gone"
+            | _, RunOutcome.SignalTerminated _ ->
+                failwith "PawPrint terminated due to a signal; the real runtime can't have done so or the test harness would be gone"
         with _ ->
             for message in messages () do
                 System.Console.Error.WriteLine $"{message}"
