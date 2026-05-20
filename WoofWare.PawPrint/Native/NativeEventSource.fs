@@ -9,22 +9,41 @@ module NativeEventSource =
     /// because `EnableEventLog` is declared via `RETAIL_CONFIG_DWORD_INFO`
     /// with no `ParseIntegerAsBase10` flag (`clrconfigvalues.h:580`).
     ///
-    /// To mirror `wcstoul` we:
+    /// The Unix PAL's `PAL_wcstoul` (`pal/src/cruntime/wchar.cpp:281–324`)
+    /// is a thin wrapper around glibc `strtoul`, which on a 64-bit host
+    /// works in `unsigned long` (64-bit). On `HOST_64BIT` the PAL post-
+    /// processes the result: if `strtoul` returned > UINT32_MAX and the
+    /// input was *positive*, it clamps to `UINT32_MAX` and sets
+    /// `errno = ERANGE`; if the input was *negative*, it leaves the
+    /// value untouched and lets the final `(ULONG)res` cast truncate to
+    /// the low 32 bits (because that mirrors Windows' 32-bit `long`
+    /// behaviour). This means a guest setting
+    /// `DOTNET_EnableEventLog=-100000001` reads as enabled on real
+    /// CoreCLR — the 64-bit two's-complement wrap leaves the low 32
+    /// bits at `0xFFFFFFFF`, non-zero.
+    ///
+    /// To mirror that here we:
     ///   * skip leading whitespace;
-    ///   * accept a single optional `+` / `-` sign (negation wraps via
-    ///     two's complement, so `-1` becomes `0xFFFFFFFF` — non-zero,
-    ///     which the gate reads as TRUE);
+    ///   * accept a single optional `+` / `-` sign;
     ///   * accept (but do not require) an optional `0x` / `0X` radix
     ///     prefix, but only when it is followed by at least one hex
     ///     digit (otherwise the leading `0` is itself the digit and the
     ///     `x` becomes a stop character);
     ///   * consume the longest hex-digit prefix and ignore everything
-    ///     after it (so `1garbage` parses as 1, matching `wcstoul`).
+    ///     after it (so `1garbage` parses as 1, matching `wcstoul`);
+    ///   * parse the magnitude as `uint64` to capture values that fit in
+    ///     `unsigned long` but exceed `UInt32.MaxValue`;
+    ///   * apply the sign in 64-bit arithmetic (so `-1` becomes
+    ///     `0xFFFFFFFFFFFFFFFF`), then truncate to `uint32` to mirror
+    ///     the final `(ULONG)res` cast.
     ///
-    /// We return `None` iff no digits could be consumed (CoreCLR's
-    /// `endPtr == val` arm) or the parsed value would overflow `uint32`
-    /// (CoreCLR's `errno == ERANGE` arm). The caller treats `None` as
-    /// the default `0`, i.e. disabled.
+    /// We return `None` in CoreCLR's two failure arms only:
+    ///   * `endPtr == val` — no digits were consumed.
+    ///   * `errno == ERANGE` — either the magnitude exceeded `uint64`
+    ///     (`strtoul` itself sets ERANGE, regardless of sign) or the
+    ///     magnitude fit in 64 bits but was positive and exceeded
+    ///     `UINT32_MAX` (PAL's HOST_64BIT post-processing arm). The
+    ///     caller treats `None` as the default `0`, i.e. disabled.
     ///
     /// `IsEventSourceLoggingEnabled` only asks whether the parsed value
     /// is non-zero, but the parser is shaped to surface the full DWORD
@@ -74,18 +93,34 @@ module NativeEventSource =
                 let hexBody = trimmed.Substring (bodyStart, idx - bodyStart)
 
                 match
-                    System.UInt32.TryParse (
+                    System.UInt64.TryParse (
                         hexBody,
                         System.Globalization.NumberStyles.HexNumber,
                         System.Globalization.CultureInfo.InvariantCulture
                     )
                 with
-                | true, value -> if negate then Some (0u - value) else Some value
                 | false, _ ->
-                    // Overflow — `wcstoul` sets `errno = ERANGE`, and
-                    // `GetConfigDWORD` rejects via that arm. Surface as
-                    // `None` so the caller falls back to the default.
+                    // Magnitude exceeds `uint64`, so glibc `strtoul`
+                    // itself sets `errno = ERANGE`. PAL_wcstoul never
+                    // clears that errno (its HOST_64BIT post-processing
+                    // only adds an additional ERANGE arm for positive
+                    // 32-bit overflows), so `GetConfigDWORD` rejects
+                    // via the errno arm for both signs.
                     None
+                | true, magnitude ->
+                    if (not negate) && magnitude > uint64 System.UInt32.MaxValue then
+                        // Positive value whose magnitude exceeds
+                        // UINT32_MAX. PAL_wcstoul's HOST_64BIT branch
+                        // clamps to UINT32_MAX and sets `errno = ERANGE`,
+                        // which `GetConfigDWORD` then rejects.
+                        None
+                    else
+                        // Negation happens in `unsigned long` (mod 2^64)
+                        // inside strtoul, and the final `(ULONG)res`
+                        // cast truncates to the low 32 bits. We mirror
+                        // both steps explicitly.
+                        let wrapped = if negate then 0UL - magnitude else magnitude
+                        Some (uint32 wrapped)
 
     /// Look up a CLRConfig string knob in the guest's emulated environment,
     /// mirroring CoreCLR's `EnvGetString` priority: try `DOTNET_<name>` first,

@@ -192,10 +192,37 @@ public static class Entry
         NativeEventSource.tryParseClrConfigDword "--1" |> shouldEqual None
 
     [<Test>]
-    let ``tryParseClrConfigDword: overflow returns None (mirrors errno == ERANGE arm)`` () : unit =
-        // 0x100000000 just past UInt32.MaxValue.
+    let ``tryParseClrConfigDword: positive overflow past UINT32_MAX returns None (PAL HOST_64BIT arm)`` () : unit =
+        // PAL_wcstoul's HOST_64BIT post-processing sets `errno = ERANGE` and
+        // clamps to UINT32_MAX whenever the parsed (positive) magnitude is
+        // greater than UINT32_MAX. GetConfigDWORD then rejects.
         NativeEventSource.tryParseClrConfigDword "100000000" |> shouldEqual None
         NativeEventSource.tryParseClrConfigDword "0x100000000" |> shouldEqual None
+        // Just past UINT32_MAX still fits in `unsigned long` on a 64-bit host.
+        NativeEventSource.tryParseClrConfigDword "100000001" |> shouldEqual None
+        // Magnitudes that exceed UINT64_MAX (and therefore `unsigned long`)
+        // make `strtoul` itself set `errno = ERANGE`. PAL_wcstoul never
+        // clears that errno, so we reject for either sign.
+        NativeEventSource.tryParseClrConfigDword "10000000000000000" |> shouldEqual None
+
+        NativeEventSource.tryParseClrConfigDword "-10000000000000000"
+        |> shouldEqual None
+
+    [<Test>]
+    let ``tryParseClrConfigDword: negative overflow past UINT32_MAX truncates to low 32 bits`` () : unit =
+        // Pins the PAL_wcstoul HOST_64BIT special case: with a leading `-`,
+        // `strtoul` parses the magnitude in 64-bit `unsigned long`, applies
+        // two's-complement negation mod 2^64, and the PAL returns that
+        // value cast to `(ULONG)` — i.e. the low 32 bits — without setting
+        // ERANGE. So `DOTNET_EnableEventLog=-100000001` enables logging on
+        // real CoreCLR, and any strict UInt32-based parser would miss it.
+        // -0x100000001 mod 2^64 = 0xFFFFFFFEFFFFFFFF; low 32 bits = 0xFFFFFFFF.
+        NativeEventSource.tryParseClrConfigDword "-100000001"
+        |> shouldEqual (Some 0xFFFFFFFFu)
+        // -0x100000000 mod 2^64 = 0xFFFFFFFF00000000; low 32 bits = 0.
+        NativeEventSource.tryParseClrConfigDword "-100000000" |> shouldEqual (Some 0u)
+        // -0x1FFFFFFFF mod 2^64 = 0xFFFFFFFE00000001; low 32 bits = 1.
+        NativeEventSource.tryParseClrConfigDword "-1FFFFFFFF" |> shouldEqual (Some 1u)
 
     [<Test>]
     let ``tryParseClrConfigDword: parses longest valid prefix (1garbage -> 1)`` () : unit =
@@ -405,6 +432,29 @@ public static class Entry
             donorConcretizedMethod loggerFactory prepared.BaseClassTypes prepared.State
 
         let state = withEnvironment [ "DOTNET_EnableEventLog", "1garbage" ] state
+
+        dispatchIsEnabled loggerFactory prepared state donor
+        |> shouldEqual (EvalStackValue.Int32 1)
+
+    [<Test>]
+    let ``IsEventSourceLoggingEnabled: DOTNET_EnableEventLog=-100000001 enables (PAL_wcstoul 64-bit wrap)`` () : unit =
+        // Pins the PAL_wcstoul HOST_64BIT special case: a negative input
+        // whose magnitude exceeds UINT32_MAX is *not* rejected by the
+        // PAL — `strtoul` parses the magnitude in 64-bit `unsigned long`,
+        // applies two's-complement negation, and the PAL's final
+        // `(ULONG)res` cast truncates to the low 32 bits without setting
+        // ERANGE. -0x100000001 mod 2^64 = 0xFFFFFFFEFFFFFFFF, low 32
+        // bits = 0xFFFFFFFF, gate non-zero → enabled. The previous
+        // UInt32-only parser rejected this magnitude before applying
+        // the sign and would have disabled the gate.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+        let prepared = prepareProgram loggerFactory
+
+        let state, donor =
+            donorConcretizedMethod loggerFactory prepared.BaseClassTypes prepared.State
+
+        let state = withEnvironment [ "DOTNET_EnableEventLog", "-100000001" ] state
 
         dispatchIsEnabled loggerFactory prepared state donor
         |> shouldEqual (EvalStackValue.Int32 1)
