@@ -52,6 +52,14 @@ module AbstractMachine =
                 match IlMachineState.returnStackFrame loggerFactory baseClassTypes thread state with
                 | ReturnFrameResult.NormalReturn state -> ExecutionResult.Stepped (state, WhatWeDid.Executed, effect)
                 | result -> failwith $"unexpected ReturnFrameResult from extern method return: %A{result}"
+            | NativeHandlerResult.Yielded (state, effect) ->
+                // Native handler ran to completion AND requested a scheduler yield. Frame
+                // management is identical to Completed (pop the native frame); the
+                // distinction is carried in `WhatWeDid.VoluntaryYield` for the Scheduler.
+                match IlMachineState.returnStackFrame loggerFactory baseClassTypes thread state with
+                | ReturnFrameResult.NormalReturn state ->
+                    ExecutionResult.Stepped (state, WhatWeDid.VoluntaryYield, effect)
+                | result -> failwith $"unexpected ReturnFrameResult from yielding extern method return: %A{result}"
             | NativeHandlerResult.PushedManagedCallee (state, effect) ->
                 // The handler pushed a managed callee on top of itself for re-entry: leave
                 // the native frame on the stack so the dispatch loop runs the callee, then

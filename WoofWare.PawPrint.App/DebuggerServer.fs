@@ -135,6 +135,15 @@ module DebuggerServer =
             | Some ms -> writer.WriteNumber ("deadlineMs", ms)
 
             writer.WriteEndObject ()
+        | ThreadStatus.BlockedOnSleep deadlineMs ->
+            writer.WriteStartObject ()
+            writer.WriteString ("kind", "blockedOnSleep")
+
+            match deadlineMs with
+            | None -> ()
+            | Some ms -> writer.WriteNumber ("deadlineMs", ms)
+
+            writer.WriteEndObject ()
         | ThreadStatus.Terminated -> writer.WriteStringValue "terminated"
         | ThreadStatus.Parked -> writer.WriteStringValue "parked"
 
@@ -335,6 +344,7 @@ module DebuggerServer =
                 match whatWeDid with
                 | WhatWeDid.BlockedOnClassInit blocker -> Some (threadIdValue blocker)
                 | WhatWeDid.Executed
+                | WhatWeDid.VoluntaryYield
                 | WhatWeDid.SuspendedForClassInit
                 | WhatWeDid.SuspendedForManagedCall
                 | WhatWeDid.ThrowingTypeInitializationException -> None

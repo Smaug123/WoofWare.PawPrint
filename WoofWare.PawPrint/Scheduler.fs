@@ -132,6 +132,61 @@ module Scheduler =
         let state = IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) thread state
         setThreadStatus thread ThreadStatus.Runnable state
 
+    /// Park `blocked` in `BlockedOnSleep`, transitioning out of `Runnable`.
+    /// Mirrors `blockOnJoin` but with no per-primitive wait queue: sleeping
+    /// is purely time-driven, the wake comes from `Scheduler.fireSleepTimeout`
+    /// when the virtual clock crosses the deadline. `deadlineMs = None` is
+    /// an infinite sleep (`Thread.Sleep(-1)` / `Timeout.Infinite`); `Some _`
+    /// is a finite timeout. No optimistic eval-stack push is performed
+    /// because `Thread.Sleep` returns `void`.
+    ///
+    /// Caller is responsible for advancing the program counter past the
+    /// `Sleep` call site before parking (so the wake resumes after the
+    /// call), matching the contract used by every other QCall handler that
+    /// blocks.
+    let blockOnSleep (blocked : ThreadId) (deadlineMs : int64 option) (state : IlMachineState) : IlMachineState =
+        { state with
+            ThreadState =
+                state.ThreadState
+                |> Map.change
+                    blocked
+                    (Option.map (fun s ->
+                        { s with
+                            Status = ThreadStatus.BlockedOnSleep deadlineMs
+                        }
+                    ))
+        }
+
+    /// Fire a `Thread.Sleep` timeout: the deadline-firing path has
+    /// observed that `thread` is parked in `BlockedOnSleep (Some _)` and
+    /// the virtual clock has advanced past its deadline. Flip the status
+    /// back to `Runnable` so the scheduler can resume the thread.
+    ///
+    /// Unlike `fireJoinTimeout` / `WaitHandle.fireTimeout` /
+    /// `LowLevelMonitor.fireTimeout` / `SyncBlockMonitor.fireWaitTimeout`,
+    /// there is no optimistic-push to rewrite: `Thread.Sleep(int)` returns
+    /// `void`, so the call site advanced past itself without leaving an
+    /// eval-stack slot behind. The wake therefore only needs to flip the
+    /// status.
+    ///
+    /// Fails loud if `thread` is not actually parked in `BlockedOnSleep`
+    /// with a finite deadline: the only caller is
+    /// `Program.fireExpiredDeadlines`, which enumerates the statuses
+    /// itself, so a miss would indicate the deadline-firing path was
+    /// reached for an infinite (or non-sleep) waiter — a structural bug
+    /// worth surfacing here.
+    let fireSleepTimeout (thread : ThreadId) (state : IlMachineState) : IlMachineState =
+        match state.ThreadState |> Map.tryFind thread with
+        | None -> failwith $"Scheduler.fireSleepTimeout: thread %O{thread} has no ThreadState."
+        | Some ts ->
+            match ts.Status with
+            | ThreadStatus.BlockedOnSleep (Some _) -> ()
+            | other ->
+                failwith
+                    $"Scheduler.fireSleepTimeout: thread %O{thread} is not parked in BlockedOnSleep with a finite deadline (status: %O{other}); the scheduler observed a sleep deadline against a thread the sleep machinery does not know about."
+
+        setThreadStatus thread ThreadStatus.Runnable state
+
     /// Record that `terminated` has finished executing its final `ret`.
     /// - Flips its own status to Terminated.
     /// - Wakes every thread that was BlockedOnJoin on it; they proceed past Join.
@@ -282,6 +337,7 @@ module Scheduler =
     let onWorkerSpawned (worker : ThreadId) (initOutcome : WhatWeDid) (state : IlMachineState) : IlMachineState =
         match initOutcome with
         | WhatWeDid.Executed
+        | WhatWeDid.VoluntaryYield
         | WhatWeDid.SuspendedForClassInit
         | WhatWeDid.SuspendedForManagedCall
         | WhatWeDid.ThrowingTypeInitializationException ->
@@ -293,10 +349,11 @@ module Scheduler =
             // callee first, then re-enter the native handler), or the cached
             // TypeInitializationException was dispatched onto the worker's frames
             // (ThrowingTypeInit — the worker will run the exception handler /
-            // terminate on its next step). In all four cases the worker stays Runnable.
-            // SuspendedForManagedCall isn't reachable from `ensureTypeInitialised`
-            // (which is what feeds this entry point) today, but listing it explicitly
-            // keeps the match exhaustive and documents the intended treatment.
+            // terminate on its next step). In every case the worker stays Runnable.
+            // SuspendedForManagedCall and VoluntaryYield aren't reachable from
+            // `ensureTypeInitialised` (which is what feeds this entry point) today,
+            // but listing them explicitly keeps the match exhaustive and documents
+            // the intended treatment.
             state
         | WhatWeDid.BlockedOnClassInit blocker ->
             // Another thread is mid-init of the worker's declaring type. StartInternal
@@ -328,7 +385,15 @@ module Scheduler =
     /// policy, which is only true after this refactor.
     let onStepOutcome (ran : ThreadId) (outcome : WhatWeDid) (state : IlMachineState) : IlMachineState =
         match outcome with
-        | WhatWeDid.Executed ->
+        // VoluntaryYield is identical in its scheduler effect to Executed: the yielder
+        // made forward progress, so any thread parked BlockedOnClassInit on `ran` must
+        // be woken to re-check its blocker. The hint (that the guest *asked* to yield)
+        // is preserved for the driver-loop boundary — `chooseNext`'s current signature
+        // doesn't consume the previous outcome, so the round-robin policy is hint-
+        // insensitive today, but the variant exists so a future fuzz/pruning policy
+        // can branch here without a wider refactor.
+        | WhatWeDid.Executed
+        | WhatWeDid.VoluntaryYield ->
             let threadState =
                 state.ThreadState
                 |> Map.map (fun _ ts ->

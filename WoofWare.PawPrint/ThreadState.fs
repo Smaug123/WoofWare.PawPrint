@@ -146,6 +146,32 @@ type ThreadStatus =
     /// map) makes the invariant "no deadline once Runnable again" structural
     /// — a wake naturally forgets it.
     | BlockedOnWaitHandle of handle : WaitHandleId * deadlineMs : int64 option
+    /// This thread called `Thread.Sleep` (routed via the `ThreadNative_Sleep`
+    /// QCall) and is parked against the virtual clock with no associated
+    /// wait-queue or signalling primitive. There is no per-primitive FIFO
+    /// here because the wake is purely time-driven: the scheduler advances
+    /// `VirtualClockMs` one tick at a time, and once it crosses the deadline
+    /// the driver fires `Scheduler.fireSleepTimeout`, which flips the status
+    /// back to `Runnable`. The IL `Sleep(int)` call site has already
+    /// advanced past itself (Sleep returns `void`, so there is no
+    /// eval-stack slot to rewrite at park time — distinguishes this from
+    /// `BlockedOnJoin`/`BlockedOnSyncBlockWait` et al., which use the
+    /// optimistic-push-then-rewrite pattern).
+    ///
+    /// `deadlineMs = None` is an infinite sleep (`Thread.Sleep(-1)` /
+    /// `Timeout.Infinite`), which currently parks the thread forever
+    /// because `Thread.Interrupt` is not yet implemented (a future slice
+    /// that wires interrupt will be the only way out of an infinite
+    /// sleep — matching real CoreCLR semantics). `Some ms` is a finite
+    /// timeout (`Thread.Sleep(ms)` with `ms > 0`), expressed as the
+    /// absolute virtual-clock millisecond at which the sleep expires.
+    /// `Thread.Sleep(0)` does not produce a `BlockedOnSleep` transition
+    /// at all: it is a no-op handled inline at the call site (the BCL
+    /// uses it as a yield hint; PawPrint has no preemption to invoke).
+    /// Storing the deadline in the status itself rather than in a
+    /// parallel map makes the invariant "no deadline once Runnable
+    /// again" structural — a wake naturally forgets it.
+    | BlockedOnSleep of deadlineMs : int64 option
     /// This thread has executed its final `ret`; it will never run again. Its state is kept
     /// only so other threads can observe termination (e.g. to satisfy Join).
     | Terminated
@@ -202,6 +228,7 @@ module ThreadStatus =
         | ThreadStatus.BlockedOnSyncBlockAcquire _ -> false
         | ThreadStatus.BlockedOnSyncBlockWait _ -> false
         | ThreadStatus.BlockedOnWaitHandle _ -> false
+        | ThreadStatus.BlockedOnSleep _ -> false
 
 type ThreadState =
     {
