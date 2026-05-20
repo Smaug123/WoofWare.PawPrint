@@ -1,6 +1,20 @@
 # WoofWare.PawPrint
 
-This is an *extremely unfinished* implementation of a .NET runtime.
+This is an *extremely unfinished* implementation of a .NET runtime (specifically .NET 10).
+
+## Current status
+
+The following work, at least in some minimal form:
+
+* `Console.WriteLine`
+* `async void Main(string[] args) { ... }`
+* `Task.Run`
+* Quite a lot of reflection
+* Many low-level synchronisation primitives like `Monitor`
+
+The following are specifically not implemented:
+
+* GC and finalizers
 
 ## Goals
 
