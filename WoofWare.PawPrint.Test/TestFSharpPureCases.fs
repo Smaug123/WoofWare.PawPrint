@@ -16,8 +16,14 @@ module TestFSharpPureCases =
 
     let private rid = RuntimeInformation.RuntimeIdentifier
 
+    // Normalise: in the Nix sandbox the F# compiler can bake `__SOURCE_DIRECTORY__`
+    // with a doubled separator (e.g. `/_//WoofWare.PawPrint.Test`). MSBuild's CLI
+    // parser then mis-classifies the resulting `/_//.../foo.fsproj` path as an
+    // unknown switch and rejects it before parsing project arguments. GetFullPath
+    // collapses the duplicate separators and resolves the `..` segment so the path
+    // we hand to dotnet publish is a clean absolute path.
     let private projectDir =
-        Path.Combine (__SOURCE_DIRECTORY__, "..", "WoofWare.PawPrint.Test.FSharpPureCases")
+        Path.GetFullPath (Path.Combine (__SOURCE_DIRECTORY__, "..", "WoofWare.PawPrint.Test.FSharpPureCases"))
 
     let private projectFile =
         Path.Combine (projectDir, "WoofWare.PawPrint.Test.FSharpPureCases.fsproj")
@@ -31,6 +37,10 @@ module TestFSharpPureCases =
 
     let private publishOnce : Lazy<unit> =
         lazy
+            if not (File.Exists projectFile) then
+                failwith
+                    $"Cannot publish F# test cases: project file %s{projectFile} does not exist. (__SOURCE_DIRECTORY__ at compile time was %s{__SOURCE_DIRECTORY__}.)"
+
             let psi = ProcessStartInfo "dotnet"
             psi.ArgumentList.Add "publish"
             psi.ArgumentList.Add "--configuration"
