@@ -3,42 +3,89 @@ namespace WoofWare.PawPrint
 [<RequireQualifiedAccess>]
 module NativeEventSource =
     /// Parse a CLRConfig DWORD env-var value the way CoreCLR does for
-    /// `EnableEventLog`: `wcstoul(val, &endPtr, 16)` — hex by default, with the
-    /// optional `0x` prefix tolerated. Returns `None` if the value is empty or
-    /// fails to parse (CoreCLR's `GetConfigDWORD` falls back to the default
-    /// value, which is `0` for `EnableEventLog`).
+    /// `EnableEventLog` — `u16_strtoul(val, &endPtr, 16)` with the
+    /// success condition `errno != ERANGE && endPtr != val` (see
+    /// `GetConfigDWORD` in `clrconfig.cpp:228`). The radix is 16
+    /// because `EnableEventLog` is declared via `RETAIL_CONFIG_DWORD_INFO`
+    /// with no `ParseIntegerAsBase10` flag (`clrconfigvalues.h:580`).
     ///
-    /// `EnableEventLog` is declared via `RETAIL_CONFIG_DWORD_INFO` with no
-    /// `ParseIntegerAsBase10` flag (see `clrconfigvalues.h:580`), so the radix
-    /// is 16. Both `1` and `0x1` therefore mean TRUE; `10` means 16 (also
-    /// TRUE); `0` and `0x0` mean FALSE. We don't need the full DWORD value —
-    /// `IsEventSourceLoggingEnabled` only asks whether it's non-zero — but
-    /// the parser is shaped to surface the value so future knobs that care
-    /// about the numeric magnitude can reuse it.
+    /// To mirror `wcstoul` we:
+    ///   * skip leading whitespace;
+    ///   * accept a single optional `+` / `-` sign (negation wraps via
+    ///     two's complement, so `-1` becomes `0xFFFFFFFF` — non-zero,
+    ///     which the gate reads as TRUE);
+    ///   * accept (but do not require) an optional `0x` / `0X` radix
+    ///     prefix, but only when it is followed by at least one hex
+    ///     digit (otherwise the leading `0` is itself the digit and the
+    ///     `x` becomes a stop character);
+    ///   * consume the longest hex-digit prefix and ignore everything
+    ///     after it (so `1garbage` parses as 1, matching `wcstoul`).
+    ///
+    /// We return `None` iff no digits could be consumed (CoreCLR's
+    /// `endPtr == val` arm) or the parsed value would overflow `uint32`
+    /// (CoreCLR's `errno == ERANGE` arm). The caller treats `None` as
+    /// the default `0`, i.e. disabled.
+    ///
+    /// `IsEventSourceLoggingEnabled` only asks whether the parsed value
+    /// is non-zero, but the parser is shaped to surface the full DWORD
+    /// so future knobs that care about the numeric magnitude can reuse it.
     ///
     /// Exposed as `internal` so the test assembly can pin the parser's
     /// behaviour directly without going through the QCall dispatcher.
     let internal tryParseClrConfigDword (raw : string) : uint32 option =
-        let trimmed = raw.Trim ()
+        let isHexDigit (c : char) : bool =
+            (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+
+        let trimmed = raw.TrimStart ()
 
         if System.String.IsNullOrEmpty trimmed then
             None
         else
-            let hexBody =
-                if trimmed.StartsWith ("0x", System.StringComparison.OrdinalIgnoreCase) then
-                    trimmed.Substring 2
-                else
-                    trimmed
+            let signStart, negate =
+                match trimmed.[0] with
+                | '+' -> 1, false
+                | '-' -> 1, true
+                | _ -> 0, false
 
-            match
-                System.UInt32.TryParse (
-                    hexBody,
-                    System.Globalization.NumberStyles.HexNumber,
-                    System.Globalization.CultureInfo.InvariantCulture
-                )
-            with
-            | true, value -> Some value
-            | false, _ -> None
+            // Optional `0x` / `0X` radix prefix — only treated as a prefix
+            // when at least one hex digit follows it. Otherwise the `0`
+            // is itself the parsed digit and the `x` becomes the
+            // stop character (matching `wcstoul`'s longest-valid-prefix
+            // semantics).
+            let bodyStart =
+                if
+                    signStart + 2 < trimmed.Length
+                    && trimmed.[signStart] = '0'
+                    && (trimmed.[signStart + 1] = 'x' || trimmed.[signStart + 1] = 'X')
+                    && isHexDigit trimmed.[signStart + 2]
+                then
+                    signStart + 2
+                else
+                    signStart
+
+            let mutable idx = bodyStart
+
+            while idx < trimmed.Length && isHexDigit trimmed.[idx] do
+                idx <- idx + 1
+
+            if idx = bodyStart then
+                None
+            else
+                let hexBody = trimmed.Substring (bodyStart, idx - bodyStart)
+
+                match
+                    System.UInt32.TryParse (
+                        hexBody,
+                        System.Globalization.NumberStyles.HexNumber,
+                        System.Globalization.CultureInfo.InvariantCulture
+                    )
+                with
+                | true, value -> if negate then Some (0u - value) else Some value
+                | false, _ ->
+                    // Overflow — `wcstoul` sets `errno = ERANGE`, and
+                    // `GetConfigDWORD` rejects via that arm. Surface as
+                    // `None` so the caller falls back to the default.
+                    None
 
     /// Look up a CLRConfig string knob in the guest's emulated environment,
     /// mirroring CoreCLR's `EnvGetString` priority: try `DOTNET_<name>` first,

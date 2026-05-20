@@ -183,19 +183,56 @@ public static class Entry
         |> shouldEqual (Some 0xdeadbeefu)
 
     [<Test>]
-    let ``tryParseClrConfigDword: malformed input returns None (not crash)`` () : unit =
+    let ``tryParseClrConfigDword: input with no parseable digits returns None`` () : unit =
         NativeEventSource.tryParseClrConfigDword "garbage" |> shouldEqual None
-        NativeEventSource.tryParseClrConfigDword "0xZZ" |> shouldEqual None
-        NativeEventSource.tryParseClrConfigDword "0x" |> shouldEqual None
-        // Larger than uint32.MaxValue — TryParse rejects, we surface None
-        // (CoreCLR would silently overflow inside wcstoul; we err on the
-        // side of treating implausible values as unset).
-        NativeEventSource.tryParseClrConfigDword "100000000" |> shouldEqual None
+        NativeEventSource.tryParseClrConfigDword "+" |> shouldEqual None
+        NativeEventSource.tryParseClrConfigDword "-" |> shouldEqual None
+        // No hex digit after the sign: `wcstoul` resets endPtr to val and
+        // returns 0; we surface None (the gate treats both as disabled).
+        NativeEventSource.tryParseClrConfigDword "--1" |> shouldEqual None
 
     [<Test>]
-    let ``tryParseClrConfigDword: surrounding whitespace is trimmed`` () : unit =
+    let ``tryParseClrConfigDword: overflow returns None (mirrors errno == ERANGE arm)`` () : unit =
+        // 0x100000000 just past UInt32.MaxValue.
+        NativeEventSource.tryParseClrConfigDword "100000000" |> shouldEqual None
+        NativeEventSource.tryParseClrConfigDword "0x100000000" |> shouldEqual None
+
+    [<Test>]
+    let ``tryParseClrConfigDword: parses longest valid prefix (1garbage -> 1)`` () : unit =
+        // `wcstoul` does not require the whole string to be valid — it
+        // returns the prefix and sets endPtr past it. CoreCLR's
+        // `endPtr != val` check then accepts the result. We must too,
+        // otherwise `DOTNET_EnableEventLog=1garbage` reads as disabled
+        // here but enabled on real CoreCLR.
+        NativeEventSource.tryParseClrConfigDword "1garbage" |> shouldEqual (Some 1u)
+        NativeEventSource.tryParseClrConfigDword "ff thanks" |> shouldEqual (Some 0xffu)
+        NativeEventSource.tryParseClrConfigDword "0XYZ" |> shouldEqual (Some 0u)
+
+    [<Test>]
+    let ``tryParseClrConfigDword: 0x without trailing hex digit parses the leading 0`` () : unit =
+        // `wcstoul` sees the `0` as a digit and the `x` as a stop character.
+        // The leading `0` is consumed (endPtr advances past it), so
+        // CoreCLR returns success with value 0.
+        NativeEventSource.tryParseClrConfigDword "0x" |> shouldEqual (Some 0u)
+        NativeEventSource.tryParseClrConfigDword "0xZZ" |> shouldEqual (Some 0u)
+
+    [<Test>]
+    let ``tryParseClrConfigDword: sign is honoured via two's complement wraparound`` () : unit =
+        // `wcstoul` accepts a leading sign and wraps the negation modulo
+        // 2^32, so `-1` becomes `0xFFFFFFFF` (non-zero → enables the
+        // gate). CoreCLR's `IsEventSourceLoggingEnabled` therefore treats
+        // `DOTNET_EnableEventLog=-1` as enabled; we must as well.
+        NativeEventSource.tryParseClrConfigDword "+1" |> shouldEqual (Some 1u)
+        NativeEventSource.tryParseClrConfigDword "-1" |> shouldEqual (Some 0xFFFFFFFFu)
+        NativeEventSource.tryParseClrConfigDword "-0" |> shouldEqual (Some 0u)
+
+    [<Test>]
+    let ``tryParseClrConfigDword: leading whitespace is skipped`` () : unit =
+        NativeEventSource.tryParseClrConfigDword "  1" |> shouldEqual (Some 1u)
+        NativeEventSource.tryParseClrConfigDword "\t0x10" |> shouldEqual (Some 16u)
+        // Whitespace after the digits stops parsing but does not invalidate
+        // the prefix.
         NativeEventSource.tryParseClrConfigDword "  1  " |> shouldEqual (Some 1u)
-        NativeEventSource.tryParseClrConfigDword "\t0x10\n" |> shouldEqual (Some 16u)
 
     [<Test>]
     let ``lookupClrConfigString: DOTNET_ wins over COMPlus_ when both set`` () : unit =
@@ -336,7 +373,44 @@ public static class Entry
         |> shouldEqual (EvalStackValue.Int32 1)
 
     [<Test>]
-    let ``IsEventSourceLoggingEnabled: malformed value defaults to FALSE`` () : unit =
+    let ``IsEventSourceLoggingEnabled: DOTNET_EnableEventLog=-1 enables (wcstoul wraps to 0xFFFFFFFF)`` () : unit =
+        // Pins the wcstoul-compatible behaviour: CoreCLR's
+        // `GetConfigDWORD` accepts the leading sign, two's-complement
+        // wraps the value, and the gate reads any non-zero DWORD as
+        // enabled. A strict UInt32.TryParse would have rejected this and
+        // disabled the gate — that divergence is what Codex caught.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+        let prepared = prepareProgram loggerFactory
+
+        let state, donor =
+            donorConcretizedMethod loggerFactory prepared.BaseClassTypes prepared.State
+
+        let state = withEnvironment [ "DOTNET_EnableEventLog", "-1" ] state
+
+        dispatchIsEnabled loggerFactory prepared state donor
+        |> shouldEqual (EvalStackValue.Int32 1)
+
+    [<Test>]
+    let ``IsEventSourceLoggingEnabled: DOTNET_EnableEventLog=1garbage enables (longest-prefix parse)`` () : unit =
+        // `wcstoul` returns the parsed prefix and leaves the rest in
+        // endPtr; CoreCLR accepts this as a successful parse. We must
+        // too, otherwise the gate disagrees with the real runtime for
+        // typo-laden env values.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+        let prepared = prepareProgram loggerFactory
+
+        let state, donor =
+            donorConcretizedMethod loggerFactory prepared.BaseClassTypes prepared.State
+
+        let state = withEnvironment [ "DOTNET_EnableEventLog", "1garbage" ] state
+
+        dispatchIsEnabled loggerFactory prepared state donor
+        |> shouldEqual (EvalStackValue.Int32 1)
+
+    [<Test>]
+    let ``IsEventSourceLoggingEnabled: malformed value with no parseable digits defaults to FALSE`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
         use _loggerFactoryResource = loggerFactory
         let prepared = prepareProgram loggerFactory
