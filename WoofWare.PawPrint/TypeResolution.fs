@@ -38,9 +38,8 @@ module TypeResolution =
                     let file = Path.Combine (dir, assemblyName.Name + ".dll")
 
                     try
-                        use f = File.OpenRead file
                         logger.LogInformation ("Loading assembly from file {AssemblyFileLoadPath}", file)
-                        Assembly.read loggerFactory (Some file) f |> Some
+                        Assembly.readFile loggerFactory file |> Some
                     with :? FileNotFoundException ->
                         None
                 )

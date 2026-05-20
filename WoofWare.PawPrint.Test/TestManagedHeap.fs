@@ -15,8 +15,7 @@ module TestManagedHeap =
     let private corelib : DumpedAssembly =
         let corelibPath = typeof<obj>.Assembly.Location
         let _, loggerFactory = LoggerFactory.makeTest ()
-        use stream = File.OpenRead corelibPath
-        Assembly.read loggerFactory (Some corelibPath) stream
+        Assembly.readFile loggerFactory corelibPath
 
     let private baseClassTypes : BaseClassTypes<DumpedAssembly> =
         Corelib.getBaseTypes corelib
@@ -43,6 +42,7 @@ module TestManagedHeap =
             {
                 ConcreteType = intArrayHandle
                 Length = 0
+                Lengths = ImmutableArray.Create 0
                 Elements = ImmutableArray.Empty
             }
 
@@ -50,6 +50,7 @@ module TestManagedHeap =
             {
                 ConcreteType = stringArrayHandle
                 Length = 0
+                Lengths = ImmutableArray.Create 0
                 Elements = ImmutableArray.Empty
             }
 
@@ -68,6 +69,7 @@ module TestManagedHeap =
             {
                 ConcreteType = arrayHandle
                 Length = 0
+                Lengths = ImmutableArray.Create 0
                 Elements = ImmutableArray.Empty
             }
 
@@ -118,7 +120,7 @@ module TestManagedHeap =
         |> ignore
 
     [<Test>]
-    let ``setStringChar keeps firstChar field in sync`` () : unit =
+    let ``setStringChar updates the canonical views`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
         let state = state loggerFactory
 
@@ -127,13 +129,10 @@ module TestManagedHeap =
 
         let heap = ManagedHeap.setStringChar addr 0 'z' state.ManagedHeap
 
-        let firstCharField =
-            FieldIdentity.requiredNonGenericInstanceFieldId state.ConcreteTypes baseClassTypes.String "_firstChar"
-
-        ManagedHeap.get addr heap
-        |> AllocatedNonArrayObject.DereferenceFieldById firstCharField
-        |> shouldEqual (CliType.ofChar 'z')
-
+        // Char 0 is exposed both through the byte-level view (used by byrefs and
+        // the synthetic `_firstChar` projection) and through the canonical
+        // `StringContents` value (used by structural ops).
+        ManagedHeap.getStringChar addr 0 heap |> shouldEqual 'z'
         ManagedHeap.getStringContents addr heap |> shouldEqual (Some "zb")
 
     [<Test>]
@@ -213,3 +212,148 @@ module TestManagedHeap =
             |> ManagedHeap.recordStringContents addr2 "abcdeg"
 
         ManagedHeap.stringsEqual addr1 addr2 heap |> shouldEqual false
+
+    [<Test>]
+    let ``allocateMultiDimArray: 2D zero-init has product Length and verbatim Lengths`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let state = state loggerFactory
+
+        let elementHandle = ConcreteTypeHandle.Concrete 1
+        let arrayHandle = ConcreteTypeHandle.Array (elementHandle, 2)
+        let zero = CliType.Numeric (CliNumericType.Int32 0)
+        let lengths = ImmutableArray.CreateRange [ 3 ; 4 ]
+
+        let addr, state =
+            IlMachineState.allocateMultiDimArray arrayHandle (fun () -> zero) lengths state
+
+        let array = state.ManagedHeap.Arrays.[addr]
+        array.ConcreteType |> shouldEqual arrayHandle
+        array.Length |> shouldEqual 12
+        array.Lengths |> shouldEqual lengths
+        array.Elements.Length |> shouldEqual 12
+
+        for i = 0 to 11 do
+            array.Elements.[i] |> shouldEqual zero
+
+    [<Test>]
+    let ``allocateMultiDimArray: zero dimension yields empty backing store`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let state = state loggerFactory
+
+        let elementHandle = ConcreteTypeHandle.Concrete 1
+        let arrayHandle = ConcreteTypeHandle.Array (elementHandle, 3)
+        let zero = CliType.Numeric (CliNumericType.Int32 0)
+        let lengths = ImmutableArray.CreateRange [ 5 ; 0 ; 7 ]
+
+        let addr, state =
+            IlMachineState.allocateMultiDimArray arrayHandle (fun () -> zero) lengths state
+
+        let array = state.ManagedHeap.Arrays.[addr]
+        array.Length |> shouldEqual 0
+        array.Lengths |> shouldEqual lengths
+        array.Elements.Length |> shouldEqual 0
+
+    [<Test>]
+    let ``allocateMultiDimArray: rank-4 product overflow is detected before wrapping`` () : unit =
+        // 65536^2 = 2^32 already overflows the UInt32 running product, so the guard
+        // must fire at dimension 1 — before any silent wrap and well before we'd
+        // attempt to allocate a backing store.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let state = state loggerFactory
+
+        let elementHandle = ConcreteTypeHandle.Concrete 1
+        let arrayHandle = ConcreteTypeHandle.Array (elementHandle, 4)
+        let zero = CliType.Numeric (CliNumericType.Int32 0)
+        let lengths = ImmutableArray.CreateRange [ 65536 ; 65536 ; 65536 ; 65536 ]
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () ->
+                IlMachineState.allocateMultiDimArray arrayHandle (fun () -> zero) lengths state
+                |> ignore
+            )
+
+        exn.Message |> shouldContainText "overflows UInt32"
+
+    [<Test>]
+    let ``allocateMultiDimArray: trailing zero rescues a prefix that fits in UInt32`` () : unit =
+        // Per CoreCLR (vm/gchelpers.cpp): the running product is uint32, and 50000 *
+        // 50000 = 2,500,000,000 fits in uint32 even though it exceeds Int32.MaxValue.
+        // The trailing 0 then brings the product back to 0 and the array is allocated
+        // empty — i.e. a transient prefix overshoot must NOT abort allocation.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let state = state loggerFactory
+
+        let elementHandle = ConcreteTypeHandle.Concrete 1
+        let arrayHandle = ConcreteTypeHandle.Array (elementHandle, 3)
+        let zero = CliType.Numeric (CliNumericType.Int32 0)
+        let lengths = ImmutableArray.CreateRange [ 50000 ; 50000 ; 0 ]
+
+        let addr, state =
+            IlMachineState.allocateMultiDimArray arrayHandle (fun () -> zero) lengths state
+
+        let array = state.ManagedHeap.Arrays.[addr]
+        array.Length |> shouldEqual 0
+        array.Lengths |> shouldEqual lengths
+        array.Elements.Length |> shouldEqual 0
+
+    [<Test>]
+    let ``allocateMultiDimArray: prefix that overflows UInt32 still throws even if a later dim is zero`` () : unit =
+        // 65536 * 65536 = 2^32 overflows UInt32 itself, so codex's "trailing zero rescues"
+        // fix must NOT extend to the case where the multiply genuinely overflows. CoreCLR
+        // throws OutOfMemoryException at the multiplication step here, regardless of the
+        // final 0 dimension.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let state = state loggerFactory
+
+        let elementHandle = ConcreteTypeHandle.Concrete 1
+        let arrayHandle = ConcreteTypeHandle.Array (elementHandle, 4)
+        let zero = CliType.Numeric (CliNumericType.Int32 0)
+        let lengths = ImmutableArray.CreateRange [ 65536 ; 65536 ; 65536 ; 0 ]
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () ->
+                IlMachineState.allocateMultiDimArray arrayHandle (fun () -> zero) lengths state
+                |> ignore
+            )
+
+        exn.Message |> shouldContainText "overflows UInt32"
+
+    [<Test>]
+    let ``allocateMultiDimArray: final product exceeding Int32 is rejected even if it fits in UInt32`` () : unit =
+        // Int32.MaxValue * 2 = UInt32.MaxValue - 1, which fits in UInt32 (the per-step
+        // multiply check passes: Int32.MaxValue == UInt32.MaxValue / 2, not strictly
+        // greater). But the final product exceeds Int32.MaxValue, so it can't index our
+        // backing store; the post-loop guard must catch it.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let state = state loggerFactory
+
+        let elementHandle = ConcreteTypeHandle.Concrete 1
+        let arrayHandle = ConcreteTypeHandle.Array (elementHandle, 2)
+        let zero = CliType.Numeric (CliNumericType.Int32 0)
+        let lengths = ImmutableArray.CreateRange [ System.Int32.MaxValue ; 2 ]
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () ->
+                IlMachineState.allocateMultiDimArray arrayHandle (fun () -> zero) lengths state
+                |> ignore
+            )
+
+        exn.Message |> shouldContainText "exceeds Int32.MaxValue"
+
+    [<Test>]
+    let ``allocateMultiDimArray: negative length is rejected`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let state = state loggerFactory
+
+        let elementHandle = ConcreteTypeHandle.Concrete 1
+        let arrayHandle = ConcreteTypeHandle.Array (elementHandle, 2)
+        let zero = CliType.Numeric (CliNumericType.Int32 0)
+        let lengths = ImmutableArray.CreateRange [ 3 ; -1 ]
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () ->
+                IlMachineState.allocateMultiDimArray arrayHandle (fun () -> zero) lengths state
+                |> ignore
+            )
+
+        exn.Message |> shouldContainText "negative length"

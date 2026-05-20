@@ -8,18 +8,29 @@ type FieldHandle =
     private
         {
             AssemblyFullName : string
-            DeclaringType : ConcreteTypeHandle
+            /// The declaring type observed at allocation time. CoreCLR's
+            /// `typeof(G&lt;int&gt;).GetField(...).FieldHandle` is observably *not*
+            /// interchangeable with `typeof(G&lt;&gt;).GetField(...).FieldHandle` —
+            /// each carries its own instantiation context and `FieldInfo.GetFieldFromHandle`
+            /// rejects a mismatched declaring `RuntimeTypeHandle`. Mirror that here by
+            /// keying on the full `RuntimeTypeHandleTarget` the caller supplied: a closed
+            /// instantiation gets `Closed`; the open generic definition gets
+            /// `OpenGenericTypeDefinition`; and the two yield distinct registry ids.
+            DeclaringType : RuntimeTypeHandleTarget
             FieldHandle : ComparableFieldDefinitionHandle
         }
 
     member this.GetAssemblyFullName () : string = this.AssemblyFullName
-    member this.GetDeclaringTypeHandle () : ConcreteTypeHandle = this.DeclaringType
+    member this.GetDeclaringTypeHandle () : RuntimeTypeHandleTarget = this.DeclaringType
     member this.GetFieldDefinitionHandle () : ComparableFieldDefinitionHandle = this.FieldHandle
 
 type FieldHandleRegistry =
     private
         {
+            // The registry is authoritative for id/address/field resolution. The managed
+            // RuntimeFieldInfoStub mirrors the id for guest-visible RuntimeFieldHandle state.
             FieldHandleIdToField : Map<int64, FieldHandle>
+            FieldHandleAddressToId : Map<ManagedHeapAddress, int64>
             FieldHandleToField : Map<ManagedHeapAddress, FieldHandle>
             FieldToHandle : Map<FieldHandle, ManagedHeapAddress>
             NextHandle : int64
@@ -29,6 +40,7 @@ type FieldHandleRegistry =
 module FieldHandleRegistry =
     let empty () =
         {
+            FieldHandleAddressToId = Map.empty
             FieldHandleToField = Map.empty
             FieldToHandle = Map.empty
             FieldHandleIdToField = Map.empty
@@ -57,17 +69,31 @@ module FieldHandleRegistry =
         | TypeDefn.Void -> false
 
     /// Returns a (struct) System.RuntimeFieldHandle, with its contents (reference type) freshly allocated if necessary.
+    /// `declaringType` must be either `Closed` (a fully concrete declaring type — non-generic or
+    /// a particular closed instantiation) or `OpenGenericTypeDefinition` (the open generic typedef,
+    /// e.g. for `typeof(Foo&lt;&gt;).GetField`). Distinct targets allocate distinct registry ids,
+    /// matching CoreCLR's per-instantiation `RuntimeFieldHandle` identity. Type-parameter targets
+    /// cannot own a field and are rejected.
     let getOrAllocate
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (allConcreteTypes : AllConcreteTypes)
         (allocState : 'allocState)
         (allocate : CliValueType -> 'allocState -> ManagedHeapAddress * 'allocState)
         (declaringAssy : AssemblyName)
-        (declaringType : ConcreteTypeHandle)
+        (declaringType : RuntimeTypeHandleTarget)
         (handle : FieldDefinitionHandle)
         (reg : FieldHandleRegistry)
         : CliType * FieldHandleRegistry * 'allocState
         =
+        match declaringType with
+        | RuntimeTypeHandleTarget.Closed _
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> ()
+        | RuntimeTypeHandleTarget.GenericParameter _
+        | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
+            // Generic-parameter declaring types cannot own a field: fields live on the
+            // type that mentions the parameter, not on the parameter itself.
+            failwith
+                $"FieldHandleRegistry.getOrAllocate: declaring type must be Closed or OpenGenericTypeDefinition, got %O{declaringType}"
 
         let runtimeFieldHandle (runtimeFieldInfoStub : ManagedHeapAddress) =
             // RuntimeFieldHandle is a struct; it contains one field, an IRuntimeFieldInfo
@@ -91,6 +117,7 @@ module FieldHandleRegistry =
                 allConcreteTypes
                 (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeFieldHandle)
                 Layout.Default
+                (CharSetMetadata.ofTypeAttributes baseClassTypes.RuntimeFieldHandle.TypeAttributes)
             |> CliType.ValueType
 
         let handle =
@@ -128,6 +155,7 @@ module FieldHandleRegistry =
                 allConcreteTypes
                 (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeFieldHandleInternal)
                 Layout.Default
+                (CharSetMetadata.ofTypeAttributes baseClassTypes.RuntimeFieldHandleInternal.TypeAttributes)
             |> CliType.ValueType
 
         // https://github.com/dotnet/runtime/blob/1d1bf92fcf43aa6981804dc53c5174445069c9e4/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L1074
@@ -171,12 +199,18 @@ module FieldHandleRegistry =
                         failwith
                             $"RuntimeFieldInfoStub field %s{field.Name} was expected to be reference-shaped or int32, got %O{signature}"
             )
-            |> CliValueType.OfFields baseClassTypes allConcreteTypes runtimeFieldInfoStubHandle Layout.Default // explicitly sequential but no custom packing size
+            |> CliValueType.OfFields
+                baseClassTypes
+                allConcreteTypes
+                runtimeFieldInfoStubHandle
+                Layout.Default
+                (CharSetMetadata.ofTypeAttributes baseClassTypes.RuntimeFieldInfoStub.TypeAttributes) // explicitly sequential but no custom packing size
 
         let alloc, state = allocate runtimeFieldInfoStub allocState
 
         let reg =
             {
+                FieldHandleAddressToId = reg.FieldHandleAddressToId |> Map.add alloc newHandle
                 FieldHandleToField = reg.FieldHandleToField |> Map.add alloc handle
                 FieldToHandle = reg.FieldToHandle |> Map.add handle alloc
                 FieldHandleIdToField = reg.FieldHandleIdToField |> Map.add newHandle handle
@@ -188,6 +222,11 @@ module FieldHandleRegistry =
     /// Given the ManagedHeapAddress of a RuntimeFieldInfoStub, resolve it to the FieldHandle.
     let resolveFieldFromAddress (addr : ManagedHeapAddress) (reg : FieldHandleRegistry) : FieldHandle option =
         Map.tryFind addr reg.FieldHandleToField
+
+    /// Given the ManagedHeapAddress of a RuntimeFieldInfoStub, resolve it to the integer payload
+    /// used by RuntimeFieldHandleInternal / FieldDesc-like native pointers.
+    let resolveFieldIdFromAddress (addr : ManagedHeapAddress) (reg : FieldHandleRegistry) : int64 option =
+        Map.tryFind addr reg.FieldHandleAddressToId
 
     /// Given the integer payload of a RuntimeFieldHandleInternal, resolve it to the FieldHandle.
     let resolveFieldFromId (id : int64) (reg : FieldHandleRegistry) : FieldHandle option =

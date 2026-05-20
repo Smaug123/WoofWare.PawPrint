@@ -8,15 +8,14 @@ type private FieldContainer =
 
 type private ArithmeticTarget =
     | NullTarget
-    | LocalMemoryTarget of ThreadId * FrameId * LocallocBlockId * int
+    | StackMemoryTarget of ThreadId * FrameId * StackMemoryBlockId * int
+    | NativeMemoryTarget of NativeMemoryBlockId * int
     | ArrayTarget of ManagedHeapAddress * int
     | StringTarget of ManagedHeapAddress * int
     | FieldTarget of FieldContainer * FieldId
     /// A byref ending in `ReinterpretAs T [; ByteOffset n]`. Pointer arithmetic
     /// walks the byte cursor rather than the underlying storage. `prefixProjs`
-    /// is whatever came before the reinterpret; the caller rebuilds the byref
-    /// by appending `[ReinterpretAs reinterpretTy; ByteOffset <new>]` (or
-    /// dropping the ByteOffset when it returns to zero).
+    /// is whatever came before the reinterpret.
     | ByteViewTarget of
         root : ByrefRoot *
         prefixProjs : ByrefProjection list *
@@ -29,8 +28,13 @@ module private ArithmeticTarget =
     let decompose (ptr : ManagedPointerSource) : ArithmeticTarget =
         match ptr with
         | ManagedPointerSource.Null -> ArithmeticTarget.NullTarget
-        | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset), []) ->
-            ArithmeticTarget.LocalMemoryTarget (thread, frame, block, byteOffset)
+        | ManagedPointerSource.NativeIntPlaceholder bits ->
+            failwith
+                $"refusing to do pointer arithmetic on fake non-null byref @ 0x%x{bits}; the placeholder must never be advanced"
+        | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset), []) ->
+            ArithmeticTarget.StackMemoryTarget (thread, frame, block, byteOffset)
+        | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, byteOffset), []) ->
+            ArithmeticTarget.NativeMemoryTarget (block, byteOffset)
         | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), []) ->
             ArithmeticTarget.ArrayTarget (arr, index)
         | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), []) ->
@@ -51,10 +55,15 @@ module private ArithmeticTarget =
                 ArithmeticTarget.ByteViewTarget (root, List.rev revRest, ty, 0)
             | [] -> failwith $"refusing to do pointer arithmetic on a bare stack slot address: {ptr}"
 
-    let getFieldContainerValue (state : IlMachineState) (container : FieldContainer) : CliType =
+    let getFieldContainerValue
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (container : FieldContainer)
+        : CliType
+        =
         match container with
         | FieldContainer.HeapObject addr -> CliType.ValueType (ManagedHeap.get addr state.ManagedHeap).Contents
-        | FieldContainer.ByrefContainer ptr -> IlMachineState.readManagedByref state ptr
+        | FieldContainer.ByrefContainer ptr -> IlMachineState.readManagedByref baseClassTypes state ptr
 
 type IArithmeticOperation =
     abstract Int32Int32 : int32 -> int32 -> int32
@@ -63,6 +72,10 @@ type IArithmeticOperation =
     abstract Int64Int64 : int64 -> int64 -> int64
     abstract FloatFloat : float -> float -> float
     abstract NativeIntNativeInt : nativeint -> nativeint -> nativeint
+
+    /// This int64 return type should be wrapped in NativeIntSource or Int64Source, for example, as soon
+    /// as you obtain it.
+    abstract CrossArrayOffsets : SyntheticCrossArrayOffset -> SyntheticCrossArrayOffset -> int64
 
     abstract Int32ManagedPtr :
         BaseClassTypes<DumpedAssembly> ->
@@ -99,41 +112,6 @@ module ArithmeticOperation =
 
         int result
 
-    let private arrayElementHandle (arrObj : AllocatedArray) : ConcreteTypeHandle =
-        match arrObj.ConcreteType with
-        | ConcreteTypeHandle.OneDimArrayZero element -> element
-        | ConcreteTypeHandle.Array (element, _) -> element
-        | ConcreteTypeHandle.Concrete _
-        | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _ -> failwith $"array object has non-array concrete type: %O{arrObj.ConcreteType}"
-
-    let private arrayElementSize
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        (arr : ManagedHeapAddress)
-        : int
-        =
-        let obj = state.ManagedHeap.Arrays.[arr]
-
-        if obj.Length > 0 then
-            CliType.sizeOf obj.Elements.[0]
-        else
-            let zero, _ =
-                CliType.zeroOf state.ConcreteTypes state._LoadedAssemblies baseClassTypes (arrayElementHandle obj)
-
-            CliType.sizeOf zero
-
-    let private arrayBytePosition
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        (arr : ManagedHeapAddress)
-        (index : int)
-        (byteOffset : int)
-        : int64
-        =
-        int64 index * int64 (arrayElementSize baseClassTypes state arr)
-        + int64 byteOffset
-
     let private charConcreteType
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -144,6 +122,17 @@ module ArithmeticOperation =
 
         AllConcreteTypes.lookup handle state.ConcreteTypes
         |> Option.defaultWith (fun () -> failwith $"System.Char concrete handle %O{handle} was not registered")
+
+    let private byteConcreteType
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        : ConcreteType<ConcreteTypeHandle>
+        =
+        let handle =
+            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Byte
+
+        AllConcreteTypes.lookup handle state.ConcreteTypes
+        |> Option.defaultWith (fun () -> failwith $"System.Byte concrete handle %O{handle} was not registered")
 
     let private crossArrayPointerDelta
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -159,8 +148,11 @@ module ArithmeticOperation =
         if arr1 = arr2 then
             failwith "crossArrayPointerDelta called for two byrefs into the same array"
 
-        let position1 = arrayBytePosition baseClassTypes state arr1 index1 byteOffset1
-        let position2 = arrayBytePosition baseClassTypes state arr2 index2 byteOffset2
+        let position1 =
+            ManagedPointerByteView.arrayBytePosition baseClassTypes state arr1 index1 (int64 byteOffset1)
+
+        let position2 =
+            ManagedPointerByteView.arrayBytePosition baseClassTypes state arr2 index2 (int64 byteOffset2)
 
         NativeIntSource.syntheticCrossStorageByteOffset
             (ByteStorageIdentity.Array arr2)
@@ -184,7 +176,7 @@ module ArithmeticOperation =
             // result tagged so later arithmetic cannot silently compose it.
             crossArrayPointerDelta baseClassTypes state arr1 index1 offset1 arr2 index2 offset2
         else
-            let elementSize = arrayElementSize baseClassTypes state arr1
+            let elementSize = ManagedPointerByteView.arrayElementSize baseClassTypes state arr1
 
             let cellDelta = (int64 index1 - int64 index2) * int64 elementSize
             let byteDelta = cellDelta + int64 (offset1 - offset2)
@@ -198,12 +190,35 @@ module ArithmeticOperation =
         (ptr : ManagedPointerSource)
         : Choice<ManagedPointerSource, int>
         =
+        match ptr with
+        | ManagedPointerSource.NativeIntPlaceholder bits ->
+            // `(void*)bits + v = (void*)(bits + v)`. GetNonNullPinnableReference
+            // produces an empty span whose pointer is the placeholder; callers
+            // then form an end pointer by adding `length * elementSize` (which is
+            // zero for an empty span, but in general arithmetic on the bits is
+            // legitimate as long as no dereference occurs). A zero result must
+            // normalise back to `Null` so the placeholder invariant ("never
+            // carries zero") holds and `Unsafe.IsNullRef` agrees with the CLR's
+            // bit-pattern definition.
+            let newBits = bits + int64 v
+
+            if newBits = 0L then
+                Choice1Of2 ManagedPointerSource.Null
+            else
+                Choice1Of2 (ManagedPointerSource.NativeIntPlaceholder newBits)
+        | _ ->
+
         match ArithmeticTarget.decompose ptr with
         | ArithmeticTarget.NullTarget -> Choice2Of2 v
-        | ArithmeticTarget.LocalMemoryTarget (thread, frame, block, byteOffset) ->
+        | ArithmeticTarget.StackMemoryTarget (thread, frame, block, byteOffset) ->
             let byteOffset = checkedAddInt32 "localloc byte offset" byteOffset v
 
-            ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset), [])
+            ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset), [])
+            |> Choice1Of2
+        | ArithmeticTarget.NativeMemoryTarget (block, byteOffset) ->
+            let byteOffset = checkedAddInt32 "native memory byte offset" byteOffset v
+
+            ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, byteOffset), [])
             |> Choice1Of2
         | ArithmeticTarget.ArrayTarget (arr, index) ->
             let index = checkedAddInt32 "array index" index v
@@ -213,20 +228,33 @@ module ArithmeticOperation =
         | ArithmeticTarget.StringTarget (str, charIndex) ->
             let charType = charConcreteType baseClassTypes state
 
-            ManagedPointerSource.Byref (
-                ByrefRoot.StringCharAt (str, charIndex),
-                [ ByrefProjection.ReinterpretAs charType ; ByrefProjection.ByteOffset v ]
-            )
-            |> ManagedPointerSource.normaliseStringByteOffset
+            ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), [])
+            |> ManagedPointerSource.addByteOffsetUnderReinterpret
+                ByteOffsetNormalisationContext.nonArrayRootsOnly
+                charType
+                v
             |> Choice1Of2
         | ArithmeticTarget.FieldTarget (container, field) ->
-            let obj = ArithmeticTarget.getFieldContainerValue state container
+            let obj = ArithmeticTarget.getFieldContainerValue baseClassTypes state container
 
             let offset, _ = CliType.getFieldLayoutById field obj
             let offset = checkedAddInt32 "field byte offset" offset v
 
             match CliType.getFieldAt offset obj with
-            | None -> failwith "TODO: couldn't identify field at offset"
+            | None ->
+                match container with
+                | FieldContainer.HeapObject addr ->
+                    let byteType = byteConcreteType baseClassTypes state
+
+                    ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [])
+                    |> ManagedPointerByteView.addByteOffset baseClassTypes state byteType offset
+                    |> Choice1Of2
+                | FieldContainer.ByrefContainer parentPtr ->
+                    let byteType = byteConcreteType baseClassTypes state
+
+                    parentPtr
+                    |> ManagedPointerByteView.addByteOffset baseClassTypes state byteType offset
+                    |> Choice1Of2
             | Some field ->
                 let newField = CliConcreteField.ToCliField(field).Id
 
@@ -238,30 +266,17 @@ module ArithmeticOperation =
                         ManagedPointerSource.appendProjection (ByrefProjection.Field newField) parentPtr
 
                 Choice1Of2 newPtr
-        | ArithmeticTarget.ByteViewTarget (root, prefixProjs, reinterpretTy, byteOffset) ->
+        | ArithmeticTarget.ByteViewTarget _ ->
             // Walk the byte cursor under the trailing reinterpret. The reinterpret
             // stays (it's the type view the caller set up); the byte offset
             // accumulates. A zero result drops the ByteOffset so stripping
             // behaviour and byref equality continue to normalise.
-            let newOffset = checkedAddInt32 "byte-view offset" byteOffset v
-
-            let tailProjs =
-                if newOffset = 0 then
-                    [ ByrefProjection.ReinterpretAs reinterpretTy ]
-                else
-                    [
-                        ByrefProjection.ReinterpretAs reinterpretTy
-                        ByrefProjection.ByteOffset newOffset
-                    ]
-
-            // Fold whole cells into the array index when the root is an array:
-            // two byrefs denoting the same byte location must share one
-            // structural form, else equality (Unsafe.AreSame, ceq) spuriously
-            // returns false when the cursor lands on another cell boundary.
-            ManagedPointerSource.Byref (root, prefixProjs @ tailProjs)
-            |> ManagedPointerSource.normaliseLocalMemoryByteOffset
-            |> ManagedPointerSource.normaliseArrayByteOffset (arrayElementSize baseClassTypes state)
-            |> ManagedPointerSource.normaliseStringByteOffset
+            // Fold whole cells into the root when possible: two byrefs
+            // denoting the same byte location must share one structural form,
+            // else equality (Unsafe.AreSame, ceq) spuriously returns false
+            // when the cursor lands on another cell boundary.
+            ptr
+            |> ManagedPointerByteView.addByteOffsetToByteView baseClassTypes state v
             |> Choice1Of2
 
     let private mulInt32ManagedPtr
@@ -289,6 +304,12 @@ module ArithmeticOperation =
             member _.Int32NativeInt a b = (# "add" a b : nativeint #)
             member _.NativeIntInt32 a b = (# "add" a b : nativeint #)
 
+            member _.CrossArrayOffsets a b =
+                if a = SyntheticCrossArrayOffset.negate b then
+                    0L
+                else
+                    failwith "refusing to add SyntheticCrossArrayOffsets"
+
             member _.ManagedPtrManagedPtr _ _ ptr1 ptr2 =
                 match ptr1, ptr2 with
                 | ManagedPointerSource.Null, _ -> Choice1Of2 ptr2
@@ -312,6 +333,12 @@ module ArithmeticOperation =
             member _.NativeIntNativeInt a b = (# "add.ovf" a b : nativeint #)
             member _.Int32NativeInt a b = (# "add.ovf" a b : nativeint #)
             member _.NativeIntInt32 a b = (# "add.ovf" a b : nativeint #)
+
+            member _.CrossArrayOffsets a b =
+                if a = SyntheticCrossArrayOffset.negate b then
+                    0L
+                else
+                    failwith "refusing to add_ovf SyntheticCrossArrayOffsets"
 
             member _.ManagedPtrManagedPtr _ _ ptr1 ptr2 =
                 match ptr1, ptr2 with
@@ -337,24 +364,60 @@ module ArithmeticOperation =
             member _.Int32NativeInt a b = (# "sub" a b : nativeint #)
             member _.NativeIntInt32 a b = (# "sub" a b : nativeint #)
 
+            member _.CrossArrayOffsets a b =
+                if a = b then
+                    0L
+                else
+                    failwith "refusing to sub SyntheticCrossArrayOffsets"
+
             member _.ManagedPtrManagedPtr baseClassTypes state ptr1 ptr2 =
                 match ptr1, ptr2 with
+                // `Unsafe.AsRef<T>((void*)bits)` produces a bit-pattern byref,
+                // and the null managed pointer is just the placeholder at
+                // `bits = 0`. Pointer subtraction over these is plain bit
+                // subtraction: GetNonNullPinnableReference uses
+                // `endPtr - startPtr` to recover an empty span's byte length
+                // (0 when the placeholders share a bit pattern). These arms
+                // must precede the generic `Null`-on-either-side arms below,
+                // which would otherwise return the left ManagedPointer
+                // (Choice1Of2) for `placeholder - Null` or refuse the
+                // `Null - placeholder` case.
+                | ManagedPointerSource.NativeIntPlaceholder bits1, ManagedPointerSource.NativeIntPlaceholder bits2 ->
+                    bits1 - bits2 |> verbatimInt64 |> Choice2Of2
+                | ManagedPointerSource.NativeIntPlaceholder bits1, ManagedPointerSource.Null ->
+                    bits1 |> verbatimInt64 |> Choice2Of2
+                | ManagedPointerSource.Null, ManagedPointerSource.NativeIntPlaceholder bits2 ->
+                    -bits2 |> verbatimInt64 |> Choice2Of2
                 | ptr1, ManagedPointerSource.Null -> Choice1Of2 ptr1
                 | ManagedPointerSource.Null, _ -> failwith "refusing to create negative pointer"
+                | ManagedPointerSource.NativeIntPlaceholder _, _
+                | _, ManagedPointerSource.NativeIntPlaceholder _ ->
+                    failwith $"refusing to subtract through fake non-null byref placeholder: %O{ptr1} and %O{ptr2}"
                 | ManagedPointerSource.Byref (ByrefRoot.Argument _, _), _
                 | _, ManagedPointerSource.Byref (ByrefRoot.Argument _, _) ->
                     failwith $"refusing to operate on pointers to arguments: %O{ptr1} and %O{ptr2}"
                 | ManagedPointerSource.Byref _, ManagedPointerSource.Byref _ ->
                     match ArithmeticTarget.decompose ptr1, ArithmeticTarget.decompose ptr2 with
-                    | ArithmeticTarget.LocalMemoryTarget (thread1, frame1, block1, byteOffset1),
-                      ArithmeticTarget.LocalMemoryTarget (thread2, frame2, block2, byteOffset2) ->
+                    | ArithmeticTarget.StackMemoryTarget (thread1, frame1, block1, byteOffset1),
+                      ArithmeticTarget.StackMemoryTarget (thread2, frame2, block2, byteOffset2) ->
                         if thread1 = thread2 && frame1 = frame2 && block1 = block2 then
                             int64 byteOffset1 - int64 byteOffset2 |> verbatimInt64 |> Choice2Of2
                         else
                             NativeIntSource.syntheticCrossStorageByteOffset
-                                (ByteStorageIdentity.LocalMemory (thread2, frame2, block2))
+                                (ByteStorageIdentity.StackMemory (thread2, frame2, block2))
                                 (int64 byteOffset2)
-                                (ByteStorageIdentity.LocalMemory (thread1, frame1, block1))
+                                (ByteStorageIdentity.StackMemory (thread1, frame1, block1))
+                                (int64 byteOffset1)
+                            |> Choice2Of2
+                    | ArithmeticTarget.NativeMemoryTarget (block1, byteOffset1),
+                      ArithmeticTarget.NativeMemoryTarget (block2, byteOffset2) ->
+                        if block1 = block2 then
+                            int64 byteOffset1 - int64 byteOffset2 |> verbatimInt64 |> Choice2Of2
+                        else
+                            NativeIntSource.syntheticCrossStorageByteOffset
+                                (ByteStorageIdentity.NativeMemory block2)
+                                (int64 byteOffset2)
+                                (ByteStorageIdentity.NativeMemory block1)
                                 (int64 byteOffset1)
                             |> Choice2Of2
                     | ArithmeticTarget.ArrayTarget (arr1, index1), ArithmeticTarget.ArrayTarget (arr2, index2) ->
@@ -372,6 +435,104 @@ module ArithmeticOperation =
                         ->
                         subtractArrayByteLocations baseClassTypes state arr1 index1 offset1 arr2 index2 offset2
                         |> Choice2Of2
+                    | ArithmeticTarget.ByteViewTarget (ByrefRoot.StackMemoryByte (thread1, frame1, block1, rootOffset1),
+                                                       prefix1,
+                                                       _,
+                                                       offset1),
+                      ArithmeticTarget.ByteViewTarget (ByrefRoot.StackMemoryByte (thread2, frame2, block2, rootOffset2),
+                                                       prefix2,
+                                                       _,
+                                                       offset2) when prefix1 = prefix2 ->
+                        let byteOffset1 = int64 rootOffset1 + int64 offset1
+                        let byteOffset2 = int64 rootOffset2 + int64 offset2
+
+                        if thread1 = thread2 && frame1 = frame2 && block1 = block2 then
+                            byteOffset1 - byteOffset2 |> verbatimInt64 |> Choice2Of2
+                        else
+                            NativeIntSource.syntheticCrossStorageByteOffset
+                                (ByteStorageIdentity.StackMemory (thread2, frame2, block2))
+                                byteOffset2
+                                (ByteStorageIdentity.StackMemory (thread1, frame1, block1))
+                                byteOffset1
+                            |> Choice2Of2
+                    | ArithmeticTarget.ByteViewTarget (ByrefRoot.StackMemoryByte (thread1, frame1, block1, rootOffset1),
+                                                       [],
+                                                       _,
+                                                       offset1),
+                      ArithmeticTarget.StackMemoryTarget (thread2, frame2, block2, byteOffset2) ->
+                        let byteOffset1 = int64 rootOffset1 + int64 offset1
+
+                        if thread1 = thread2 && frame1 = frame2 && block1 = block2 then
+                            byteOffset1 - int64 byteOffset2 |> verbatimInt64 |> Choice2Of2
+                        else
+                            NativeIntSource.syntheticCrossStorageByteOffset
+                                (ByteStorageIdentity.StackMemory (thread2, frame2, block2))
+                                (int64 byteOffset2)
+                                (ByteStorageIdentity.StackMemory (thread1, frame1, block1))
+                                byteOffset1
+                            |> Choice2Of2
+                    | ArithmeticTarget.StackMemoryTarget (thread1, frame1, block1, byteOffset1),
+                      ArithmeticTarget.ByteViewTarget (ByrefRoot.StackMemoryByte (thread2, frame2, block2, rootOffset2),
+                                                       [],
+                                                       _,
+                                                       offset2) ->
+                        let byteOffset2 = int64 rootOffset2 + int64 offset2
+
+                        if thread1 = thread2 && frame1 = frame2 && block1 = block2 then
+                            int64 byteOffset1 - byteOffset2 |> verbatimInt64 |> Choice2Of2
+                        else
+                            NativeIntSource.syntheticCrossStorageByteOffset
+                                (ByteStorageIdentity.StackMemory (thread2, frame2, block2))
+                                byteOffset2
+                                (ByteStorageIdentity.StackMemory (thread1, frame1, block1))
+                                (int64 byteOffset1)
+                            |> Choice2Of2
+                    | ArithmeticTarget.ByteViewTarget (ByrefRoot.NativeMemoryByte (block1, rootOffset1),
+                                                       prefix1,
+                                                       _,
+                                                       offset1),
+                      ArithmeticTarget.ByteViewTarget (ByrefRoot.NativeMemoryByte (block2, rootOffset2),
+                                                       prefix2,
+                                                       _,
+                                                       offset2) when prefix1 = prefix2 ->
+                        let byteOffset1 = int64 rootOffset1 + int64 offset1
+                        let byteOffset2 = int64 rootOffset2 + int64 offset2
+
+                        if block1 = block2 then
+                            byteOffset1 - byteOffset2 |> verbatimInt64 |> Choice2Of2
+                        else
+                            NativeIntSource.syntheticCrossStorageByteOffset
+                                (ByteStorageIdentity.NativeMemory block2)
+                                byteOffset2
+                                (ByteStorageIdentity.NativeMemory block1)
+                                byteOffset1
+                            |> Choice2Of2
+                    | ArithmeticTarget.ByteViewTarget (ByrefRoot.NativeMemoryByte (block1, rootOffset1), [], _, offset1),
+                      ArithmeticTarget.NativeMemoryTarget (block2, byteOffset2) ->
+                        let byteOffset1 = int64 rootOffset1 + int64 offset1
+
+                        if block1 = block2 then
+                            byteOffset1 - int64 byteOffset2 |> verbatimInt64 |> Choice2Of2
+                        else
+                            NativeIntSource.syntheticCrossStorageByteOffset
+                                (ByteStorageIdentity.NativeMemory block2)
+                                (int64 byteOffset2)
+                                (ByteStorageIdentity.NativeMemory block1)
+                                byteOffset1
+                            |> Choice2Of2
+                    | ArithmeticTarget.NativeMemoryTarget (block1, byteOffset1),
+                      ArithmeticTarget.ByteViewTarget (ByrefRoot.NativeMemoryByte (block2, rootOffset2), [], _, offset2) ->
+                        let byteOffset2 = int64 rootOffset2 + int64 offset2
+
+                        if block1 = block2 then
+                            int64 byteOffset1 - byteOffset2 |> verbatimInt64 |> Choice2Of2
+                        else
+                            NativeIntSource.syntheticCrossStorageByteOffset
+                                (ByteStorageIdentity.NativeMemory block2)
+                                byteOffset2
+                                (ByteStorageIdentity.NativeMemory block1)
+                                (int64 byteOffset1)
+                            |> Choice2Of2
                     | ArithmeticTarget.ByteViewTarget (ByrefRoot.StringCharAt (str1, index1), prefix1, _, offset1),
                       ArithmeticTarget.ByteViewTarget (ByrefRoot.StringCharAt (str2, index2), prefix2, _, offset2) when
                         prefix1 = prefix2
@@ -407,8 +568,8 @@ module ArithmeticOperation =
                             failwith
                                 $"refusing to subtract pointers to fields of different containers: %O{container1} vs %O{container2}"
 
-                        let obj1 = ArithmeticTarget.getFieldContainerValue state container1
-                        let obj2 = ArithmeticTarget.getFieldContainerValue state container2
+                        let obj1 = ArithmeticTarget.getFieldContainerValue baseClassTypes state container1
+                        let obj2 = ArithmeticTarget.getFieldContainerValue baseClassTypes state container2
 
                         let offset1, _ = CliType.getFieldLayoutById field1 obj1
                         let offset2, _ = CliType.getFieldLayoutById field2 obj2
@@ -420,10 +581,14 @@ module ArithmeticOperation =
                         // delta regardless of which `ReinterpretAs` type was used
                         // on each side (the view is address-preserving).
                         int64 off1 - int64 off2 |> verbatimInt64 |> Choice2Of2
-                    | ArithmeticTarget.LocalMemoryTarget _, _
-                    | _, ArithmeticTarget.LocalMemoryTarget _ ->
+                    | ArithmeticTarget.StackMemoryTarget _, _
+                    | _, ArithmeticTarget.StackMemoryTarget _ ->
                         failwith
                             $"refusing to subtract localloc byte pointer from incompatible pointer: %O{ptr1} vs %O{ptr2}"
+                    | ArithmeticTarget.NativeMemoryTarget _, _
+                    | _, ArithmeticTarget.NativeMemoryTarget _ ->
+                        failwith
+                            $"refusing to subtract native memory byte pointer from incompatible pointer: %O{ptr1} vs %O{ptr2}"
                     | ArithmeticTarget.ArrayTarget _, _
                     | _, ArithmeticTarget.ArrayTarget _ ->
                         failwith
@@ -432,7 +597,9 @@ module ArithmeticOperation =
                     | _, ArithmeticTarget.StringTarget _ ->
                         failwith
                             $"refusing to subtract string character pointer from incompatible pointer: %O{ptr1} vs %O{ptr2}"
-                    | _, _ -> failwith "TODO"
+                    | target1, target2 ->
+                        failwith
+                            $"TODO: subtracting incompatible managed pointer targets is not implemented: %O{target1} vs %O{target2} (%O{ptr1} vs %O{ptr2})"
 
             member _.Int32ManagedPtr _ state val1 ptr2 =
                 match ptr2 with
@@ -458,6 +625,9 @@ module ArithmeticOperation =
             member _.Int32NativeInt a b = (# "mul" a b : nativeint #)
             member _.NativeIntInt32 a b = (# "mul" a b : nativeint #)
 
+            member _.CrossArrayOffsets a b =
+                failwith "refusing to mul SyntheticCrossArrayOffsets"
+
             member _.ManagedPtrManagedPtr _ _ ptr1 ptr2 =
                 match ptr1, ptr2 with
                 | ManagedPointerSource.Null, _ -> Choice2Of2 (NativeIntSource.Verbatim 0L)
@@ -478,6 +648,9 @@ module ArithmeticOperation =
             member _.NativeIntNativeInt a b = (# "rem" a b : nativeint #)
             member _.Int32NativeInt a b = (# "rem" a b : nativeint #)
             member _.NativeIntInt32 a b = (# "rem" a b : nativeint #)
+
+            member _.CrossArrayOffsets a b =
+                failwith "refusing to rem SyntheticCrossArrayOffsets"
 
             member _.ManagedPtrManagedPtr _ _ ptr1 ptr2 = failwith "refusing to rem pointers"
 
@@ -500,6 +673,9 @@ module ArithmeticOperation =
             member _.Int32NativeInt a b = (# "rem.un" a b : nativeint #)
             member _.NativeIntInt32 a b = (# "rem.un" a b : nativeint #)
 
+            member _.CrossArrayOffsets a b =
+                failwith "refusing to rem_un SyntheticCrossArrayOffsets"
+
             member _.ManagedPtrManagedPtr _ _ ptr1 ptr2 = failwith "refusing to rem.un pointers"
 
             member _.Int32ManagedPtr _ _ a ptr = failwith "refusing to rem.un pointer"
@@ -518,6 +694,9 @@ module ArithmeticOperation =
             member _.Int32NativeInt a b = (# "mul.ovf" a b : nativeint #)
             member _.NativeIntInt32 a b = (# "mul.ovf" a b : nativeint #)
 
+            member _.CrossArrayOffsets a b =
+                failwith "refusing to mul_ovf SyntheticCrossArrayOffsets"
+
             member _.ManagedPtrManagedPtr _ _ ptr1 ptr2 =
                 match ptr1, ptr2 with
                 | ManagedPointerSource.Null, _ -> Choice2Of2 (NativeIntSource.Verbatim 0L)
@@ -530,6 +709,30 @@ module ArithmeticOperation =
             member _.Name = "mul_ovf"
         }
 
+    let mulOvfUn =
+        { new IArithmeticOperation with
+            member _.Int32Int32 a b = (# "mul.ovf.un" a b : int32 #)
+            member _.Int64Int64 a b = (# "mul.ovf.un" a b : int64 #)
+
+            member _.FloatFloat a b =
+                failwith $"refusing to mul.ovf.un float values: %f{a} and %f{b}"
+
+            member _.NativeIntNativeInt a b = (# "mul.ovf.un" a b : nativeint #)
+            member _.Int32NativeInt a b = (# "mul.ovf.un" a b : nativeint #)
+            member _.NativeIntInt32 a b = (# "mul.ovf.un" a b : nativeint #)
+
+            member _.CrossArrayOffsets a b =
+                failwith "refusing to mul_ovf_un SyntheticCrossArrayOffsets"
+
+            member _.ManagedPtrManagedPtr _ _ ptr1 ptr2 =
+                failwith $"refusing to mul.ovf.un two managed pointers: %O{ptr1} and %O{ptr2}"
+
+            member _.Int32ManagedPtr _ state a ptr = mulInt32ManagedPtr state a ptr
+            member _.ManagedPtrInt32 _ state a ptr = mulInt32ManagedPtr state ptr a
+
+            member _.Name = "mul.ovf.un"
+        }
+
     let div =
         { new IArithmeticOperation with
             member _.Int32Int32 a b = (# "div" a b : int32 #)
@@ -538,6 +741,9 @@ module ArithmeticOperation =
             member _.NativeIntNativeInt a b = (# "div" a b : nativeint #)
             member _.Int32NativeInt a b = (# "div" a b : nativeint #)
             member _.NativeIntInt32 a b = (# "div" a b : nativeint #)
+
+            member _.CrossArrayOffsets a b =
+                failwith "refusing to div SyntheticCrossArrayOffsets"
 
             member _.ManagedPtrManagedPtr _ _ ptr1 ptr2 =
                 match ptr1, ptr2 with
@@ -561,13 +767,19 @@ module ArithmeticOperation =
 
 [<RequireQualifiedAccess>]
 module BinaryArithmetic =
+    /// Apply a binary arithmetic operation. Returns the result together with
+    /// the (possibly updated) machine state — the WidenedNativeInt arms that
+    /// materialise synthesised pointer-hash bits register new
+    /// `PointerHashCounters` entries on `state`; every other arm returns
+    /// `state` unchanged. Callers MUST use the returned state, not the input
+    /// state, when pushing the result.
     let execute
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (op : IArithmeticOperation)
         (state : IlMachineState)
         (val1 : EvalStackValue)
         (val2 : EvalStackValue)
-        : EvalStackValue
+        : EvalStackValue * IlMachineState
         =
         let managedPtrManagedPtr (ptr1 : ManagedPointerSource) (ptr2 : ManagedPointerSource) : EvalStackValue =
             match op.ManagedPtrManagedPtr baseClassTypes state ptr1 ptr2 with
@@ -596,11 +808,40 @@ module BinaryArithmetic =
                 failwith
                     $"managed pointer arithmetic (%s{op.Name}): refusing to use non-verbatim native int %O{v} as pointer offset"
 
+        // 64-bit assumption: an int64 offset that does not fit in int32 cannot
+        // be applied to a managed pointer in our model. On 32-bit, the BCL's
+        // wraparound idiom intentionally produces oversize int64s and relies
+        // on the subsequent Conv.U truncating mod 2^32; we don't model that.
+        let widenedInt64OffsetForPointerArithmetic (n : int64) : int32 =
+            if n > int64<int32> System.Int32.MaxValue || n < int64<int32> System.Int32.MinValue then
+                failwith
+                    $"managed pointer arithmetic (%s{op.Name}): int64 offset does not fit in int32: %d{n} (the WidenedNativeInt arms are 64-bit-only — on 32-bit, oversize offsets would truncate mod 2^32)"
+
+            int32<int64> n
+
+        let widenedManagedPtrChoiceAsInt64
+            (signed : bool)
+            (result : Choice<ManagedPointerSource, int>)
+            : EvalStackValue
+            =
+            match result with
+            | Choice1Of2 ptr ->
+                EvalStackValue.Int64 (Int64Source.widenedNativeInt (NativeIntSource.ManagedPointer ptr) signed)
+            | Choice2Of2 i -> EvalStackValue.Int64 (Int64Source.Verbatim (int64<int32> i))
+
+        let materialise (src : NativeIntSource) (counters : PointerHashCounters) : int64 * PointerHashCounters =
+            PointerHashSynthesis.materialiseHashBits $"BinaryArithmetic.%s{op.Name}" src counters
+
+        let withState (esv : EvalStackValue) : EvalStackValue * IlMachineState = esv, state
+
         // see table at https://learn.microsoft.com/en-us/dotnet/api/system.reflection.emit.opcodes.add?view=net-9.0
         match val1, val2 with
-        | EvalStackValue.Int32 val1, EvalStackValue.Int32 val2 -> op.Int32Int32 val1 val2 |> EvalStackValue.Int32
+        | EvalStackValue.Int32 val1, EvalStackValue.Int32 val2 ->
+            op.Int32Int32 val1 val2 |> EvalStackValue.Int32 |> withState
         | EvalStackValue.Int32 val1, EvalStackValue.NativeInt (NativeIntSource.ManagedPointer val2) ->
-            op.Int32ManagedPtr baseClassTypes state val1 val2 |> managedPtrChoiceAsNativeInt
+            op.Int32ManagedPtr baseClassTypes state val1 val2
+            |> managedPtrChoiceAsNativeInt
+            |> withState
         | EvalStackValue.Int32 val1, EvalStackValue.NativeInt val2 ->
             let val2 =
                 match val2 with
@@ -611,15 +852,132 @@ module BinaryArithmetic =
             |> int64<nativeint>
             |> NativeIntSource.Verbatim
             |> EvalStackValue.NativeInt
+            |> withState
         | EvalStackValue.Int32 val1, EvalStackValue.ManagedPointer val2 ->
             match op.Int32ManagedPtr baseClassTypes state val1 val2 with
-            | Choice1Of2 v -> EvalStackValue.ManagedPointer v
-            | Choice2Of2 i -> EvalStackValue.Int32 i
-        | EvalStackValue.Int32 val1, EvalStackValue.ObjectRef val2 -> failwith "" |> EvalStackValue.ObjectRef
+            | Choice1Of2 v -> EvalStackValue.ManagedPointer v |> withState
+            | Choice2Of2 i -> EvalStackValue.Int32 i |> withState
+        | EvalStackValue.Int32 val1, EvalStackValue.ObjectRef val2 ->
+            failwith "" |> EvalStackValue.ObjectRef |> withState
         | EvalStackValue.Int32 _, EvalStackValue.NullObjectRef -> failwith ""
-        | EvalStackValue.Int64 val1, EvalStackValue.Int64 val2 -> op.Int64Int64 val1 val2 |> EvalStackValue.Int64
+        | EvalStackValue.Int64 (Int64Source.Verbatim val1), EvalStackValue.Int64 (Int64Source.Verbatim val2) ->
+            op.Int64Int64 val1 val2
+            |> Int64Source.Verbatim
+            |> EvalStackValue.Int64
+            |> withState
+        // Arithmetic on synthesised pointer-hash bits stays in the hash domain:
+        // the bits are not a real numeric quantity, but the bit-mixing pipeline
+        // (e.g. `hash * 11400714819323198485ul` in CastCache.KeyToBucket) needs
+        // arithmetic ops to combine them. Keep the OpaqueHashBits tag so the
+        // result can't round-trip back to a pointer via `conv.u`/`conv.i`.
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits val1), EvalStackValue.Int64 (Int64Source.OpaqueHashBits val2) ->
+            op.Int64Int64 val1 val2
+            |> Int64Source.OpaqueHashBits
+            |> EvalStackValue.Int64
+            |> withState
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits val1), EvalStackValue.Int64 (Int64Source.Verbatim val2) ->
+            op.Int64Int64 val1 val2
+            |> Int64Source.OpaqueHashBits
+            |> EvalStackValue.Int64
+            |> withState
+        | EvalStackValue.Int64 (Int64Source.Verbatim val1), EvalStackValue.Int64 (Int64Source.OpaqueHashBits val2) ->
+            op.Int64Int64 val1 val2
+            |> Int64Source.OpaqueHashBits
+            |> EvalStackValue.Int64
+            |> withState
+        | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset val1),
+          EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset val2) ->
+            op.CrossArrayOffsets val1 val2
+            |> Int64Source.Verbatim
+            |> EvalStackValue.Int64
+            |> withState
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (NativeIntSource.ManagedPointer val1, signed)),
+          EvalStackValue.Int64 (Int64Source.Verbatim val2) ->
+            let val2 = widenedInt64OffsetForPointerArithmetic val2
+
+            op.ManagedPtrInt32 baseClassTypes state val1 val2
+            |> widenedManagedPtrChoiceAsInt64 signed
+            |> withState
+        | EvalStackValue.Int64 (Int64Source.Verbatim val1),
+          EvalStackValue.Int64 (Int64Source.WidenedNativeInt (NativeIntSource.ManagedPointer val2, signed)) ->
+            let val1 = widenedInt64OffsetForPointerArithmetic val1
+
+            op.Int32ManagedPtr baseClassTypes state val1 val2
+            |> widenedManagedPtrChoiceAsInt64 signed
+            |> withState
+        // Arithmetic on a widened non-managed-pointer source materialises the
+        // synthesised hash bits up-front, so a pointer-hash expression starting
+        // with arithmetic (e.g. `(ulong)handle * C` for the CastCache golden-
+        // ratio mix) doesn't fall through to "invalid operation". The
+        // ManagedPointer arms above match first, so `src` here is always one
+        // of the non-managed pointer shapes that `materialiseHashBits`
+        // accepts (TypeHandlePtr, MethodTablePtr, function/method/field
+        // handles, etc.). Result is tagged OpaqueHashBits so it can't
+        // round-trip back to a pointer via `conv.u` / `conv.i`.
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)), EvalStackValue.Int64 (Int64Source.Verbatim val2) ->
+            let val1, counters = materialise src state.PointerHashCounters
+
+            let state =
+                { state with
+                    PointerHashCounters = counters
+                }
+
+            op.Int64Int64 val1 val2 |> Int64Source.OpaqueHashBits |> EvalStackValue.Int64, state
+        | EvalStackValue.Int64 (Int64Source.Verbatim val1), EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
+            let val2, counters = materialise src state.PointerHashCounters
+
+            let state =
+                { state with
+                    PointerHashCounters = counters
+                }
+
+            op.Int64Int64 val1 val2 |> Int64Source.OpaqueHashBits |> EvalStackValue.Int64, state
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)),
+          EvalStackValue.Int64 (Int64Source.OpaqueHashBits val2) ->
+            let val1, counters = materialise src state.PointerHashCounters
+
+            let state =
+                { state with
+                    PointerHashCounters = counters
+                }
+
+            op.Int64Int64 val1 val2 |> Int64Source.OpaqueHashBits |> EvalStackValue.Int64, state
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits val1),
+          EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
+            let val2, counters = materialise src state.PointerHashCounters
+
+            let state =
+                { state with
+                    PointerHashCounters = counters
+                }
+
+            op.Int64Int64 val1 val2 |> Int64Source.OpaqueHashBits |> EvalStackValue.Int64, state
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src1, _)),
+          EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src2, _)) ->
+            // Mixing managed-pointer arithmetic with non-pointer hash bits in
+            // the same op is unsupported — pointer × pointer arithmetic on
+            // bare nativeints is itself rare, and falls through to the
+            // existing "invalid operation" failwith if either side is a
+            // managed pointer.
+            match src1, src2 with
+            | NativeIntSource.ManagedPointer _, _
+            | _, NativeIntSource.ManagedPointer _ ->
+                failwith
+                    $"TODO: BinaryArithmetic %s{op.Name} on (WidenedNativeInt %O{src1}) and (WidenedNativeInt %O{src2}): one side is a managed pointer, the other isn't"
+            | _ ->
+                let val1, counters = materialise src1 state.PointerHashCounters
+                let val2, counters = materialise src2 counters
+
+                let state =
+                    { state with
+                        PointerHashCounters = counters
+                    }
+
+                op.Int64Int64 val1 val2 |> Int64Source.OpaqueHashBits |> EvalStackValue.Int64, state
         | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer val1), EvalStackValue.Int32 val2 ->
-            op.ManagedPtrInt32 baseClassTypes state val1 val2 |> managedPtrChoiceAsNativeInt
+            op.ManagedPtrInt32 baseClassTypes state val1 val2
+            |> managedPtrChoiceAsNativeInt
+            |> withState
         | EvalStackValue.NativeInt val1, EvalStackValue.Int32 val2 ->
             let val1 =
                 match val1 with
@@ -630,60 +988,84 @@ module BinaryArithmetic =
             |> int64<nativeint>
             |> NativeIntSource.Verbatim
             |> EvalStackValue.NativeInt
+            |> withState
         | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer val1),
           EvalStackValue.NativeInt (NativeIntSource.ManagedPointer val2) ->
             op.ManagedPtrManagedPtr baseClassTypes state val1 val2
             |> managedPtrManagedPtrAsNativeInt
+            |> withState
         | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer val1), EvalStackValue.NativeInt val2 ->
             let val2 = nativeIntOffsetForPointerArithmetic val2
-            op.ManagedPtrInt32 baseClassTypes state val1 val2 |> managedPtrChoiceAsNativeInt
+
+            op.ManagedPtrInt32 baseClassTypes state val1 val2
+            |> managedPtrChoiceAsNativeInt
+            |> withState
         | EvalStackValue.NativeInt val1, EvalStackValue.NativeInt (NativeIntSource.ManagedPointer val2) ->
             let val1 = nativeIntOffsetForPointerArithmetic val1
-            op.Int32ManagedPtr baseClassTypes state val1 val2 |> managedPtrChoiceAsNativeInt
+
+            op.Int32ManagedPtr baseClassTypes state val1 val2
+            |> managedPtrChoiceAsNativeInt
+            |> withState
         | EvalStackValue.NativeInt val1, EvalStackValue.NativeInt val2 ->
-            let val1 =
-                match val1 with
-                | NativeIntSource.Verbatim n -> nativeint<int64> n
-                | v -> failwith $"refusing to operate on non-verbatim native int %O{v}"
+            match val1, val2 with
+            | NativeIntSource.SyntheticCrossArrayOffset val1, NativeIntSource.SyntheticCrossArrayOffset val2 ->
+                // Targeted special-case
+                op.CrossArrayOffsets val1 val2
+                |> NativeIntSource.Verbatim
+                |> EvalStackValue.NativeInt
+                |> withState
+            | NativeIntSource.Verbatim val1, NativeIntSource.Verbatim val2 ->
+                let val1 = nativeint<int64> val1
+                let val2 = nativeint<int64> val2
 
-            let val2 =
-                match val2 with
-                | NativeIntSource.Verbatim n -> nativeint<int64> n
-                | v -> failwith $"refusing to operate on non-verbatim native int %O{v}"
+                op.NativeIntNativeInt val1 val2
+                |> int64<nativeint>
+                |> NativeIntSource.Verbatim
+                |> EvalStackValue.NativeInt
+                |> withState
+            | val1, val2 -> failwith $"refusing to operate %s{op.Name} on non-verbatim native ints %O{val1}, %O{val2}"
 
-            op.NativeIntNativeInt val1 val2
-            |> int64<nativeint>
-            |> NativeIntSource.Verbatim
-            |> EvalStackValue.NativeInt
         | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer val1), EvalStackValue.ManagedPointer val2 ->
             op.ManagedPtrManagedPtr baseClassTypes state val1 val2
             |> managedPtrManagedPtrAsNativeInt
+            |> withState
         | EvalStackValue.NativeInt val1, EvalStackValue.ManagedPointer val2 ->
             let val1 = nativeIntOffsetForPointerArithmetic val1
 
             match op.Int32ManagedPtr baseClassTypes state val1 val2 with
-            | Choice1Of2 v -> EvalStackValue.ManagedPointer v
-            | Choice2Of2 i -> EvalStackValue.NativeInt (NativeIntSource.Verbatim (int64<int32> i))
-        | EvalStackValue.NativeInt val1, EvalStackValue.ObjectRef val2 -> failwith "" |> EvalStackValue.ObjectRef
+            | Choice1Of2 v -> EvalStackValue.ManagedPointer v |> withState
+            | Choice2Of2 i ->
+                EvalStackValue.NativeInt (NativeIntSource.Verbatim (int64<int32> i))
+                |> withState
+        | EvalStackValue.NativeInt val1, EvalStackValue.ObjectRef val2 ->
+            failwith "" |> EvalStackValue.ObjectRef |> withState
         | EvalStackValue.NativeInt _, EvalStackValue.NullObjectRef -> failwith ""
-        | EvalStackValue.Float val1, EvalStackValue.Float val2 -> op.FloatFloat val1 val2 |> EvalStackValue.Float
+        | EvalStackValue.Float val1, EvalStackValue.Float val2 ->
+            op.FloatFloat val1 val2 |> EvalStackValue.Float |> withState
         | EvalStackValue.ManagedPointer val1, EvalStackValue.NativeInt (NativeIntSource.ManagedPointer val2) ->
             match op.ManagedPtrManagedPtr baseClassTypes state val1 val2 with
-            | Choice1Of2 result -> EvalStackValue.ManagedPointer result
-            | Choice2Of2 result -> EvalStackValue.NativeInt result
+            | Choice1Of2 result -> EvalStackValue.ManagedPointer result |> withState
+            | Choice2Of2 result -> EvalStackValue.NativeInt result |> withState
         | EvalStackValue.ManagedPointer val1, EvalStackValue.NativeInt val2 ->
             let val2 = nativeIntOffsetForPointerArithmetic val2
 
             match op.ManagedPtrInt32 baseClassTypes state val1 val2 with
-            | Choice1Of2 result -> EvalStackValue.ManagedPointer result
-            | Choice2Of2 result -> EvalStackValue.NativeInt (NativeIntSource.Verbatim (int64<int32> result))
-        | EvalStackValue.ObjectRef val1, EvalStackValue.NativeInt val2 -> failwith "" |> EvalStackValue.ObjectRef
+            | Choice1Of2 result -> EvalStackValue.ManagedPointer result |> withState
+            | Choice2Of2 result ->
+                EvalStackValue.NativeInt (NativeIntSource.Verbatim (int64<int32> result))
+                |> withState
+        | EvalStackValue.ObjectRef val1, EvalStackValue.NativeInt val2 ->
+            failwith "" |> EvalStackValue.ObjectRef |> withState
         | EvalStackValue.NullObjectRef, EvalStackValue.NativeInt _ -> failwith ""
         | EvalStackValue.ManagedPointer val1, EvalStackValue.Int32 val2 ->
             match op.ManagedPtrInt32 baseClassTypes state val1 val2 with
-            | Choice1Of2 result -> EvalStackValue.ManagedPointer result
-            | Choice2Of2 result -> EvalStackValue.NativeInt (NativeIntSource.Verbatim (int64<int32> result))
-        | EvalStackValue.ObjectRef val1, EvalStackValue.Int32 val2 -> failwith "" |> EvalStackValue.ObjectRef
+            | Choice1Of2 result -> EvalStackValue.ManagedPointer result |> withState
+            | Choice2Of2 result ->
+                EvalStackValue.NativeInt (NativeIntSource.Verbatim (int64<int32> result))
+                |> withState
+        | EvalStackValue.ObjectRef val1, EvalStackValue.Int32 val2 ->
+            failwith "" |> EvalStackValue.ObjectRef |> withState
         | EvalStackValue.NullObjectRef, EvalStackValue.Int32 _ -> failwith ""
-        | EvalStackValue.ManagedPointer val1, EvalStackValue.ManagedPointer val2 -> managedPtrManagedPtr val1 val2
+        | EvalStackValue.ManagedPointer val1, EvalStackValue.ManagedPointer val2 ->
+            managedPtrManagedPtr val1 val2 |> withState
         | val1, val2 -> failwith $"invalid %s{op.Name} operation: {val1} and {val2}"

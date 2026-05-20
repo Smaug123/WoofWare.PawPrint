@@ -73,6 +73,8 @@ module Corelib =
         let byReferenceType =
             tryFindCorelibType corelib "System" [ "ByReference" ; "ByReference`1" ]
 
+        let nullableType = findCorelibType corelib "System" "Nullable`1"
+
         let runtimeFieldInfoStubType =
             findCorelibType corelib "System" "RuntimeFieldInfoStub"
 
@@ -96,10 +98,16 @@ module Corelib =
             findCorelibType corelib "System" "IndexOutOfRangeException"
 
         let invalidCastException = findCorelibType corelib "System" "InvalidCastException"
+
+        let arrayTypeMismatchException =
+            findCorelibType corelib "System" "ArrayTypeMismatchException"
+
         let missingFieldException = findCorelibType corelib "System" "MissingFieldException"
 
         let missingMethodException =
             findCorelibType corelib "System" "MissingMethodException"
+
+        let notSupportedException = findCorelibType corelib "System" "NotSupportedException"
 
         let nullReferenceException =
             findCorelibType corelib "System" "NullReferenceException"
@@ -107,6 +115,28 @@ module Corelib =
         let outOfMemoryException = findCorelibType corelib "System" "OutOfMemoryException"
         let argumentException = findCorelibType corelib "System" "ArgumentException"
         let argumentNullException = findCorelibType corelib "System" "ArgumentNullException"
+        let dateTime = findCorelibType corelib "System" "DateTime"
+        let decimal = findCorelibType corelib "System" "Decimal"
+
+        let targetInvocationException =
+            findCorelibType corelib "System.Reflection" "TargetInvocationException"
+
+        // The five interfaces in CoreCLR's `IsImplicitInterfaceOfSZArray` set.
+        // Their open-generic TypeDef rows live in System.Collections.Generic in
+        // the corelib; the metadata Name carries the backtick-arity suffix.
+        let iListGeneric = findCorelibType corelib "System.Collections.Generic" "IList`1"
+
+        let iEnumerableGeneric =
+            findCorelibType corelib "System.Collections.Generic" "IEnumerable`1"
+
+        let iCollectionGeneric =
+            findCorelibType corelib "System.Collections.Generic" "ICollection`1"
+
+        let iReadOnlyListGeneric =
+            findCorelibType corelib "System.Collections.Generic" "IReadOnlyList`1"
+
+        let iReadOnlyCollectionGeneric =
+            findCorelibType corelib "System.Collections.Generic" "IReadOnlyCollection`1"
 
         {
             Corelib = corelib
@@ -141,6 +171,7 @@ module Corelib =
             IntPtr = intPtrType
             UIntPtr = uintPtrType
             ByReference = byReferenceType
+            Nullable = nullableType
             Exception = exceptionType
             ArithmeticException = arithmeticException
             DivideByZeroException = divideByZeroException
@@ -150,12 +181,22 @@ module Corelib =
             TypeInitializationException = typeInitializationException
             IndexOutOfRangeException = indexOutOfRangeException
             InvalidCastException = invalidCastException
+            ArrayTypeMismatchException = arrayTypeMismatchException
             MissingFieldException = missingFieldException
             MissingMethodException = missingMethodException
+            NotSupportedException = notSupportedException
             NullReferenceException = nullReferenceException
             OutOfMemoryException = outOfMemoryException
             ArgumentException = argumentException
             ArgumentNullException = argumentNullException
+            DateTime = dateTime
+            Decimal = decimal
+            TargetInvocationException = targetInvocationException
+            IListGeneric = iListGeneric
+            IEnumerableGeneric = iEnumerableGeneric
+            ICollectionGeneric = iCollectionGeneric
+            IReadOnlyListGeneric = iReadOnlyListGeneric
+            IReadOnlyCollectionGeneric = iReadOnlyCollectionGeneric
         }
 
     let concretizeAll
@@ -304,4 +345,66 @@ module PrimitiveLikeStruct =
         =
         match AllConcreteTypes.lookup h allCt with
         | None -> None
+        | Some ct -> kind bct ct
+
+/// Structural classification of BCL types that the runtime must special-case at opcode level.
+///
+/// ECMA-335 calls out a handful of types whose IL semantics differ from "ordinary" CLR types:
+/// `IntPtr`/`UIntPtr` are primitive CLI types distinct from user-defined value types (III.1.1.1),
+/// and `Nullable\`1` has bespoke box/unbox semantics (III.4.16). Multiple opcodes (`box`,
+/// `unbox.any`, `ldobj`, `stobj`, `constrained.` …) need to discriminate these cases.
+///
+/// Rather than recomputing a name+namespace+assembly comparison at every use site -- which is
+/// fragile (assembly check is easy to forget) and proliferates as new opcodes are taught the
+/// distinction -- callers compute the kind once via `InternalTypeKind.kind`/`kindFromHandle` and
+/// `match` on the result. The classification is identity-based: each variant is anchored on a
+/// specific `BaseClassTypes` row, so a hostile assembly defining its own `System.Nullable\`1`
+/// cannot accidentally be treated as the real one.
+[<RequireQualifiedAccess>]
+type InternalTypeKind =
+    /// Anything that does not require runtime-level special-casing under this scheme.
+    | Ordinary
+    /// `System.IntPtr`. ECMA-335 `ELEMENT_TYPE_I`. Some opcodes (e.g. `unbox.any`) push
+    /// `EvalStackValue.NativeInt` rather than `UserDefinedValueType` for this exact type.
+    | NativeInt
+    /// `System.UIntPtr`. ECMA-335 `ELEMENT_TYPE_U`. Behaves like `NativeInt` for stack
+    /// purposes but is preserved as a separate variant so individual call sites can
+    /// distinguish them if needed (e.g. signature checks that mandate `IntPtr` specifically).
+    | NativeUInt
+    /// Any instantiation of `System.Nullable\`1`. Requires the spec-mandated box/unbox
+    /// semantics (box of null-valued Nullable becomes null; unbox.any reconstructs the
+    /// Nullable from a boxed underlying value, etc.).
+    | Nullable
+
+[<RequireQualifiedAccess>]
+module InternalTypeKind =
+    /// Classify a concrete type against the BCL canonical identities. Comparison is by
+    /// `ResolvedTypeIdentity` (assembly + TypeDef handle), so a Nullable\`1 instantiation
+    /// matches the open-generic definition regardless of its generic arguments, and a
+    /// user-defined `System.IntPtr` in a non-corelib assembly does not collide with the
+    /// real one.
+    let kind (bct : BaseClassTypes<DumpedAssembly>) (ct : ConcreteType<'a>) : InternalTypeKind =
+        let identity = ct.Identity
+
+        if identity = bct.Nullable.Identity then
+            InternalTypeKind.Nullable
+        elif ct.Generics.IsEmpty && identity = bct.IntPtr.Identity then
+            InternalTypeKind.NativeInt
+        elif ct.Generics.IsEmpty && identity = bct.UIntPtr.Identity then
+            InternalTypeKind.NativeUInt
+        else
+            InternalTypeKind.Ordinary
+
+    /// Resolve a `ConcreteTypeHandle` through `AllConcreteTypes` and classify it.
+    /// Structural wrappers (Byref, Pointer, arrays, function pointers) are `Ordinary`:
+    /// the spec's special cases attach to nominal value types, not their structural
+    /// composers, so this is the correct identity for them under this classification.
+    let kindFromHandle
+        (bct : BaseClassTypes<DumpedAssembly>)
+        (allCt : AllConcreteTypes)
+        (h : ConcreteTypeHandle)
+        : InternalTypeKind
+        =
+        match AllConcreteTypes.lookup h allCt with
+        | None -> InternalTypeKind.Ordinary
         | Some ct -> kind bct ct

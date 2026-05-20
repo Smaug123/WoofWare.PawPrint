@@ -2,7 +2,7 @@ namespace WoofWare.PawPrint
 
 [<RequireQualifiedAccess>]
 module NativeType =
-    let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
+    let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
 

@@ -17,8 +17,7 @@ module TestBinaryArithmetic =
     let private corelib : DumpedAssembly =
         let corelibPath = typeof<obj>.Assembly.Location
         let _, loggerFactory = LoggerFactory.makeTest ()
-        use stream = File.OpenRead corelibPath
-        Assembly.read loggerFactory (Some corelibPath) stream
+        Assembly.readFile loggerFactory corelibPath
 
     let private baseClassTypes : BaseClassTypes<DumpedAssembly> =
         Corelib.getBaseTypes corelib
@@ -46,7 +45,7 @@ module TestBinaryArithmetic =
         (val2 : EvalStackValue)
         : EvalStackValue
         =
-        BinaryArithmetic.execute baseClassTypes op state val1 val2
+        BinaryArithmetic.execute baseClassTypes op state val1 val2 |> fst
 
     let private concreteTypeFor
         (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
@@ -70,6 +69,7 @@ module TestBinaryArithmetic =
         {
             ConcreteType = ConcreteTypeHandle.OneDimArrayZero int32Handle
             Length = values.Length
+            Lengths = ImmutableArray.Create values.Length
             Elements = elements
         }
 
@@ -136,20 +136,22 @@ module TestBinaryArithmetic =
         | EvalStackValue.NativeInt (NativeIntSource.Verbatim actual) -> actual |> shouldEqual expected
         | other -> failwith $"expected native int %d{expected}, got %O{other}"
 
-    let private expectSyntheticNativeIntValue (actual : EvalStackValue) : int64 =
+    let private expectSyntheticNativeIntValue (actual : EvalStackValue) : SyntheticCrossArrayOffset =
         match actual with
         | EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset actual) -> actual
         | other -> failwith $"expected synthetic cross-array native int, got %O{other}"
 
-    let private syntheticNativeIntSourceValue (actual : NativeIntSource) : int64 =
+    let private syntheticNativeIntSourceValue (actual : NativeIntSource) : SyntheticCrossArrayOffset =
         match actual with
         | NativeIntSource.SyntheticCrossArrayOffset actual -> actual
         | other -> failwith $"expected synthetic cross-storage native int, got %O{other}"
 
-    let private expectedCrossStorageMagnitude (maxOffsetMagnitude : int64) : int64 =
-        NativeIntSource.syntheticCrossStorageSeparation - maxOffsetMagnitude
-
     let private propertyConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 500
+
+    // FirstStep is zero with probability 1/25, so 650 cases puts the false
+    // "missed zero" balance failure probability below 1e-11.
+    let private sameArrayPropertyConfig : Config =
+        Config.QuickThrowOnFailure.WithMaxTest 650
 
     type private SameArrayCase =
         {
@@ -179,6 +181,20 @@ module TestBinaryArithmetic =
             TargetOffset : int64
         }
 
+    [<RequireQualifiedAccess>]
+    type private NormalisableRootKind =
+        | StackMemory
+        | Array
+        | String
+
+    type private ByteOffsetNormalisationCase =
+        {
+            Kind : NormalisableRootKind
+            RootOffset : int
+            ArrayCellSize : int
+            ByteOffset : int
+        }
+
     let private genArrayLength : Gen<int> = Gen.choose (0, 8)
 
     let private genSmallOffset : Gen<int> = Gen.choose (-12, 12)
@@ -187,7 +203,7 @@ module TestBinaryArithmetic =
         [|
             "array", ByteStorageIdentity.Array (ManagedHeapAddress 101)
             "string", ByteStorageIdentity.String (ManagedHeapAddress 102)
-            "local-memory", ByteStorageIdentity.LocalMemory (ThreadId 0, FrameId 10, LocallocBlockId 0)
+            "local-memory", ByteStorageIdentity.StackMemory (ThreadId 0, FrameId 10, StackMemoryBlockId 0)
             "stack-local", ByteStorageIdentity.StackLocal (ThreadId 0, FrameId 11, 1us)
             "stack-argument", ByteStorageIdentity.StackArgument (ThreadId 0, FrameId 12, 2us)
         |]
@@ -248,6 +264,155 @@ module TestBinaryArithmetic =
                     TargetOffset = int64 targetOffset
                 }
         }
+
+    let private genByteOffsetNormalisationCase : Gen<ByteOffsetNormalisationCase> =
+        gen {
+            let! kind =
+                Gen.elements
+                    [
+                        NormalisableRootKind.StackMemory
+                        NormalisableRootKind.Array
+                        NormalisableRootKind.String
+                    ]
+
+            let! rootOffset = Gen.choose (-8, 8)
+            let! arrayCellSize = Gen.choose (1, 8)
+            let! byteOffset = Gen.choose (-32, 32)
+
+            return
+                {
+                    Kind = kind
+                    RootOffset = rootOffset
+                    ArrayCellSize = arrayCellSize
+                    ByteOffset = byteOffset
+                }
+        }
+
+    let private floorDivRem (value : int) (divisor : int) : int * int =
+        let q = value / divisor
+        let r = value - q * divisor
+
+        if r < 0 then q - 1, r + divisor else q, r
+
+    let private pointerForNormalisationCase (case : ByteOffsetNormalisationCase) : ManagedPointerSource =
+        match case.Kind with
+        | NormalisableRootKind.StackMemory ->
+            ManagedPointerSource.Byref (
+                ByrefRoot.StackMemoryByte (ThreadId 0, FrameId 0, StackMemoryBlockId 0, case.RootOffset),
+                []
+            )
+        | NormalisableRootKind.Array ->
+            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (ManagedHeapAddress 123, case.RootOffset), [])
+        | NormalisableRootKind.String ->
+            ManagedPointerSource.Byref (ByrefRoot.StringCharAt (ManagedHeapAddress 456, case.RootOffset), [])
+
+    let private expectedNormalisedPointer (case : ByteOffsetNormalisationCase) : ManagedPointerSource =
+        let cellSize =
+            match case.Kind with
+            | NormalisableRootKind.StackMemory -> 1
+            | NormalisableRootKind.Array -> case.ArrayCellSize
+            | NormalisableRootKind.String -> 2
+
+        let cellAdvance, inCellOffset = floorDivRem case.ByteOffset cellSize
+
+        let root =
+            match case.Kind with
+            | NormalisableRootKind.StackMemory ->
+                ByrefRoot.StackMemoryByte (ThreadId 0, FrameId 0, StackMemoryBlockId 0, case.RootOffset + cellAdvance)
+            | NormalisableRootKind.Array ->
+                ByrefRoot.ArrayElement (ManagedHeapAddress 123, case.RootOffset + cellAdvance)
+            | NormalisableRootKind.String ->
+                ByrefRoot.StringCharAt (ManagedHeapAddress 456, case.RootOffset + cellAdvance)
+
+        let projs =
+            if inCellOffset = 0 then
+                [ ByrefProjection.ReinterpretAs byteType ]
+            else
+                [
+                    ByrefProjection.ReinterpretAs byteType
+                    ByrefProjection.ByteOffset inCellOffset
+                ]
+
+        ManagedPointerSource.Byref (root, projs)
+
+    [<Test>]
+    let ``byte offset helper normalises every byte-addressable root with generated offsets`` () : unit =
+        let mutable stackMemoryCases = 0
+        let mutable arrayCases = 0
+        let mutable stringCases = 0
+        let mutable negativeOffsets = 0
+        let mutable zeroOffsets = 0
+        let mutable positiveOffsets = 0
+        let mutable residualOffsets = 0
+
+        let property (case : ByteOffsetNormalisationCase) : bool =
+            match case.Kind with
+            | NormalisableRootKind.StackMemory -> stackMemoryCases <- stackMemoryCases + 1
+            | NormalisableRootKind.Array -> arrayCases <- arrayCases + 1
+            | NormalisableRootKind.String -> stringCases <- stringCases + 1
+
+            if case.ByteOffset < 0 then
+                negativeOffsets <- negativeOffsets + 1
+            elif case.ByteOffset = 0 then
+                zeroOffsets <- zeroOffsets + 1
+            else
+                positiveOffsets <- positiveOffsets + 1
+
+            let context =
+                match case.Kind with
+                | NormalisableRootKind.Array ->
+                    ByteOffsetNormalisationContext.withArrayElementSize (ManagedHeapAddress 123) case.ArrayCellSize
+                | NormalisableRootKind.StackMemory
+                | NormalisableRootKind.String -> ByteOffsetNormalisationContext.nonArrayRootsOnly
+
+            let ptr = pointerForNormalisationCase case
+
+            let raw =
+                ptr
+                |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs byteType)
+                |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset case.ByteOffset)
+
+            let smart =
+                ManagedPointerSource.addByteOffsetUnderReinterpret context byteType case.ByteOffset ptr
+
+            let byteViewSmart =
+                ptr
+                |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs byteType)
+                |> ManagedPointerSource.addByteOffsetToByteView context case.ByteOffset
+
+            let expected = expectedNormalisedPointer case
+
+            smart |> shouldEqual expected
+
+            byteViewSmart |> shouldEqual expected
+
+            ManagedPointerSource.normaliseForComparison context raw
+            |> NormalisedManagedPointerSource.value
+            |> shouldEqual expected
+
+            ManagedPointerSource.normaliseForComparison context smart
+            |> NormalisedManagedPointerSource.value
+            |> shouldEqual smart
+
+            match expected with
+            | ManagedPointerSource.Byref (_, [ ByrefProjection.ReinterpretAs _ ; ByrefProjection.ByteOffset _ ]) ->
+                residualOffsets <- residualOffsets + 1
+            | _ -> ()
+
+            true
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genByteOffsetNormalisationCase) property)
+
+        if stackMemoryCases = 0 || arrayCases = 0 || stringCases = 0 then
+            failwith
+                $"generator missed normalisable roots: local-memory=%d{stackMemoryCases}, array=%d{arrayCases}, string=%d{stringCases}"
+
+        if negativeOffsets = 0 || zeroOffsets = 0 || positiveOffsets = 0 then
+            failwith
+                $"generator missed offset signs: negative=%d{negativeOffsets}, zero=%d{zeroOffsets}, positive=%d{positiveOffsets}"
+
+        if residualOffsets = 0 then
+            failwith "generator did not exercise non-zero in-cell residual offsets"
 
     [<Test>]
     let ``add advances plain array byrefs by element offset`` () : unit =
@@ -314,10 +479,13 @@ module TestBinaryArithmetic =
             execute ArithmeticOperation.sub state (arrayPointer arr2 3) (arrayPointer arr1 5)
             |> expectSyntheticNativeIntValue
 
-        forward + backward |> shouldEqual 0L
+        SyntheticCrossArrayOffset.negate forward |> shouldEqual backward
 
-        if abs forward < 1_000_000L then
-            failwith $"expected cross-array sentinel magnitude to be large, got %d{forward}"
+        SyntheticCrossArrayOffset.targetRoot forward
+        |> shouldEqual (ByteStorageIdentity.Array arr1)
+
+        SyntheticCrossArrayOffset.sourceRoot forward
+        |> shouldEqual (ByteStorageIdentity.Array arr2)
 
     [<Test>]
     let ``synthetic cross-array subtraction refuses downstream arithmetic`` () : unit =
@@ -362,7 +530,19 @@ module TestBinaryArithmetic =
         let byteView =
             execute ArithmeticOperation.sub state ptr1 ptr2 |> expectSyntheticNativeIntValue
 
-        byteView - plain |> shouldEqual -2L
+        SyntheticCrossArrayOffset.targetRoot byteView
+        |> shouldEqual (SyntheticCrossArrayOffset.targetRoot plain)
+
+        SyntheticCrossArrayOffset.sourceRoot byteView
+        |> shouldEqual (SyntheticCrossArrayOffset.sourceRoot plain)
+
+        SyntheticCrossArrayOffset.targetOffset byteView
+        - SyntheticCrossArrayOffset.targetOffset plain
+        |> shouldEqual 1L
+
+        SyntheticCrossArrayOffset.sourceOffset byteView
+        - SyntheticCrossArrayOffset.sourceOffset plain
+        |> shouldEqual 3L
 
     [<Test>]
     let ``subtracting byte-view byrefs in an empty array uses element type size`` () : unit =
@@ -370,6 +550,124 @@ module TestBinaryArithmetic =
 
         execute ArithmeticOperation.sub state (byteViewPointer arr 1 0) (byteViewPointer arr 0 0)
         |> expectNativeInt 4L
+
+    let private nativeMemoryPointer (block : int) (byteOffset : int) : EvalStackValue =
+        ManagedPointerSource.Byref (
+            ByrefRoot.NativeMemoryByte (NativeMemoryBlockId.NativeMemoryBlockId block, byteOffset),
+            []
+        )
+        |> EvalStackValue.ManagedPointer
+
+    let private expectNativeMemoryPointer
+        (expectedBlock : int)
+        (expectedByteOffset : int)
+        (actual : EvalStackValue)
+        : unit
+        =
+        match actual with
+        | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (NativeMemoryBlockId.NativeMemoryBlockId block,
+                                                                                                 byteOffset),
+                                                                     [])) ->
+            block |> shouldEqual expectedBlock
+            byteOffset |> shouldEqual expectedByteOffset
+        | other ->
+            failwith
+                $"expected native memory byref at block %d{expectedBlock} byte %d{expectedByteOffset}, got %O{other}"
+
+    [<Test>]
+    let ``add advances native-memory byrefs by byte offset`` () : unit =
+        let state = state ()
+
+        execute ArithmeticOperation.add state (nativeMemoryPointer 0 4) (EvalStackValue.Int32 6)
+        |> expectNativeMemoryPointer 0 10
+
+        execute ArithmeticOperation.add state (EvalStackValue.Int32 6) (nativeMemoryPointer 0 4)
+        |> expectNativeMemoryPointer 0 10
+
+    [<Test>]
+    let ``sub on native-memory byrefs in the same block returns byte delta`` () : unit =
+        let state = state ()
+
+        execute ArithmeticOperation.sub state (nativeMemoryPointer 0 10) (nativeMemoryPointer 0 4)
+        |> expectNativeInt 6L
+
+        execute ArithmeticOperation.sub state (nativeMemoryPointer 0 4) (nativeMemoryPointer 0 10)
+        |> expectNativeInt -6L
+
+    [<Test>]
+    let ``sub on native-memory byrefs in different blocks returns synthetic cross-storage offset`` () : unit =
+        let state = state ()
+
+        let forward =
+            execute ArithmeticOperation.sub state (nativeMemoryPointer 0 5) (nativeMemoryPointer 1 3)
+            |> expectSyntheticNativeIntValue
+
+        let backward =
+            execute ArithmeticOperation.sub state (nativeMemoryPointer 1 3) (nativeMemoryPointer 0 5)
+            |> expectSyntheticNativeIntValue
+
+        SyntheticCrossArrayOffset.negate forward |> shouldEqual backward
+
+        SyntheticCrossArrayOffset.targetRoot forward
+        |> shouldEqual (ByteStorageIdentity.NativeMemory (NativeMemoryBlockId.NativeMemoryBlockId 0))
+
+        SyntheticCrossArrayOffset.sourceRoot forward
+        |> shouldEqual (ByteStorageIdentity.NativeMemory (NativeMemoryBlockId.NativeMemoryBlockId 1))
+
+        SyntheticCrossArrayOffset.targetOffset forward |> shouldEqual 5L
+        SyntheticCrossArrayOffset.sourceOffset forward |> shouldEqual 3L
+
+    [<Test>]
+    let ``readManagedByrefBytesAs round-trips a typed cell through a native-memory byref`` () : unit =
+        // Regression for Codex P2: native-memory byrefs must route through the byte-backed
+        // read/write paths so that a stobj followed by an ldind via NativeMemoryByte
+        // reconstitutes the value via the byte view, not via `readRootValue`'s typed-cell
+        // fast path. Pre-fix, `executeLdind` and `Stobj`'s `writeAt` only special-cased
+        // `StackMemoryByte`, leaving `NativeMemoryByte` to fall through to
+        // `readManagedByref`/`writeManagedByrefWithBase`, which can't service byte-backed
+        // reinterpretation when no typed cell exists at the requested offset.
+        let ptr, state =
+            IlMachineState.allocateNativeMemory MemoryBlockInitialization.ZeroInitialized 4 (state ())
+
+        // Plain typed-cell round-trip at the base offset.
+        let state =
+            IlMachineState.writeManagedByrefBytesOrTypedCell
+                baseClassTypes
+                state
+                ptr
+                (CliType.Numeric (CliNumericType.Int32 0x11223344))
+
+        let roundTripped =
+            IlMachineState.readManagedByrefBytesAs baseClassTypes state ptr (CliType.Numeric (CliNumericType.Int32 0))
+
+        roundTripped |> shouldEqual (CliType.Numeric (CliNumericType.Int32 0x11223344))
+
+    [<Test>]
+    let ``readManagedByrefBytesAs reinterprets raw native-memory bytes as a typed cell`` () : unit =
+        // Regression for Codex P2: the byte-backed read path must work for native-memory
+        // byrefs even when the underlying block has no typed cell at the requested offset.
+        // The pre-fix dispatch would have routed bare `NativeMemoryByte` reads through
+        // `readManagedByref` → `readRootValue`, which fails with "no typed cell here"
+        // instead of reading raw bytes.
+        let ptr, state =
+            IlMachineState.allocateNativeMemory MemoryBlockInitialization.ZeroInitialized 4 (state ())
+
+        let block =
+            match ptr with
+            | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, 0), []) -> block
+            | other -> failwith $"expected bare NativeMemoryByte byref, got %O{other}"
+
+        // Write raw bytes directly into the native-memory pool, bypassing typed-cell stores.
+        let pool =
+            NativeMemoryPool.writeBytes block 0 [| 0x44uy ; 0x33uy ; 0x22uy ; 0x11uy |] state.Kernel.NativeMemoryPool
+
+        let state = IlMachineState.setNativeMemoryPool pool state
+
+        let readBack =
+            IlMachineState.readManagedByrefBytesAs baseClassTypes state ptr (CliType.Numeric (CliNumericType.Int32 0))
+
+        // Little-endian assembly of the four bytes above gives 0x11223344.
+        readBack |> shouldEqual (CliType.Numeric (CliNumericType.Int32 0x11223344))
 
     [<Test>]
     let ``array byref arithmetic rejects int32 index overflow`` () : unit =
@@ -421,7 +719,7 @@ module TestBinaryArithmetic =
 
             true
 
-        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genSameArrayCase) property)
+        Check.One (sameArrayPropertyConfig, Prop.forAll (Arb.fromGen genSameArrayCase) property)
 
         if negativeSteps = 0 || zeroSteps = 0 || positiveSteps = 0 then
             failwith
@@ -454,10 +752,13 @@ module TestBinaryArithmetic =
                 execute ArithmeticOperation.sub state (arrayPointer arr2 case.Index2) (arrayPointer arr1 case.Index1)
                 |> expectSyntheticNativeIntValue
 
-            forward + backward |> shouldEqual 0L
+            SyntheticCrossArrayOffset.negate forward |> shouldEqual backward
 
-            if abs forward < expectedCrossStorageMagnitude 128L then
-                failwith $"expected generated cross-array sentinel magnitude to be large, got %d{forward}"
+            SyntheticCrossArrayOffset.targetRoot forward
+            |> shouldEqual (ByteStorageIdentity.Array arr1)
+
+            SyntheticCrossArrayOffset.sourceRoot forward
+            |> shouldEqual (ByteStorageIdentity.Array arr2)
 
             let byteViewForward =
                 execute
@@ -475,13 +776,15 @@ module TestBinaryArithmetic =
                     (byteViewPointer arr1 case.Index1 case.ByteOffset1)
                 |> expectSyntheticNativeIntValue
 
-            byteViewForward + byteViewBackward |> shouldEqual 0L
+            SyntheticCrossArrayOffset.negate byteViewForward |> shouldEqual byteViewBackward
 
-            if abs byteViewForward < expectedCrossStorageMagnitude 128L then
-                failwith $"expected generated byte-view sentinel magnitude to be large, got %d{byteViewForward}"
+            SyntheticCrossArrayOffset.targetOffset byteViewForward
+            - SyntheticCrossArrayOffset.targetOffset forward
+            |> shouldEqual (int64 case.ByteOffset1)
 
-            byteViewForward - forward
-            |> shouldEqual (int64 (case.ByteOffset1 - case.ByteOffset2))
+            SyntheticCrossArrayOffset.sourceOffset byteViewForward
+            - SyntheticCrossArrayOffset.sourceOffset forward
+            |> shouldEqual (int64 case.ByteOffset2)
 
             true
 
@@ -495,7 +798,7 @@ module TestBinaryArithmetic =
     let ``cross-storage byte offsets are generated anti-symmetric for all byte storage identities`` () : unit =
         let mutable arrayCases = 0
         let mutable stringCases = 0
-        let mutable localMemoryCases = 0
+        let mutable stackMemoryCases = 0
         let mutable stackLocalCases = 0
         let mutable stackArgumentCases = 0
 
@@ -510,7 +813,7 @@ module TestBinaryArithmetic =
                 stringCases <- stringCases + 1
 
             if touchesKind "local-memory" case then
-                localMemoryCases <- localMemoryCases + 1
+                stackMemoryCases <- stackMemoryCases + 1
 
             if touchesKind "stack-local" case then
                 stackLocalCases <- stackLocalCases + 1
@@ -534,10 +837,12 @@ module TestBinaryArithmetic =
                     case.OriginOffset
                 |> syntheticNativeIntSourceValue
 
-            forward + backward |> shouldEqual 0L
+            SyntheticCrossArrayOffset.negate forward |> shouldEqual backward
 
-            if abs forward < expectedCrossStorageMagnitude 32L then
-                failwith $"expected generated cross-storage sentinel magnitude to be large, got %d{forward}"
+            SyntheticCrossArrayOffset.targetRoot forward |> shouldEqual case.Target
+            SyntheticCrossArrayOffset.sourceRoot forward |> shouldEqual case.Origin
+            SyntheticCrossArrayOffset.targetOffset forward |> shouldEqual case.TargetOffset
+            SyntheticCrossArrayOffset.sourceOffset forward |> shouldEqual case.OriginOffset
 
             true
 
@@ -546,9 +851,290 @@ module TestBinaryArithmetic =
         if
             arrayCases = 0
             || stringCases = 0
-            || localMemoryCases = 0
+            || stackMemoryCases = 0
             || stackLocalCases = 0
             || stackArgumentCases = 0
         then
             failwith
-                $"generator missed required storage identities: array=%d{arrayCases}, string=%d{stringCases}, local-memory=%d{localMemoryCases}, stack-local=%d{stackLocalCases}, stack-argument=%d{stackArgumentCases}"
+                $"generator missed required storage identities: array=%d{arrayCases}, string=%d{stringCases}, local-memory=%d{stackMemoryCases}, stack-local=%d{stackLocalCases}, stack-argument=%d{stackArgumentCases}"
+
+    // The following tests cover the BCL's portable wraparound idiom from
+    // UnmanagedMemoryStream.Initialize: `((byte*)((long)pointer + capacity)) < pointer`
+    // expressed as `Conv.U8 → ldc.i8 capacity → Add → Conv.U → ldarg pointer → Bge.un`.
+    // On a 64-bit interpreter the wraparound is statically vacuous; we have to keep
+    // pointer provenance flowing through the int64 widening so that the eventual
+    // `Conv.U` recovers the byref and the comparison behaves correctly.
+
+    let private convU8AndAdd (state : IlMachineState) (ptr : EvalStackValue) (capacity : int64) : EvalStackValue =
+        let widened : EvalStackValue =
+            match EvalStackValue.convToUInt64 ptr with
+            | Some src -> EvalStackValue.Int64 src
+            | None -> failwith $"convToUInt64 returned None for %O{ptr}"
+
+        execute ArithmeticOperation.add state widened (EvalStackValue.Int64 (Int64Source.Verbatim capacity))
+
+    [<Test>]
+    let ``Conv.U8 then Conv.U on a byte-view byref recovers the original pointer`` () : unit =
+        let state, arr = stateWithIntArray [ 10 ; 20 ; 30 ; 40 ]
+        let ptr = byteViewPointer arr 1 3
+
+        let widened : EvalStackValue =
+            match EvalStackValue.convToUInt64 ptr with
+            | Some src -> EvalStackValue.Int64 src
+            | None -> failwith "convToUInt64 returned None"
+
+        let recovered : NativeIntSource =
+            match EvalStackValue.toUnsignedNativeInt widened with
+            | Some (UnsignedNativeIntSource.FromManagedPointer mp) -> NativeIntSource.ManagedPointer mp
+            | other -> failwith $"expected FromManagedPointer, got %O{other}"
+
+        let asNativeInt = EvalStackValue.NativeInt recovered
+
+        if not (EvalStackValueComparisons.ceq ptr asNativeInt) then
+            failwith $"expected Conv.U8 → Conv.U to round-trip the byref, got %O{recovered} from %O{ptr}"
+
+    [<Test>]
+    let ``Conv.I8 then Conv.I on a byte-view byref recovers the original pointer`` () : unit =
+        let state, arr = stateWithIntArray [ 10 ; 20 ; 30 ; 40 ]
+        let ptr = byteViewPointer arr 2 1
+
+        let widened : EvalStackValue =
+            match EvalStackValue.convToInt64 ptr with
+            | Some src -> EvalStackValue.Int64 src
+            | None -> failwith "convToInt64 returned None"
+
+        let recovered : NativeIntSource =
+            match EvalStackValue.toNativeInt widened with
+            | Some src -> src
+            | None -> failwith "toNativeInt returned None"
+
+        if not (EvalStackValueComparisons.ceq ptr (EvalStackValue.NativeInt recovered)) then
+            failwith $"expected Conv.I8 → Conv.I to round-trip the byref, got %O{recovered}"
+
+    [<Test>]
+    let ``Conv.U8 of a null managed pointer normalises to verbatim zero`` () : unit =
+        // Null is the zero pointer, so widening it must reduce to a plain Int64 0.
+        // This keeps later arithmetic on the result usable without dragging the
+        // null-pointer special case through every arm.
+        match EvalStackValue.convToUInt64 (EvalStackValue.ManagedPointer ManagedPointerSource.Null) with
+        | Some (Int64Source.Verbatim 0L) -> ()
+        | other -> failwith $"expected null → verbatim 0, got %O{other}"
+
+    [<Test>]
+    let ``Conv.U8 then Add then Conv.U advances a byte-view byref`` () : unit =
+        let state, arr = stateWithIntArray [ 10 ; 20 ; 30 ; 40 ; 50 ]
+        let ptr = byteViewPointer arr 1 0
+
+        let advanced = convU8AndAdd state ptr 5L
+
+        let recovered : NativeIntSource =
+            match EvalStackValue.toUnsignedNativeInt advanced with
+            | Some (UnsignedNativeIntSource.FromManagedPointer mp) -> NativeIntSource.ManagedPointer mp
+            | other -> failwith $"expected FromManagedPointer after Conv.U, got %O{other}"
+
+        // Original byref was at array index 1 with byte cursor 0; advancing 5 bytes
+        // through the int64 round-trip must place the cursor 5 bytes ahead under
+        // the same root and prefix. With element size 4 (int32), 5 bytes lands in
+        // index 2 with a 1-byte residual cursor.
+        match recovered with
+        | NativeIntSource.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (resultArr, idx),
+                                                                      [ ByrefProjection.ReinterpretAs _
+                                                                        ByrefProjection.ByteOffset off ])) when
+            resultArr = arr
+            ->
+            idx |> shouldEqual 2
+            off |> shouldEqual 1
+        | other -> failwith $"unexpected advanced byref shape: %O{other}"
+
+    [<Test>]
+    let ``UnmanagedMemoryStream wraparound check is statically not taken on 64-bit`` () : unit =
+        // ECMA-335 III.3.4: bge.un is `not clt.un`. On 64-bit the BCL's wraparound
+        // detection (advanced < pointer) is structurally false, so the branch over
+        // the throw is always taken. We model this by checking cgeUn on the same
+        // operands the BCL idiom produces.
+        let state, arr = stateWithIntArray [ 10 ; 20 ; 30 ; 40 ; 50 ; 60 ; 70 ; 80 ]
+        let ptr = byteViewPointer arr 0 0
+
+        let advanced = convU8AndAdd state ptr 12L
+
+        // Bge.un compares value1 (deeper, advanced) with value2 (top, original).
+        // Per the C# `if (advanced < ptr) throw`, the IL skips the throw via
+        // bge.un.s when advanced >= ptr; that condition must hold for any
+        // non-negative capacity.
+        if not (EvalStackValueComparisons.cgeUn advanced ptr) then
+            failwith "expected the wraparound check to detect no wraparound for a non-negative capacity"
+
+        if EvalStackValueComparisons.cltUn advanced ptr then
+            failwith "expected clt.un to be false for advanced vs original byref"
+
+    [<Test>]
+    let ``cgt.un between byrefs of the same root reflects byte-cursor ordering`` () : unit =
+        let state, arr = stateWithIntArray [ 10 ; 20 ; 30 ; 40 ]
+        let earlier = byteViewPointer arr 1 0
+        let later = byteViewPointer arr 1 3
+
+        if not (EvalStackValueComparisons.cgtUn later earlier) then
+            failwith "expected later byte-view byref to compare strictly greater unsigned"
+
+        if EvalStackValueComparisons.cgtUn earlier later then
+            failwith "expected earlier byte-view byref not to compare greater unsigned"
+
+        if EvalStackValueComparisons.cgtUn earlier earlier then
+            failwith "expected cgt.un on identical byrefs to be false"
+
+    [<Test>]
+    let ``cgt.un refuses to compare byrefs across distinct roots`` () : unit =
+        // Cross-root pointer comparison has no defensible answer in our model;
+        // this test pins the strict same-root requirement so the next loose use
+        // of pointer-bit comparisons surfaces a clear diagnostic.
+        let state, arr1, arr2 = stateWithTwoIntArrays [ 10 ; 20 ] [ 100 ; 200 ]
+
+        let p1 = byteViewPointer arr1 0 0
+        let p2 = byteViewPointer arr2 0 0
+
+        let outcome =
+            try
+                EvalStackValueComparisons.cgtUn p1 p2 |> ignore
+                Choice1Of2 ()
+            with e ->
+                Choice2Of2 e
+
+        match outcome with
+        | Choice1Of2 () -> failwith "expected cgt.un to refuse cross-root byref comparison"
+        | Choice2Of2 e when e.Message.Contains "common root" -> ()
+        | Choice2Of2 e -> failwith $"unexpected exception from cgt.un: %s{e.Message}"
+
+    [<Test>]
+    let ``Conv.U8 round-trip via Add preserves provenance under arithmetic identity`` () : unit =
+        // Property: for every non-negative offset that fits in int32, the round-trip
+        // through Conv.U8 + Add + Conv.U must equal a direct pointer advance via
+        // Add at the byref level. This pins the 64-bit assumption: the widened-int64
+        // arithmetic and the native-int arithmetic agree.
+        let state, arr = stateWithIntArray (List.init 32 id)
+
+        let property (capacity : int) : bool =
+            if capacity < 0 then
+                true
+            else
+                let ptr = byteViewPointer arr 0 0
+
+                let viaInt64 =
+                    let advanced = convU8AndAdd state ptr (int64 capacity)
+
+                    match EvalStackValue.toUnsignedNativeInt advanced with
+                    | Some (UnsignedNativeIntSource.FromManagedPointer mp) ->
+                        EvalStackValue.NativeInt (NativeIntSource.ManagedPointer mp)
+                    | other -> failwith $"unexpected: %O{other}"
+
+                let viaNativeInt =
+                    execute ArithmeticOperation.add state ptr (EvalStackValue.Int32 capacity)
+
+                EvalStackValueComparisons.ceq viaInt64 viaNativeInt
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen (Gen.choose (0, System.Int32.MaxValue / 2))) property)
+
+    [<Test>]
+    let ``tryByteAddressDeltaSign accepts canonical byrefs at distinct array indices`` () : unit =
+        let _, arr = stateWithIntArray (List.init 8 id)
+
+        let extractByref (esv : EvalStackValue) : ManagedPointerSource =
+            match esv with
+            | EvalStackValue.ManagedPointer mp -> mp
+            | other -> failwith $"expected managed pointer, got %O{other}"
+
+        let p0 = extractByref (byteViewPointer arr 0 0)
+        let p1Plus3 = extractByref (byteViewPointer arr 1 3)
+
+        match ManagedPointerSource.tryByteAddressDeltaSign p0 p1Plus3 with
+        | Some sign when sign > 0 -> ()
+        | other -> failwith $"expected positive sign for arr[0] -> arr[1]+3, got %O{other}"
+
+        match ManagedPointerSource.tryByteAddressDeltaSign p1Plus3 p0 with
+        | Some sign when sign < 0 -> ()
+        | other -> failwith $"expected negative sign for arr[1]+3 -> arr[0], got %O{other}"
+
+    [<Test>]
+    let ``tryByteAddressDeltaSign throws on a non-canonical negative trailing byte cursor`` () : unit =
+        let _, arr = stateWithIntArray (List.init 4 id)
+
+        let canonical = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, 0), [])
+
+        // Manually construct a malformed pointer: the trailing ByteOffset
+        // bypasses normaliseTrailingByteOffset's floor-division and is negative.
+        // tryByteAddressDeltaSign's array fallback's correctness depends on each
+        // residual sitting in [0, cellSize); a negative residual indicates a
+        // construction-site bug and must not silently degrade to a wrong sign.
+        let malformed =
+            ManagedPointerSource.Byref (
+                ByrefRoot.ArrayElement (arr, 1),
+                [ ByrefProjection.ReinterpretAs byteType ; ByrefProjection.ByteOffset -1 ]
+            )
+
+        let outcome =
+            try
+                ManagedPointerSource.tryByteAddressDeltaSign canonical malformed |> ignore
+                Choice1Of2 ()
+            with e ->
+                Choice2Of2 e
+
+        match outcome with
+        | Choice1Of2 () -> failwith "expected tryByteAddressDeltaSign to throw on negative trailing byte cursor"
+        | Choice2Of2 e when e.Message.Contains "non-negative" -> ()
+        | Choice2Of2 e -> failwith $"unexpected exception: %s{e.Message}"
+
+    [<Test>]
+    let ``tryByteAddressDeltaSign throws on a ByteOffset at a non-trailing position`` () : unit =
+        let _, arr = stateWithIntArray (List.init 4 id)
+
+        let canonical = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, 0), [])
+
+        // ByrefProjection.ByteOffset is documented to only appear as the final
+        // element preceded by ReinterpretAs. A non-trailing ByteOffset is an
+        // invariant violation; the helper must throw rather than silently
+        // returning a wrong sign.
+        let malformed =
+            ManagedPointerSource.Byref (
+                ByrefRoot.ArrayElement (arr, 1),
+                [
+                    ByrefProjection.ReinterpretAs byteType
+                    ByrefProjection.ByteOffset 1
+                    ByrefProjection.ReinterpretAs byteType
+                ]
+            )
+
+        let outcome =
+            try
+                ManagedPointerSource.tryByteAddressDeltaSign canonical malformed |> ignore
+                Choice1Of2 ()
+            with e ->
+                Choice2Of2 e
+
+        match outcome with
+        | Choice1Of2 () -> failwith "expected tryByteAddressDeltaSign to throw on non-trailing ByteOffset"
+        | Choice2Of2 e when e.Message.Contains "non-trailing" -> ()
+        | Choice2Of2 e -> failwith $"unexpected exception: %s{e.Message}"
+
+    [<Test>]
+    let ``tryByteAddressDeltaSign throws on a trailing ByteOffset without ReinterpretAs`` () : unit =
+        let _, arr = stateWithIntArray (List.init 4 id)
+
+        let canonical = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, 0), [])
+
+        // A trailing ByteOffset must be preceded by ReinterpretAs (the byte
+        // cursor is on top of a byte view of the cell). Without that pairing
+        // the projection list is malformed.
+        let malformed =
+            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, 1), [ ByrefProjection.ByteOffset 1 ])
+
+        let outcome =
+            try
+                ManagedPointerSource.tryByteAddressDeltaSign canonical malformed |> ignore
+                Choice1Of2 ()
+            with e ->
+                Choice2Of2 e
+
+        match outcome with
+        | Choice1Of2 () ->
+            failwith "expected tryByteAddressDeltaSign to throw on trailing ByteOffset without ReinterpretAs"
+        | Choice2Of2 e when e.Message.Contains "preceded by ReinterpretAs" -> ()
+        | Choice2Of2 e -> failwith $"unexpected exception: %s{e.Message}"

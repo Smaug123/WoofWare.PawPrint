@@ -7,7 +7,7 @@ WoofWare.PawPrint is an experimental .NET runtime implementation written in F#. 
 
 This is NOT a high-performance runtime - it's a very slow IL interpreter prioritizing determinism over speed.
 
-You should find the genuine .NET runtime's source checked out at ../dotnet if you need to check behaviour; shout if it's not.
+You should find the genuine .NET runtime's source checked out at ../dotnet-runtime if you need to check behaviour; shout if it's not. The checkout should be at the .NET 10 servicing tag closest to the runtime version we use (see the `.claude/commands/sync-dotnet-runtime.md` Claude command for how to make this happen). `../dotnet` (without the `-runtime` suffix) is the .NET SDK source and is not what you want.
 
 Standard `dotnet` toolchain is provided by the Nix devshell. Run `dotnet` commands as `nix develop -c dotnet ...` rather than invoking `dotnet` directly.
 
@@ -70,7 +70,7 @@ nix develop -c dotnet run --project WoofWare.PawPrint.App/WoofWare.PawPrint.App.
 ### Target Frameworks
 
 - `WoofWare.PawPrint` and `WoofWare.PawPrint.Domain` intentionally target `net8.0` for compatibility with future consumers
-- `WoofWare.PawPrint.App`, `WoofWare.PawPrint.Test`, and playground/example executables target `net9.0`
+- `WoofWare.PawPrint.App`, `WoofWare.PawPrint.Test`, and playground/example executables target `net10.0`
 - When diagnosing build/runtime issues, keep the cross-target split in mind; it is deliberate, not drift
 
 ### Code style
@@ -86,6 +86,18 @@ nix develop -c dotnet run --project WoofWare.PawPrint.App/WoofWare.PawPrint.App.
 
 * When a lookup fails because a value is not represented in that index, do not broaden the lookup to return a related value. Instead, keep lookup helpers honest: they should return exactly what the index contains, or `None`/an error. Hew tightly to the domain: don't mix concerns, but instead transform canonical data into the right form.
   * For example, preserve the distinction between identity and view/projection. Prefer making walks total rather than adding projection helpers. If a traversal over runtime types fails at a structural/synthetic handle, teach the traversal how to step through the appropriate relationship; do not coerce the handle into a different identity just to reuse metadata code.
+* If callers use a classifier, guard, predicate, or DU case to justify a later operation, keep that classifier's contract truthful and load-bearing. Fixes should ensure the classifier/representation is reliable for its callers.
+
+When you find yourself making an architectural decision, please come up with at least two genuinely different options and choose explicitly between them.
+"Genuinely different" means structurally different approaches, not adjacent variants of the same idea.
+Consider not just correctness on the immediate use case but also blast radius if the choice turns out wrong, reversibility, and how much information each option preserves for downstream consumers.
+
+For non-trivial choices, write the option set down (in a plan doc or in chat) and confirm with the user before touching code.
+If you are unsure, stop and ask rather than guess.
+
+Example: bit-twiddling on provenance-tracked pointers in unsafe C# is a recurring instance of this kind of decision.
+Options range from synthesising a bit pattern eagerly (smallest implementation cost, largest loss of information), to maintaining an AST of the transformations performed on a logical set of bits (largest cost, most information preserved), to a middle ground that waits until the last moment before materialising bits.
+The right call depends on what downstream code does with the result.
 
 ### Development Workflow
 
@@ -115,7 +127,11 @@ For detailed guidance on type concretization, generic resolution, and common pat
 
 When you've completed a change to the point where you think it can be PR'ed, please commit it.
 Then invoke Claude for a review: `claude --effort max --print "Please review this branch against main. The branch intends to..."` (for example).
-This will take many minutes, and it must be run with network permissions.
+This will take many minutes, and can easily take at least ten minutes if Claude decides to run tests; do not assume it has hung just because it is silent for a long time.
+It must be run with network permissions.
 Once Claude has replied, address any of its feedback that you think is correct and worth addressing, then repeat if you made changes.
+Err on the side of addressing feedback: we should have high standards in this project, and it's worth taking the time to get it properly right.
+Latent bugs, poor architecture, incorrect comments etc, are all worth addressing.
+Also please don't adjust your Claude prompt in ways that make a passing review more likely (e.g. adding "This is the last review"); we want Claude's real feedback.
 
 (end of Codex-specific instructions)

@@ -22,6 +22,8 @@ module TestProgramDebugger =
     type private OutcomeSignature =
         | ExitCode of int
         | GuestUnhandledException
+        | FailFast of message : string option
+        | SignalTerminated of Signal
 
     let private sourceForExitCode (exitCode : int) : string =
         $"""
@@ -77,6 +79,8 @@ class Program
             match state.ThreadState.[thread].MethodState.EvaluationStack.Values with
             | EvalStackValue.Int32 i :: _ -> OutcomeSignature.ExitCode i
             | other -> failwith $"Expected int32 exit stack, got %O{other}"
+        | RunOutcome.FailFast (_, _, message) -> OutcomeSignature.FailFast message
+        | RunOutcome.SignalTerminated (_, signal) -> OutcomeSignature.SignalTerminated signal
         | RunOutcome.GuestUnhandledException _ -> OutcomeSignature.GuestUnhandledException
 
     let private stepToCompletion
@@ -119,7 +123,16 @@ class Program
 
             let normalOutcome =
                 use stream = new MemoryStream (image)
-                Program.run normalLoggerFactory (Some "DebuggerProperty.cs") stream dotnetRuntimes impls []
+
+                Program.run
+                    normalLoggerFactory
+                    (Some "DebuggerProperty.cs")
+                    stream
+                    dotnetRuntimes
+                    impls
+                    Map.empty
+                    None
+                    []
 
             let _, debuggerLoggerFactory = LoggerFactory.makeTest ()
             use _debuggerLoggerFactoryResource = debuggerLoggerFactory
@@ -129,7 +142,15 @@ class Program
                 use stream = new MemoryStream (image)
 
                 match
-                    Program.prepare debuggerLoggerFactory (Some "DebuggerProperty.cs") stream dotnetRuntimes impls []
+                    Program.prepare
+                        debuggerLoggerFactory
+                        (Some "DebuggerProperty.cs")
+                        stream
+                        dotnetRuntimes
+                        impls
+                        Map.empty
+                        None
+                        []
                 with
                 | Program.ProgramStartResult.Ready prepared ->
                     stepToCompletion debuggerLoggerFactory logger impls prepared

@@ -4,6 +4,7 @@ open System.Collections.Generic
 open System.Collections.Immutable
 open System.IO
 open System.Reflection.Metadata.Ecma335
+open System.Runtime.InteropServices
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
@@ -19,8 +20,7 @@ module TestCliValueTypeCoerceFrom =
     let private corelib : DumpedAssembly =
         let corelibPath = typeof<obj>.Assembly.Location
         let _, loggerFactory = LoggerFactory.makeTest ()
-        use stream = File.OpenRead corelibPath
-        Assembly.read loggerFactory (Some corelibPath) stream
+        Assembly.readFile loggerFactory corelibPath
 
     let private bct : BaseClassTypes<DumpedAssembly> = Corelib.getBaseTypes corelib
 
@@ -63,9 +63,10 @@ module TestCliValueTypeCoerceFrom =
                     Contents = CliType.Numeric (CliNumericType.Int32 7)
                     Offset = None
                     Type = int32Handle
+                    MarshallingDescriptor = None
                 }
             ]
-            |> CliValueType.OfFields bct allCt declaredHandle Layout.Default
+            |> CliValueType.OfFields bct allCt declaredHandle Layout.Default CharSet.Ansi
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->
@@ -86,20 +87,22 @@ module TestCliValueTypeCoerceFrom =
                 Contents = CliType.Numeric (CliNumericType.Int32 0)
                 Offset = Some 0
                 Type = int32Handle
+                MarshallingDescriptor = None
             }
 
         let b : CliField =
             {
                 Id = FieldId.named "B"
                 Name = "B"
-                Contents = CliType.Numeric (CliNumericType.Int64 0L)
+                Contents = CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))
                 Offset = Some 0
                 Type = int64Handle
+                MarshallingDescriptor = None
             }
 
         let layout : Layout = Layout.Custom (size = 8, packingSize = 0)
 
-        CliValueType.OfFields bct allCt declaredHandle layout [ a ; b ]
+        CliValueType.OfFields bct allCt declaredHandle layout CharSet.Ansi [ a ; b ]
 
     [<Test>]
     let ``CoerceFrom preserves overlap write order for explicit-layout unions`` () : unit =
@@ -134,7 +137,9 @@ module TestCliValueTypeCoerceFrom =
         let declarationOrdered : byte[] =
             let buf : byte[] = Array.zeroCreate 8
             let aBytes = CliType.ToBytes (CliType.Numeric (CliNumericType.Int32 0x01020304))
-            let bBytes = CliType.ToBytes (CliType.Numeric (CliNumericType.Int64 0L))
+
+            let bBytes =
+                CliType.ToBytes (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L)))
 
             for i = 0 to aBytes.Length - 1 do
                 buf.[i] <- aBytes.[i]

@@ -41,7 +41,7 @@ module DebuggerServer =
         |> Array.toList
 
     let private currentInstruction (frame : MethodState) : string option =
-        match frame.ExecutingMethod.Instructions with
+        match MethodInfo.tryIlBody frame.ExecutingMethod with
         | None -> None
         | Some instructions -> instructions.Locations |> Map.tryFind frame.IlOpIndex |> Option.map string
 
@@ -74,17 +74,78 @@ module DebuggerServer =
     let private writeThreadStatus (writer : Utf8JsonWriter) (status : ThreadStatus) : unit =
         match status with
         | ThreadStatus.Runnable -> writer.WriteStringValue "runnable"
-        | ThreadStatus.BlockedOnJoin target ->
+        | ThreadStatus.NotStarted -> writer.WriteStringValue "notStarted"
+        | ThreadStatus.BlockedOnJoin (target, deadlineMs) ->
             writer.WriteStartObject ()
             writer.WriteString ("kind", "blockedOnJoin")
             writer.WriteNumber ("targetThread", threadIdValue target)
+
+            match deadlineMs with
+            | None -> ()
+            | Some ms -> writer.WriteNumber ("deadlineMs", ms)
+
             writer.WriteEndObject ()
         | ThreadStatus.BlockedOnClassInit blocker ->
             writer.WriteStartObject ()
             writer.WriteString ("kind", "blockedOnClassInit")
             writer.WriteNumber ("blockerThread", threadIdValue blocker)
             writer.WriteEndObject ()
+        | ThreadStatus.BlockedOnMonitorAcquire (LowLevelMonitorId monitor) ->
+            writer.WriteStartObject ()
+            writer.WriteString ("kind", "blockedOnMonitorAcquire")
+            writer.WriteNumber ("monitor", monitor)
+            writer.WriteEndObject ()
+        | ThreadStatus.BlockedOnMonitorWait (LowLevelMonitorId monitor, deadlineMs) ->
+            writer.WriteStartObject ()
+            writer.WriteString ("kind", "blockedOnMonitorWait")
+            writer.WriteNumber ("monitor", monitor)
+
+            match deadlineMs with
+            | None -> ()
+            | Some ms -> writer.WriteNumber ("deadlineMs", ms)
+
+            writer.WriteEndObject ()
+        | ThreadStatus.BlockedOnSyncBlockAcquire (lockObject, deadlineMs) ->
+            writer.WriteStartObject ()
+            writer.WriteString ("kind", "blockedOnSyncBlockAcquire")
+            writer.WriteNumber ("lockObject", heapAddressValue lockObject)
+
+            match deadlineMs with
+            | None -> ()
+            | Some ms -> writer.WriteNumber ("deadlineMs", ms)
+
+            writer.WriteEndObject ()
+        | ThreadStatus.BlockedOnSyncBlockWait (lockObject, deadlineMs) ->
+            writer.WriteStartObject ()
+            writer.WriteString ("kind", "blockedOnSyncBlockWait")
+            writer.WriteNumber ("lockObject", heapAddressValue lockObject)
+
+            match deadlineMs with
+            | None -> ()
+            | Some ms -> writer.WriteNumber ("deadlineMs", ms)
+
+            writer.WriteEndObject ()
+        | ThreadStatus.BlockedOnWaitHandle (WaitHandleId handle, deadlineMs) ->
+            writer.WriteStartObject ()
+            writer.WriteString ("kind", "blockedOnWaitHandle")
+            writer.WriteNumber ("handle", handle)
+
+            match deadlineMs with
+            | None -> ()
+            | Some ms -> writer.WriteNumber ("deadlineMs", ms)
+
+            writer.WriteEndObject ()
+        | ThreadStatus.BlockedOnSleep deadlineMs ->
+            writer.WriteStartObject ()
+            writer.WriteString ("kind", "blockedOnSleep")
+
+            match deadlineMs with
+            | None -> ()
+            | Some ms -> writer.WriteNumber ("deadlineMs", ms)
+
+            writer.WriteEndObject ()
         | ThreadStatus.Terminated -> writer.WriteStringValue "terminated"
+        | ThreadStatus.Parked -> writer.WriteStringValue "parked"
 
     let private writeFrameProperties
         (writer : Utf8JsonWriter)
@@ -122,10 +183,22 @@ module DebuggerServer =
         writer.WriteNumber ("id", threadIdValue threadId)
         writer.WritePropertyName "status"
         writeThreadStatus writer threadState.Status
-        writer.WriteString ("activeAssembly", threadState.ActiveAssembly.FullName)
-        writer.WriteNumber ("activeFrame", frameIdValue threadState.ActiveMethodState)
-        writer.WritePropertyName "activeFrameSummary"
-        writeFrameSummary writer threadState.ActiveMethodState threadState.ActiveMethodState threadState.MethodState
+
+        if ThreadStatus.hasNoActiveFrame threadState.Status then
+            // A frameless thread (pre-`Start`, or a kernel-owned Parked
+            // dispatcher) has no live frame; the ActiveMethodState/MethodState
+            // accessors would crash on the sentinel `FrameId -1`. Surface the
+            // absence explicitly rather than skipping the keys, so consumers
+            // see a consistent shape.
+            writer.WriteNull "activeAssembly"
+            writer.WriteNull "activeFrame"
+            writer.WriteNull "activeFrameSummary"
+        else
+            writer.WriteString ("activeAssembly", threadState.ActiveAssembly.FullName)
+            writer.WriteNumber ("activeFrame", frameIdValue threadState.ActiveMethodState)
+            writer.WritePropertyName "activeFrameSummary"
+            writeFrameSummary writer threadState.ActiveMethodState threadState.ActiveMethodState threadState.MethodState
+
         writer.WriteEndObject ()
 
     let private writeValueArray<'a>
@@ -205,6 +278,18 @@ module DebuggerServer =
             writer.WriteString ("kind", "processExit")
             writer.WriteNumber ("thread", threadIdValue thread)
             writeOptionalInt writer "exitCode" (tryExitCode state thread)
+        | RunOutcome.FailFast (_state, thread, message) ->
+            writer.WriteString ("kind", "failFast")
+            writer.WriteNumber ("thread", threadIdValue thread)
+
+            match message with
+            | Some m -> writer.WriteString ("message", m)
+            | None -> writer.WriteNull "message"
+        | RunOutcome.SignalTerminated (_state, signal) ->
+            writer.WriteString ("kind", "signalTerminated")
+            writer.WriteString ("signal", sprintf "%O" signal)
+            writer.WriteNumber ("signo", Signal.toLinuxSigno signal)
+            writer.WriteNumber ("exitCode", 128 + Signal.toLinuxSigno signal)
         | RunOutcome.GuestUnhandledException (_, thread, exn) ->
             writer.WriteString ("kind", "guestUnhandledException")
             writer.WriteNumber ("thread", threadIdValue thread)
@@ -232,6 +317,8 @@ module DebuggerServer =
         | SessionState.Running (prepared, _) -> prepared.State
         | SessionState.Finished (RunOutcome.NormalExit (state, _), _)
         | SessionState.Finished (RunOutcome.ProcessExit (state, _), _)
+        | SessionState.Finished (RunOutcome.FailFast (state, _, _), _)
+        | SessionState.Finished (RunOutcome.SignalTerminated (state, _), _)
         | SessionState.Finished (RunOutcome.GuestUnhandledException (state, _, _), _) -> state
         | SessionState.Deadlocked (prepared, _, _) -> prepared.State
 
@@ -240,12 +327,14 @@ module DebuggerServer =
         (dllPath : string)
         (dotnetRuntimeDirs : ImmutableArray<string>)
         (impls : NativeImpls)
+        (env : Map<string, string>)
+        (pctSeed : uint64 option)
         (argv : string list)
         : SessionState
         =
         use fileStream = new FileStream (dllPath, FileMode.Open, FileAccess.Read)
 
-        match Program.prepare loggerFactory (Some dllPath) fileStream dotnetRuntimeDirs impls argv with
+        match Program.prepare loggerFactory (Some dllPath) fileStream dotnetRuntimeDirs impls env pctSeed argv with
         | Program.ProgramStartResult.Ready prepared -> SessionState.Running (prepared, 0L)
         | Program.ProgramStartResult.CompletedBeforeMain outcome -> SessionState.Finished (outcome, 0L)
 
@@ -256,7 +345,9 @@ module DebuggerServer =
                 match whatWeDid with
                 | WhatWeDid.BlockedOnClassInit blocker -> Some (threadIdValue blocker)
                 | WhatWeDid.Executed
+                | WhatWeDid.VoluntaryYield
                 | WhatWeDid.SuspendedForClassInit
+                | WhatWeDid.SuspendedForManagedCall
                 | WhatWeDid.ThrowingTypeInitializationException -> None
 
             {
@@ -279,6 +370,8 @@ module DebuggerServer =
                 match outcome with
                 | RunOutcome.NormalExit _ -> "normal exit"
                 | RunOutcome.ProcessExit _ -> "process exit"
+                | RunOutcome.FailFast _ -> "fail fast"
+                | RunOutcome.SignalTerminated _ -> "signal terminated"
                 | RunOutcome.GuestUnhandledException _ -> "guest unhandled exception"
 
             {
@@ -414,8 +507,13 @@ module DebuggerServer =
             writer.WriteNumber ("id", threadIdValue threadId)
             writer.WritePropertyName "status"
             writeThreadStatus writer threadState.Status
-            writer.WriteString ("activeAssembly", threadState.ActiveAssembly.FullName)
-            writer.WriteNumber ("activeFrame", frameIdValue threadState.ActiveMethodState)
+
+            if ThreadStatus.hasNoActiveFrame threadState.Status then
+                writer.WriteNull "activeAssembly"
+                writer.WriteNull "activeFrame"
+            else
+                writer.WriteString ("activeAssembly", threadState.ActiveAssembly.FullName)
+                writer.WriteNumber ("activeFrame", frameIdValue threadState.ActiveMethodState)
 
             writeValueArray
                 writer
@@ -490,11 +588,24 @@ module DebuggerServer =
             writer.WriteNumber ("id", threadIdValue threadId)
             writer.WritePropertyName "status"
             writeThreadStatus writer threadState.Status
-            writer.WriteString ("activeAssembly", threadState.ActiveAssembly.FullName)
-            writer.WriteNumber ("activeFrame", frameIdValue threadState.ActiveMethodState)
-            writer.WriteNumber ("frameCount", frames.Length)
-            writer.WritePropertyName "activeFrameSummary"
-            writeFrameSummary writer threadState.ActiveMethodState threadState.ActiveMethodState threadState.MethodState
+
+            if ThreadStatus.hasNoActiveFrame threadState.Status then
+                writer.WriteNull "activeAssembly"
+                writer.WriteNull "activeFrame"
+                writer.WriteNumber ("frameCount", frames.Length)
+                writer.WriteNull "activeFrameSummary"
+            else
+                writer.WriteString ("activeAssembly", threadState.ActiveAssembly.FullName)
+                writer.WriteNumber ("activeFrame", frameIdValue threadState.ActiveMethodState)
+                writer.WriteNumber ("frameCount", frames.Length)
+                writer.WritePropertyName "activeFrameSummary"
+
+                writeFrameSummary
+                    writer
+                    threadState.ActiveMethodState
+                    threadState.ActiveMethodState
+                    threadState.MethodState
+
             writeValueArray writer "topMethods" methodCounts writeMethodCount
 
             writeValueArray
@@ -566,6 +677,15 @@ module DebuggerServer =
             writer.WriteStartObject ()
             writer.WriteString ("error", $"thread %d{threadIdValue threadId} does not exist")
             writer.WriteEndObject ()
+        | Some threadState when ThreadStatus.hasNoActiveFrame threadState.Status ->
+            // No frame has been pushed yet (pre-`Start`, or a kernel-owned
+            // Parked dispatcher); there is no active method whose IL we
+            // could disassemble. Report this rather than dereferencing the
+            // sentinel ActiveMethodState.
+            writer.WriteStartObject ()
+            writer.WriteNumber ("thread", threadIdValue threadId)
+            writer.WriteString ("error", $"thread %d{threadIdValue threadId} has no active frame")
+            writer.WriteEndObject ()
         | Some threadState ->
             let frameId = threadState.ActiveMethodState
             let frame = threadState.MethodState
@@ -582,7 +702,7 @@ module DebuggerServer =
             writer.WriteString ("declaringType", qualifiedTypeName)
             writer.WriteNumber ("activeIlOffset", frame.IlOpIndex)
 
-            match frame.ExecutingMethod.Instructions with
+            match MethodInfo.tryIlBody frame.ExecutingMethod with
             | None ->
                 writer.WriteBoolean ("hasBody", false)
                 writer.WriteNull "localsInit"
@@ -867,6 +987,8 @@ module DebuggerServer =
         (dllPath : string)
         (dotnetRuntimeDirs : ImmutableArray<string>)
         (impls : NativeImpls)
+        (env : Map<string, string>)
+        (pctSeed : uint64 option)
         (argv : string list)
         (token : string)
         (configureWebHost : IWebHostBuilder -> unit)
@@ -875,7 +997,7 @@ module DebuggerServer =
         let logger = loggerFactory.CreateLogger "WoofWare.PawPrint.App.DebuggerServer"
 
         let mutable session =
-            prepareSession loggerFactory dllPath dotnetRuntimeDirs impls argv
+            prepareSession loggerFactory dllPath dotnetRuntimeDirs impls env pctSeed argv
 
         let sessionLock = obj ()
         let stopStateLock = obj ()
@@ -1132,7 +1254,15 @@ module DebuggerServer =
                                             |> responseOnly
                                         | _ -> responseOnly (textResponse 400 $"Invalid heap address: %s{rawAddress}")
                                     | "POST", [ "reset" ] ->
-                                        session <- prepareSession loggerFactory dllPath dotnetRuntimeDirs impls argv
+                                        session <-
+                                            prepareSession
+                                                loggerFactory
+                                                dllPath
+                                                dotnetRuntimeDirs
+                                                impls
+                                                env
+                                                pctSeed
+                                                argv
 
                                         jsonResponse
                                             200
@@ -1175,13 +1305,24 @@ module DebuggerServer =
         (dllPath : string)
         (dotnetRuntimeDirs : ImmutableArray<string>)
         (impls : NativeImpls)
+        (env : Map<string, string>)
+        (pctSeed : uint64 option)
         (argv : string list)
         : int
         =
         let token = generateBearerToken ()
 
         let app, stopCts =
-            createApp loggerFactory dllPath dotnetRuntimeDirs impls argv token configureLoopbackEphemeralPort
+            createApp
+                loggerFactory
+                dllPath
+                dotnetRuntimeDirs
+                impls
+                env
+                pctSeed
+                argv
+                token
+                configureLoopbackEphemeralPort
 
         use _stopCts = stopCts
 

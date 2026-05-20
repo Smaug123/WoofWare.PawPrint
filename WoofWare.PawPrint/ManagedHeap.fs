@@ -2,9 +2,64 @@ namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
 
-type SyncBlock =
+/// State carried when an object's monitor is `Held` by some thread.
+/// `AcquireQueue` is the FIFO list of (thread, optional re-entry depth) pairs
+/// parked in `BlockedOnSyncBlockAcquire` waiting for ownership to be transferred
+/// to them when `LockingThread` calls `Monitor.Exit`. FIFO order is load-bearing
+/// for fairness: switching to LIFO or arbitrary order would change the
+/// observable interleaving for guests that race multiple threads into the same
+/// `lock` block.
+///
+/// The `int option` snapshot on each `AcquireQueue` entry distinguishes the
+/// two flavours of waiter:
+///   * `None` — a fresh entrant from `Monitor.Enter`. On ownership transfer it
+///     becomes the new owner with `ReentrancyCount = 1`.
+///   * `Some depth` — a waiter that was woken from `Monitor.Wait` by
+///     `Monitor.Pulse` / `PulseAll` (or a spurious wake). `Wait` snapshots its
+///     prior `ReentrancyCount` so that on re-acquire the depth it had before
+///     parking is restored verbatim. Storing the depth inline next to the
+///     thread keeps the "what's waiting and what depth do they need" coupling
+///     visible at every read site; a separate map would let a transition lose
+///     the pairing silently.
+///
+/// `ReentrancyCount` is the depth of nested `Monitor.Enter` calls by
+/// `LockingThread` and must reach exactly zero before ownership can transfer.
+type LockedSyncBlock =
+    {
+        LockingThread : ThreadId
+        ReentrancyCount : int
+        AcquireQueue : (ThreadId * int option) list
+    }
+
+/// Ownership state of an object's monitor — distinct from its `WaitQueue`
+/// because `Monitor.Wait` fully releases the lock (`Free`) while leaving its
+/// caller parked in the SyncBlock's `WaitQueue`.
+type SyncBlockLock =
     | Free
-    | Locked of lockingThread : ThreadId * reentrancyCount : int
+    | Held of LockedSyncBlock
+
+/// Per-object monitor metadata. `Lock` describes ownership and FIFO of
+/// `Monitor.Enter` contenders. `WaitQueue` is the FIFO list of (thread,
+/// snapshot depth) pairs currently parked in `BlockedOnSyncBlockWait` from a
+/// `Monitor.Wait` call; they do NOT contend for the lock until a `Pulse` /
+/// `PulseAll` moves them onto `AcquireQueue` (FIFO tail), at which point they
+/// re-enter via the normal ownership-transfer path. The two fields are
+/// orthogonal: a non-empty `WaitQueue` can coexist with `Lock = Free` (the
+/// owner called `Wait`, releasing the lock, but the waiter is still parked).
+/// Pulse on an empty wait queue is a documented no-op (matches CoreCLR's
+/// `SyncBlock`).
+type SyncBlock =
+    {
+        Lock : SyncBlockLock
+        WaitQueue : (ThreadId * int) list
+    }
+
+    /// Initial state for a freshly-allocated object: lock free, no waiters.
+    static member Empty : SyncBlock =
+        {
+            Lock = SyncBlockLock.Free
+            WaitQueue = []
+        }
 
 type AllocatedNonArrayObject =
     {
@@ -33,7 +88,15 @@ type AllocatedNonArrayObject =
 type AllocatedArray =
     {
         ConcreteType : ConcreteTypeHandle
+        /// Total element count, equal to the product of `Lengths`. For szarrays this is just
+        /// the array length; for multi-dim arrays it is the size of the flat backing store.
         Length : int
+        /// Per-dimension lengths in row-major order. Length is 1 for szarrays, equal to the
+        /// rank for multi-dim arrays. Multiplying these produces `Length`.
+        Lengths : ImmutableArray<int>
+        /// Backing store in row-major order. For multi-dim arrays the element at
+        /// `(i_0, ..., i_{n-1})` lives at flat offset
+        /// `((((i_0)*d_1)+i_1)*d_2 + i_2)*...*d_{n-1} + i_{n-1}`, where `d_k = Lengths.[k]`.
         Elements : ImmutableArray<CliType>
     }
 
@@ -46,13 +109,15 @@ type ManagedHeap =
         /// so we'll have a special pool for their bytes.
         StringArrayData : ImmutableArray<char>
         /// Side-table mapping a String object's address to its full character content.
-        /// The managed representation of a String only carries _firstChar and _stringLength,
-        /// which is not enough to reconstruct the full text; we record it here at allocation
-        /// time so operations like String.Equals can compare full contents.
+        /// The managed representation of a String only carries `_stringLength` as a
+        /// regular field; the chars (including the metadata-level `_firstChar`) live
+        /// in `StringArrayData` and are projected via `RuntimeFieldProjection`. We
+        /// record the canonical text here at allocation time so operations like
+        /// `String.Equals` can compare full contents without re-reading the byte view.
         StringContents : ImmutableDictionary<ManagedHeapAddress, string>
         /// Side-table mapping a String object's address to the first character's index in
-        /// `StringArrayData`. String objects store `_firstChar` as a regular field, but
-        /// byrefs to it must be able to walk into the trailing character data.
+        /// `StringArrayData`. `_firstChar` and byref/trailing-data reads both walk
+        /// from this offset.
         StringDataOffsets : ImmutableDictionary<ManagedHeapAddress, int>
     }
 
@@ -178,22 +243,12 @@ module ManagedHeap =
         | Some contents -> contents
         | None -> failwith $"%s{operation}: string contents for %O{addr} were not recorded"
 
-    let private setFirstStringCharField (addr : ManagedHeapAddress) (value : char) (heap : ManagedHeap) : ManagedHeap =
-        match heap.NonArrayObjects.TryGetValue addr with
-        | false, _ -> heap
-        | true, stringObject ->
-            let stringObject =
-                AllocatedNonArrayObject.SetField "_firstChar" (CliType.ofChar value) stringObject
-
-            { heap with
-                NonArrayObjects = heap.NonArrayObjects |> Map.add addr stringObject
-            }
-
     /// Update a character in the runtime string data side-table. `charIndex` equal
     /// to the string length addresses the null terminator; that updates
-    /// `StringArrayData` but not the logical `StringContents` value. Character
-    /// zero is also mirrored into String._firstChar, keeping direct field reads
-    /// consistent with byref/trailing-data reads.
+    /// `StringArrayData` but not the logical `StringContents` value. The metadata-
+    /// level `_firstChar` field is a synthetic projection over
+    /// `StringArrayData[dataOffset]` (see `RuntimeFieldProjection`) and therefore
+    /// requires no separate mirror.
     let setStringChar (addr : ManagedHeapAddress) (charIndex : int) (value : char) (heap : ManagedHeap) : ManagedHeap =
         if charIndex < 0 then
             failwith $"string character index must be non-negative, got %d{charIndex} for %O{addr}"
@@ -212,12 +267,6 @@ module ManagedHeap =
             { heap with
                 StringArrayData = newArr.ToImmutable ()
             }
-
-        let heap =
-            if charIndex = 0 then
-                setFirstStringCharField addr value heap
-            else
-                heap
 
         if charIndex < contents.Length then
             let chars = contents.ToCharArray ()
@@ -264,11 +313,15 @@ module ManagedHeap =
 
     let getArrayValue (alloc : ManagedHeapAddress) (offset : int) (heap : ManagedHeap) : CliType =
         match heap.Arrays.TryGetValue alloc with
-        | false, _ -> failwith "TODO: array not on heap"
+        | false, _ -> failwith $"TODO: array not on heap (no array registered at %O{alloc})"
         | true, arr ->
 
-        if offset < 0 || offset >= arr.Length then
-            failwith "TODO: raise IndexOutOfBoundsException"
+        if offset < 0 then
+            failwith
+                $"TODO: raise IndexOutOfRangeException: negative array index %d{offset} on array at %O{alloc} (length %d{arr.Length}). A negative index here typically means a byref obtained via `RawData::Data` on an array was read without first applying the canonical `+sizeof(nint)` skip past the length-header region; if you intended to read the length, use `RawArrayData::Length` instead."
+        elif offset >= arr.Length then
+            failwith
+                $"TODO: raise IndexOutOfRangeException: array index %d{offset} >= length %d{arr.Length} on array at %O{alloc}"
 
         arr.Elements.[offset]
 
@@ -289,10 +342,14 @@ module ManagedHeap =
                 alloc
                 (fun arr ->
                     match arr with
-                    | None -> failwith "tried to change element of nonexistent array"
+                    | None -> failwith $"tried to change element of nonexistent array at %O{alloc}"
                     | Some arr ->
-                        if offset < 0 || offset >= arr.Elements.Length then
-                            failwith "TODO: throw somehow"
+                        if offset < 0 then
+                            failwith
+                                $"TODO: raise IndexOutOfRangeException: negative array index %d{offset} on array at %O{alloc} (length %d{arr.Elements.Length}). A negative index here typically means a byref obtained via `RawData::Data` on an array was written without first applying the canonical `+sizeof(nint)` skip past the length-header region."
+                        elif offset >= arr.Elements.Length then
+                            failwith
+                                $"TODO: raise IndexOutOfRangeException: array index %d{offset} >= length %d{arr.Elements.Length} on array at %O{alloc}"
 
                         { arr with
                             Elements = arr.Elements.SetItem (offset, v)

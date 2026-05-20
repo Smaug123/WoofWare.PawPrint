@@ -8,7 +8,6 @@ open System.Collections.Immutable
 open System.Reflection
 open System.Reflection.Metadata
 open System.Reflection.PortableExecutable
-open Microsoft.Extensions.Logging
 
 /// <summary>
 /// Represents information about a method parameter.
@@ -138,6 +137,115 @@ module MethodInstructions =
         }
 
 /// <summary>
+/// <summary>
+/// The kind of target an <c>[UnsafeAccessor]</c> method accesses, mirroring
+/// <see cref="System.Runtime.CompilerServices.UnsafeAccessorKind"/> from the BCL.
+/// </summary>
+type UnsafeAccessorKind =
+    | Constructor
+    | Method
+    | StaticMethod
+    | Field
+    | StaticField
+
+/// Classifies the runtime-synthesised behaviour of a method whose implementation is
+/// supplied by the runtime. Most variants correspond to
+/// <c>MethodImplAttributes.Runtime</c> (used by the CLR for delegates today; multi-dim
+/// array <c>Get</c>/<c>Set</c>/<c>Address</c>/<c>.ctor</c> coming soon). The
+/// <see cref="UnsafeAccessor"/> variant is different: those methods carry
+/// <c>ImplAttributes=IL</c> with <c>RVA=0</c>, and the runtime synthesises the body
+/// from the <c>[UnsafeAccessor]</c> attribute rather than from <c>MethodImpl.Runtime</c>.
+/// </summary>
+type RuntimeBehaviour =
+    /// A delegate constructor, dispatched by writing the target object and method
+    /// pointer into the new delegate instance.
+    | DelegateCtor
+
+    /// A delegate <c>Invoke</c> call, dispatched by reading the target/method-pointer
+    /// fields off the delegate instance and calling through.
+    | DelegateInvoke
+
+    /// <summary>
+    /// A C# 12+ <c>[UnsafeAccessor]</c> <c>extern static</c> method. The runtime
+    /// synthesises the body to forward to a (possibly inaccessible) member of the
+    /// type given by the attributed method's first parameter (or, for
+    /// <see cref="UnsafeAccessorKind.StaticField"/>/<see cref="UnsafeAccessorKind.StaticMethod"/>,
+    /// the parameter's static type). <c>TargetName</c> is the value of the
+    /// <c>Name</c> property on the attribute; <c>None</c> means "use the attributed
+    /// method's name", per the attribute's documented default.
+    /// </summary>
+    | UnsafeAccessor of kind : UnsafeAccessorKind * targetName : string option
+
+    /// <summary>
+    /// The Runtime-impl flag is set but PawPrint has no specific handler. This currently
+    /// covers <c>BeginInvoke</c>/<c>EndInvoke</c> on delegates and any other
+    /// Runtime-impl method we have not classified. Reaching this at dispatch time is a
+    /// bug in PawPrint's coverage; the dispatcher fails with a clear message.
+    /// </summary>
+    | Unrecognised of name : string
+
+/// <summary>
+/// The implementation a method carries. The CLR distinguishes several kinds of
+/// "method body" beyond plain IL — InternalCalls, P/Invokes, runtime-synthesised
+/// methods (delegates today, multi-dim arrays soon), and abstract methods with no
+/// body at all. This DU names them all so dispatch sites can match exhaustively
+/// rather than treating "no IL" as an undifferentiated <c>None</c>.
+/// </summary>
+type MethodBody<'methodVars> =
+    /// Normal IL body parsed from the assembly's PE stream.
+    | Il of MethodInstructions<'methodVars>
+
+    /// <summary>
+    /// Marked <c>[MethodImpl(MethodImplOptions.InternalCall)]</c>. The implementation is
+    /// supplied by the runtime; PawPrint dispatches via NativeImpls.
+    /// </summary>
+    | InternalCall
+
+    /// <summary>
+    /// Marked <c>[MethodAttributes.PinvokeImpl]</c>. The import data lives on the parent
+    /// <see cref="MethodInfo.NativeImport"/> field.
+    /// </summary>
+    | PInvoke
+
+    /// <summary>
+    /// The runtime synthesises the body. Most cases are flagged by
+    /// <c>[MethodImpl(MethodImplOptions.Runtime)]</c> (delegates, multi-dim array helpers
+    /// — keyed off the declaring type and method name); the
+    /// <see cref="RuntimeBehaviour.UnsafeAccessor"/> variant is the C# 12+
+    /// <c>[UnsafeAccessor]</c> <c>extern static</c> case which carries
+    /// <c>ImplAttributes=IL</c> instead. See <see cref="RuntimeBehaviour"/>.
+    /// </summary>
+    | RuntimeProvided of RuntimeBehaviour
+
+    /// <summary>
+    /// Marked <c>[MethodAttributes.Abstract]</c> — virtual without a body. Direct dispatch
+    /// is illegal; reachable only via mis-resolved <c>callvirt</c>.
+    /// </summary>
+    | Abstract
+
+[<RequireQualifiedAccess>]
+module MethodBody =
+    let tryIl<'methodVars> (body : MethodBody<'methodVars>) : MethodInstructions<'methodVars> option =
+        match body with
+        | MethodBody.Il instr -> Some instr
+        | MethodBody.InternalCall
+        | MethodBody.PInvoke
+        | MethodBody.RuntimeProvided _
+        | MethodBody.Abstract -> None
+
+    let mapMethodVars<'a, 'b>
+        (f : MethodInstructions<'a> -> MethodInstructions<'b>)
+        (body : MethodBody<'a>)
+        : MethodBody<'b>
+        =
+        match body with
+        | MethodBody.Il instr -> MethodBody.Il (f instr)
+        | MethodBody.InternalCall -> MethodBody.InternalCall
+        | MethodBody.PInvoke -> MethodBody.PInvoke
+        | MethodBody.RuntimeProvided rb -> MethodBody.RuntimeProvided rb
+        | MethodBody.Abstract -> MethodBody.Abstract
+
+/// <summary>
 /// Represents detailed information about a method in a .NET assembly.
 /// This is a strongly-typed representation of MethodDefinition from System.Reflection.Metadata.
 /// </summary>
@@ -157,11 +265,11 @@ type MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars> =
         Name : string
 
         /// <summary>
-        /// The IL instructions that compose the method body, along with their offset positions.
-        ///
-        /// There may be no instructions for this method, e.g. if it's an `InternalCall`.
+        /// The implementation this method carries. The CLR distinguishes IL bodies,
+        /// InternalCalls, P/Invokes, runtime-synthesised methods (delegates etc.), and
+        /// abstract methods; see <see cref="MethodBody"/>.
         /// </summary>
-        Instructions : MethodInstructions<'methodVars> option
+        Body : MethodBody<'methodVars>
 
         /// <summary>
         /// The parameters of this method.
@@ -203,30 +311,18 @@ type MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars> =
     override this.ToString () =
         $"{this.DeclaringType.Assembly.Name}.{this.DeclaringType.Name}.{this.Name}"
 
-    /// <summary>
-    /// Whether this method's implementation is directly supplied by the CLI, rather than being loaded
-    /// from an assembly as IL.
-    /// </summary>
-    member this.IsCliInternal : bool =
-        this.ImplAttributes.HasFlag MethodImplAttributes.InternalCall
-
-    /// <summary>
-    /// Whether this method is implemented as a platform invoke (P/Invoke) to unmanaged code.
-    /// </summary>
-    member this.IsPinvokeImpl : bool =
-        this.MethodAttributes.HasFlag MethodAttributes.PinvokeImpl
-
-    /// <summary>
-    /// Whether this method requires a runtime-provided or host-provided implementation
-    /// (InternalCall, PinvokeImpl, or Runtime-supplied such as delegates).
-    /// </summary>
-    member this.IsNativeMethod : bool =
-        this.IsCliInternal
-        || this.IsPinvokeImpl
-        || this.ImplAttributes.HasFlag MethodImplAttributes.Runtime
-
 [<RequireQualifiedAccess>]
 module MethodInfo =
+    let NominallyEqual
+        (a : MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars>)
+        (b : MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars>)
+        : bool
+        =
+        a.DeclaringType.Identity = b.DeclaringType.Identity
+        && a.DeclaringType.Generics = b.DeclaringType.Generics
+        && a.Handle = b.Handle
+        && a.Generics = b.Generics
+
     let private isIntrinsicAttributeType (namespaceName : string) (typeName : string) : bool =
         namespaceName = "System.Runtime.CompilerServices"
         && typeName = "IntrinsicAttribute"
@@ -276,7 +372,7 @@ module MethodInfo =
             DeclaringType = m.DeclaringType |> ConcreteType.mapGeneric (fun _ -> f)
             Handle = m.Handle
             Name = m.Name
-            Instructions = m.Instructions
+            Body = m.Body
             Parameters = m.Parameters
             Generics = m.Generics
             Signature = m.Signature
@@ -299,7 +395,7 @@ module MethodInfo =
             DeclaringType = m.DeclaringType
             Handle = m.Handle
             Name = m.Name
-            Instructions = m.Instructions
+            Body = m.Body
             Parameters = m.Parameters
             Generics = generics
             Signature = m.Signature
@@ -312,7 +408,7 @@ module MethodInfo =
         }
 
     let setMethodVars
-        (vars2 : MethodInstructions<'vars2> option)
+        (body : MethodBody<'vars2>)
         (signature : TypeMethodSignature<'vars2>)
         (m : MethodInfo<'typeGen, 'methodGen, 'vars1>)
         : MethodInfo<'typeGen, 'methodGen, 'vars2>
@@ -321,7 +417,7 @@ module MethodInfo =
             DeclaringType = m.DeclaringType
             Handle = m.Handle
             Name = m.Name
-            Instructions = vars2
+            Body = body
             Parameters = m.Parameters
             Generics = m.Generics
             Signature = signature
@@ -333,9 +429,14 @@ module MethodInfo =
             IsStatic = m.IsStatic
         }
 
-    type private Dummy = class end
+    /// View helper for sites that genuinely just want "the IL body if there is one,"
+    /// e.g. formatters, the debugger, and the abstract-method filter. Prefer matching
+    /// on <see cref="MethodInfo.Body"/> directly when the dispatch site cares which
+    /// non-IL variant is present.
+    let tryIlBody (m : MethodInfo<'typeGen, 'methodGen, 'methodVars>) : MethodInstructions<'methodVars> option =
+        MethodBody.tryIl m.Body
 
-    type private MethodBody =
+    type private RawMethodBody =
         {
             Instructions : (IlOp * int) list
             LocalInit : bool
@@ -344,12 +445,12 @@ module MethodInfo =
             ExceptionRegions : ImmutableArray<ExceptionRegion>
         }
 
-    let private readMetadataToken (reader : byref<BlobReader>) : MetadataToken =
-        reader.ReadUInt32 () |> int |> MetadataToken.ofInt
+    let private readMetadataToken (assembly : AssemblyName) (reader : byref<BlobReader>) : SourcedMetadataToken =
+        reader.ReadUInt32 () |> int |> SourcedMetadataToken.ofInt assembly
 
-    let private readStringToken (reader : byref<BlobReader>) : StringToken =
+    let private readStringToken (assembly : AssemblyName) (reader : byref<BlobReader>) : SourcedStringToken =
         let value = reader.ReadUInt32 () |> int
-        StringToken.ofInt value
+        SourcedStringToken.ofInt assembly value
 
     // TODO: each opcode probably ought to store how many bytes it takes, so we can advance the program counter?
     let private readOpCode (reader : byref<BlobReader>) : ILOpCode =
@@ -366,7 +467,7 @@ module MethodInfo =
         (metadataReader : MetadataReader)
         (assembly : AssemblyName)
         (methodDef : MethodDefinition)
-        : MethodBody option
+        : RawMethodBody option
         =
         if methodDef.RelativeVirtualAddress = 0 then
             None
@@ -433,11 +534,11 @@ module MethodInfo =
                         | ILOpCode.Dup -> IlOp.Nullary NullaryIlOp.Dup
                         | ILOpCode.Pop -> IlOp.Nullary NullaryIlOp.Pop
                         | ILOpCode.Jmp ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Jmp, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Jmp, readMetadataToken assembly &reader)
                         | ILOpCode.Call ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Call, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Call, readMetadataToken assembly &reader)
                         | ILOpCode.Calli ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Calli, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Calli, readMetadataToken assembly &reader)
                         | ILOpCode.Ret -> IlOp.Nullary NullaryIlOp.Ret
                         | ILOpCode.Br_s -> IlOp.UnaryConst (UnaryConstIlOp.Br_s (reader.ReadSByte ()))
                         | ILOpCode.Brfalse_s -> IlOp.UnaryConst (UnaryConstIlOp.Brfalse_s (reader.ReadSByte ()))
@@ -520,36 +621,43 @@ module MethodInfo =
                         | ILOpCode.Conv_u4 -> IlOp.Nullary NullaryIlOp.Conv_U4
                         | ILOpCode.Conv_u8 -> IlOp.Nullary NullaryIlOp.Conv_U8
                         | ILOpCode.Callvirt ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Callvirt, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (
+                                UnaryMetadataTokenIlOp.Callvirt,
+                                readMetadataToken assembly &reader
+                            )
                         | ILOpCode.Cpobj ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Cpobj, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Cpobj, readMetadataToken assembly &reader)
                         | ILOpCode.Ldobj ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldobj, readMetadataToken &reader)
-                        | ILOpCode.Ldstr -> IlOp.UnaryStringToken (UnaryStringTokenIlOp.Ldstr, readStringToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldobj, readMetadataToken assembly &reader)
+                        | ILOpCode.Ldstr ->
+                            IlOp.UnaryStringToken (UnaryStringTokenIlOp.Ldstr, readStringToken assembly &reader)
                         | ILOpCode.Newobj ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Newobj, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Newobj, readMetadataToken assembly &reader)
                         | ILOpCode.Castclass ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Castclass, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (
+                                UnaryMetadataTokenIlOp.Castclass,
+                                readMetadataToken assembly &reader
+                            )
                         | ILOpCode.Isinst ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Isinst, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Isinst, readMetadataToken assembly &reader)
                         | ILOpCode.Conv_r_un -> IlOp.Nullary NullaryIlOp.Conv_r_un
                         | ILOpCode.Unbox ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Unbox, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Unbox, readMetadataToken assembly &reader)
                         | ILOpCode.Throw -> IlOp.Nullary NullaryIlOp.Throw
                         | ILOpCode.Ldfld ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldfld, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldfld, readMetadataToken assembly &reader)
                         | ILOpCode.Ldflda ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldflda, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldflda, readMetadataToken assembly &reader)
                         | ILOpCode.Stfld ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Stfld, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Stfld, readMetadataToken assembly &reader)
                         | ILOpCode.Ldsfld ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldsfld, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldsfld, readMetadataToken assembly &reader)
                         | ILOpCode.Ldsflda ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldsflda, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldsflda, readMetadataToken assembly &reader)
                         | ILOpCode.Stsfld ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Stsfld, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Stsfld, readMetadataToken assembly &reader)
                         | ILOpCode.Stobj ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Stobj, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Stobj, readMetadataToken assembly &reader)
                         | ILOpCode.Conv_ovf_i_un -> IlOp.Nullary NullaryIlOp.Conv_ovf_i_un
                         | ILOpCode.Conv_ovf_i1_un -> IlOp.Nullary NullaryIlOp.Conv_ovf_i1_un
                         | ILOpCode.Conv_ovf_i2_un -> IlOp.Nullary NullaryIlOp.Conv_ovf_i2_un
@@ -561,12 +669,12 @@ module MethodInfo =
                         | ILOpCode.Conv_ovf_u4_un -> IlOp.Nullary NullaryIlOp.Conv_ovf_u4_un
                         | ILOpCode.Conv_ovf_u8_un -> IlOp.Nullary NullaryIlOp.Conv_ovf_u8_un
                         | ILOpCode.Box ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Box, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Box, readMetadataToken assembly &reader)
                         | ILOpCode.Newarr ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Newarr, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Newarr, readMetadataToken assembly &reader)
                         | ILOpCode.Ldlen -> IlOp.Nullary NullaryIlOp.LdLen
                         | ILOpCode.Ldelema ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldelema, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldelema, readMetadataToken assembly &reader)
                         | ILOpCode.Ldelem_i1 -> IlOp.Nullary NullaryIlOp.Ldelem_i1
                         | ILOpCode.Ldelem_u1 -> IlOp.Nullary NullaryIlOp.Ldelem_u1
                         | ILOpCode.Ldelem_i2 -> IlOp.Nullary NullaryIlOp.Ldelem_i2
@@ -587,11 +695,14 @@ module MethodInfo =
                         | ILOpCode.Stelem_r8 -> IlOp.Nullary NullaryIlOp.Stelem_r8
                         | ILOpCode.Stelem_ref -> IlOp.Nullary NullaryIlOp.Stelem_ref
                         | ILOpCode.Ldelem ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldelem, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldelem, readMetadataToken assembly &reader)
                         | ILOpCode.Stelem ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Stelem, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Stelem, readMetadataToken assembly &reader)
                         | ILOpCode.Unbox_any ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Unbox_Any, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (
+                                UnaryMetadataTokenIlOp.Unbox_Any,
+                                readMetadataToken assembly &reader
+                            )
                         | ILOpCode.Conv_ovf_i1 -> IlOp.Nullary NullaryIlOp.Conv_ovf_i1
                         | ILOpCode.Conv_ovf_u1 -> IlOp.Nullary NullaryIlOp.Conv_ovf_u1
                         | ILOpCode.Conv_ovf_i2 -> IlOp.Nullary NullaryIlOp.Conv_ovf_i2
@@ -601,12 +712,18 @@ module MethodInfo =
                         | ILOpCode.Conv_ovf_i8 -> IlOp.Nullary NullaryIlOp.Conv_ovf_i8
                         | ILOpCode.Conv_ovf_u8 -> IlOp.Nullary NullaryIlOp.Conv_ovf_u8
                         | ILOpCode.Refanyval ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Refanyval, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (
+                                UnaryMetadataTokenIlOp.Refanyval,
+                                readMetadataToken assembly &reader
+                            )
                         | ILOpCode.Ckfinite -> IlOp.Nullary NullaryIlOp.Ckfinite
                         | ILOpCode.Mkrefany ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Mkrefany, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (
+                                UnaryMetadataTokenIlOp.Mkrefany,
+                                readMetadataToken assembly &reader
+                            )
                         | ILOpCode.Ldtoken ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldtoken, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldtoken, readMetadataToken assembly &reader)
                         | ILOpCode.Conv_u2 -> IlOp.Nullary NullaryIlOp.Conv_U2
                         | ILOpCode.Conv_u1 -> IlOp.Nullary NullaryIlOp.Conv_U1
                         | ILOpCode.Conv_i -> IlOp.Nullary NullaryIlOp.Conv_I
@@ -630,9 +747,12 @@ module MethodInfo =
                         | ILOpCode.Clt -> IlOp.Nullary NullaryIlOp.Clt
                         | ILOpCode.Clt_un -> IlOp.Nullary NullaryIlOp.Clt_un
                         | ILOpCode.Ldftn ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldftn, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldftn, readMetadataToken assembly &reader)
                         | ILOpCode.Ldvirtftn ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldvirtftn, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (
+                                UnaryMetadataTokenIlOp.Ldvirtftn,
+                                readMetadataToken assembly &reader
+                            )
                         | ILOpCode.Ldarg -> IlOp.UnaryConst (UnaryConstIlOp.Ldarg (reader.ReadUInt16 ()))
                         | ILOpCode.Ldarga -> IlOp.UnaryConst (UnaryConstIlOp.Ldarga (reader.ReadUInt16 ()))
                         | ILOpCode.Starg -> IlOp.UnaryConst (UnaryConstIlOp.Starg (reader.ReadUInt16 ()))
@@ -645,14 +765,17 @@ module MethodInfo =
                         | ILOpCode.Volatile -> IlOp.Nullary NullaryIlOp.Volatile
                         | ILOpCode.Tail -> IlOp.Nullary NullaryIlOp.Tail
                         | ILOpCode.Initobj ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Initobj, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Initobj, readMetadataToken assembly &reader)
                         | ILOpCode.Constrained ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Constrained, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (
+                                UnaryMetadataTokenIlOp.Constrained,
+                                readMetadataToken assembly &reader
+                            )
                         | ILOpCode.Cpblk -> IlOp.Nullary NullaryIlOp.Cpblk
                         | ILOpCode.Initblk -> IlOp.Nullary NullaryIlOp.Initblk
                         | ILOpCode.Rethrow -> IlOp.Nullary NullaryIlOp.Rethrow
                         | ILOpCode.Sizeof ->
-                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Sizeof, readMetadataToken &reader)
+                            IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Sizeof, readMetadataToken assembly &reader)
                         | ILOpCode.Refanytype -> IlOp.Nullary NullaryIlOp.Refanytype
                         | ILOpCode.Readonly -> IlOp.Nullary NullaryIlOp.Readonly
                         | i -> failwithf "Unknown opcode: %A" i
@@ -675,42 +798,192 @@ module MethodInfo =
             }
             |> Some
 
+    /// <summary>
+    /// Decide whether the declaring type's direct base type is <c>System.MulticastDelegate</c>,
+    /// purely from metadata (no assembly resolution). Every C#-emitted delegate inherits
+    /// <c>MulticastDelegate</c> directly, so this is sufficient to recognise a delegate type
+    /// at <see cref="read"/> time, before <see cref="BaseClassTypes"/> is available.
+    ///
+    /// <c>MulticastDelegate</c> itself extends <c>Delegate</c>, and <c>Delegate</c> extends
+    /// <c>Object</c>; both are correctly excluded by this check, and their <c>.ctor</c>/
+    /// <c>Invoke</c> are never directly dispatched anyway.
+    /// </summary>
+    let private declaringTypeIsDelegate (metadataReader : MetadataReader) (declaringDefn : TypeDefinition) : bool =
+        if declaringDefn.BaseType.IsNil then
+            false
+        else
+            match MetadataToken.ofEntityHandle declaringDefn.BaseType with
+            | MetadataToken.TypeReference handle ->
+                let tr = metadataReader.GetTypeReference handle
+
+                metadataReader.GetString tr.Namespace = "System"
+                && metadataReader.GetString tr.Name = "MulticastDelegate"
+            | MetadataToken.TypeDefinition handle ->
+                let td = metadataReader.GetTypeDefinition handle
+
+                metadataReader.GetString td.Namespace = "System"
+                && metadataReader.GetString td.Name = "MulticastDelegate"
+            | _ -> false
+
+    /// <summary>
+    /// Inspect the constructor token of a custom attribute and return the namespace and
+    /// type name of the attribute class, if available from metadata alone (i.e. without
+    /// loading another assembly). The two shapes that occur in practice are:
+    /// <list type="bullet">
+    /// <item><c>MemberReference</c> whose Parent is a <c>TypeReference</c> — the common
+    /// case when the attribute is defined in another assembly.</item>
+    /// <item><c>MethodDefinition</c> whose declaring type is a <c>TypeDefinition</c> —
+    /// occurs only when the attribute is applied within the same assembly that defines
+    /// it (e.g. inside <c>System.Private.CoreLib</c> for built-in attributes).</item>
+    /// </list>
+    /// </summary>
+    let private tryReadAttributeTypeName
+        (metadataReader : MetadataReader)
+        (ctorToken : EntityHandle)
+        : (string * string) option
+        =
+        if ctorToken.IsNil then
+            None
+        else
+            match MetadataToken.ofEntityHandle ctorToken with
+            | MetadataToken.MemberReference handle ->
+                let memberRef = metadataReader.GetMemberReference handle
+
+                if memberRef.Parent.IsNil then
+                    None
+                else
+                    match MetadataToken.ofEntityHandle memberRef.Parent with
+                    | MetadataToken.TypeReference parentTypeRef ->
+                        let tr = metadataReader.GetTypeReference parentTypeRef
+
+                        Some (metadataReader.GetString tr.Namespace, metadataReader.GetString tr.Name)
+                    | MetadataToken.TypeDefinition parentTypeDef ->
+                        let td = metadataReader.GetTypeDefinition parentTypeDef
+
+                        Some (metadataReader.GetString td.Namespace, metadataReader.GetString td.Name)
+                    | _ -> None
+            | MetadataToken.MethodDef handle ->
+                let methodDef = metadataReader.GetMethodDefinition handle
+                let declaringType = methodDef.GetDeclaringType ()
+
+                if declaringType.IsNil then
+                    None
+                else
+                    let td = metadataReader.GetTypeDefinition declaringType
+
+                    Some (metadataReader.GetString td.Namespace, metadataReader.GetString td.Name)
+            | _ -> None
+
+    /// <summary>
+    /// Parse the value blob of an <c>[UnsafeAccessor]</c> custom attribute. The attribute's
+    /// only constructor takes an <c>UnsafeAccessorKind</c> enum (serialised as int32), and
+    /// it has one optional named property <c>Name</c> of type <c>string</c>. ECMA-335
+    /// II.23.3 specifies the encoding:
+    /// <list type="bullet">
+    /// <item>2-byte prolog <c>0x0001</c></item>
+    /// <item>4-byte int32 for the enum-typed fixed argument</item>
+    /// <item>2-byte uint16 named-argument count</item>
+    /// <item>For each named arg: kind byte (<c>0x53</c> field / <c>0x54</c> property),
+    /// type byte (<c>0x0E</c> for string), serialised name string, serialised value</item>
+    /// </list>
+    /// We only recognise the <c>Name</c> property; any unexpected named arg makes us
+    /// abandon parsing and treat the attribute as malformed.
+    /// </summary>
+    let private tryParseUnsafeAccessorBlob (reader : byref<BlobReader>) : (UnsafeAccessorKind * string option) option =
+        let prolog = reader.ReadUInt16 ()
+
+        if prolog <> 0x0001us then
+            None
+        else
+            let kindRaw = reader.ReadInt32 ()
+
+            let kind =
+                match kindRaw with
+                | 0 -> Some UnsafeAccessorKind.Constructor
+                | 1 -> Some UnsafeAccessorKind.Method
+                | 2 -> Some UnsafeAccessorKind.StaticMethod
+                | 3 -> Some UnsafeAccessorKind.Field
+                | 4 -> Some UnsafeAccessorKind.StaticField
+                | _ -> None
+
+            match kind with
+            | None -> None
+            | Some kind ->
+                let namedCount = int (reader.ReadUInt16 ())
+
+                let mutable parsedName = None
+                let mutable malformed = false
+                let mutable i = 0
+
+                while not malformed && i < namedCount do
+                    let argKind = reader.ReadByte ()
+                    let argType = reader.ReadByte ()
+
+                    // 0x54 = PROPERTY, 0x0E = ELEMENT_TYPE_STRING. We only recognise
+                    // a string-typed property; anything else we don't expect from
+                    // [UnsafeAccessor] and refuse to guess at.
+                    if argKind <> 0x54uy || argType <> 0x0Euy then
+                        malformed <- true
+                    else
+                        let argName = reader.ReadSerializedString ()
+                        let argValue = reader.ReadSerializedString ()
+
+                        if argName = "Name" then
+                            // ReadSerializedString returns null for the explicit-null
+                            // encoding (0xFF); treat that the same as "Name not set".
+                            parsedName <- if isNull argValue then Some None else Some (Some argValue)
+                        else
+                            malformed <- true
+
+                    i <- i + 1
+
+                if malformed then
+                    None
+                else
+                    let name =
+                        match parsedName with
+                        | Some n -> n
+                        | None -> None
+
+                    Some (kind, name)
+
+    /// <summary>
+    /// Scan a method's custom attributes for <c>[UnsafeAccessor]</c> and parse the
+    /// kind and (optional) target name. Returns <c>None</c> when the attribute is
+    /// absent or the blob fails to match the expected shape.
+    /// </summary>
+    let private tryReadUnsafeAccessor
+        (metadataReader : MetadataReader)
+        (methodDef : MethodDefinition)
+        : (UnsafeAccessorKind * string option) option
+        =
+        let mutable result = None
+
+        for handle in methodDef.GetCustomAttributes () do
+            if result.IsNone then
+                let attr = metadataReader.GetCustomAttribute handle
+
+                match tryReadAttributeTypeName metadataReader attr.Constructor with
+                | Some ("System.Runtime.CompilerServices", "UnsafeAccessorAttribute") ->
+                    if not attr.Value.IsNil then
+                        let mutable reader = metadataReader.GetBlobReader attr.Value
+                        result <- tryParseUnsafeAccessorBlob &reader
+                | _ -> ()
+
+        result
+
     let read
-        (loggerFactory : ILoggerFactory)
         (peReader : PEReader)
         (metadataReader : MetadataReader)
         (methodHandle : MethodDefinitionHandle)
-        : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> option
+        : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>
         =
-        let logger = loggerFactory.CreateLogger "MethodInfo"
         let assemblyName = metadataReader.GetAssemblyDefinition().GetAssemblyName ()
         let methodDef = metadataReader.GetMethodDefinition methodHandle
         let methodName = metadataReader.GetString methodDef.Name
         let methodSig = methodDef.DecodeSignature (TypeDefn.typeProvider assemblyName, ())
         let implAttrs = methodDef.ImplAttributes
-
-        let methodBody =
-            if
-                implAttrs.HasFlag MethodImplAttributes.InternalCall
-                || implAttrs.HasFlag MethodImplAttributes.Runtime
-            then
-                None
-            elif methodDef.Attributes.HasFlag MethodAttributes.PinvokeImpl then
-                None
-            else
-                match readMethodBody peReader metadataReader assemblyName methodDef with
-                | None ->
-                    logger.LogTrace $"no method body in {assemblyName.Name} {methodName}"
-                    None
-                | Some body ->
-                    {
-                        MethodInstructions.Instructions = body.Instructions
-                        Locations = body.Instructions |> List.map (fun (a, b) -> b, a) |> Map.ofList
-                        LocalsInit = body.LocalInit
-                        LocalVars = body.LocalSig
-                        ExceptionRegions = body.ExceptionRegions
-                    }
-                    |> Some
+        let methodAttrs = methodDef.Attributes
 
         let declaringType = methodDef.GetDeclaringType ()
 
@@ -720,9 +993,53 @@ module MethodInfo =
 
         let declaringTypeName = metadataReader.GetString declaringDefn.Name
 
+        let body : MethodBody<TypeDefn> =
+            if implAttrs.HasFlag MethodImplAttributes.InternalCall then
+                MethodBody.InternalCall
+            elif methodAttrs.HasFlag MethodAttributes.PinvokeImpl then
+                MethodBody.PInvoke
+            elif implAttrs.HasFlag MethodImplAttributes.Runtime then
+                let behaviour =
+                    if declaringTypeIsDelegate metadataReader declaringDefn then
+                        match methodName with
+                        | ".ctor" -> RuntimeBehaviour.DelegateCtor
+                        | "Invoke" -> RuntimeBehaviour.DelegateInvoke
+                        | _ -> RuntimeBehaviour.Unrecognised methodName
+                    else
+                        RuntimeBehaviour.Unrecognised methodName
+
+                MethodBody.RuntimeProvided behaviour
+            elif methodAttrs.HasFlag MethodAttributes.Abstract then
+                MethodBody.Abstract
+            else
+                match readMethodBody peReader metadataReader assemblyName methodDef with
+                | Some raw ->
+                    {
+                        MethodInstructions.Instructions = raw.Instructions
+                        Locations = raw.Instructions |> List.map (fun (a, b) -> b, a) |> Map.ofList
+                        LocalsInit = raw.LocalInit
+                        LocalVars = raw.LocalSig
+                        ExceptionRegions = raw.ExceptionRegions
+                    }
+                    |> MethodBody.Il
+                | None ->
+                    // ECMA-335 II.22.26 nominally requires one of PinvokeImpl / Abstract /
+                    // Runtime / InternalCall when RVA = 0, but C# 12+ [UnsafeAccessor] extern
+                    // static methods land here too: ImplAttributes is IL, MethodAttributes
+                    // doesn't include PinvokeImpl/Abstract, and the body is synthesised by the
+                    // runtime from the attribute. Recognise that case explicitly; anything else
+                    // is genuinely unexpected and we fail loudly so we surface the gap rather
+                    // than silently synthesising an Abstract method.
+                    match tryReadUnsafeAccessor metadataReader methodDef with
+                    | Some (kind, targetName) ->
+                        MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (kind, targetName))
+                    | None ->
+                        failwith
+                            $"%s{assemblyName.Name}::%s{declaringTypeNamespace}.%s{declaringTypeName}::%s{methodName}: RVA=0 but no InternalCall/PInvoke/Runtime/Abstract flag and no [UnsafeAccessor] attribute (ImplAttributes=%O{implAttrs}, MethodAttributes=%O{methodAttrs}); malformed metadata or unhandled body classification"
+
         let declaringTypeGenericParams =
             metadataReader.GetTypeDefinition(declaringType).GetGenericParameters ()
-            |> GenericParameter.readAll metadataReader
+            |> GenericParameter.readAll assemblyName metadataReader
 
         let attrs =
             let result = ImmutableArray.CreateBuilder ()
@@ -730,7 +1047,7 @@ module MethodInfo =
 
             for attr in attrs do
                 metadataReader.GetCustomAttribute attr
-                |> CustomAttribute.make attr
+                |> CustomAttribute.make metadataReader attr
                 |> result.Add
 
             result.ToImmutable ()
@@ -745,10 +1062,10 @@ module MethodInfo =
         let methodParams = Parameter.readAll metadataReader (methodDef.GetParameters ())
 
         let methodGenericParams =
-            GenericParameter.readAll metadataReader (methodDef.GetGenericParameters ())
+            GenericParameter.readAll assemblyName metadataReader (methodDef.GetGenericParameters ())
 
         let nativeImport =
-            if methodDef.Attributes.HasFlag MethodAttributes.PinvokeImpl then
+            if methodAttrs.HasFlag MethodAttributes.PinvokeImpl then
                 let import = methodDef.GetImport ()
                 let moduleRef = metadataReader.GetModuleReference import.Module
 
@@ -773,18 +1090,17 @@ module MethodInfo =
             DeclaringType = declaringType
             Handle = methodHandle
             Name = methodName
-            Instructions = methodBody
+            Body = body
             Parameters = methodParams
             Generics = methodGenericParams
             Signature = typeSig
             RawSignature = typeSig
-            MethodAttributes = methodDef.Attributes
+            MethodAttributes = methodAttrs
             CustomAttributes = attrs
             IsStatic = not methodSig.Header.IsInstance
             ImplAttributes = implAttrs
             NativeImport = nativeImport
         }
-        |> Some
 
     let rec resolveBaseType
         (methodGenerics : TypeDefn ImmutableArray option)
@@ -822,7 +1138,7 @@ module MethodInfo =
         | TypeDefn.FromReference (typeRef, signatureTypeKind) -> failwith "todo"
         | TypeDefn.FromDefinition (_identity, signatureTypeKind) -> failwith "todo"
         | TypeDefn.GenericInstantiation (generic, args) -> failwith "todo"
-        | TypeDefn.FunctionPointer typeMethodSignature -> failwith "todo"
+        | TypeDefn.FunctionPointer _ -> ResolvedBaseType.ValueType
         | TypeDefn.GenericTypeParameter index ->
             resolveBaseType methodGenerics executingMethod executingMethod.DeclaringType.Generics.[index]
         | TypeDefn.GenericMethodParameter index ->

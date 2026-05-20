@@ -13,10 +13,14 @@ module TestExceptionHResults =
     let private getActualHResult (typeName : string) : int =
         let ty = Type.GetType (typeName, throwOnError = true)
 
-        // TypeInitializationException has no default constructor; it requires (string, Exception).
+        // A few exception types lack a public parameterless ctor.
         let exn =
             if typeName = "System.TypeInitializationException" then
+                // ctor signature: TypeInitializationException(string, Exception)
                 Activator.CreateInstance (ty, [| box "Foo" ; box (null : Exception) |]) :?> Exception
+            elif typeName = "System.Reflection.TargetInvocationException" then
+                // ctor signature: TargetInvocationException(Exception)
+                Activator.CreateInstance (ty, [| box (null : Exception) |]) :?> Exception
             else
                 Activator.CreateInstance ty :?> Exception
 

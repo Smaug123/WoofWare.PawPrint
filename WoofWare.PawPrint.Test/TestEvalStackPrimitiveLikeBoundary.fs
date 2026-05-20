@@ -3,6 +3,7 @@ namespace WoofWare.PawPrint.Test
 open System.Collections.Generic
 open System.Collections.Immutable
 open System.IO
+open System.Runtime.InteropServices
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
@@ -17,8 +18,7 @@ module TestEvalStackPrimitiveLikeBoundary =
     let private corelib : DumpedAssembly =
         let corelibPath = typeof<obj>.Assembly.Location
         let _, loggerFactory = LoggerFactory.makeTest ()
-        use stream = File.OpenRead corelibPath
-        Assembly.read loggerFactory (Some corelibPath) stream
+        Assembly.readFile loggerFactory corelibPath
 
     let private bct : BaseClassTypes<DumpedAssembly> = Corelib.getBaseTypes corelib
 
@@ -53,9 +53,10 @@ module TestEvalStackPrimitiveLikeBoundary =
             Contents = contents
             Offset = None
             Type = declared
+            MarshallingDescriptor = None
         }
         |> List.singleton
-        |> CliValueType.OfFields bct allCt declared Layout.Default
+        |> CliValueType.OfFields bct allCt declared Layout.Default CharSet.Ansi
 
     let private wrapSingleField
         (ti : TypeInfo<GenericParamFromMetadata, TypeDefn>)

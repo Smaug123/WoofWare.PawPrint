@@ -9,7 +9,7 @@ namespace HelloWorldApp
             object locker = new object();
             lock (locker)
             {
-                return 1;
+                return 0;
             }
         }
     }

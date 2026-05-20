@@ -6,1034 +6,20 @@ open Microsoft.Extensions.Logging
 
 [<RequireQualifiedAccess>]
 module Intrinsics =
-    type IntrinsicMethodKey =
-        {
-            AssemblyName : string
-            DeclaringTypeFullName : string
-            MethodName : string
-            ParameterShapes : string list
-        }
-
-    [<RequireQualifiedAccess>]
-    type private IntrinsicParameterPattern =
-        | Any
-        | Exact of string
-        | Byref
-        | Pointer
-        | SzArray
-        | Array
-
-    type private IntrinsicMethodPattern =
-        {
-            AssemblyName : string
-            DeclaringTypeFullName : string
-            MethodName : string
-            ParameterPatterns : IntrinsicParameterPattern list option
-        }
-
-    let private pattern
-        (assemblyName : string)
-        (declaringTypeFullName : string)
-        (methodName : string)
-        (parameterPatterns : IntrinsicParameterPattern list)
-        : IntrinsicMethodPattern
-        =
-        {
-            AssemblyName = assemblyName
-            DeclaringTypeFullName = declaringTypeFullName
-            MethodName = methodName
-            ParameterPatterns = Some parameterPatterns
-        }
-
-    let private anyParams
-        (assemblyName : string)
-        (declaringTypeFullName : string)
-        (methodName : string)
-        : IntrinsicMethodPattern
-        =
-        {
-            AssemblyName = assemblyName
-            DeclaringTypeFullName = declaringTypeFullName
-            MethodName = methodName
-            ParameterPatterns = None
-        }
+    type IntrinsicMethodKey = IntrinsicMethodKeys.IntrinsicMethodKey
 
     let methodKey
         (state : IlMachineState)
         (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         : IntrinsicMethodKey
         =
-        let declaringAssy =
-            match state.LoadedAssembly methodToCall.DeclaringType.Assembly with
-            | Some assy -> assy
-            | None ->
-                failwith
-                    $"Intrinsic method key requested for method whose declaring assembly is not loaded: %O{methodToCall}"
+        IntrinsicMethodKeys.methodKey state methodToCall
 
-        let declaringType =
-            declaringAssy.TypeDefs.[methodToCall.DeclaringType.Definition.Get]
+    let formatMethodKey (key : IntrinsicMethodKey) : string = IntrinsicMethodKeys.formatMethodKey key
 
-        let concreteTypeShape (handle : ConcreteTypeHandle) : string =
-            match handle with
-            | ConcreteTypeHandle.Concrete _ ->
-                match AllConcreteTypes.lookup handle state.ConcreteTypes with
-                | Some ct ->
-                    if String.IsNullOrEmpty ct.Namespace then
-                        ct.Name
-                    else
-                        $"%s{ct.Namespace}.%s{ct.Name}"
-                | None -> failwith $"Intrinsic method key requested for unknown concrete type handle: %O{handle}"
-            | ConcreteTypeHandle.Byref _ -> "&"
-            | ConcreteTypeHandle.Pointer _ -> "*"
-            | ConcreteTypeHandle.OneDimArrayZero _ -> "[]"
-            | ConcreteTypeHandle.Array (_, rank) -> $"[%i{rank}]"
+    let isSafeIntrinsic (key : IntrinsicMethodKey) : bool = IntrinsicMethodKeys.isSafeIntrinsic key
 
-        {
-            AssemblyName = methodToCall.DeclaringType.Assembly.Name
-            DeclaringTypeFullName = TypeInfo.fullName (fun h -> declaringAssy.TypeDefs.[h]) declaringType
-            MethodName = methodToCall.Name
-            ParameterShapes = methodToCall.Signature.ParameterTypes |> List.map concreteTypeShape
-        }
-
-    let formatMethodKey (key : IntrinsicMethodKey) : string =
-        let parameters = key.ParameterShapes |> String.concat ", "
-        $"%s{key.AssemblyName} %s{key.DeclaringTypeFullName}.%s{key.MethodName}(%s{parameters})"
-
-    let private parameterPatternMatches (pattern : IntrinsicParameterPattern) (actual : string) : bool =
-        match pattern with
-        | IntrinsicParameterPattern.Any -> true
-        | IntrinsicParameterPattern.Exact expected -> expected = actual
-        | IntrinsicParameterPattern.Byref -> actual = "&"
-        | IntrinsicParameterPattern.Pointer -> actual = "*"
-        | IntrinsicParameterPattern.SzArray -> actual = "[]"
-        | IntrinsicParameterPattern.Array -> actual.StartsWith ("[", StringComparison.Ordinal)
-
-    let private methodPatternMatches (pattern : IntrinsicMethodPattern) (key : IntrinsicMethodKey) : bool =
-        pattern.AssemblyName = key.AssemblyName
-        && pattern.DeclaringTypeFullName = key.DeclaringTypeFullName
-        && pattern.MethodName = key.MethodName
-        && match pattern.ParameterPatterns with
-           | None -> true
-           | Some patterns ->
-               List.length patterns = List.length key.ParameterShapes
-               && List.forall2 parameterPatternMatches patterns key.ParameterShapes
-
-    let private safeIntrinsics =
-        [
-            // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/String.cs#L739-L750
-            pattern "System.Private.CoreLib" "System.String" "get_Length" []
-            // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/String.cs#L728-L737
-            pattern
-                "System.Private.CoreLib"
-                "System.String"
-                "get_Chars"
-                [ IntrinsicParameterPattern.Exact "System.Int32" ]
-            // IL body is `ldarg.0; ldflda _firstChar; ret`; PawPrint projects `_firstChar`
-            // to the string character data side-table.
-            pattern "System.Private.CoreLib" "System.String" "GetRawStringData" []
-            pattern "System.Private.CoreLib" "System.String" "GetRawStringDataAsUInt16" []
-            // IL body constructs a span over the string contents; PawPrint's string field
-            // projection handles the `_firstChar` boundary it depends on.
-            pattern
-                "System.Private.CoreLib"
-                "System.String"
-                "op_Implicit"
-                [ IntrinsicParameterPattern.Exact "System.String" ]
-            // String overloads bottom out in String.GetRawStringData plus ReadOnlySpan construction.
-            anyParams "System.Private.CoreLib" "System.MemoryExtensions" "AsSpan"
-            // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/ArgumentNullException.cs#L54
-            anyParams "System.Private.CoreLib" "System.ArgumentNullException" "ThrowIfNull"
-            // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/coreclr/System.Private.CoreLib/src/System/Type.CoreCLR.cs#L82
-            pattern
-                "System.Private.CoreLib"
-                "System.Type"
-                "GetTypeFromHandle"
-                [ IntrinsicParameterPattern.Exact "System.RuntimeTypeHandle" ]
-            // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/Type.cs#L703
-            // Managed IL bodies with RuntimeType fast paths before Equals; op_Inequality delegates to op_Equality.
-            pattern
-                "System.Private.CoreLib"
-                "System.Type"
-                "op_Equality"
-                [
-                    IntrinsicParameterPattern.Exact "System.Type"
-                    IntrinsicParameterPattern.Exact "System.Type"
-                ]
-            pattern
-                "System.Private.CoreLib"
-                "System.Type"
-                "op_Inequality"
-                [
-                    IntrinsicParameterPattern.Exact "System.Type"
-                    IntrinsicParameterPattern.Exact "System.Type"
-                ]
-            // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/ReadOnlySpan.cs#L161
-            pattern "System.Private.CoreLib" "System.ReadOnlySpan`1" "get_Length" []
-            // Reviewed constructors initialise `_reference` / `_length` through already-modelled
-            // array and byref boundaries. The `(void*, int)` constructor is an explicit
-            // intrinsic implementation below because it crosses the unmanaged-pointer boundary.
-            pattern "System.Private.CoreLib" "System.ReadOnlySpan`1" ".ctor" [ IntrinsicParameterPattern.SzArray ]
-            pattern
-                "System.Private.CoreLib"
-                "System.ReadOnlySpan`1"
-                ".ctor"
-                [
-                    IntrinsicParameterPattern.SzArray
-                    IntrinsicParameterPattern.Exact "System.Int32"
-                    IntrinsicParameterPattern.Exact "System.Int32"
-                ]
-            pattern "System.Private.CoreLib" "System.ReadOnlySpan`1" ".ctor" [ IntrinsicParameterPattern.Byref ]
-            pattern
-                "System.Private.CoreLib"
-                "System.ReadOnlySpan`1"
-                ".ctor"
-                [
-                    IntrinsicParameterPattern.Byref
-                    IntrinsicParameterPattern.Exact "System.Int32"
-                ]
-            // Managed wrappers over already-modelled span fields, bounds checks, array allocation,
-            // and Buffer.Memmove.
-            pattern
-                "System.Private.CoreLib"
-                "System.ReadOnlySpan`1"
-                "CopyTo"
-                [ IntrinsicParameterPattern.Exact "System.Span`1" ]
-            pattern
-                "System.Private.CoreLib"
-                "System.ReadOnlySpan`1"
-                "TryCopyTo"
-                [ IntrinsicParameterPattern.Exact "System.Span`1" ]
-            // Reviewed IL: bounds checks, Unsafe.Add over the span byref, then byref+length
-            // ReadOnlySpan<T> construction. Unsafe.Add and the constructor are implemented
-            // boundaries below.
-            pattern
-                "System.Private.CoreLib"
-                "System.ReadOnlySpan`1"
-                "Slice"
-                [ IntrinsicParameterPattern.Exact "System.Int32" ]
-            pattern
-                "System.Private.CoreLib"
-                "System.ReadOnlySpan`1"
-                "Slice"
-                [
-                    IntrinsicParameterPattern.Exact "System.Int32"
-                    IntrinsicParameterPattern.Exact "System.Int32"
-                ]
-            pattern "System.Private.CoreLib" "System.ReadOnlySpan`1" "ToArray" []
-            // IL body is `ldarg.0; ldfld _length; ret`.
-            pattern "System.Private.CoreLib" "System.Span`1" "get_Length" []
-            // Same constructor shape as ReadOnlySpan<T>; the `(void*, int)` constructor is
-            // handled explicitly below.
-            pattern "System.Private.CoreLib" "System.Span`1" ".ctor" [ IntrinsicParameterPattern.SzArray ]
-            pattern
-                "System.Private.CoreLib"
-                "System.Span`1"
-                ".ctor"
-                [
-                    IntrinsicParameterPattern.SzArray
-                    IntrinsicParameterPattern.Exact "System.Int32"
-                    IntrinsicParameterPattern.Exact "System.Int32"
-                ]
-            pattern "System.Private.CoreLib" "System.Span`1" ".ctor" [ IntrinsicParameterPattern.Byref ]
-            pattern
-                "System.Private.CoreLib"
-                "System.Span`1"
-                ".ctor"
-                [
-                    IntrinsicParameterPattern.Byref
-                    IntrinsicParameterPattern.Exact "System.Int32"
-                ]
-            // Managed wrappers over already-modelled span fields, bounds checks, array allocation,
-            // and Buffer.Memmove.
-            pattern
-                "System.Private.CoreLib"
-                "System.Span`1"
-                "CopyTo"
-                [ IntrinsicParameterPattern.Exact "System.Span`1" ]
-            pattern
-                "System.Private.CoreLib"
-                "System.Span`1"
-                "TryCopyTo"
-                [ IntrinsicParameterPattern.Exact "System.Span`1" ]
-            // Reviewed IL: bounds checks, Unsafe.Add over the span byref, then byref+length
-            // Span<T> construction. Unsafe.Add and the constructor are implemented
-            // boundaries below.
-            pattern "System.Private.CoreLib" "System.Span`1" "Slice" [ IntrinsicParameterPattern.Exact "System.Int32" ]
-            pattern
-                "System.Private.CoreLib"
-                "System.Span`1"
-                "Slice"
-                [
-                    IntrinsicParameterPattern.Exact "System.Int32"
-                    IntrinsicParameterPattern.Exact "System.Int32"
-                ]
-            pattern "System.Private.CoreLib" "System.Span`1" "ToArray" []
-            // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.cs#L153
-            anyParams "System.Private.CoreLib" "System.Runtime.CompilerServices.RuntimeHelpers" "CreateSpan"
-            // https://github.com/dotnet/runtime/blob/d258af50034c192bf7f0a18856bf83d2903d98ae/src/libraries/System.Private.CoreLib/src/System/Math.cs#L127
-            // https://github.com/dotnet/runtime/blob/d258af50034c192bf7f0a18856bf83d2903d98ae/src/libraries/System.Private.CoreLib/src/System/Math.cs#L137
-            anyParams "System.Private.CoreLib" "System.Math" "Abs"
-            // https://github.com/dotnet/runtime/blob/d258af50034c192bf7f0a18856bf83d2903d98ae/src/libraries/System.Private.CoreLib/src/System/Math.cs#L965C10-L1062C19
-            anyParams "System.Private.CoreLib" "System.Math" "Max"
-            // https://github.com/dotnet/runtime/blob/d258af50034c192bf7f0a18856bf83d2903d98ae/src/libraries/System.Private.CoreLib/src/System/Buffer.cs#L150
-            anyParams "System.Private.CoreLib" "System.Buffer" "Memmove"
-            // Managed fast paths use Unsafe.ReadUnaligned/WriteUnaligned; the native fallback remains
-            // a future boundary.
-            anyParams "System.Private.CoreLib" "System.SpanHelpers" "Memmove"
-            // https://github.com/dotnet/runtime/blob/1c3221b63340d7f81dfd829f3bcd822e582324f6/src/libraries/System.Private.CoreLib/src/System/Threading/Thread.cs#L799
-            pattern "System.Private.CoreLib" "System.Threading.Thread" "get_CurrentThread" []
-            // IL body is `ldarg.0; ldfld _managedThreadId; ret` — pure field access.
-            pattern "System.Private.CoreLib" "System.Threading.Thread" "get_ManagedThreadId" []
-            // IL body is `ldsfld <Default>k__BackingField; ret`; the .cctor constructs the comparer.
-            pattern "System.Private.CoreLib" "System.Collections.Generic.EqualityComparer`1" "get_Default" []
-            // Volatile.Read/Write wrappers are managed field accesses through volatile struct
-            // views. PawPrint does not currently model memory-ordering effects, but executing
-            // the IL is deterministic and preserves the accessed value.
-            pattern "System.Private.CoreLib" "System.Threading.Volatile" "Read" [ IntrinsicParameterPattern.Byref ]
-            pattern
-                "System.Private.CoreLib"
-                "System.Threading.Volatile"
-                "Write"
-                [ IntrinsicParameterPattern.Byref ; IntrinsicParameterPattern.Any ]
-            pattern "System.Private.CoreLib" "System.Threading.Volatile" "ReadBarrier" []
-            pattern "System.Private.CoreLib" "System.Threading.Volatile" "WriteBarrier" []
-        ]
-
-    let isSafeIntrinsic (key : IntrinsicMethodKey) : bool =
-        safeIntrinsics |> List.exists (fun pattern -> methodPatternMatches pattern key)
-
-    type private RefTypeProcessingStatus =
-        | InProgress
-        | Completed of bool
-
-    let rec private containsRefType
-        (loggerFactory : ILoggerFactory)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        (seenSoFar : ImmutableDictionary<TypeInfo<TypeDefn, TypeDefn>, RefTypeProcessingStatus>)
-        (td : TypeInfo<TypeDefn, TypeDefn>)
-        : IlMachineState * ImmutableDictionary<_, RefTypeProcessingStatus> * bool
-        =
-        match seenSoFar.TryGetValue td with
-        | true, InProgress ->
-            // We've hit a cycle. Optimistically assume this path does not introduce a reference type.
-            // If another path finds a reference type, its 'true' will override this.
-            state, seenSoFar, false
-        | true, Completed v ->
-            // We've already calculated this; return the memoized result.
-            state, seenSoFar, v
-        | false, _ ->
-            if DumpedAssembly.isReferenceType baseClassTypes state._LoadedAssemblies td then
-                // Short-circuit: if the type itself is a reference type, we're done.
-                let seenSoFar = seenSoFar.Add (td, Completed true)
-                state, seenSoFar, true
-            else
-                // It's a value type, so we must check its fields.
-                // Mark as in progress before recursing.
-                let seenSoFarWithInProgress = seenSoFar.Add (td, InProgress)
-
-                let stateAfterFieldResolution, nonStaticFields =
-                    ((state, []), td.Fields)
-                    ||> List.fold (fun (currentState, acc) field ->
-                        if field.IsStatic then
-                            currentState, acc
-                        else
-                            // TODO: generics
-                            let newState, _, info =
-                                IlMachineState.resolveTypeFromDefn
-                                    loggerFactory
-                                    baseClassTypes
-                                    field.Signature
-                                    ImmutableArray.Empty
-                                    ImmutableArray.Empty
-                                    (currentState.LoadedAssembly (td.Assembly) |> Option.get)
-                                    currentState
-
-                            newState, info :: acc
-                    )
-
-                // Recurse through the fields, correctly propagating state.
-                let finalState, finalSeenSoFar, fieldsContainRefType =
-                    ((stateAfterFieldResolution, seenSoFarWithInProgress, false), nonStaticFields)
-                    ||> List.fold (fun (currentState, currentSeenSoFar, currentResult) field ->
-                        if currentResult then
-                            (currentState, currentSeenSoFar, true) // Short-circuit
-                        else
-                            let newState, newSeenSoFar, fieldResult =
-                                containsRefType loggerFactory baseClassTypes currentState currentSeenSoFar field
-
-                            (newState, newSeenSoFar, currentResult || fieldResult)
-                    )
-
-                // Mark as completed with the final result before returning.
-                let finalSeenSoFar = finalSeenSoFar.SetItem (td, Completed fieldsContainRefType)
-                finalState, finalSeenSoFar, fieldsContainRefType
-
-    let private concreteTypeContainsReferences
-        (loggerFactory : ILoggerFactory)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        (handle : ConcreteTypeHandle)
-        : IlMachineState * bool
-        =
-        match handle with
-        | ConcreteTypeHandle.OneDimArrayZero _
-        | ConcreteTypeHandle.Array _ -> state, true
-        | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _ -> state, false
-        | ConcreteTypeHandle.Concrete _ ->
-            let concrete =
-                AllConcreteTypes.lookup handle state.ConcreteTypes
-                |> Option.defaultWith (fun () -> failwith $"type was not registered: %O{handle}")
-
-            let primitiveValueTypeNames =
-                set
-                    [
-                        "Boolean"
-                        "Byte"
-                        "SByte"
-                        "Char"
-                        "Int16"
-                        "UInt16"
-                        "Int32"
-                        "UInt32"
-                        "Int64"
-                        "UInt64"
-                        "IntPtr"
-                        "UIntPtr"
-                        "Single"
-                        "Double"
-                    ]
-
-            if
-                concrete.Assembly.Name = "System.Private.CoreLib"
-                && concrete.Namespace = "System"
-                && primitiveValueTypeNames.Contains concrete.Name
-            then
-                state, false
-            else
-                let td =
-                    state.LoadedAssembly concrete.Assembly
-                    |> Option.get
-                    |> fun a -> a.TypeDefs.[concrete.Definition.Get]
-
-                if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies td then
-                    td
-                    |> TypeInfo.mapGeneric (fun (par, _) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
-                    |> containsRefType loggerFactory baseClassTypes state ImmutableDictionary.Empty
-                    |> fun (state, _, result) -> state, result
-                else
-                    state, true
-
-    let private popRuntimeTypeHandle
-        (currentThread : ThreadId)
-        (state : IlMachineState)
-        : RuntimeTypeHandleTarget * IlMachineState
-        =
-        let this, state = IlMachineState.popEvalStack currentThread state
-
-        let this =
-            match this with
-            | EvalStackValue.ObjectRef ptr ->
-                IlMachineState.readManagedByref state (ManagedPointerSource.Byref (ByrefRoot.HeapValue ptr, []))
-            | EvalStackValue.ManagedPointer ptr -> IlMachineState.readManagedByref state ptr
-            | EvalStackValue.NullObjectRef -> failwith "TODO: Type intrinsic receiver was null; throw NRE"
-            | EvalStackValue.Float _
-            | EvalStackValue.Int32 _
-            | EvalStackValue.Int64 _ -> failwith "Type intrinsic receiver: refusing to dereference literal"
-            | other -> failwith $"Type intrinsic receiver: expected RuntimeType object or byref, got %O{other}"
-
-        let ty =
-            match this with
-            | CliType.ValueType cvt ->
-                // `RuntimeType.m_handle` is IntPtr (primitive-like); unwrap to reach the inner NativeInt.
-                let handleField =
-                    IlMachineState.requiredOwnInstanceFieldId state cvt.Declared "m_handle"
-
-                match CliValueType.DereferenceFieldById handleField cvt |> CliType.unwrapPrimitiveLike with
-                | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr target)) -> target
-                | other ->
-                    failwith
-                        $"Type intrinsic receiver: expected RuntimeType.m_handle to contain a TypeHandlePtr, got %O{other}"
-            | other -> failwith $"Type intrinsic receiver: expected RuntimeType value contents, got %O{other}"
-
-        ty, state
-
-    /// Compute `src + offset` worth of element-T steps over a byref source.
-    /// The input byref may or may not carry an address-preserving
-    /// `ReinterpretAs` projection (from an `Unsafe.As` or a round-trip).
-    /// We can only do element-index arithmetic if `sizeof(T)` matches the
-    /// underlying storage's true cell size (the array's element size, or
-    /// 2 bytes for a string char): otherwise advancing by `offset` elements
-    /// of T is not a whole-cell step in the underlying storage. Any
-    /// existing trailing reinterprets must also only be size-preserving,
-    /// and they stay on the result so that later field access / As chains
-    /// still see the type view the caller set up.
-    let private offsetManagedPointerByElements
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        (elementType : ConcreteTypeHandle)
-        (offset : int)
-        (src : EvalStackValue)
-        : EvalStackValue * IlMachineState
-        =
-        // Thread the state returned by `cliTypeZeroOfHandle`: for a struct T
-        // it can concretise additional types, and discarding the update would
-        // drop that work from the machine state.
-        let tZero, state =
-            IlMachineState.cliTypeZeroOfHandle state baseClassTypes elementType
-
-        let tSize = CliType.sizeOf tZero
-
-        let ptr : EvalStackValue =
-            match src with
-            | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs)) ->
-                let arrElementSize =
-                    let arrObj = state.ManagedHeap.Arrays.[arr]
-
-                    if arrObj.Length = 0 then
-                        tSize
-                    else
-                        CliType.sizeOf arrObj.Elements.[0]
-
-                // Choose between cell-index and byte-cursor walks:
-                //   - If the byref already carries a `ByteOffset` tail, we
-                //     must stay in the byte cursor (accumulate).
-                //   - If `sizeof(T)` matches the underlying array's cell
-                //     stride, cell-index arithmetic is exact and keeps the
-                //     byref in a form the generic projection fold can
-                //     dereference — preferred even when there's a trailing
-                //     `ReinterpretAs`.
-                //   - Otherwise we need a byte cursor; this requires a
-                //     trailing `ReinterpretAs` to anchor the view, since plain
-                //     cell byrefs aren't byte-addressable.
-                let trailingIsByteOffset =
-                    match List.tryLast projs with
-                    | Some (ByrefProjection.ByteOffset _) -> true
-                    | _ -> false
-
-                let trailingIsReinterpretAs =
-                    match List.tryLast projs with
-                    | Some (ByrefProjection.ReinterpretAs _) -> true
-                    | _ -> false
-
-                // The byte-cursor branch produces pointers of shape
-                // `[ReinterpretAs ...; ByteOffset n]` that the bytewise
-                // consumers (`ReadUnaligned`, `WriteUnaligned`, `ByteOffset`)
-                // handle. If the existing projection list contains anything
-                // other than `ReinterpretAs` or `ByteOffset`, appending another
-                // `ByteOffset` would manufacture a pointer the downstream code
-                // can't consume.
-                let projectionsAreByteViewCompatible =
-                    projs
-                    |> List.forall (fun p ->
-                        match p with
-                        | ByrefProjection.ReinterpretAs _
-                        | ByrefProjection.ByteOffset _ -> true
-                        | _ -> false
-                    )
-
-                if
-                    projectionsAreByteViewCompatible
-                    && (trailingIsByteOffset || (tSize <> arrElementSize && trailingIsReinterpretAs))
-                then
-                    let byteDelta = tSize * offset
-                    let baseSrc = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs)
-
-                    let cellSizeOf (addr : ManagedHeapAddress) : int =
-                        let obj = state.ManagedHeap.Arrays.[addr]
-
-                        if obj.Length = 0 then
-                            0
-                        else
-                            CliType.sizeOf obj.Elements.[0]
-
-                    baseSrc
-                    |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset byteDelta)
-                    |> ManagedPointerSource.normaliseArrayByteOffset cellSizeOf
-                    |> EvalStackValue.ManagedPointer
-                else
-                    if tSize <> arrElementSize then
-                        failwith
-                            $"TODO: byref element offset where element size of T (%d{tSize}) differs from underlying array element size (%d{arrElementSize}) without a trailing ReinterpretAs projection"
-
-                    for p in projs do
-                        match p with
-                        | ByrefProjection.ReinterpretAs _ -> ()
-                        | _ -> failwith $"TODO: byref element offset on byref with non-ReinterpretAs projection: %O{p}"
-
-                    ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i + offset), projs)
-                    |> EvalStackValue.ManagedPointer
-            | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, i), projs) as src) ->
-                let stringCharSize = 2
-
-                let trailingIsByteOffset =
-                    match List.tryLast projs with
-                    | Some (ByrefProjection.ByteOffset _) -> true
-                    | _ -> false
-
-                let trailingIsReinterpretAs =
-                    match List.tryLast projs with
-                    | Some (ByrefProjection.ReinterpretAs _) -> true
-                    | _ -> false
-
-                let projectionsAreByteViewCompatible =
-                    projs
-                    |> List.forall (fun p ->
-                        match p with
-                        | ByrefProjection.ReinterpretAs _
-                        | ByrefProjection.ByteOffset _ -> true
-                        | _ -> false
-                    )
-
-                if
-                    projectionsAreByteViewCompatible
-                    && (trailingIsByteOffset || (tSize <> stringCharSize && trailingIsReinterpretAs))
-                then
-                    src
-                    |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset (tSize * offset))
-                    |> ManagedPointerSource.normaliseStringByteOffset
-                    |> EvalStackValue.ManagedPointer
-                else
-                    if tSize <> stringCharSize then
-                        failwith
-                            $"TODO: byref element offset where element size of T (%d{tSize}) differs from string char size (%d{stringCharSize}) without a trailing ReinterpretAs projection"
-
-                    for p in projs do
-                        match p with
-                        | ByrefProjection.ReinterpretAs _ -> ()
-                        | _ ->
-                            failwith
-                                $"TODO: byref element offset on string byref with non-ReinterpretAs projection: %O{p}"
-
-                    ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, i + offset), projs)
-                    |> EvalStackValue.ManagedPointer
-            | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (_, projs) as src) ->
-                let projectionsAreByteViewCompatible =
-                    projs
-                    |> List.forall (fun p ->
-                        match p with
-                        | ByrefProjection.ReinterpretAs _
-                        | ByrefProjection.ByteOffset _ -> true
-                        | _ -> false
-                    )
-
-                if projs <> [] && projectionsAreByteViewCompatible then
-                    // Non-array byte views have no repeatable cell stride, so
-                    // normaliseArrayByteOffset is only meaningful for array roots.
-                    src
-                    |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset (tSize * offset))
-                    |> EvalStackValue.ManagedPointer
-                elif offset = 0 then
-                    EvalStackValue.ManagedPointer src
-                else
-                    failwith
-                        $"TODO: byref element offset on non-array byref without a trailing byte-view ReinterpretAs projection: %O{src}"
-            | _ -> failwith $"TODO: byref element offset on non-managed-pointer: %O{src}"
-
-        ptr, state
-
-    let private vectorAccelerationAvailable (declaringTypeName : string) (profile : HardwareIntrinsicsProfile) : bool =
-        match declaringTypeName with
-        | "Vector128" -> profile.Vector128
-        | "Vector256" -> profile.Vector256
-        | "Vector512" -> profile.Vector512
-        | other -> failwith $"Unexpected vector intrinsic type name: %s{other}"
-
-    let private scalarOnlyFalseIsSupportedIntrinsics =
-        set
-            [
-                "System.Runtime.Intrinsics.Arm.AdvSimd"
-                "System.Runtime.Intrinsics.Arm.AdvSimd.Arm64"
-                "System.Runtime.Intrinsics.Arm.Rdm"
-                "System.Runtime.Intrinsics.Arm.Rdm.Arm64"
-            ]
-
-    let private managedPointerOfPointerArgument (operation : string) (arg : EvalStackValue) : ManagedPointerSource =
-        match arg with
-        | EvalStackValue.ManagedPointer ptr -> ptr
-        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) -> ptr
-        | EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L)
-        | EvalStackValue.NullObjectRef -> ManagedPointerSource.Null
-        | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) ->
-            failwith $"%s{operation}: refusing to dereference unmanaged pointer value %d{i}"
-        | other -> failwith $"%s{operation}: expected a pointer argument, got %O{other}"
-
-    let private popPointerBackedSpanConstructorArgs
-        (currentThread : ThreadId)
-        (wasConstructing : ManagedHeapAddress option)
-        (state : IlMachineState)
-        : ManagedPointerSource * ManagedPointerSource * int * IlMachineState
-        =
-        match wasConstructing with
-        | Some _ ->
-            let thisArg, state = IlMachineState.popEvalStack currentThread state
-            let lengthArg, state = IlMachineState.popEvalStack currentThread state
-            let sourceArg, state = IlMachineState.popEvalStack currentThread state
-
-            let thisPtr =
-                match thisArg with
-                | EvalStackValue.ManagedPointer ptr -> ptr
-                | other -> failwith $"Span pointer constructor expected managed byref `this`, got %O{other}"
-
-            let length =
-                match lengthArg with
-                | EvalStackValue.Int32 i -> i
-                | other -> failwith $"Span pointer constructor expected int length, got %O{other}"
-
-            let sourcePtr = managedPointerOfPointerArgument "Span pointer constructor" sourceArg
-
-            thisPtr, sourcePtr, length, state
-        | None ->
-            let lengthArg, state = IlMachineState.popEvalStack currentThread state
-            let sourceArg, state = IlMachineState.popEvalStack currentThread state
-            let thisArg, state = IlMachineState.popEvalStack currentThread state
-
-            let thisPtr =
-                match thisArg with
-                | EvalStackValue.ManagedPointer ptr -> ptr
-                | other -> failwith $"Span pointer constructor expected managed byref `this`, got %O{other}"
-
-            let length =
-                match lengthArg with
-                | EvalStackValue.Int32 i -> i
-                | other -> failwith $"Span pointer constructor expected int length, got %O{other}"
-
-            let sourcePtr = managedPointerOfPointerArgument "Span pointer constructor" sourceArg
-
-            thisPtr, sourcePtr, length, state
-
-    let private intrinsicDeclaringTypeHandle
-        (state : IlMachineState)
-        (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
-        : ConcreteTypeHandle
-        =
-        AllConcreteTypes.findExistingConcreteType
-            state.ConcreteTypes
-            methodToCall.DeclaringType.Identity
-            methodToCall.DeclaringType.Generics
-        |> Option.defaultWith (fun () ->
-            failwith
-                $"Intrinsic method declaring type was not registered: %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}"
-        )
-
-    let private writePointerBackedSpanConstructor
-        (loggerFactory : ILoggerFactory)
-        (baseClassTypes : BaseClassTypes<_>)
-        (currentThread : ThreadId)
-        (wasConstructing : ManagedHeapAddress option)
-        (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
-        (state : IlMachineState)
-        : IlMachineState
-        =
-        let elementType = methodToCall.DeclaringType.Generics |> Seq.exactlyOne
-
-        match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-        | [ ConcretePointer _ ; ConcreteInt32 state.ConcreteTypes ], MethodReturnType.Void -> ()
-        | _ -> failwith $"bad signature for %s{formatMethodKey (methodKey state methodToCall)}"
-
-        let state, elementContainsRefs =
-            concreteTypeContainsReferences loggerFactory baseClassTypes state elementType
-
-        if elementContainsRefs then
-            failwith
-                $"TODO: %s{methodToCall.DeclaringType.Name}(void*, int) with reference-containing element type should throw ArgumentException"
-
-        let thisPtr, sourcePtr, length, state =
-            popPointerBackedSpanConstructorArgs currentThread wasConstructing state
-
-        if length < 0 then
-            failwith
-                $"TODO: %s{methodToCall.DeclaringType.Name}(void*, int) with negative length should throw ArgumentOutOfRangeException"
-
-        let elementTypeInfo =
-            match AllConcreteTypes.lookup elementType state.ConcreteTypes with
-            | Some info -> info
-            | None -> failwith $"Span pointer constructor element type was not registered: %O{elementType}"
-
-        let sourcePtr =
-            match sourcePtr with
-            | ManagedPointerSource.Null -> ManagedPointerSource.Null
-            | sourcePtr ->
-                ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs elementTypeInfo) sourcePtr
-
-        let declaringTypeHandle = intrinsicDeclaringTypeHandle state methodToCall
-
-        let span =
-            match IlMachineState.readManagedByref state thisPtr with
-            | CliType.ValueType vt when vt.Declared = declaringTypeHandle -> vt
-            | CliType.ValueType vt ->
-                failwith
-                    $"Span pointer constructor `this` pointed at value type %O{vt.Declared}, expected %O{declaringTypeHandle}"
-            | other -> failwith $"Span pointer constructor `this` pointed at non-value-type %O{other}"
-
-        let referenceField =
-            IlMachineState.requiredOwnInstanceFieldId state span.Declared "_reference"
-
-        let lengthField =
-            IlMachineState.requiredOwnInstanceFieldId state span.Declared "_length"
-
-        let referenceValue =
-            EvalStackValue.toCliTypeCoerced
-                (CliValueType.DereferenceFieldById referenceField span)
-                (EvalStackValue.ManagedPointer sourcePtr)
-
-        let lengthValue =
-            EvalStackValue.toCliTypeCoerced
-                (CliValueType.DereferenceFieldById lengthField span)
-                (EvalStackValue.Int32 length)
-
-        let span =
-            span
-            |> CliValueType.WithFieldSetById referenceField referenceValue
-            |> CliValueType.WithFieldSetById lengthField lengthValue
-
-        let state = IlMachineState.writeManagedByref state thisPtr (CliType.ValueType span)
-
-        let state =
-            match wasConstructing with
-            | None -> state
-            | Some constructing ->
-                let constructed = state.ManagedHeap.NonArrayObjects.[constructing]
-
-                state
-                |> IlMachineState.pushToEvalStack (CliType.ValueType constructed.Contents) currentThread
-
-        state |> IlMachineState.advanceProgramCounter currentThread
-
-    let private charOfCliType (operation : string) (value : CliType) : char =
-        match CliType.unwrapPrimitiveLikeDeep value with
-        | CliType.Char (high, low) -> char (int high * 256 + int low)
-        | CliType.Numeric (CliNumericType.UInt16 i) -> char (int<uint16> i)
-        | CliType.Numeric (CliNumericType.Int16 i) -> char (int<uint16> (uint16<int16> i))
-        | other -> failwith $"%s{operation}: expected char-compatible value, got %O{other}"
-
-    let private int32OfEvalStackValue (operation : string) (value : EvalStackValue) : int =
-        match value with
-        | EvalStackValue.Int32 i -> i
-        | EvalStackValue.UserDefinedValueType vt ->
-            match (CliValueType.PrimitiveLikeField vt).Contents |> CliType.unwrapPrimitiveLikeDeep with
-            | CliType.Numeric (CliNumericType.Int32 i) -> i
-            | other -> failwith $"%s{operation}: expected int32-like value, got %O{other}"
-        | other -> failwith $"%s{operation}: expected int32-like value, got %O{other}"
-
-    let private isCorelibConcreteType
-        (state : IlMachineState)
-        (ns : string)
-        (name : string)
-        (handle : ConcreteTypeHandle)
-        : bool
-        =
-        match AllConcreteTypes.lookup handle state.ConcreteTypes with
-        | Some ty ->
-            ty.Assembly.Name = "System.Private.CoreLib"
-            && ty.Namespace = ns
-            && ty.Name = name
-        | None -> false
-
-    let private isReadOnlySpanOfChar (state : IlMachineState) (handle : ConcreteTypeHandle) : bool =
-        match AllConcreteTypes.lookup handle state.ConcreteTypes with
-        | Some ty ->
-            ty.Assembly.Name = "System.Private.CoreLib"
-            && ty.Namespace = "System"
-            && ty.Name = "ReadOnlySpan`1"
-            && ty.Generics.Length = 1
-            && isCorelibConcreteType state "System" "Char" ty.Generics.[0]
-        | None -> false
-
-    let private spanReceiverValue
-        (operation : string)
-        (state : IlMachineState)
-        (receiver : EvalStackValue)
-        : CliValueType
-        =
-        match receiver with
-        | EvalStackValue.ManagedPointer src ->
-            match IlMachineState.readManagedByref state src with
-            | CliType.ValueType vt -> vt
-            | other -> failwith $"%s{operation}: receiver byref read produced non-value-type %O{other}"
-        | EvalStackValue.UserDefinedValueType vt -> vt
-        | other -> failwith $"%s{operation}: expected span receiver byref, got %O{other}"
-
-    let private spanReferenceAndLength
-        (operation : string)
-        (state : IlMachineState)
-        (span : CliValueType)
-        : EvalStackValue * int
-        =
-        let referenceField =
-            IlMachineState.requiredOwnInstanceFieldId state span.Declared "_reference"
-
-        let reference =
-            match
-                CliValueType.DereferenceFieldById referenceField span
-                |> CliType.unwrapPrimitiveLikeDeep
-            with
-            | CliType.RuntimePointer (CliRuntimePointer.Managed src) -> EvalStackValue.ManagedPointer src
-            | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer src)) ->
-                EvalStackValue.ManagedPointer src
-            | other -> failwith $"%s{operation}: expected _reference to be a managed byref, got %O{other}"
-
-        let lengthField =
-            IlMachineState.requiredOwnInstanceFieldId state span.Declared "_length"
-
-        let length =
-            match
-                CliValueType.DereferenceFieldById lengthField span
-                |> CliType.unwrapPrimitiveLike
-            with
-            | CliType.Numeric (CliNumericType.Int32 i) -> i
-            | other -> failwith $"%s{operation}: expected _length to be int32, got %O{other}"
-
-        reference, length
-
-    let private readCharSpanContents
-        (baseClassTypes : BaseClassTypes<_>)
-        (operation : string)
-        (state : IlMachineState)
-        (span : CliValueType)
-        : string * IlMachineState
-        =
-        let spanType =
-            AllConcreteTypes.lookup span.Declared state.ConcreteTypes
-            |> Option.defaultWith (fun () -> failwith $"%s{operation}: span type %O{span.Declared} was not registered")
-
-        if
-            spanType.Assembly.Name <> "System.Private.CoreLib"
-            || spanType.Namespace <> "System"
-            || (spanType.Name <> "ReadOnlySpan`1" && spanType.Name <> "Span`1")
-            || spanType.Generics.Length <> 1
-            || not (isCorelibConcreteType state "System" "Char" spanType.Generics.[0])
-        then
-            failwith $"%s{operation}: expected ReadOnlySpan<char> or Span<char>, got %O{spanType}"
-
-        let reference, length = spanReferenceAndLength operation state span
-
-        if length < 0 then
-            failwith $"%s{operation}: span length was negative: %d{length}"
-
-        let contents, state =
-            (([], state), [ 0 .. length - 1 ])
-            ||> List.fold (fun (chars, state) index ->
-                let ptr, state =
-                    offsetManagedPointerByElements baseClassTypes state spanType.Generics.[0] index reference
-
-                let value =
-                    match ptr with
-                    | EvalStackValue.ManagedPointer src -> IlMachineState.readManagedByref state src
-                    | other -> failwith $"%s{operation}: element pointer was not a managed pointer: %O{other}"
-
-                charOfCliType operation value :: chars, state
-            )
-
-        System.String (contents |> List.rev |> List.toArray), state
-
-    let private spanToString
-        (loggerFactory : ILoggerFactory)
-        (baseClassTypes : BaseClassTypes<_>)
-        (currentThread : ThreadId)
-        (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
-        (state : IlMachineState)
-        : IlMachineState
-        =
-        match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-        | [], MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.String) -> ()
-        | _ -> failwith $"bad signature for %s{formatMethodKey (methodKey state methodToCall)}"
-
-        let operation = $"{methodToCall.DeclaringType.Name}.ToString"
-        let elementType = methodToCall.DeclaringType.Generics |> Seq.exactlyOne
-        let receiver, state = IlMachineState.popEvalStack currentThread state
-        let span = spanReceiverValue operation state receiver
-        let reference, length = spanReferenceAndLength operation state span
-
-        if length < 0 then
-            failwith $"%s{operation}: span length was negative: %d{length}"
-
-        let elementTypeInfo =
-            AllConcreteTypes.lookup elementType state.ConcreteTypes
-            |> Option.defaultWith (fun () -> failwith $"%s{operation}: element type %O{elementType} was not registered")
-
-        let contents, state =
-            if
-                elementTypeInfo.Assembly.Name = "System.Private.CoreLib"
-                && elementTypeInfo.Namespace = "System"
-                && elementTypeInfo.Name = "Char"
-            then
-                (([], state), [ 0 .. length - 1 ])
-                ||> List.fold (fun (chars, state) index ->
-                    let ptr, state =
-                        offsetManagedPointerByElements baseClassTypes state elementType index reference
-
-                    let value =
-                        match ptr with
-                        | EvalStackValue.ManagedPointer src -> IlMachineState.readManagedByref state src
-                        | other -> failwith $"%s{operation}: element pointer was not a managed pointer: %O{other}"
-
-                    charOfCliType operation value :: chars, state
-                )
-                |> fun (chars, state) -> System.String (chars |> List.rev |> List.toArray), state
-            else
-                let typeKind =
-                    if methodToCall.DeclaringType.Name = "ReadOnlySpan`1" then
-                        "ReadOnlySpan"
-                    else
-                        "Span"
-
-                $"System.%s{typeKind}<%s{elementTypeInfo.Name}>[%d{length}]", state
-
-        let stringAddr, state =
-            IlMachineState.allocateManagedString loggerFactory baseClassTypes contents state
-
-        state
-        |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some stringAddr)) currentThread
-        |> IlMachineState.advanceProgramCounter currentThread
-
-    let private memoryExtensionsEquals
-        (baseClassTypes : BaseClassTypes<_>)
-        (currentThread : ThreadId)
-        (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
-        (state : IlMachineState)
-        : IlMachineState
-        =
-        match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-        | [ leftSpan ; rightSpan ; comparisonType ], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) when
-            isReadOnlySpanOfChar state leftSpan
-            && isReadOnlySpanOfChar state rightSpan
-            && isCorelibConcreteType state "System" "StringComparison" comparisonType
-            ->
-            ()
-        | _ -> failwith $"bad signature for %s{formatMethodKey (methodKey state methodToCall)}"
-
-        let operation =
-            "MemoryExtensions.Equals(ReadOnlySpan<char>, ReadOnlySpan<char>, StringComparison)"
-
-        let comparisonType, state = IlMachineState.popEvalStack currentThread state
-        let right, state = IlMachineState.popEvalStack currentThread state
-        let left, state = IlMachineState.popEvalStack currentThread state
-
-        let comparisonType = int32OfEvalStackValue operation comparisonType
-        let left = spanReceiverValue operation state left
-        let right = spanReceiverValue operation state right
-        let left, state = readCharSpanContents baseClassTypes operation state left
-        let right, state = readCharSpanContents baseClassTypes operation state right
-
-        let result =
-            match comparisonType with
-            | 0
-            | 1
-            | 2
-            | 3 ->
-                failwith
-                    $"TODO: %s{operation} with culture-sensitive StringComparison %d{comparisonType} requires deterministic culture modelling"
-            | 4 -> String.Equals (left, right, StringComparison.Ordinal)
-            | 5 -> String.Equals (left, right, StringComparison.OrdinalIgnoreCase)
-            | _ ->
-                failwith
-                    $"TODO: %s{operation} with invalid StringComparison %d{comparisonType} should throw ArgumentException"
-
-        state
-        |> IlMachineState.pushToEvalStack (CliType.ofBool result) currentThread
-        |> IlMachineState.advanceProgramCounter currentThread
+    open IntrinsicHelpers
 
     let call
         (loggerFactory : ILoggerFactory)
@@ -1044,15 +30,54 @@ module Intrinsics =
         (state : IlMachineState)
         : IlMachineState option
         =
-        let callerAssy =
-            state.ThreadState.[currentThread].MethodState.ExecutingMethod.DeclaringType.Assembly
-
         let intrinsicKey = methodKey state methodToCall
+
+        // Predicates shared by the Interlocked.CompareExchange / Interlocked.Exchange intrinsic arms,
+        // which both dispatch by the (location, value, [comparand]) shape of the overload.
+        let isReferenceTypeHandle (handle : ConcreteTypeHandle) : bool =
+            match handle with
+            | ConcreteTypeHandle.OneDimArrayZero _
+            | ConcreteTypeHandle.Array _ -> true
+            | ConcreteTypeHandle.Byref _
+            | ConcreteTypeHandle.Pointer _
+            | ConcreteTypeHandle.FunctionPointer _ -> false
+            | ConcreteTypeHandle.Concrete _ ->
+                match IlMachineState.tryGetConcreteTypeInfo state handle with
+                | Some (_, typeInfo) -> DumpedAssembly.isReferenceType baseClassTypes state._LoadedAssemblies typeInfo
+                | None ->
+                    failwith $"Interlocked reference-type intrinsic: concrete type handle %O{handle} has no TypeDef row"
+
+        let isNativeIntPrimitive (primitive : PrimitiveType) : bool =
+            match primitive with
+            | PrimitiveType.IntPtr
+            | PrimitiveType.UIntPtr -> true
+            | _ -> false
+
+        // CIL widens Boolean (1-byte zero-extending) and Char (2-byte zero-extending)
+        // to Int32 on the eval stack and `EvalStackValue.toCliTypeCoerced` already
+        // rewraps from Int32 back to `CliType.Bool` / `CliType.Char`, so for atomic
+        // Exchange / CompareExchange they behave identically to the scalar integers
+        // here. Naming the predicate after the eval-stack shape rather than the spec
+        // name "integer" keeps its contract truthful for the call sites that justify
+        // dispatching to `executeScalarIntegerExchange` / `executeScalarInteger`.
+        let isScalarIntegralLikePrimitive (primitive : PrimitiveType) : bool =
+            match primitive with
+            | PrimitiveType.Boolean
+            | PrimitiveType.Char
+            | PrimitiveType.SByte
+            | PrimitiveType.Byte
+            | PrimitiveType.Int16
+            | PrimitiveType.UInt16
+            | PrimitiveType.Int32
+            | PrimitiveType.UInt32
+            | PrimitiveType.Int64
+            | PrimitiveType.UInt64 -> true
+            | _ -> false
 
         // In general, some implementations are in:
         // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L192
         match methodToCall.DeclaringType.Assembly.Name, methodToCall.DeclaringType.Name, methodToCall.Name with
-        | "System.Private.CoreLib", ("AdvSimd" | "Rdm" | "Arm64"), "get_IsSupported" when
+        | "System.Private.CoreLib", _, "get_IsSupported" when
             scalarOnlyFalseIsSupportedIntrinsics.Contains intrinsicKey.DeclaringTypeFullName
             ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
@@ -1081,10 +106,21 @@ module Intrinsics =
             |> Some
         | "System.Private.CoreLib", "MemoryExtensions", "Equals" ->
             memoryExtensionsEquals baseClassTypes currentThread methodToCall state |> Some
-        | "System.Private.CoreLib", ("Vector128" | "Vector256" | "Vector512"), "get_IsHardwareAccelerated" ->
-            // System.Runtime.Intrinsics.Vector{128,256,512}.IsHardwareAccelerated are JIT
-            // intrinsic capability queries. PawPrint models a deterministic virtual CPU profile;
-            // the default scalar-only profile reports them unavailable without consulting the host.
+        | "System.Private.CoreLib", "SpanHelpers", "SequenceEqual" when
+            isSpanHelpersByteSequenceEqual state methodToCall
+            ->
+            spanHelpersSequenceEqual baseClassTypes currentThread methodToCall state |> Some
+        | "System.Private.CoreLib", ("Vector128" | "Vector256" | "Vector512"), "get_IsHardwareAccelerated"
+        | "System.Private.CoreLib", "Vector", "get_IsHardwareAccelerated" when
+            // System.Runtime.Intrinsics.Vector{128,256,512}.IsHardwareAccelerated and
+            // System.Numerics.Vector.IsHardwareAccelerated are JIT intrinsic capability queries
+            // whose IL bodies are recursive self-calls the JIT replaces with a constant. PawPrint
+            // models a deterministic virtual CPU profile; the default scalar-only profile reports
+            // them unavailable without consulting the host. The fully-qualified-name guard on the
+            // "Vector" arm rejects any unrelated CoreLib type that happens to share the short name.
+            methodToCall.DeclaringType.Name <> "Vector"
+            || intrinsicKey.DeclaringTypeFullName = "System.Numerics.Vector"
+            ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
             | _ ->
@@ -1118,7 +154,7 @@ module Intrinsics =
                 | EvalStackValue.NullObjectRef ->
                     failwith "TODO: Object.GetType receiver was null; throw NullReferenceException"
                 | EvalStackValue.ManagedPointer ptr ->
-                    match IlMachineState.readManagedByref state ptr with
+                    match IlMachineState.readManagedByref baseClassTypes state ptr with
                     | CliType.ObjectRef (Some addr) -> ManagedHeap.getObjectConcreteType addr state.ManagedHeap, state
                     | CliType.ObjectRef None ->
                         failwith "TODO: Object.GetType receiver was null; throw NullReferenceException"
@@ -1193,7 +229,12 @@ module Intrinsics =
                             baseClassTypes.RuntimeType.Identity
                          |> Option.get)
                     |> List.singleton
-                    |> CliValueType.OfFields baseClassTypes state.ConcreteTypes runtimeTypeHandleHandle Layout.Default
+                    |> CliValueType.OfFields
+                        baseClassTypes
+                        state.ConcreteTypes
+                        runtimeTypeHandleHandle
+                        Layout.Default
+                        (CharSetMetadata.ofTypeAttributes baseClassTypes.RuntimeTypeHandle.TypeAttributes)
 
                 IlMachineState.pushToEvalStack (CliType.ValueType vt) currentThread state
                 |> IlMachineState.advanceProgramCounter currentThread
@@ -1226,7 +267,7 @@ module Intrinsics =
 
             state
             |> IlMachineState.pushToEvalStack'
-                (EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr concreteType))
+                (EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed concreteType)))
                 currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
@@ -1235,27 +276,156 @@ module Intrinsics =
             | [], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
             | _ -> failwith "bad signature Type.get_IsValueType"
 
-            let target, state = popRuntimeTypeHandle currentThread state
-
-            let ty =
-                match target with
-                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
-                    match state.LoadedAssembly identity.Assembly with
-                    | Some assembly -> assembly.TypeDefs.[identity.TypeDefinition.Get]
-                    | None ->
-                        failwith
-                            $"Type.get_IsValueType: assembly for open generic type definition is not loaded: %s{identity.AssemblyFullName}"
-                | RuntimeTypeHandleTarget.Closed ty ->
-                    // TODO: structural handles such as typeof(int[]) still reach here as
-                    // ConcreteTypeHandle.OneDimArrayZero, but this branch only handles nominal types.
-                    match AllConcreteTypes.lookup ty state.ConcreteTypes with
-                    | Some ty -> state.LoadedAssembly(ty.Assembly).Value.TypeDefs.[ty.Definition.Get]
-                    | None -> failwith $"Type.get_IsValueType: expected nominal concrete type handle, got %O{ty}"
+            let target, state = popRuntimeTypeHandle baseClassTypes currentThread state
 
             let isValueType =
-                DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies ty
+                match target with
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+                    let ty =
+                        match state.LoadedAssembly identity.Assembly with
+                        | Some assembly -> assembly.TypeDefs.[identity.TypeDefinition.Get]
+                        | None ->
+                            failwith
+                                $"Type.get_IsValueType: assembly for open generic type definition is not loaded: %s{identity.AssemblyFullName}"
+
+                    DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies ty
+                | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
+                    // CoreCLR derives IsValueType from generic-parameter constraints:
+                    // gpNotNullableValueTypeConstraint => true; gpReferenceTypeConstraint => false;
+                    // otherwise consults the parameter's base type, which is the most specific
+                    // non-interface class constraint (System.Object if there is none). The flag
+                    // cases are exhaustive for unconstrained `T`, `where T : struct`, and
+                    // `where T : class`. For any other class constraint (including
+                    // `where T : Enum`/`where T : ValueType`, which CoreCLR resolves to true)
+                    // we'd need to walk GenericParamMetadata.Constraints and resolve each
+                    // constraint type — fail loudly here rather than silently return the wrong
+                    // answer.
+                    let assembly =
+                        state.LoadedAssembly declaringType.Assembly
+                        |> Option.defaultWith (fun () ->
+                            failwith
+                                $"Type.get_IsValueType: assembly for declaring type of generic parameter is not loaded: %s{declaringType.AssemblyFullName}"
+                        )
+
+                    let typeInfo = assembly.TypeDefs.[declaringType.TypeDefinition.Get]
+
+                    if position < 0 || position >= typeInfo.Generics.Length then
+                        failwith
+                            $"Type.get_IsValueType: generic parameter position %d{position} is out of range for %O{declaringType.TypeDefinition.Get} (declares %d{typeInfo.Generics.Length} parameters)"
+
+                    let _, metadata = typeInfo.Generics.[position]
+
+                    match metadata.Constraint with
+                    | Some GenericConstraint.NonNullableValue -> true
+                    | Some GenericConstraint.Reference -> false
+                    | None when metadata.Constraints.IsEmpty -> false
+                    | None ->
+                        failwith
+                            $"TODO: Type.get_IsValueType for generic parameter #%d{position} of %O{declaringType.TypeDefinition.Get} with %d{metadata.Constraints.Length} class/interface constraint(s); needs constraint-walk to honour `where T : Enum`/`where T : ValueType`"
+                | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+                    failwith
+                        $"TODO: Type.get_IsValueType for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
+                | RuntimeTypeHandleTarget.Closed ty ->
+                    match ty with
+                    // Byref, pointer, function-pointer, single-dim szarray, and multi-dim array
+                    // types are TypeDescs in CoreCLR; IsValueTypeImpl resolves to
+                    // IsSubclassOf(typeof(ValueType)) for TypeDescs, which is false for all of
+                    // these. They're absent from the nominal AllConcreteTypes mapping, so handle
+                    // them explicitly here rather than failing the lookup.
+                    | ConcreteTypeHandle.Byref _
+                    | ConcreteTypeHandle.Pointer _
+                    | ConcreteTypeHandle.FunctionPointer _
+                    | ConcreteTypeHandle.OneDimArrayZero _
+                    | ConcreteTypeHandle.Array _ -> false
+                    | ConcreteTypeHandle.Concrete _ ->
+                        let typeInfo =
+                            match AllConcreteTypes.lookup ty state.ConcreteTypes with
+                            | Some ty -> state.LoadedAssembly(ty.Assembly).Value.TypeDefs.[ty.Definition.Get]
+                            | None ->
+                                failwith $"Type.get_IsValueType: expected nominal concrete type handle, got %O{ty}"
+
+                        DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo
 
             IlMachineState.pushToEvalStack (CliType.ofBool isValueType) currentThread state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Some
+        | "System.Private.CoreLib", "Type", "get_IsEnum" ->
+            // CoreCLR semantics: a type IsEnum iff its immediate parent in the type hierarchy is
+            // System.Enum. Enums cannot be generic, so an open generic type definition is never
+            // an enum. Structural shapes (byref, pointer, single-dim szarray, multi-dim array)
+            // never extend Enum either. CoreCLR additionally has an IsTypeDesc branch that
+            // returns IsSubclassOf(Enum) for generic parameters with an Enum-shaped constraint —
+            // implement that once constraint metadata reaches reflection paths.
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
+            | _ -> failwith "bad signature Type.get_IsEnum"
+
+            let target, state = popRuntimeTypeHandle baseClassTypes currentThread state
+
+            let isEnum, state =
+                match target with
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> false, state
+                | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
+                    // CoreCLR returns IsSubclassOf(Enum) for generic parameters: false unless
+                    // a class-style constraint resolves to System.Enum (or a specific enum).
+                    // The flag-only cases (struct/class/unconstrained) are exhaustively handled
+                    // — anything else needs the constraint walk we haven't yet implemented, so
+                    // fail loudly rather than silently returning false for `where T : Enum`.
+                    let assembly =
+                        state.LoadedAssembly declaringType.Assembly
+                        |> Option.defaultWith (fun () ->
+                            failwith
+                                $"Type.get_IsEnum: assembly for declaring type of generic parameter is not loaded: %s{declaringType.AssemblyFullName}"
+                        )
+
+                    let typeInfo = assembly.TypeDefs.[declaringType.TypeDefinition.Get]
+
+                    if position < 0 || position >= typeInfo.Generics.Length then
+                        failwith
+                            $"Type.get_IsEnum: generic parameter position %d{position} is out of range for %O{declaringType.TypeDefinition.Get} (declares %d{typeInfo.Generics.Length} parameters)"
+
+                    let _, metadata = typeInfo.Generics.[position]
+
+                    // `where T : unmanaged, Enum` (and similar combinations) sets the
+                    // NotNullableValueTypeConstraint flag *and* emits an Enum class-constraint,
+                    // and CoreCLR walks the constraints regardless of the flag — so ignoring
+                    // Constraints when a flag is set would silently return false for an
+                    // enum-shaped parameter. Guard non-empty Constraints uniformly.
+                    if not metadata.Constraints.IsEmpty then
+                        failwith
+                            $"TODO: Type.get_IsEnum for generic parameter #%d{position} of %O{declaringType.TypeDefinition.Get} with %d{metadata.Constraints.Length} class/interface constraint(s); needs constraint-walk to honour `where T : Enum`"
+
+                    false, state
+                | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+                    failwith
+                        $"TODO: Type.get_IsEnum for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
+                | RuntimeTypeHandleTarget.Closed handle ->
+                    match handle with
+                    | ConcreteTypeHandle.Byref _
+                    | ConcreteTypeHandle.Pointer _
+                    | ConcreteTypeHandle.FunctionPointer _
+                    | ConcreteTypeHandle.OneDimArrayZero _
+                    | ConcreteTypeHandle.Array _ -> false, state
+                    | ConcreteTypeHandle.Concrete _ ->
+                        let state, baseHandle =
+                            IlMachineState.resolveBaseConcreteType loggerFactory baseClassTypes state handle
+
+                        match baseHandle with
+                        | None ->
+                            // System.Object has no base type and is not an enum.
+                            false, state
+                        | Some baseHandle ->
+                            let baseIsEnum =
+                                match AllConcreteTypes.lookup baseHandle state.ConcreteTypes with
+                                | Some baseTy -> baseTy.Identity = baseClassTypes.Enum.Identity
+                                | None ->
+                                    // Structural handles (byref/pointer/array) are never System.Enum,
+                                    // and they're absent from the nominal AllConcreteTypes mapping.
+                                    false
+
+                            baseIsEnum, state
+
+            IlMachineState.pushToEvalStack (CliType.ofBool isEnum) currentThread state
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
         | "System.Private.CoreLib", "Type", "get_IsGenericType" ->
@@ -1263,11 +433,15 @@ module Intrinsics =
             | [], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
             | _ -> failwith "bad signature Type.get_IsGenericType"
 
-            let target, state = popRuntimeTypeHandle currentThread state
+            let target, state = popRuntimeTypeHandle baseClassTypes currentThread state
 
             let isGenericType =
                 match target with
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> true
+                // A generic parameter is itself not a generic type — it's a placeholder
+                // for one. Type.IsGenericType returns false on it in CoreCLR.
+                | RuntimeTypeHandleTarget.GenericParameter _
+                | RuntimeTypeHandleTarget.MethodGenericParameter _ -> false
                 | RuntimeTypeHandleTarget.Closed ty ->
                     match ty with
                     | ConcreteTypeHandle.Concrete _ ->
@@ -1276,6 +450,7 @@ module Intrinsics =
                         | None -> failwith $"Type.get_IsGenericType: concrete type handle was not registered: %O{ty}"
                     | ConcreteTypeHandle.Byref _
                     | ConcreteTypeHandle.Pointer _
+                    | ConcreteTypeHandle.FunctionPointer _
                     | ConcreteTypeHandle.OneDimArrayZero _
                     | ConcreteTypeHandle.Array _ -> false
 
@@ -1294,112 +469,331 @@ module Intrinsics =
             IlMachineState.pushToEvalStack (CliType.RuntimePointer toPush) currentThread state
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
+        | "System.Private.CoreLib", "Unsafe", "SkipInit" ->
+            // `SkipInit<T>(out T)` is a JIT intrinsic that deliberately leaves
+            // the byref target untouched. PawPrint's storage is already
+            // deterministic, so the only observable effect is consuming the
+            // byref argument and returning void.
+            let t =
+                match Seq.toList methodToCall.Generics with
+                | [ t ] -> t
+                | _ -> failwith "bad generics Unsafe.SkipInit"
+
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteByref tParam ], MethodReturnType.Void when tParam = t -> ()
+            | _ -> failwith $"bad signature Unsafe.SkipInit: %A{methodToCall.Signature}"
+
+            let arg, state = IlMachineState.popEvalStack currentThread state
+
+            match arg with
+            | EvalStackValue.ManagedPointer _ -> ()
+            | other -> failwith $"Unsafe.SkipInit: expected managed byref argument, got %O{other}"
+
+            state |> IlMachineState.advanceProgramCounter currentThread |> Some
         | "System.Private.CoreLib", "Unsafe", "AsRef" ->
-            // `AsRef<T>(ref readonly T)` is a JIT intrinsic. The CoreLib body in
-            // this runtime throws PlatformNotSupportedException; the intended
-            // intrinsic semantics are the address-preserving `ldarg.0; ret`.
-            // Keep the void* overload out of this arm until native pointers are
-            // modelled here deliberately.
+            // `AsRef<T>(ref readonly T)` and `AsRef<T>(void* source)` are JIT
+            // intrinsics. The CoreLib bodies in this runtime throw
+            // PlatformNotSupportedException; the intended intrinsic semantics
+            // are the address-preserving `ldarg.0; ret`.
+            //
+            // The `void*` overload is invoked by BCL code like
+            // `MemoryMarshal.GetNonNullPinnableReference` which fabricates
+            // `Unsafe.AsRef<T>((void*)1)` for empty spans so the subsequent
+            // `fixed` pins to a non-null pointer. Translate the native int back
+            // through the managed-pointer view, normalising `0L` to `Null` and
+            // existing managed-pointer provenance back to its underlying
+            // source; raw verbatim bits become a `NativeIntPlaceholder` whose
+            // contract is "must never be dereferenced".
             let t =
                 match Seq.toList methodToCall.Generics with
                 | [ t ] -> t
                 | _ -> failwith "bad generics Unsafe.AsRef"
 
-            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteByref tParam ], MethodReturnType.Returns (ConcreteByref tRet) when tParam = t && tRet = t -> ()
-            | _ -> failwith $"TODO: Unsafe.AsRef unsupported signature %A{methodToCall.Signature.ParameterTypes}"
+            let isByrefOverload =
+                match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+                | [ ConcreteByref tParam ], MethodReturnType.Returns (ConcreteByref tRet) when tParam = t && tRet = t ->
+                    true
+                | [ ConcretePointer _ ], MethodReturnType.Returns (ConcreteByref tRet) when tRet = t -> false
+                | _ -> failwith $"TODO: Unsafe.AsRef unsupported signature %A{methodToCall.Signature.ParameterTypes}"
 
             let arg, state = IlMachineState.popEvalStack currentThread state
 
             let toPush =
-                match arg with
-                | EvalStackValue.ManagedPointer ptr -> EvalStackValue.ManagedPointer ptr
-                | x -> failwith $"TODO: Unsafe.AsRef(%O{x})"
+                if isByrefOverload then
+                    match arg with
+                    | EvalStackValue.ManagedPointer ptr -> EvalStackValue.ManagedPointer ptr
+                    | x -> failwith $"TODO: Unsafe.AsRef(ref readonly T) on %O{x}"
+                else
+                    let placeholderOf (bits : int64) =
+                        if bits = 0L then
+                            ManagedPointerSource.Null
+                        else
+                            ManagedPointerSource.NativeIntPlaceholder bits
+
+                    match arg with
+                    | EvalStackValue.ManagedPointer ptr -> EvalStackValue.ManagedPointer ptr
+                    | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) -> EvalStackValue.ManagedPointer ptr
+                    | EvalStackValue.NativeInt (NativeIntSource.Verbatim bits) ->
+                        EvalStackValue.ManagedPointer (placeholderOf bits)
+                    | EvalStackValue.Int32 bits -> EvalStackValue.ManagedPointer (placeholderOf (int64 bits))
+                    | EvalStackValue.Int64 (Int64Source.Verbatim bits) ->
+                        EvalStackValue.ManagedPointer (placeholderOf bits)
+                    | EvalStackValue.NullObjectRef -> EvalStackValue.ManagedPointer ManagedPointerSource.Null
+                    | x -> failwith $"TODO: Unsafe.AsRef(void*) on %O{x}"
 
             state
             |> IlMachineState.pushToEvalStack' toPush currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
-        | "System.Private.CoreLib", "Interlocked", "CompareExchange" ->
-            // The (ref IntPtr, IntPtr, IntPtr) -> IntPtr overload needs its own path: the shipped
-            // IL wrapper does `Unsafe.As<IntPtr,long>` + delegates to the Int64 overload, which
-            // would destroy our NativeIntSource provenance.
-            // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/Threading/Interlocked.cs#L452
-            let isReferenceTypeHandle (handle : ConcreteTypeHandle) : bool =
-                match handle with
-                | ConcreteTypeHandle.OneDimArrayZero _
-                | ConcreteTypeHandle.Array _ -> true
-                | ConcreteTypeHandle.Byref _
-                | ConcreteTypeHandle.Pointer _ -> false
-                | ConcreteTypeHandle.Concrete _ ->
-                    match IlMachineState.tryGetConcreteTypeInfo state handle with
-                    | Some (_, typeInfo) ->
-                        DumpedAssembly.isReferenceType baseClassTypes state._LoadedAssemblies typeInfo
-                    | None ->
-                        failwith $"Interlocked.CompareExchange<T>: concrete type handle %O{handle} has no TypeDef row"
+        | "System.Private.CoreLib", "Unsafe", "NullRef" ->
+            // CoreCLR's UNSAFE__BYREF_NULLREF intrinsic replaces the CoreLib
+            // body with a null managed byref (`ldc.i4.0; conv.u; ret`).
+            let t =
+                let generics = Seq.toList methodToCall.Generics
+
+                match generics with
+                | [ t ] -> t
+                | _ -> failwith $"bad generics Unsafe.NullRef: expected exactly one generic argument, got %A{generics}"
 
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr)
-                ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
-                ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
-              MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr) ->
+            | [], MethodReturnType.Returns (ConcreteByref ret) when ret = t -> ()
+            | _ ->
+                failwith
+                    $"bad signature Unsafe.NullRef: expected no parameters and byref return matching %O{t}, got %A{methodToCall.Signature}"
+
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ManagedPointerSource.Null) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Some
+        | "System.Private.CoreLib", "Unsafe", "IsNullRef" ->
+            // The JIT intrinsic compares the byref argument against the null
+            // managed byref.
+            let t =
+                let generics = Seq.toList methodToCall.Generics
+
+                match generics with
+                | [ t ] -> t
+                | _ ->
+                    failwith $"bad generics Unsafe.IsNullRef: expected exactly one generic argument, got %A{generics}"
+
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteByref param ], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) when param = t -> ()
+            | _ ->
+                failwith
+                    $"bad signature Unsafe.IsNullRef: expected one byref parameter matching %O{t} and bool return, got %A{methodToCall.Signature}"
+
+            let arg, state = IlMachineState.popEvalStack currentThread state
+
+            let isNullRef =
+                match arg with
+                | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> true
+                | EvalStackValue.ManagedPointer _ -> false
+                | other -> failwith $"Unsafe.IsNullRef: expected managed byref argument, got %O{other}"
+
+            state
+            |> IlMachineState.pushToEvalStack (CliType.ofBool isNullRef) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Some
+        | "System.Private.CoreLib", "Interlocked", ("Add" | "ExchangeAdd") ->
+            // `Add` returns the newly-stored sum; the private `ExchangeAdd`
+            // primitive returns the original value. The read-modify-write
+            // happens inside one intrinsic dispatch, so the scheduler cannot
+            // interleave another guest thread between the read and write.
+            let returnsOriginalValue = methodToCall.Name = "ExchangeAdd"
+
+            let executeInt32 (operation : string) (state : IlMachineState) : IlMachineState =
+                let valueArg, state = IlMachineState.popEvalStack currentThread state
+                let byrefArg, state = IlMachineState.popEvalStack currentThread state
+
+                let value =
+                    EvalStackValue.convToInt32 valueArg
+                    |> Option.defaultWith (fun () -> failwith $"%s{operation}: expected int32 value, got %O{valueArg}")
+
+                let byrefSrc = popManagedByrefArgument operation byrefArg
+                let currentValue = IlMachineState.readManagedByref baseClassTypes state byrefSrc
+
+                let current =
+                    match EvalStackValue.ofCliType currentValue with
+                    | EvalStackValue.Int32 i -> i
+                    | other -> failwith $"%s{operation}: expected int32 in target location, got %O{other}"
+
+                // From the docs:
+                // This method handles an overflow condition by wrapping:
+                // if the value at location1 is Int32.MaxValue and value is 1, the result is Int32.MinValue;
+                // if value is 2, the result is (Int32.MinValue + 1); and so on.
+                // No exception is thrown.
+                let updated = uint32<int32> current + uint32<int32> value |> int32<uint32>
+
+                let state =
+                    IlMachineState.writeManagedByrefWithBase
+                        baseClassTypes
+                        state
+                        byrefSrc
+                        (EvalStackValue.toCliTypeCoerced currentValue (EvalStackValue.Int32 updated))
+
+                let result = if returnsOriginalValue then current else updated
+
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 result) currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+
+            let executeInt64 (operation : string) (state : IlMachineState) : IlMachineState =
+                let valueArg, state = IlMachineState.popEvalStack currentThread state
+                let byrefArg, state = IlMachineState.popEvalStack currentThread state
+
+                let value =
+                    EvalStackValue.convToInt64 valueArg
+                    |> Option.defaultWith (fun () -> failwith $"%s{operation}: expected int64 value, got %O{valueArg}")
+
+                let byrefSrc = popManagedByrefArgument operation byrefArg
+                let currentValue = IlMachineState.readManagedByref baseClassTypes state byrefSrc
+
+                let current =
+                    match EvalStackValue.ofCliType currentValue with
+                    | EvalStackValue.Int64 i -> i
+                    | other -> failwith $"%s{operation}: expected int64 in target location, got %O{other}"
+
+                // From the docs:
+                // This method handles an overflow condition by wrapping:
+                // if the value at location1 is Int64.MaxValue and value is 1, the result is Int64.MinValue;
+                // if value is 2, the result is (Int64.MinValue + 1); and so on.
+                // No exception is thrown.
+                let updated =
+                    match current, value with
+                    | Int64Source.Verbatim current, Int64Source.Verbatim value ->
+                        uint64<int64> current + uint64<int64> value
+                        |> int64<uint64>
+                        |> Int64Source.Verbatim
+                    | _, _ -> failwith "TODO"
+
+                let state =
+                    IlMachineState.writeManagedByrefWithBase
+                        baseClassTypes
+                        state
+                        byrefSrc
+                        (EvalStackValue.toCliTypeCoerced currentValue (EvalStackValue.Int64 updated))
+
+                let result = if returnsOriginalValue then current else updated
+
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int64 result) currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteByref (ConcreteInt32 state.ConcreteTypes) ; ConcreteInt32 state.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes)
+            | [ ConcreteByref (ConcreteUInt32 state.ConcreteTypes) ; ConcreteUInt32 state.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteUInt32 state.ConcreteTypes) ->
+                executeInt32 methodToCall.Name state |> Some
+            | [ ConcreteByref (ConcreteInt64 state.ConcreteTypes) ; ConcreteInt64 state.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteInt64 state.ConcreteTypes)
+            | [ ConcreteByref (ConcreteUInt64 state.ConcreteTypes) ; ConcreteUInt64 state.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteUInt64 state.ConcreteTypes) ->
+                executeInt64 methodToCall.Name state |> Some
+            | _ -> None
+
+        | "System.Private.CoreLib", "Interlocked", "MemoryBarrier" ->
+            // [Intrinsic] public static void MemoryBarrier() => MemoryBarrier();
+            // Same shape as Volatile.{Read,Write}Barrier (below): the managed body is
+            // infinite self-recursion and the JIT replaces the call with the
+            // appropriate processor fence. PawPrint single-steps a deterministic
+            // virtual CPU, so there is no host memory reordering for a fence to
+            // constrain; the no-op is correct for the same reason as the `volatile.`
+            // IL prefix (NullaryIlOp.fs). Cannot live in safeIntrinsics because the
+            // IL would loop forever.
+            // https://github.com/dotnet/runtime/blob/HEAD/src/libraries/System.Private.CoreLib/src/System/Threading/Interlocked.cs
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [], MethodReturnType.Void -> ()
+            | _ -> failwith $"Interlocked.MemoryBarrier: unexpected signature %A{methodToCall.Signature}"
+
+            state |> IlMachineState.advanceProgramCounter currentThread |> Some
+
+        | "System.Private.CoreLib", "Interlocked", "CompareExchange" ->
+            // The native-int-shaped overloads need their own path: the shipped IL wrappers do
+            // `Unsafe.As<_, long>` and delegate to the Int64 overload, which would destroy our
+            // NativeIntSource provenance.
+            // Narrow scalar and reference-type overloads are JIT intrinsic boundaries too; handle
+            // those primitives here instead of executing their Unsafe.As / InternalCall wrappers.
+            // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/Threading/Interlocked.cs#L452
+            let executeScalarInteger (operation : string) (state : IlMachineState) : IlMachineState =
+                let comparand, state = IlMachineState.popEvalStack currentThread state
+                let value, state = IlMachineState.popEvalStack currentThread state
+                let byrefArg, state = IlMachineState.popEvalStack currentThread state
+
+                let byrefSrc = popManagedByrefArgument operation byrefArg
+                let currentValue = IlMachineState.readManagedByref baseClassTypes state byrefSrc
+                let currentEval = EvalStackValue.ofCliType currentValue
+                let valueCli = EvalStackValue.toCliTypeCoerced currentValue value
+                let comparandCli = EvalStackValue.toCliTypeCoerced currentValue comparand
+
+                // The intrinsic bypasses normal method-frame construction, so coerce the eval-stack
+                // operands to the signedness/width of the overload before comparing and writing.
+                let state =
+                    if EvalStackValueComparisons.ceq currentEval (EvalStackValue.ofCliType comparandCli) then
+                        IlMachineState.writeManagedByrefWithBase baseClassTypes state byrefSrc valueCli
+                    else
+                        state
+
+                state
+                |> IlMachineState.pushToEvalStack currentValue currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes locationPrimitive)
+                ConcretePrimitive state.ConcreteTypes valuePrimitive
+                ConcretePrimitive state.ConcreteTypes comparandPrimitive ],
+              MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes returnPrimitive) when
+                isNativeIntPrimitive locationPrimitive
+                && locationPrimitive = valuePrimitive
+                && locationPrimitive = comparandPrimitive
+                && locationPrimitive = returnPrimitive
+                ->
 
                 let comparand, state = IlMachineState.popEvalStack currentThread state
                 let value, state = IlMachineState.popEvalStack currentThread state
                 let byrefArg, state = IlMachineState.popEvalStack currentThread state
 
                 let byrefSrc =
-                    match byrefArg with
-                    | EvalStackValue.ManagedPointer ptr -> ptr
-                    | EvalStackValue.NullObjectRef -> ManagedPointerSource.Null
-                    | other ->
-                        failwith
-                            $"Interlocked.CompareExchange(ref IntPtr,...): expected ManagedPointer byref, got %O{other}"
+                    popManagedByrefArgument "Interlocked.CompareExchange(ref native-int,...)" byrefArg
 
-                // Eval-stack IntPtr arguments are flattened to the primitive by the push
-                // boundary (see EvalStackValue.ofCliType), so a UserDefinedValueType IntPtr
-                // is unreachable here by invariant.
+                // Eval-stack IntPtr/UIntPtr arguments are flattened to the primitive by the push
+                // boundary (see EvalStackValue.ofCliType), so a UserDefinedValueType IntPtr or
+                // UIntPtr is unreachable here by invariant.
                 let toNativeIntSource (v : EvalStackValue) : NativeIntSource =
                     match v with
                     | EvalStackValue.NativeInt src -> src
-                    | EvalStackValue.Int64 i -> NativeIntSource.Verbatim i
+                    | EvalStackValue.Int64 (Int64Source.Verbatim i) -> NativeIntSource.Verbatim i
                     | EvalStackValue.Int32 i -> NativeIntSource.Verbatim (int64<int> i)
                     | EvalStackValue.ManagedPointer src -> NativeIntSource.ManagedPointer src
                     | EvalStackValue.NullObjectRef -> NativeIntSource.ManagedPointer ManagedPointerSource.Null
                     | other ->
                         failwith
-                            $"Interlocked.CompareExchange(ref IntPtr,...): unexpected IntPtr-shaped eval stack value %O{other}"
+                            $"Interlocked.CompareExchange(ref native-int,...): unexpected native-int-shaped eval stack value %O{other}"
 
                 let comparandSrc = toNativeIntSource comparand
                 let valueSrc = toNativeIntSource value
 
-                let currentValue = IlMachineState.readManagedByref state byrefSrc
+                let currentValue = IlMachineState.readManagedByref baseClassTypes state byrefSrc
 
-                // `ref IntPtr` derefs to the IntPtr wrapper struct. Route the read/write through
+                // `ref IntPtr` / `ref UIntPtr` derefs to a wrapper struct. Route the read/write through
                 // the eval-stack flatten/rewrap boundary: `ofCliType` peels the primitive-like
                 // wrapper to `NativeInt`, and `toCliTypeCoerced` reconstructs the wrapper shape
                 // on write. The primitive-like registry is the single source of truth for shape.
                 let currentSrc =
                     match EvalStackValue.ofCliType currentValue with
                     | EvalStackValue.NativeInt src -> src
-                    | EvalStackValue.Int64 i -> NativeIntSource.Verbatim i
+                    | EvalStackValue.Int64 (Int64Source.Verbatim i) -> NativeIntSource.Verbatim i
                     | EvalStackValue.Int32 i -> NativeIntSource.Verbatim (int64<int> i)
                     | other ->
                         failwith
-                            $"Interlocked.CompareExchange(ref IntPtr,...): expected NativeInt at byref target, got %O{other}"
-
-                // Two representations of zero exist (`Verbatim 0L` for `new IntPtr(0)` and
-                // `ManagedPointer Null` for default-initialised IntPtr / `IntPtr.Zero`); treat
-                // them as equal, matching native-int `ceq` semantics.
-                let nativeIntEq (a : NativeIntSource) (b : NativeIntSource) : bool =
-                    a = b || (NativeIntSource.isZero a && NativeIntSource.isZero b)
+                            $"Interlocked.CompareExchange(ref native-int,...): expected NativeInt at byref target, got %O{other}"
 
                 let state =
-                    if nativeIntEq currentSrc comparandSrc then
+                    if NativeIntSource.equalsForCli currentSrc comparandSrc then
                         let newValue =
                             EvalStackValue.toCliTypeCoerced currentValue (EvalStackValue.NativeInt valueSrc)
 
-                        IlMachineState.writeManagedByref state byrefSrc newValue
+                        IlMachineState.writeManagedByrefWithBase baseClassTypes state byrefSrc newValue
                     else
                         state
 
@@ -1407,6 +801,16 @@ module Intrinsics =
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt currentSrc) currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
                 |> Some
+            | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes locationPrimitive)
+                ConcretePrimitive state.ConcreteTypes valuePrimitive
+                ConcretePrimitive state.ConcreteTypes comparandPrimitive ],
+              MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes returnPrimitive) when
+                isScalarIntegralLikePrimitive locationPrimitive
+                && locationPrimitive = valuePrimitive
+                && locationPrimitive = comparandPrimitive
+                && locationPrimitive = returnPrimitive
+                ->
+                executeScalarInteger "Interlocked.CompareExchange" state |> Some
             | [ ConcreteByref locationType ; valueType ; comparandType ], MethodReturnType.Returns returnType when
                 locationType = valueType
                 && locationType = comparandType
@@ -1421,13 +825,9 @@ module Intrinsics =
                 let value, state = IlMachineState.popEvalStack currentThread state
                 let byrefArg, state = IlMachineState.popEvalStack currentThread state
 
-                let byrefSrc =
-                    match byrefArg with
-                    | EvalStackValue.ManagedPointer ptr -> ptr
-                    | EvalStackValue.NullObjectRef -> ManagedPointerSource.Null
-                    | other -> failwith $"Interlocked.CompareExchange<T>: expected ManagedPointer byref, got %O{other}"
+                let byrefSrc = popManagedByrefArgument "Interlocked.CompareExchange<T>" byrefArg
 
-                let currentValue = IlMachineState.readManagedByref state byrefSrc
+                let currentValue = IlMachineState.readManagedByref baseClassTypes state byrefSrc
 
                 let objectTarget (argName : string) (value : CliType) : ManagedHeapAddress option =
                     match value with
@@ -1445,7 +845,7 @@ module Intrinsics =
 
                 let state =
                     if currentTarget = comparandTarget then
-                        IlMachineState.writeManagedByref state byrefSrc valueCli
+                        IlMachineState.writeManagedByrefWithBase baseClassTypes state byrefSrc valueCli
                     else
                         state
 
@@ -1454,11 +854,152 @@ module Intrinsics =
                 |> IlMachineState.advanceProgramCounter currentThread
                 |> Some
             | _ ->
-                // Other Interlocked.CompareExchange overloads are not yet intrinsified.
-                // The Int32/Int64 shipped IL bodies self-call (expecting the JIT to intrinsify),
-                // so they will stack-overflow if we fall through here.
-                // When a caller needs one of these, it will need its own intrinsic arm.
+                // The float/double overloads are not yet intrinsified. Their shipped IL bodies
+                // reinterpret-cast to integer overloads, so falling through would either re-enter
+                // this intrinsic path or lose the bit-level shape of the floating-point value.
+                // When a caller needs one of these, add a dedicated intrinsic arm.
                 None
+        | "System.Private.CoreLib", "Interlocked", "Exchange" ->
+            // Same intrinsic-boundary motivation as CompareExchange: the shipped CoreLib
+            // bodies for Exchange ride Unsafe.As / InternalCall paths that would either
+            // destroy NativeIntSource provenance for IntPtr/UIntPtr or re-enter this
+            // intrinsic at the wrong width. Implement the primitive directly.
+            // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/Threading/Interlocked.cs#L80
+            let executeScalarIntegerExchange (operation : string) (state : IlMachineState) : IlMachineState =
+                let value, state = IlMachineState.popEvalStack currentThread state
+                let byrefArg, state = IlMachineState.popEvalStack currentThread state
+
+                let byrefSrc = popManagedByrefArgument operation byrefArg
+                let currentValue = IlMachineState.readManagedByref baseClassTypes state byrefSrc
+                let valueCli = EvalStackValue.toCliTypeCoerced currentValue value
+
+                // The intrinsic bypasses normal method-frame construction, so coerce the
+                // eval-stack value to the signedness/width of the overload before writing.
+                let state =
+                    IlMachineState.writeManagedByrefWithBase baseClassTypes state byrefSrc valueCli
+
+                state
+                |> IlMachineState.pushToEvalStack currentValue currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes locationPrimitive)
+                ConcretePrimitive state.ConcreteTypes valuePrimitive ],
+              MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes returnPrimitive) when
+                isNativeIntPrimitive locationPrimitive
+                && locationPrimitive = valuePrimitive
+                && locationPrimitive = returnPrimitive
+                ->
+
+                let value, state = IlMachineState.popEvalStack currentThread state
+                let byrefArg, state = IlMachineState.popEvalStack currentThread state
+
+                let byrefSrc =
+                    popManagedByrefArgument "Interlocked.Exchange(ref native-int,...)" byrefArg
+
+                // Eval-stack IntPtr/UIntPtr arguments are flattened to the primitive by the push
+                // boundary (see EvalStackValue.ofCliType), so a UserDefinedValueType IntPtr or
+                // UIntPtr is unreachable here by invariant.
+                let toNativeIntSource (v : EvalStackValue) : NativeIntSource =
+                    match v with
+                    | EvalStackValue.NativeInt src -> src
+                    | EvalStackValue.Int64 (Int64Source.Verbatim i) -> NativeIntSource.Verbatim i
+                    | EvalStackValue.Int32 i -> NativeIntSource.Verbatim (int64<int> i)
+                    | EvalStackValue.ManagedPointer src -> NativeIntSource.ManagedPointer src
+                    | EvalStackValue.NullObjectRef -> NativeIntSource.ManagedPointer ManagedPointerSource.Null
+                    | other ->
+                        failwith
+                            $"Interlocked.Exchange(ref native-int,...): unexpected native-int-shaped eval stack value %O{other}"
+
+                let valueSrc = toNativeIntSource value
+
+                let currentValue = IlMachineState.readManagedByref baseClassTypes state byrefSrc
+
+                // `ref IntPtr` / `ref UIntPtr` derefs to a wrapper struct. Route the read/write through
+                // the eval-stack flatten/rewrap boundary: `ofCliType` peels the primitive-like
+                // wrapper to `NativeInt`, and `toCliTypeCoerced` reconstructs the wrapper shape
+                // on write. The primitive-like registry is the single source of truth for shape.
+                let currentSrc =
+                    match EvalStackValue.ofCliType currentValue with
+                    | EvalStackValue.NativeInt src -> src
+                    | EvalStackValue.Int64 (Int64Source.Verbatim i) -> NativeIntSource.Verbatim i
+                    | EvalStackValue.Int32 i -> NativeIntSource.Verbatim (int64<int> i)
+                    | other ->
+                        failwith
+                            $"Interlocked.Exchange(ref native-int,...): expected NativeInt at byref target, got %O{other}"
+
+                let newValue =
+                    EvalStackValue.toCliTypeCoerced currentValue (EvalStackValue.NativeInt valueSrc)
+
+                let state =
+                    IlMachineState.writeManagedByrefWithBase baseClassTypes state byrefSrc newValue
+
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt currentSrc) currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Some
+            | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes locationPrimitive)
+                ConcretePrimitive state.ConcreteTypes valuePrimitive ],
+              MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes returnPrimitive) when
+                isScalarIntegralLikePrimitive locationPrimitive
+                && locationPrimitive = valuePrimitive
+                && locationPrimitive = returnPrimitive
+                ->
+                executeScalarIntegerExchange "Interlocked.Exchange" state |> Some
+            | [ ConcreteByref locationType ; valueType ], MethodReturnType.Returns returnType when
+                locationType = valueType
+                && locationType = returnType
+                && isReferenceTypeHandle locationType
+                ->
+                // Reference-typed Exchange overloads are JIT/runtime intrinsic boundaries
+                // in CoreLib. Implement the object-reference primitive directly instead of
+                // trying to execute the generic Unsafe.As<T, object> path.
+                let value, state = IlMachineState.popEvalStack currentThread state
+                let byrefArg, state = IlMachineState.popEvalStack currentThread state
+
+                let byrefSrc = popManagedByrefArgument "Interlocked.Exchange<T>" byrefArg
+
+                let currentValue = IlMachineState.readManagedByref baseClassTypes state byrefSrc
+
+                let valueCli = EvalStackValue.toCliTypeCoerced currentValue value
+
+                let state =
+                    IlMachineState.writeManagedByrefWithBase baseClassTypes state byrefSrc valueCli
+
+                state
+                |> IlMachineState.pushToEvalStack currentValue currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Some
+            | _ ->
+                // The float/double overloads are not yet intrinsified, matching the
+                // CompareExchange precedent above. Add a dedicated arm when first needed.
+                None
+        | "System.Private.CoreLib", "Thread", "FastPollGC" ->
+            // [Intrinsic] internal static void Thread.FastPollGC() => Thread.FastPollGC();
+            // The managed IL body is an infinite self-recursive call; the JIT replaces
+            // every call site with an inline fast GC poll. PawPrint has no GC, so the
+            // intrinsic is a pure no-op. This cannot live in safeIntrinsics because
+            // executing the IL would loop forever.
+            // https://github.com/dotnet/runtime/blob/HEAD/src/libraries/System.Private.CoreLib/src/System/Threading/Thread.cs#L389-L392
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [], MethodReturnType.Void -> ()
+            | _ -> failwith $"Thread.FastPollGC: unexpected signature %A{methodToCall.Signature}"
+
+            state |> IlMachineState.advanceProgramCounter currentThread |> Some
+        | "System.Private.CoreLib", "Volatile", ("ReadBarrier" | "WriteBarrier") ->
+            // [Intrinsic] public static void Volatile.{Read,Write}Barrier() => Volatile.{Read,Write}Barrier();
+            // Same shape as Thread.FastPollGC: the managed body is infinite self-recursion
+            // and the JIT replaces the call with the appropriate processor fence. PawPrint
+            // does not model memory-ordering effects across threads, and even if it did the
+            // single-stepping interpreter has no instruction reordering to fence against,
+            // so the no-op is correct. Cannot live in safeIntrinsics because the IL would
+            // loop forever.
+            // https://github.com/dotnet/runtime/blob/HEAD/src/libraries/System.Private.CoreLib/src/System/Threading/Volatile.cs#L236-L245
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [], MethodReturnType.Void -> ()
+            | _ -> failwith $"Volatile.%s{methodToCall.Name}: unexpected signature %A{methodToCall.Signature}"
+
+            state |> IlMachineState.advanceProgramCounter currentThread |> Some
         | "System.Private.CoreLib", "BitConverter", "SingleToInt32Bits" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteSingle state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) -> ()
@@ -1510,6 +1051,7 @@ module Intrinsics =
             let result =
                 BitConverter.DoubleToUInt64Bits arg
                 |> int64<uint64>
+                |> Int64Source.Verbatim
                 |> CliNumericType.Int64
                 |> CliType.Numeric
 
@@ -1527,7 +1069,7 @@ module Intrinsics =
 
             let arg =
                 match arg with
-                | EvalStackValue.Int64 i -> uint64 i
+                | EvalStackValue.Int64 (Int64Source.Verbatim i) -> uint64<int64> i
                 | _ -> failwith "$TODO: {arr}"
 
             let result =
@@ -1546,7 +1088,7 @@ module Intrinsics =
 
             let arg =
                 match arg with
-                | EvalStackValue.Int64 i -> i
+                | EvalStackValue.Int64 (Int64Source.Verbatim i) -> i
                 | _ -> failwith "$TODO: {arr}"
 
             let result =
@@ -1565,7 +1107,8 @@ module Intrinsics =
 
             let result =
                 match arg with
-                | EvalStackValue.Float f -> BitConverter.DoubleToInt64Bits f |> EvalStackValue.Int64
+                | EvalStackValue.Float f ->
+                    BitConverter.DoubleToInt64Bits f |> Int64Source.Verbatim |> EvalStackValue.Int64
                 | _ -> failwith "TODO"
 
             state
@@ -1612,6 +1155,59 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack' result currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
+        | "System.Private.CoreLib", "BitOperations", "Log2" ->
+            // BitOperations.Log2 is a JIT intrinsic in the real CLR. The BCL IL body falls
+            // through to a software fallback that reads from a De Bruijn lookup table backed
+            // by a PE byte range, which collides with paths PawPrint does not yet model.
+            // Model the boundary directly instead: delegate to the host BCL, which honours
+            // the documented `Log2(0) = 0` contract.
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteUInt32 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) ->
+                let arg, state = IlMachineState.popEvalStack currentThread state
+
+                let value =
+                    match arg with
+                    | EvalStackValue.Int32 i -> uint32<int> i
+                    | _ -> failwith $"BitOperations.Log2(uint): unexpected eval stack value %O{arg}"
+
+                let result = System.Numerics.BitOperations.Log2 value
+
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 result) currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Some
+            | [ ConcreteUInt64 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) ->
+                let arg, state = IlMachineState.popEvalStack currentThread state
+
+                let value =
+                    match arg with
+                    | EvalStackValue.Int64 (Int64Source.Verbatim i) -> uint64<int64> i
+                    | _ -> failwith $"BitOperations.Log2(ulong): unexpected eval stack value %O{arg}"
+
+                let result = System.Numerics.BitOperations.Log2 value
+
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 result) currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Some
+            | [ ConcreteUIntPtr state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) ->
+                let arg, state = IlMachineState.popEvalStack currentThread state
+
+                let value : unativeint =
+                    match arg with
+                    | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) -> unativeint<int64> i
+                    | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) -> 0un
+                    | EvalStackValue.Int64 (Int64Source.Verbatim i) -> unativeint<int64> i
+                    | EvalStackValue.Int32 i -> unativeint<int> i
+                    | _ -> failwith $"BitOperations.Log2(nuint): unexpected eval stack value %O{arg}"
+
+                let result = System.Numerics.BitOperations.Log2 value
+
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 result) currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Some
+            | _ -> failwith $"BitOperations.Log2: unexpected signature %s{formatMethodKey intrinsicKey}"
         | "System.Private.CoreLib", "String", "Equals" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteString state.ConcreteTypes ; ConcreteString state.ConcreteTypes ],
@@ -1656,13 +1252,13 @@ module Intrinsics =
             // reinterpreting the pointer as `ref T` and dereferencing. The JIT
             // lowers it to `Unsafe.As<byte, T>(ref source)` + deref. Our heap
             // stores typed cells rather than raw bytes, so we model the read
-            // as a bytewise gather across the pointed-to storage and then
-            // reconstruct a T of the right shape via `ofBytesLike`.
+            // by delegating the bytewise gather/reconstruction to managed
+            // byref byte helpers.
             //
             // Two overloads exist: `ReadUnaligned<T>(ref byte source)` and
             // `ReadUnaligned<T>(void* source)`. PawPrint handles the pointer
             // overload only when the pointer has managed provenance, for
-            // example an RVA data pointer produced by `ldsflda`.
+            // example a PE byte-range pointer produced by `ldsflda`.
             match methodToCall.Signature.ParameterTypes with
             | [ ConcreteByref _ ] ->
 
@@ -1681,7 +1277,7 @@ module Intrinsics =
                     | EvalStackValue.NullObjectRef -> failwith "TODO: Unsafe.ReadUnaligned on null should throw NRE"
                     | _ -> failwith $"TODO: Unsafe.ReadUnaligned: expected ManagedPointer, got %O{ptr}"
 
-                let v = IlMachineState.readManagedByrefBytesAs state src tZero
+                let v = IlMachineState.readManagedByrefBytesAs baseClassTypes state src tZero
 
                 let state =
                     state
@@ -1702,7 +1298,7 @@ module Intrinsics =
 
                 let src = managedPointerOfPointerArgument "Unsafe.ReadUnaligned(void*)" ptr
 
-                let v = IlMachineState.readManagedByrefBytesAs state src tZero
+                let v = IlMachineState.readManagedByrefBytesAs baseClassTypes state src tZero
 
                 let state =
                     state
@@ -1714,8 +1310,7 @@ module Intrinsics =
         | "System.Private.CoreLib", "Unsafe", "WriteUnaligned" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L609
             // Symmetric to ReadUnaligned: writes a T through a byte-level
-            // byref by scattering `CliType.ToBytes` of the value across
-            // consecutive cells of the pointed-to storage.
+            // byref by delegating byte scattering to managed byref byte helpers.
             //
             // The `(void*, T)` overload is handled only for pointers with
             // managed provenance, symmetric with `ReadUnaligned`.
@@ -1743,15 +1338,17 @@ module Intrinsics =
 
                 // Coerce the stack value to a CliType shaped like T: sub-int
                 // primitives arrive as Int32 and must narrow back to their
-                // CliType flavour before `ToBytes` produces a correct byte image.
+                // CliType flavour before the byte helpers write it.
                 let valueAsCli = EvalStackValue.toCliTypeCoerced tZero value
-                let bytes = CliType.ToBytes valueAsCli
 
-                if bytes.Length <> tSize then
+                let valueSize = CliType.sizeOf valueAsCli
+
+                if valueSize <> tSize then
                     failwith
-                        $"Unsafe.WriteUnaligned: ToBytes produced %d{bytes.Length} bytes, expected %d{tSize} for %O{valueAsCli}"
+                        $"Unsafe.WriteUnaligned: coerced value has size %d{valueSize}, expected %d{tSize} for %O{valueAsCli}"
 
-                let state = IlMachineState.writeManagedByrefBytes state src valueAsCli
+                let state =
+                    IlMachineState.writeManagedByrefBytesOrTypedCell baseClassTypes state src valueAsCli
 
                 let state = state |> IlMachineState.advanceProgramCounter currentThread
                 Some state
@@ -1773,16 +1370,49 @@ module Intrinsics =
                 let src = managedPointerOfPointerArgument "Unsafe.WriteUnaligned(void*)" ptr
 
                 let valueAsCli = EvalStackValue.toCliTypeCoerced tZero value
-                let bytes = CliType.ToBytes valueAsCli
 
-                if bytes.Length <> tSize then
+                let valueSize = CliType.sizeOf valueAsCli
+
+                if valueSize <> tSize then
                     failwith
-                        $"Unsafe.WriteUnaligned(void*): ToBytes produced %d{bytes.Length} bytes, expected %d{tSize} for %O{valueAsCli}"
+                        $"Unsafe.WriteUnaligned(void*): coerced value has size %d{valueSize}, expected %d{tSize} for %O{valueAsCli}"
 
-                let state = IlMachineState.writeManagedByrefBytes state src valueAsCli
+                let state =
+                    IlMachineState.writeManagedByrefBytesOrTypedCell baseClassTypes state src valueAsCli
 
                 let state = state |> IlMachineState.advanceProgramCounter currentThread
                 Some state
+            | _ -> None
+        | "System.Private.CoreLib", "Unsafe", ("CopyBlock" | "CopyBlockUnaligned") ->
+            // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L313
+            // The CoreLib bodies throw PlatformNotSupportedException; the real JIT replaces
+            // these with `cpblk` (optionally prefixed by `unaligned.`). Both overloads accept
+            // the byref and pointer forms uniformly via managedPointerOfPointerArgument.
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
+                ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
+                ConcreteUInt32 state.ConcreteTypes ],
+              MethodReturnType.Void
+            | [ ConcretePointer _ ; ConcretePointer _ ; ConcreteUInt32 state.ConcreteTypes ], MethodReturnType.Void ->
+                let operation = $"Unsafe.%s{methodToCall.Name}"
+                executeUnsafeCopyBlock baseClassTypes currentThread operation state |> Some
+            | _ -> None
+        | "System.Private.CoreLib", "SpanHelpers", "Memmove" ->
+            // `[Intrinsic] internal static void Memmove(ref byte dest, ref byte src, nuint len)`
+            // (SpanHelpers.ByteMemOps.cs:37). The managed body executes the platform-tuned
+            // byte/Block16 unrolled walk and P/Invokes into native memmove on overlap; both
+            // paths flow through PawPrint's byte-walk model, which cannot serialise non-`Verbatim`
+            // `NativeIntSource` provenance via `CliNumericType.ToBytes`. Routing the intrinsic
+            // through `CellAwareCopy.copy` with `Memmove` policy preserves whole-cell ranges
+            // (provenance, ObjectRef cells) when both endpoints anchor on cell-aware roots, and
+            // falls back to the byte walk for genuinely byte-addressable storage.
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
+                ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
+                ConcreteUIntPtr state.ConcreteTypes ],
+              MethodReturnType.Void ->
+                let operation = "SpanHelpers.Memmove"
+                executeSpanHelpersMemmove baseClassTypes currentThread operation state |> Some
             | _ -> None
         | "System.Private.CoreLib", "String", "op_Implicit" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
@@ -1839,8 +1469,7 @@ module Intrinsics =
                 if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies td then
                     td
                     |> TypeInfo.mapGeneric (fun (par, _) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
-                    |> containsRefType loggerFactory baseClassTypes state ImmutableDictionary.Empty
-                    |> fun (state, _, result) -> state, result
+                    |> typeInfoContainsReferences loggerFactory baseClassTypes state
                 else
                     state, true
 
@@ -1872,20 +1501,67 @@ module Intrinsics =
             // RuntimeFieldHandle is primitive-like (FlattenToObjectRef): its single `m_ptr`
             // (an IRuntimeFieldInfo ref) arrives on the stack flattened to an ObjectRef,
             // including after box/unbox round-trips (Unbox_Any flattens primitive-like types).
-            let runtimeFieldInfoStubAddr : ManagedHeapAddress =
+            // The referenced object can be either a RuntimeFieldInfoStub (the form that
+            // FieldHandleRegistry.getOrAllocate produces for ldtoken) or an RtFieldInfo
+            // (the form reflection's RuntimeTypeHandle.GetFields populates from the IntPtr
+            // ids returned by that QCall, https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/coreclr/System.Private.CoreLib/src/System/Reflection/RtFieldInfo.cs ).
+            let runtimeFieldInfoAddr : ManagedHeapAddress =
                 match fldHandle with
                 | EvalStackValue.ObjectRef addr -> addr
                 | EvalStackValue.NullObjectRef ->
                     failwith "TODO: throw ArgumentException for InitializeArray with null field handle"
                 | other -> failwith $"InitializeArray: expected RuntimeFieldHandle ObjectRef, got %O{other}"
 
-            // Look up the FieldHandle from the registry using the RuntimeFieldInfoStub address
+            // The address-keyed registry index is populated when PawPrint allocates a
+            // RuntimeFieldInfoStub. Reflection-produced RtFieldInfo objects are not in that
+            // index — they are constructed in managed code from the IntPtr field ids that
+            // RuntimeTypeHandle.GetFields returned, so we recover the FieldHandle by reading
+            // the heap object's `m_fieldHandle` slot and resolving it against the id-keyed
+            // index. Both RuntimeFieldInfoStub and RtFieldInfo declare a field with that name.
             let fieldHandle : FieldHandle =
-                match FieldHandleRegistry.resolveFieldFromAddress runtimeFieldInfoStubAddr state.FieldHandles with
+                match FieldHandleRegistry.resolveFieldFromAddress runtimeFieldInfoAddr state.FieldHandles with
+                | Some fh -> fh
+                | None ->
+
+                let heapObj = ManagedHeap.get runtimeFieldInfoAddr state.ManagedHeap
+
+                let typeInfo =
+                    match IlMachineState.tryGetConcreteTypeInfo state heapObj.ConcreteType with
+                    | Some (_, typeInfo) -> typeInfo
+                    | None ->
+                        failwith
+                            $"InitializeArray: object at %O{runtimeFieldInfoAddr} has concrete type %O{heapObj.ConcreteType} with no TypeDef row"
+
+                let fieldHandleField =
+                    typeInfo.Fields
+                    |> List.tryFind (fun field -> field.Name = "m_fieldHandle" && not field.IsStatic)
+                    |> Option.defaultWith (fun () ->
+                        failwith
+                            $"InitializeArray: object at %O{runtimeFieldInfoAddr} (type %s{typeInfo.Namespace}.%s{typeInfo.Name}) is not in the field handle registry and has no instance field 'm_fieldHandle' to recover the field id from"
+                    )
+
+                let fieldHandleId =
+                    let fieldId = FieldIdentity.fieldId heapObj.ConcreteType fieldHandleField
+
+                    match
+                        AllocatedNonArrayObject.DereferenceFieldById fieldId heapObj
+                        |> CliType.unwrapPrimitiveLikeDeep
+                    with
+                    | CliType.RuntimePointer (CliRuntimePointer.FieldRegistryHandle id) -> id
+                    | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr id)) -> id
+                    | CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L)
+                    | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) ->
+                        failwith
+                            "TODO: throw ArgumentException for InitializeArray with null field handle (m_fieldHandle was zero)"
+                    | other ->
+                        failwith
+                            $"InitializeArray: m_fieldHandle on %s{typeInfo.Namespace}.%s{typeInfo.Name} did not contain a field-registry handle, got %O{other}"
+
+                match FieldHandleRegistry.resolveFieldFromId fieldHandleId state.FieldHandles with
                 | Some fh -> fh
                 | None ->
                     failwith
-                        $"InitializeArray: RuntimeFieldInfoStub at %O{runtimeFieldInfoStubAddr} not found in field handle registry"
+                        $"InitializeArray: m_fieldHandle id %d{fieldHandleId} on object at %O{runtimeFieldInfoAddr} (type %s{typeInfo.Namespace}.%s{typeInfo.Name}) was not present in the field handle registry"
 
             // Get the assembly and field definition
             let assemblyFullName = fieldHandle.GetAssemblyFullName ()
@@ -1933,7 +1609,9 @@ module Intrinsics =
                                 | CliType.Numeric (CliNumericType.Int32 _) ->
                                     CliType.Numeric (CliNumericType.Int32 (reader.ReadInt32 ()))
                                 | CliType.Numeric (CliNumericType.Int64 _) ->
-                                    CliType.Numeric (CliNumericType.Int64 (reader.ReadInt64 ()))
+                                    CliType.Numeric (
+                                        CliNumericType.Int64 (reader.ReadInt64 () |> Int64Source.Verbatim)
+                                    )
                                 | CliType.Numeric (CliNumericType.Float32 _) ->
                                     CliType.Numeric (CliNumericType.Float32 (reader.ReadSingle ()))
                                 | CliType.Numeric (CliNumericType.Float64 _) ->
@@ -1954,6 +1632,44 @@ module Intrinsics =
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
             Some state
+        | "System.Private.CoreLib", "RuntimeHelpers", "IsBitwiseEquatable" ->
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
+            | _ -> failwith "bad signature for System.Private.CoreLib.RuntimeHelpers.IsBitwiseEquatable"
+
+            let ty = Seq.exactlyOne methodToCall.Generics
+
+            let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes ty
+
+            let result =
+                match CliType.unwrapPrimitiveLikeDeep zero with
+                | CliType.Numeric numeric ->
+                    match numeric with
+                    | CliNumericType.Float32 _
+                    | CliNumericType.Float64 _
+                    | CliNumericType.NativeFloat _ -> false
+                    | CliNumericType.Int32 _
+                    | CliNumericType.Int64 _
+                    | CliNumericType.Int8 _
+                    | CliNumericType.Int16 _
+                    | CliNumericType.UInt8 _
+                    | CliNumericType.UInt16 _
+                    | CliNumericType.NativeInt _ -> true
+                | CliType.Bool _
+                | CliType.Char _ -> true
+                // Returning false is semantically safe: it only disables the BCL's bitwise
+                // equality fast path. In PawPrint today that may still be observable for user
+                // structs because the fallback SpanHelpers.SequenceEqual<T> path is not implemented.
+                // TODO: Return true for eligible value types after implementing the same
+                // override, field-recursion, and IEquatable<T> checks as the MethodTable QCall.
+                | CliType.ValueType _
+                | CliType.ObjectRef _
+                | CliType.RuntimePointer _ -> false
+
+            state
+            |> IlMachineState.pushToEvalStack (CliType.ofBool result) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Some
         | "System.Private.CoreLib", "GC", "KeepAlive" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ], MethodReturnType.Void -> ()
@@ -2034,6 +1750,77 @@ module Intrinsics =
                     |> Some
                 | other -> failwith $"Unsafe.As<T>(object): expected object reference, got %O{other}"
             | _ -> byrefAs ()
+        | "System.Private.CoreLib", "Unsafe", "BitCast" ->
+            // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L259
+            // BCL body:
+            //   if (sizeof(TFrom) != sizeof(TTo)
+            //       || !typeof(TFrom).IsValueType
+            //       || !typeof(TTo).IsValueType)
+            //       ThrowHelper.ThrowNotSupportedException();
+            //   return ReadUnaligned<TTo>(ref As<TFrom, byte>(ref source));
+            //
+            // PawPrint models this as a primitive byte reinterpretation between
+            // two byte-addressable storage shapes. We are stricter than the BCL:
+            // a value type carrying provenance the byte model cannot render
+            // (managed pointers, runtime/method/field handles, GC handles, ...)
+            // is rejected via `CliType.ByteAddressability`. The BCL would happily
+            // produce undefined garbage in those cases; refusing is consistent
+            // with PawPrint's deterministic byte model and with the user-facing
+            // contract "between equal-sized unmanaged storage shapes".
+            let fromHandle, toHandle =
+                match Seq.toList methodToCall.Generics with
+                | [ f ; t ] -> f, t
+                | _ -> failwith "bad generics Unsafe.BitCast: expected exactly two type arguments"
+
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ paramTy ], MethodReturnType.Returns retTy when paramTy = fromHandle && retTy = toHandle -> ()
+            | _ -> failwith $"bad signature Unsafe.BitCast: %A{methodToCall.Signature}"
+
+            let fromZero, state =
+                IlMachineState.cliTypeZeroOfHandle state baseClassTypes fromHandle
+
+            let toZero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes toHandle
+
+            let fromSize = CliType.sizeOf fromZero
+            let toSize = CliType.sizeOf toZero
+
+            let popped, state = IlMachineState.popEvalStack currentThread state
+            let inputCli = EvalStackValue.toCliTypeCoerced fromZero popped
+
+            let inputAddressable =
+                match CliType.ByteAddressability inputCli with
+                | CliByteAddressability.ByteAddressable -> true
+                | CliByteAddressability.Rejected _ -> false
+
+            let targetAddressable =
+                match CliType.ByteAddressability toZero with
+                | CliByteAddressability.ByteAddressable -> true
+                | CliByteAddressability.Rejected _ -> false
+
+            if fromSize <> toSize || not inputAddressable || not targetAddressable then
+                // The BCL throws `NotSupportedException` for these cases. Raising guest exceptions
+                // from intrinsic dispatch is not yet wired (Intrinsics.fs compiles before
+                // IlMachineStateExecution.fs, so `raiseRuntimeException` is not in scope here).
+                // Host-fail for now with a precise diagnostic; mirrors the existing
+                // `Unsafe.ReadUnaligned` null-target TODO above.
+                let reason =
+                    if fromSize <> toSize then
+                        $"size mismatch (TFrom = %d{fromSize} bytes, TTo = %d{toSize} bytes)"
+                    elif not inputAddressable then
+                        $"input is not byte-addressable: %s{(CliType.ByteAddressability inputCli).Description}"
+                    else
+                        $"target is not byte-addressable: %s{(CliType.ByteAddressability toZero).Description}"
+
+                failwith
+                    $"TODO: Unsafe.BitCast<%O{fromHandle}, %O{toHandle}> should throw NotSupportedException (%s{reason})"
+            else
+                let bytes = CliType.ToBytes inputCli
+                let result = CliType.OfBytesLike toZero bytes
+
+                state
+                |> IlMachineState.pushToEvalStack result currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Some
         | "System.Private.CoreLib", "Unsafe", "SizeOf" ->
             // https://github.com/dotnet/runtime/blob/721fdf6dcb032da1f883d30884e222e35e3d3c99/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L51
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
@@ -2078,15 +1865,24 @@ module Intrinsics =
             let leftPtr = extractPtr left
             let rightPtr = extractPtr right
 
+            let normalisation =
+                ManagedPointerByteView.normalisationContextForPointers baseClassTypes state [ leftPtr ; rightPtr ]
+
+            let leftNormalised =
+                ManagedPointerSource.normaliseForComparison normalisation leftPtr
+
+            let rightNormalised =
+                ManagedPointerSource.normaliseForComparison normalisation rightPtr
+
             if
-                ManagedPointerSource.hasNonTrailingReinterpret leftPtr
-                || ManagedPointerSource.hasNonTrailingReinterpret rightPtr
+                ManagedPointerSource.hasNonTrailingReinterpret leftNormalised
+                || ManagedPointerSource.hasNonTrailingReinterpret rightNormalised
             then
                 failwith
                     $"TODO: Unsafe.AreSame on byref with `ReinterpretAs` followed by `Field` needs a bytewise layout comparison; got %O{leftPtr} vs %O{rightPtr}"
 
             let strip = ManagedPointerSource.stripTrailingReinterprets
-            let areSame = strip leftPtr = strip rightPtr
+            let areSame = strip leftNormalised = strip rightNormalised
 
             state
             |> IlMachineState.pushToEvalStack (CliType.ofBool areSame) currentThread
@@ -2140,6 +1936,165 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack' ptr currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
+        | "System.Private.CoreLib", "Unsafe", "AddByteOffset" ->
+            // CoreCLR's managed body throws PlatformNotSupportedException; the JIT replaces
+            // the call with raw byref + native-int addition. Both overloads (IntPtr and
+            // UIntPtr) share the same semantics: advance the byref by `byteOffset` bytes,
+            // preserving the static `T` view.
+            // https://github.com/dotnet/runtime/blob/HEAD/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L661
+            let t =
+                match Seq.toList methodToCall.Generics with
+                | [ t ] -> t
+                | _ -> failwith "bad generics Unsafe.AddByteOffset"
+
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteByref tFromParam ; ConcreteIntPtr state.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteByref tFromRet)
+            | [ ConcreteByref tFromParam ; ConcreteUIntPtr state.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteByref tFromRet) when tFromParam = t && tFromRet = t -> ()
+            | _ ->
+                failwith
+                    $"TODO: Unsafe.AddByteOffset: only the (ref T, IntPtr) and (ref T, UIntPtr) overloads are implemented; got params %A{methodToCall.Signature.ParameterTypes}"
+
+            let offset, state = IlMachineState.popEvalStack currentThread state
+            let src, state = IlMachineState.popEvalStack currentThread state
+
+            let offset : int =
+                match offset with
+                | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) ->
+                    if i < int64<int> System.Int32.MinValue || i > int64<int> System.Int32.MaxValue then
+                        failwith $"TODO: Unsafe.AddByteOffset: native-int byte offset %d{i} does not fit in Int32"
+
+                    int32<int64> i
+                | EvalStackValue.Int32 i -> i
+                | _ ->
+                    failwith
+                        $"TODO: Unsafe.AddByteOffset: expected Verbatim NativeInt or Int32 byte offset, got %O{offset}"
+
+            let srcPtr =
+                match src with
+                | EvalStackValue.ManagedPointer p -> p
+                | _ -> failwith $"TODO: Unsafe.AddByteOffset on non-ManagedPointer source byref: %O{src}"
+
+            // `Unsafe.AsRef<T>((void*)bits)` byrefs are bit patterns, not
+            // anchored byrefs. `Unsafe.AddByteOffset` on a placeholder is just
+            // bit addition; appending a `ReinterpretAs` would be meaningless on
+            // a target that doesn't represent memory. `Null` is the bit pattern
+            // `0` (we normalise placeholder→Null on zero), so an offset from
+            // `Null` must use the same bit-arithmetic route — otherwise the
+            // chain `placeholder + (-bits)` (which normalises to `Null`) +
+            // another `AddByteOffset` would fall into the byref path and try
+            // to project off a null managed pointer.
+            let placeholderBits =
+                match srcPtr with
+                | ManagedPointerSource.NativeIntPlaceholder bits -> Some bits
+                | ManagedPointerSource.Null -> Some 0L
+                | _ -> None
+
+            match placeholderBits with
+            | Some bits ->
+                let newBits = bits + int64 offset
+
+                let ptr =
+                    if newBits = 0L then
+                        ManagedPointerSource.Null
+                    else
+                        ManagedPointerSource.NativeIntPlaceholder newBits
+
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Some
+            | None ->
+
+            // `addByteOffsetUnderReinterpret` anchors the byte cursor under `ReinterpretAs T`
+            // before appending the offset, so it works regardless of whether the source byref
+            // already carries a trailing byte-view tail. The trailing `ReinterpretAs T` is
+            // address-preserving; the `appendProjection` collapse rules handle the common
+            // case where the source already has a `ReinterpretAs T` (idempotent) or a
+            // `[ReinterpretAs T; ByteOffset n]` tail whose `n` cancels the new offset (e.g.
+            // `RawData::Data` on an array followed by the canonical `+sizeof(nint)` skip).
+            //
+            // The byte-view path requires the reinterpret target's storage to be
+            // byte-addressable on read. Object references (and value types containing
+            // them) deliberately are not, so a naturally-typed byref to such cells
+            // must stay in its natural form. We short-circuit when (a) the source
+            // is itself naturally-typed (no trailing byte-view tail) and (b) the
+            // byte offset is a whole-cell multiple, so the result is still
+            // expressible without a reinterpret tail. The general byte-view path
+            // handles all other shapes.
+            let normalisation =
+                match srcPtr with
+                | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, _), _) ->
+                    let elementSize =
+                        let obj = state.ManagedHeap.Arrays.[arr]
+
+                        if obj.Length = 0 then
+                            0
+                        else
+                            CliType.sizeOf obj.Elements.[0]
+
+                    ByteOffsetNormalisationContext.withArrayElementSize arr elementSize
+                | _ -> ByteOffsetNormalisationContext.fixedStrideRootsOnly
+
+            let typedShortcut : ManagedPointerSource option =
+                match srcPtr with
+                | ManagedPointerSource.Byref (root, projs) ->
+                    let hasByteViewTail =
+                        match List.tryLast projs with
+                        | Some (ByrefProjection.ReinterpretAs _)
+                        | Some (ByrefProjection.ByteOffset _) -> true
+                        | _ -> false
+
+                    if hasByteViewTail then
+                        None
+                    elif offset = 0 then
+                        // Zero-byte advance on a naturally-typed byref is the identity;
+                        // returning the source preserves the typed view that the bytewise
+                        // path would otherwise destroy by appending a `ReinterpretAs T`.
+                        Some srcPtr
+                    else
+                        match root, projs with
+                        | ByrefRoot.ArrayElement (arr, i), [] ->
+                            let arrObj = state.ManagedHeap.Arrays.[arr]
+
+                            if arrObj.Length = 0 then
+                                None
+                            else
+                                let elementSize = CliType.sizeOf arrObj.Elements.[0]
+
+                                if elementSize > 0 && offset % elementSize = 0 then
+                                    Some (
+                                        ManagedPointerSource.Byref (
+                                            ByrefRoot.ArrayElement (arr, i + offset / elementSize),
+                                            []
+                                        )
+                                    )
+                                else
+                                    None
+                        | _ -> None
+                | _ -> None
+
+            // Concretising T is only required for the byte-view fallback (which
+            // anchors a `ReinterpretAs T` tail). The typed shortcut never touches
+            // T, so structural concrete-type handles (array, pointer, function
+            // pointer) — which `AllConcreteTypes.lookup` doesn't store — can still
+            // resolve cleanly through the shortcut.
+            let ptr =
+                match typedShortcut with
+                | Some p -> p
+                | None ->
+                    let tConcrete =
+                        match AllConcreteTypes.lookup t state.ConcreteTypes with
+                        | Some c -> c
+                        | None -> failwith $"Unsafe.AddByteOffset: T not concretised: %O{t}"
+
+                    ManagedPointerSource.addByteOffsetUnderReinterpret normalisation tConcrete offset srcPtr
+
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Some
         | "System.Private.CoreLib", "Unsafe", "ByteOffset" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L69
             // The source-level IL body throws PlatformNotSupportedException; the JIT replaces it with sub on two byrefs.
@@ -2158,6 +2113,29 @@ module Intrinsics =
             let tSize, state =
                 let tZero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes t
                 CliType.sizeOf tZero, state
+
+            // `Unsafe.AsRef<T>((void*)bits)` byrefs are bit patterns, not
+            // anchored byrefs. `Unsafe.ByteOffset` on a pair of them is just
+            // the bit-difference, matching the IL `sub` semantics implemented
+            // in BinaryArithmetic. Null is the placeholder for bits=0, so
+            // pairings with Null are still well-defined as bit subtraction.
+            let asPlaceholderBits (v : EvalStackValue) : int64 option =
+                match v with
+                | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> Some 0L
+                | EvalStackValue.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits) -> Some bits
+                | _ -> None
+
+            match asPlaceholderBits origin, asPlaceholderBits target with
+            | Some originBits, Some targetBits ->
+                let byteOffset = targetBits - originBits
+
+                state
+                |> IlMachineState.pushToEvalStack'
+                    (EvalStackValue.NativeInt (NativeIntSource.Verbatim byteOffset))
+                    currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Some
+            | _ ->
 
             // ByteOffset measures the byte distance between two byref address
             // targets. The generic T on the method is only the static view
@@ -2184,13 +2162,17 @@ module Intrinsics =
                     byteOff
 
                 match src with
-                | ManagedPointerSource.Byref (ByrefRoot.LocalMemoryByte (thread, frame, block, byteOffset), projs) ->
-                    ByteStorageIdentity.LocalMemory (thread, frame, block),
+                | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset), projs) ->
+                    ByteStorageIdentity.StackMemory (thread, frame, block),
                     int64 byteOffset + projectionByteOffset projs
+                | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, byteOffset), projs) ->
+                    ByteStorageIdentity.NativeMemory block, int64 byteOffset + projectionByteOffset projs
                 | ManagedPointerSource.Byref (ByrefRoot.LocalVariable (thread, frame, local), projs) ->
                     ByteStorageIdentity.StackLocal (thread, frame, local), projectionByteOffset projs
                 | ManagedPointerSource.Byref (ByrefRoot.Argument (thread, frame, arg), projs) ->
                     ByteStorageIdentity.StackArgument (thread, frame, arg), projectionByteOffset projs
+                | ManagedPointerSource.Byref (ByrefRoot.StaticField (declaringType, field), projs) ->
+                    ByteStorageIdentity.StaticField (declaringType, field), projectionByteOffset projs
                 | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs) ->
                     // `Array.Empty<T>()` carries no stored element to read a
                     // size from, but the statically-declared `T` on the method
@@ -2207,6 +2189,8 @@ module Intrinsics =
                     ByteStorageIdentity.Array arr, int64 i * int64 elementSize + projectionByteOffset projs
                 | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), projs) ->
                     ByteStorageIdentity.String str, int64 charIndex * 2L + projectionByteOffset projs
+                | ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange, projs) ->
+                    ByteStorageIdentity.PeByteRange peByteRange, projectionByteOffset projs
                 | _ -> failwith $"TODO: Unsafe.ByteOffset on unsupported byref: %O{v}"
 
             let storage1, originOffset = extractByteLocation origin
@@ -2238,10 +2222,12 @@ module Intrinsics =
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt byteOffset) currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
                 |> Some
-        | "System.Private.CoreLib", "ReadOnlySpan`1", "get_Item" ->
+        | "System.Private.CoreLib", ("ReadOnlySpan`1" | "Span`1"), "get_Item" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/ReadOnlySpan.cs#L141
             // The source-level body returns `ref Unsafe.Add(ref _reference, index)`;
             // the method is intrinsic so we model that primitive boundary directly.
+            let spanTypeName : string = methodToCall.DeclaringType.Name
+
             let elementType : ConcreteTypeHandle =
                 methodToCall.DeclaringType.Generics |> Seq.exactlyOne
 
@@ -2249,7 +2235,8 @@ module Intrinsics =
             | [ ConcreteInt32 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteByref ret) when ret = elementType ->
                 ()
             | _ ->
-                failwith $"bad signature for System.Private.CoreLib.ReadOnlySpan`1.get_Item: %A{methodToCall.Signature}"
+                failwith
+                    $"bad signature for System.Private.CoreLib.%s{spanTypeName}.get_Item: %A{methodToCall.Signature}"
 
             let index, state = IlMachineState.popEvalStack currentThread state
             let receiver, state = IlMachineState.popEvalStack currentThread state
@@ -2257,17 +2244,17 @@ module Intrinsics =
             let index : int =
                 match index with
                 | EvalStackValue.Int32 i -> i
-                | other -> failwith $"ReadOnlySpan<T>.get_Item expected Int32 index, got %O{other}"
+                | other -> failwith $"%s{spanTypeName}.get_Item expected Int32 index, got %O{other}"
 
             let span : CliValueType =
                 match receiver with
                 | EvalStackValue.ManagedPointer src ->
-                    match IlMachineState.readManagedByref state src with
+                    match IlMachineState.readManagedByref baseClassTypes state src with
                     | CliType.ValueType vt -> vt
                     | other ->
-                        failwith $"ReadOnlySpan<T>.get_Item receiver byref read produced non-value-type %O{other}"
+                        failwith $"%s{spanTypeName}.get_Item receiver byref read produced non-value-type %O{other}"
                 | EvalStackValue.UserDefinedValueType vt -> vt
-                | other -> failwith $"ReadOnlySpan<T>.get_Item expected span receiver byref, got %O{other}"
+                | other -> failwith $"%s{spanTypeName}.get_Item expected span receiver byref, got %O{other}"
 
             let length : int =
                 let lengthField =
@@ -2278,11 +2265,11 @@ module Intrinsics =
                     |> CliType.unwrapPrimitiveLike
                 with
                 | CliType.Numeric (CliNumericType.Int32 i) -> i
-                | other -> failwith $"ReadOnlySpan<T>.get_Item expected _length to be int32, got %O{other}"
+                | other -> failwith $"%s{spanTypeName}.get_Item expected _length to be int32, got %O{other}"
 
             if uint32<int32> index >= uint32<int32> length then
                 failwith
-                    $"TODO: ReadOnlySpan<T>.get_Item index %d{index} outside length %d{length}; throw IndexOutOfRangeException"
+                    $"TODO: %s{spanTypeName}.get_Item index %d{index} outside length %d{length}; throw IndexOutOfRangeException"
 
             let reference : EvalStackValue =
                 let referenceField =
@@ -2295,7 +2282,8 @@ module Intrinsics =
                 | CliType.RuntimePointer (CliRuntimePointer.Managed src) -> EvalStackValue.ManagedPointer src
                 | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer src)) ->
                     EvalStackValue.ManagedPointer src
-                | other -> failwith $"ReadOnlySpan<T>.get_Item expected _reference to be a managed byref, got %O{other}"
+                | other ->
+                    failwith $"%s{spanTypeName}.get_Item expected _reference to be a managed byref, got %O{other}"
 
             let ptr, state =
                 offsetManagedPointerByElements baseClassTypes state elementType index reference
@@ -2304,6 +2292,74 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack' ptr currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
+        | "System.Private.CoreLib", "Span`1", "Clear" ->
+            // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/Span.cs#L280
+            // Span<T>.Clear is a JIT intrinsic; the BCL IL falls through to
+            // SpanHelpers.ClearWithReferences / ClearWithoutReferences, the latter of
+            // which has a P/Invoke fallback for long zeroings. Model the JIT semantics
+            // directly: write default(T) to each of `_length` elements starting at
+            // `_reference`, using the same byref-projection helpers as get_Item.
+            let elementType : ConcreteTypeHandle =
+                methodToCall.DeclaringType.Generics |> Seq.exactlyOne
+
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [], MethodReturnType.Void -> ()
+            | _ -> failwith $"bad signature for System.Span`1.Clear: %A{methodToCall.Signature}"
+
+            let receiver, state = IlMachineState.popEvalStack currentThread state
+
+            let span : CliValueType =
+                match receiver with
+                | EvalStackValue.ManagedPointer src ->
+                    match IlMachineState.readManagedByref baseClassTypes state src with
+                    | CliType.ValueType vt -> vt
+                    | other -> failwith $"Span`1.Clear receiver byref read produced non-value-type %O{other}"
+                | EvalStackValue.UserDefinedValueType vt -> vt
+                | other -> failwith $"Span`1.Clear expected span receiver byref, got %O{other}"
+
+            let length : int =
+                let lengthField =
+                    IlMachineState.requiredOwnInstanceFieldId state span.Declared "_length"
+
+                match
+                    CliValueType.DereferenceFieldById lengthField span
+                    |> CliType.unwrapPrimitiveLike
+                with
+                | CliType.Numeric (CliNumericType.Int32 i) -> i
+                | other -> failwith $"Span`1.Clear expected _length to be int32, got %O{other}"
+
+            let reference : EvalStackValue =
+                let referenceField =
+                    IlMachineState.requiredOwnInstanceFieldId state span.Declared "_reference"
+
+                match
+                    CliValueType.DereferenceFieldById referenceField span
+                    |> CliType.unwrapPrimitiveLikeDeep
+                with
+                | CliType.RuntimePointer (CliRuntimePointer.Managed src) -> EvalStackValue.ManagedPointer src
+                | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer src)) ->
+                    EvalStackValue.ManagedPointer src
+                | other -> failwith $"Span`1.Clear expected _reference to be a managed byref, got %O{other}"
+
+            let zero, state =
+                IlMachineState.cliTypeZeroOfHandle state baseClassTypes elementType
+
+            let state =
+                (state, seq { 0 .. length - 1 })
+                ||> Seq.fold (fun state i ->
+                    let ptr, state =
+                        offsetManagedPointerByElements baseClassTypes state elementType i reference
+
+                    let byrefSrc =
+                        match ptr with
+                        | EvalStackValue.ManagedPointer src -> src
+                        | other ->
+                            failwith $"Span`1.Clear: offsetManagedPointerByElements returned non-byref %O{other}"
+
+                    IlMachineState.writeManagedByrefWithBase baseClassTypes state byrefSrc zero
+                )
+
+            state |> IlMachineState.advanceProgramCounter currentThread |> Some
         | "System.Private.CoreLib", "RuntimeHelpers", "CreateSpan" ->
             // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.cs#L153
             None
@@ -2393,7 +2449,7 @@ module Intrinsics =
                     let numericToInt64 (n : CliNumericType) : int64 =
                         match n with
                         | CliNumericType.Int32 i -> int64 i
-                        | CliNumericType.Int64 i -> i
+                        | CliNumericType.Int64 (Int64Source.Verbatim i) -> i
                         | CliNumericType.Int8 i -> int64 i
                         | CliNumericType.UInt8 i -> int64 i
                         | CliNumericType.Int16 i -> int64 i
@@ -2442,4 +2498,3 @@ module Intrinsics =
                     failwith "Enum.HasFlag null flag: ArgumentNullException was unhandled (no catch handler in caller)"
             | _ -> failwith $"Enum.HasFlag: expected two ObjectRefs on eval stack"
         | _ -> None
-        |> Option.map (fun s -> s.WithThreadSwitchedToAssembly callerAssy currentThread |> fst)

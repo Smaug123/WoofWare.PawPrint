@@ -15,6 +15,11 @@ module TestHardwareIntrinsicsProfile =
             match outcome with
             | RunOutcome.NormalExit (state, thread)
             | RunOutcome.ProcessExit (state, thread) -> state, thread
+            | RunOutcome.FailFast (_, _, message) ->
+                let m = message |> Option.defaultValue "<no message>"
+                failwith $"PawPrint guest called Environment.FailFast: %s{m}"
+            | RunOutcome.SignalTerminated (_, signal) ->
+                failwith $"PawPrint guest was terminated by POSIX signal %O{signal}"
             | RunOutcome.GuestUnhandledException (_, _, exn) ->
                 failwith $"PawPrint threw an unexpected guest exception: %O{exn.ExceptionObject}"
 
@@ -38,7 +43,7 @@ module TestHardwareIntrinsicsProfile =
         use peImage = new MemoryStream (image)
 
         try
-            Program.run loggerFactory (Some sourceFileName) peImage dotnetRuntimes (MockEnv.make ()) []
+            Program.run loggerFactory (Some sourceFileName) peImage dotnetRuntimes (MockEnv.make ()) Map.empty None []
         with _ ->
             for message in messages () do
                 System.Console.Error.WriteLine $"{message}"
@@ -86,6 +91,25 @@ class Program
         |> shouldEqual 0
 
     [<Test>]
+    let ``Default virtual hardware profile reports System.Numerics.Vector unavailable`` () : unit =
+        let source =
+            """
+using System.Numerics;
+
+class Program
+{
+    static int Main(string[] args)
+    {
+        return Vector.IsHardwareAccelerated ? 1 : 0;
+    }
+}
+"""
+
+        runSource "NumericsVectorIsHardwareAccelerated.cs" source
+        |> exitCodeOfRunOutcome
+        |> shouldEqual 0
+
+    [<Test>]
     let ``Scalar-only profile reports Arm Rdm unavailable`` () : unit =
         let source =
             """
@@ -122,7 +146,24 @@ class Program
         |> shouldEqual 0
 
     [<Test>]
-    let ``Unimplemented class-level intrinsic fails before executing placeholder IL`` () : unit =
+    let ``Scalar-only profile reports X86 Ssse3 unavailable`` () : unit =
+        let source =
+            """
+using System.Runtime.Intrinsics.X86;
+
+class Program
+{
+    static int Main(string[] args)
+    {
+        return Ssse3.IsSupported ? 1 : 0;
+    }
+}
+"""
+
+        runSource "Ssse3IsSupported.cs" source |> exitCodeOfRunOutcome |> shouldEqual 0
+
+    [<Test>]
+    let ``Scalar-only profile reports Arm ArmBase unavailable`` () : unit =
         let source =
             """
 using System.Runtime.Intrinsics.Arm;
@@ -136,10 +177,23 @@ class Program
 }
 """
 
-        let ex =
-            Assert.Throws<System.Exception> (fun () -> runSource "ArmBaseIsSupported.cs" source |> ignore)
+        runSource "ArmBaseIsSupported.cs" source
+        |> exitCodeOfRunOutcome
+        |> shouldEqual 0
 
-        ex.Message |> shouldContainText "TODO: implement JIT intrinsic"
+    [<Test>]
+    let ``Scalar-only profile reports X86 Sse41 unavailable`` () : unit =
+        let source =
+            """
+using System.Runtime.Intrinsics.X86;
 
-        ex.Message
-        |> shouldContainText "System.Runtime.Intrinsics.Arm.ArmBase.get_IsSupported"
+class Program
+{
+    static int Main(string[] args)
+    {
+        return Sse41.IsSupported ? 1 : 0;
+    }
+}
+"""
+
+        runSource "Sse41IsSupported.cs" source |> exitCodeOfRunOutcome |> shouldEqual 0

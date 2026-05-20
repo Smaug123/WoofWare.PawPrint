@@ -8,6 +8,7 @@ module NativeArray =
         | other -> failwith $"%s{operation}: expected %s{argName} as Int32, got %O{other}"
 
     let private readInt32Pointer
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (operation : string)
         (state : IlMachineState)
         (argName : string)
@@ -16,7 +17,12 @@ module NativeArray =
         =
         match ptr with
         | ManagedPointerSource.Null -> failwith $"%s{operation}: expected non-null %s{argName} pointer"
-        | ManagedPointerSource.Byref _ -> IlMachineState.readManagedByref state ptr |> int32OfCliType operation argName
+        | ManagedPointerSource.NativeIntPlaceholder bits ->
+            failwith
+                $"%s{operation}: cannot read %s{argName} through fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
+        | ManagedPointerSource.Byref _ ->
+            IlMachineState.readManagedByref baseClassTypes state ptr
+            |> int32OfCliType operation argName
 
     let private arrayTypeForCreateInstance
         (operation : string)
@@ -28,6 +34,11 @@ module NativeArray =
         match target with
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
             failwith $"TODO: %s{operation} for open generic type definition %O{identity}"
+        | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
+            failwith $"TODO: %s{operation} for generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
+        | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+            failwith
+                $"TODO: %s{operation} for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
         | RuntimeTypeHandleTarget.Closed typeHandle ->
             if fromArrayType then
                 match typeHandle with
@@ -44,7 +55,7 @@ module NativeArray =
                 failwith
                     $"TODO: %s{operation} for rank %d{rank}; PawPrint array allocation currently models rank-1 zero-lower-bound arrays"
 
-    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : ExecutionResult option =
+    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
 
@@ -100,15 +111,20 @@ module NativeArray =
             let retArray =
                 NativeCall.objectHandleOnStackTarget operation state "retArray" instruction.Arguments.[5]
 
-            let arrayLength = readInt32Pointer operation state "lengths[0]" lengths
+            let arrayLength =
+                readInt32Pointer ctx.BaseClassTypes operation state "lengths[0]" lengths
 
             if arrayLength < 0 then
                 failwith "TODO: Array.CreateInstance with negative length should throw ArgumentOutOfRangeException"
 
             match lowerBounds with
             | ManagedPointerSource.Null -> ()
+            | ManagedPointerSource.NativeIntPlaceholder bits ->
+                failwith
+                    $"%s{operation}: cannot read lowerBounds through fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
             | ManagedPointerSource.Byref _ ->
-                let lowerBound = readInt32Pointer operation state "lowerBounds[0]" lowerBounds
+                let lowerBound =
+                    readInt32Pointer ctx.BaseClassTypes operation state "lowerBounds[0]" lowerBounds
 
                 if lowerBound <> 0 then
                     failwith
@@ -124,7 +140,11 @@ module NativeArray =
                 IlMachineState.allocateArray arrayType (fun () -> zero) arrayLength state
 
             let state =
-                IlMachineState.writeManagedByref state retArray (CliType.ObjectRef (Some arrayAddr))
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    retArray
+                    (CliType.ObjectRef (Some arrayAddr))
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | _ -> None

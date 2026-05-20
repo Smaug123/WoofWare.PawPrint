@@ -122,10 +122,10 @@ module IlFormatting =
     let formatIlOp (assembly : DumpedAssembly) (ilOp : IlOp) (offset : int) : string =
         match ilOp with
         | IlOp.UnaryMetadataToken (op, token) ->
-            let tokenStr = formatMetadataToken assembly token
+            let tokenStr = formatMetadataToken assembly token.Token
             $"    IL_%04X{offset}: %-20O{op} %s{tokenStr}"
         | IlOp.UnaryStringToken (op, token) ->
-            let str = assembly.Strings token |> escapeStringLiteral
+            let str = assembly.Strings token.Token |> escapeStringLiteral
             $"    IL_%04X{offset}: %-20O{op} \"%s{str}\""
         | _ -> IlOp.Format ilOp offset
 
@@ -152,9 +152,27 @@ module IlFormatting =
         let header =
             $"// %s{qualifiedTypeName}::%s{staticStr}%s{method.Name}%s{generics}(%s{paramTypes}) : %O{method.RawSignature.ReturnType}"
 
-        match method.Instructions with
-        | None -> [ header ; "  // No IL body (native/internal method)" ]
-        | Some instructions ->
+        match method.Body with
+        | MethodBody.InternalCall -> [ header ; "  // No IL body (InternalCall)" ]
+        | MethodBody.PInvoke -> [ header ; "  // No IL body (P/Invoke)" ]
+        | MethodBody.RuntimeProvided RuntimeBehaviour.DelegateCtor ->
+            [ header ; "  // No IL body (runtime-provided delegate .ctor)" ]
+        | MethodBody.RuntimeProvided RuntimeBehaviour.DelegateInvoke ->
+            [ header ; "  // No IL body (runtime-provided delegate Invoke)" ]
+        | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (kind, targetName)) ->
+            let nameStr =
+                match targetName with
+                | Some n -> $"\"{n}\""
+                | None -> "<attributed method name>"
+
+            [
+                header
+                $"  // No IL body (runtime-provided UnsafeAccessor: {kind}, target={nameStr})"
+            ]
+        | MethodBody.RuntimeProvided (RuntimeBehaviour.Unrecognised name) ->
+            [ header ; $"  // No IL body (runtime-provided, unclassified: {name})" ]
+        | MethodBody.Abstract -> [ header ; "  // No IL body (abstract)" ]
+        | MethodBody.Il instructions ->
             let localLines =
                 match instructions.LocalVars with
                 | None -> []

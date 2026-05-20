@@ -16,8 +16,7 @@ module TestSwitchIlOp =
     let private corelib : DumpedAssembly =
         let corelibPath = typeof<obj>.Assembly.Location
         let _, loggerFactory = LoggerFactory.makeTest ()
-        use stream = File.OpenRead corelibPath
-        Assembly.read loggerFactory (Some corelibPath) stream
+        Assembly.readFile loggerFactory corelibPath
 
     let private baseClassTypes : BaseClassTypes<DumpedAssembly> =
         Corelib.getBaseTypes corelib
@@ -165,7 +164,7 @@ module TestSwitchIlOp =
             objectToString
             |> MethodInfo.mapTypeGenerics (fun _ -> failwith "System.Object::ToString is not type-generic")
             |> MethodInfo.mapMethodGenerics (fun _ _ -> failwith "System.Object::ToString is not method-generic")
-            |> MethodInfo.setMethodVars (Some instructions) signature
+            |> MethodInfo.setMethodVars (MethodBody.Il instructions) signature
 
         state, method
 
@@ -198,7 +197,7 @@ module TestSwitchIlOp =
 
         let state =
             { state with
-                ThreadState = Map.empty |> Map.add thread (ThreadState.New corelib.Name methodState)
+                ThreadState = Map.empty |> Map.add thread (ThreadState.New methodState)
             }
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 index) thread
 

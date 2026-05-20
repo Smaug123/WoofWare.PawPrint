@@ -155,6 +155,8 @@ class Program
                 dllPath
                 dotnetRuntimes
                 impls
+                Map.empty
+                None
                 []
                 token
                 DebuggerServer.configureLoopbackEphemeralPort

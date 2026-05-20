@@ -137,7 +137,21 @@ module IlMachineStateExecution =
             retAssignable
             && candidateSignature.ParameterTypes = methodToCall.Signature.ParameterTypes
 
+        // When dispatching through a variant interface (ECMA-335 §I.8.7), the MethodImpl's
+        // declaration may name a variance-compatible — not identical — instantiation of the
+        // call target's interface. The candidate's signature has been substituted with the
+        // declaration's view (e.g. `IContravariant<object>.Set(object)`) while methodToCall
+        // holds the dispatch view (`IContravariant<string>.Set(string)`), so a literal
+        // parameter-type comparison would wrongly reject the override.
+        //
+        // Instead of relaxing the signature comparison — which can match the wrong overload
+        // when an interface has overloads with assignable parameters (e.g. both `M(object)`
+        // and `M(string)`) — identify the slot by its underlying MethodDefinitionHandle.
+        // Both `meth.Handle` and `methodToCall.Handle` resolve to the same MethodDef in the
+        // interface's assembly when they name the same virtual slot under variance
+        // substitution, regardless of how the surrounding type generics differ.
         let methodReferenceMatchesTarget
+            (varianceInPlay : bool)
             (candidateTypeGenerics : ImmutableArray<ConcreteTypeHandle>)
             (meth : WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>)
             (state : IlMachineState)
@@ -145,6 +159,8 @@ module IlMachineStateExecution =
             =
             if meth.Name <> methodToCall.Name then
                 state, false
+            elif varianceInPlay then
+                state, meth.Handle = methodToCall.Handle
             else
                 signatureMatchesTarget meth.DeclaringType.Assembly candidateTypeGenerics meth.Signature state
 
@@ -284,6 +300,120 @@ module IlMachineStateExecution =
                 | MemberSignature.Field _ -> false
             | _ -> false
 
+        let findMatchingMethodImplBodies
+            (currentTy : ConcreteType<ConcreteTypeHandle>)
+            (currentTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+            (state : IlMachineState)
+            : IlMachineState *
+              WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> list
+            =
+            let currentAssy = state._LoadedAssemblies.[currentTy.Identity.AssemblyFullName]
+
+            ((state, []), currentTypeInfo.MethodImpls.Values)
+            ||> Seq.fold (fun (state, acc) impl ->
+                if not (methodImplDeclarationCouldMatch currentAssy impl.Declaration) then
+                    state, acc
+                else
+                    let state, declaration, declarationTypeArgs =
+                        resolveMethodReference currentTy.Generics currentAssy impl.Declaration state
+
+                    let state, declarationTypeGenerics =
+                        match declarationTypeArgs with
+                        | Some typeArgs ->
+                            concretizeTypeArgs declaration.DeclaringType.Assembly currentTy.Generics typeArgs state
+                        | None when declaration.DeclaringType.Generics.IsEmpty -> state, ImmutableArray.Empty
+                        | None when declaration.DeclaringType.Identity = currentTy.Identity ->
+                            state, currentTy.Generics
+                        | None ->
+                            failwith
+                                $"MethodImpl declaration for %s{currentTypeInfo.Namespace}.%s{currentTypeInfo.Name} referenced generic MethodDef %s{declaration.Name} without concrete type arguments"
+
+                    // A MethodImpl binds a Body to the specific virtual slot identified by its
+                    // Declaration: ECMA-335 II.22.27 keys the slot on (declaring type, member).
+                    // Name + signature alone is not enough — two unrelated interfaces can share
+                    // a shape (e.g. `IReader.Read()` and `IScanner.Read()`), so we also require
+                    // the declaration's declaring type to match the dispatch target.
+                    //
+                    // For variant interfaces (ECMA-335 §I.8.7) a MethodImpl on `IFoo<X>` also
+                    // satisfies dispatch through `IFoo<Y>` when `IFoo<X>` is variance-assignable
+                    // to `IFoo<Y>` (e.g. `ICovariant<string>` satisfies `ICovariant<object>`),
+                    // so we defer same-TypeDef generic comparisons to the assignability walk
+                    // rather than insisting on exact-argument equality.
+                    //
+                    // The declaration's declaring-type instantiation may not yet be in the
+                    // ConcreteTypes registry (e.g. `ICovariant<object> obj = new CovariantImpl();
+                    // obj.Get()` only concretizes the call target `ICovariant<object>`, not the
+                    // body's declared interface `ICovariant<string>`). Register it on demand so
+                    // the variance check is not silently skipped.
+                    let ensureRegistered
+                        (state : IlMachineState)
+                        (identity : ResolvedTypeIdentity)
+                        (ns : string)
+                        (name : string)
+                        (generics : ImmutableArray<ConcreteTypeHandle>)
+                        : IlMachineState * ConcreteTypeHandle
+                        =
+                        match AllConcreteTypes.findExistingConcreteType state.ConcreteTypes identity generics with
+                        | Some handle -> state, handle
+                        | None ->
+                            let ct = ConcreteType.makeFromIdentity identity ns name generics
+                            let handle, newConcreteTypes = AllConcreteTypes.add ct state.ConcreteTypes
+
+                            { state with
+                                ConcreteTypes = newConcreteTypes
+                            },
+                            handle
+
+                    // declarationTypeMatches is true when the MethodImpl's declared interface
+                    // matches the dispatch target; varianceInPlay tracks whether the match
+                    // relied on generic variance (vs identical instantiations), so we know to
+                    // relax the parameter check accordingly.
+                    let state, declarationTypeMatches, varianceInPlay =
+                        if declaration.DeclaringType.Identity <> methodToCall.DeclaringType.Identity then
+                            state, false, false
+                        elif declarationTypeGenerics = methodToCall.DeclaringType.Generics then
+                            state, true, false
+                        else
+                            let state, fromH =
+                                ensureRegistered
+                                    state
+                                    declaration.DeclaringType.Identity
+                                    declaration.DeclaringType.Namespace
+                                    declaration.DeclaringType.Name
+                                    declarationTypeGenerics
+
+                            let state, toH =
+                                ensureRegistered
+                                    state
+                                    methodToCall.DeclaringType.Identity
+                                    methodToCall.DeclaringType.Namespace
+                                    methodToCall.DeclaringType.Name
+                                    methodToCall.DeclaringType.Generics
+
+                            let state, matches = isAssignableFrom loggerFactory baseClassTypes fromH toH state
+
+                            state, matches, matches
+
+                    if not declarationTypeMatches then
+                        state, acc
+                    else
+
+                    let matches, state =
+                        let state, matches =
+                            methodReferenceMatchesTarget varianceInPlay declarationTypeGenerics declaration state
+
+                        matches, state
+
+                    if not matches then
+                        state, acc
+                    else
+                        match impl.Body with
+                        | MetadataToken.MethodDef body -> state, currentAssy.Methods.[body] :: acc
+                        | other ->
+                            failwith
+                                $"MethodImpl body for %s{currentTypeInfo.Namespace}.%s{currentTypeInfo.Name} was not a MethodDef: %O{other}"
+            )
+
         let concretizeImplementation
             (implementationTypeHandle : ConcreteTypeHandle)
             (implementation : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
@@ -292,7 +422,10 @@ module IlMachineStateExecution =
             =
             let typeGenerics =
                 AllConcreteTypes.lookup implementationTypeHandle state.ConcreteTypes
-                |> Option.get
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"Implementation declaring type handle %O{implementationTypeHandle} was not registered while concretizing %s{implementation.DeclaringType.Namespace}.%s{implementation.DeclaringType.Name}::%s{implementation.Name}"
+                )
                 |> _.Generics
 
             let state, meth, _ =
@@ -315,7 +448,8 @@ module IlMachineStateExecution =
                 else
                     match currentTypeHandle with
                     | ConcreteTypeHandle.Byref _
-                    | ConcreteTypeHandle.Pointer _ -> state, None
+                    | ConcreteTypeHandle.Pointer _
+                    | ConcreteTypeHandle.FunctionPointer _ -> state, None
                     | ConcreteTypeHandle.Concrete _
                     | ConcreteTypeHandle.OneDimArrayZero _
                     | ConcreteTypeHandle.Array _ ->
@@ -330,48 +464,8 @@ module IlMachineStateExecution =
                 match IlMachineState.tryGetConcreteTypeInfo state currentTypeHandle with
                 | None -> walkBase state currentTypeHandle
                 | Some (currentTy, currentTypeInfo) ->
-                    let currentAssy = state._LoadedAssemblies.[currentTy.Identity.AssemblyFullName]
-
                     let state, matchingMethodImplBodies =
-                        ((state, []), currentTypeInfo.MethodImpls.Values)
-                        ||> Seq.fold (fun (state, acc) impl ->
-                            if not (methodImplDeclarationCouldMatch currentAssy impl.Declaration) then
-                                state, acc
-                            else
-                                let state, declaration, declarationTypeArgs =
-                                    resolveMethodReference currentTy.Generics currentAssy impl.Declaration state
-
-                                let state, declarationTypeGenerics =
-                                    match declarationTypeArgs with
-                                    | Some typeArgs ->
-                                        concretizeTypeArgs
-                                            declaration.DeclaringType.Assembly
-                                            currentTy.Generics
-                                            typeArgs
-                                            state
-                                    | None when declaration.DeclaringType.Generics.IsEmpty ->
-                                        state, ImmutableArray.Empty
-                                    | None when declaration.DeclaringType.Identity = currentTy.Identity ->
-                                        state, currentTy.Generics
-                                    | None ->
-                                        failwith
-                                            $"MethodImpl declaration for %s{currentTypeInfo.Namespace}.%s{currentTypeInfo.Name} referenced generic MethodDef %s{declaration.Name} without concrete type arguments"
-
-                                let matches, state =
-                                    let state, matches =
-                                        methodReferenceMatchesTarget declarationTypeGenerics declaration state
-
-                                    matches, state
-
-                                if not matches then
-                                    state, acc
-                                else
-                                    match impl.Body with
-                                    | MetadataToken.MethodDef body -> state, currentAssy.Methods.[body] :: acc
-                                    | other ->
-                                        failwith
-                                            $"MethodImpl body for %s{currentTypeInfo.Namespace}.%s{currentTypeInfo.Name} was not a MethodDef: %O{other}"
-                        )
+                        findMatchingMethodImplBodies currentTy currentTypeInfo state
 
                     match matchingMethodImplBodies with
                     | [ impl ] -> state, Some (currentTypeHandle, impl, "Found concrete implementation from MethodImpl")
@@ -379,6 +473,7 @@ module IlMachineStateExecution =
                         matchingMethodImplBodies
                         |> List.map (fun m -> m.Name)
                         |> String.concat ", "
+                        // TODO: throw guest System.Runtime.AmbiguousImplementationException here.
                         |> failwithf
                             "multiple MethodImpl bodies matched this virtual slot; overload/interface disambiguation is not implemented: %s"
                     | [] ->
@@ -416,104 +511,267 @@ module IlMachineStateExecution =
         | None when not walkBaseTypes -> state, None
         | None ->
 
-        let rec findInterfaceScanTypeInfo
-            (state : IlMachineState)
-            (currentTypeHandle : ConcreteTypeHandle)
-            : IlMachineState * TypeInfo<GenericParamFromMetadata, TypeDefn> option
-            =
-            match IlMachineState.tryGetConcreteTypeInfo state currentTypeHandle with
-            | Some (_, typeInfo) -> state, Some typeInfo
-            | None ->
-                match currentTypeHandle with
-                | ConcreteTypeHandle.Byref _
-                | ConcreteTypeHandle.Pointer _ -> state, None
-                | ConcreteTypeHandle.Concrete _
-                | ConcreteTypeHandle.OneDimArrayZero _
-                | ConcreteTypeHandle.Array _ when walkBaseTypes ->
-                    let state, baseType =
-                        IlMachineState.resolveBaseConcreteType loggerFactory baseClassTypes state currentTypeHandle
-
-                    match baseType with
-                    | None -> state, None
-                    | Some baseType -> findInterfaceScanTypeInfo state baseType
-                | ConcreteTypeHandle.Concrete _
-                | ConcreteTypeHandle.OneDimArrayZero _
-                | ConcreteTypeHandle.Array _ -> state, None
-
-        let state, callingObjTy =
-            match findInterfaceScanTypeInfo state dispatchTypeHandle with
-            | state, None -> failwith $"No metadata dispatch type available for virtual receiver %O{dispatchTypeHandle}"
-            | state, Some typeInfo -> state, typeInfo
-
         logger.LogDebug "No concrete implementation found; scanning interfaces"
 
-        let possibleInterfaceMethods, state =
-            (state, callingObjTy.ImplementedInterfaces)
-            ||> Seq.mapFold (fun state impl ->
-                let assy = state.LoadedAssembly impl.RelativeToAssembly |> Option.get
+        let resolveImplementedInterface
+            (ownerTy : ConcreteType<ConcreteTypeHandle>)
+            (impl : WoofWare.PawPrint.InterfaceImplementation)
+            (state : IlMachineState)
+            : IlMachineState *
+              ConcreteTypeHandle *
+              ConcreteType<ConcreteTypeHandle> *
+              TypeInfo<GenericParamFromMetadata, TypeDefn>
+            =
+            let ownerAssy = state._LoadedAssemblies.[ownerTy.Identity.AssemblyFullName]
 
-                let state, defn =
-                    match impl.InterfaceHandle with
-                    | MetadataToken.TypeDefinition defn ->
-                        let state, defn = IlMachineState.lookupTypeDefn baseClassTypes state assy defn
+            let implAssy =
+                match state.LoadedAssembly impl.RelativeToAssembly with
+                | Some assy -> assy
+                | None -> ownerAssy
 
-                        let state, _, defn =
-                            IlMachineState.resolveTypeFromDefn
-                                loggerFactory
-                                baseClassTypes
-                                defn
-                                ImmutableArray.Empty
-                                ImmutableArray.Empty
-                                assy
-                                state
+            let state, implTypeDefn, implResolvedAssy =
+                IlMachineState.resolveTypeMetadataToken
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    implAssy
+                    ownerTy.Generics
+                    impl.InterfaceHandle
 
-                        state, defn
-                    | MetadataToken.TypeReference _ -> failwith "TODO: interface dispatch through TypeReference"
-                    | MetadataToken.TypeSpecification spec ->
-                        let state, assy, defn =
-                            IlMachineState.resolveTypeFromSpec
-                                loggerFactory
-                                baseClassTypes
-                                spec
-                                assy
-                                ImmutableArray.Empty
-                                ImmutableArray.Empty
-                                state
+            let state, implHandle =
+                IlMachineState.concretizeType
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    implResolvedAssy.Name
+                    ownerTy.Generics
+                    ImmutableArray.Empty
+                    implTypeDefn
 
-                        state, defn
-                    | handle -> failwith $"unexpected: {handle}"
+            match IlMachineState.tryGetConcreteTypeInfo state implHandle with
+            | Some (implTy, typeInfo) -> state, implHandle, implTy, typeInfo
+            | None ->
+                failwith $"Interface implementation handle %O{implHandle} was not registered or has no TypeDef row"
 
-                logger.LogDebug ("Interface {InterfaceName} (generics: {InterfaceGenerics})", defn.Name, defn.Generics)
+        let hasCallableBody
+            (meth : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
+            : bool
+            =
+            match meth.Body with
+            | MethodBody.Il _ -> true
+            | MethodBody.InternalCall
+            | MethodBody.PInvoke
+            | MethodBody.RuntimeProvided _
+            | MethodBody.Abstract -> false
 
-                let s, state =
-                    defn.Methods
-                    |> Seq.filter (fun mi -> mi.Name = methodToCall.Name)
-                    |> Seq.mapFold
-                        (fun state meth ->
-                            let state, mi, _ =
-                                ExecutionConcretization.concretizeMethodForExecution
-                                    loggerFactory
-                                    baseClassTypes
-                                    thread
-                                    meth
-                                    None
-                                    (if defn.Generics.IsEmpty then None else Some defn.Generics)
-                                    state
+        let findInterfaceImplementationOnType
+            (currentTypeHandle : ConcreteTypeHandle)
+            (currentTy : ConcreteType<ConcreteTypeHandle>)
+            (currentTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+            (state : IlMachineState)
+            : IlMachineState *
+              WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> option
+            =
+            let state, matchingMethodImplBodies =
+                findMatchingMethodImplBodies currentTy currentTypeInfo state
 
-                            mi, state
-                        )
-                        state
+            let matchingMethodImplBodies =
+                matchingMethodImplBodies |> List.filter hasCallableBody
 
-                s, state
+            match matchingMethodImplBodies with
+            | [ impl ] -> state, Some impl
+            | _ :: _ ->
+                matchingMethodImplBodies
+                |> List.map (fun m -> m.Name)
+                |> String.concat ", "
+                // TODO: throw guest System.Runtime.AmbiguousImplementationException here.
+                |> failwithf
+                    "multiple interface MethodImpl bodies matched this virtual slot on %O; overload/interface disambiguation is not implemented: %s"
+                    currentTypeHandle
+            | [] ->
+                let implementation, state =
+                    (state, currentTypeInfo.Methods)
+                    ||> List.mapFold (fun state meth -> methodMatches currentTy.Generics true meth state)
+
+                let implementation =
+                    implementation |> List.choose id |> List.map fst |> List.filter hasCallableBody
+
+                match implementation with
+                | [ impl ] -> state, Some impl
+                | _ :: _ ->
+                    implementation
+                    |> List.map (fun m -> m.Name)
+                    |> String.concat ", "
+                    // TODO: throw guest System.Runtime.AmbiguousImplementationException here.
+                    |> failwithf
+                        "multiple default interface methods matched this virtual slot on %O; overload/interface disambiguation is not implemented: %s"
+                        currentTypeHandle
+                | [] -> state, None
+
+        let rec collectInterfaceCandidates
+            (state : IlMachineState)
+            (visited : Set<ConcreteTypeHandle>)
+            (currentTypeHandle : ConcreteTypeHandle)
+            (currentTy : ConcreteType<ConcreteTypeHandle>)
+            (currentTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+            : IlMachineState *
+              (ConcreteTypeHandle *
+              WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>) list
+            =
+            if visited.Contains currentTypeHandle then
+                state, []
+            else
+                let visited = visited.Add currentTypeHandle
+
+                logger.LogDebug (
+                    "Interface {InterfaceName} (generics: {InterfaceGenerics})",
+                    currentTypeInfo.Name,
+                    currentTy.Generics
+                )
+
+                let state, ownCandidate =
+                    findInterfaceImplementationOnType currentTypeHandle currentTy currentTypeInfo state
+
+                let ownCandidates =
+                    match ownCandidate with
+                    | Some impl -> [ currentTypeHandle, impl ]
+                    | None -> []
+
+                ((state, ownCandidates), currentTypeInfo.ImplementedInterfaces)
+                ||> Seq.fold (fun (state, acc) impl ->
+                    let state, parentHandle, parentTy, parentTypeInfo =
+                        resolveImplementedInterface currentTy impl state
+
+                    let state, parentCandidates =
+                        collectInterfaceCandidates state visited parentHandle parentTy parentTypeInfo
+
+                    state, parentCandidates @ acc
+                )
+
+        let collectDirectInterfaceCandidates
+            (ownerTy : ConcreteType<ConcreteTypeHandle>)
+            (ownerTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+            (state : IlMachineState)
+            : IlMachineState *
+              (ConcreteTypeHandle *
+              WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>) list
+            =
+            ((state, []), ownerTypeInfo.ImplementedInterfaces)
+            ||> Seq.fold (fun (state, acc) impl ->
+                let state, interfaceHandle, interfaceTy, interfaceTypeInfo =
+                    resolveImplementedInterface ownerTy impl state
+
+                let state, candidates =
+                    // Each direct interface gets an independent visited set; diamond duplicates
+                    // are intentionally collapsed by the distinctBy after collection.
+                    collectInterfaceCandidates state Set.empty interfaceHandle interfaceTy interfaceTypeInfo
+
+                state, candidates @ acc
             )
 
-        let possibleInterfaceMethods = possibleInterfaceMethods |> Seq.concat |> Seq.toList
+        let rec collectTypeAndBaseInterfaceCandidates
+            (state : IlMachineState)
+            (visited : Set<ConcreteTypeHandle>)
+            (currentTypeHandle : ConcreteTypeHandle)
+            : IlMachineState *
+              (ConcreteTypeHandle *
+              WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>) list
+            =
+            if visited.Contains currentTypeHandle then
+                state, []
+            else
+                let visited = visited.Add currentTypeHandle
 
-        match possibleInterfaceMethods with
+                let state, ownCandidates =
+                    match IlMachineState.tryGetConcreteTypeInfo state currentTypeHandle with
+                    | Some (currentTy, currentTypeInfo) ->
+                        collectDirectInterfaceCandidates currentTy currentTypeInfo state
+                    | None ->
+                        match currentTypeHandle with
+                        | ConcreteTypeHandle.Byref _
+                        | ConcreteTypeHandle.Pointer _
+                        | ConcreteTypeHandle.FunctionPointer _ ->
+                            failwith $"No metadata dispatch type available for virtual receiver %O{currentTypeHandle}"
+                        | ConcreteTypeHandle.Concrete _
+                        | ConcreteTypeHandle.OneDimArrayZero _
+                        | ConcreteTypeHandle.Array _ -> state, []
+
+                let state, baseCandidates =
+                    if not walkBaseTypes then
+                        state, []
+                    else
+                        match currentTypeHandle with
+                        | ConcreteTypeHandle.Byref _
+                        | ConcreteTypeHandle.Pointer _
+                        | ConcreteTypeHandle.FunctionPointer _ -> state, []
+                        | ConcreteTypeHandle.Concrete _
+                        | ConcreteTypeHandle.OneDimArrayZero _
+                        | ConcreteTypeHandle.Array _ ->
+                            let state, baseType =
+                                IlMachineState.resolveBaseConcreteType
+                                    loggerFactory
+                                    baseClassTypes
+                                    state
+                                    currentTypeHandle
+
+                            match baseType with
+                            | None -> state, []
+                            | Some baseType -> collectTypeAndBaseInterfaceCandidates state visited baseType
+
+                state, ownCandidates @ baseCandidates
+
+        let state, possibleInterfaceMethods =
+            collectTypeAndBaseInterfaceCandidates state Set.empty dispatchTypeHandle
+
+        let possibleInterfaceMethods =
+            possibleInterfaceMethods
+            |> List.distinctBy (fun (interfaceHandle, meth) -> interfaceHandle, meth.Handle)
+
+        let rec hasMoreSpecificInterfaceImplementation
+            (state : IlMachineState)
+            (interfaceHandle : ConcreteTypeHandle)
+            (candidates :
+                (ConcreteTypeHandle *
+                WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>) list)
+            : IlMachineState * bool
+            =
+            match candidates with
+            | [] -> state, false
+            | (otherInterfaceHandle, _) :: remaining ->
+                if otherInterfaceHandle = interfaceHandle then
+                    hasMoreSpecificInterfaceImplementation state interfaceHandle remaining
+                else
+                    let state, otherIsMoreSpecific =
+                        IlMachineState.isConcreteTypeAssignableTo
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            otherInterfaceHandle
+                            interfaceHandle
+
+                    if otherIsMoreSpecific then
+                        state, true
+                    else
+                        hasMoreSpecificInterfaceImplementation state interfaceHandle remaining
+
+        let state, mostSpecificInterfaceMethods =
+            ((state, []), possibleInterfaceMethods)
+            ||> List.fold (fun (state, acc) (interfaceHandle, meth) ->
+                let state, hasMoreSpecificImplementation =
+                    hasMoreSpecificInterfaceImplementation state interfaceHandle possibleInterfaceMethods
+
+                if hasMoreSpecificImplementation then
+                    state, acc
+                else
+                    state, (interfaceHandle, meth) :: acc
+            )
+            |> Tuple.rmap List.rev
+
+        match mostSpecificInterfaceMethods with
         | [] ->
             logger.LogDebug "No interface implementation found either"
             state, None
-        | [ meth ] ->
+        | [ implementationTypeHandle, meth ] ->
             logger.LogDebug (
                 "Exactly one interface implementation found {DeclaringTypeNamespace}.{DeclaringTypeName}.{MethodName} ({MethodGenerics})",
                 meth.DeclaringType.Namespace,
@@ -522,10 +780,16 @@ module IlMachineStateExecution =
                 meth.Generics
             )
 
+            let state, meth = concretizeImplementation implementationTypeHandle meth state
             state, Some meth
-        | _ -> failwith "TODO: handle overloads"
+        | _ ->
+            mostSpecificInterfaceMethods
+            |> List.map (fun (_, m) -> $"%s{m.DeclaringType.Namespace}.%s{m.DeclaringType.Name}::%s{m.Name}")
+            |> String.concat ", "
+            // TODO: throw guest System.Runtime.AmbiguousImplementationException here.
+            |> failwithf "multiple most-specific default interface implementations matched this virtual slot: %s"
 
-    let callMethod
+    let rec callMethod
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (wasInitialising : ConcreteTypeHandle option)
@@ -539,6 +803,7 @@ module IlMachineStateExecution =
         (threadState : ThreadState)
         (callSiteIlOpIndexOverride : int option)
         (dispatchAsExceptionOnReturn : bool)
+        (wrapExceptionInTargetInvocation : bool)
         (state : IlMachineState)
         : IlMachineState
         =
@@ -566,11 +831,302 @@ module IlMachineStateExecution =
         let declaringTypeHasIntrinsicAttribute =
             MethodInfo.hasIntrinsicAttribute getMemberRefParentType declaringAssy.Methods declaringType.Attributes
 
-        let isIntrinsic = methodHasIntrinsicAttribute || declaringTypeHasIntrinsicAttribute
+        // `[Intrinsic]` on an abstract/interface method is a JIT inlining hint for the
+        // call site only — there is no IL to interpret. Virtual resolution further down
+        // dispatches to the concrete override; whether *that* method is intrinsic is what
+        // determines special handling. Without this guard we'd fail any callvirt of an
+        // abstract `[Intrinsic]` method (e.g. IEnumerable`1::GetEnumerator) before ever
+        // reaching virtual resolution.
+        let isAbstractBody =
+            match methodToCall.Body with
+            | MethodBody.Abstract -> true
+            | _ -> false
+
+        let isIntrinsic =
+            (methodHasIntrinsicAttribute || declaringTypeHasIntrinsicAttribute)
+            && not isAbstractBody
+
         let intrinsicKey = Intrinsics.methodKey state methodToCall
+
+        // `static T Activator.CreateInstance<T>()` is marked `[Intrinsic]` because the JIT inlines it
+        // to an allocate+ctor sequence. The managed IL bottoms out in InternalCalls
+        // (`RuntimeType.CreateInstanceOfT`, `CallDefaultStructConstructor`) we don't model, so we
+        // implement the high-level intrinsic semantics directly: for a value type T, push `default(T)`
+        // (skipping any explicit parameterless struct ctor for now — see TODO); for a reference type T,
+        // allocate the object and run its parameterless ctor by recursing through `callMethod`.
+        // See https://github.com/dotnet/runtime/blob/HEAD/src/coreclr/System.Private.CoreLib/src/System/Activator.RuntimeType.cs#L138
+        //
+        // Exception wrapping:
+        //  - CoreCLR's `CreateInstanceOfT` wraps any exception thrown by the recursed ctor in a
+        //    `TargetInvocationException`. We can't observe that in a separate Activator frame
+        //    because we inline the intrinsic, so the recursive `callMethod` for the ctor sets
+        //    `WrapExceptionInTargetInvocation = true` on the ctor frame's `ReturnState`. When
+        //    `ExceptionDispatching.unwindToCallerAndSearch` pops the ctor frame, it synthesises
+        //    a fresh `TargetInvocationException` with the original exception as `_innerException`
+        //    and continues the search with the wrapped exception. A try/catch *inside* the ctor
+        //    that handles the exception is unaffected, matching CoreCLR.
+        //
+        // Intentional divergence (see docs/divergences.md):
+        //  - For `BeforeFieldInit` reference types, CoreCLR defers the type initializer past the
+        //    Activator allocation/ctor pair. PawPrint's `newobj` (UnaryMetadataObjectOps.fs:240)
+        //    runs cctor eagerly on every instance creation regardless of the flag, so this
+        //    intrinsic follows the same convention. ECMA-335 II.10.5.3.2 permits eager schedules.
+        let tryHandleActivatorCreateInstance () : IlMachineState option =
+            if
+                intrinsicKey.AssemblyName = "System.Private.CoreLib"
+                && intrinsicKey.DeclaringTypeFullName = "System.Activator"
+                && intrinsicKey.MethodName = "CreateInstance"
+                && List.isEmpty intrinsicKey.ParameterShapes
+                && methodToCall.Generics.Length = 1
+            then
+                let tHandle = methodToCall.Generics.[0]
+
+                // Determine whether T is a value type BEFORE running its cctor: CoreCLR's
+                // `Activator.CreateInstance<T>()` for a value type without an explicit parameterless
+                // ctor returns `default(T)` and does NOT trigger T's static constructor. We must not
+                // observe cctor side effects on that path. The ref-type path picks up cctor naturally
+                // via the recursive `callMethod` for the .ctor.
+                let isValueType, typeDefOpt =
+                    match tHandle with
+                    | ConcreteTypeHandle.Byref _
+                    | ConcreteTypeHandle.Pointer _
+                    | ConcreteTypeHandle.FunctionPointer _ ->
+                        failwith
+                            $"Activator.CreateInstance<T>() requires T to satisfy `new()`, but T has handle %O{tHandle}"
+                    | ConcreteTypeHandle.OneDimArrayZero _
+                    | ConcreteTypeHandle.Array _ ->
+                        // Arrays are reference types but their construction is special; defer.
+                        false, None
+                    | ConcreteTypeHandle.Concrete _ ->
+                        match IlMachineState.tryGetConcreteTypeInfo state tHandle with
+                        | Some (_, typeInfo) ->
+                            DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo, Some typeInfo
+                        | None ->
+                            failwith
+                                $"Activator.CreateInstance<T>(): concrete type handle %O{tHandle} has no TypeDef row"
+
+                if isValueType then
+                    match typeDefOpt with
+                    | Some typeDef ->
+                        let hasExplicitParameterlessCtor =
+                            typeDef.Methods
+                            |> List.exists (fun m -> m.Name = ".ctor" && not m.IsStatic && m.Parameters.IsEmpty)
+
+                        if hasExplicitParameterlessCtor then
+                            failwith
+                                $"TODO: Activator.CreateInstance<T>() for value type %s{typeDef.Namespace}.%s{typeDef.Name} with an explicit parameterless ctor is not yet implemented (CoreCLR runs it via CallDefaultStructConstructor, including running the cctor)"
+                    | None -> failwith "Activator.CreateInstance<T>(): value-type branch without typeDef"
+
+                    let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes tHandle
+
+                    let state = state |> IlMachineState.pushToEvalStack zero thread
+
+                    let state =
+                        if advanceProgramCounterOfCaller then
+                            IlMachineState.advanceProgramCounter thread state
+                        else
+                            state
+
+                    Some state
+                else
+
+                match tHandle with
+                | ConcreteTypeHandle.OneDimArrayZero _
+                | ConcreteTypeHandle.Array _ ->
+                    failwith $"TODO: Activator.CreateInstance<T>() for array type %O{tHandle} is not yet implemented"
+                | _ -> ()
+
+                let typeDef =
+                    match typeDefOpt with
+                    | Some typeDef -> typeDef
+                    | None -> failwith "Activator.CreateInstance<T>(): reference-type branch without typeDef"
+
+                // Validate T BEFORE running its cctor. CoreCLR rejects abstract types and types
+                // without a public parameterless ctor in `RuntimeType.CreateInstanceOfT` /
+                // ActivatorCache construction, before any class-init side effects are observable.
+                // Running `ensureTypeInitialised` first would let a throwing `.cctor` mask the
+                // `MissingMethodException` users actually expect — empirically verified against
+                // .NET 10.
+                if typeDef.TypeAttributes.HasFlag TypeAttributes.Abstract then
+                    // CoreCLR's MissingMethodException carries the message
+                    // "Cannot dynamically create an instance of type 'X'. Reason: Cannot create
+                    // an abstract class." (verified against .NET 10).
+                    failwith
+                        $"TODO: Activator.CreateInstance<T>() should throw MissingMethodException because T = %s{typeDef.Namespace}.%s{typeDef.Name} is abstract"
+
+                // CoreCLR's `CreateInstanceOfT` consults `ActivatorCache.CtorIsPublic` and throws
+                // `MissingMethodException` if the parameterless ctor is non-public — see
+                // RuntimeType.CoreCLR.cs:4034. Filter accordingly so an internal/private ctor is
+                // not silently invoked.
+                let isPublic (m : MethodInfo<_, _, _>) : bool =
+                    (m.MethodAttributes &&& MethodAttributes.MemberAccessMask) = MethodAttributes.Public
+
+                let ctor =
+                    typeDef.Methods
+                    |> List.tryFind (fun m -> m.Name = ".ctor" && not m.IsStatic && m.Parameters.IsEmpty && isPublic m)
+
+                match ctor with
+                | None ->
+                    // CoreCLR throws MissingMethodException here. We don't yet have a host helper
+                    // to raise that, so fail loudly with the precise condition.
+                    let hasNonPublicParameterless =
+                        typeDef.Methods
+                        |> List.exists (fun m ->
+                            m.Name = ".ctor" && not m.IsStatic && m.Parameters.IsEmpty && not (isPublic m)
+                        )
+
+                    let reason =
+                        if hasNonPublicParameterless then
+                            "its parameterless instance constructor is non-public"
+                        else
+                            "it has no parameterless instance constructor"
+
+                    failwith
+                        $"TODO: Activator.CreateInstance<T>() should throw MissingMethodException because T = %s{typeDef.Namespace}.%s{typeDef.Name} %s{reason}"
+                | Some ctor ->
+
+                let ct =
+                    AllConcreteTypes.lookup tHandle state.ConcreteTypes
+                    |> Option.defaultWith (fun () ->
+                        failwith
+                            $"Activator.CreateInstance<T>(): concrete type handle %O{tHandle} not found in AllConcreteTypes"
+                    )
+
+                // CoreCLR's `CreateInstanceOfT` catches *every* exception escaping the
+                // cache.CallRefConstructor path — including a `TypeInitializationException`
+                // raised by T's `.cctor` — and rethrows it wrapped in `TargetInvocationException`.
+                // We mirror that on three sub-paths:
+                //
+                //   (a) T's cctor was previously cached as Failed. We synthesise a fresh
+                //       `TargetInvocationException` whose `_innerException` is the cached TIE
+                //       and dispatch it ourselves. Per CoreCLR the cctor is NOT re-run, but a
+                //       fresh wrap is produced each time (verified against .NET 10).
+                //   (b) T's cctor is about to run for the first time. We let `ensureTypeInitialised`
+                //       push the cctor frame, then flip its `WrapExceptionInTargetInvocation`
+                //       flag so that if the cctor unwinds with a TIE (after the existing
+                //       `WasInitialisingType` wrap), the dispatcher additionally wraps it in
+                //       `TargetInvocationException` on the way out of the cctor frame.
+                //   (c) T's cctor has already run successfully; we just call the instance ctor
+                //       with the wrap flag set on the ctor's frame.
+                match TypeInitTable.tryGet tHandle state.TypeInitTable with
+                | Some (TypeInitState.Failed (cachedTieAddr, _cachedTieType)) ->
+                    let state =
+                        IlMachineState.setExceptionStackTraceString loggerFactory baseClassTypes cachedTieAddr [] state
+
+                    let tieAddr, tieType, state =
+                        IlMachineState.synthesizeTargetInvocationException
+                            loggerFactory
+                            baseClassTypes
+                            cachedTieAddr
+                            state
+
+                    match
+                        ExceptionDispatching.throwExceptionObject
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            thread
+                            tieAddr
+                            tieType
+                    with
+                    | ExceptionDispatchResult.HandlerFound state -> Some state
+                    | ExceptionDispatchResult.ExceptionUnhandled _ ->
+                        failwith
+                            "Unhandled TargetInvocationException wrapping a cached TypeInitializationException during Activator.CreateInstance<T>(); should have been caught by a handler"
+                | _ ->
+
+                let state, init =
+                    ensureTypeInitialised loggerFactory baseClassTypes thread tHandle state
+
+                match init with
+                | WhatWeDid.Executed ->
+                    let state, concretizedCtor, declaringTypeHandle =
+                        ExecutionConcretization.concretizeMethodWithAllGenerics
+                            loggerFactory
+                            baseClassTypes
+                            ct.Generics
+                            ctor
+                            ImmutableArray.Empty
+                            state
+
+                    let state, allFields =
+                        IlMachineState.collectAllInstanceFields loggerFactory baseClassTypes state declaringTypeHandle
+
+                    let fields =
+                        CliValueType.OfFields
+                            baseClassTypes
+                            state.ConcreteTypes
+                            declaringTypeHandle
+                            typeDef.Layout
+                            (CharSetMetadata.ofTypeAttributes typeDef.TypeAttributes)
+                            allFields
+
+                    let allocatedAddr, state =
+                        IlMachineState.allocateManagedObject declaringTypeHandle fields state
+
+                    let state =
+                        state
+                        |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some allocatedAddr)) thread
+
+                    let threadState = state.ThreadState.[thread]
+
+                    callMethod
+                        loggerFactory
+                        baseClassTypes
+                        None
+                        (Some allocatedAddr)
+                        false
+                        false
+                        advanceProgramCounterOfCaller
+                        concretizedCtor.Generics
+                        concretizedCtor
+                        thread
+                        threadState
+                        None
+                        false
+                        true // wrapExceptionInTargetInvocation: mirror CreateInstanceOfT
+                        state
+                    |> Some
+                | WhatWeDid.SuspendedForClassInit ->
+                    // T's cctor was kicked off and is now running on top of the current frame.
+                    // We need the activator call to be retried after the cctor returns. The
+                    // simplest signal to the engine for that today is: leave the state with the
+                    // cctor frame pushed, but the activator caller's PC must not have advanced,
+                    // because when control returns to it, we want it to re-execute the call
+                    // opcode and re-enter Activator.CreateInstance<T>().
+                    //
+                    // Caller-PC advancement happens later in `callMethod` (line ~961); by short-
+                    // circuiting here we never reach it, so the caller's PC stays put. Good.
+                    //
+                    // The cctor frame is now the active frame on this thread. Mark it so that if
+                    // the cctor throws, the resulting TIE is rewrapped in TargetInvocationException
+                    // when the cctor frame unwinds — see comment block (a)/(b)/(c) above.
+                    let state = IlMachineState.markActiveFrameWrapInTargetInvocation thread state
+
+                    Some state
+                | WhatWeDid.BlockedOnClassInit _ ->
+                    failwith
+                        "TODO: cross-thread class init blocking inside Activator.CreateInstance<T>() is not yet handled"
+                | WhatWeDid.SuspendedForManagedCall ->
+                    failwith
+                        "logic error: ensureTypeInitialised inside Activator.CreateInstance<T>() cannot suspend for an arbitrary managed call"
+                | WhatWeDid.ThrowingTypeInitializationException ->
+                    // Unreachable: the only way `ensureTypeInitialised` returns this is via the
+                    // `TypeInitState.Failed` cached-cctor path, which we pre-handle above.
+                    failwith
+                        "logic error: ensureTypeInitialised should not reach the cached-failure path inside Activator.CreateInstance<T>() (handled separately above)"
+                | WhatWeDid.VoluntaryYield ->
+                    failwith
+                        "logic error: ensureTypeInitialised inside Activator.CreateInstance<T>() cannot produce a VoluntaryYield (cctor execution has no path to a yield primitive)"
+            else
+                None
 
         match
             if isIntrinsic && not (Intrinsics.isSafeIntrinsic intrinsicKey) then
+                match tryHandleActivatorCreateInstance () with
+                | Some result -> Some result
+                | None ->
+
                 match Intrinsics.call loggerFactory baseClassTypes wasConstructing methodToCall thread state with
                 | Some result -> Some result
                 | None ->
@@ -627,6 +1183,13 @@ module IlMachineStateExecution =
                 state, resolved |> Option.defaultValue methodToCall
             else
                 state, methodToCall
+
+        let declaringAssy =
+            match state.LoadedAssembly methodToCall.DeclaringType.Assembly with
+            | Some assy -> assy
+            | None ->
+                failwith
+                    $"CallMethod: declaring assembly for %O{methodToCall} is not loaded after virtual resolution: %O{methodToCall.DeclaringType.Assembly}"
 
         // Helper to pop and coerce a single argument
         let popAndCoerceArg zeroType methodState =
@@ -726,6 +1289,7 @@ module IlMachineStateExecution =
                         WasConstructingObj = wasConstructing
                         CallSiteIlOpIndex = callSiteIlOpIndexOverride |> Option.defaultValue afterPop.IlOpIndex
                         DispatchAsExceptionOnReturn = dispatchAsExceptionOnReturn
+                        WrapExceptionInTargetInvocation = wrapExceptionInTargetInvocation
                     }
 
             match
@@ -733,7 +1297,7 @@ module IlMachineStateExecution =
                     state.ConcreteTypes
                     baseClassTypes
                     state._LoadedAssemblies
-                    (state.ActiveAssembly thread)
+                    declaringAssy
                     methodToCall
                     methodGenerics
                     args
@@ -774,7 +1338,7 @@ module IlMachineStateExecution =
             ThreadState = state.ThreadState |> Map.add thread newThreadState
         }
 
-    let rec loadClass
+    and loadClass
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (ty : ConcreteTypeHandle)
@@ -820,9 +1384,6 @@ module IlMachineStateExecution =
                 match AllConcreteTypes.lookup ty state.ConcreteTypes with
                 | Some ct -> ct
                 | None -> failwith $"ConcreteTypeHandle {ty} not found in ConcreteTypes mapping"
-
-            let state, origAssyName =
-                state.WithThreadSwitchedToAssembly concreteType.Assembly currentThread
 
             let sourceAssembly = state.LoadedAssembly concreteType.Assembly |> Option.get
 
@@ -881,10 +1442,9 @@ module IlMachineStateExecution =
                         )
 
                 // Convert method instructions (local variables)
-                let state, convertedInstructions =
-                    match cctorMethodWithMethodGenerics.Instructions with
-                    | None -> state, None
-                    | Some methodInstr ->
+                let state, convertedBody =
+                    match cctorMethodWithMethodGenerics.Body with
+                    | MethodBody.Il methodInstr ->
                         let state, convertedLocalVars =
                             match methodInstr.LocalVars with
                             | None -> state, None
@@ -909,10 +1469,14 @@ module IlMachineStateExecution =
 
                                 state, Some convertedVars
 
-                        state, Some (MethodInstructions.setLocalVars convertedLocalVars methodInstr)
+                        state, MethodBody.Il (MethodInstructions.setLocalVars convertedLocalVars methodInstr)
+                    | MethodBody.InternalCall -> state, MethodBody.InternalCall
+                    | MethodBody.PInvoke -> state, MethodBody.PInvoke
+                    | MethodBody.RuntimeProvided rb -> state, MethodBody.RuntimeProvided rb
+                    | MethodBody.Abstract -> state, MethodBody.Abstract
 
                 let fullyConvertedMethod =
-                    MethodInfo.setMethodVars convertedInstructions convertedSignature cctorMethodWithMethodGenerics
+                    MethodInfo.setMethodVars convertedBody convertedSignature cctorMethodWithMethodGenerics
 
                 callMethod
                     loggerFactory
@@ -929,6 +1493,7 @@ module IlMachineStateExecution =
                     currentThreadState
                     None
                     false
+                    false // wrapExceptionInTargetInvocation
                     state
                 |> FirstLoadThis
             | None ->
@@ -936,12 +1501,9 @@ module IlMachineStateExecution =
                 // Mark the type as initialized.
                 let state = state.WithTypeEndInit currentThread ty
 
-                // Restore original assembly context if needed
-                state.WithThreadSwitchedToAssembly origAssyName currentThread
-                |> fst
-                |> NothingToDo
+                NothingToDo state
 
-    let ensureTypeInitialised
+    and ensureTypeInitialised
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (thread : ThreadId)
@@ -1040,9 +1602,6 @@ module IlMachineStateExecution =
         //    begins, handler lookup and the stack-trace frame must see the faulting
         //    instruction's PC, not the next instruction.  (Same class of bug as call-site
         //    vs resumed-PC for cross-frame unwinding, which CallSiteIlOpIndex solves.)
-        let state, _ =
-            state.WithThreadSwitchedToAssembly exceptionTypeInfo.Assembly currentThread
-
         let state, concretizedCtor, _declaringTypeHandle =
             ExecutionConcretization.concretizeMethodForExecution
                 loggerFactory
@@ -1069,5 +1628,109 @@ module IlMachineStateExecution =
             threadState
             None
             true // dispatchAsExceptionOnReturn
+            false // wrapExceptionInTargetInvocation
             state,
         WhatWeDid.Executed
+
+    /// Result of the ECMA-335 III.4.x runtime array-store variance gate.
+    [<RequireQualifiedAccess>]
+    type ArrayStoreVarianceCheck =
+        /// The store may proceed. The state may have been updated as a side effect of
+        /// the assignability walk (which may concretize additional metadata), so the
+        /// caller must use the state carried here, not its pre-check state.
+        | Allowed of state : IlMachineState
+        /// The store was rejected as covariance-incompatible; `ArrayTypeMismatchException`
+        /// has been raised on the current thread. The caller must return
+        /// `(state, WhatWeDid.Executed)` immediately without advancing PC: exception
+        /// dispatch needs the faulting instruction's offset.
+        | Raised of state : IlMachineState
+
+    /// ECMA-335 III.4.x runtime-assignment-compatibility gate for `stelem` /
+    /// runtime-synthesized `T[<rank>]::Set`. For reference-typed array elements, the
+    /// value's runtime type must be assignment-compatible with the array's stored
+    /// element type; otherwise raise `ArrayTypeMismatchException`. Null is always
+    /// storable. Value-typed-element arrays bypass the gate: there is no covariance
+    /// for value types, the verifier rejects mismatching value-store opcodes at
+    /// load time, and primitive coercion is handled by `EvalStackValue.toCliTypeCoerced`.
+    let checkArrayStoreVariance
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (currentThread : ThreadId)
+        (arrayAddress : ManagedHeapAddress)
+        (value : EvalStackValue)
+        (state : IlMachineState)
+        : ArrayStoreVarianceCheck
+        =
+        let arrayObj =
+            match state.ManagedHeap.Arrays.TryGetValue arrayAddress with
+            | true, v -> v
+            | false, _ ->
+                failwith
+                    $"checkArrayStoreVariance: no array allocation at %O{arrayAddress}; helper called with a non-array heap address"
+
+        let storedElement =
+            match arrayObj.ConcreteType with
+            | ConcreteTypeHandle.OneDimArrayZero elt -> elt
+            | ConcreteTypeHandle.Array (elt, _) -> elt
+            | other ->
+                failwith
+                    $"checkArrayStoreVariance: array allocation at %O{arrayAddress} has non-array ConcreteType %O{other}"
+
+        let storedElementIsReference =
+            match storedElement with
+            | ConcreteTypeHandle.OneDimArrayZero _
+            | ConcreteTypeHandle.Array _ -> true
+            | ConcreteTypeHandle.Byref _
+            | ConcreteTypeHandle.Pointer _
+            | ConcreteTypeHandle.FunctionPointer _ -> false
+            | ConcreteTypeHandle.Concrete _ ->
+                match IlMachineState.tryGetConcreteTypeInfo state storedElement with
+                | Some (_, typeInfo) -> DumpedAssembly.isReferenceType baseClassTypes state._LoadedAssemblies typeInfo
+                | None -> failwith $"checkArrayStoreVariance: array element handle %O{storedElement} has no TypeDef row"
+
+        if not storedElementIsReference then
+            // Value-type element store: variance does not apply. Numeric coercion
+            // happens in toCliTypeCoerced; the verifier guards value-type identity.
+            ArrayStoreVarianceCheck.Allowed state
+        else
+
+        match value with
+        | EvalStackValue.NullObjectRef ->
+            // Null is always storable into a reference-typed array slot.
+            ArrayStoreVarianceCheck.Allowed state
+        | EvalStackValue.ObjectRef addr ->
+            let valueRuntimeType = ManagedHeap.getObjectConcreteType addr state.ManagedHeap
+
+            let state, isAssignable =
+                IlMachineState.isConcreteTypeAssignableTo
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    valueRuntimeType
+                    storedElement
+
+            if isAssignable then
+                ArrayStoreVarianceCheck.Allowed state
+            else
+                let state, _whatWeDid =
+                    raiseRuntimeException
+                        loggerFactory
+                        baseClassTypes
+                        baseClassTypes.ArrayTypeMismatchException
+                        currentThread
+                        state
+
+                ArrayStoreVarianceCheck.Raised state
+        | EvalStackValue.ManagedPointer _
+        | EvalStackValue.Int32 _
+        | EvalStackValue.Int64 _
+        | EvalStackValue.NativeInt _
+        | EvalStackValue.Float _
+        | EvalStackValue.UserDefinedValueType _ ->
+            // Reference-typed-element arrays only accept ObjectRef / NullObjectRef stack
+            // values. The verifier rejects other shapes at load time, so reaching this
+            // arm means either the verifier was skipped or the interpreter produced a
+            // value of the wrong shape. Surface the gap explicitly rather than letting
+            // the store silently mis-coerce.
+            failwith
+                $"TODO: array-store variance check for reference-typed-element array with stack value form %O{value}; expected ObjectRef or NullObjectRef"

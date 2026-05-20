@@ -15,24 +15,48 @@ open WoofWare.PawPrint.Test
 module TestImpureCases =
     let assy = typeof<RunResult>.Assembly
 
-    let unimplemented =
-        [
-            {
-                FileName = "WriteLine.cs"
-                ExpectedReturnCode = 1
-                NativeImpls = NativeImpls.PassThru ()
-                ExpectsUnhandledException = false
-            }
-        ]
+    let unimplemented : EndToEndTestCase list = []
 
     let cases : EndToEndTestCase list =
         [
             {
+                // `Console.WriteLine("Hello, world!")` exercises the full
+                // BCL stdio stack end-to-end: `Console::get_Out` descends
+                // `ConsolePal::OpenStandardOutput → Interop.Sys.Dup`, then
+                // the `StreamWriter` flush descends `Interop.Sys.Write`.
+                // Both shims are intercepted by PawPrint's
+                // FileDescriptorRegistry / EmulatedKernel. We assert on
+                // the bytes the guest actually appended to the stdout
+                // log, not just the exit code — a regression in the
+                // encoder, the StreamWriter buffer, or the SystemNative
+                // pointer decode would not change the exit code (the
+                // `return 1;` runs unconditionally) but would corrupt
+                // these bytes.
+                FileName = "WriteLine.cs"
+                ExpectedReturnCode = 1
+                NativeImpls = NativeImpls.PassThru ()
+                Environment = Map.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState =
+                    Some (fun state ->
+                        OutputLogEntry.bytesFor FileDescriptorRole.StandardOutput state.Kernel.OutputLog
+                        |> Seq.toArray
+                        |> shouldEqual (System.Text.Encoding.UTF8.GetBytes "Hello, world!\n")
+
+                        OutputLogEntry.bytesFor FileDescriptorRole.StandardError state.Kernel.OutputLog
+                        |> Seq.length
+                        |> shouldEqual 0
+                    )
+            }
+            {
                 FileName = "InstaQuit.cs"
                 ExpectedReturnCode = 1
+                Environment = Map.empty
                 ExpectsUnhandledException = false
+                AssertTerminalState = None
                 NativeImpls =
                     let mock = MockEnv.make ()
+                    let env = mock.System_Environment
 
                     { mock with
                         System_Environment =
@@ -42,7 +66,8 @@ module TestImpureCases =
                                         let state =
                                             state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) thread
 
-                                        (state, WhatWeDid.Executed) |> ExecutionResult.Stepped
+                                        (state, WhatWeDid.Executed) |> ExecutionResult.stepped
+                                GetCurrentManagedThreadId = env.GetCurrentManagedThreadId
                                 _Exit =
                                     fun thread state ->
                                         let state = state |> IlMachineState.loadArgument thread 0
@@ -55,13 +80,82 @@ module TestImpureCases =
                 // must terminate with the worker's exit code, not just that worker thread.
                 FileName = "ExitFromWorker.cs"
                 ExpectedReturnCode = 7
+                Environment = Map.empty
                 ExpectsUnhandledException = false
+                AssertTerminalState = None
                 NativeImpls =
                     let mock = MockEnv.make ()
 
                     { mock with
                         System_Environment = System_Environment.passThru
                     }
+            }
+            {
+                // Exercises the SystemNative_Write success path: a guest that
+                // DllImports SystemNative_Write directly and pushes a few
+                // bytes at stdout. The pure-source test only covers the
+                // error paths (negative size, bad fd, zero size); the
+                // success path is impure because it appends to the
+                // interpreter's `OutputLog` and we want to assert directly
+                // on those bytes rather than try to capture the test
+                // runner's real stdout. The guest returns 0 on success
+                // (positive return from `Write`), so a regression in the
+                // handler's return value or pointer decoding also surfaces
+                // as a wrong exit code.
+                FileName = "SystemNativeWriteSuccess.cs"
+                ExpectedReturnCode = 0
+                Environment = Map.empty
+                ExpectsUnhandledException = false
+                NativeImpls = NativeImpls.PassThru ()
+                AssertTerminalState =
+                    Some (fun state ->
+                        // The guest writes the literal "hi\n" (3 bytes) to
+                        // fd 1. If the handler decoded the pointer wrong,
+                        // we'd see garbage or fewer bytes here.
+                        OutputLogEntry.bytesFor FileDescriptorRole.StandardOutput state.Kernel.OutputLog
+                        |> Seq.toArray
+                        |> shouldEqual [| 0x68uy ; 0x69uy ; 0x0Auy |]
+
+                        OutputLogEntry.bytesFor FileDescriptorRole.StandardError state.Kernel.OutputLog
+                        |> fun bytes -> bytes.Length
+                        |> shouldEqual 0
+                    )
+            }
+            {
+                // Exercises the SystemNative_Close / SystemNative_Dup handler
+                // pair end-to-end against the PawPrint FileDescriptorRegistry:
+                // close of an invalid fd, close of a freshly-duped fd, the
+                // double-close EBADF path, and the lowest-free gap-fill after
+                // a close. This used to live in sourcesPure for cross-runtime
+                // validation, but the real CLR's multi-threaded fd activity
+                // races our close + dup window in the NUnit test process, so
+                // it now runs as an impure (PawPrint-only) test where the
+                // interpreter's deterministic single-threaded fd table makes
+                // the assertions stable. The registry-level invariants are
+                // still independently covered by TestFileDescriptorRegistry's
+                // property tests; this test verifies the wiring from the
+                // P/Invoke handler through to the registry.
+                FileName = "SystemNativeClose.cs"
+                ExpectedReturnCode = 0
+                Environment = Map.empty
+                ExpectsUnhandledException = false
+                NativeImpls = NativeImpls.PassThru ()
+                AssertTerminalState = None
+            }
+            {
+                // Exercises the SystemNative_IsATty PawPrint handler against
+                // standard fds, a freshly-duped fd, and a closed fd. Lives in
+                // sourcesImpure because the real CLR's IsATty answer depends
+                // on whether the test process happens to have a TTY attached
+                // to its standard streams, which races with how a developer
+                // happens to run NUnit; PawPrint's headless-process model
+                // makes the answer stable by construction.
+                FileName = "SystemNativeIsATty.cs"
+                ExpectedReturnCode = 0
+                Environment = Map.empty
+                ExpectsUnhandledException = false
+                NativeImpls = NativeImpls.PassThru ()
+                AssertTerminalState = None
             }
         ]
 
@@ -81,9 +175,23 @@ module TestImpureCases =
 
         try
             let terminalState, terminatingThread =
-                match Program.run loggerFactory (Some case.FileName) peImage dotnetRuntimes case.NativeImpls [] with
+                match
+                    Program.run
+                        loggerFactory
+                        (Some case.FileName)
+                        peImage
+                        dotnetRuntimes
+                        case.NativeImpls
+                        case.Environment
+                        None
+                        []
+                with
                 | RunOutcome.GuestUnhandledException (_, _, exn) ->
                     failwith $"Guest threw unhandled exception: %O{exn.ExceptionObject}"
+                | RunOutcome.FailFast (_, _, message) ->
+                    let m = message |> Option.defaultValue "<no message>"
+                    failwith $"Guest called Environment.FailFast: %s{m}"
+                | RunOutcome.SignalTerminated (_, signal) -> failwith $"Guest was terminated by POSIX signal %O{signal}"
                 | RunOutcome.NormalExit (state, thread) -> state, thread
                 | RunOutcome.ProcessExit (state, thread) -> state, thread
 
@@ -96,6 +204,10 @@ module TestImpureCases =
                     | ret -> failwith $"expected program to return an int, but it returned %O{ret}"
 
             exitCode |> shouldEqual case.ExpectedReturnCode
+
+            match case.AssertTerminalState with
+            | None -> ()
+            | Some assertion -> assertion terminalState
         with _ ->
             for message in messages () do
                 System.Console.Error.WriteLine $"{message}"

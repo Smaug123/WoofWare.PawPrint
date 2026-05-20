@@ -55,7 +55,7 @@ module CrossAssemblyHarness =
             | EvalStackValue.Int32 i -> i
             | ret -> failwith $"expected program to return an int, but it returned %O{ret}"
 
-    let private compileAssemblies (assemblies : CrossAssemblySpec list) : Map<string, byte[]> =
+    let compileAssemblies (assemblies : CrossAssemblySpec list) : Map<string, byte[]> =
         (Map.empty, assemblies)
         ||> List.fold (fun built spec ->
             let references =
@@ -99,9 +99,15 @@ module CrossAssemblyHarness =
 
         try
             let terminalState, terminatingThread =
-                match Program.run loggerFactory (Some entryPath) peImage dotnetRuntimeDirs nativeImpls [] with
+                match
+                    Program.run loggerFactory (Some entryPath) peImage dotnetRuntimeDirs nativeImpls Map.empty None []
+                with
                 | RunOutcome.GuestUnhandledException (_, _, exn) ->
                     failwith $"Guest threw unhandled exception: %O{exn.ExceptionObject}"
+                | RunOutcome.FailFast (_, _, message) ->
+                    let m = message |> Option.defaultValue "<no message>"
+                    failwith $"Guest called Environment.FailFast: %s{m}"
+                | RunOutcome.SignalTerminated (_, signal) -> failwith $"Guest was terminated by POSIX signal %O{signal}"
                 | RunOutcome.NormalExit (state, thread) -> state, thread
                 | RunOutcome.ProcessExit (state, thread) -> state, thread
 
@@ -130,8 +136,14 @@ module CrossAssemblyHarness =
         try
             let entry : Reflection.Assembly = loadContext.LoadFromAssemblyPath entryPath
             let entryPoint : Reflection.MethodInfo = entry.EntryPoint
-            let mainArgs : string[] = [||]
-            let invokeArgs : obj[] = [| mainArgs :> obj |]
+
+            let invokeArgs : obj[] =
+                match entryPoint.GetParameters().Length with
+                | 0 -> [||]
+                | _ ->
+                    let mainArgs : string[] = [||]
+                    [| mainArgs :> obj |]
+
             let result : obj = entryPoint.Invoke ((null : obj), invokeArgs)
             unbox<int> result
         finally

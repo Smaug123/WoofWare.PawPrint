@@ -2,7 +2,7 @@ namespace WoofWare.PawPrint
 
 [<RequireQualifiedAccess>]
 module NativeGcHandle =
-    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : ExecutionResult option =
+    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
 
@@ -34,7 +34,7 @@ module NativeGcHandle =
             let gcHandleType = instruction.Arguments.[1] |> EvalStackValue.ofCliType
 
             let typeHandle =
-                NativeCall.qCallTypeHandleToConcreteTypeHandle operation state qCallHandle
+                NativeCall.qCallTypeHandleToRuntimeTypeHandleTarget operation state qCallHandle
 
             let kind = NativeCall.gcHandleKindOfEvalStackValue operation gcHandleType
 
@@ -49,7 +49,7 @@ module NativeGcHandle =
 
             let state = NativeCall.pushGcHandleAddress handle ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | "QCall_FreeGCHandleForTypeHandle",
           "System.Private.CoreLib",
           "System",
@@ -68,7 +68,7 @@ module NativeGcHandle =
             // unregister the handle before destroying it; PawPrint has one process-wide
             // handle registry, but keeping the type association visible makes a future
             // collector/loader model easier to add.
-            NativeCall.qCallTypeHandleToConcreteTypeHandle operation state qCallHandle
+            NativeCall.qCallTypeHandleToRuntimeTypeHandleTarget operation state qCallHandle
             |> ignore
 
             let handle = NativeCall.gcHandleAddressOfEvalStackValue operation objHandle
@@ -79,17 +79,16 @@ module NativeGcHandle =
                 }
 
             match returnType with
-            | MethodReturnType.Void -> (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            | MethodReturnType.Void -> NativeHandlerResult.completed state |> Some
             | MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr) ->
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L)) ctx.Thread
-                |> Tuple.withRight WhatWeDid.Executed
-                |> ExecutionResult.Stepped
+                |> NativeHandlerResult.completed
                 |> Some
             | other -> failwith $"%s{operation}: unexpected return type %O{other}"
         | _ -> None
 
-    let tryExecute (ctx : NativeCallContext) : ExecutionResult option =
+    let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
 
@@ -134,7 +133,7 @@ module NativeGcHandle =
 
             let state = NativeCall.pushGcHandleAddress handle ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib",
           "System.Runtime.InteropServices",
           "GCHandle",
@@ -153,7 +152,7 @@ module NativeGcHandle =
 
             let state = IlMachineState.pushToEvalStack (CliType.ofBool true) ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib",
           "System.Runtime.InteropServices",
           "GCHandle",
@@ -170,7 +169,7 @@ module NativeGcHandle =
                     GcHandles = state.GcHandles |> GcHandleRegistry.free handle
                 }
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib",
           "System.Runtime.InteropServices",
           "GCHandle",
@@ -193,7 +192,7 @@ module NativeGcHandle =
                     GcHandles = state.GcHandles |> GcHandleRegistry.setTarget handle target
                 }
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib",
           "System.Runtime.InteropServices",
           "GCHandle",
@@ -227,5 +226,5 @@ module NativeGcHandle =
 
             let state = NativeCall.pushObjectTarget oldTarget ctx.Thread state
 
-            (state, WhatWeDid.Executed) |> ExecutionResult.Stepped |> Some
+            NativeHandlerResult.completed state |> Some
         | _ -> None

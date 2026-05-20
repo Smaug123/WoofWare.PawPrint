@@ -80,7 +80,7 @@ module ExceptionDispatching =
         (methodState : MethodState)
         : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> option
         =
-        match methodState.ExecutingMethod.Instructions with
+        match MethodInfo.tryIlBody methodState.ExecutingMethod with
         | None -> None
         | Some instructions ->
             instructions.ExceptionRegions
@@ -114,7 +114,7 @@ module ExceptionDispatching =
         (skippedFilters : ExceptionFilterRegion list)
         : IlMachineState * (WoofWare.PawPrint.ExceptionRegion * bool) option
         =
-        match method.Instructions with
+        match MethodInfo.tryIlBody method with
         | None -> state, None
         | Some instructions ->
 
@@ -553,16 +553,48 @@ module ExceptionDispatching =
 
                 state, wrappedCliException, tieType
 
+        // If this frame was the ctor target of `Activator.CreateInstance<T>()` (or any other
+        // CreateInstanceOfT-style invocation that opts in via `WrapExceptionInTargetInvocation`),
+        // wrap the in-flight exception in a fresh `TargetInvocationException` whose
+        // `_innerException` field points at the original. This mirrors CoreCLR's
+        // `try { ctor } catch (Exception e) { throw new TargetInvocationException(e); }` wrap
+        // around `cache.CallRefConstructor` in `RuntimeType.CreateInstanceOfT` without
+        // synthesising an extra trampoline frame: the wrap only fires on unwind across this
+        // frame's boundary, so a try/catch *inside* the ctor that handles the exception is
+        // unaffected.
+        let state, cliException, exceptionType =
+            if not returnState.WrapExceptionInTargetInvocation then
+                state, cliException, exceptionType
+            else
+                let state =
+                    IlMachineState.setExceptionStackTraceString
+                        loggerFactory
+                        corelib
+                        cliException.ExceptionObject
+                        cliException.StackTrace
+                        state
+
+                let tieAddr, tieType, state =
+                    IlMachineState.synthesizeTargetInvocationException
+                        loggerFactory
+                        corelib
+                        cliException.ExceptionObject
+                        state
+
+                let wrappedCliException =
+                    {
+                        ExceptionObject = tieAddr
+                        StackTrace = []
+                    }
+
+                state, wrappedCliException, tieType
+
         // Pop to caller frame
         let callerFrame = ThreadState.getFrame returnState.JumpTo threadState
 
         let threadState =
             threadState
             |> ThreadState.setActiveFrame returnState.JumpTo
-            |> fun threadState ->
-                { threadState with
-                    ActiveAssembly = callerFrame.ExecutingMethod.DeclaringType.Assembly
-                }
             |> ThreadState.removeFrame unwoundFrameId
 
         let state =
@@ -842,7 +874,13 @@ module ExceptionDispatching =
             IlMachineState.collectAllInstanceFields loggerFactory baseClassTypes state exnHandle
 
         let fields =
-            CliValueType.OfFields baseClassTypes state.ConcreteTypes exnHandle exceptionTypeInfo.Layout allFields
+            CliValueType.OfFields
+                baseClassTypes
+                state.ConcreteTypes
+                exnHandle
+                exceptionTypeInfo.Layout
+                (CharSetMetadata.ofTypeAttributes exceptionTypeInfo.TypeAttributes)
+                allFields
 
         let addr, state = IlMachineState.allocateManagedObject exnHandle fields state
 

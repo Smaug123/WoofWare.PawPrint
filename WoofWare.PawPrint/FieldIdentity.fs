@@ -18,6 +18,7 @@ module FieldIdentity =
             Contents = contents
             Offset = field.Offset
             Type = fieldTypeHandle
+            MarshallingDescriptor = field.MarshallingDescriptor
         }
 
     let private requiredOwnFieldMatching

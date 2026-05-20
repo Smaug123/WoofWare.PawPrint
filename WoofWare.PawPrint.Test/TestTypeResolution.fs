@@ -15,9 +15,7 @@ module TestTypeResolution =
         let _, loggerFactory = LoggerFactory.makeTest ()
         let corelibPath = typeof<obj>.Assembly.Location
 
-        use corelibStream = File.OpenRead corelibPath
-
-        let corelib = AssemblyApi.read loggerFactory (Some corelibPath) corelibStream
+        let corelib = AssemblyApi.readFile loggerFactory corelibPath
 
         Corelib.getBaseTypes corelib
 
@@ -295,7 +293,7 @@ public class Consumer
 
         firstAssembly.Name.FullName |> shouldEqual secondAssembly.Name.FullName
         firstIdentity |> shouldEqual secondIdentity
-        firstType |> shouldEqual secondType
+        TypeInfo.NominallyEqual firstType secondType |> shouldEqual true
 
     [<Test>]
     let ``same simple nested names under different parents resolve to distinct identities`` () =
@@ -1042,6 +1040,10 @@ public class OpenBox<T> { }
         match constructedTarget with
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
             failwith "TypeSpec-like token was incorrectly classified as an open generic type definition"
+        | RuntimeTypeHandleTarget.GenericParameter _ ->
+            failwith "TypeSpec-like token was incorrectly classified as a generic parameter"
+        | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
+            failwith "TypeSpec-like token was incorrectly classified as a method generic parameter"
         | RuntimeTypeHandleTarget.Closed handle ->
             let constructed =
                 AllConcreteTypes.lookup handle state.ConcreteTypes
