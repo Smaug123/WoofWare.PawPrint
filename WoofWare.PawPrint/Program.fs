@@ -566,6 +566,11 @@ module Program =
     /// `Map.empty` still get the seeded `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1` default.
     /// Keys present in `env` win over the default — that's how the CLI lets the host process
     /// override the seed if it really needs to.
+    ///
+    /// `pctSeed = Some s` selects the PCT scheduling policy seeded with `s`; `None` keeps the
+    /// default round-robin policy. Applied before any cctor frame is pushed so the very first
+    /// `chooseNext` decision is policy-correct — `IlMachineState.initial` defaults the field
+    /// to `RoundRobin`, and `withPctSeed` simply overwrites it.
     let prepare
         (loggerFactory : ILoggerFactory)
         (originalPath : string option)
@@ -573,6 +578,7 @@ module Program =
         (dotnetRuntimeDirs : ImmutableArray<string>)
         impls
         (env : Map<string, string>)
+        (pctSeed : uint64 option)
         (argv : string list)
         : ProgramStartResult
         =
@@ -605,6 +611,10 @@ module Program =
         let state =
             IlMachineState.initial loggerFactory dotnetRuntimeDirs dumped
             |> fun s -> s.MapKernel (EmulatedKernel.withEnvironment env)
+            |> fun s ->
+                match pctSeed with
+                | None -> s
+                | Some seed -> IlMachineState.withPctSeed seed s
 
         // Find the core library by traversing the type hierarchy of the main method's declaring type
         // until we reach System.Object
@@ -887,6 +897,10 @@ module Program =
             }
 
     /// Returns the outcome of the program run: normal exit or unhandled guest exception.
+    ///
+    /// `pctSeed` flows through to `prepare`: `Some s` selects PCT with seed `s`,
+    /// `None` keeps the default round-robin scheduler. See `prepare` for the
+    /// timing contract (applied before the first cctor frame is pushed).
     let run
         (loggerFactory : ILoggerFactory)
         (originalPath : string option)
@@ -894,11 +908,12 @@ module Program =
         (dotnetRuntimeDirs : ImmutableArray<string>)
         impls
         (env : Map<string, string>)
+        (pctSeed : uint64 option)
         (argv : string list)
         : RunOutcome
         =
         let logger = loggerFactory.CreateLogger "Program"
 
-        match prepare loggerFactory originalPath fileStream dotnetRuntimeDirs impls env argv with
+        match prepare loggerFactory originalPath fileStream dotnetRuntimeDirs impls env pctSeed argv with
         | ProgramStartResult.CompletedBeforeMain outcome -> outcome
         | ProgramStartResult.Ready prepared -> pumpPrepared loggerFactory logger impls prepared

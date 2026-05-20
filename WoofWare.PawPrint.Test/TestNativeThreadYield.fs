@@ -47,6 +47,7 @@ public static class Entry
                 dotnetRuntimes
                 (MockEnv.make ())
                 Map.empty
+                None
                 []
         with
         | Program.ProgramStartResult.Ready prepared -> prepared

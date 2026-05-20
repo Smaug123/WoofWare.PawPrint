@@ -226,3 +226,19 @@ module IlMachineState =
 
     let containsAnyGenericParameter =
         IlMachineRuntimeMetadata.containsAnyGenericParameter
+
+    /// Replace the scheduling policy on `state` with a fresh PCT policy
+    /// seeded from `seed`. Idempotent in `state` apart from `Scheduling`:
+    /// any previous `Pct` priorities/Rng are discarded (this is meant to be
+    /// called exactly once, at program prepare time, before any
+    /// `Scheduler.chooseNext` call has observed threads). Round-robin runs
+    /// don't call this and stay on the `SchedulerState.RoundRobin` default
+    /// set by `IlMachineState.initial`.
+    ///
+    /// Lives here rather than on `SchedulerState` so callers don't need to
+    /// open the policy module just to plug a seed in — the seam is "the
+    /// machine has a scheduling policy", and that lives on `IlMachineState`.
+    let withPctSeed (seed : uint64) (state : IlMachineState) : IlMachineState =
+        { state with
+            Scheduling = SchedulerState.Pct (PctState.ofSeed seed)
+        }

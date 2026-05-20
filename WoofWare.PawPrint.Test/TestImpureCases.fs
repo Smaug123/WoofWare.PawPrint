@@ -183,6 +183,7 @@ module TestImpureCases =
                         dotnetRuntimes
                         case.NativeImpls
                         case.Environment
+                        None
                         []
                 with
                 | RunOutcome.GuestUnhandledException (_, _, exn) ->

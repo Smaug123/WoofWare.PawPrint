@@ -79,6 +79,7 @@
     <Compile Include="TestSyncBlockMonitor.fs" />
     <Compile Include="TestNativeThreadYield.fs" />
     <Compile Include="TestSchedulerVoluntaryYield.fs" />
+    <Compile Include="TestSchedulerPct.fs" />
     <Compile Include="TestPureCases.fs" />
     <Compile Include="TestImpureCases.fs" />
     <Compile Include="TestRaces.fs" />

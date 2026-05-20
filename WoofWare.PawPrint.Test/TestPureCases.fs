@@ -100,7 +100,7 @@ module TestPureCases =
 
         try
             let pawPrintResult =
-                Program.run loggerFactory (Some sourceName) peImage dotnetRuntimes nativeImpls env []
+                Program.run loggerFactory (Some sourceName) peImage dotnetRuntimes nativeImpls env None []
 
             assertResult image pawPrintResult
         with _ ->

@@ -166,6 +166,7 @@ type StackHeavyProgramBenchmarks () =
                 dotnetRuntimeDirs
                 nativeImpls
                 Map.empty
+                None
                 []
         with
         | RunOutcome.NormalExit (terminalState, terminatingThread)
