@@ -12,25 +12,77 @@ open WoofWare.PawPrint.ExternImplementations
 
 module AppProgram =
     let private usage =
-        "Usage: WoofWare.PawPrint.App [--debug-server] <dll-path> [args...]"
+        "Usage: WoofWare.PawPrint.App [--debug-server] [--seed <decimal-or-0xHEX>] <dll-path> [args...]"
 
     [<RequireQualifiedAccess>]
     type private AppMode =
-        | RunGuest of dllPath : string * args : string list
-        | DebugServer of dllPath : string * args : string list
+        | RunGuest of dllPath : string * pctSeed : uint64 option * args : string list
+        | DebugServer of dllPath : string * pctSeed : uint64 option * args : string list
         | InvalidArgs of message : string
 
+    /// Parse a PCT seed in decimal (`12345`) or hex (`0xDEADBEEF`/`0XDEADBEEF`).
+    /// Hex is supported because writing 16 raw hex digits is the natural shape
+    /// for a 64-bit seed, and the CLI is a place where humans want to copy/paste
+    /// reproduction seeds from log output. Returns the parsed value or an error
+    /// message; failure cases are reported via `AppMode.InvalidArgs` so the
+    /// existing usage-print path handles them uniformly.
+    let private parseSeed (s : string) : Result<uint64, string> =
+        let trimmed = s.Trim ()
+
+        if trimmed.StartsWith ("0x", System.StringComparison.OrdinalIgnoreCase) then
+            let digits = trimmed.Substring 2
+
+            match
+                System.UInt64.TryParse (
+                    digits,
+                    System.Globalization.NumberStyles.HexNumber,
+                    System.Globalization.CultureInfo.InvariantCulture
+                )
+            with
+            | true, v -> Result.Ok v
+            | false, _ -> Result.Error $"--seed: '%s{s}' is not a valid 64-bit hex literal"
+        else
+            match
+                System.UInt64.TryParse (
+                    trimmed,
+                    System.Globalization.NumberStyles.Integer,
+                    System.Globalization.CultureInfo.InvariantCulture
+                )
+            with
+            | true, v -> Result.Ok v
+            | false, _ ->
+                Result.Error $"--seed: '%s{s}' is not a valid unsigned 64-bit decimal or 0x-prefixed hex literal"
+
     let private parseMode (argv : string list) : AppMode =
-        match argv with
-        | "--debug-server" :: dllPath :: args -> AppMode.DebugServer (dllPath, args)
-        | "--debug-server" :: [] -> AppMode.InvalidArgs "--debug-server requires a DLL path"
-        | dllPath :: args -> AppMode.RunGuest (dllPath, args)
-        | [] -> AppMode.InvalidArgs "Supply a DLL path"
+        // Two flags (`--debug-server`, `--seed N`) are accepted in either order
+        // before the DLL path. Implemented as a fold rather than a fixed-order
+        // pattern match so callers don't have to memorise the prefix order, and
+        // so a future third flag stays additive instead of multiplying cases.
+        let rec go (debugServer : bool) (seed : uint64 option) (rest : string list) : AppMode =
+            match rest with
+            | "--debug-server" :: tail -> go true seed tail
+            | "--seed" :: value :: tail ->
+                match parseSeed value with
+                | Result.Ok v -> go debugServer (Some v) tail
+                | Result.Error msg -> AppMode.InvalidArgs msg
+            | "--seed" :: [] -> AppMode.InvalidArgs "--seed requires a value (decimal or 0xHEX)"
+            | dllPath :: args ->
+                if debugServer then
+                    AppMode.DebugServer (dllPath, seed, args)
+                else
+                    AppMode.RunGuest (dllPath, seed, args)
+            | [] ->
+                if debugServer then
+                    AppMode.InvalidArgs "--debug-server requires a DLL path"
+                else
+                    AppMode.InvalidArgs "Supply a DLL path"
+
+        go false None argv
 
     let private dllPathFromMode (mode : AppMode) : string option =
         match mode with
-        | AppMode.RunGuest (dllPath, _)
-        | AppMode.DebugServer (dllPath, _) -> Some dllPath
+        | AppMode.RunGuest (dllPath, _, _)
+        | AppMode.DebugServer (dllPath, _, _) -> Some dllPath
         | AppMode.InvalidArgs _ -> None
 
     let reallyMain (argv : string[]) : int =
@@ -90,7 +142,15 @@ module AppProgram =
 
             acc
 
-        let runNormal (dllPath : string) (args : string list) : int =
+        let runNormal (dllPath : string) (pctSeed : uint64 option) (args : string list) : int =
+            // Echo the active seed to stderr (so it doesn't pollute the
+            // guest's stdout) before any guest output. Hex is the canonical
+            // form for copy/paste reproduction even when the seed was given
+            // in decimal — paste-back via `--seed 0x...` always parses.
+            match pctSeed with
+            | Some seed -> eprintfn "PCT seed: 0x%016X" seed
+            | None -> ()
+
             let dotnetRuntimes =
                 DotnetRuntime.SelectForDll dllPath |> ImmutableArray.CreateRange
 
@@ -150,7 +210,9 @@ module AppProgram =
                     out.Flush ()
                     err.Flush ()
 
-            match Program.run loggerFactory (Some dllPath) fileStream dotnetRuntimes impls hostEnvironment args with
+            match
+                Program.run loggerFactory (Some dllPath) fileStream dotnetRuntimes impls hostEnvironment pctSeed args
+            with
             | RunOutcome.NormalExit (state, thread)
             | RunOutcome.ProcessExit (state, thread) ->
                 drainStandardStreams state
@@ -206,17 +268,21 @@ module AppProgram =
                 else
                     134
 
-        let runDebugger (dllPath : string) (args : string list) : int =
+        let runDebugger (dllPath : string) (pctSeed : uint64 option) (args : string list) : int =
             let dotnetRuntimes =
                 DotnetRuntime.SelectForDll dllPath |> ImmutableArray.CreateRange
 
             let impls = NativeImpls.PassThru ()
 
-            DebuggerServer.run loggerFactory dllPath dotnetRuntimes impls hostEnvironment args
+            match pctSeed with
+            | Some seed -> eprintfn "PCT seed: 0x%016X" seed
+            | None -> ()
+
+            DebuggerServer.run loggerFactory dllPath dotnetRuntimes impls hostEnvironment pctSeed args
 
         match mode with
-        | AppMode.RunGuest (dllPath, args) -> runNormal dllPath args
-        | AppMode.DebugServer (dllPath, args) -> runDebugger dllPath args
+        | AppMode.RunGuest (dllPath, pctSeed, args) -> runNormal dllPath pctSeed args
+        | AppMode.DebugServer (dllPath, pctSeed, args) -> runDebugger dllPath pctSeed args
         | AppMode.InvalidArgs message ->
             logger.LogCritical ("{Message}\n{Usage}", message, usage)
 

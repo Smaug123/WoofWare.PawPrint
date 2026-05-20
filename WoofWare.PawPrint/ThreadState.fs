@@ -391,3 +391,51 @@ type ThreadState =
                 }
             )
             s
+
+    /// Look up the IL operation the thread's active frame is about to execute
+    /// without modifying any state. Used by the PCT scheduler to classify the
+    /// imminent op via `ContextSwitchPrior.ofIlOp` before deciding whether to
+    /// demote the running thread; mirrors the dispatch pattern in
+    /// `AbstractMachine.executeOneStep` but without the side-effecting machinery.
+    ///
+    /// Returns:
+    ///   - `Some op` when the active frame has an `Il` body and the current
+    ///     `IlOpIndex` is in its `Locations` map. This is the only case the
+    ///     classifier can reason about; every other case carries no IL.
+    ///   - `None` when the active frame's body is `InternalCall`, `PInvoke`,
+    ///     or `RuntimeProvided _`. These dispatch through native handlers that
+    ///     execute as a single atomic step from the scheduler's point of view,
+    ///     and have no `IlOp` to classify. The caller (PCT) treats `None` as
+    ///     "always-guest-visible" because native steps almost always have
+    ///     observable effects (writes, I/O, syscalls).
+    ///
+    /// Fails loudly if:
+    ///   - the thread has no active frame (`NotStarted`, `Parked`, sentinel
+    ///     `FrameId -1`) — calling this on a non-runnable thread is a caller
+    ///     bug; the scheduler only peeks at Runnable threads.
+    ///   - the body is `Abstract` — virtual dispatch should already have
+    ///     resolved to a concrete override, so reaching this here mirrors
+    ///     `AbstractMachine.executeOneStep`'s own BUG path for the same case.
+    ///   - the body is `Il` but the `IlOpIndex` is missing from `Locations`
+    ///     — same invariant the dispatch path asserts; surfacing it here
+    ///     means a corrupted PC, not a missing IL handler.
+    static member peekNextOp (state : ThreadState) : IlOp option =
+        if ThreadStatus.hasNoActiveFrame state.Status then
+            failwith
+                $"ThreadState.peekNextOp: thread has no active frame (status: %O{state.Status}); the scheduler should only peek at threads with a live frame."
+
+        let frame = ThreadState.getFrame state.ActiveMethodState state
+
+        match frame.ExecutingMethod.Body with
+        | MethodBody.Il instr ->
+            match instr.Locations.TryGetValue frame.IlOpIndex with
+            | true, op -> Some op
+            | false, _ ->
+                failwith
+                    $"ThreadState.peekNextOp: IlOpIndex %d{frame.IlOpIndex} is not in Locations for method %s{frame.ExecutingMethod.DeclaringType.Name}.%s{frame.ExecutingMethod.Name}; the PC is corrupt."
+        | MethodBody.InternalCall
+        | MethodBody.PInvoke
+        | MethodBody.RuntimeProvided _ -> None
+        | MethodBody.Abstract ->
+            failwith
+                $"ThreadState.peekNextOp: reached abstract method %s{frame.ExecutingMethod.DeclaringType.Name}.%s{frame.ExecutingMethod.Name}; virtual dispatch should have resolved to a concrete override."

@@ -46,6 +46,7 @@ module TestSignalTermination =
                 dotnetRuntimes
                 (NativeImpls.PassThru ())
                 Map.empty
+                None
                 []
         with _ ->
             for message in messages () do

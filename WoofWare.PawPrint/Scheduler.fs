@@ -18,6 +18,16 @@ namespace WoofWare.PawPrint
 [<RequireQualifiedAccess>]
 module Scheduler =
 
+    /// Base per-step demotion probability when the imminent op is classified
+    /// `AlwaysGuestVisible` (weight 1.0). Lower bands scale this down linearly
+    /// via `ContextSwitchPrior.weight`: `RarelyGuestVisible` (0.1) gives 0.1%,
+    /// `InterpreterOnly` (0.01) gives 0.01%, `Never` (0.0) gives 0%. The 1% cap
+    /// is a calibration choice: high enough that a multi-thousand-step run
+    /// reliably exercises interleaving, low enough that bursty native-step
+    /// sequences don't churn the schedule on every dispatch. Tuned empirically;
+    /// surface as a knob if a future harness needs to fuzz the constant itself.
+    let private P_BASE : double = 0.01
+
     /// Enumerate the Runnable threads in ascending id order. Used by every
     /// policy: the set of candidates is policy-independent, only the choice
     /// among them differs. Kept private so policies stay enumerable here.
@@ -70,14 +80,83 @@ module Scheduler =
                     |> Option.orElse (List.tryHead runnable)
 
             state, chosen
-        | SchedulerState.Pct _ ->
-            // The PCT decision logic lands in a follow-up PR. Until then
-            // nothing constructs `Pct _` (the default is `RoundRobin`), so
-            // reaching this branch indicates a partially-wired harness;
-            // fail loud rather than silently fall back to round-robin and
-            // mask the mistake.
-            failwith
-                "Scheduler.chooseNext: PCT scheduling policy is not yet implemented; only RoundRobin is supported in this build."
+        | SchedulerState.Pct pct ->
+            let runnable = runnableThreads state
+
+            match runnable with
+            | [] ->
+                // No Runnable threads — deadlock signal. State is returned
+                // unchanged (no RNG advance) so a quiescent probe followed by
+                // a wake-up resumes from the same PRNG position as if the probe
+                // never happened, keeping replay bit-exact across the boundary.
+                state, None
+            | _ ->
+                // Lazy first-observation insert: any Runnable thread without a
+                // priority gets one sampled in ascending-ThreadId order, so the
+                // sampling sequence is determined by the seed plus the set of
+                // threads that have ever been seen Runnable, not by the order
+                // in which they were created.
+                let pct = PctState.ensurePriorityFor runnable pct
+
+                // Deterministic argmax over `runnable`. F#'s `List.maxBy` keeps
+                // the first element on ties (it uses strict `>`); `runnable`
+                // is sorted by ThreadId ascending, so ties resolve to the
+                // lowest id — purely for reproducibility, since with `nextDouble`
+                // sampling from a 53-bit mantissa a tie is astronomically rare.
+                let argmax (priorities : Map<ThreadId, double>) : ThreadId =
+                    runnable |> List.maxBy (fun tid -> Map.find tid priorities)
+
+                let current = argmax pct.Priorities
+
+                // Classify the imminent op of `current` to weight the demotion
+                // probability. `None` (the active frame is native — InternalCall,
+                // PInvoke, or RuntimeProvided) is treated as AlwaysGuestVisible
+                // (weight 1.0): a native step runs as one atomic block from the
+                // scheduler's viewpoint and almost always has observable effects,
+                // so it's the most interesting interleaving point we can see.
+                let weight =
+                    match ThreadState.peekNextOp (Map.find current state.ThreadState) with
+                    | Some op -> ContextSwitchPrior.weight (ContextSwitchPrior.ofIlOp op)
+                    | None -> 1.0
+
+                // Single weighted-Bernoulli draw against `weight * P_BASE`. We
+                // always burn one RNG step here, regardless of weight, so
+                // `Pct` schedules consume the seed at a predictable rate
+                // (one `nextDouble` per `chooseNext` call) and `weight = 0.0`
+                // is correctly a no-op without a branch that skips the draw.
+                let sample, rng = NonCryptoRandom.nextDouble pct.Rng
+
+                let pct =
+                    { pct with
+                        Rng = rng
+                    }
+
+                if sample < weight * P_BASE then
+                    // Demote: resample `current`'s priority and recompute the
+                    // argmax. The new priority is uniform-on-[0, 1), so demotion
+                    // may yield a higher value than the old one (in which case
+                    // `current` wins again) — by design, since the per-step
+                    // weight system is a Bernoulli "consider switching here"
+                    // signal, not a guaranteed switch. The effective switch
+                    // rate is `weight * P_BASE * P(some other thread now has
+                    // a higher priority)`, which the PCT statistics naturally
+                    // approach asymptotically.
+                    let pct = PctState.resamplePriority current pct
+                    let chosen = argmax pct.Priorities
+
+                    let state =
+                        { state with
+                            Scheduling = SchedulerState.Pct pct
+                        }
+
+                    state, Some chosen
+                else
+                    let state =
+                        { state with
+                            Scheduling = SchedulerState.Pct pct
+                        }
+
+                    state, Some current
 
     /// Set `thread`'s status. Used by the LowLevelMonitor state machine, which
     /// owns the registry-side bookkeeping (queues, owner) but routes every
@@ -355,8 +434,21 @@ module Scheduler =
                 | _ -> ts
             )
 
+        // If a Pct schedule is in effect, drop the terminated thread's
+        // priority entry so the next argmax can never see a stale slot.
+        // In practice the slot would never be picked (the terminated thread
+        // is not Runnable), but keeping the map domain "ever-seen-and-not-
+        // terminated" is easier to reason about than "ever-seen", and bounds
+        // the map size by the live-thread count rather than the all-time
+        // thread count. No-op for `RoundRobin`.
+        let scheduling =
+            match state.Scheduling with
+            | SchedulerState.RoundRobin -> SchedulerState.RoundRobin
+            | SchedulerState.Pct pct -> SchedulerState.Pct (PctState.removeThread terminated pct)
+
         { state with
             ThreadState = threadState
+            Scheduling = scheduling
         }
 
     /// Apply the init outcome of a freshly-spawned worker to its own ThreadStatus.

@@ -27,7 +27,7 @@ module TestRaces =
 
         use peImage = new MemoryStream (image)
 
-        Program.run loggerFactory (Some sourceName) peImage dotnetRuntimes (MockEnv.make ()) Map.empty []
+        Program.run loggerFactory (Some sourceName) peImage dotnetRuntimes (MockEnv.make ()) Map.empty None []
 
     // The guest reads a shared `int` between starting a worker (which writes 1)
     // and joining it. Both 0 (read precedes worker's write) and 1 (read follows
