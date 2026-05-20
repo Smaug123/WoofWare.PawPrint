@@ -29,8 +29,7 @@ module Program =
         let argsAllocations, state =
             (state, args)
             ||> Seq.mapFold (fun state arg ->
-                IlMachineState.allocateManagedObject stringType (failwith "TODO: assert fields and populate") state
-            // TODO: set the char values in memory
+                IlMachineRuntimeMetadata.allocateManagedString loggerFactory corelib arg state
             )
 
         let stringArrayType = ConcreteTypeHandle.OneDimArrayZero stringType

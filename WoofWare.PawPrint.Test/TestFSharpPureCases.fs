@@ -70,7 +70,7 @@ module TestFSharpPureCases =
 
     // PawPrint cannot yet allocate string argv (Program.allocateArgs is unimplemented),
     // so all F# test cases that require argv dispatch are unimplemented for now.
-    let unimplemented : Set<string> = Set.ofList [ ]
+    let unimplemented : Set<string> = Set.ofList []
 
     let private runTest (testCaseName : string) : unit =
         let image = loadImage ()
@@ -89,7 +89,15 @@ module TestFSharpPureCases =
             let realResult = RealRuntime.executeWithRealRuntime [| testCaseName |] image
 
             let pawPrintResult =
-                Program.run loggerFactory (Some dllPath) peImage dotnetRuntimes (MockEnv.make ()) Map.empty None [ testCaseName ]
+                Program.run
+                    loggerFactory
+                    (Some dllPath)
+                    peImage
+                    dotnetRuntimes
+                    (MockEnv.make ())
+                    Map.empty
+                    None
+                    [ testCaseName ]
 
             match realResult, pawPrintResult with
             | RealRuntimeResult.NormalExit exitCode, RunOutcome.NormalExit (terminalState, terminatingThread) ->
@@ -118,11 +126,14 @@ module TestFSharpPureCases =
                 failwith
                     $"Real runtime threw unhandled %s{realExn.GetType().Name}, but PawPrint exited normally (code: %O{pawPrintExitCode})"
             | _, RunOutcome.FailFast _ ->
-                failwith "PawPrint called Environment.FailFast; the real runtime can't have done so or the test harness would be gone"
+                failwith
+                    "PawPrint called Environment.FailFast; the real runtime can't have done so or the test harness would be gone"
             | _, RunOutcome.ProcessExit _ ->
-                failwith "PawPrint called Environment.Exit; the real runtime can't have done so or the test harness would be gone"
+                failwith
+                    "PawPrint called Environment.Exit; the real runtime can't have done so or the test harness would be gone"
             | _, RunOutcome.SignalTerminated _ ->
-                failwith "PawPrint terminated due to a signal; the real runtime can't have done so or the test harness would be gone"
+                failwith
+                    "PawPrint terminated due to a signal; the real runtime can't have done so or the test harness would be gone"
         with _ ->
             for message in messages () do
                 System.Console.Error.WriteLine $"{message}"
