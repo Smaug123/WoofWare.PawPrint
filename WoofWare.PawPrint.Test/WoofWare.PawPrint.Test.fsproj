@@ -29,6 +29,7 @@
     <Compile Include="TestCliTypeBytes.fs" />
     <Compile Include="TestManagedHeap.fs" />
     <Compile Include="TestBinaryArithmetic.fs" />
+    <Compile Include="TestContextSwitchPrior.fs" />
     <Compile Include="TestNullaryIlOp.fs" />
     <Compile Include="TestStackMemoryPool.fs" />
     <Compile Include="TestNativeMemoryPool.fs" />
