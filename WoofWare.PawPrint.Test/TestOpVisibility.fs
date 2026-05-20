@@ -295,10 +295,11 @@ module TestOpVisibility =
             // Refanyval allocates an InvalidCastException when the typed
             // reference's embedded type doesn't match the metadata token.
             UnaryMetadataTokenIlOp.Refanyval
-        ]
-
-    let private metadataThreadLocal : UnaryMetadataTokenIlOp list =
-        [
+            // Ldftn / Sizeof / Constrained / Mkrefany each resolve a type
+            // or method token in the current interpreter, which lazily
+            // populates `state.ConcreteTypes` and `_LoadedAssemblies` —
+            // shared interpreter state that other threads observe by
+            // handle identity.
             UnaryMetadataTokenIlOp.Ldftn
             UnaryMetadataTokenIlOp.Sizeof
             UnaryMetadataTokenIlOp.Constrained
@@ -309,11 +310,6 @@ module TestOpVisibility =
     let ``heap-touching and call metadata ops classify GloballyVisible`` () : unit =
         for op in metadataGloballyVisible do
             OpVisibility.classifyUnaryMetadata op |> shouldEqual Visibility.GloballyVisible
-
-    [<Test>]
-    let ``pure metadata-token ops classify ThreadLocal`` () : unit =
-        for op in metadataThreadLocal do
-            OpVisibility.classifyUnaryMetadata op |> shouldEqual Visibility.ThreadLocal
 
     // ---------- Routing at the top-level classifier ----------
 
@@ -336,7 +332,7 @@ module TestOpVisibility =
         |> shouldEqual Visibility.GloballyVisible
 
         OpVisibility.classify (IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Sizeof, token))
-        |> shouldEqual Visibility.ThreadLocal
+        |> shouldEqual Visibility.GloballyVisible
 
     [<Test>]
     let ``top-level classifier routes to unary-string classifier`` () : unit =

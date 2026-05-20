@@ -411,17 +411,26 @@ module OpVisibility =
         // visible, allocating an InvalidCastException is heap publication.
         | UnaryMetadataTokenIlOp.Refanyval -> Visibility.GloballyVisible
 
-        // Ldftn picks a method pointer from metadata; the load itself is
-        // pure (no object dereference). Sizeof is a constant push from
-        // immutable metadata. Constrained is a prefix on a following
-        // call/callvirt, which will classify visible. Mkrefany packages a
-        // typed-reference struct on the stack from a managed pointer +
-        // type token, without dereferencing the address it carries; the
-        // next op that uses the address will be visible.
+        // Every remaining metadata-token op resolves a type / method / field
+        // token through `IlMachineState.resolveTypeMetadataToken` /
+        // `ExecutionConcretization.concretizeMethodForExecution`, both of
+        // which lazily realise new concrete types into `state.ConcreteTypes`
+        // and may also force assembly load via `_LoadedAssemblies`. First
+        // touch publishes both, and other threads observe the resulting
+        // handle identities. There is no metadata-token op in PawPrint's
+        // current shape that's truly pure, so the conservative-when-in-doubt
+        // contract pulls all of these to visible.
+        //   - Ldftn calls `concretizeMethodForExecution` / `resolveMember`.
+        //   - Sizeof calls `resolveTypeMetadataToken` + `concretizeType`.
+        //   - Constrained is a prefix, but its handler also resolves /
+        //     concretises the constrained-type token before the following
+        //     call (so the visible boundary is the prefix itself).
+        //   - Mkrefany packages a typed-reference, but materialising the
+        //     embedded type handle requires the same resolution machinery.
         | UnaryMetadataTokenIlOp.Ldftn
         | UnaryMetadataTokenIlOp.Sizeof
         | UnaryMetadataTokenIlOp.Constrained
-        | UnaryMetadataTokenIlOp.Mkrefany -> Visibility.ThreadLocal
+        | UnaryMetadataTokenIlOp.Mkrefany -> Visibility.GloballyVisible
 
     /// See `Visibility` for the contract.
     let classifyUnaryString (op : UnaryStringTokenIlOp) : Visibility =
