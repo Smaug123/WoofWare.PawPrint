@@ -338,6 +338,7 @@ module IlMachineThreadState =
                 NextManagedThreadId = 2
                 PointerHashCounters = PointerHashCounters.empty
                 Kernel = EmulatedKernel.initial
+                Scheduling = SchedulerState.RoundRobin
             }
 
         state.WithLoadedAssembly assyName entryAssembly

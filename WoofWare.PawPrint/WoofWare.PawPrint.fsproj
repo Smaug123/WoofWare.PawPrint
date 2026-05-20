@@ -13,6 +13,7 @@
     <Compile Include="Result.fs" />
     <Compile Include="Corelib.fs" />
     <Compile Include="AbstractMachineDomain.fs" />
+    <Compile Include="SchedulerState.fs" />
     <Compile Include="FieldId.fs" />
     <Compile Include="ManagedPointerSource.fs" />
     <Compile Include="NativeIntSource.fs" />

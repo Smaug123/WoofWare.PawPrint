@@ -63,6 +63,14 @@ type IlMachineState =
         /// sub-record because the rest of `IlMachineState` models the CIL
         /// execution layer, not the kernel surface PawPrint refuses to use.
         Kernel : EmulatedKernel
+        /// Scheduling policy state. `RoundRobin` reproduces the legacy
+        /// deterministic ordering and is the default for runs that don't
+        /// request fuzzing; `Pct _` carries the live priority assignment
+        /// and splitmix64 RNG state for Probabilistic Concurrency Testing.
+        /// Lives here (rather than on `EmulatedKernel`) because the scheduler
+        /// is an interpreter-level concern — it isn't a syscall the guest
+        /// can observe or perturb.
+        Scheduling : SchedulerState
     }
 
     member this.WithKernel (kernel : EmulatedKernel) : IlMachineState =

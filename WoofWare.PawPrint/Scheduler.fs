@@ -18,32 +18,66 @@ namespace WoofWare.PawPrint
 [<RequireQualifiedAccess>]
 module Scheduler =
 
-    /// Pick the next thread to run using a deterministic round-robin policy: among
-    /// the Runnable threads, prefer the lowest id strictly greater than `lastRan`;
-    /// if there isn't one, wrap to the lowest id overall. The policy is intentionally
-    /// *not* sticky — staying on the most-recently-run thread minimises interleaving,
-    /// which is the opposite of what a pruning harness wants. Returns `None` iff no
-    /// thread is Runnable, which the driver treats as deadlock.
-    let chooseNext (lastRan : ThreadId) (state : IlMachineState) : ThreadId option =
-        let runnable =
-            state.ThreadState
-            |> Map.toSeq
-            |> Seq.choose (fun (tid, ts) ->
-                match ts.Status with
-                | ThreadStatus.Runnable -> Some tid
-                | _ -> None
-            )
-            |> Seq.sortBy (fun (ThreadId i) -> i)
-            |> Seq.toList
+    /// Enumerate the Runnable threads in ascending id order. Used by every
+    /// policy: the set of candidates is policy-independent, only the choice
+    /// among them differs. Kept private so policies stay enumerable here.
+    let private runnableThreads (state : IlMachineState) : ThreadId list =
+        state.ThreadState
+        |> Map.toSeq
+        |> Seq.choose (fun (tid, ts) ->
+            match ts.Status with
+            | ThreadStatus.Runnable -> Some tid
+            | _ -> None
+        )
+        |> Seq.sortBy (fun (ThreadId i) -> i)
+        |> Seq.toList
 
-        match runnable with
-        | [] -> None
-        | _ ->
-            let (ThreadId lastRanId) = lastRan
+    /// Does any thread currently have status `Runnable`? Used by the
+    /// deadline-advance loop in `Program.fs` to decide whether jumping the
+    /// virtual clock has made progress; that check is policy-independent
+    /// (every scheduler returns `None` from `chooseNext` iff no thread is
+    /// Runnable), so callers should reach for this helper instead of
+    /// invoking `chooseNext` and discarding its returned state.
+    let hasAnyRunnable (state : IlMachineState) : bool =
+        not (List.isEmpty (runnableThreads state))
 
-            runnable
-            |> List.tryFind (fun (ThreadId i) -> i > lastRanId)
-            |> Option.orElse (List.tryHead runnable)
+    /// Pick the next thread to run, returning the (possibly-updated) machine
+    /// state alongside the choice so that stochastic policies can thread
+    /// their RNG state forward. The `RoundRobin` policy is pure in `state`
+    /// (the returned state is `=` to the input) and reproduces the legacy
+    /// deterministic ordering: among the Runnable threads, prefer the
+    /// lowest id strictly greater than `lastRan`; if there isn't one, wrap
+    /// to the lowest id overall. The policy is intentionally *not* sticky
+    /// — staying on the most-recently-run thread minimises interleaving,
+    /// which is the opposite of what a pruning harness wants.
+    ///
+    /// Returns `None` for the choice iff no thread is Runnable, which the
+    /// driver treats as deadlock; the state is still returned so the caller
+    /// always handles the same shape regardless of the outcome.
+    let chooseNext (lastRan : ThreadId) (state : IlMachineState) : IlMachineState * ThreadId option =
+        match state.Scheduling with
+        | SchedulerState.RoundRobin ->
+            let runnable = runnableThreads state
+
+            let chosen =
+                match runnable with
+                | [] -> None
+                | _ ->
+                    let (ThreadId lastRanId) = lastRan
+
+                    runnable
+                    |> List.tryFind (fun (ThreadId i) -> i > lastRanId)
+                    |> Option.orElse (List.tryHead runnable)
+
+            state, chosen
+        | SchedulerState.Pct _ ->
+            // The PCT decision logic lands in a follow-up PR. Until then
+            // nothing constructs `Pct _` (the default is `RoundRobin`), so
+            // reaching this branch indicates a partially-wired harness;
+            // fail loud rather than silently fall back to round-robin and
+            // mask the mistake.
+            failwith
+                "Scheduler.chooseNext: PCT scheduling policy is not yet implemented; only RoundRobin is supported in this build."
 
     /// Set `thread`'s status. Used by the LowLevelMonitor state machine, which
     /// owns the registry-side bookkeeping (queues, owner) but routes every
