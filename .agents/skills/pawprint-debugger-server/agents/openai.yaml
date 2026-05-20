@@ -1,0 +1,4 @@
+interface:
+  display_name: "PawPrint Debugger Server"
+  short_description: "Use PawPrint app HTTP debugger server."
+  default_prompt: "Use the PawPrint debugger server skill to start or query an interactive PawPrint debugging session."

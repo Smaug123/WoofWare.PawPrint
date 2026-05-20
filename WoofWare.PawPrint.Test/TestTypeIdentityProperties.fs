@@ -56,6 +56,13 @@ module TestTypeIdentityProperties =
             Inner : TypeInfo<GenericParamFromMetadata, TypeDefn>
         }
 
+    type private ModifiedConcretizationShape =
+        | TypeParameter
+        | ByrefTypeParameter
+        | PointerTypeParameter
+        | ArrayTypeParameter
+        | GenericBoxTypeParameter
+
     let private compileSingleAssembly (shape : AssemblyShape) : DumpedAssembly =
         let bytes = compileLibrary shape.Name [] [ AssemblyShape.render shape ]
         dumpedAssembly (Some (shape.Name + ".dll")) bytes
@@ -409,6 +416,34 @@ module TestTypeIdentityProperties =
             ImmutableArray.Create (asClassTypeDefn assy arg)
         )
 
+    let private modifiedConcretizationShapeType
+        (compiled : CompiledGenericScenario)
+        (shape : ModifiedConcretizationShape)
+        : TypeDefn
+        =
+        let genericTypeParameter = TypeDefn.GenericTypeParameter 0
+
+        match shape with
+        | ModifiedConcretizationShape.TypeParameter -> genericTypeParameter
+        | ModifiedConcretizationShape.ByrefTypeParameter -> TypeDefn.Byref genericTypeParameter
+        | ModifiedConcretizationShape.PointerTypeParameter -> TypeDefn.Pointer genericTypeParameter
+        | ModifiedConcretizationShape.ArrayTypeParameter ->
+            TypeDefn.OneDimensionalArrayLowerBoundZero genericTypeParameter
+        | ModifiedConcretizationShape.GenericBoxTypeParameter ->
+            TypeDefn.GenericInstantiation (
+                asClassTypeDefn compiled.Assembly compiled.LeftBox,
+                ImmutableArray.Create genericTypeParameter
+            )
+
+    let private allModifiedConcretizationShapes : ModifiedConcretizationShape list =
+        [
+            ModifiedConcretizationShape.TypeParameter
+            ModifiedConcretizationShape.ByrefTypeParameter
+            ModifiedConcretizationShape.PointerTypeParameter
+            ModifiedConcretizationShape.ArrayTypeParameter
+            ModifiedConcretizationShape.GenericBoxTypeParameter
+        ]
+
     let private genericIdentifierPool : string list =
         [
             "Plain"
@@ -546,6 +581,53 @@ namespace {scenario.Namespace}
 
     let private genericConcretizationConfig : Config =
         Config.QuickThrowOnFailure.WithMaxTest 30
+
+    [<TestCase(true)>]
+    [<TestCase(false)>]
+    let ``Modified byref generic type parameter concretizes as unmodified type`` (modificationRequired : bool) : unit =
+        let scenario =
+            {
+                AssemblyName = "TypeIdentity.Modified.ByrefGeneric"
+                Namespace = "N"
+                PlainName = "Modifier"
+                FirstArgumentName = "Argument"
+                SecondArgumentName = "OtherArgument"
+                LeftContainerName = "Left"
+                RightContainerName = "Right"
+                BoxName = "Box"
+                OuterName = "Outer"
+                InnerName = "Inner"
+            }
+
+        let compiled = compileGenericScenario scenario
+        let ctx = emptyConcretizationContext [ compiled.Assembly ]
+
+        let genericArgumentHandle, ctx =
+            TypeConcretization.concretizeType
+                ctx
+                (NoAssemblyLoad ())
+                compiled.Assembly.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                (asClassTypeDefn compiled.Assembly compiled.FirstArgument)
+
+        let typeGenerics = ImmutableArray.Create genericArgumentHandle
+
+        let unmodified = TypeDefn.Byref (TypeDefn.GenericTypeParameter 0)
+
+        let modified =
+            TypeDefn.Modified (unmodified, asClassTypeDefn compiled.Assembly compiled.Plain, modificationRequired)
+
+        let actual, _ =
+            TypeConcretization.concretizeType
+                ctx
+                (NoAssemblyLoad ())
+                compiled.Assembly.Name
+                typeGenerics
+                ImmutableArray.Empty
+                modified
+
+        actual |> shouldEqual (ConcreteTypeHandle.Byref genericArgumentHandle)
 
     [<Test>]
     let ``Property A1 type-definition lookup partition is complete and disjoint`` () : unit =
@@ -951,5 +1033,55 @@ namespace {scenario.Namespace}
                     secondConcrete.Generics.Length |> shouldEqual 1
                     firstConcrete.Generics.[0] |> shouldEqual firstArgumentHandle
                     secondConcrete.Generics.[0] |> shouldEqual secondArgumentHandle
+                )
+        )
+
+    [<Test>]
+    let ``Property C6 custom modifiers erase during concretization`` () : unit =
+        Check.One (
+            genericConcretizationConfig,
+            Prop.forAll
+                (TypeIdentityPropertyArbitraries.GenericConcretizationScenario ())
+                (fun (scenario : GenericConcretizationScenario) ->
+                    let compiled = compileGenericScenario scenario
+                    let ctx = emptyConcretizationContext [ compiled.Assembly ]
+
+                    let genericArgumentHandle, ctx =
+                        TypeConcretization.concretizeType
+                            ctx
+                            (NoAssemblyLoad ())
+                            compiled.Assembly.Name
+                            ImmutableArray.Empty
+                            ImmutableArray.Empty
+                            (asClassTypeDefn compiled.Assembly compiled.FirstArgument)
+
+                    let typeGenerics = ImmutableArray.Create genericArgumentHandle
+                    let modifier = asClassTypeDefn compiled.Assembly compiled.Plain
+
+                    for shape in allModifiedConcretizationShapes do
+                        let unmodified = modifiedConcretizationShapeType compiled shape
+
+                        let expected, ctx =
+                            TypeConcretization.concretizeType
+                                ctx
+                                (NoAssemblyLoad ())
+                                compiled.Assembly.Name
+                                typeGenerics
+                                ImmutableArray.Empty
+                                unmodified
+
+                        for modificationRequired in [ true ; false ] do
+                            let modified = TypeDefn.Modified (unmodified, modifier, modificationRequired)
+
+                            let actual, _ =
+                                TypeConcretization.concretizeType
+                                    ctx
+                                    (NoAssemblyLoad ())
+                                    compiled.Assembly.Name
+                                    typeGenerics
+                                    ImmutableArray.Empty
+                                    modified
+
+                            actual |> shouldEqual expected
                 )
         )

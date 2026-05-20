@@ -1,6 +1,7 @@
 namespace WoofWare.PawPrint
 
 open System
+open System.Collections.Concurrent
 open System.Collections.Generic
 open System.Collections.Immutable
 open System.IO
@@ -29,6 +30,35 @@ module AssemblyDefinition =
         {
             Name = assy.GetAssemblyName ()
         }
+
+/// Metadata for a manifest resource whose payload is embedded in this assembly image.
+type EmbeddedManifestResource =
+    {
+        AssemblyFullName : string
+        Name : string
+        PayloadRelativeVirtualAddress : int
+        PayloadLength : int
+    }
+
+/// Metadata for a manifest resource whose payload is stored in a file named by this assembly's File table.
+type ExternalManifestResource =
+    {
+        AssemblyFullName : string
+        Name : string
+        FileName : string
+        /// Byte offset within the linked file at which the resource's 4-byte
+        /// little-endian length prefix begins. The payload bytes follow that
+        /// prefix. Not validated here, since the linked file may not be loaded.
+        Offset : int64
+    }
+
+/// Result of looking up a manifest resource by exact metadata name.
+[<RequireQualifiedAccess>]
+type ManifestResourceLookupResult =
+    | NotFound
+    | Embedded of EmbeddedManifestResource
+    | ExternalFile of ExternalManifestResource
+    | ReferencedAssembly of resourceName : string * assemblyReference : WoofWare.PawPrint.AssemblyReference
 
 /// <summary>
 /// Represents a fully parsed .NET assembly with all its metadata components.
@@ -121,9 +151,21 @@ type DumpedAssembly =
         PeReader : PEReader
 
         /// <summary>
+        /// True when disposing this record should dispose <c>PeReader</c>.
+        /// Cached file-backed assemblies share a PE reader, so cache hits do not own it.
+        /// </summary>
+        OwnsPeReader : bool
+
+        /// <summary>
         /// Dictionary of all custom attributes in this assembly, keyed by their handle.
         /// </summary>
         Attributes : ImmutableDictionary<CustomAttributeHandle, WoofWare.PawPrint.CustomAttribute>
+
+        /// <summary>
+        /// Index from parent metadata token (as raw int32) to the raw int32 tokens of all
+        /// CustomAttribute rows applied to that parent.
+        /// </summary>
+        CustomAttributesByParentToken : ImmutableDictionary<int, ImmutableArray<int>>
 
         /// <summary>
         /// Dictionary of all exported types in this assembly, keyed by their handle.
@@ -154,6 +196,15 @@ type DumpedAssembly =
         /// Internal lookup for nested exported types by parent export and simple name.
         /// </summary>
         _NestedExportedTypesLookup : ImmutableDictionary<ExportedTypeHandle * string, WoofWare.PawPrint.ExportedType>
+
+        /// <summary>
+        /// Friend-assembly declarations parsed from assembly-level
+        /// <c>InternalsVisibleTo</c> and <c>IgnoresAccessChecksTo</c> custom
+        /// attributes on this assembly. Cached eagerly so visibility checks
+        /// (e.g. CA filtering via <c>IsCAVisibleFromDecoratedType</c>) do not
+        /// re-walk the assembly-level attribute list per call.
+        /// </summary>
+        Friends : FriendAssemblies
     }
 
     static member internal BuildTopLevelTypeDefsLookup
@@ -298,7 +349,9 @@ type DumpedAssembly =
         | true, v -> Some v
 
     interface IDisposable with
-        member this.Dispose () = this.PeReader.Dispose ()
+        member this.Dispose () =
+            if this.OwnsPeReader then
+                this.PeReader.Dispose ()
 
 
 type TypeResolutionResult =
@@ -313,7 +366,24 @@ type TypeResolutionResult =
 
 [<RequireQualifiedAccess>]
 module Assembly =
-    let read (loggerFactory : ILoggerFactory) (originalPath : string option) (dllBytes : Stream) : DumpedAssembly =
+    type private AssemblyFileCacheKey =
+        {
+            FullPath : string
+            Length : int64
+            LastWriteTimeUtc : DateTime
+        }
+
+    /// Process-lifetime cache for explicit file-backed reads. The parsed metadata is
+    /// immutable, and the key includes simple file metadata so rebuilt files get a fresh parse.
+    let private fileCache : ConcurrentDictionary<AssemblyFileCacheKey, Lazy<DumpedAssembly>> =
+        ConcurrentDictionary<AssemblyFileCacheKey, Lazy<DumpedAssembly>> ()
+
+    let private readUncached
+        (loggerFactory : ILoggerFactory)
+        (originalPath : string option)
+        (dllBytes : Stream)
+        : DumpedAssembly
+        =
         let peReader = new PEReader (dllBytes)
         let metadataReader = peReader.GetMetadataReader ()
 
@@ -346,7 +416,7 @@ module Assembly =
             let builder = ImmutableDictionary.CreateBuilder ()
 
             for ty in metadataReader.TypeDefinitions do
-                builder.Add (ty, TypeInfo.read loggerFactory peReader assy.Name metadataReader ty)
+                builder.Add (ty, TypeInfo.read peReader assy.Name metadataReader ty)
 
             builder.ToImmutable ()
 
@@ -421,18 +491,57 @@ module Assembly =
 
             result.ToImmutable ()
 
-        let attrs =
-            let result = ImmutableDictionary.CreateBuilder ()
+        let attrs, (customAttributesByParentToken : ImmutableDictionary<int, ImmutableArray<int>>) =
+            let attrsBuilder =
+                ImmutableDictionary.CreateBuilder<CustomAttributeHandle, WoofWare.PawPrint.CustomAttribute> ()
 
-            for field in metadataReader.CustomAttributes do
-                let fieldDefn =
-                    metadataReader.GetCustomAttribute field |> CustomAttribute.make field
+            let groupedByParent = Dictionary<int, ImmutableArray<int>.Builder> ()
 
-                result.Add (field, fieldDefn)
+            for handle in metadataReader.CustomAttributes do
+                let typed =
+                    metadataReader.GetCustomAttribute handle
+                    |> CustomAttribute.make metadataReader handle
 
-            result.ToImmutable ()
+                attrsBuilder.Add (handle, typed)
+
+                let parentToken = MetadataToken.toInt typed.Parent
+
+                let attrAsEntity : EntityHandle = CustomAttributeHandle.op_Implicit handle
+                let attrToken = MetadataTokens.GetToken attrAsEntity
+
+                let builder =
+                    match groupedByParent.TryGetValue parentToken with
+                    | true, b -> b
+                    | false, _ ->
+                        let b = ImmutableArray.CreateBuilder ()
+                        groupedByParent.[parentToken] <- b
+                        b
+
+                builder.Add attrToken
+
+            let parentTokenResult = ImmutableDictionary.CreateBuilder ()
+
+            for kvp in groupedByParent do
+                parentTokenResult.Add (kvp.Key, kvp.Value.ToImmutable ())
+
+            attrsBuilder.ToImmutable (), parentTokenResult.ToImmutable ()
 
         let logger = loggerFactory.CreateLogger assy.Name.Name
+
+        let friends =
+            let input : FriendAssembliesScanInput =
+                {
+                    CustomAttributesByParentToken = customAttributesByParentToken
+                    Attributes = attrs
+                    Members = memberReferences
+                    TypeRefs = typeRefs
+                    TypeDefs = typeDefs
+                    Methods = methods
+                }
+
+            match FriendAssemblies.scan input with
+            | Ok f -> f
+            | Error e -> failwithf "FriendAssemblies.scan failed on %s: %s" assy.Name.Name e
 
         {
             Logger = logger
@@ -451,7 +560,9 @@ module Assembly =
             RootNamespace = rootNamespace
             NonRootNamespaces = nonRootNamespaces
             PeReader = peReader
+            OwnsPeReader = true
             Attributes = attrs
+            CustomAttributesByParentToken = customAttributesByParentToken
             ExportedTypes = exportedTypes
             _TopLevelTypeDefsLookup = DumpedAssembly.BuildTopLevelTypeDefsLookup logger assy.Name typeDefs.Values
             _NestedTypeDefsLookup = DumpedAssembly.BuildNestedTypeDefsLookup logger assy.Name typeDefs.Values
@@ -459,7 +570,238 @@ module Assembly =
                 DumpedAssembly.BuildTopLevelExportedTypesLookup logger assy.Name exportedTypes.Values
             _NestedExportedTypesLookup =
                 DumpedAssembly.BuildNestedExportedTypesLookup logger assy.Name exportedTypes.Values
+            Friends = friends
         }
+
+    let private fileCacheKey (path : string) : AssemblyFileCacheKey =
+        let fileInfo = FileInfo path
+
+        {
+            FullPath = fileInfo.FullName
+            Length = fileInfo.Length
+            LastWriteTimeUtc = fileInfo.LastWriteTimeUtc
+        }
+
+    let private withLogger
+        (loggerFactory : ILoggerFactory)
+        (fullPath : string)
+        (assembly : DumpedAssembly)
+        : DumpedAssembly
+        =
+        { assembly with
+            Logger = loggerFactory.CreateLogger assembly.Name.Name
+            OriginalPath = Some fullPath
+        }
+
+    let private removeCachedFile (key : AssemblyFileCacheKey) (cached : Lazy<DumpedAssembly>) : unit =
+        let pair = KeyValuePair<AssemblyFileCacheKey, Lazy<DumpedAssembly>> (key, cached)
+
+        (fileCache :> ICollection<KeyValuePair<AssemblyFileCacheKey, Lazy<DumpedAssembly>>>).Remove pair
+        |> ignore<bool>
+
+    let private readCachedFile (loggerFactory : ILoggerFactory) (path : string) : DumpedAssembly =
+        let key = fileCacheKey path
+
+        let cached =
+            fileCache.GetOrAdd (
+                key,
+                Func<AssemblyFileCacheKey, Lazy<DumpedAssembly>> (fun key ->
+                    lazy
+                        (let bytes = File.ReadAllBytes key.FullPath
+                         let stream = new MemoryStream (bytes, false)
+                         let assembly = readUncached loggerFactory (Some key.FullPath) stream
+
+                         { assembly with
+                             OwnsPeReader = false
+                         })
+                )
+            )
+
+        try
+            cached.Value |> withLogger loggerFactory key.FullPath
+        with _ ->
+            removeCachedFile key cached
+            reraise ()
+
+    /// Read an assembly from a file path using the process-lifetime parse cache.
+    let readFile (loggerFactory : ILoggerFactory) (path : string) : DumpedAssembly = readCachedFile loggerFactory path
+
+    /// Read an assembly from the supplied stream without consulting the file cache.
+    let read (loggerFactory : ILoggerFactory) (originalPath : string option) (dllBytes : Stream) : DumpedAssembly =
+        readUncached loggerFactory originalPath dllBytes
+
+    let private checkedManifestResourceOffset (resourceName : string) (offset : int64) : int =
+        if offset < 0L || offset > int64 Int32.MaxValue then
+            failwith $"Manifest resource %s{resourceName} has unsupported metadata offset %d{offset}"
+
+        int offset
+
+    let private checkedManifestResourceLength (resourceName : string) (length : uint32) : int =
+        if length > uint32 Int32.MaxValue then
+            failwith $"Manifest resource %s{resourceName} has unsupported payload length %d{length}"
+
+        int length
+
+    let private checkedManifestResourceRelativeVirtualAddress (resourceName : string) (rva : int64) : int =
+        if rva < 0L || rva > int64 Int32.MaxValue then
+            failwith $"Manifest resource %s{resourceName} has unsupported relative virtual address %d{rva}"
+
+        int rva
+
+    let private validateManifestResourceImplementationRow
+        (metadataReader : MetadataReader)
+        (resourceName : string)
+        (tableIndex : TableIndex)
+        (implementation : EntityHandle)
+        : unit
+        =
+        let expectedKind =
+            match tableIndex with
+            | TableIndex.File -> HandleKind.AssemblyFile
+            | TableIndex.AssemblyRef -> HandleKind.AssemblyReference
+            | _ ->
+                failwith
+                    $"Manifest resource %s{resourceName} row validation does not support implementation table %O{tableIndex}"
+
+        if implementation.Kind <> expectedKind then
+            failwith
+                $"Manifest resource %s{resourceName} validates implementation table %O{tableIndex}, but handle kind is %O{implementation.Kind}"
+
+        let row = MetadataTokens.GetRowNumber implementation
+        let rowCount = metadataReader.GetTableRowCount tableIndex
+
+        if row < 1 || row > rowCount then
+            failwith
+                $"Manifest resource %s{resourceName} points at invalid %O{tableIndex} row %d{row}; table has %d{rowCount} rows"
+
+    let private readEmbeddedManifestResource
+        (assy : DumpedAssembly)
+        (resourceName : string)
+        (resource : System.Reflection.Metadata.ManifestResource)
+        : EmbeddedManifestResource
+        =
+        let resourceDirectory = assy.PeReader.PEHeaders.CorHeader.ResourcesDirectory
+
+        if resourceDirectory.RelativeVirtualAddress <= 0 then
+            failwith
+                $"Manifest resource %s{resourceName} is embedded, but the CLI resource directory RVA is non-positive"
+
+        if resourceDirectory.Size < 0 then
+            failwith $"Manifest resource %s{resourceName} is embedded, but the CLI resource directory size is negative"
+
+        let resourceOffset = checkedManifestResourceOffset resourceName resource.Offset
+
+        if int64 resourceOffset + 4L > int64 resourceDirectory.Size then
+            failwith
+                $"Manifest resource %s{resourceName} header offset %d{resourceOffset} is outside CLI resource directory size %d{resourceDirectory.Size}"
+
+        let headerRva =
+            int64 resourceDirectory.RelativeVirtualAddress + int64 resourceOffset
+            |> checkedManifestResourceRelativeVirtualAddress resourceName
+
+        let sectionData = assy.PeReader.GetSectionData headerRva
+        let mutable reader = sectionData.GetReader ()
+
+        // Corrupt directory RVAs can point outside every PE section; in that case
+        // GetSectionData may have fewer bytes than the directory bounds imply.
+        if reader.Length < 4 then
+            failwith
+                $"Manifest resource %s{resourceName} section data at header RVA %d{headerRva} is shorter than 4 bytes"
+
+        let payloadLength =
+            reader.ReadUInt32 () |> checkedManifestResourceLength resourceName
+
+        let resourcePayloadEnd = int64 resourceOffset + 4L + int64 payloadLength
+
+        if resourcePayloadEnd > int64 resourceDirectory.Size then
+            failwith
+                $"Manifest resource %s{resourceName} declares payload end offset %d{resourcePayloadEnd}, beyond CLI resource directory size %d{resourceDirectory.Size}"
+
+        if payloadLength > reader.RemainingBytes then
+            failwith
+                $"Manifest resource %s{resourceName} declares payload length %d{payloadLength}, but only %d{reader.RemainingBytes} bytes remain in the section"
+
+        let payloadRva =
+            int64 headerRva + 4L
+            |> checkedManifestResourceRelativeVirtualAddress resourceName
+
+        {
+            AssemblyFullName = assy.Name.FullName
+            Name = resourceName
+            PayloadRelativeVirtualAddress = payloadRva
+            PayloadLength = payloadLength
+        }
+
+    let findManifestResource (assy : DumpedAssembly) (resourceName : string) : ManifestResourceLookupResult =
+        let metadataReader = assy.PeReader.GetMetadataReader ()
+
+        let resource =
+            metadataReader.ManifestResources
+            |> Seq.tryPick (fun handle ->
+                let resource = metadataReader.GetManifestResource handle
+                let name = metadataReader.GetString resource.Name
+
+                if String.Equals (name, resourceName, StringComparison.Ordinal) then
+                    Some (name, resource)
+                else
+                    None
+            )
+
+        match resource with
+        | None -> ManifestResourceLookupResult.NotFound
+        | Some (name, resource) ->
+            if resource.Implementation.IsNil then
+                resource
+                |> readEmbeddedManifestResource assy name
+                |> ManifestResourceLookupResult.Embedded
+            else
+                match resource.Implementation.Kind with
+                | HandleKind.AssemblyFile ->
+                    validateManifestResourceImplementationRow
+                        metadataReader
+                        name
+                        TableIndex.File
+                        resource.Implementation
+
+                    let fileHandle = AssemblyFileHandle.op_Explicit resource.Implementation
+
+                    let file = metadataReader.GetAssemblyFile fileHandle
+                    let fileName = metadataReader.GetString file.Name
+
+                    // CoreCLR rejects file-backed manifest resources when fetching them on .NET
+                    // Core. This metadata layer still reports the ECMA shape so the eventual
+                    // AssemblyNative_GetResource implementation can make that policy, including
+                    // File row flag checks, explicit.
+                    {
+                        AssemblyFullName = assy.Name.FullName
+                        Name = name
+                        FileName = fileName
+                        Offset = resource.Offset
+                    }
+                    |> ManifestResourceLookupResult.ExternalFile
+                | HandleKind.AssemblyReference ->
+                    validateManifestResourceImplementationRow
+                        metadataReader
+                        name
+                        TableIndex.AssemblyRef
+                        resource.Implementation
+
+                    if resource.Offset <> 0L then
+                        failwith
+                            $"Manifest resource %s{name} is forwarded to an assembly reference, but declares non-zero offset %d{resource.Offset}"
+
+                    let assemblyReferenceHandle =
+                        AssemblyReferenceHandle.op_Explicit resource.Implementation
+
+                    // Assembly.read populates this map from the AssemblyRef table rows. Keep the
+                    // guard so manually constructed DumpedAssembly values fail with resource context.
+                    match assy.AssemblyReferences.TryGetValue assemblyReferenceHandle with
+                    | true, assemblyReference ->
+                        ManifestResourceLookupResult.ReferencedAssembly (name, assemblyReference)
+                    | false, _ ->
+                        failwith
+                            $"Manifest resource %s{name} points at missing assembly reference handle %O{assemblyReferenceHandle}"
+                | other -> failwith $"Manifest resource %s{name} has unsupported implementation handle kind %O{other}"
 
     let print (main : MethodDefinitionHandle) (dumped : DumpedAssembly) : unit =
         for KeyValue (_, typ) in dumped.TypeDefs do
@@ -471,12 +813,27 @@ module Assembly =
 
                 Console.WriteLine $"\nMethod: %s{method.Name}"
 
-                match method.Instructions with
-                | None -> Console.WriteLine "<no IL instructions>"
-                | Some instructions ->
+                match method.Body with
+                | MethodBody.Il instructions ->
                     instructions.Instructions
                     |> List.map (fun (op, index) -> IlOp.Format op index)
                     |> List.iter Console.WriteLine
+                | MethodBody.InternalCall -> Console.WriteLine "<InternalCall: no IL>"
+                | MethodBody.PInvoke -> Console.WriteLine "<P/Invoke: no IL>"
+                | MethodBody.RuntimeProvided RuntimeBehaviour.DelegateCtor ->
+                    Console.WriteLine "<runtime-provided: delegate .ctor>"
+                | MethodBody.RuntimeProvided RuntimeBehaviour.DelegateInvoke ->
+                    Console.WriteLine "<runtime-provided: delegate Invoke>"
+                | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (kind, targetName)) ->
+                    let nameStr =
+                        match targetName with
+                        | Some n -> $"\"%s{n}\""
+                        | None -> "<inherits attributed name>"
+
+                    Console.WriteLine $"<runtime-provided: UnsafeAccessor %O{kind}, target=%s{nameStr}>"
+                | MethodBody.RuntimeProvided (RuntimeBehaviour.Unrecognised name) ->
+                    Console.WriteLine $"<runtime-provided: unclassified ({name})>"
+                | MethodBody.Abstract -> Console.WriteLine "<abstract: no IL>"
 
     let private applyGenericArgs
         (genericArgs : ImmutableArray<TypeDefn>)
@@ -668,6 +1025,14 @@ module Assembly =
             | TypeResolutionResult.FirstLoadAssy assyRef -> TypeResolutionResult.FirstLoadAssy assyRef
             | TypeResolutionResult.Resolved (targetAssembly, parentIdentity, _) ->
                 resolveNestedTypeInAssembly assemblies genericArgs targetAssembly parentIdentity target.Name
+        | TypeRefResolutionScope.ModuleDef _ ->
+            // The type is defined in the current module.
+            resolveTopLevelTypeInAssembly
+                assemblies
+                genericArgs
+                referencedInAssembly
+                (Some target.Namespace)
+                target.Name
         | TypeRefResolutionScope.ModuleRef moduleRef ->
             failwithf
                 "ModuleRef type resolution is not yet supported for type %s.%s in assembly %s via module ref %A"
@@ -764,22 +1129,6 @@ module DumpedAssembly =
             (getTypeSpec loadedAssemblies)
             ty
 
-    /// True iff the type transitively inherits from System.Delegate, excluding System.Delegate itself.
-    let isDelegate
-        (bct : BaseClassTypes<DumpedAssembly>)
-        (loadedAssemblies : ImmutableDictionary<string, DumpedAssembly>)
-        (ty : TypeInfo<'generic, 'field>)
-        : bool
-        =
-        TypeInfo.isDelegate
-            bct
-            (assemblies loadedAssemblies)
-            getName
-            getTypeDef
-            (getTypeRef loadedAssemblies)
-            (getTypeSpec loadedAssemblies)
-            ty
-
     /// Convenience: not a value type.
     let isReferenceType
         (bct : BaseClassTypes<DumpedAssembly>)
@@ -840,6 +1189,8 @@ module DumpedAssembly =
 [<RequireQualifiedAccess>]
 module AssemblyApi =
     let read = Assembly.read
+    let readFile = Assembly.readFile
+    let findManifestResource = Assembly.findManifestResource
     let resolveTypeRef = Assembly.resolveTypeRef
     let resolveTopLevelTypeFromName = Assembly.resolveTopLevelTypeFromName
 

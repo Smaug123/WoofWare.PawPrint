@@ -4,6 +4,8 @@
   <Project Path="WoofWare.PawPrint.App/WoofWare.PawPrint.App.fsproj" />
   <Project Path="WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj" />
   <Project Path="WoofWare.PawPrint.IlDump/WoofWare.PawPrint.IlDump.fsproj" />
+  <Project Path="WoofWare.PawPrint.Logging/WoofWare.PawPrint.Logging.fsproj" />
+  <Project Path="WoofWare.PawPrint.Performance/WoofWare.PawPrint.Performance.fsproj" />
   <Project Path="WoofWare.PawPrint.Test/WoofWare.PawPrint.Test.fsproj" />
   <Project Path="WoofWare.PawPrint/WoofWare.PawPrint.fsproj" />
   <Project Path="WoofWare.PawPrint.Test.FSharpPureCases/WoofWare.PawPrint.Test.FSharpPureCases.fsproj" />

@@ -1,0 +1,152 @@
+namespace WoofWare.PawPrint.Test
+
+open System.Collections.Immutable
+open System.IO
+open FsUnitTyped
+open Microsoft.CodeAnalysis
+open NUnit.Framework
+open WoofWare.DotnetRuntimeLocator
+open WoofWare.PawPrint
+open WoofWare.PawPrint.ExternImplementations
+
+/// Direct-call test for the `ThreadNative_YieldThread` QCall handler. Pins the
+/// outcome shape promised by the `WhatWeDid.VoluntaryYield` design: the handler
+/// must report `NativeHandlerResult.Yielded` (so the dispatcher reports
+/// `WhatWeDid.VoluntaryYield`) and must push Int32 0 (Interop.BOOL.FALSE) as
+/// the return value. See `NativeThreading.fs` for the reasoning behind FALSE
+/// over TRUE under the current `chooseNext` contract.
+[<TestFixture>]
+module TestNativeThreadYield =
+
+    let private trivialSource : string =
+        """
+public static class Entry
+{
+    public static int Main(string[] args)
+    {
+        return 0;
+    }
+}
+"""
+
+    let private prepareProgram (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory) : Program.PreparedProgram =
+        let image =
+            Roslyn.compileAssemblyWithResources "ThreadYieldTest" OutputKind.ConsoleApplication [] [] [ trivialSource ]
+
+        let dotnetRuntimes =
+            DotnetRuntime.SelectForDll (typeof<RunResult>.Assembly.Location)
+            |> ImmutableArray.CreateRange
+
+        use peImage = new MemoryStream (image)
+
+        match
+            Program.prepare
+                loggerFactory
+                (Some "ThreadYieldTest.cs")
+                peImage
+                dotnetRuntimes
+                (MockEnv.make ())
+                Map.empty
+                None
+                []
+        with
+        | Program.ProgramStartResult.Ready prepared -> prepared
+        | Program.ProgramStartResult.CompletedBeforeMain outcome ->
+            failwith $"expected program to be ready before Main, got %O{outcome}"
+
+    let private requiredTopLevelType
+        (assembly : DumpedAssembly)
+        (namespaceName : string)
+        (typeName : string)
+        : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        =
+        assembly.TryGetTopLevelTypeDef namespaceName typeName
+        |> Option.defaultWith (fun () -> failwith $"type %s{namespaceName}.%s{typeName} not found")
+
+    let private yieldInternalMethod
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        : IlMachineState *
+          TypeInfo<GenericParamFromMetadata, TypeDefn> *
+          MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+        =
+        let threadType =
+            requiredTopLevelType baseClassTypes.Corelib "System.Threading" "Thread"
+
+        let rawMethod =
+            threadType.Methods
+            |> List.filter (fun method ->
+                match method.NativeImport with
+                | Some import ->
+                    import.ModuleName = "QCall"
+                    && import.EntryPointName = "ThreadNative_YieldThread"
+                | None -> false
+            )
+            |> function
+                | [ method ] -> method
+                | [] -> failwith "QCall entry point ThreadNative_YieldThread not found on System.Threading.Thread"
+                | methods ->
+                    failwith
+                        $"QCall entry point ThreadNative_YieldThread was ambiguous on System.Threading.Thread: %d{methods.Length} matches"
+
+        let state, method, _declaringType =
+            ExecutionConcretization.concretizeMethodWithTypeGenerics
+                loggerFactory
+                baseClassTypes
+                ImmutableArray.Empty
+                rawMethod
+                None
+                baseClassTypes.Corelib.Name
+                ImmutableArray.Empty
+                state
+
+        state, threadType, method
+
+    [<Test>]
+    let ``ThreadNative_YieldThread reports Yielded and pushes Interop.BOOL.FALSE`` () : unit =
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+        let prepared = prepareProgram loggerFactory
+        let baseClassTypes = prepared.BaseClassTypes
+
+        let state, threadType, qCallMethod =
+            yieldInternalMethod loggerFactory baseClassTypes prepared.State
+
+        let instruction =
+            { state.ThreadState.[prepared.EntryThread].MethodState with
+                ExecutingMethod = qCallMethod
+                Arguments = ImmutableArray.Empty
+            }
+
+        let ctx : NativeCallContext =
+            {
+                LoggerFactory = loggerFactory
+                Implementations = MockEnv.make ()
+                BaseClassTypes = baseClassTypes
+                Thread = prepared.EntryThread
+                State = state
+                Instruction = instruction
+                TargetAssembly = baseClassTypes.Corelib
+                TargetType = threadType
+            }
+
+        let stateAfter =
+            match NativeThreading.tryExecuteQCall "ThreadNative_YieldThread" ctx with
+            | Some (NativeHandlerResult.Yielded (state, effect)) ->
+                // The handler must not emit any externally-observable effect — Thread.Yield is
+                // a scheduler hint, not an I/O operation. The dispatcher will translate
+                // `Yielded` into `ExecutionResult.Stepped (_, WhatWeDid.VoluntaryYield, effect)`,
+                // so any non-`NoEffect` here would leak through to the driver.
+                effect |> shouldEqual StepEffect.NoEffect
+                state
+            | Some other -> failwith $"unexpected ThreadNative_YieldThread execution result: %O{other}"
+            | None -> failwith "ThreadNative_YieldThread QCall did not match"
+
+        let returnValue, _ = IlMachineState.popEvalStack prepared.EntryThread stateAfter
+
+        // Interop.BOOL.FALSE is Int32 0; pushed by the handler so the IL caller's
+        // `YieldInternal() != Interop.BOOL.FALSE` evaluates to `false`. Returning TRUE here
+        // would lie under the current `Scheduler.chooseNext` contract (no guarantee a
+        // different thread will run before the yielder observes the return).
+        returnValue |> shouldEqual (EvalStackValue.Int32 0)

@@ -8,6 +8,7 @@ open Microsoft.FSharp.Core
 [<CustomEquality>]
 type TypeRefResolutionScope =
     | Assembly of AssemblyReferenceHandle
+    | ModuleDef of ModuleDefinitionHandle
     | ModuleRef of ModuleReferenceHandle
     | TypeRef of TypeReferenceHandle
 
@@ -20,6 +21,8 @@ type TypeRefResolutionScope =
         match this, other with
         | TypeRefResolutionScope.Assembly a1, TypeRefResolutionScope.Assembly a2 -> a1 = a2
         | TypeRefResolutionScope.Assembly _, _ -> false
+        | TypeRefResolutionScope.ModuleDef m1, TypeRefResolutionScope.ModuleDef m2 -> m1 = m2
+        | TypeRefResolutionScope.ModuleDef _, _ -> false
         | TypeRefResolutionScope.ModuleRef m1, TypeRefResolutionScope.ModuleRef m2 -> m1 = m2
         | TypeRefResolutionScope.ModuleRef _, _ -> false
         | TypeRefResolutionScope.TypeRef t1, TypeRefResolutionScope.TypeRef t2 -> t1 = t2
@@ -28,8 +31,9 @@ type TypeRefResolutionScope =
     override this.GetHashCode () : int =
         match this with
         | TypeRefResolutionScope.Assembly h -> hash (1, h)
-        | TypeRefResolutionScope.ModuleRef h -> hash (2, h)
-        | TypeRefResolutionScope.TypeRef h -> hash (3, h)
+        | TypeRefResolutionScope.ModuleDef h -> hash (2, h)
+        | TypeRefResolutionScope.ModuleRef h -> hash (3, h)
+        | TypeRefResolutionScope.TypeRef h -> hash (4, h)
 
     interface IComparable<TypeRefResolutionScope> with
         member this.CompareTo other =
@@ -37,14 +41,18 @@ type TypeRefResolutionScope =
             | TypeRefResolutionScope.Assembly h1, TypeRefResolutionScope.Assembly h2 ->
                 // this happens to get the underlying int
                 h1.GetHashCode().CompareTo (h2.GetHashCode ())
-            | TypeRefResolutionScope.Assembly _, TypeRefResolutionScope.ModuleRef _ -> -1
-            | TypeRefResolutionScope.Assembly _, TypeRefResolutionScope.TypeRef _ -> -1
-            | TypeRefResolutionScope.ModuleRef _, Assembly _ -> 1
-            | TypeRefResolutionScope.ModuleRef m1, ModuleRef m2 -> m1.GetHashCode().CompareTo (m2.GetHashCode ())
-            | TypeRefResolutionScope.ModuleRef _, TypeRef _ -> -1
-            | TypeRefResolutionScope.TypeRef _, Assembly _ -> 1
-            | TypeRefResolutionScope.TypeRef _, ModuleRef _ -> 1
-            | TypeRefResolutionScope.TypeRef t1, TypeRef t2 -> t1.GetHashCode().CompareTo (t2.GetHashCode ())
+            | TypeRefResolutionScope.Assembly _, _ -> -1
+            | _, TypeRefResolutionScope.Assembly _ -> 1
+            | TypeRefResolutionScope.ModuleDef m1, TypeRefResolutionScope.ModuleDef m2 ->
+                m1.GetHashCode().CompareTo (m2.GetHashCode ())
+            | TypeRefResolutionScope.ModuleDef _, _ -> -1
+            | _, TypeRefResolutionScope.ModuleDef _ -> 1
+            | TypeRefResolutionScope.ModuleRef m1, TypeRefResolutionScope.ModuleRef m2 ->
+                m1.GetHashCode().CompareTo (m2.GetHashCode ())
+            | TypeRefResolutionScope.ModuleRef _, _ -> -1
+            | _, TypeRefResolutionScope.ModuleRef _ -> 1
+            | TypeRefResolutionScope.TypeRef t1, TypeRefResolutionScope.TypeRef t2 ->
+                t1.GetHashCode().CompareTo (t2.GetHashCode ())
 
     interface IComparable with
         member this.CompareTo (other : obj) : int =
@@ -83,6 +91,7 @@ module TypeRef =
         let resolutionScope =
             match MetadataToken.ofEntityHandle typeRef.ResolutionScope with
             | MetadataToken.AssemblyReference ref -> TypeRefResolutionScope.Assembly ref
+            | MetadataToken.ModuleDefinition ref -> TypeRefResolutionScope.ModuleDef ref
             | MetadataToken.ModuleReference ref -> TypeRefResolutionScope.ModuleRef ref
             | MetadataToken.TypeReference ref -> TypeRefResolutionScope.TypeRef ref
             | handle -> failwith $"Unexpected TypeRef resolution scope: {handle}"

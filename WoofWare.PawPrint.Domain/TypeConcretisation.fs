@@ -9,12 +9,37 @@ type ConcreteTypeHandle =
     | Concrete of int
     | Byref of ConcreteTypeHandle
     | Pointer of ConcreteTypeHandle
+    /// A zero-lower-bound single-dimensional array (szarray in IL), e.g. int[].
+    | OneDimArrayZero of element : ConcreteTypeHandle
+    /// A general array with explicit rank (potentially multi-dimensional), e.g. int[,] (rank=2).
+    /// Rank is tracked so that int[,] and int[,,] are distinct types.
+    | Array of element : ConcreteTypeHandle * rank : int
+    /// A function pointer type (e.g. `delegate*<int, int>` in C#). Distinct fnptr types
+    /// have distinct signatures, so the signature is the type identity.
+    | FunctionPointer of TypeMethodSignature<ConcreteTypeHandle>
 
     override this.ToString () =
         match this with
         | ConcreteTypeHandle.Byref b -> "&" + b.ToString ()
         | ConcreteTypeHandle.Concrete i -> i.ToString ()
         | ConcreteTypeHandle.Pointer i -> "*" + i.ToString ()
+        | ConcreteTypeHandle.OneDimArrayZero e -> e.ToString () + "[]"
+        | ConcreteTypeHandle.Array (e, rank) ->
+            let inside = if rank <= 1 then "*" else String.replicate (rank - 1) ","
+
+            e.ToString () + "[" + inside + "]"
+        | ConcreteTypeHandle.FunctionPointer signature ->
+            let args =
+                signature.ParameterTypes
+                |> List.map (fun h -> h.ToString ())
+                |> String.concat " -> "
+
+            let returnStr =
+                match signature.ReturnType with
+                | MethodReturnType.Void -> "void"
+                | MethodReturnType.Returns ty -> ty.ToString ()
+
+            $"*({args} -> {returnStr})"
 
 type AllConcreteTypes =
     private
@@ -39,6 +64,9 @@ module AllConcreteTypes =
         | ConcreteTypeHandle.Concrete id -> this.Mapping |> Map.tryFind id
         | ConcreteTypeHandle.Byref _ -> None // Byref types are not stored in the mapping
         | ConcreteTypeHandle.Pointer _ -> None // Pointer types are not stored in the mapping
+        | ConcreteTypeHandle.OneDimArrayZero _ -> None // Array types are structural wrappers
+        | ConcreteTypeHandle.Array _ -> None // Array types are structural wrappers
+        | ConcreteTypeHandle.FunctionPointer _ -> None // FunctionPointer types are structural wrappers
 
     let findExistingConcreteType
         (concreteTypes : AllConcreteTypes)
@@ -160,7 +188,8 @@ module ConcreteActivePatterns =
             | _ -> None
         | _ -> None
 
-    let (|ConcreteNonGenericArray|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) =
+    /// Matches the System.Array metadata type exactly.
+    let (|ConcreteSystemArray|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) =
         match handle with
         | ConcreteTypeHandle.Concrete id ->
             match concreteTypes.Mapping |> Map.tryFind id with
@@ -172,24 +201,21 @@ module ConcreteActivePatterns =
                 ->
                 Some ()
             | _ -> None
-        | _ -> None
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ -> None
 
+    /// Matches an array type whose element type is the given handle.
     let (|ConcreteGenericArray|_|)
-        (concreteTypes : AllConcreteTypes)
+        (_concreteTypes : AllConcreteTypes)
         (eltType : ConcreteTypeHandle)
         (handle : ConcreteTypeHandle)
         =
         match handle with
-        | ConcreteTypeHandle.Concrete id ->
-            match concreteTypes.Mapping |> Map.tryFind id with
-            | Some ct when
-                ct.Assembly.Name = "System.Private.CoreLib"
-                && ct.Namespace = "System"
-                && ct.Name = "Array"
-                && Seq.tryExactlyOne ct.Generics = Some eltType
-                ->
-                Some ()
-            | _ -> None
+        | ConcreteTypeHandle.OneDimArrayZero e when e = eltType -> Some ()
+        | ConcreteTypeHandle.Array (e, _) when e = eltType -> Some ()
         | _ -> None
 
     let (|ConcreteObj|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) : unit option =
@@ -362,6 +388,40 @@ module ConcreteActivePatterns =
             | None -> None
         | _ -> None
 
+    let (|ConcreteIntPtr|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) : unit option =
+        match handle with
+        | ConcreteTypeHandle.Concrete id ->
+            match concreteTypes.Mapping |> Map.tryFind id with
+            | Some ct ->
+                if
+                    ct.Assembly.Name = "System.Private.CoreLib"
+                    && ct.Namespace = "System"
+                    && ct.Name = "IntPtr"
+                    && ct.Generics.IsEmpty
+                then
+                    Some ()
+                else
+                    None
+            | None -> None
+        | _ -> None
+
+    let (|ConcreteUIntPtr|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) : unit option =
+        match handle with
+        | ConcreteTypeHandle.Concrete id ->
+            match concreteTypes.Mapping |> Map.tryFind id with
+            | Some ct ->
+                if
+                    ct.Assembly.Name = "System.Private.CoreLib"
+                    && ct.Namespace = "System"
+                    && ct.Name = "UIntPtr"
+                    && ct.Generics.IsEmpty
+                then
+                    Some ()
+                else
+                    None
+            | None -> None
+        | _ -> None
+
     /// Active pattern to match byref types
     let (|ConcreteByref|_|) (handle : ConcreteTypeHandle) =
         match handle with
@@ -372,6 +432,24 @@ module ConcreteActivePatterns =
     let (|ConcretePointer|_|) (handle : ConcreteTypeHandle) =
         match handle with
         | ConcreteTypeHandle.Pointer inner -> Some inner
+        | _ -> None
+
+    /// Active pattern to match szarray types (zero-lower-bound one-dimensional arrays)
+    let (|ConcreteOneDimArrayZero|_|) (handle : ConcreteTypeHandle) =
+        match handle with
+        | ConcreteTypeHandle.OneDimArrayZero inner -> Some inner
+        | _ -> None
+
+    /// Active pattern to match general array types, returning (element, rank).
+    let (|ConcreteArray|_|) (handle : ConcreteTypeHandle) =
+        match handle with
+        | ConcreteTypeHandle.Array (inner, rank) -> Some (inner, rank)
+        | _ -> None
+
+    /// Active pattern to match function pointer types, returning the concretized signature.
+    let (|ConcreteFunctionPointer|_|) (handle : ConcreteTypeHandle) =
+        match handle with
+        | ConcreteTypeHandle.FunctionPointer signature -> Some signature
         | _ -> None
 
 type IAssemblyLoad =
@@ -501,41 +579,20 @@ module TypeConcretization =
             // Create and add the concrete type (primitives have no generic arguments)
             createAndAddConcreteType ctx identity typeInfo.Namespace typeInfo.Name ImmutableArray.Empty // Primitives have no generic parameters
 
-    let private concretizeArrayLike
-        (ctx : ConcretizationContext<'corelib>)
-        (elementHandle : ConcreteTypeHandle)
-        : ConcreteTypeHandle * ConcretizationContext<'corelib>
-        =
-        let arrayTypeInfo = ctx.BaseTypes.Array
-
-        let identity =
-            ResolvedTypeIdentity.ofTypeDefinition arrayTypeInfo.Assembly arrayTypeInfo.TypeDefHandle
-
-        match findExistingType ctx.ConcreteTypes identity (ImmutableArray.Create elementHandle) with
-        | Some handle -> handle, ctx
-        | None ->
-            // Create and add the concrete array type
-            createAndAddConcreteType
-                ctx
-                identity
-                arrayTypeInfo.Namespace
-                arrayTypeInfo.Name
-                (ImmutableArray.Create elementHandle) // Array<T> has one generic parameter
-
     let private concretizeArray
         (ctx : ConcretizationContext<'corelib>)
         (elementHandle : ConcreteTypeHandle)
-        (shape : 'a)
+        (rank : int)
         : ConcreteTypeHandle * ConcretizationContext<'corelib>
         =
-        concretizeArrayLike ctx elementHandle
+        ConcreteTypeHandle.Array (elementHandle, rank), ctx
 
     let private concretizeOneDimArray
         (ctx : ConcretizationContext<'corelib>)
         (elementHandle : ConcreteTypeHandle)
         : ConcreteTypeHandle * ConcretizationContext<'corelib>
         =
-        concretizeArrayLike ctx elementHandle
+        ConcreteTypeHandle.OneDimArrayZero elementHandle, ctx
 
     let concretizeTypeDefinition
         (ctx : ConcretizationContext<'corelib>)
@@ -601,11 +658,11 @@ module TypeConcretization =
         match typeDefn with
         | TypeDefn.PrimitiveType prim -> concretizePrimitive ctx prim
 
-        | TypeDefn.Array (elementType, shape) ->
+        | TypeDefn.Array (elementType, rank) ->
             let elementHandle, ctx =
                 concretizeType ctx loadAssembly assembly typeGenerics methodGenerics elementType
 
-            concretizeArray ctx elementHandle shape
+            concretizeArray ctx elementHandle rank
 
         | TypeDefn.OneDimensionalArrayLowerBoundZero elementType ->
             let elementHandle, ctx =
@@ -650,9 +707,22 @@ module TypeConcretization =
             // Return a Pointer constructor wrapping the element type
             ConcreteTypeHandle.Pointer elementHandle, ctx
 
+        | TypeDefn.Pinned elementType ->
+            // `pinned` is a GC-pinning annotation that appears on local-variable signatures emitted
+            // by the C# `fixed` statement. In the real CLR it tells the GC not to relocate the
+            // referent; we have no moving GC, so pinning is semantically a no-op and the element
+            // type's own concretization handle is the right representation.
+            concretizeType ctx loadAssembly assembly typeGenerics methodGenerics elementType
+
+        | TypeDefn.Modified (unmodifiedType, _modifierType, _modificationRequired) ->
+            // Custom modifiers are metadata annotations on the signature. Runtime type
+            // identity and storage shape follow the unmodified type.
+            concretizeType ctx loadAssembly assembly typeGenerics methodGenerics unmodifiedType
+
         | TypeDefn.Void ->
-            // Void isn't a real runtime type, but we assign it a concretization entry anyway
-            // Use System.Void from the base class types
+            // Method return signatures represent `void` separately from runtime types.
+            // Type signatures can still mention `void`, for example as the element type of `void*`.
+            // In those positions, System.Void is the canonical concrete type identity.
             let voidTypeInfo = ctx.BaseTypes.Void
 
             match
@@ -671,7 +741,55 @@ module TypeConcretization =
                     voidTypeInfo.Name
                     ImmutableArray.Empty // Void has no generic parameters
 
-        | _ -> failwithf "TODO: Concretization of %A not implemented" typeDefn
+        | TypeDefn.FunctionPointer signature ->
+            // Function pointer types are structural: the signature is the type identity.
+            // Concretize each parameter and the return type under the current generic context.
+            let concretized, ctx =
+                concretizeMethodSignature ctx loadAssembly assembly typeGenerics methodGenerics signature
+
+            ConcreteTypeHandle.FunctionPointer concretized, ctx
+
+    and concretizeMethodSignature
+        (ctx : ConcretizationContext<DumpedAssembly>)
+        (loadAssembly : IAssemblyLoad)
+        (assembly : AssemblyName)
+        (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (signature : TypeMethodSignature<TypeDefn>)
+        : TypeMethodSignature<ConcreteTypeHandle> * ConcretizationContext<DumpedAssembly>
+        =
+        // Concretize return type only when the method actually returns a value.
+        let ctx, returnType =
+            MethodReturnType.map
+                ctx
+                (fun ctx ty ->
+                    let handle, ctx =
+                        concretizeType ctx loadAssembly assembly typeGenerics methodGenerics ty
+
+                    ctx, handle
+                )
+                signature.ReturnType
+
+        let paramHandles = ResizeArray<ConcreteTypeHandle> signature.ParameterTypes.Length
+        let mutable ctx = ctx
+
+        for paramType in signature.ParameterTypes do
+            let handle, newCtx =
+                concretizeType ctx loadAssembly assembly typeGenerics methodGenerics paramType
+
+            paramHandles.Add handle
+            ctx <- newCtx
+
+        let concretized =
+            {
+                Header = signature.Header
+                ReturnType = returnType
+                ParameterTypes = paramHandles |> List.ofSeq
+                GenericParameterCount = signature.GenericParameterCount
+                RequiredParameterCount = signature.RequiredParameterCount
+            }
+
+        concretized, ctx
 
     and private concretizeGenericInstantiation
         (ctx : ConcretizationContext<DumpedAssembly>)
@@ -765,32 +883,7 @@ module Concretization =
         (signature : TypeMethodSignature<TypeDefn>)
         : TypeMethodSignature<ConcreteTypeHandle> * TypeConcretization.ConcretizationContext<DumpedAssembly>
         =
-
-        // Concretize return type
-        let returnHandle, ctx =
-            TypeConcretization.concretizeType ctx loadAssembly assembly typeArgs methodArgs signature.ReturnType
-
-        // Concretize parameter types
-        let paramHandles = ResizeArray<ConcreteTypeHandle> ()
-        let mutable ctx = ctx
-
-        for paramType in signature.ParameterTypes do
-            let handle, newCtx =
-                TypeConcretization.concretizeType ctx loadAssembly assembly typeArgs methodArgs paramType
-
-            paramHandles.Add handle
-            ctx <- newCtx
-
-        let newSignature =
-            {
-                Header = signature.Header
-                ReturnType = returnHandle
-                ParameterTypes = paramHandles |> Seq.toList
-                GenericParameterCount = signature.GenericParameterCount
-                RequiredParameterCount = signature.RequiredParameterCount
-            }
-
-        newSignature, ctx
+        TypeConcretization.concretizeMethodSignature ctx loadAssembly assembly typeArgs methodArgs signature
 
     /// Helper to ensure base type assembly is loaded
     let private loadAssemblyReferenceByName
@@ -1002,11 +1095,10 @@ module Concretization =
                 methodArgs
                 method.Signature
 
-        // Concretize local variables
-        let instructions, concCtx2 =
-            match method.Instructions with
-            | None -> None, concCtx
-            | Some instr ->
+        // Concretize local variables (only IL bodies carry them).
+        let body, concCtx2 =
+            match method.Body with
+            | MethodBody.Il instr ->
                 let locals, updatedCtx =
                     match instr.LocalVars with
                     | None -> None, concCtx
@@ -1022,7 +1114,11 @@ module Concretization =
 
                         Some handles, ctx
 
-                Some (MethodInstructions.setLocalVars locals instr), updatedCtx
+                MethodBody.Il (MethodInstructions.setLocalVars locals instr), updatedCtx
+            | MethodBody.InternalCall -> MethodBody.InternalCall, concCtx
+            | MethodBody.PInvoke -> MethodBody.PInvoke, concCtx
+            | MethodBody.RuntimeProvided rb -> MethodBody.RuntimeProvided rb, concCtx
+            | MethodBody.Abstract -> MethodBody.Abstract, concCtx
 
         // Map generics to handles
         let genericHandles =
@@ -1034,7 +1130,7 @@ module Concretization =
                 DeclaringType = concretizedDeclaringType
                 Handle = method.Handle
                 Name = method.Name
-                Instructions = instructions
+                Body = body
                 Parameters = method.Parameters
                 Generics = genericHandles
                 Signature = signature
@@ -1042,6 +1138,7 @@ module Concretization =
                 CustomAttributes = method.CustomAttributes
                 MethodAttributes = method.MethodAttributes
                 ImplAttributes = method.ImplAttributes
+                NativeImport = method.NativeImport
                 IsStatic = method.IsStatic
             }
 
@@ -1065,6 +1162,24 @@ module Concretization =
                 concreteHandleToTypeDefn baseClassTypes elementHandle concreteTypes assemblies
 
             TypeDefn.Pointer elementType
+        | ConcreteTypeHandle.OneDimArrayZero elementHandle ->
+            let elementType =
+                concreteHandleToTypeDefn baseClassTypes elementHandle concreteTypes assemblies
+
+            TypeDefn.OneDimensionalArrayLowerBoundZero elementType
+        | ConcreteTypeHandle.Array (elementHandle, rank) ->
+            let elementType =
+                concreteHandleToTypeDefn baseClassTypes elementHandle concreteTypes assemblies
+
+            TypeDefn.Array (elementType, rank)
+        | ConcreteTypeHandle.FunctionPointer signature ->
+            let _, mapped =
+                TypeMethodSignature.map
+                    ()
+                    (fun () h -> (), concreteHandleToTypeDefn baseClassTypes h concreteTypes assemblies)
+                    signature
+
+            TypeDefn.FunctionPointer mapped
         | ConcreteTypeHandle.Concrete _ ->
             match AllConcreteTypes.lookup handle concreteTypes with
             | None -> failwith "Logic error: handle not found"

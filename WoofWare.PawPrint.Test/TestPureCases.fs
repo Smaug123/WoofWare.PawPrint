@@ -17,27 +17,10 @@ module TestPureCases =
 
     let unimplemented =
         [
-            "CrossAssemblyTypes.cs"
-            "EnumSemantics.cs"
-            "OverlappingStructs.cs"
-            "AdvancedStructLayout.cs"
-            "Threads.cs"
-            "ComplexTryCatch.cs"
-            "ResizeArray.cs"
-            "LdtokenField.cs"
-            "GenericEdgeCases.cs"
-            "UnsafeAs.cs"
-            "ThrowingCctorProperties.cs"
-            "ThrowingCctorStackTrace.cs"
-            "NullDereferenceTest.cs"
-            "CastclassFailures.cs"
-            "CastClassBoxing.cs" // Unbox_Any unimplemented
-            "CastClassEnum.cs" // Unbox_Any unimplemented
-            "CastClassCrossAssembly.cs" // GetMethodTable intrinsic unimplemented
-            "CastClassArray.cs" // bad generics in Array.Length path
-            "CastClassInvalid.cs" // try/catch needs Monitor + RuntimeTypeHandle.GetAssembly
-            "IsinstPatternMatching.cs" // conv_i4 from float unimplemented
-            "FieldShadowing.cs" // field lookup is name-based, shadowed fields collide
+            "AdvancedStructLayout.cs" // past MarshalNative_SizeOfHelper for ByValTStr and SystemNative_Malloc / SystemNative_Free / Marshal.AllocHGlobal / FreeHGlobal; now blocked downstream at the unimplemented MarshalNative_TryGetStructMarshalStub QCall (CoreLib's Marshal.StructureToPtr path)
+            "MarshalStructureToPtrDateTimeField.cs" // MarshalNative_TryGetStructMarshalStub doesn't yet synthesise an IL stub for has-layout-non-blittable structs; CoreCLR writes an 8-byte OADate (`MARSHAL_TYPE_DATE`) for a `DateTime` field, but PawPrint currently rejects the struct loudly rather than memmove-ing the managed `_dateData` bytes. Real implementation needs the OADate-conversion stub.
+            "MarshalStructureToPtrDecimalField.cs" // MarshalNative_TryGetStructMarshalStub now rejects Decimal fields (CoreCLR routes them through `NFT_DECIMAL` stub synthesis because native `DECIMAL` is 8-byte aligned while managed `Decimal` is 4-byte aligned). Two follow-on gaps remain before this test can pass: (1) `Marshal.SizeOf<{int; decimal}>()` returns 20 instead of 24 because the marshal-size walk in `CliValueType.TryComputeMarshalSize` doesn't bump Decimal's field alignment to 8, and (2) the actual Decimal-marshal stub that writes a 16-byte native `DECIMAL` at the 8-byte-aligned offset.
+            "MarshalStructureToPtrIntPtrField.cs" // Classifier+Memmove widening now lets `Marshal.StructureToPtr` reach the byte copy for `IntPtr`/`UIntPtr` fields, but the subsequent `Marshal.ReadInt32(ptr, ofs)` (Marshal.cs:332) does `(int)addr & 0x3` as an alignment check, hitting `Conv_I4` of a managed pointer to a native memory block. Needs alignment-aware `Conv_I4`/`Conv_U4` on managed pointers (or equivalent) to land.
         ]
         |> Set.ofList
 
@@ -45,52 +28,30 @@ module TestPureCases =
         let empty = MockEnv.make ()
 
         [
-            "BasicLock.cs",
-            (1,
-             { empty with
-                 System_Threading_Monitor = System_Threading_Monitor.passThru
-             })
-            "MonitorEnterRefBool.cs",
-            (1,
-             { empty with
-                 System_Threading_Monitor = System_Threading_Monitor.passThru
-             })
             "ProcessorCount.cs",
-            (0,
-             { empty with
-                 System_Environment = System_Environment.passThru
-             })
+            { empty with
+                System_Environment = System_Environment.passThru
+            }
+            "EnvironmentCurrentManagedThreadId.cs",
+            { empty with
+                System_Environment = System_Environment.passThru
+            }
+            "EnvironmentCurrentManagedThreadIdThread.cs",
+            { empty with
+                System_Environment = System_Environment.passThru
+            }
+            "ResizeArray.cs",
+            { empty with
+                System_Environment = System_Environment.passThru
+            }
         ]
         |> Map.ofList
 
-    let unimplementedMockTests =
-        let empty = MockEnv.make ()
-
-        [
-            "InterfaceDispatch.cs",
-            (0,
-             { empty with
-                 System_Threading_Monitor = System_Threading_Monitor.passThru
-             })
-        ]
-        |> Map.ofList
+    let unimplementedMockTests : Map<string, NativeImpls> = Map.empty
 
     let expectsUnhandledException = [ "UnhandledException.cs" ] |> Set.ofList
 
-    let customExitCodes =
-        [
-            "NoOp.cs", 1
-            "CustomDelegate.cs", 8
-            "InstanceDelegate.cs", 7
-            "ExceptionWithNoOpFinally.cs", 3
-            "ExceptionWithNoOpCatch.cs", 10
-            "TryCatchWithThrowInBody.cs", 4
-            "IsinstSemantics.cs", 127
-            "ResizeArray.cs", 114
-            "Threads.cs", 3
-            "TriangleNumber.cs", 10
-        ]
-        |> Map.ofList
+    let customExitCodes = [ "ExceptionWithNoOpFinally.cs", 3 ] |> Map.ofList
 
     let allPure =
         assy.GetManifestResourceNames ()
@@ -116,10 +77,20 @@ module TestPureCases =
         )
         |> Seq.toList
 
-    let runTest (case : EndToEndTestCase) : unit =
-        let source = Assembly.getEmbeddedResourceAsString case.FileName assy
+    let runPawPrintSource
+        (sourceName : string)
+        (source : string)
+        (nativeImpls : NativeImpls)
+        (env : Map<string, string>)
+        (assertResult : byte array -> RunOutcome -> unit)
+        : unit
+        =
         let image = Roslyn.compile [ source ]
-        let messages, loggerFactory = LoggerFactory.makeTest ()
+
+        let messages, loggerFactory =
+            LoggerFactory.makeTestWithProperties [ "source_file", sourceName ]
+
+        use _loggerFactoryResource = loggerFactory
 
         let dotnetRuntimes =
             DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
@@ -127,46 +98,367 @@ module TestPureCases =
         use peImage = new MemoryStream (image)
 
         try
-            let realResult = RealRuntime.executeWithRealRuntime [||] image
-
             let pawPrintResult =
-                Program.run loggerFactory (Some case.FileName) peImage dotnetRuntimes case.NativeImpls []
+                Program.run loggerFactory (Some sourceName) peImage dotnetRuntimes nativeImpls env None []
 
-            match realResult, pawPrintResult with
-            | RealRuntimeResult.NormalExit exitCode, RunOutcome.NormalExit (terminalState, terminatingThread) ->
-                exitCode |> shouldEqual case.ExpectedReturnCode
-
-                let pawPrintExitCode =
-                    match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-                    | [] -> failwith "expected program to return a value, but it returned void"
-                    | head :: _ ->
-                        match head with
-                        | EvalStackValue.Int32 i -> i
-                        | ret -> failwith $"expected program to return an int, but it returned %O{ret}"
-
-                pawPrintExitCode |> shouldEqual exitCode
-            | RealRuntimeResult.UnhandledException _, RunOutcome.GuestUnhandledException _ ->
-                if not case.ExpectsUnhandledException then
-                    failwith
-                        $"Both runtimes threw unhandled exceptions for %s{case.FileName}, but this test was not expected to throw. Add to expectsUnhandledException if intentional."
-            | RealRuntimeResult.NormalExit exitCode, RunOutcome.GuestUnhandledException (_, _, exn) ->
-                failwith
-                    $"Real runtime exited normally with code %d{exitCode}, but PawPrint threw unhandled exception: %O{exn.ExceptionObject}"
-            | RealRuntimeResult.UnhandledException realExn, RunOutcome.NormalExit (terminalState, terminatingThread) ->
-                let pawPrintExitCode =
-                    match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-                    | [] -> None
-                    | EvalStackValue.Int32 i :: _ -> Some i
-                    | _ -> None
-
-                failwith
-                    $"Real runtime threw unhandled %s{realExn.GetType().Name}, but PawPrint exited normally (code: %O{pawPrintExitCode})"
-
+            assertResult image pawPrintResult
         with _ ->
             for message in messages () do
                 System.Console.Error.WriteLine $"{message}"
 
             reraise ()
+
+    let runTest (case : EndToEndTestCase) : unit =
+        let source = Assembly.getEmbeddedResourceAsString case.FileName assy
+
+        runPawPrintSource
+            case.FileName
+            source
+            case.NativeImpls
+            case.Environment
+            (fun image pawPrintResult ->
+                let realResult = RealRuntime.executeWithRealRuntime [||] image
+
+                // NormalExit and ProcessExit both represent a clean process termination with
+                // an exit code on the terminating thread's eval stack; the only difference is
+                // whether the guest returned from Main or called Environment.Exit. The real
+                // runtime surfaces both as RealRuntimeResult.NormalExit, so normalise here.
+                let normalisedPawPrint =
+                    match pawPrintResult with
+                    | RunOutcome.ProcessExit (s, t) -> RunOutcome.NormalExit (s, t)
+                    | other -> other
+
+                match realResult, normalisedPawPrint with
+                | RealRuntimeResult.NormalExit exitCode, RunOutcome.NormalExit (terminalState, terminatingThread) ->
+                    exitCode |> shouldEqual case.ExpectedReturnCode
+
+                    let pawPrintExitCode =
+                        match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
+                        | [] -> failwith "expected program to return a value, but it returned void"
+                        | head :: _ ->
+                            match head with
+                            | EvalStackValue.Int32 i -> i
+                            | ret -> failwith $"expected program to return an int, but it returned %O{ret}"
+
+                    pawPrintExitCode |> shouldEqual exitCode
+                | RealRuntimeResult.UnhandledException _, RunOutcome.GuestUnhandledException _ ->
+                    if not case.ExpectsUnhandledException then
+                        failwith
+                            $"Both runtimes threw unhandled exceptions for %s{case.FileName}, but this test was not expected to throw. Add to expectsUnhandledException if intentional."
+                | RealRuntimeResult.NormalExit exitCode, RunOutcome.GuestUnhandledException (_, _, exn) ->
+                    failwith
+                        $"Real runtime exited normally with code %d{exitCode}, but PawPrint threw unhandled exception: %O{exn.ExceptionObject}"
+                | RealRuntimeResult.UnhandledException realExn,
+                  RunOutcome.NormalExit (terminalState, terminatingThread) ->
+                    let pawPrintExitCode =
+                        match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
+                        | [] -> None
+                        | EvalStackValue.Int32 i :: _ -> Some i
+                        | _ -> None
+
+                    failwith
+                        $"Real runtime threw unhandled %s{realExn.GetType().Name}, but PawPrint exited normally (code: %O{pawPrintExitCode})"
+                | _, RunOutcome.FailFast (_, _, message) ->
+                    let m = message |> Option.defaultValue "<no message>"
+
+                    failwith $"PawPrint guest called Environment.FailFast for %s{case.FileName}: %s{m}"
+                | _, RunOutcome.SignalTerminated (_, signal) ->
+                    failwith
+                        $"PawPrint guest was terminated by POSIX signal %O{signal} for %s{case.FileName}; this test does not exercise signal-driven termination"
+                | _, RunOutcome.ProcessExit _ -> failwith "unreachable: normalised away above"
+            )
+
+    [<Test>]
+    let ``Unhandled rethrow preserves original throw stack frame`` () =
+        let source =
+            """
+using System;
+
+class StackTraceSentinelException : Exception
+{
+}
+
+class Program
+{
+    static void Blow()
+    {
+        throw new StackTraceSentinelException();
+    }
+
+    static int Main(string[] args)
+    {
+        try
+        {
+            Blow();
+        }
+        catch
+        {
+            throw;
+        }
+
+        return 1;
+    }
+}
+"""
+
+        runPawPrintSource
+            "RethrowStackTrace.cs"
+            source
+            (MockEnv.make ())
+            Map.empty
+            (fun _image pawPrintResult ->
+                match pawPrintResult with
+                | RunOutcome.GuestUnhandledException (_, _, exn) ->
+                    match exn.StackTrace with
+                    | firstFrame :: _ -> firstFrame.Method.Name |> shouldEqual "Blow"
+                    | [] -> failwith "Expected an unhandled rethrow to keep the original throw stack frame"
+                | outcome -> failwith $"Expected an unhandled rethrow, got %O{outcome}"
+            )
+
+    [<Test>]
+    let ``Mock environment exposes invariant globalization switch`` () =
+        let source =
+            """
+using System;
+
+class Program
+{
+    static int Main(string[] args)
+    {
+        return Environment.GetEnvironmentVariable("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT") == "1" ? 0 : 1;
+    }
+}
+"""
+
+        runPawPrintSource
+            "MockEnvironmentInvariantGlobalization.cs"
+            source
+            (MockEnv.make ())
+            Map.empty
+            (fun _image pawPrintResult ->
+                match pawPrintResult with
+                | RunOutcome.NormalExit (terminalState, terminatingThread) ->
+                    match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
+                    | EvalStackValue.Int32 exitCode :: _ -> exitCode |> shouldEqual 0
+                    | [] -> failwith "expected program to return an int, but it returned void"
+                    | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
+                | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
+                | RunOutcome.FailFast (_, _, message) ->
+                    let m = message |> Option.defaultValue "<no message>"
+                    failwith $"expected normal exit, got Environment.FailFast: %s{m}"
+                | RunOutcome.SignalTerminated (_, signal) ->
+                    failwith $"expected normal exit, got POSIX signal termination: %O{signal}"
+                | RunOutcome.GuestUnhandledException (_, _, exn) ->
+                    failwith $"guest threw unhandled exception: %O{exn.ExceptionObject}"
+            )
+
+    [<Test>]
+    let ``Mock environment returns configured variables and null for missing variables`` () =
+        let source =
+            """
+using System;
+
+class Program
+{
+    static int Main(string[] args)
+    {
+        if (Environment.GetEnvironmentVariable("PAWPRINT_TEST_VARIABLE") != "configured")
+        {
+            return 1;
+        }
+
+        if (Environment.GetEnvironmentVariable("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT") != "1")
+        {
+            return 5;
+        }
+
+        string missing = Environment.GetEnvironmentVariable("PAWPRINT_MISSING_VARIABLE");
+
+        if (missing == "configured")
+        {
+            return 2;
+        }
+
+        if (missing == "")
+        {
+            return 3;
+        }
+
+        if (missing != null)
+        {
+            return 4;
+        }
+
+        return 0;
+    }
+}
+"""
+
+        runPawPrintSource
+            "MockEnvironmentConfiguredVariables.cs"
+            source
+            (MockEnv.make ())
+            ([ "PAWPRINT_TEST_VARIABLE", "configured" ] |> Map.ofList)
+            (fun _image pawPrintResult ->
+                match pawPrintResult with
+                | RunOutcome.NormalExit (terminalState, terminatingThread) ->
+                    match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
+                    | EvalStackValue.Int32 exitCode :: _ -> exitCode |> shouldEqual 0
+                    | [] -> failwith "expected program to return an int, but it returned void"
+                    | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
+                | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
+                | RunOutcome.FailFast (_, _, message) ->
+                    let m = message |> Option.defaultValue "<no message>"
+                    failwith $"expected normal exit, got Environment.FailFast: %s{m}"
+                | RunOutcome.SignalTerminated (_, signal) ->
+                    failwith $"expected normal exit, got POSIX signal termination: %O{signal}"
+                | RunOutcome.GuestUnhandledException (_, _, exn) ->
+                    failwith $"guest threw unhandled exception: %O{exn.ExceptionObject}"
+            )
+
+    [<Test>]
+    let ``GetEnvironmentVariableW lookup is case-sensitive`` () =
+        // CoreCLR's Unix PAL implements the `kernel32!GetEnvironmentVariableW`
+        // import with exact name comparison (see pal/src/misc/environ.cpp
+        // `FindEnvVarValue`), so the QCall shim must do exact-string lookup
+        // against the kernel env map even though the *Windows* kernel32 entry
+        // would be case-insensitive: PawPrint is baselined against the host
+        // runtime, which is the Unix PAL on the hosts this repo runs on.
+        let source =
+            """
+using System;
+
+class Program
+{
+    static int Main(string[] args)
+    {
+        if (Environment.GetEnvironmentVariable("PaWpRiNt_MiXeD_CaSe_KeY") != "found")
+        {
+            return 1;
+        }
+
+        if (Environment.GetEnvironmentVariable("pawprint_mixed_case_key") != null)
+        {
+            return 2;
+        }
+
+        if (Environment.GetEnvironmentVariable("PAWPRINT_MIXED_CASE_KEY") != null)
+        {
+            return 3;
+        }
+
+        return 0;
+    }
+}
+"""
+
+        runPawPrintSource
+            "MockEnvironmentCaseSensitiveLookup.cs"
+            source
+            (MockEnv.make ())
+            ([ "PaWpRiNt_MiXeD_CaSe_KeY", "found" ] |> Map.ofList)
+            (fun _image pawPrintResult ->
+                match pawPrintResult with
+                | RunOutcome.NormalExit (terminalState, terminatingThread) ->
+                    match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
+                    | EvalStackValue.Int32 exitCode :: _ -> exitCode |> shouldEqual 0
+                    | [] -> failwith "expected program to return an int, but it returned void"
+                    | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
+                | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
+                | RunOutcome.FailFast (_, _, message) ->
+                    let m = message |> Option.defaultValue "<no message>"
+                    failwith $"expected normal exit, got Environment.FailFast: %s{m}"
+                | RunOutcome.SignalTerminated (_, signal) ->
+                    failwith $"expected normal exit, got POSIX signal termination: %O{signal}"
+                | RunOutcome.GuestUnhandledException (_, _, exn) ->
+                    failwith $"guest threw unhandled exception: %O{exn.ExceptionObject}"
+            )
+
+    [<Test>]
+    let ``Mock environment preserves missing variable last PInvoke error`` () =
+        let source =
+            """
+using System;
+using System.Runtime.InteropServices;
+
+class Program
+{
+    static int Main(string[] args)
+    {
+        Marshal.SetLastPInvokeError(0);
+
+        string missing = Environment.GetEnvironmentVariable("PAWPRINT_MISSING_VARIABLE");
+
+        if (missing != null)
+        {
+            return 1;
+        }
+
+        return Marshal.GetLastPInvokeError() == 203 ? 0 : 2;
+    }
+}
+"""
+
+        runPawPrintSource
+            "MockEnvironmentMissingVariableLastPInvokeError.cs"
+            source
+            (MockEnv.make ())
+            Map.empty
+            (fun _image pawPrintResult ->
+                match pawPrintResult with
+                | RunOutcome.NormalExit (terminalState, terminatingThread) ->
+                    match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
+                    | EvalStackValue.Int32 exitCode :: _ -> exitCode |> shouldEqual 0
+                    | [] -> failwith "expected program to return an int, but it returned void"
+                    | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
+                | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
+                | RunOutcome.FailFast (_, _, message) ->
+                    let m = message |> Option.defaultValue "<no message>"
+                    failwith $"expected normal exit, got Environment.FailFast: %s{m}"
+                | RunOutcome.SignalTerminated (_, signal) ->
+                    failwith $"expected normal exit, got POSIX signal termination: %O{signal}"
+                | RunOutcome.GuestUnhandledException (_, _, exn) ->
+                    failwith $"guest threw unhandled exception: %O{exn.ExceptionObject}"
+            )
+
+    [<Test>]
+    let ``Environment.FailFast aborts execution`` () =
+        let source =
+            """
+using System;
+
+class Program
+{
+    static int Main(string[] args)
+    {
+        Environment.FailFast("boom");
+        return 0;
+    }
+}
+"""
+
+        let nativeImpls =
+            let empty = MockEnv.make ()
+
+            { empty with
+                System_Environment = System_Environment.passThru
+            }
+
+        runPawPrintSource
+            "EnvironmentFailFast.cs"
+            source
+            nativeImpls
+            Map.empty
+            (fun _image pawPrintResult ->
+                match pawPrintResult with
+                | RunOutcome.FailFast (_, _, message) -> message |> shouldEqual (Some "boom")
+                | RunOutcome.NormalExit _ -> failwith "expected FailFast, got normal exit"
+                | RunOutcome.ProcessExit _ -> failwith "expected FailFast, got process exit"
+                | RunOutcome.SignalTerminated (_, signal) ->
+                    failwith $"expected FailFast, got POSIX signal termination: %O{signal}"
+                | RunOutcome.GuestUnhandledException (_, _, exn) ->
+                    failwith $"expected FailFast, got guest unhandled exception: %O{exn.ExceptionObject}"
+            )
 
     [<TestCaseSource(nameof simpleCases)>]
     let ``Standard tests`` (fileName : string) =
@@ -174,7 +466,9 @@ module TestPureCases =
             FileName = fileName
             ExpectedReturnCode = 0
             NativeImpls = MockEnv.make ()
+            Environment = Map.empty
             ExpectsUnhandledException = false
+            AssertTerminalState = None
         }
         |> runTest
 
@@ -187,17 +481,21 @@ module TestPureCases =
             FileName = fileName
             ExpectedReturnCode = exitCode
             NativeImpls = MockEnv.make ()
+            Environment = Map.empty
             ExpectsUnhandledException = false
+            AssertTerminalState = None
         }
         |> runTest
 
     [<TestCaseSource(nameof requiresMocks)>]
-    let ``Tests which require mocks`` (KeyValue (fileName : string, (exitCode : int, mock : NativeImpls))) =
+    let ``Tests which require mocks`` (KeyValue (fileName : string, mock : NativeImpls)) =
         {
             FileName = fileName
-            ExpectedReturnCode = exitCode
+            ExpectedReturnCode = 0
             NativeImpls = mock
+            Environment = Map.empty
             ExpectsUnhandledException = false
+            AssertTerminalState = None
         }
         |> runTest
 
@@ -208,7 +506,9 @@ module TestPureCases =
             FileName = fileName
             ExpectedReturnCode = 0 // not checked; both runtimes are expected to throw
             NativeImpls = MockEnv.make ()
+            Environment = Map.empty
             ExpectsUnhandledException = true
+            AssertTerminalState = None
         }
         |> runTest
 
@@ -232,31 +532,33 @@ module TestPureCases =
             FileName = fileName
             ExpectedReturnCode = 0
             NativeImpls = MockEnv.make ()
+            Environment = Map.empty
             ExpectsUnhandledException = false
+            AssertTerminalState = None
         }
         |> runTest
 
     [<TestCaseSource(nameof unimplementedMockTests)>]
     let ``Unimplemented mock tests have correct real-runtime behaviour``
-        (KeyValue (fileName : string, (exitCode : int, _mock : NativeImpls)))
+        (KeyValue (fileName : string, _mock : NativeImpls))
         =
         let source = Assembly.getEmbeddedResourceAsString fileName assy
         let image = Roslyn.compile [ source ]
 
         match RealRuntime.executeWithRealRuntime [||] image with
-        | RealRuntimeResult.NormalExit actualExitCode -> actualExitCode |> shouldEqual exitCode
+        | RealRuntimeResult.NormalExit actualExitCode -> actualExitCode |> shouldEqual 0
         | RealRuntimeResult.UnhandledException exn ->
             failwith $"Real runtime threw unhandled %s{exn.GetType().Name} for %s{fileName}: %s{exn.Message}"
 
     [<TestCaseSource(nameof unimplementedMockTests)>]
     [<Explicit>]
-    let ``Can evaluate C# files, unimplemented mock tests``
-        (KeyValue (fileName : string, (exitCode : int, mock : NativeImpls)))
-        =
+    let ``Can evaluate C# files, unimplemented mock tests`` (KeyValue (fileName : string, mock : NativeImpls)) =
         {
             FileName = fileName
-            ExpectedReturnCode = exitCode
+            ExpectedReturnCode = 0
             NativeImpls = mock
+            Environment = Map.empty
             ExpectsUnhandledException = false
+            AssertTerminalState = None
         }
         |> runTest

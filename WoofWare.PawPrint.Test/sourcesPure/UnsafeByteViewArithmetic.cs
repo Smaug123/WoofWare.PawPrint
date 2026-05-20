@@ -1,0 +1,213 @@
+using System.Runtime.CompilerServices;
+
+public class TestUnsafeByteViewArithmetic
+{
+    // `Unsafe.As<int, byte>` produces a `ref byte` view over an int[]; bytewise
+    // `Unsafe.Add` on that view walks the underlying storage byte by byte.
+    // Reading a short at byte offset 4 lands on cell 1 of the array.
+    public static int Test1()
+    {
+        int[] a = { 0x11223344, unchecked((int)0xDDCCBBAA) };
+        ref byte b = ref Unsafe.As<int, byte>(ref a[0]);
+        ref byte b4 = ref Unsafe.Add(ref b, 4);
+        int v = Unsafe.ReadUnaligned<int>(ref b4);
+        if (v != unchecked((int)0xDDCCBBAA))
+            return 1;
+        return 0;
+    }
+
+    // ReadUnaligned of a type larger than a single byte at a byte offset that
+    // straddles a cell boundary: start 2 bytes into cell 0 (an int[]) and read
+    // a 4-byte int, which spans the high half of cell 0 and the low half of
+    // cell 1.
+    public static int Test2()
+    {
+        int[] a = { 0x44332211, unchecked((int)0x88776655) };
+        ref byte b = ref Unsafe.As<int, byte>(ref a[0]);
+        ref byte b2 = ref Unsafe.Add(ref b, 2);
+        int v = Unsafe.ReadUnaligned<int>(ref b2);
+        // Little-endian: bytes at offset 2..5 are 0x33, 0x44, 0x55, 0x66.
+        if (v != 0x66554433)
+            return 2;
+        return 0;
+    }
+
+    // WriteUnaligned at a cell-aligned byte offset: the write must land in the
+    // correct cell and leave neighbours untouched.
+    public static int Test3()
+    {
+        int[] a = new int[4];
+        ref byte b = ref Unsafe.As<int, byte>(ref a[0]);
+        ref byte b8 = ref Unsafe.Add(ref b, 8);
+        Unsafe.WriteUnaligned<int>(ref b8, 0x12345678);
+        if (a[0] != 0)
+            return 3;
+        if (a[1] != 0)
+            return 4;
+        if (a[2] != 0x12345678)
+            return 5;
+        if (a[3] != 0)
+            return 6;
+        return 0;
+    }
+
+    // WriteUnaligned that straddles a cell boundary updates bytes across two
+    // cells without disturbing bytes outside the written region.
+    public static int Test4()
+    {
+        int[] a = { unchecked((int)0xFFFFFFFF), unchecked((int)0xFFFFFFFF), unchecked((int)0xFFFFFFFF) };
+        ref byte b = ref Unsafe.As<int, byte>(ref a[0]);
+        ref byte b6 = ref Unsafe.Add(ref b, 6);
+        // Write a 32-bit value straddling cells 1 and 2 (bytes 6..9).
+        Unsafe.WriteUnaligned<int>(ref b6, 0x00000000);
+        // Cell 0 bytes 0..3 untouched.
+        if (a[0] != unchecked((int)0xFFFFFFFF))
+            return 7;
+        // Cell 1 bytes 4..7: bytes 4,5 untouched (0xFF), bytes 6,7 zeroed.
+        if (a[1] != unchecked((int)0x0000FFFF))
+            return 8;
+        // Cell 2 bytes 8..11: bytes 8,9 zeroed, bytes 10,11 untouched.
+        if (a[2] != unchecked((int)0xFFFF0000))
+            return 9;
+        return 0;
+    }
+
+    // Round-trip byte-level: write a short at an odd byte offset, read it back
+    // through the same byte cursor.
+    public static int Test5()
+    {
+        int[] a = new int[4];
+        ref byte b = ref Unsafe.As<int, byte>(ref a[0]);
+        ref byte b5 = ref Unsafe.Add(ref b, 5);
+        Unsafe.WriteUnaligned<short>(ref b5, unchecked((short)0xCAFE));
+        short s = Unsafe.ReadUnaligned<short>(ref b5);
+        if (s != unchecked((short)0xCAFE))
+            return 10;
+        return 0;
+    }
+
+    // Unsafe.ByteOffset on two byte-view byrefs into the same int[] must
+    // return the signed byte delta regardless of the ReinterpretAs chain.
+    public static int Test6()
+    {
+        int[] a = new int[8];
+        ref byte b0 = ref Unsafe.As<int, byte>(ref a[0]);
+        ref byte b0b = ref Unsafe.Add(ref b0, 3);
+        ref byte b1 = ref Unsafe.Add(ref b0, 10);
+        System.IntPtr delta = Unsafe.ByteOffset(ref b0b, ref b1);
+        if ((long)delta != 7L)
+            return 11;
+        System.IntPtr back = Unsafe.ByteOffset(ref b1, ref b0b);
+        if ((long)back != -7L)
+            return 12;
+        return 0;
+    }
+
+    // Composition of two Unsafe.Adds at the byte level produces the same
+    // cursor as a single combined Unsafe.Add.
+    public static int Test7()
+    {
+        int[] a = { 0x01020304, 0x05060708 };
+        ref byte b = ref Unsafe.As<int, byte>(ref a[0]);
+        ref byte step1 = ref Unsafe.Add(ref b, 3);
+        ref byte step2 = ref Unsafe.Add(ref step1, 2);
+        ref byte direct = ref Unsafe.Add(ref b, 5);
+        if (!Unsafe.AreSame(ref step2, ref direct))
+            return 13;
+        return 0;
+    }
+
+    // Negative byte-level Unsafe.Add: walking back from mid-array must
+    // recover the cursor that a forward walk would have produced.
+    public static int Test8()
+    {
+        int[] a = { 0x44332211, unchecked((int)0x88776655) };
+        ref byte b = ref Unsafe.As<int, byte>(ref a[0]);
+        ref byte b5 = ref Unsafe.Add(ref b, 5);
+        ref byte b2 = ref Unsafe.Add(ref b5, -3);
+        int v = Unsafe.ReadUnaligned<int>(ref b2);
+        // Little-endian bytes at offset 2..5 are 0x33, 0x44, 0x55, 0x66.
+        if (v != 0x66554433)
+            return 14;
+        return 0;
+    }
+
+    // Whole-cell byte offset canonicalization: stepping forward by one cell's
+    // worth of bytes through the byte view must produce the same cursor as a
+    // cell-stride `Unsafe.Add<int>` — i.e. the internal representation must
+    // fold whole-cell byte offsets back into the array index.
+    public static int Test9()
+    {
+        int[] a = new int[4];
+        ref int rInt = ref a[1];
+        ref byte rByte = ref Unsafe.As<int, byte>(ref a[0]);
+        ref byte rByteStepped = ref Unsafe.Add(ref rByte, 4);
+        ref int reinterpreted = ref Unsafe.As<byte, int>(ref rByteStepped);
+        if (!Unsafe.AreSame(ref rInt, ref reinterpreted))
+            return 15;
+        return 0;
+    }
+
+    // Negative byte-level Unsafe.Add crossing a cell boundary backwards must
+    // produce a cursor that reads the bytes in the expected straddling layout.
+    public static int Test10()
+    {
+        int[] a = { 0x44332211, unchecked((int)0x88776655), unchecked((int)0xCCBBAA99) };
+        ref byte b = ref Unsafe.As<int, byte>(ref a[0]);
+        ref byte b9 = ref Unsafe.Add(ref b, 9);
+        // Step back 7 bytes: lands at offset 2 (mid cell 0). Read a 4-byte int
+        // straddling cells 0 and 1: bytes 0x33 0x44 0x55 0x66.
+        ref byte back = ref Unsafe.Add(ref b9, -7);
+        int v = Unsafe.ReadUnaligned<int>(ref back);
+        if (v != 0x66554433)
+            return 16;
+        return 0;
+    }
+
+    // Reinterpreting a byref that already carries a byte offset must preserve
+    // the offset across the ReinterpretAs. A reinterpret-and-back round trip
+    // must leave the cursor identical to the original byte offset: if the
+    // ByteOffset were lost when applying a new ReinterpretAs, the round-tripped
+    // cursor would collapse back to the array origin.
+    public static int Test11()
+    {
+        int[] a = new int[2];
+        ref byte b = ref Unsafe.As<int, byte>(ref a[0]);
+        ref byte b2 = ref Unsafe.Add(ref b, 2);
+        ref short s2 = ref Unsafe.As<byte, short>(ref b2);
+        ref byte roundTripped = ref Unsafe.As<short, byte>(ref s2);
+        if (!Unsafe.AreSame(ref b2, ref roundTripped))
+            return 17;
+        // And the round-tripped cursor is not the same as the array origin.
+        if (Unsafe.AreSame(ref b, ref roundTripped))
+            return 18;
+        return 0;
+    }
+
+    public static int Main(string[] argv)
+    {
+        int r = Test1();
+        if (r != 0) return r;
+        r = Test2();
+        if (r != 0) return r;
+        r = Test3();
+        if (r != 0) return r;
+        r = Test4();
+        if (r != 0) return r;
+        r = Test5();
+        if (r != 0) return r;
+        r = Test6();
+        if (r != 0) return r;
+        r = Test7();
+        if (r != 0) return r;
+        r = Test8();
+        if (r != 0) return r;
+        r = Test9();
+        if (r != 0) return r;
+        r = Test10();
+        if (r != 0) return r;
+        r = Test11();
+        if (r != 0) return r;
+        return 0;
+    }
+}

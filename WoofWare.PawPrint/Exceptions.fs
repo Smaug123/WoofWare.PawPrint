@@ -21,12 +21,39 @@ type CliException<'typeGen, 'methodGen, 'methodVar when 'typeGen : comparison an
         StackTrace : ExceptionStackFrame<'typeGen, 'methodGen, 'methodVar> list
     }
 
+type ExceptionFilterRegion =
+    {
+        FilterOffset : int
+        HandlerOffset : ExceptionOffset
+    }
+
+type ExceptionFilterContinuation<'typeGen, 'methodGen, 'methodVar
+    when 'typeGen : comparison and 'typeGen :> IComparable<'typeGen>> =
+    {
+        CurrentFilter : ExceptionFilterRegion
+        SkippedFilters : ExceptionFilterRegion list
+        SearchPC : int
+        CliException : CliException<'typeGen, 'methodGen, 'methodVar>
+    }
+
 /// Represents what to do after executing a finally/filter block
 type ExceptionContinuation<'typeGen, 'methodGen, 'methodVar
     when 'typeGen : comparison and 'typeGen :> IComparable<'typeGen>> =
     | ResumeAfterFinally of targetPC : int
     | PropagatingException of exn : CliException<'typeGen, 'methodGen, 'methodVar>
-    | ResumeAfterFilter of handlerPC : int * exn : CliException<'typeGen, 'methodGen, 'methodVar>
+    | ResumeAfterFilter of continuation : ExceptionFilterContinuation<'typeGen, 'methodGen, 'methodVar>
+
+type ExceptionContinuationScope =
+    | FinallyHandler of offset : ExceptionOffset
+    | FaultHandler of offset : ExceptionOffset
+    | FilterHandler of filter : ExceptionFilterRegion
+
+type ExceptionContinuationFrame<'typeGen, 'methodGen, 'methodVar
+    when 'typeGen : comparison and 'typeGen :> IComparable<'typeGen>> =
+    {
+        Scope : ExceptionContinuationScope
+        Continuation : ExceptionContinuation<'typeGen, 'methodGen, 'methodVar>
+    }
 
 /// Maps CLR exception type full names to the HResult the real CLR would set for a
 /// runtime-synthesised exception of that type.  Entries here correspond to
@@ -52,6 +79,7 @@ module internal ExceptionHResults =
             "System.MissingMethodException", int 0x80131513u // COR_E_MISSINGMETHOD
             "System.ArgumentException", int 0x80070057u // COR_E_ARGUMENT
             "System.ArgumentNullException", 0x80004003 // E_POINTER (ArgumentNullException maps to E_POINTER in the CLR)
+            "System.Reflection.TargetInvocationException", int 0x80131604u // COR_E_TARGETINVOCATION
         ]
 
     /// The fallback HResult for exception types not in the table.
@@ -67,6 +95,32 @@ module internal ExceptionHResults =
 [<RequireQualifiedAccess>]
 module ExceptionHandling =
 
+    let isInHandlerBody (pc : int) (offset : ExceptionOffset) : bool =
+        pc >= offset.HandlerOffset && pc < offset.HandlerOffset + offset.HandlerLength
+
+    let findCatchHandlersToLeave
+        (currentPC : int)
+        (targetPC : int)
+        (method : WoofWare.PawPrint.MethodInfo<'typeGeneric, 'methodGeneric, 'methodVar>)
+        : ExceptionOffset list
+        =
+        match MethodInfo.tryIlBody method with
+        | None -> []
+        | Some instructions ->
+            instructions.ExceptionRegions
+            |> Seq.choose (fun region ->
+                match region with
+                | ExceptionRegion.Catch (_, offset)
+                | ExceptionRegion.Filter (_, offset) ->
+                    if isInHandlerBody currentPC offset && not (isInHandlerBody targetPC offset) then
+                        Some offset
+                    else
+                        None
+                | ExceptionRegion.Finally _
+                | ExceptionRegion.Fault _ -> None
+            )
+            |> Seq.toList
+
     /// Find finally blocks that need to run when leaving a try region
     let findFinallyBlocksToRun
         (currentPC : int)
@@ -74,7 +128,7 @@ module ExceptionHandling =
         (method : WoofWare.PawPrint.MethodInfo<'typeGeneric, 'methodGeneric, 'methodVar>)
         : ExceptionOffset list
         =
-        match method.Instructions with
+        match MethodInfo.tryIlBody method with
         | None -> []
         | Some instructions ->
             instructions.ExceptionRegions
@@ -104,7 +158,7 @@ module ExceptionHandling =
         (method : WoofWare.PawPrint.MethodInfo<'a, 'b, 'c>)
         : WoofWare.PawPrint.ExceptionRegion list
         =
-        match method.Instructions with
+        match MethodInfo.tryIlBody method with
         | None -> []
         | Some instructions ->
             instructions.ExceptionRegions

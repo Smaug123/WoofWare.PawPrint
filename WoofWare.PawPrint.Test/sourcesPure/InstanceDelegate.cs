@@ -19,7 +19,7 @@ public class InstanceDelegateDemo
         var demo = new InstanceDelegateDemo(10);
         MyTransform transform = demo.AddOffset;
         int result = transform(5);
-        if (result == 15) return 7;
+        if (result == 15) return 0;
         return 1;
     }
 }

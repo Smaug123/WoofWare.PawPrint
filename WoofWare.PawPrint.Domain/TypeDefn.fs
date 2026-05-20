@@ -14,6 +14,33 @@ type ResolvedBaseType =
     | Object
     | Delegate
 
+/// A method signature return shape. `void` is not a runtime type; it means the
+/// callee returns no value to the caller. `System.Void` remains an ordinary
+/// metadata type for reflection.
+[<RequireQualifiedAccess>]
+type MethodReturnType<'Types> =
+    | Void
+    | Returns of 'Types
+
+    override this.ToString () =
+        match this with
+        | MethodReturnType.Void -> "void"
+        | MethodReturnType.Returns ty -> string<'Types> ty
+
+[<RequireQualifiedAccess>]
+module MethodReturnType =
+    let map<'a, 'b, 'state>
+        (state : 'state)
+        (f : 'state -> 'a -> 'state * 'b)
+        (ret : MethodReturnType<'a>)
+        : 'state * MethodReturnType<'b>
+        =
+        match ret with
+        | MethodReturnType.Void -> state, MethodReturnType.Void
+        | MethodReturnType.Returns ty ->
+            let state, ty = f state ty
+            state, MethodReturnType.Returns ty
+
 /// <summary>
 /// Represents a method signature with type parameters.
 /// Corresponds to MethodSignature in System.Reflection.Metadata.
@@ -41,17 +68,17 @@ type TypeMethodSignature<'Types> =
         RequiredParameterCount : int
 
         /// <summary>
-        /// The return type of the method.
+        /// The return shape of the method.
         /// </summary>
-        ReturnType : 'Types
+        ReturnType : MethodReturnType<'Types>
     }
 
 [<RequireQualifiedAccess>]
 module TypeMethodSignature =
-    let make<'T> (p : MethodSignature<'T>) : TypeMethodSignature<'T> =
+    let make<'T> (returnType : 'T -> MethodReturnType<'T>) (p : MethodSignature<'T>) : TypeMethodSignature<'T> =
         {
             Header = ComparableSignatureHeader.Make p.Header
-            ReturnType = p.ReturnType
+            ReturnType = returnType p.ReturnType
             ParameterTypes = List.ofSeq p.ParameterTypes
             GenericParameterCount = p.GenericParameterCount
             RequiredParameterCount = p.RequiredParameterCount
@@ -63,7 +90,7 @@ module TypeMethodSignature =
         (signature : TypeMethodSignature<'a>)
         : 'state * TypeMethodSignature<'b>
         =
-        let state, ret = f state signature.ReturnType
+        let state, ret = MethodReturnType.map state f signature.ReturnType
 
         let state, pars =
             ((state, []), signature.ParameterTypes)
@@ -175,8 +202,9 @@ module PrimitiveType =
 
 type TypeDefn =
     | PrimitiveType of PrimitiveType
-    // TODO: array shapes
-    | Array of elt : TypeDefn * shape : unit
+    /// A general (potentially multi-dimensional) array. Rank distinguishes e.g. int[,] from int[,,].
+    /// TODO: sizes and lower bounds from ArrayShape are not yet preserved.
+    | Array of elt : TypeDefn * rank : int
     | Pinned of TypeDefn
     | Pointer of TypeDefn
     | Byref of TypeDefn
@@ -208,9 +236,7 @@ type TypeDefn =
     override this.ToString () =
         match this with
         | TypeDefn.PrimitiveType primitiveType -> $"%O{primitiveType}"
-        | TypeDefn.Array (elt, shape) ->
-            // TODO: shape
-            $"arr[%O{elt} ; shape]"
+        | TypeDefn.Array (elt, rank) -> $"arr[%O{elt} ; rank=%i{rank}]"
         | TypeDefn.Pinned typeDefn -> $"pinned[%s{string<TypeDefn> typeDefn}]"
         | TypeDefn.Pointer typeDefn -> $"ptr[%s{string<TypeDefn> typeDefn}]"
         | TypeDefn.Byref typeDefn -> $"byref[%s{string<TypeDefn> typeDefn}]"
@@ -230,7 +256,7 @@ type TypeDefn =
                 |> List.map string<TypeDefn>
                 |> String.concat " -> "
 
-            $"*(%s{args} -> %s{string<TypeDefn> typeMethodSignature.ReturnType})"
+            $"*(%s{args} -> %s{string<MethodReturnType<TypeDefn>> typeMethodSignature.ReturnType})"
         | TypeDefn.GenericTypeParameter index -> $"<type param %i{index}>"
         | TypeDefn.GenericMethodParameter index -> $"<method param %i{index}>"
         | TypeDefn.Void -> "void"
@@ -240,7 +266,7 @@ module TypeDefn =
     let isManaged (typeDefn : TypeDefn) : bool =
         match typeDefn with
         | TypeDefn.PrimitiveType primitiveType -> failwith "todo"
-        | TypeDefn.Array (elt, shape) -> failwith "todo"
+        | TypeDefn.Array (elt, rank) -> failwith "todo"
         | TypeDefn.Pinned typeDefn -> failwith "todo"
         | TypeDefn.Pointer typeDefn -> failwith "todo"
         | TypeDefn.Byref typeDefn -> failwith "todo"
@@ -298,7 +324,7 @@ module TypeDefn =
     let typeProvider (a : AssemblyName) : ISignatureTypeProvider<TypeDefn, unit> =
         { new ISignatureTypeProvider<TypeDefn, unit> with
             member this.GetArrayType (elementType : TypeDefn, shape : ArrayShape) : TypeDefn =
-                TypeDefn.Array (elementType, ())
+                TypeDefn.Array (elementType, shape.Rank)
 
             member this.GetByReferenceType (elementType : TypeDefn) : TypeDefn = TypeDefn.Byref elementType
 
@@ -337,7 +363,13 @@ module TypeDefn =
             member this.GetPointerType (typeCode : TypeDefn) : TypeDefn = TypeDefn.Pointer typeCode
 
             member this.GetFunctionPointerType signature =
-                TypeDefn.FunctionPointer (TypeMethodSignature.make signature)
+                TypeDefn.FunctionPointer (
+                    TypeMethodSignature.make
+                        (function
+                        | TypeDefn.Void -> MethodReturnType.Void
+                        | retType -> MethodReturnType.Returns retType)
+                        signature
+                )
 
             member this.GetGenericMethodParameter (genericContext, index) = TypeDefn.GenericMethodParameter index
             member this.GetGenericTypeParameter (genericContext, index) = TypeDefn.GenericTypeParameter index

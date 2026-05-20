@@ -1,0 +1,57 @@
+loki.source.file "pawprint" {
+  targets = [
+    {
+      __path__ = "/tmp/pawprint-logs/**/*.jsonl",
+      job      = "pawprint",
+    },
+  ]
+
+  forward_to = [loki.process.pawprint.receiver]
+
+  file_match {
+    enabled     = true
+    sync_period = "10s"
+  }
+}
+
+loki.process "pawprint" {
+  forward_to = [loki.write.local.receiver]
+
+  stage.json {
+    expressions = {
+      timestamp   = "timestamp",
+      level       = "level",
+      component   = "component",
+      logger      = "logger",
+      message     = "message",
+      run_id      = "run_id",
+      user_run_id = "user_run_id",
+    }
+  }
+
+  stage.timestamp {
+    source = "timestamp"
+    format = "RFC3339Nano"
+  }
+
+  stage.labels {
+    values = {
+      component = "",
+      level     = "",
+    }
+  }
+
+  stage.structured_metadata {
+    values = {
+      logger      = "",
+      run_id      = "",
+      user_run_id = "",
+    }
+  }
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://localhost:3100/loki/api/v1/push"
+  }
+}

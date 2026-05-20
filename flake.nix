@@ -17,8 +17,8 @@
         config.allowUnfree = true;
       };
       pname = "WoofWare.PawPrint";
-      dotnet-sdk = pkgs.dotnetCorePackages.sdk_9_0;
-      dotnet-runtime = pkgs.dotnetCorePackages.runtime_9_0;
+      dotnet-sdk = pkgs.dotnetCorePackages.sdk_10_0;
+      dotnet-runtime = pkgs.dotnetCorePackages.runtime_10_0;
       version = "0.1";
       dotnetTool = dllOverride: toolName: toolVersion: hash:
         pkgs.stdenvNoCC.mkDerivation rec {
@@ -65,6 +65,11 @@
       devShell = pkgs.mkShell {
         buildInputs = [dotnet-sdk];
         DOTNET_CLI_TELEMETRY_OPTOUT = "1";
+        # Force polling-based file watcher to avoid hangs in
+        # FileSystemWatcher.StartRaisingEvents on macOS (FSEvents/CoreFoundation
+        # path can deadlock under load when ASP.NET hosts created in tests
+        # initialise their JSON configuration providers).
+        DOTNET_USE_POLLING_FILE_WATCHER = "1";
         packages = [
           pkgs.alejandra
           pkgs.lychee

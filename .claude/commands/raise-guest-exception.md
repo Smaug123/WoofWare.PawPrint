@@ -37,10 +37,12 @@ with
 
 ## Tier 2: Constructing and throwing a new exception object
 
-Use `IlMachineStateExecution.raiseManagedException`. It takes a `TypeInfo`, e.g. as from `BaseClassTypes` (such as `baseClassTypes.NullReferenceException`) and returns `IlMachineState * WhatWeDid`. Do NOT advance the program counter after calling it — exception dispatch uses the faulting instruction's PC to determine which exception handler regions are active and to build the stack trace.
+Use `IlMachineStateExecution.raiseRuntimeException`. It takes a `TypeInfo`, e.g. as from `BaseClassTypes` (such as `baseClassTypes.NullReferenceException`) and returns `IlMachineState * WhatWeDid`. Do NOT advance the program counter after calling it — exception dispatch uses the faulting instruction's PC to determine which exception handler regions are active and to build the stack trace.
+
+This entry point is intended for exceptions the runtime itself synthesises (e.g. `NullReferenceException` from a null deref, `InvalidCastException` from a failed `castclass`). It deliberately skips the exception type's `.cctor`, which is safe for the BCL exception types but not for arbitrary guest-defined types — so don't use it to dispatch guest-thrown exceptions. Those go through Tier 1 (`throwExceptionObject`) after the guest's own `newobj` has already run the cctor.
 
 ```fsharp
-IlMachineStateExecution.raiseManagedException
+IlMachineStateExecution.raiseRuntimeException
     loggerFactory
     baseClassTypes
     baseClassTypes.NullReferenceException

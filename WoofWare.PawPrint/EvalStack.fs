@@ -5,7 +5,7 @@ namespace WoofWare.PawPrint
 /// See I.12.3.2.1 for definition
 type EvalStackValue =
     | Int32 of int32
-    | Int64 of int64
+    | Int64 of Int64Source
     | NativeInt of NativeIntSource
     | Float of float
     | ManagedPointer of ManagedPointerSource
@@ -17,7 +17,7 @@ type EvalStackValue =
     override this.ToString () =
         match this with
         | EvalStackValue.Int32 i -> $"Int32(%i{i})"
-        | EvalStackValue.Int64 i -> $"Int64(%i{i})"
+        | EvalStackValue.Int64 i -> $"Int64(%O{i})"
         | EvalStackValue.NativeInt src -> $"NativeInt(%O{src})"
         | EvalStackValue.Float f -> $"Float(%f{f})"
         | EvalStackValue.ManagedPointer managedPointerSource -> $"Pointer(%O{managedPointerSource})"
@@ -27,102 +27,469 @@ type EvalStackValue =
 
 [<RequireQualifiedAccess>]
 module EvalStackValue =
+    let private nativeIntBitsForIntegerConversion (operation : string) (src : NativeIntSource) : int64 =
+        match src with
+        | NativeIntSource.Verbatim i -> i
+        | NativeIntSource.SyntheticCrossArrayOffset _ ->
+            failwith $"%s{operation}: refusing to convert cross-array offset to an integer"
+        | NativeIntSource.ManagedPointer ManagedPointerSource.Null -> 0L
+        | NativeIntSource.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits) ->
+            // `Unsafe.AsRef<T>((void*)bits)` placeholders ARE bit patterns;
+            // narrowing to a smaller integer is just truncation of those bits.
+            bits
+        | NativeIntSource.ManagedPointer ptr ->
+            failwith $"%s{operation}: refusing to convert managed pointer %O{ptr} to an integer"
+        | NativeIntSource.FunctionPointer methodInfo ->
+            failwith $"%s{operation}: refusing to convert function pointer %O{methodInfo} to an integer"
+        | NativeIntSource.TypeHandlePtr typeHandle ->
+            failwith $"%s{operation}: refusing to convert RuntimeTypeHandle pointer %O{typeHandle} to an integer"
+        | NativeIntSource.MethodTablePtr typeHandle ->
+            failwith $"%s{operation}: refusing to convert MethodTable pointer %O{typeHandle} to an integer"
+        | NativeIntSource.MethodTableAuxiliaryDataPtr typeHandle ->
+            failwith $"%s{operation}: refusing to convert MethodTableAuxiliaryData pointer %O{typeHandle} to an integer"
+        | NativeIntSource.PerInstInfoPtr handle ->
+            failwith $"%s{operation}: refusing to convert PerInstInfo pointer %O{handle} to an integer"
+        | NativeIntSource.PerInstDictPtr handle ->
+            failwith $"%s{operation}: refusing to convert PerInstDict pointer %O{handle} to an integer"
+        | NativeIntSource.FieldHandlePtr handle ->
+            failwith $"%s{operation}: refusing to convert RuntimeFieldHandle pointer %d{handle} to an integer"
+        | NativeIntSource.MethodHandlePtr handle ->
+            failwith $"%s{operation}: refusing to convert RuntimeMethodHandle pointer %d{handle} to an integer"
+        | NativeIntSource.GcHandlePtr handle ->
+            failwith $"%s{operation}: refusing to convert GC handle pointer %O{handle} to an integer"
+        | NativeIntSource.EventPipeProviderPtr id ->
+            failwith $"%s{operation}: refusing to convert EventPipe provider handle #%d{id} to an integer"
+        | NativeIntSource.EventPipeEventPtr id ->
+            failwith $"%s{operation}: refusing to convert EventPipe event handle #%d{id} to an integer"
+        | NativeIntSource.LowLevelMonitorPtr id ->
+            failwith $"%s{operation}: refusing to convert low-level monitor handle %O{id} to an integer"
+        | NativeIntSource.WaitHandlePtr id ->
+            failwith $"%s{operation}: refusing to convert wait handle %O{id} to an integer"
+        | NativeIntSource.AssemblyHandle assemblyName ->
+            failwith $"%s{operation}: refusing to convert assembly handle %s{assemblyName} to an integer"
+        | NativeIntSource.ModuleHandle moduleName ->
+            failwith $"%s{operation}: refusing to convert module handle %s{moduleName} to an integer"
+        | NativeIntSource.MetadataImportHandle moduleName ->
+            failwith $"%s{operation}: refusing to convert metadata import handle %s{moduleName} to an integer"
+        | NativeIntSource.OpaqueHashBits bits ->
+            // Synthesised pointer-hash bits are deterministic numeric content;
+            // narrowing them to int32 is exactly the cast-cache final step
+            // `(int)((hash * 0x...) >> hashShift)`. Width-narrowing keeps the
+            // bits in the int domain (no pointer escape).
+            bits
+
+    let private failReferenceConversion (operation : string) (value : EvalStackValue) : 'a =
+        match value with
+        | EvalStackValue.ManagedPointer ptr -> failwith $"%s{operation}: refusing to convert managed pointer %O{ptr}"
+        | EvalStackValue.NullObjectRef -> failwith $"%s{operation}: refusing to convert null object reference"
+        | EvalStackValue.ObjectRef addr -> failwith $"%s{operation}: refusing to convert object reference %O{addr}"
+        | EvalStackValue.UserDefinedValueType valueType ->
+            failwith $"%s{operation}: refusing to convert user-defined value type %O{valueType}"
+        | _ -> failwith $"%s{operation}: unexpected non-reference value %O{value}"
+
+    let private convIFromInt32 (value : int32) : int64 =
+        let converted = (# "conv.i" value : nativeint #)
+        int64<nativeint> converted
+
+    let private convIFromInt64 (value : int64) : int64 =
+        let converted = (# "conv.i" value : nativeint #)
+        int64<nativeint> converted
+
+    let private convIFromFloat (value : float) : int64 =
+        let converted = (# "conv.i" value : nativeint #)
+        int64<nativeint> converted
+
+    let private convUFromFloat (value : float) : uint64 =
+        let converted = (# "conv.u" value : unativeint #)
+        uint64<unativeint> converted
+
+    let private convI1FromInt64 (value : int64) : int32 =
+        let converted = (# "conv.i1" value : int8 #)
+        int32<int8> converted
+
+    let private convI1FromInt32 (value : int32) : int32 =
+        let converted = (# "conv.i1" value : int8 #)
+        int32<int8> converted
+
+    let private convI1FromFloat (value : float) : int32 =
+        let converted = (# "conv.i1" value : int8 #)
+        int32<int8> converted
+
+    let private convI2FromInt64 (value : int64) : int32 =
+        let converted = (# "conv.i2" value : int16 #)
+        int32<int16> converted
+
+    let private convI2FromInt32 (value : int32) : int32 =
+        let converted = (# "conv.i2" value : int16 #)
+        int32<int16> converted
+
+    let private convI2FromFloat (value : float) : int32 =
+        let converted = (# "conv.i2" value : int16 #)
+        int32<int16> converted
+
+    let private convI4FromInt64 (value : int64) : int32 = (# "conv.i4" value : int32 #)
+
+    let private convI4FromFloat (value : float) : int32 = (# "conv.i4" value : int32 #)
+
+    let private convI8FromFloat (value : float) : int64 = (# "conv.i8" value : int64 #)
+
+    let private convU1FromInt64 (value : int64) : int32 =
+        let converted = (# "conv.u1" value : uint8 #)
+        int32<uint8> converted
+
+    let private convU1FromInt32 (value : int32) : int32 =
+        let converted = (# "conv.u1" value : uint8 #)
+        int32<uint8> converted
+
+    let private convU1FromFloat (value : float) : int32 =
+        let converted = (# "conv.u1" value : uint8 #)
+        int32<uint8> converted
+
+    let private convU2FromInt64 (value : int64) : int32 =
+        let converted = (# "conv.u2" value : uint16 #)
+        int32<uint16> converted
+
+    let private convU2FromInt32 (value : int32) : int32 =
+        let converted = (# "conv.u2" value : uint16 #)
+        int32<uint16> converted
+
+    let private convU2FromFloat (value : float) : int32 =
+        let converted = (# "conv.u2" value : uint16 #)
+        int32<uint16> converted
+
+    let private convU4FromInt64 (value : int64) : int32 =
+        let converted = (# "conv.u4" value : uint32 #)
+        int32<uint32> converted
+
+    let private convU4FromInt32 (value : int32) : int32 =
+        let converted = (# "conv.u4" value : uint32 #)
+        int32<uint32> converted
+
+    let private convU4FromFloat (value : float) : int32 =
+        let converted = (# "conv.u4" value : uint32 #)
+        int32<uint32> converted
+
+    let private convU8FromFloat (value : float) : int64 =
+        let converted = (# "conv.u8" value : uint64 #)
+        int64<uint64> converted
+
+    let private convR4FromInt32 (value : int32) : float =
+        let converted = (# "conv.r4" value : float32 #)
+        float<float32> converted
+
+    let private convR4FromInt64 (value : int64) : float =
+        let converted = (# "conv.r4" value : float32 #)
+        float<float32> converted
+
+    let private convR4FromFloat (value : float) : float =
+        let converted = (# "conv.r4" value : float32 #)
+        float<float32> converted
+
+    let private convR8FromInt32 (value : int32) : float = (# "conv.r8" value : float #)
+
+    let private convR8FromInt64 (value : int64) : float = (# "conv.r8" value : float #)
+
+    let private convR8FromFloat (value : float) : float = (# "conv.r8" value : float #)
+
+    let private convRUnFromInt32 (value : int32) : float = (# "conv.r.un" value : float #)
+
+    let private convRUnFromInt64 (value : int64) : float = (# "conv.r.un" value : float #)
+
     /// The conversion performed by Conv_u.
     let toUnsignedNativeInt (value : EvalStackValue) : UnsignedNativeIntSource option =
-        // Table III.8
+        // Table III.8. Negative inputs are bit-reinterpreted (zero-extended
+        // for Int32, same bits for Int64/NativeInt); the F# `uint32`/`uint64`
+        // conversions from signed already do this.
         match value with
-        | EvalStackValue.Int32 i ->
-            if i >= 0 then
-                Some (uint64 i |> UnsignedNativeIntSource.Verbatim)
-            else
-            // Zero-extend.
-            failwith "todo"
-        | EvalStackValue.Int64 i ->
-            if i >= 0L then
-                Some (uint64 i |> UnsignedNativeIntSource.Verbatim)
-            else
-                failwith "todo"
+        | EvalStackValue.Int32 i -> Some (uint64 (uint32 i) |> UnsignedNativeIntSource.Verbatim)
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> Some (uint64 i |> UnsignedNativeIntSource.Verbatim)
+        | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset i) ->
+            Some (UnsignedNativeIntSource.FromSyntheticCrossArrayStorage i)
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
+            // Inversion of `Conv.U8` / `Conv.I8` followed by `Conv.U`. On a
+            // 64-bit interpreter the widening is bit-preserving, so the
+            // truncation back to native int recovers the original
+            // NativeIntSource. On a 32-bit interpreter this would lose the
+            // high 32 bits, which is exactly the wraparound that the
+            // `UnmanagedMemoryStream.Initialize` idiom checks for; modelling
+            // that would require revisiting `NATIVE_INT_SIZE`.
+            match src with
+            | NativeIntSource.ManagedPointer ptr -> Some (UnsignedNativeIntSource.FromManagedPointer ptr)
+            | NativeIntSource.SyntheticCrossArrayOffset s ->
+                Some (UnsignedNativeIntSource.FromSyntheticCrossArrayStorage s)
+            | NativeIntSource.Verbatim n -> Some (UnsignedNativeIntSource.Verbatim (uint64 n))
+            | _ -> failwith $"TODO: Conv_U from widened native int with non-pointer source %O{src}"
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) ->
+            // `conv.u` narrows synthesised hash bits from int64 width back to
+            // native-int width. Preserve the synthesis tag so downstream code
+            // (e.g. `BitOperations.RotateLeft`'s `(nuint)` cast) sees the same
+            // contract: deterministic numeric content, not a real pointer.
+            UnsignedNativeIntSource.FromOpaqueHashBits bits |> Some
         | EvalStackValue.NativeInt i ->
             match i with
-            | NativeIntSource.Verbatim i ->
-                if i >= 0L then
-                    uint64 i |> UnsignedNativeIntSource.Verbatim |> Some
-                else
-                    failwith "todo"
-            | NativeIntSource.ManagedPointer _ -> failwith "TODO"
-            | NativeIntSource.FunctionPointer _ -> failwith "TODO"
-            | NativeIntSource.FieldHandlePtr _ -> failwith "TODO"
-            | NativeIntSource.TypeHandlePtr _ -> failwith "TODO"
-        | EvalStackValue.Float f -> failwith "todo"
+            | NativeIntSource.Verbatim i -> uint64 i |> UnsignedNativeIntSource.Verbatim |> Some
+            | NativeIntSource.SyntheticCrossArrayOffset i ->
+                UnsignedNativeIntSource.FromSyntheticCrossArrayStorage i |> Some
+            | NativeIntSource.ManagedPointer ptr -> UnsignedNativeIntSource.FromManagedPointer ptr |> Some
+            | NativeIntSource.FunctionPointer methodInfo ->
+                failwith $"Conv_U: refusing to convert function pointer %O{methodInfo} to unsigned native int"
+            | NativeIntSource.FieldHandlePtr handle ->
+                failwith $"Conv_U: refusing to convert RuntimeFieldHandle pointer %d{handle} to unsigned native int"
+            | NativeIntSource.MethodHandlePtr handle ->
+                failwith $"Conv_U: refusing to convert RuntimeMethodHandle pointer %d{handle} to unsigned native int"
+            | NativeIntSource.TypeHandlePtr typeHandle ->
+                failwith $"Conv_U: refusing to convert RuntimeTypeHandle pointer %O{typeHandle} to unsigned native int"
+            | NativeIntSource.MethodTablePtr typeHandle ->
+                failwith $"Conv_U: refusing to convert MethodTable pointer %O{typeHandle} to unsigned native int"
+            | NativeIntSource.MethodTableAuxiliaryDataPtr typeHandle ->
+                failwith
+                    $"Conv_U: refusing to convert MethodTableAuxiliaryData pointer %O{typeHandle} to unsigned native int"
+            | NativeIntSource.PerInstInfoPtr handle ->
+                failwith $"Conv_U: refusing to convert PerInstInfo pointer %O{handle} to unsigned native int"
+            | NativeIntSource.PerInstDictPtr handle ->
+                failwith $"Conv_U: refusing to convert PerInstDict pointer %O{handle} to unsigned native int"
+            | NativeIntSource.GcHandlePtr handle ->
+                failwith $"Conv_U: refusing to convert GC handle pointer %O{handle} to unsigned native int"
+            | NativeIntSource.EventPipeProviderPtr id ->
+                failwith $"Conv_U: refusing to convert EventPipe provider handle #%d{id} to unsigned native int"
+            | NativeIntSource.EventPipeEventPtr id ->
+                failwith $"Conv_U: refusing to convert EventPipe event handle #%d{id} to unsigned native int"
+            | NativeIntSource.LowLevelMonitorPtr id ->
+                failwith $"Conv_U: refusing to convert low-level monitor handle %O{id} to unsigned native int"
+            | NativeIntSource.WaitHandlePtr id ->
+                failwith $"Conv_U: refusing to convert wait handle %O{id} to unsigned native int"
+            | NativeIntSource.AssemblyHandle assemblyName ->
+                failwith $"Conv_U: refusing to convert assembly handle %s{assemblyName} to unsigned native int"
+            | NativeIntSource.ModuleHandle moduleName ->
+                failwith $"Conv_U: refusing to convert module handle %s{moduleName} to unsigned native int"
+            | NativeIntSource.MetadataImportHandle moduleName ->
+                failwith $"Conv_U: refusing to convert metadata import handle %s{moduleName} to unsigned native int"
+            | NativeIntSource.OpaqueHashBits bits -> UnsignedNativeIntSource.FromOpaqueHashBits bits |> Some
+        | EvalStackValue.Float f -> convUFromFloat f |> UnsignedNativeIntSource.Verbatim |> Some
         | EvalStackValue.ManagedPointer managedPointerSource ->
             UnsignedNativeIntSource.FromManagedPointer managedPointerSource |> Some
-        | EvalStackValue.NullObjectRef -> failwith "todo"
-        | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
-        | EvalStackValue.UserDefinedValueType _ -> failwith "todo"
+        | EvalStackValue.NullObjectRef ->
+            ManagedPointerSource.Null |> UnsignedNativeIntSource.FromManagedPointer |> Some
+        | EvalStackValue.ObjectRef _
+        | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_U" value
 
     /// The conversion performed by Conv_i.
     let toNativeInt (value : EvalStackValue) : NativeIntSource option =
         match value with
-        | EvalStackValue.Int64 i -> Some (NativeIntSource.Verbatim i)
-        | EvalStackValue.Int32 i -> Some (NativeIntSource.Verbatim (int64<int> i))
-        | value -> failwith $"{value}"
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> i |> convIFromInt64 |> NativeIntSource.Verbatim |> Some
+        | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset i) ->
+            NativeIntSource.SyntheticCrossArrayOffset i |> Some
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
+            // Inversion of `Conv.U8` / `Conv.I8` followed by `Conv.I`. See
+            // the matching arm in `toUnsignedNativeInt` for the architecture
+            // assumption.
+            Some src
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) ->
+            // `conv.i` narrows synthesised hash bits from int64 width back to
+            // native-int width. The tag is preserved so the bits remain
+            // distinguishable from real-pointer NativeInt sources.
+            NativeIntSource.OpaqueHashBits bits |> Some
+        | EvalStackValue.Int32 i -> i |> convIFromInt32 |> NativeIntSource.Verbatim |> Some
+        | EvalStackValue.NativeInt src -> Some src
+        | EvalStackValue.Float f -> f |> convIFromFloat |> NativeIntSource.Verbatim |> Some
+        | EvalStackValue.ManagedPointer ptr -> NativeIntSource.ManagedPointer ptr |> Some
+        | EvalStackValue.NullObjectRef -> ManagedPointerSource.Null |> NativeIntSource.ManagedPointer |> Some
+        | EvalStackValue.ObjectRef _
+        | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_I" value
+
+    let convToInt8 (value : EvalStackValue) : int32 option =
+        match value with
+        | EvalStackValue.Int32 i -> convI1FromInt32 i |> Some
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convI1FromInt64 i |> Some
+        | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
+            failwith $"TODO: Conv_I1 from widened native int %O{src} (truncating pointer-shaped int64 to int8)"
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) -> convI1FromInt64 bits |> Some
+        | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_I1" src |> convI1FromInt64 |> Some
+        | EvalStackValue.Float f -> convI1FromFloat f |> Some
+        | EvalStackValue.ManagedPointer _
+        | EvalStackValue.NullObjectRef
+        | EvalStackValue.ObjectRef _
+        | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_I1" value
+
+    let convToInt16 (value : EvalStackValue) : int32 option =
+        match value with
+        | EvalStackValue.Int32 i -> convI2FromInt32 i |> Some
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convI2FromInt64 i |> Some
+        | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
+            failwith $"TODO: Conv_I2 from widened native int %O{src} (truncating pointer-shaped int64 to int16)"
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) -> convI2FromInt64 bits |> Some
+        | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_I2" src |> convI2FromInt64 |> Some
+        | EvalStackValue.Float f -> convI2FromFloat f |> Some
+        | EvalStackValue.ManagedPointer _
+        | EvalStackValue.NullObjectRef
+        | EvalStackValue.ObjectRef _
+        | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_I2" value
 
     let convToInt32 (value : EvalStackValue) : int32 option =
         match value with
         | EvalStackValue.Int32 i -> Some i
-        | EvalStackValue.Int64 int64 -> failwith "todo"
-        | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
-        | EvalStackValue.Float f -> failwith "todo"
-        | EvalStackValue.ManagedPointer managedPointerSource -> failwith "todo"
-        | EvalStackValue.NullObjectRef -> failwith "todo"
-        | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
-        | EvalStackValue.UserDefinedValueType evalStackValues -> failwith "todo"
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convI4FromInt64 i |> Some
+        | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
+            failwith $"TODO: Conv_I4 from widened native int %O{src} (truncating pointer-shaped int64 to int32)"
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) ->
+            // Truncating synthesised hash bits to int32 is the load-bearing
+            // path: `CastCache.KeyToBucket` ends in `(int)((hash * c) >> shift)`
+            // to produce an array index. The result has no provenance, but
+            // an array index doesn't need one.
+            convI4FromInt64 bits |> Some
+        | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_I4" src |> convI4FromInt64 |> Some
+        | EvalStackValue.Float f -> convI4FromFloat f |> Some
+        | EvalStackValue.ManagedPointer _
+        | EvalStackValue.NullObjectRef
+        | EvalStackValue.ObjectRef _
+        | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_I4" value
 
-    let convToInt64 (value : EvalStackValue) : int64 option =
+    let convToInt64 (value : EvalStackValue) : Int64Source option =
         match value with
-        | EvalStackValue.Int32 i -> Some (int64<int> i)
+        | EvalStackValue.Int32 i -> Some (int64<int> i |> Int64Source.Verbatim)
         | EvalStackValue.Int64 i -> Some i
         | EvalStackValue.NativeInt src ->
-            match src with
-            | NativeIntSource.Verbatim int64 -> Some int64
-            | NativeIntSource.ManagedPointer ManagedPointerSource.Null -> Some 0L
-            | NativeIntSource.ManagedPointer _
-            | NativeIntSource.FunctionPointer _
-            | NativeIntSource.TypeHandlePtr _
-            | NativeIntSource.FieldHandlePtr _ -> failwith "refusing to convert pointer to int64"
-        | EvalStackValue.Float f -> failwith "todo"
-        | EvalStackValue.ManagedPointer managedPointerSource -> failwith "todo"
-        | EvalStackValue.NullObjectRef -> failwith "todo"
-        | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
-        | EvalStackValue.UserDefinedValueType evalStackValues -> failwith "todo"
+            // `widenedNativeInt` normalises the Verbatim/SyntheticCrossArrayOffset/Null
+            // cases back to canonical Int64Source variants. Non-numeric
+            // sources (managed pointers, function pointers, type handles)
+            // get wrapped so their provenance survives the
+            // `Conv.I8 → … → Conv.I` round-trip.
+            Some (Int64Source.widenedNativeInt src true)
+        | EvalStackValue.Float f -> convI8FromFloat f |> Int64Source.Verbatim |> Some
+        | EvalStackValue.ManagedPointer ptr ->
+            // Same rationale as the NativeInt arm: keep the pointer's provenance
+            // as a widened-native-int so a subsequent `Conv.U` / `Conv.I`
+            // recovers the original ManagedPointer.
+            Some (Int64Source.widenedNativeInt (NativeIntSource.ManagedPointer ptr) true)
+        | EvalStackValue.NullObjectRef ->
+            Some (Int64Source.widenedNativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) true)
+        | EvalStackValue.ObjectRef _
+        | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_I8" value
 
     /// Then truncates to int64.
-    let convToUInt64 (value : EvalStackValue) : int64 option =
+    let convToUInt64 (value : EvalStackValue) : Int64Source option =
         match value with
-        | EvalStackValue.Int32 i -> Some (int64 (uint32 i))
-        | EvalStackValue.Int64 int64 -> Some int64
-        | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
-        | EvalStackValue.Float f -> failwith "todo"
-        | EvalStackValue.ManagedPointer managedPointerSource -> failwith "todo"
-        | EvalStackValue.NullObjectRef -> failwith "todo"
-        | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
-        | EvalStackValue.UserDefinedValueType evalStackValues -> failwith "todo"
+        | EvalStackValue.Int32 i -> Some (int64 (uint32 i) |> Int64Source.Verbatim)
+        | EvalStackValue.Int64 i -> Some i
+        | EvalStackValue.NativeInt src -> Some (Int64Source.widenedNativeInt src false)
+        | EvalStackValue.Float f -> convU8FromFloat f |> Int64Source.Verbatim |> Some
+        | EvalStackValue.ManagedPointer ptr ->
+            Some (Int64Source.widenedNativeInt (NativeIntSource.ManagedPointer ptr) false)
+        | EvalStackValue.NullObjectRef ->
+            Some (Int64Source.widenedNativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) false)
+        | EvalStackValue.ObjectRef _
+        | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_U8" value
 
     /// Then truncates to int32.
     let convToUInt8 (value : EvalStackValue) : int32 option =
         match value with
-        | EvalStackValue.Int32 (i : int32) ->
-            let v = (# "conv.u1" i : uint8 #)
-            Some (int32<uint8> v)
-        | EvalStackValue.Int64 int64 ->
-            let v = (# "conv.u1" int64 : uint8 #)
-            Some (int32<uint8> v)
-        | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
-        | EvalStackValue.Float f -> failwith "todo"
-        | EvalStackValue.ManagedPointer managedPointerSource -> failwith "todo"
-        | EvalStackValue.NullObjectRef -> failwith "todo"
-        | EvalStackValue.ObjectRef managedHeapAddress -> failwith "todo"
-        | EvalStackValue.UserDefinedValueType evalStackValues -> failwith "todo"
+        | EvalStackValue.Int32 i -> convU1FromInt32 i |> Some
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convU1FromInt64 i |> Some
+        | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
+            failwith $"TODO: Conv_U1 from widened native int %O{src} (truncating pointer-shaped int64 to uint8)"
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) -> convU1FromInt64 bits |> Some
+        | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_U1" src |> convU1FromInt64 |> Some
+        | EvalStackValue.Float f -> convU1FromFloat f |> Some
+        | EvalStackValue.ManagedPointer _
+        | EvalStackValue.NullObjectRef
+        | EvalStackValue.ObjectRef _
+        | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_U1" value
+
+    /// Then truncates to int32.
+    let convToUInt16 (value : EvalStackValue) : int32 option =
+        match value with
+        | EvalStackValue.Int32 i -> convU2FromInt32 i |> Some
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convU2FromInt64 i |> Some
+        | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
+            failwith $"TODO: Conv_U2 from widened native int %O{src} (truncating pointer-shaped int64 to uint16)"
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) -> convU2FromInt64 bits |> Some
+        | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_U2" src |> convU2FromInt64 |> Some
+        | EvalStackValue.Float f -> convU2FromFloat f |> Some
+        | EvalStackValue.ManagedPointer _
+        | EvalStackValue.NullObjectRef
+        | EvalStackValue.ObjectRef _
+        | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_U2" value
+
+    /// Then truncates to int32.
+    let convToUInt32 (value : EvalStackValue) : int32 option =
+        match value with
+        | EvalStackValue.Int32 i -> convU4FromInt32 i |> Some
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convU4FromInt64 i |> Some
+        | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
+            failwith $"TODO: Conv_U4 from widened native int %O{src} (truncating pointer-shaped int64 to uint32)"
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) -> convU4FromInt64 bits |> Some
+        | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_U4" src |> convU4FromInt64 |> Some
+        | EvalStackValue.Float f -> convU4FromFloat f |> Some
+        | EvalStackValue.ManagedPointer _
+        | EvalStackValue.NullObjectRef
+        | EvalStackValue.ObjectRef _
+        | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_U4" value
+
+    let convToFloat32 (value : EvalStackValue) : float option =
+        match value with
+        | EvalStackValue.Int32 i -> convR4FromInt32 i |> Some
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convR4FromInt64 i |> Some
+        | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) ->
+            failwith "Refusing to convert byte offset to float"
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
+            failwith $"Refusing to convert widened native int %O{src} to float"
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) ->
+            failwith $"Refusing to convert synthesised pointer-hash bits 0x%x{bits} to float"
+        | EvalStackValue.NativeInt (NativeIntSource.OpaqueHashBits bits) ->
+            // Matches the Int64 OpaqueHashBits refusal above. The helper below
+            // would let these bits become a float, materialising synthesised
+            // pointer provenance into the float domain.
+            failwith $"Refusing to convert synthesised pointer-hash bits 0x%x{bits} (native int) to float"
+        | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_R4" src |> convR4FromInt64 |> Some
+        | EvalStackValue.Float f -> convR4FromFloat f |> Some
+        | EvalStackValue.ManagedPointer _
+        | EvalStackValue.NullObjectRef
+        | EvalStackValue.ObjectRef _
+        | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_R4" value
+
+    let convToFloat64 (value : EvalStackValue) : float option =
+        match value with
+        | EvalStackValue.Int32 i -> convR8FromInt32 i |> Some
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convR8FromInt64 i |> Some
+        | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) ->
+            failwith "Refusing to convert byte offset to float"
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
+            failwith $"Refusing to convert widened native int %O{src} to float"
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) ->
+            failwith $"Refusing to convert synthesised pointer-hash bits 0x%x{bits} to float"
+        | EvalStackValue.NativeInt (NativeIntSource.OpaqueHashBits bits) ->
+            failwith $"Refusing to convert synthesised pointer-hash bits 0x%x{bits} (native int) to float"
+        | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_R8" src |> convR8FromInt64 |> Some
+        | EvalStackValue.Float f -> convR8FromFloat f |> Some
+        | EvalStackValue.ManagedPointer _
+        | EvalStackValue.NullObjectRef
+        | EvalStackValue.ObjectRef _
+        | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_R8" value
+
+    let convUnsignedToFloat (value : EvalStackValue) : float option =
+        match value with
+        | EvalStackValue.Int32 i -> convRUnFromInt32 i |> Some
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convRUnFromInt64 i |> Some
+        | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) ->
+            failwith "Refusing to convert byte offset to float"
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
+            failwith $"Refusing to convert widened native int %O{src} to float"
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) ->
+            failwith $"Refusing to convert synthesised pointer-hash bits 0x%x{bits} to float"
+        | EvalStackValue.NativeInt (NativeIntSource.OpaqueHashBits bits) ->
+            failwith $"Refusing to convert synthesised pointer-hash bits 0x%x{bits} (native int) to float"
+        | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_R_Un" src |> convRUnFromInt64 |> Some
+        | EvalStackValue.Float _ -> failwith "Conv_R_Un: refusing to convert an existing float as unsigned integer"
+        | EvalStackValue.ManagedPointer _
+        | EvalStackValue.NullObjectRef
+        | EvalStackValue.ObjectRef _
+        | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_R_Un" value
 
     let rec ofCliType (v : CliType) : EvalStackValue =
         match v with
@@ -148,10 +515,33 @@ module EvalStackValue =
         | CliType.RuntimePointer ptr ->
             match ptr with
             | CliRuntimePointer.Verbatim ptrInt -> NativeIntSource.Verbatim ptrInt |> EvalStackValue.NativeInt
+            | CliRuntimePointer.TypeHandlePtr typeHandle ->
+                NativeIntSource.TypeHandlePtr typeHandle |> EvalStackValue.NativeInt
             | CliRuntimePointer.FieldRegistryHandle ptrInt ->
                 NativeIntSource.FieldHandlePtr ptrInt |> EvalStackValue.NativeInt
+            | CliRuntimePointer.MethodRegistryHandle ptrInt ->
+                NativeIntSource.MethodHandlePtr ptrInt |> EvalStackValue.NativeInt
+            | CliRuntimePointer.MethodTablePtr typeHandle ->
+                NativeIntSource.MethodTablePtr typeHandle |> EvalStackValue.NativeInt
+            | CliRuntimePointer.MethodTableAuxiliaryDataPtr typeHandle ->
+                NativeIntSource.MethodTableAuxiliaryDataPtr typeHandle
+                |> EvalStackValue.NativeInt
+            | CliRuntimePointer.PerInstInfoPtr handle ->
+                NativeIntSource.PerInstInfoPtr handle |> EvalStackValue.NativeInt
+            | CliRuntimePointer.PerInstDictPtr handle ->
+                NativeIntSource.PerInstDictPtr handle |> EvalStackValue.NativeInt
             | CliRuntimePointer.Managed ptr -> ptr |> EvalStackValue.ManagedPointer
-        | CliType.ValueType fields -> EvalStackValue.UserDefinedValueType fields
+            | CliRuntimePointer.GcHandlePtr addr -> NativeIntSource.GcHandlePtr addr |> EvalStackValue.NativeInt
+        | CliType.ValueType vt ->
+            // Primitive-like single-field wrappers (IntPtr, RuntimeTypeHandle, enums, ...) all get
+            // flattened to their underlying primitive on the stack. ECMA III.1.8 treats enums as
+            // their underlying integer for every numeric/comparison opcode; flattening here means
+            // cgt.un/clt.un/add/etc. don't need enum-specific arms. Storage stays wrapped;
+            // `toCliTypeCoerced` re-wraps on the pop side when the target slot is primitive-like.
+            if vt.PrimitiveLikeKind.IsSome then
+                ofCliType (CliValueType.PrimitiveLikeField vt).Contents
+            else
+                EvalStackValue.UserDefinedValueType vt
 
     let rec toCliTypeCoerced (target : CliType) (popped : EvalStackValue) : CliType =
         match target with
@@ -173,11 +563,36 @@ module EvalStackValue =
                 | EvalStackValue.Int64 i -> CliType.Numeric (CliNumericType.Int64 i)
                 | EvalStackValue.NativeInt src ->
                     match src with
-                    | NativeIntSource.Verbatim i -> CliType.Numeric (CliNumericType.Int64 i)
+                    | NativeIntSource.Verbatim i ->
+                        CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim i))
+                    | NativeIntSource.SyntheticCrossArrayOffset _ -> failwith "TODO"
                     | NativeIntSource.ManagedPointer ptr -> failwith "TODO"
                     | NativeIntSource.FunctionPointer f -> failwith $"TODO: {f}"
                     | NativeIntSource.FieldHandlePtr f -> failwith $"TODO: {f}"
+                    | NativeIntSource.MethodHandlePtr f -> failwith $"TODO: {f}"
                     | NativeIntSource.TypeHandlePtr f -> failwith $"TODO: {f}"
+                    | NativeIntSource.MethodTablePtr f -> failwith $"TODO: {f}"
+                    | NativeIntSource.MethodTableAuxiliaryDataPtr f -> failwith $"TODO: {f}"
+                    | NativeIntSource.PerInstInfoPtr f ->
+                        failwith $"refusing to coerce PerInstInfo pointer %O{f} to int64"
+                    | NativeIntSource.PerInstDictPtr f ->
+                        failwith $"refusing to coerce PerInstDict pointer %O{f} to int64"
+                    | NativeIntSource.GcHandlePtr f -> failwith $"TODO: {f}"
+                    | NativeIntSource.EventPipeProviderPtr id ->
+                        failwith $"refusing to coerce EventPipe provider handle #%d{id} to int64"
+                    | NativeIntSource.EventPipeEventPtr id ->
+                        failwith $"refusing to coerce EventPipe event handle #%d{id} to int64"
+                    | NativeIntSource.LowLevelMonitorPtr id ->
+                        failwith $"refusing to coerce low-level monitor handle %O{id} to int64"
+                    | NativeIntSource.WaitHandlePtr id -> failwith $"refusing to coerce wait handle %O{id} to int64"
+                    | NativeIntSource.AssemblyHandle f -> failwith $"TODO: {f}"
+                    | NativeIntSource.ModuleHandle f -> failwith $"TODO: {f}"
+                    | NativeIntSource.MetadataImportHandle f ->
+                        failwith $"refusing to coerce metadata import handle %s{f} to int64"
+                    | NativeIntSource.OpaqueHashBits bits ->
+                        // Widening synthesised pointer-hash bits to an int64 slot
+                        // is the inverse of `conv.u` from `Int64Source.OpaqueHashBits`.
+                        CliType.Numeric (CliNumericType.Int64 (Int64Source.OpaqueHashBits bits))
                 // CliType.Numeric (CliNumericType.TypeHandlePtr f)
                 | i -> failwith $"TODO: %O{i}"
             | CliNumericType.NativeInt _ ->
@@ -193,15 +608,43 @@ module EvalStackValue =
                     match popped with
                     | CliType.Numeric (CliNumericType.NativeInt i) -> CliType.Numeric (CliNumericType.NativeInt i)
                     | CliType.Numeric (CliNumericType.Int64 i) ->
-                        CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim i))
+                        match i with
+                        | Int64Source.Verbatim i ->
+                            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim i))
+                        | Int64Source.SyntheticCrossArrayOffset i ->
+                            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.SyntheticCrossArrayOffset i))
+                        | Int64Source.WidenedNativeInt (src, _) ->
+                            // The int64 carries a widened NativeIntSource; truncating
+                            // back to native int recovers the original source on
+                            // 64-bit (the widening is bit-preserving).
+                            CliType.Numeric (CliNumericType.NativeInt src)
+                        | Int64Source.OpaqueHashBits bits ->
+                            failwith
+                                $"refusing to coerce synthesised pointer-hash bits 0x%x{bits} into a native int (would forge pointer provenance)"
                     | CliType.RuntimePointer ptr ->
                         match ptr with
                         | CliRuntimePointer.Verbatim i ->
                             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim i))
+                        | CliRuntimePointer.TypeHandlePtr typeHandle ->
+                            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr typeHandle))
                         | CliRuntimePointer.FieldRegistryHandle ptr ->
                             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr ptr))
+                        | CliRuntimePointer.MethodRegistryHandle ptr ->
+                            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.MethodHandlePtr ptr))
+                        | CliRuntimePointer.MethodTablePtr typeHandle ->
+                            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.MethodTablePtr typeHandle))
+                        | CliRuntimePointer.MethodTableAuxiliaryDataPtr typeHandle ->
+                            CliType.Numeric (
+                                CliNumericType.NativeInt (NativeIntSource.MethodTableAuxiliaryDataPtr typeHandle)
+                            )
+                        | CliRuntimePointer.PerInstInfoPtr handle ->
+                            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.PerInstInfoPtr handle))
+                        | CliRuntimePointer.PerInstDictPtr handle ->
+                            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.PerInstDictPtr handle))
                         | CliRuntimePointer.Managed src ->
                             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer src))
+                        | CliRuntimePointer.GcHandlePtr addr ->
+                            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.GcHandlePtr addr))
                     | _ -> failwith $"TODO: {popped}"
                 | _ -> failwith $"TODO: {popped}"
             | CliNumericType.NativeFloat f -> failwith "todo"
@@ -237,9 +680,36 @@ module EvalStackValue =
                 match nativeIntSource with
                 | NativeIntSource.Verbatim 0L -> CliType.ObjectRef None
                 | NativeIntSource.Verbatim i -> failwith $"refusing to interpret verbatim native int {i} as a pointer"
+                | NativeIntSource.SyntheticCrossArrayOffset _ ->
+                    failwith "refusing to interpret synthetic cross-storage byte offset as a pointer"
                 | NativeIntSource.FunctionPointer _ -> failwith "TODO"
                 | NativeIntSource.TypeHandlePtr _ -> failwith "refusing to interpret type handle ID as an object ref"
+                | NativeIntSource.MethodTablePtr _ ->
+                    failwith "refusing to interpret method table pointer as an object ref"
+                | NativeIntSource.MethodTableAuxiliaryDataPtr _ ->
+                    failwith "refusing to interpret method table auxiliary-data pointer as an object ref"
+                | NativeIntSource.PerInstInfoPtr _ ->
+                    failwith "refusing to interpret PerInstInfo pointer as an object ref"
+                | NativeIntSource.PerInstDictPtr _ ->
+                    failwith "refusing to interpret PerInstDict pointer as an object ref"
+                | NativeIntSource.MethodHandlePtr _ ->
+                    failwith "refusing to interpret method handle ID as an object ref"
                 | NativeIntSource.FieldHandlePtr _ -> failwith "refusing to interpret field handle ID as an object ref"
+                | NativeIntSource.GcHandlePtr _ -> failwith "refusing to interpret GC handle ID as an object ref"
+                | NativeIntSource.EventPipeProviderPtr _ ->
+                    failwith "refusing to interpret EventPipe provider handle as an object ref"
+                | NativeIntSource.EventPipeEventPtr _ ->
+                    failwith "refusing to interpret EventPipe event handle as an object ref"
+                | NativeIntSource.LowLevelMonitorPtr _ ->
+                    failwith "refusing to interpret low-level monitor handle as an object ref"
+                | NativeIntSource.WaitHandlePtr _ -> failwith "refusing to interpret wait handle as an object ref"
+                | NativeIntSource.AssemblyHandle _ -> failwith "refusing to interpret assembly handle as an object ref"
+                | NativeIntSource.ModuleHandle _ -> failwith "refusing to interpret module handle as an object ref"
+                | NativeIntSource.MetadataImportHandle _ ->
+                    failwith "refusing to interpret metadata import handle as an object ref"
+                | NativeIntSource.OpaqueHashBits bits ->
+                    failwith
+                        $"refusing to interpret synthesised pointer-hash bits 0x%x{bits} as an object ref (would forge a heap address)"
                 | NativeIntSource.ManagedPointer ptr ->
                     match ptr with
                     | ManagedPointerSource.Null -> CliType.ObjectRef None
@@ -266,54 +736,90 @@ module EvalStackValue =
             | EvalStackValue.NativeInt intSrc ->
                 match intSrc with
                 | NativeIntSource.Verbatim i -> CliType.RuntimePointer (CliRuntimePointer.Verbatim i)
+                | NativeIntSource.SyntheticCrossArrayOffset _ ->
+                    failwith
+                        "refusing to interpret synthetic cross-storage byte offset as a runtime pointer: the value is a deterministic sentinel, not a real address"
                 | NativeIntSource.ManagedPointer src -> src |> CliRuntimePointer.Managed |> CliType.RuntimePointer
                 | NativeIntSource.FunctionPointer methodInfo ->
                     CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer methodInfo))
-                | NativeIntSource.TypeHandlePtr int64 -> failwith "todo"
-                | NativeIntSource.FieldHandlePtr int64 -> failwith "todo"
+                | NativeIntSource.TypeHandlePtr typeHandle ->
+                    CliType.RuntimePointer (CliRuntimePointer.TypeHandlePtr typeHandle)
+                | NativeIntSource.MethodTablePtr typeHandle ->
+                    CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr typeHandle)
+                | NativeIntSource.MethodTableAuxiliaryDataPtr typeHandle ->
+                    CliType.RuntimePointer (CliRuntimePointer.MethodTableAuxiliaryDataPtr typeHandle)
+                | NativeIntSource.PerInstInfoPtr handle ->
+                    CliType.RuntimePointer (CliRuntimePointer.PerInstInfoPtr handle)
+                | NativeIntSource.PerInstDictPtr handle ->
+                    CliType.RuntimePointer (CliRuntimePointer.PerInstDictPtr handle)
+                | NativeIntSource.FieldHandlePtr ptr ->
+                    CliType.RuntimePointer (CliRuntimePointer.FieldRegistryHandle ptr)
+                | NativeIntSource.MethodHandlePtr ptr ->
+                    CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle ptr)
+                | NativeIntSource.GcHandlePtr addr -> CliType.RuntimePointer (CliRuntimePointer.GcHandlePtr addr)
+                | NativeIntSource.EventPipeProviderPtr id ->
+                    failwith
+                        $"refusing to coerce EventPipe provider handle #%d{id} to runtime pointer: tracing handles are opaque, not addresses"
+                | NativeIntSource.EventPipeEventPtr id ->
+                    failwith
+                        $"refusing to coerce EventPipe event handle #%d{id} to runtime pointer: tracing handles are opaque, not addresses"
+                | NativeIntSource.LowLevelMonitorPtr id ->
+                    failwith
+                        $"refusing to coerce low-level monitor handle %O{id} to runtime pointer: monitor handles are opaque, not addresses"
+                | NativeIntSource.WaitHandlePtr id ->
+                    failwith
+                        $"refusing to coerce wait handle %O{id} to runtime pointer: wait handles are opaque, not addresses"
+                | NativeIntSource.AssemblyHandle _ -> failwith "todo: AssemblyHandle into CliType.RuntimePointer"
+                | NativeIntSource.ModuleHandle _ -> failwith "todo: ModuleHandle into CliType.RuntimePointer"
+                | NativeIntSource.MetadataImportHandle _ ->
+                    failwith "refusing to coerce metadata import handle to runtime pointer"
+                | NativeIntSource.OpaqueHashBits bits ->
+                    failwith
+                        $"refusing to coerce synthesised pointer-hash bits 0x%x{bits} to runtime pointer (would forge a dereferenceable address)"
             | EvalStackValue.NullObjectRef -> failwith "cannot coerce null object reference to runtime pointer"
             | EvalStackValue.ObjectRef addr -> failwith $"cannot coerce object reference %O{addr} to runtime pointer"
             | _ -> failwith $"TODO: %O{popped}"
         | CliType.Char _ ->
             match popped with
             | EvalStackValue.Int32 i ->
-                let high = i / 256
-                let low = i % 256
-                CliType.Char (byte<int> high, byte<int> low)
+                // Char is a 16-bit unsigned slot. The int32 on the stack may
+                // carry a sign-extended negative value (e.g. from coercing a
+                // negative Int16 through a `Unsafe.As<ushort, short>` write);
+                // narrow via `uint16` so the reinterpret preserves the low
+                // 16 bits bit-for-bit instead of splitting signed/ arithmetic
+                // into the wrong high byte.
+                let truncated = uint16<int> i
+                let high = byte<uint16> (truncated >>> 8)
+                let low = byte<uint16> (truncated &&& 0xFFus)
+                CliType.Char (high, low)
             | popped -> failwith $"Unexpectedly wanted a char from {popped}"
         | CliType.ValueType vt ->
             match popped with
             | EvalStackValue.UserDefinedValueType popped' ->
-                match CliValueType.TrySequentialFields vt, CliValueType.TrySequentialFields popped' with
-                | Some vt, Some popped ->
-                    if vt.Length <> popped.Length then
-                        failwith
-                            $"mismatch: popped value type {popped} (length %i{popped.Length}) into {vt} (length %i{vt.Length})"
+                let coerceContents (targetContents : CliType) (sourceContents : CliType) : CliType =
+                    toCliTypeCoerced targetContents (ofCliType sourceContents)
 
-                    (vt, popped)
-                    ||> List.map2 (fun field1 popped ->
-                        if field1.Name <> popped.Name then
-                            failwith $"TODO: name mismatch, {field1.Name} vs {popped.Name}"
-
-                        if field1.Offset <> popped.Offset then
-                            failwith $"TODO: offset mismatch for {field1.Name}, {field1.Offset} vs {popped.Offset}"
-
-                        let contents = toCliTypeCoerced field1.Contents (ofCliType popped.Contents)
-
-                        {
-                            CliField.Name = field1.Name
-                            Contents = contents
-                            Offset = field1.Offset
-                            Type = field1.Type
-                        }
-                    )
-                    |> CliValueType.OfFields popped'.Layout
-                    |> CliType.ValueType
-                | _, _ -> failwith "TODO: overlapping fields going onto eval stack"
+                CliValueType.CoerceFrom coerceContents vt popped' |> CliType.ValueType
             | popped ->
-                match CliValueType.TryExactlyOneField vt with
-                | Some field -> toCliTypeCoerced field.Contents popped
-                | _ -> failwith $"TODO: {popped} into value type {target}"
+                // A bare primitive popped into a ValueType slot is only legal for primitive-like
+                // wrappers: the BCL handles (IntPtr, RuntimeTypeHandle, ...) flattened on push,
+                // and enums, where CIL freely coerces between the underlying integer on the stack
+                // and the enum slot. Both cases share the same rewrap: clone the target's single-
+                // field skeleton and store the coerced primitive into `value__`/`_value`. A
+                // single-field user-defined struct receiving a bare primitive is invalid IL; fail
+                // loud so the misfire surfaces instead of silently degrading the storage shape.
+                if vt.PrimitiveLikeKind.IsSome then
+                    let field = CliValueType.PrimitiveLikeField vt
+                    let newContents = toCliTypeCoerced field.Contents popped
+
+                    let newField =
+                        { field with
+                            Contents = newContents
+                        }
+
+                    [ newField ] |> CliValueType.OfFieldsLike vt vt.Layout |> CliType.ValueType
+                else
+                    failwith $"TODO: {popped} into value type {target}"
 
 type EvalStack =
     {
@@ -339,6 +845,15 @@ type EvalStack =
     static member Peek (stack : EvalStack) : EvalStackValue option = stack.Values |> List.tryHead
 
     static member Push' (v : EvalStackValue) (stack : EvalStack) : EvalStack =
+        // Invariant: primitive-like wrapper structs (IntPtr, RuntimeTypeHandle, enums, ...) must
+        // never appear on the eval stack as UserDefinedValueType; EvalStackValue.ofCliType flattens
+        // them on push. A caller using Push' directly must respect this too.
+        match v with
+        | EvalStackValue.UserDefinedValueType vt when vt.PrimitiveLikeKind.IsSome ->
+            failwith
+                $"eval-stack invariant violated: primitive-like struct %O{vt.Declared} pushed as UserDefinedValueType (kind = %O{vt.PrimitiveLikeKind})"
+        | _ -> ()
+
         {
             Values = v :: stack.Values
         }

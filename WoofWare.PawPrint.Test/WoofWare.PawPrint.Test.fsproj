@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <IsPackable>false</IsPackable>
     <OutputType>Exe</OutputType>
   </PropertyGroup>
@@ -10,6 +10,11 @@
     <Compile Include="LoggerFactory.fs" />
     <Compile Include="Assembly.fs" />
     <Compile Include="Roslyn.fs" />
+    <Compile Include="TestAssemblyReadCache.fs" />
+    <Compile Include="TestCustomAttributeBlob.fs" />
+    <Compile Include="TestCustomAttribValueLowering.fs" />
+    <Compile Include="TestFriendAssemblies.fs" />
+    <Compile Include="TestAccessCheck.fs" />
     <Compile Include="RealRuntime.fs" />
     <Compile Include="TestHarness.fs"/>
     <Compile Include="CrossAssemblyHarness.fs" />
@@ -19,21 +24,82 @@
     <Compile Include="TestTypeResolution.fs" />
     <Compile Include="TestTypeIdentityProperties.fs" />
     <Compile Include="TestEvalStack.fs" />
+    <Compile Include="TestNativeIntSource.fs" />
+    <Compile Include="TestPointerHashSynthesis.fs" />
+    <Compile Include="TestCliTypeBytes.fs" />
+    <Compile Include="TestManagedHeap.fs" />
+    <Compile Include="TestBinaryArithmetic.fs" />
+    <Compile Include="TestContextSwitchPrior.fs" />
+    <Compile Include="TestNullaryIlOp.fs" />
+    <Compile Include="TestStackMemoryPool.fs" />
+    <Compile Include="TestNativeMemoryPool.fs" />
+    <Compile Include="TestSwitchIlOp.fs" />
+    <Compile Include="TestUnaryConstIlOp.fs" />
+    <Compile Include="TestUnaryMetadataIlOp.fs" />
+    <Compile Include="TestMethodTableProjection.fs" />
     <Compile Include="TestCrossAssemblyTypeInitialisation.fs" />
     <Compile Include="TestCrossAssemblyCastclass.fs" />
+    <Compile Include="TestCrossAssemblyDispatch.fs" />
+    <Compile Include="TestCrossAssemblyIsAssignableFrom.fs" />
     <Compile Include="TestNativeMethodDetection.fs" />
+    <Compile Include="TestUnsafeAccessorRead.fs" />
+    <Compile Include="TestNativeKernel32.fs" />
+    <Compile Include="TestFieldHandleRegistry.fs" />
+    <Compile Include="TestNativeMetadataImport.fs" />
+    <Compile Include="TestNativeSignature.fs" />
+    <Compile Include="TestNativeCustomAttribute.fs" />
+    <Compile Include="TestManifestResources.fs" />
+    <Compile Include="TestNativeEnum.fs" />
+    <Compile Include="TestMethodHandleRegistry.fs" />
+    <Compile Include="TestMethodReturnType.fs" />
+    <Compile Include="TestFunctionPointerConcretization.fs" />
+    <Compile Include="TestGenericParamConstraints.fs" />
+    <Compile Include="TestGcHandleRegistry.fs" />
+    <Compile Include="TestFileDescriptorRegistry.fs" />
+    <Compile Include="TestNonCryptoRandom.fs" />
+    <Compile Include="TestPrimitiveLikeStructRegistry.fs" />
+    <Compile Include="TestEvalStackPrimitiveLikeBoundary.fs" />
+    <Compile Include="TestCliValueTypeCoerceFrom.fs" />
     <Compile Include="TestExceptionHResults.fs" />
+    <Compile Include="TestFaultHandlers.fs" />
+    <Compile Include="TestJsonLinesLogging.fs" />
+    <Compile Include="TestHardwareIntrinsicsProfile.fs" />
+    <Compile Include="TestDebuggerState.fs" />
+    <Compile Include="TestProgramDebugger.fs" />
+    <Compile Include="TestDebuggerServer.fs" />
+    <Compile Include="TestBclIntrinsicStaticFields.fs" />
+    <Compile Include="TestLowLevelMonitor.fs" />
+    <Compile Include="TestSignal.fs" />
+    <Compile Include="TestSignalState.fs" />
+    <Compile Include="TestSignalHandler.fs" />
+    <Compile Include="TestSignalDispatcherThread.fs" />
+    <Compile Include="TestSignalDispatch.fs" />
+    <Compile Include="TestSignalTermination.fs" />
+    <Compile Include="TestWaitHandle.fs" />
+    <Compile Include="TestSyncBlockMonitor.fs" />
+    <Compile Include="TestNativeThreadYield.fs" />
+    <Compile Include="TestNativeEventSource.fs" />
+    <Compile Include="TestSchedulerVoluntaryYield.fs" />
+    <Compile Include="TestSchedulerPct.fs" />
     <Compile Include="TestPureCases.fs" />
     <Compile Include="TestFSharpPureCases.fs" />
     <Compile Include="TestImpureCases.fs" />
+    <Compile Include="TestRaces.fs" />
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="sourcesPure\*.cs" />
     <EmbeddedResource Include="sourcesImpure\*.cs" />
+    <EmbeddedResource Include="sources\*.cs" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="../WoofWare.PawPrint/WoofWare.PawPrint.fsproj"/>
+    <ProjectReference Include="../WoofWare.PawPrint.Logging/WoofWare.PawPrint.Logging.fsproj"/>
+    <ProjectReference Include="../WoofWare.PawPrint.App/WoofWare.PawPrint.App.fsproj"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
   <ItemGroup>

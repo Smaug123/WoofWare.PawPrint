@@ -14,3 +14,4 @@ result
 **/Generated*.fs
 .codex
 *.trx
+BenchmarkDotNet.Artifacts/

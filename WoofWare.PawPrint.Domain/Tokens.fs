@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint
 
+open System.Reflection
 open System.Reflection.Metadata
 open System.Reflection.Metadata.Ecma335
 
@@ -8,6 +9,8 @@ open System.Reflection.Metadata.Ecma335
 /// This discriminated union provides type-safe handling of metadata tokens with specific handle types.
 /// </summary>
 type MetadataToken =
+    /// <summary>Module definition token, identifying the current module.</summary>
+    | ModuleDefinition of ModuleDefinitionHandle
     /// <summary>Method implementation token, specifying how a virtual method is implemented.</summary>
     | MethodImplementation of MethodImplementationHandle
     /// <summary>Method definition token, identifying a method defined in this assembly.</summary>
@@ -52,6 +55,8 @@ type MetadataToken =
     | ManifestResource of ManifestResourceHandle
     /// <summary>Generic parameter token, identifying a generic type or method parameter.</summary>
     | GenericParameter of GenericParameterHandle
+    /// <summary>Assembly definition token, identifying the current assembly's manifest metadata row.</summary>
+    | AssemblyDefinition of AssemblyDefinitionHandle
     /// <summary>Generic parameter constraint token, identifying a constraint on a generic parameter.</summary>
     | GenericParameterConstraint of GenericParameterConstraintHandle
     /// <summary>Document token, used in debugging information.</summary>
@@ -75,7 +80,13 @@ module MetadataToken =
         let asRowNum = value &&& 0x00FFFFFF
 
         match LanguagePrimitives.EnumOfValue<byte, HandleKind> (byte (value &&& 0xFF000000 >>> 24)) with
-        | HandleKind.ModuleDefinition -> failwith "TODO"
+        | HandleKind.ModuleDefinition ->
+            if asRowNum = 0 then
+                failwith "Nil ModuleDefinition token (row 0)"
+            elif asRowNum <> 1 then
+                failwith $"Invalid ModuleDefinition row number: {asRowNum} (only row 1 is valid)"
+            else
+                MetadataToken.ModuleDefinition EntityHandle.ModuleDefinition
         | HandleKind.TypeReference -> MetadataToken.TypeReference (MetadataTokens.TypeReferenceHandle asRowNum)
         | HandleKind.TypeDefinition -> MetadataToken.TypeDefinition (MetadataTokens.TypeDefinitionHandle asRowNum)
         | HandleKind.FieldDefinition -> MetadataToken.FieldDefinition (MetadataTokens.FieldDefinitionHandle asRowNum)
@@ -98,7 +109,13 @@ module MetadataToken =
         | HandleKind.ModuleReference -> MetadataToken.ModuleReference (MetadataTokens.ModuleReferenceHandle asRowNum)
         | HandleKind.TypeSpecification ->
             MetadataToken.TypeSpecification (MetadataTokens.TypeSpecificationHandle asRowNum)
-        | HandleKind.AssemblyDefinition -> failwith "TODO"
+        | HandleKind.AssemblyDefinition ->
+            if asRowNum = 0 then
+                failwith "Nil AssemblyDefinition token (row 0)"
+            elif asRowNum <> 1 then
+                failwith $"Invalid AssemblyDefinition row number: {asRowNum} (only row 1 is valid)"
+            else
+                MetadataToken.AssemblyDefinition EntityHandle.AssemblyDefinition
         | HandleKind.AssemblyReference ->
             MetadataToken.AssemblyReference (MetadataTokens.AssemblyReferenceHandle asRowNum)
         | HandleKind.AssemblyFile -> MetadataToken.AssemblyFile (MetadataTokens.AssemblyFileHandle asRowNum)
@@ -125,4 +142,91 @@ module MetadataToken =
         | HandleKind.NamespaceDefinition -> failwith "TODO"
         | h -> failwith $"Unrecognised kind: {h}"
 
-    let ofEntityHandle (eh : EntityHandle) : MetadataToken = ofInt (eh.GetHashCode ())
+    let ofEntityHandle (eh : EntityHandle) : MetadataToken =
+        if eh.IsNil then
+            failwith $"Nil EntityHandle (kind {eh.Kind})"
+        else
+            ofInt (MetadataTokens.GetToken eh)
+
+    /// <summary>
+    /// Converts a MetadataToken back to its raw int32 metadata token representation.
+    /// </summary>
+    let toInt (token : MetadataToken) : int32 =
+        let handle : Handle =
+            match token with
+            | MetadataToken.ModuleDefinition h -> ModuleDefinitionHandle.op_Implicit h
+            | MetadataToken.MethodImplementation h -> MethodImplementationHandle.op_Implicit h
+            | MetadataToken.MethodDef h -> MethodDefinitionHandle.op_Implicit h
+            | MetadataToken.MethodSpecification h -> MethodSpecificationHandle.op_Implicit h
+            | MetadataToken.MemberReference h -> MemberReferenceHandle.op_Implicit h
+            | MetadataToken.TypeReference h -> TypeReferenceHandle.op_Implicit h
+            | MetadataToken.AssemblyReference h -> AssemblyReferenceHandle.op_Implicit h
+            | MetadataToken.TypeSpecification h -> TypeSpecificationHandle.op_Implicit h
+            | MetadataToken.TypeDefinition h -> TypeDefinitionHandle.op_Implicit h
+            | MetadataToken.FieldDefinition h -> FieldDefinitionHandle.op_Implicit h
+            | MetadataToken.Parameter h -> ParameterHandle.op_Implicit h
+            | MetadataToken.InterfaceImplementation h -> InterfaceImplementationHandle.op_Implicit h
+            | MetadataToken.ExportedType h -> ExportedTypeHandle.op_Implicit h
+            | MetadataToken.StandaloneSignature h -> StandaloneSignatureHandle.op_Implicit h
+            | MetadataToken.EventDefinition h -> EventDefinitionHandle.op_Implicit h
+            | MetadataToken.Constant h -> ConstantHandle.op_Implicit h
+            | MetadataToken.CustomAttribute h -> CustomAttributeHandle.op_Implicit h
+            | MetadataToken.DeclarativeSecurityAttribute h -> DeclarativeSecurityAttributeHandle.op_Implicit h
+            | MetadataToken.PropertyDefinition h -> PropertyDefinitionHandle.op_Implicit h
+            | MetadataToken.ModuleReference h -> ModuleReferenceHandle.op_Implicit h
+            | MetadataToken.AssemblyFile h -> AssemblyFileHandle.op_Implicit h
+            | MetadataToken.ManifestResource h -> ManifestResourceHandle.op_Implicit h
+            | MetadataToken.GenericParameter h -> GenericParameterHandle.op_Implicit h
+            | MetadataToken.AssemblyDefinition h -> AssemblyDefinitionHandle.op_Implicit h
+            | MetadataToken.GenericParameterConstraint h -> GenericParameterConstraintHandle.op_Implicit h
+            | MetadataToken.Document h -> DocumentHandle.op_Implicit h
+            | MetadataToken.MethodDebugInformation h -> MethodDebugInformationHandle.op_Implicit h
+            | MetadataToken.LocalScope h -> LocalScopeHandle.op_Implicit h
+            | MetadataToken.LocalVariable h -> LocalVariableHandle.op_Implicit h
+            | MetadataToken.LocalConstant h -> LocalConstantHandle.op_Implicit h
+            | MetadataToken.ImportScope h -> ImportScopeHandle.op_Implicit h
+            | MetadataToken.CustomDebugInformation h -> CustomDebugInformationHandle.op_Implicit h
+
+        MetadataTokens.GetToken handle
+
+/// A metadata token operand together with the assembly whose metadata tables own it.
+/// CLI metadata tokens are only meaningful relative to a module, so executable IL
+/// operands should carry this context rather than consulting ambient thread state.
+[<NoEquality ; NoComparison>]
+type SourcedMetadataToken =
+    {
+        SourceAssembly : AssemblyName
+        Token : MetadataToken
+    }
+
+[<RequireQualifiedAccess>]
+module SourcedMetadataToken =
+    let make (sourceAssembly : AssemblyName) (token : MetadataToken) : SourcedMetadataToken =
+        {
+            SourceAssembly = sourceAssembly
+            Token = token
+        }
+
+    let ofInt (sourceAssembly : AssemblyName) (value : int32) : SourcedMetadataToken =
+        MetadataToken.ofInt value |> make sourceAssembly
+
+/// A string token operand together with the assembly whose string heap owns it.
+/// CLI string tokens are only meaningful relative to a module, so executable IL
+/// operands should carry this context rather than consulting ambient thread state.
+[<NoEquality ; NoComparison>]
+type SourcedStringToken =
+    {
+        SourceAssembly : AssemblyName
+        Token : StringToken
+    }
+
+[<RequireQualifiedAccess>]
+module SourcedStringToken =
+    let make (sourceAssembly : AssemblyName) (token : StringToken) : SourcedStringToken =
+        {
+            SourceAssembly = sourceAssembly
+            Token = token
+        }
+
+    let ofInt (sourceAssembly : AssemblyName) (value : int32) : SourcedStringToken =
+        StringToken.ofInt value |> make sourceAssembly

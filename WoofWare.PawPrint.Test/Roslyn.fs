@@ -17,10 +17,11 @@ module Roslyn =
 
         Array.append runtimeReferences (extraReferences |> List.toArray)
 
-    let compileAssembly
+    let compileAssemblyWithResources
         (assemblyName : string)
         (outputKind : OutputKind)
         (extraReferences : MetadataReference list)
+        (resources : ResourceDescription list)
         (sources : string list)
         : byte[]
         =
@@ -47,7 +48,7 @@ module Roslyn =
 
         use peStream = new MemoryStream ()
 
-        let emitResult = compilation.Emit peStream
+        let emitResult = compilation.Emit (peStream, manifestResources = resources)
 
         if emitResult.Success then
             peStream.ToArray ()
@@ -59,6 +60,15 @@ module Roslyn =
                 |> String.concat Environment.NewLine
 
             failwith $"Compilation failed:\n{diagnostics}"
+
+    let compileAssembly
+        (assemblyName : string)
+        (outputKind : OutputKind)
+        (extraReferences : MetadataReference list)
+        (sources : string list)
+        : byte[]
+        =
+        compileAssemblyWithResources assemblyName outputKind extraReferences [] sources
 
     /// Compiles the supplied C# source strings into an in-memory PE image.
     /// Raises if compilation fails.

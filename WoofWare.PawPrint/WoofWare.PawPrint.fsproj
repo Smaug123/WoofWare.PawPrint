@@ -13,9 +13,20 @@
     <Compile Include="Result.fs" />
     <Compile Include="Corelib.fs" />
     <Compile Include="AbstractMachineDomain.fs" />
-    <Compile Include="BasicCliType.fs" />
+    <Compile Include="SchedulerState.fs" />
+    <Compile Include="FieldId.fs" />
+    <Compile Include="ManagedPointerSource.fs" />
+    <Compile Include="NativeIntSource.fs" />
+    <Compile Include="PointerHashSynthesis.fs" />
+    <Compile Include="CliNumericType.fs" />
+    <Compile Include="CliType.fs" />
+    <Compile Include="FieldIdentity.fs" />
+    <Compile Include="GcHandleRegistry.fs" />
+    <Compile Include="Errno.fs" />
+    <Compile Include="FileDescriptorRegistry.fs" />
     <Compile Include="TypeHandleRegistry.fs" />
     <Compile Include="FieldHandleRegistry.fs" />
+    <Compile Include="MethodHandleRegistry.fs" />
     <Compile Include="ManagedHeap.fs" />
     <Compile Include="TypeInitialisation.fs" />
     <Compile Include="Exceptions.fs" />
@@ -23,15 +34,45 @@
     <Compile Include="EvalStackValueComparisons.fs" />
     <Compile Include="MethodState.fs" />
     <Compile Include="ThreadState.fs" />
+    <Compile Include="TypeResolution.fs" />
+    <Compile Include="HardwareIntrinsicsProfile.fs" />
+    <Compile Include="DebuggerState.fs" />
+    <Compile Include="Signal.fs" />
+    <Compile Include="SignalState.fs" />
+    <Compile Include="EmulatedKernel.fs" />
+    <Compile Include="IlMachineStateModel.fs" />
+    <Compile Include="IlMachineTypeResolution.fs" />
+    <Compile Include="IlMachineThreadState.fs" />
+    <Compile Include="IlMachineMemberResolution.fs" />
+    <Compile Include="IlMachineManagedByref.fs" />
+    <Compile Include="IlMachineRuntimeMetadata.fs" />
     <Compile Include="IlMachineState.fs" />
+    <Compile Include="CustomAttribValueLowering.fs" />
+    <Compile Include="MethodTableProjection.fs" />
+    <Compile Include="RawArrayDataProjection.fs" />
+    <Compile Include="RuntimeFieldProjection.fs" />
+    <Compile Include="ExecutionConcretization.fs" />
     <Compile Include="ExceptionDispatching.fs" />
+    <Compile Include="ManagedPointerByteView.fs" />
     <Compile Include="BinaryArithmetic.fs" />
+    <Compile Include="IntrinsicMethodKeys.fs" />
+    <Compile Include="CellAwareCopy.fs" />
+    <Compile Include="IntrinsicHelpers.fsi" />
+    <Compile Include="IntrinsicHelpers.fs" />
     <Compile Include="Intrinsics.fs" />
     <Compile Include="IlMachineStateExecution.fs" />
     <Compile Include="NullaryIlOp.fs" />
+    <Compile Include="UnaryMetadataIlOpContext.fs" />
+    <Compile Include="UnaryMetadataCallOps.fs" />
+    <Compile Include="UnaryMetadataObjectOps.fs" />
+    <Compile Include="UnaryMetadataFieldOps.fs" />
+    <Compile Include="UnaryMetadataArrayOps.fs" />
+    <Compile Include="UnaryMetadataMemoryOps.fs" />
+    <Compile Include="UnaryMetadataTokenOps.fs" />
     <Compile Include="UnaryMetadataIlOp.fs" />
     <Compile Include="UnaryStringTokenIlOp.fs" />
     <Compile Include="UnaryConstIlOp.fs" />
+    <Compile Include="SwitchIlOp.fs" />
     <Compile Include="ExternImplementations\System.Environment.fs" />
     <Compile Include="ExternImplementations\GeneratedSystem.Environment.fs">
       <MyriadFile>ExternImplementations\System.Environment.fs</MyriadFile>
@@ -39,14 +80,48 @@
         <ISystem_Environment>GenerateMock(false)</ISystem_Environment>
       </MyriadParams>
     </Compile>
-    <Compile Include="ExternImplementations\System.Threading.Monitor.fs" />
-    <Compile Include="ExternImplementations\GeneratedSystem.Threading.Monitor.fs">
-      <MyriadFile>ExternImplementations\System.Threading.Monitor.fs</MyriadFile>
-      <MyriadParams>
-        <ISystem_Threading_Monitor>GenerateMock(false)</ISystem_Threading_Monitor>
-      </MyriadParams>
-    </Compile>
     <Compile Include="ExternImplementations\NativeImpls.fs" />
+    <Compile Include="Scheduler.fs" />
+    <Compile Include="LowLevelMonitor.fs" />
+    <Compile Include="WaitHandle.fs" />
+    <Compile Include="SyncBlockMonitor.fs" />
+    <Compile Include="ExternImplementations\System.Threading.Monitor.fs" />
+    <Compile Include="Native\NativeCall.fs" />
+    <Compile Include="Native\NativeEnvironment.fs" />
+    <Compile Include="Native\NativeMonitor.fs" />
+    <Compile Include="Native\NativeMetadataImport.fs" />
+    <Compile Include="Native\NativeRuntimeFieldHandle.fs" />
+    <Compile Include="Native\NativeRuntimeMethodHandle.fs" />
+    <Compile Include="Native\NativeRuntimeHelpers.fs" />
+    <Compile Include="Native\NativeMarshal.fs" />
+    <Compile Include="Native\NativeGcHandle.fs" />
+    <Compile Include="Native\NativeDependentHandle.fs" />
+    <Compile Include="Native\NativeBuffer.fs" />
+    <Compile Include="Native\NativeException.fs" />
+    <Compile Include="Native\NativeRuntimeTypeHelpers.fs" />
+    <Compile Include="Native\NativeSignature.fs" />
+    <Compile Include="Native\NativeRuntimeTypeQCall.fs" />
+    <Compile Include="Native\NativeRuntimeTypeFCall.fs" />
+    <Compile Include="Native\NativeRuntimeType.fs" />
+    <Compile Include="Native\NativeArray.fs" />
+    <Compile Include="Native\NativeEnum.fs" />
+    <Compile Include="Native\NativeKernel32.fs" />
+    <Compile Include="Native\NativeClrConfig.fs" />
+    <Compile Include="Native\NativeWaitHandle.fs" />
+    <Compile Include="Native\NativeRuntimeAssembly.fs" />
+    <Compile Include="Native\NativeMetadataUpdater.fs" />
+    <Compile Include="Native\NativeThreading.fs" />
+    <Compile Include="Native\NativeDebugger.fs" />
+    <Compile Include="Native\NativeEventPipe.fs" />
+    <Compile Include="Native\NativeEventSource.fs" />
+    <Compile Include="Native\NativeCustomAttribute.fs" />
+    <Compile Include="Native\NativeQCall.fs" />
+    <Compile Include="Native\NativeType.fs" />
+    <Compile Include="Native\NativeString.fs" />
+    <Compile Include="Native\NativeSystemNative.fs" />
+    <Compile Include="Native\NativeLowLevelMonitor.fs" />
+    <Compile Include="Native\NativeDispatch.fs" />
+    <Compile Include="SignalDispatch.fs" />
     <Compile Include="AbstractMachine.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
