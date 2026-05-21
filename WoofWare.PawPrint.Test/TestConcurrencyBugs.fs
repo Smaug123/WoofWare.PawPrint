@@ -223,6 +223,13 @@ module TestConcurrencyBugs =
                 Bad = BadOutcome.UnhandledException
                 Seeds = defaultSeeds
             }
+
+            {
+                SourceName = "InvertedMonitorDeadlock.cs"
+                Description = "Deadlock when mutices are taken in the wrong order"
+                Bad = BadOutcome.Deadlock
+                Seeds = defaultSeeds
+            }
         ]
 
     let private demonstrate (scenario : Scenario) : unit =
