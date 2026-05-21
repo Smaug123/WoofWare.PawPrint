@@ -68,8 +68,8 @@ module TestConcurrencyBugs =
             /// interleaving is common, widen for ones rarer than that.
             Seeds : uint64 list
         }
-        override this.ToString () =
-            this.SourceName
+
+        override this.ToString () = this.SourceName
 
     /// Host-level summary of one seeded run. Distinct from `RunOutcome`
     /// because `Deadlocked` is a step-level observation that
