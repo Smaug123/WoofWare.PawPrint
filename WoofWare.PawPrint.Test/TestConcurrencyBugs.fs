@@ -216,6 +216,13 @@ module TestConcurrencyBugs =
                 Bad = BadOutcome.UnhandledException
                 Seeds = defaultSeeds
             }
+
+            {
+                SourceName = "SimultaneousCounter.cs"
+                Description = "Two threads can simultaneously see the same counter as having different values"
+                Bad = BadOutcome.UnhandledException
+                Seeds = defaultSeeds
+            }
         ]
 
     let private demonstrate (scenario : Scenario) : unit =
