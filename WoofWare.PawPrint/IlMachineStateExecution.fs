@@ -1372,10 +1372,13 @@ module IlMachineStateExecution =
             // We're already initializing this type on this thread; just proceed with the initialisation, no extra
             // class loading required.
             StateLoadResult.NothingToDo state
-        | Some (TypeInitState.InProgress _) ->
-            // This is usually signalled by WhatWeDid.Blocked
-            failwith
-                "TODO: cross-thread class init synchronization unimplemented - this thread has to wait for the other thread to finish initialisation"
+        | Some (TypeInitState.InProgress blocker) ->
+            // Another thread owns this type's .cctor lock. Surface the blocker so the caller can
+            // translate to `WhatWeDid.BlockedOnClassInit blocker`; the scheduler then parks this
+            // thread until `blocker` makes progress or its cctor fails. We deliberately do not
+            // touch `state` (no WithTypeBeginInit, no PC advance): on wake-up the caller retries
+            // the same opcode and re-enters loadClass to observe the new TypeInitTable entry.
+            StateLoadResult.Blocked (state, blocker)
         | None ->
             // We have work to do!
 
@@ -1517,6 +1520,11 @@ module IlMachineStateExecution =
             | NothingToDo state -> state, WhatWeDid.Executed
             | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
             | ThrowingTypeInitializationException state -> state, WhatWeDid.ThrowingTypeInitializationException
+            | Blocked _ ->
+                // Unreachable: we just observed `None` in the TypeInitTable, so no thread
+                // (including another one) can hold the in-progress lock. The state isn't
+                // mutated between the lookup and the loadClass call (single-threaded F# code).
+                failwith "logic error: loadClass returned Blocked after tryGet observed no TypeInitTable entry"
         | Some TypeInitState.Initialized -> state, WhatWeDid.Executed
         | Some (TypeInitState.Failed (tieAddr, tieType)) ->
             // The .cctor for this type threw. Per ECMA-335, subsequent access should throw

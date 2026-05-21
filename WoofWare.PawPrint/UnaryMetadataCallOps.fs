@@ -657,6 +657,11 @@ module internal UnaryMetadataCallOps =
             WhatWeDid.Executed
         | FirstLoadThis state -> reinstallConstrained state, WhatWeDid.SuspendedForClassInit
         | ThrowingTypeInitializationException state -> state, WhatWeDid.ThrowingTypeInitializationException
+        | Blocked (state, blockedBy) ->
+            // Park this thread on the other thread's in-progress cctor. The PC has not been
+            // advanced, so when the scheduler wakes us we re-execute this call opcode; restore
+            // any pending `constrained.` prefix that we cleared above so the retry sees it.
+            reinstallConstrained state, WhatWeDid.BlockedOnClassInit blockedBy
 
     let executeCallvirt (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
@@ -792,29 +797,33 @@ module internal UnaryMetadataCallOps =
 
                 cur, cleared
 
+        let reinstallConstrained (state : IlMachineState) : IlMachineState =
+            match pendingConstrained with
+            | None -> state
+            | Some h ->
+                state
+                |> IlMachineState.mapFrame
+                    thread
+                    activeFrameId
+                    (fun frame ->
+                        { frame with
+                            PendingPrefix =
+                                { frame.PendingPrefix with
+                                    Constrained = Some h
+                                }
+                        }
+                    )
+
         match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
         | FirstLoadThis state ->
             // The cctor frame has been pushed; the original callvirt will re-execute. We
             // re-install the prefix on the original frame so the re-entry sees it.
-            let state =
-                match pendingConstrained with
-                | None -> state
-                | Some h ->
-                    state
-                    |> IlMachineState.mapFrame
-                        thread
-                        activeFrameId
-                        (fun frame ->
-                            { frame with
-                                PendingPrefix =
-                                    { frame.PendingPrefix with
-                                        Constrained = Some h
-                                    }
-                            }
-                        )
-
-            state, WhatWeDid.SuspendedForClassInit
+            reinstallConstrained state, WhatWeDid.SuspendedForClassInit
         | ThrowingTypeInitializationException state -> state, WhatWeDid.ThrowingTypeInitializationException
+        | Blocked (state, blockedBy) ->
+            // Another thread owns the cctor lock; park this one. The PC has not been advanced,
+            // so on wake we re-execute the callvirt; re-install the cleared prefix for the retry.
+            reinstallConstrained state, WhatWeDid.BlockedOnClassInit blockedBy
         | NothingToDo state ->
 
         // Apply a pending `constrained.` prefix (ECMA III.2.1). The prefix transforms the

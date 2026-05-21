@@ -799,6 +799,12 @@ module Program =
             | StateLoadResult.FirstLoadThis ilMachineState -> loadInitialState ilMachineState
             | StateLoadResult.ThrowingTypeInitializationException _ ->
                 failwith "TypeInitializationException during initial class load of entry point type"
+            | StateLoadResult.Blocked _ ->
+                // Unreachable at startup: only the entry thread exists, so no other thread can
+                // be mid-cctor on the entry type. Listing the case explicitly keeps the match
+                // exhaustive and pins the invariant for future readers.
+                failwith
+                    "logic error: initial loadClass for entry point cannot block on another thread (no other threads exist yet)"
 
         let state = loadInitialState state
 

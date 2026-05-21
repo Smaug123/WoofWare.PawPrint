@@ -220,6 +220,7 @@ module internal UnaryMetadataFieldOps =
         match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
         | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
         | ThrowingTypeInitializationException state -> state, WhatWeDid.ThrowingTypeInitializationException
+        | Blocked (state, blockedBy) -> state, WhatWeDid.BlockedOnClassInit blockedBy
         | NothingToDo state ->
 
         let popped, state = IlMachineState.popEvalStack thread state
@@ -516,6 +517,7 @@ module internal UnaryMetadataFieldOps =
         match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
         | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
         | ThrowingTypeInitializationException state -> state, WhatWeDid.ThrowingTypeInitializationException
+        | Blocked (state, blockedBy) -> state, WhatWeDid.BlockedOnClassInit blockedBy
         | NothingToDo state ->
 
         let fieldValue, state =
@@ -610,6 +612,7 @@ module internal UnaryMetadataFieldOps =
         match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
         | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
         | ThrowingTypeInitializationException state -> state, WhatWeDid.ThrowingTypeInitializationException
+        | Blocked (state, blockedBy) -> state, WhatWeDid.BlockedOnClassInit blockedBy
         | NothingToDo state ->
 
         match

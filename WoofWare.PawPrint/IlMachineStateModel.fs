@@ -395,6 +395,13 @@ type StateLoadResult =
     | FirstLoadThis of IlMachineState
     /// The type's .cctor previously failed. A TypeInitializationException has been dispatched into the guest.
     | ThrowingTypeInitializationException of IlMachineState
+    /// Another thread is currently running the type's .cctor. The current thread must park on
+    /// `BlockedOnClassInit blockedBy` until that thread completes initialisation (or its cctor
+    /// fails, at which point the parked thread is woken to observe the cached
+    /// TypeInitializationException). The state is unchanged from the caller's perspective: in
+    /// particular the caller's program counter must not advance, so the opcode is retried on
+    /// wake-up.
+    | Blocked of IlMachineState * blockedBy : ThreadId
 
 [<RequireQualifiedAccess>]
 module ExecutionResult =
