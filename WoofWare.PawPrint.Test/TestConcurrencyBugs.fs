@@ -209,6 +209,13 @@ module TestConcurrencyBugs =
                 Bad = BadOutcome.UnhandledException
                 Seeds = defaultSeeds
             }
+
+            {
+                SourceName = "TwoCountersSeparated.cs"
+                Description = "Incrementing a counter after another counter, we can see the first counter be bigger"
+                Bad = BadOutcome.UnhandledException
+                Seeds = defaultSeeds
+            }
         ]
 
     let private demonstrate (scenario : Scenario) : unit =
