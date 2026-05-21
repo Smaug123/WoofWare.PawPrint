@@ -230,6 +230,13 @@ module TestConcurrencyBugs =
                 Bad = BadOutcome.Deadlock
                 Seeds = defaultSeeds
             }
+
+            {
+                SourceName = "QueueIsNotThreadSafe.cs"
+                Description = "Queue can expose state where Count > 0 but Dequeue fails"
+                Bad = BadOutcome.UnhandledException
+                Seeds = defaultSeeds
+            }
         ]
 
     let private demonstrate (scenario : Scenario) : unit =
