@@ -85,11 +85,13 @@
     <Compile Include="TestFSharpPureCases.fs" />
     <Compile Include="TestImpureCases.fs" />
     <Compile Include="TestRaces.fs" />
+    <Compile Include="TestConcurrencyBugs.fs" />
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="sourcesPure\*.cs" />
     <EmbeddedResource Include="sourcesImpure\*.cs" />
     <EmbeddedResource Include="sources\*.cs" />
+    <EmbeddedResource Include="sourcesConcurrencyBugs\*.cs" />
   </ItemGroup>
 
   <ItemGroup>
