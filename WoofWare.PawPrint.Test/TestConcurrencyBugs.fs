@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint.Test
 
+open System.Collections.Concurrent
 open System.Collections.Immutable
 open System.IO
 open NUnit.Framework
@@ -25,6 +26,21 @@ open WoofWare.PawPrint
 [<Parallelizable(ParallelScope.All)>]
 module TestConcurrencyBugs =
 
+    /// Specification of which guest exception "found the bug" looks like.
+    /// `TypeFullName` is matched exactly against the guest exception's
+    /// fully-qualified type name (e.g. `"System.InvalidOperationException"`).
+    /// When `MessageContains` is non-empty, the guest exception's `_message`
+    /// field must additionally contain one of the listed substrings; an
+    /// empty list disables the message check. Tightening the type/message
+    /// here is what prevents an *unrelated* guest exception (a mistake in
+    /// the fixture, a NullReferenceException from a different bug) from
+    /// passing the scenario.
+    type ExceptionMatch =
+        {
+            TypeFullName : string
+            MessageContains : string list
+        }
+
     /// Classifier for "PCT found the bug" on a single seeded run. Pick the
     /// one that matches how the guest encodes the bad interleaving; the
     /// scenario fails only if no seed in its sweep produces a matching
@@ -39,10 +55,13 @@ module TestConcurrencyBugs =
         /// left to make progress. Use for AB-BA / cyclic-wait scenarios
         /// where the bad interleaving is itself the bug.
         | Deadlock
-        /// A guest thread raised an unhandled CLI exception (e.g. a
-        /// NullReferenceException from a torn read of a freshly-published
-        /// object reference).
-        | UnhandledException
+        /// A guest thread raised an unhandled CLI exception matching the
+        /// supplied type (and optionally message substring). The exception
+        /// type and message are extracted by the host from the guest's
+        /// heap-allocated exception object so the scenario fails fast if a
+        /// *different* exception is observed (which would indicate a
+        /// different bug, not the targeted one).
+        | UnhandledException of ExceptionMatch
         /// A guest thread called `Environment.FailFast`. Useful when the
         /// guest detects the bad state in code that can't easily return
         /// a sentinel value -- e.g. from inside a worker.
@@ -80,7 +99,14 @@ module TestConcurrencyBugs =
         | ExitCode of int
         | NonIntReturn of string
         | Deadlock of stuck : string
-        | UnhandledException of string
+        /// A guest thread raised an unhandled CLI exception.
+        /// `TypeFullName` is the guest type's fully-qualified name (extracted
+        /// by the host from the exception object on the managed heap); `Message`
+        /// is the guest exception's `_message` field, or `None` if the field
+        /// was null / could not be read. We carry the structured fields rather
+        /// than just a rendered string so the matcher can do precise type/message
+        /// comparisons without scraping `sprintf` output.
+        | UnhandledException of typeFullName : string * message : string option
         | FailFast of message : string
         | Signal of string
         /// A worker spawned during a static cctor terminated the
@@ -106,12 +132,47 @@ module TestConcurrencyBugs =
         | [] -> RunSummary.NonIntReturn "void"
         | head :: _ -> RunSummary.NonIntReturn (sprintf "%O" head)
 
+    /// Read the fully-qualified type name of the guest exception object from the
+    /// host's `AllConcreteTypes` registry. The exception object's runtime type is
+    /// what we want to match against, not its statically-declared `catch` type,
+    /// so we go through the managed heap rather than the `CliException`'s frames.
+    let private exceptionTypeFullName (state : IlMachineState) (addr : ManagedHeapAddress) : string =
+        let handle = ManagedHeap.getObjectConcreteType addr state.ManagedHeap
+
+        match AllConcreteTypes.lookup handle state.ConcreteTypes with
+        | Some ct ->
+            if System.String.IsNullOrEmpty ct.Namespace then
+                ct.Name
+            else
+                $"%s{ct.Namespace}.%s{ct.Name}"
+        | None ->
+            // Structural handles (byref, pointer, array, function pointer) can't
+            // be the runtime type of a thrown exception object, so we don't expect
+            // to land here under correct guest behaviour. Render the handle so the
+            // diagnostic is still actionable if something pathological occurs.
+            sprintf "<unresolved type %O>" handle
+
+    /// Read the guest exception's `Exception._message` field via the host's view of
+    /// the managed heap. Returns `None` if the field is null. We extract this on
+    /// the host side (rather than calling guest code) so we don't perturb the
+    /// state we're about to discard, and so the scenario classifier never depends
+    /// on the guest's `ToString()` being available.
+    let private exceptionMessage (state : IlMachineState) (addr : ManagedHeapAddress) : string option =
+        let obj = ManagedHeap.get addr state.ManagedHeap
+
+        match AllocatedNonArrayObject.DereferenceField "_message" obj with
+        | CliType.ObjectRef None -> None
+        | CliType.ObjectRef (Some msgAddr) -> ManagedHeap.getStringContents msgAddr state.ManagedHeap
+        | _ -> None
+
     let private classifyRunOutcome (outcome : RunOutcome) : RunSummary =
         match outcome with
         | RunOutcome.NormalExit (state, thread)
         | RunOutcome.ProcessExit (state, thread) -> extractExitCode state thread
-        | RunOutcome.GuestUnhandledException (_, _, exn) ->
-            RunSummary.UnhandledException (sprintf "%O" exn.ExceptionObject)
+        | RunOutcome.GuestUnhandledException (state, _, exn) ->
+            let typeName = exceptionTypeFullName state exn.ExceptionObject
+            let message = exceptionMessage state exn.ExceptionObject
+            RunSummary.UnhandledException (typeName, message)
         | RunOutcome.FailFast (_, _, message) -> RunSummary.FailFast (Option.defaultValue "<no message>" message)
         | RunOutcome.SignalTerminated (_, signal) -> RunSummary.Signal (sprintf "%O" signal)
 
@@ -156,11 +217,25 @@ module TestConcurrencyBugs =
         match bad, summary with
         | BadOutcome.ExitCode want, RunSummary.ExitCode got -> want = got
         | BadOutcome.Deadlock, RunSummary.Deadlock _ -> true
-        | BadOutcome.UnhandledException, RunSummary.UnhandledException _ -> true
+        | BadOutcome.UnhandledException spec, RunSummary.UnhandledException (typeName, message) ->
+            // Require the runtime type to match exactly; otherwise a *different* bug
+            // raising a different exception would silently count as "found it".
+            if typeName <> spec.TypeFullName then
+                false
+            else
+                // Empty list disables the message check (caller opted out). Otherwise
+                // at least one substring must appear in the actual message. A null
+                // guest message can never satisfy a non-empty `MessageContains`.
+                match spec.MessageContains with
+                | [] -> true
+                | substrings ->
+                    match message with
+                    | None -> false
+                    | Some actual -> substrings |> List.exists actual.Contains
         | BadOutcome.FailFast, RunSummary.FailFast _ -> true
         | BadOutcome.ExitCode _, _
         | BadOutcome.Deadlock, _
-        | BadOutcome.UnhandledException, _
+        | BadOutcome.UnhandledException _, _
         | BadOutcome.FailFast, _ -> false
 
     /// Reasonable default sweep, sized to catch one-shot two-thread
@@ -206,21 +281,43 @@ module TestConcurrencyBugs =
             {
                 SourceName = "JustABoolNotAMutex.cs"
                 Description = "Two threads try to guard a critical section using just a boolean flag, not a mutex"
-                Bad = BadOutcome.UnhandledException
+                Bad =
+                    BadOutcome.UnhandledException
+                        {
+                            TypeFullName = "System.Exception"
+                            MessageContains = [ "failed!" ]
+                        }
                 Seeds = defaultSeeds
             }
 
             {
                 SourceName = "TwoCountersSeparated.cs"
                 Description = "Incrementing a counter after another counter, we can see the first counter be bigger"
-                Bad = BadOutcome.UnhandledException
+                Bad =
+                    BadOutcome.UnhandledException
+                        {
+                            TypeFullName = "System.Exception"
+                            MessageContains = [ "counter2 was bigger than counter1!" ]
+                        }
                 Seeds = defaultSeeds
             }
 
             {
                 SourceName = "SimultaneousCounter.cs"
+                // The guest raises one of two messages depending on which worker
+                // observes the racing peer first; both are evidence of the same
+                // critical-section race and either should satisfy the scenario.
                 Description = "Two threads can simultaneously see the same counter as having different values"
-                Bad = BadOutcome.UnhandledException
+                Bad =
+                    BadOutcome.UnhandledException
+                        {
+                            TypeFullName = "System.Exception"
+                            MessageContains =
+                                [
+                                    "we were not the first"
+                                    "Worker1 is in the critical section at the same time as us"
+                                ]
+                        }
                 Seeds = defaultSeeds
             }
 
@@ -234,7 +331,12 @@ module TestConcurrencyBugs =
             {
                 SourceName = "QueueIsNotThreadSafe.cs"
                 Description = "Queue can expose state where Count > 0 but Dequeue fails"
-                Bad = BadOutcome.UnhandledException
+                Bad =
+                    BadOutcome.UnhandledException
+                        {
+                            TypeFullName = "System.InvalidOperationException"
+                            MessageContains = [ "torn enqueue: Count > 0 but slot was empty" ]
+                        }
                 Seeds = defaultSeeds
             }
         ]
@@ -247,8 +349,12 @@ module TestConcurrencyBugs =
         // is: walking the whole list would dominate the test budget when
         // the bad interleaving is common. We record every summary the
         // search visited so the failure path can still print a useful
-        // diagnostic when no seed matches.
-        let visited = ResizeArray<uint64 * RunSummary> ()
+        // diagnostic when no seed matches. `Array.Parallel.tryFind` runs
+        // the predicate on multiple threads concurrently, so the
+        // diagnostic store must be thread-safe — a `ResizeArray.Add`
+        // here races and can drop or duplicate entries (or, worse, throw
+        // out of `EnsureCapacity`), corrupting the failure diagnostic.
+        let visited = ConcurrentBag<uint64 * RunSummary> ()
 
         let visit (seed : uint64) : bool =
             let summary = runOne scenario.SourceName image seed
