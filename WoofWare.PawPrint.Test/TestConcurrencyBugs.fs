@@ -5,7 +5,6 @@ open System.IO
 open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
-open WoofWare.PawPrint.ExternImplementations
 
 /// Harness for "find the bad interleaving" concurrency-bug demonstrations.
 /// Each scenario is a one-file C# guest plus a classifier describing what
@@ -69,6 +68,8 @@ module TestConcurrencyBugs =
             /// interleaving is common, widen for ones rarer than that.
             Seeds : uint64 list
         }
+        override this.ToString () =
+            this.SourceName
 
     /// Host-level summary of one seeded run. Distinct from `RunOutcome`
     /// because `Deadlocked` is a step-level observation that
@@ -201,6 +202,13 @@ module TestConcurrencyBugs =
                 Bad = BadOutcome.ExitCode 1
                 Seeds = defaultSeeds
             }
+
+            {
+                SourceName = "JustABoolNotAMutex.cs"
+                Description = "Two threads try to guard a critical section using just a boolean flag, not a mutex"
+                Bad = BadOutcome.UnhandledException
+                Seeds = defaultSeeds
+            }
         ]
 
     let private demonstrate (scenario : Scenario) : unit =
@@ -219,7 +227,7 @@ module TestConcurrencyBugs =
             visited.Add (seed, summary)
             matches scenario.Bad summary
 
-        let hit = scenario.Seeds |> Seq.tryFind visit
+        let hit = scenario.Seeds |> Array.ofList |> Array.Parallel.tryFind visit
 
         match hit with
         | Some _ -> ()
