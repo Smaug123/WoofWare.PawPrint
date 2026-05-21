@@ -5,8 +5,8 @@ namespace HelloWorldApp
 {
     class Program
     {
-        static object locker1;
-        static object locker2;
+        static object locker1 = new object ();
+        static object locker2 = new object ();
 
         static void Worker1()
         {

@@ -10,14 +10,14 @@ namespace HelloWorldApp
 
         static void Worker1()
         {
-            while (true) {
+            while (counter < 2) {
                 counter += 1;
                 if (counter == 2) {
                     if (isWorking) {
                         throw new Exception("we were not the first");
                     }
                     isWorking = true;
-                    while (true) {}
+                    for (int i = 0; i < 1000; i += 1) {}
                 }
             }
         }
