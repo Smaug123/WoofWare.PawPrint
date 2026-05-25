@@ -1,5 +1,7 @@
 # WoofWare.PawPrint
 
+*Slop status: original architecture is by me, with only reference assistance from LLMs. Then in 2026 I drove GPT-5.5 and Claude Opus 4.6/4.7 hard to get this to a usable state. Architecture is still mine, and I've read all the incoming non-test code, but have perhaps been a bit sloppy about some of it.*
+
 This is an *extremely unfinished* implementation of a .NET runtime (specifically .NET 10).
 
 ## Current status
@@ -27,3 +29,9 @@ The following are specifically not implemented:
 * Performance. I expect this to be a *very slow* IL interpreter.
 * Fidelity to the optimisations performed by e.g. the JIT or the GC. I am purely interpreting IL. For example, it is likely that I will simply never deallocate memory (so e.g. finalisers are not run).
 * Support for any operating systems other than the ones on which I am running (currently macOS, but if this project actually starts working, then I will start using Linux).
+
+## Licence
+
+I haven't yet applied a licence to this project, so you don't get to use it yet; sorry.
+
+The .NET runtime was used under the [MIT licence](./LICENCE_dotnet.md), although this project should only contain trivial amounts of that code.
