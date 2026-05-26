@@ -44,6 +44,22 @@ module AttributeFormatting =
         else
             name
 
+    /// Strip a CLI generic arity suffix (e.g. <c>`1</c>) from the end of a
+    /// simple name. Only digit sequences after a single backtick are removed;
+    /// anything else is returned unchanged.
+    let private stripGenericArity (name : string) : string =
+        let idx = name.LastIndexOf '`'
+
+        if idx > 0 && idx < name.Length - 1 then
+            let rest = name.Substring (idx + 1)
+
+            if rest |> Seq.forall Char.IsDigit then
+                name.Substring (0, idx)
+            else
+                name
+        else
+            name
+
     /// Apply <c>stripAttributeSuffix</c> to the last name segment of a qualified
     /// type name (segments are separated by '.' or '/'). The namespace prefix
     /// and any outer-type prefix are preserved unchanged.
@@ -59,11 +75,75 @@ module AttributeFormatting =
             let tail = qualified.Substring (sep + 1)
             head + stripAttributeSuffix tail
 
+    /// Apply <c>stripGenericArity</c> followed by <c>stripAttributeSuffix</c>
+    /// to the last name segment of a qualified type name. This is the rendering
+    /// the human reader wants for a generic attribute: <c>MyAttribute`1</c>
+    /// becomes <c>My</c>, ready for an explicit <c>&lt;args&gt;</c> suffix.
+    let private prettifyGenericAttributeBase (qualified : string) : string =
+        let lastSlash = qualified.LastIndexOf '/'
+        let lastDot = qualified.LastIndexOf '.'
+        let sep = max lastSlash lastDot
+
+        let head, tail =
+            if sep < 0 then
+                "", qualified
+            else
+                qualified.Substring (0, sep + 1), qualified.Substring (sep + 1)
+
+        head + (tail |> stripGenericArity |> stripAttributeSuffix)
+
+    /// Format a TypeRef as <c>Namespace.Name</c>, walking the
+    /// <c>ResolutionScope</c> chain to prefix any outer types (separated by
+    /// <c>/</c>). The leading namespace is omitted for nested types.
+    let private formatTypeRef (assembly : DumpedAssembly) (tr : TypeRef) : string =
+        let rec qualify (r : TypeRef) : string =
+            match r.ResolutionScope with
+            | TypeRefResolutionScope.TypeRef parentHandle ->
+                match assembly.TypeRefs.TryGetValue parentHandle with
+                | true, parent -> sprintf "%s/%s" (qualify parent) r.Name
+                | false, _ -> r.Name
+            | _ ->
+                if String.IsNullOrEmpty r.Namespace then
+                    r.Name
+                else
+                    sprintf "%s.%s" r.Namespace r.Name
+
+        qualify tr
+
+    /// <summary>
+    /// Render the display name of an attribute type expressed as a
+    /// <see cref="TypeDefn"/>: typically the signature of a
+    /// <c>TypeSpecification</c> used as the parent of a constructor
+    /// <c>MemberReference</c>. Generic instantiations are rendered as
+    /// <c>Base&lt;arg, ...&gt;</c>. Falls back to the TypeDefn's default
+    /// <c>ToString</c> when the inner type cannot be resolved locally.
+    /// </summary>
+    let rec private renderAttributeTypeFromTypeDefn (assembly : DumpedAssembly) (td : TypeDefn) : string =
+        match td with
+        | TypeDefn.GenericInstantiation (generic, args) ->
+            let baseName = renderAttributeTypeFromTypeDefn assembly generic
+
+            let argsStr = args |> Seq.map (fun a -> sprintf "%O" a) |> String.concat ", "
+
+            sprintf "%s<%s>" baseName argsStr
+        | TypeDefn.FromDefinition (identity, _) ->
+            if identity.AssemblyFullName = assembly.Name.FullName then
+                match assembly.TypeDefs.TryGetValue identity.TypeDefinition.Get with
+                | true, td -> IlFormatting.qualifyTypeName assembly.TypeDefs td
+                | false, _ -> sprintf "%O" td
+            else
+                sprintf "%O" td
+        | TypeDefn.FromReference (typeRef, _) -> formatTypeRef assembly typeRef
+        | _ -> sprintf "%O" td
+
     /// <summary>
     /// The display name of the attribute type, i.e. the type whose constructor
     /// <paramref name="attr"/>.Constructor points at. The conventional trailing
     /// <c>Attribute</c> suffix is stripped from the simple name; the namespace
     /// (and any outer-type prefix for nested attribute types) is retained.
+    /// Generic attributes whose ctor parent is a <c>TypeSpecification</c> are
+    /// rendered as <c>Base&lt;args&gt;</c>, with the suffix stripped from
+    /// <c>Base</c> rather than from the full <c>Base&lt;args&gt;</c> string.
     /// </summary>
     let attributeTypeName (assembly : DumpedAssembly) (attr : CustomAttribute) : string =
         match attr.Constructor with
@@ -81,8 +161,29 @@ module AttributeFormatting =
         | MetadataToken.MemberReference handle ->
             match assembly.Members.TryGetValue handle with
             | true, m ->
-                IlFormatting.formatMetadataToken assembly m.Parent
-                |> stripAttributeSuffixOnLastSegment
+                match m.Parent with
+                | MetadataToken.TypeSpecification tsHandle ->
+                    match assembly.TypeSpecs.TryGetValue tsHandle with
+                    | true, ts ->
+                        match ts.Signature with
+                        | TypeDefn.GenericInstantiation (generic, args) ->
+                            // Strip the CLI arity marker AND the "Attribute" suffix from
+                            // the generic *head*: an explicit "<args>" follows, so e.g.
+                            // "MyGenericAttribute`1" becomes "MyGeneric", which we then
+                            // combine with the rendered args.
+                            let baseName =
+                                renderAttributeTypeFromTypeDefn assembly generic |> prettifyGenericAttributeBase
+
+                            let argsStr = args |> Seq.map (fun a -> sprintf "%O" a) |> String.concat ", "
+
+                            sprintf "%s<%s>" baseName argsStr
+                        | other ->
+                            renderAttributeTypeFromTypeDefn assembly other
+                            |> stripAttributeSuffixOnLastSegment
+                    | false, _ -> $"TypeSpec(%O{tsHandle})"
+                | _ ->
+                    IlFormatting.formatMetadataToken assembly m.Parent
+                    |> stripAttributeSuffixOnLastSegment
             | false, _ -> $"MemberRef(%O{handle})"
         | other -> sprintf "%O" other
 
@@ -115,7 +216,17 @@ module AttributeFormatting =
     let rec formatFixedArg (arg : CustomAttribFixedArg) : string =
         match arg with
         | CustomAttribFixedArg.Bool b -> if b then "true" else "false"
-        | CustomAttribFixedArg.Char c -> sprintf "'%s'" (IlFormatting.escapeStringLiteral (string c))
+        | CustomAttribFixedArg.Char c ->
+            // escapeStringLiteral handles backslash and the usual whitespace/null escapes,
+            // but is targeted at double-quoted strings and so leaves '\'' as-is. Escape it
+            // here so a single-quote char doesn't render as the ambiguous '''.
+            let escaped =
+                if c = '\'' then
+                    "\\'"
+                else
+                    IlFormatting.escapeStringLiteral (string c)
+
+            sprintf "'%s'" escaped
         | CustomAttribFixedArg.I1 v -> sprintf "%dy" v
         | CustomAttribFixedArg.U1 v -> sprintf "%duy" v
         | CustomAttribFixedArg.I2 v -> sprintf "%ds" v

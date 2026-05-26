@@ -36,6 +36,16 @@ module TestAttributeFormatting =
         |> shouldEqual "'\\n'"
 
     [<Test>]
+    let ``formatFixedArg Char escapes single quote unambiguously`` () : unit =
+        // Without escape, this would render as the ambiguous '''.
+        AttributeFormatting.formatFixedArg (CustomAttribFixedArg.Char '\'')
+        |> shouldEqual "'\\''"
+
+        // Backslash must still be escaped (and not double-escaped).
+        AttributeFormatting.formatFixedArg (CustomAttribFixedArg.Char '\\')
+        |> shouldEqual "'\\\\'"
+
+    [<Test>]
     let ``formatFixedArg integers carry suffixes`` () : unit =
         AttributeFormatting.formatFixedArg (CustomAttribFixedArg.I1 -1y)
         |> shouldEqual "-1y"
@@ -262,3 +272,51 @@ module TestAttributeFormatting =
             MetadataToken.MethodDef (System.Reflection.Metadata.Ecma335.MetadataTokens.MethodDefinitionHandle 0xFFFFFF)
 
         AttributeFormatting.attributesFor corelib bogus |> shouldEqual []
+
+    // ----- generic attribute applications (TypeSpec ctor parent) -----------------
+
+    [<Test>]
+    let ``attributeTypeName renders generic attribute with its type argument and strips Attribute suffix`` () : unit =
+        // A generic attribute's ctor lives on a MemberRef whose Parent is a TypeSpecification;
+        // without TypeSpec handling, the rendered name comes from TypeDefn.ToString and loses
+        // the attribute's actual name.
+        let source =
+            """
+using System;
+
+[AttributeUsage(AttributeTargets.All)]
+public class MyGenericAttribute<T> : Attribute { }
+
+[MyGeneric<string>]
+public class Target { }
+"""
+
+        let image =
+            Roslyn.compileAssembly
+                "GenericAttributeFormattingTest"
+                Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+                []
+                [ source ]
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use stream = new System.IO.MemoryStream (image)
+        let assembly = global.WoofWare.PawPrint.AssemblyApi.read loggerFactory None stream
+
+        let target = assembly.TypeDefs.Values |> Seq.find (fun td -> td.Name = "Target")
+
+        let attrs =
+            AttributeFormatting.attributesFor assembly (MetadataToken.TypeDefinition target.TypeDefHandle)
+
+        let names = attrs |> List.map (AttributeFormatting.attributeTypeName assembly)
+
+        // We should see exactly one attribute application on Target, and its rendered name
+        // must contain the simple "MyGeneric<...>" (suffix stripped) — not "<type defined in ...>".
+        let found =
+            names
+            |> List.exists (fun n -> n.EndsWith ("MyGeneric<string>", System.StringComparison.Ordinal))
+
+        if not found then
+            failwithf "actual rendered names: %s" (names |> String.concat " ; ")
+
+        for n in names do
+            n.Contains "<type defined in" |> shouldEqual false
