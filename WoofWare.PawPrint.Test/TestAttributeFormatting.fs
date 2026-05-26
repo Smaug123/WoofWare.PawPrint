@@ -320,3 +320,48 @@ public class Target { }
 
         for n in names do
             n.Contains "<type defined in" |> shouldEqual false
+
+    [<Test>]
+    let ``attributeTypeName renders user-defined type argument by qualified name`` () : unit =
+        // The args of a generic-attribute instantiation are themselves TypeDefns;
+        // user-defined ones must be routed through the same resolver as the head,
+        // otherwise they collapse to "<type defined in ...>".
+        let source =
+            """
+using System;
+
+public class ArgType { }
+
+[AttributeUsage(AttributeTargets.All)]
+public class MyGenericAttribute<T> : Attribute { }
+
+[MyGeneric<ArgType>]
+public class Target { }
+"""
+
+        let image =
+            Roslyn.compileAssembly
+                "GenericAttributeFormattingUserArgTest"
+                Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+                []
+                [ source ]
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use stream = new System.IO.MemoryStream (image)
+        let assembly = global.WoofWare.PawPrint.AssemblyApi.read loggerFactory None stream
+
+        let target = assembly.TypeDefs.Values |> Seq.find (fun td -> td.Name = "Target")
+
+        let names =
+            AttributeFormatting.attributesFor assembly (MetadataToken.TypeDefinition target.TypeDefHandle)
+            |> List.map (AttributeFormatting.attributeTypeName assembly)
+
+        let found =
+            names
+            |> List.exists (fun n -> n.EndsWith ("MyGeneric<ArgType>", System.StringComparison.Ordinal))
+
+        if not found then
+            failwithf "actual rendered names: %s" (names |> String.concat " ; ")
+
+        for n in names do
+            n.Contains "<type defined in" |> shouldEqual false

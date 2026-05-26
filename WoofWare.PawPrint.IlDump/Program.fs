@@ -27,10 +27,14 @@ module Program =
     /// lines (if any), followed by attribute lines for each filter-matching
     /// method, field, property, and event. Members with no attributes are
     /// silently skipped. The type header itself is only emitted if at least
-    /// one of those produces output. Returns true iff any lines were emitted.
+    /// one of those produces output. When this emits any lines and
+    /// <paramref name="isFirstType"/> is false, a leading blank line is printed
+    /// to separate from the previous type. Returns true iff any lines were
+    /// emitted.
     let private printTypeAttrs
         (assembly : DumpedAssembly)
         (memberFilter : string option)
+        (isFirstType : bool)
         (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
         : bool
         =
@@ -97,6 +101,12 @@ module Program =
         if List.isEmpty nonEmptyGroups then
             false
         else
+            // Separate from the previous type only now that we know there's
+            // something to emit — otherwise broad filters that skip multiple
+            // types would leave a trail of blank separator lines.
+            if not isFirstType then
+                printfn ""
+
             let mutable first = true
 
             for group in nonEmptyGroups do
@@ -172,10 +182,7 @@ module Program =
                         | Some filter -> qualifiedName.Contains (filter, StringComparison.OrdinalIgnoreCase)
 
                     if typeMatches then
-                        if anyEmitted then
-                            printfn ""
-
-                        let emitted = printTypeAttrs assembly memberFilter typeInfo
+                        let emitted = printTypeAttrs assembly memberFilter (not anyEmitted) typeInfo
 
                         if emitted then
                             anyEmitted <- true

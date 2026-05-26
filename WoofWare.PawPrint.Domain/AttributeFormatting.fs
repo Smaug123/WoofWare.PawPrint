@@ -123,7 +123,8 @@ module AttributeFormatting =
         | TypeDefn.GenericInstantiation (generic, args) ->
             let baseName = renderAttributeTypeFromTypeDefn assembly generic
 
-            let argsStr = args |> Seq.map (fun a -> sprintf "%O" a) |> String.concat ", "
+            let argsStr =
+                args |> Seq.map (renderAttributeTypeFromTypeDefn assembly) |> String.concat ", "
 
             sprintf "%s<%s>" baseName argsStr
         | TypeDefn.FromDefinition (identity, _) ->
@@ -174,7 +175,8 @@ module AttributeFormatting =
                             let baseName =
                                 renderAttributeTypeFromTypeDefn assembly generic |> prettifyGenericAttributeBase
 
-                            let argsStr = args |> Seq.map (fun a -> sprintf "%O" a) |> String.concat ", "
+                            let argsStr =
+                                args |> Seq.map (renderAttributeTypeFromTypeDefn assembly) |> String.concat ", "
 
                             sprintf "%s<%s>" baseName argsStr
                         | other ->
