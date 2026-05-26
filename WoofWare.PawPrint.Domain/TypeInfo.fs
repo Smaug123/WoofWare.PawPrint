@@ -367,7 +367,7 @@ module TypeInfo =
 
             for evt in typeDef.GetEvents () do
                 metadataReader.GetEventDefinition evt
-                |> EventDefn.make metadataReader
+                |> EventDefn.make metadataReader evt
                 |> result.Add
 
             result.ToImmutable ()
