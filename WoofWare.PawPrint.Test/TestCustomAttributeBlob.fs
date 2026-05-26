@@ -161,7 +161,7 @@ module TestCustomAttributeBlob =
     // ----- readFixedArgs ----------------------------------------------------
 
     /// Encode a single CustomAttribFixedArg per ECMA-335 II.23.3.
-    let private encodeFixedArg (arg : CustomAttribFixedArg) : byte array =
+    let rec private encodeFixedArg (arg : CustomAttribFixedArg) : byte array =
         match arg with
         | CustomAttribFixedArg.Bool b -> [| (if b then 1uy else 0uy) |]
         | CustomAttribFixedArg.Char c ->
@@ -183,8 +183,16 @@ module TestCustomAttributeBlob =
         | CustomAttribFixedArg.String (Some s) ->
             let utf8 = Encoding.UTF8.GetBytes (s : string)
             Array.append (encodePackedLen utf8.Length) utf8
+        | CustomAttribFixedArg.Array None -> System.BitConverter.GetBytes (0xFFFFFFFFu)
+        | CustomAttribFixedArg.Array (Some elts) ->
+            let count = System.BitConverter.GetBytes (uint32 (List.length elts))
+            let body = elts |> List.collect (encodeFixedArg >> Array.toList) |> List.toArray
+            Array.append count body
 
-    let private typeOfArg (arg : CustomAttribFixedArg) : TypeDefn =
+    /// Recover the declaration-site `TypeDefn` for a fixed arg. For SZARRAYs we
+    /// recurse into the first element; empty and null arrays would lose the
+    /// element type, so callers must supply the type directly for those cases.
+    let rec private typeOfArg (arg : CustomAttribFixedArg) : TypeDefn =
         match arg with
         | CustomAttribFixedArg.Bool _ -> TypeDefn.PrimitiveType PrimitiveType.Boolean
         | CustomAttribFixedArg.Char _ -> TypeDefn.PrimitiveType PrimitiveType.Char
@@ -199,6 +207,11 @@ module TestCustomAttributeBlob =
         | CustomAttribFixedArg.R4 _ -> TypeDefn.PrimitiveType PrimitiveType.Single
         | CustomAttribFixedArg.R8 _ -> TypeDefn.PrimitiveType PrimitiveType.Double
         | CustomAttribFixedArg.String _ -> TypeDefn.PrimitiveType PrimitiveType.String
+        | CustomAttribFixedArg.Array (Some (head :: _)) -> TypeDefn.OneDimensionalArrayLowerBoundZero (typeOfArg head)
+        | CustomAttribFixedArg.Array None
+        | CustomAttribFixedArg.Array (Some []) ->
+            failwith
+                "typeOfArg cannot infer element TypeDefn for a null or empty Array; supply the SZARRAY type directly in the test"
 
     /// Build a CustomAttrib blob with the given fixed args and optional trailing bytes
     /// (intended to represent the NumNamed count + named-args section).
@@ -349,3 +362,196 @@ module TestCustomAttributeBlob =
         let argsGen : Gen<CustomAttribFixedArg list> = Gen.listOf genFixedArg
         let argsArb : Arbitrary<CustomAttribFixedArg list> = Arb.fromGen argsGen
         Check.One (propertyConfig, Prop.forAll argsArb property)
+
+    // ----- SZARRAY decoding ------------------------------------------------
+
+    /// Convenience for the dominant Roslyn-emitted shape: NullableAttribute(byte[]).
+    let private szarrayByte =
+        TypeDefn.OneDimensionalArrayLowerBoundZero (TypeDefn.PrimitiveType PrimitiveType.Byte)
+
+    [<Test>]
+    let ``readFixedArgs decodes null byte[]`` () : unit =
+        // Prolog + NumElem = 0xFFFFFFFF (null sentinel).
+        let blob =
+            ImmutableArray.Create<byte> ([| 0x01uy ; 0x00uy ; 0xFFuy ; 0xFFuy ; 0xFFuy ; 0xFFuy |])
+
+        match CustomAttribute.readFixedArgs [ szarrayByte ] blob with
+        | Ok ([ CustomAttribFixedArg.Array None ], offset) -> offset |> shouldEqual blob.Length
+        | other -> failwithf "expected Ok [Array None], got %A" other
+
+    [<Test>]
+    let ``readFixedArgs decodes empty byte[]`` () : unit =
+        // Prolog + NumElem = 0.
+        let blob =
+            ImmutableArray.Create<byte> ([| 0x01uy ; 0x00uy ; 0x00uy ; 0x00uy ; 0x00uy ; 0x00uy |])
+
+        match CustomAttribute.readFixedArgs [ szarrayByte ] blob with
+        | Ok ([ CustomAttribFixedArg.Array (Some []) ], offset) -> offset |> shouldEqual blob.Length
+        | other -> failwithf "expected Ok [Array (Some [])], got %A" other
+
+    [<Test>]
+    let ``readFixedArgs decodes single-byte byte[]`` () : unit =
+        // The NullableAttribute(byte) shape: prolog + NumElem=1 + one byte.
+        let arg = CustomAttribFixedArg.Array (Some [ CustomAttribFixedArg.U1 0x2Auy ])
+        let blob = buildFixedArgsBlob [ arg ] [||]
+
+        match CustomAttribute.readFixedArgs [ szarrayByte ] blob with
+        | Ok ([ decoded ], offset) ->
+            decoded |> shouldEqual arg
+            offset |> shouldEqual blob.Length
+        | other -> failwithf "expected Ok [single arg], got %A" other
+
+    [<Test>]
+    let ``readFixedArgs decodes multi-element int32[]`` () : unit =
+        let arg =
+            CustomAttribFixedArg.Array (
+                Some
+                    [
+                        CustomAttribFixedArg.I4 -1
+                        CustomAttribFixedArg.I4 0
+                        CustomAttribFixedArg.I4 0x11223344
+                    ]
+            )
+
+        let blob = buildFixedArgsBlob [ arg ] [||]
+
+        let szarrayInt =
+            TypeDefn.OneDimensionalArrayLowerBoundZero (TypeDefn.PrimitiveType PrimitiveType.Int32)
+
+        match CustomAttribute.readFixedArgs [ szarrayInt ] blob with
+        | Ok ([ decoded ], offset) ->
+            decoded |> shouldEqual arg
+            offset |> shouldEqual blob.Length
+        | other -> failwithf "expected Ok [single arg], got %A" other
+
+    [<Test>]
+    let ``readFixedArgs decodes string[] including null sentinels`` () : unit =
+        let arg =
+            CustomAttribFixedArg.Array (
+                Some
+                    [
+                        CustomAttribFixedArg.String (Some "alpha")
+                        CustomAttribFixedArg.String None
+                        CustomAttribFixedArg.String (Some "")
+                    ]
+            )
+
+        let blob = buildFixedArgsBlob [ arg ] [||]
+
+        let szarrayStr =
+            TypeDefn.OneDimensionalArrayLowerBoundZero (TypeDefn.PrimitiveType PrimitiveType.String)
+
+        match CustomAttribute.readFixedArgs [ szarrayStr ] blob with
+        | Ok ([ decoded ], offset) ->
+            decoded |> shouldEqual arg
+            offset |> shouldEqual blob.Length
+        | other -> failwithf "expected Ok [single arg], got %A" other
+
+    [<Test>]
+    let ``readFixedArgs reports truncated NumElem`` () : unit =
+        // Prolog + only 3 of the 4 NumElem bytes.
+        let blob =
+            ImmutableArray.Create<byte> ([| 0x01uy ; 0x00uy ; 0x01uy ; 0x00uy ; 0x00uy |])
+
+        match CustomAttribute.readFixedArgs [ szarrayByte ] blob with
+        | Error _ -> ()
+        | Ok r -> failwithf "expected Error, got Ok %A" r
+
+    [<Test>]
+    let ``readFixedArgs reports truncated final element`` () : unit =
+        // Prolog + NumElem=2 + only one of the two int32 elements.
+        let blob =
+            ImmutableArray.Create<byte> (
+                [|
+                    0x01uy
+                    0x00uy
+                    0x02uy
+                    0x00uy
+                    0x00uy
+                    0x00uy
+                    0xAAuy
+                    0xBBuy
+                    0xCCuy
+                    0xDDuy
+                |]
+            )
+
+        let szarrayInt =
+            TypeDefn.OneDimensionalArrayLowerBoundZero (TypeDefn.PrimitiveType PrimitiveType.Int32)
+
+        match CustomAttribute.readFixedArgs [ szarrayInt ] blob with
+        | Error _ -> ()
+        | Ok r -> failwithf "expected Error, got Ok %A" r
+
+    /// Generators paired by element TypeDefn so SZARRAY tests can produce
+    /// homogeneous element lists without losing the type for empty/null arrays.
+    let private elementGens : (TypeDefn * Gen<CustomAttribFixedArg>) list =
+        let prim (p : PrimitiveType) g = TypeDefn.PrimitiveType p, g
+
+        let serString : Gen<string option> =
+            Gen.frequency
+                [
+                    1, Gen.constant None
+                    1, Gen.constant (Some "")
+                    8,
+                    ArbMap.defaults
+                    |> ArbMap.generate<NonNull<string>>
+                    |> Gen.map (fun (NonNull s) -> Some s)
+                ]
+
+        [
+            prim PrimitiveType.Boolean (ArbMap.defaults |> ArbMap.generate<bool> |> Gen.map CustomAttribFixedArg.Bool)
+            prim PrimitiveType.Char (ArbMap.defaults |> ArbMap.generate<char> |> Gen.map CustomAttribFixedArg.Char)
+            prim PrimitiveType.SByte (ArbMap.defaults |> ArbMap.generate<sbyte> |> Gen.map CustomAttribFixedArg.I1)
+            prim PrimitiveType.Byte (ArbMap.defaults |> ArbMap.generate<byte> |> Gen.map CustomAttribFixedArg.U1)
+            prim PrimitiveType.Int16 (ArbMap.defaults |> ArbMap.generate<int16> |> Gen.map CustomAttribFixedArg.I2)
+            prim PrimitiveType.UInt16 (ArbMap.defaults |> ArbMap.generate<uint16> |> Gen.map CustomAttribFixedArg.U2)
+            prim PrimitiveType.Int32 (ArbMap.defaults |> ArbMap.generate<int32> |> Gen.map CustomAttribFixedArg.I4)
+            prim PrimitiveType.UInt32 (ArbMap.defaults |> ArbMap.generate<uint32> |> Gen.map CustomAttribFixedArg.U4)
+            prim PrimitiveType.Int64 (ArbMap.defaults |> ArbMap.generate<int64> |> Gen.map CustomAttribFixedArg.I8)
+            prim PrimitiveType.UInt64 (ArbMap.defaults |> ArbMap.generate<uint64> |> Gen.map CustomAttribFixedArg.U8)
+            prim
+                PrimitiveType.Single
+                (ArbMap.defaults
+                 |> ArbMap.generate<NormalFloat>
+                 |> Gen.map (fun (NormalFloat f) -> CustomAttribFixedArg.R4 (float32 f)))
+            prim
+                PrimitiveType.Double
+                (ArbMap.defaults
+                 |> ArbMap.generate<NormalFloat>
+                 |> Gen.map (fun (NormalFloat f) -> CustomAttribFixedArg.R8 f))
+            prim PrimitiveType.String (serString |> Gen.map CustomAttribFixedArg.String)
+        ]
+
+    [<Test>]
+    let ``readFixedArgs round-trips SZARRAY of primitive`` () : unit =
+        let property (eltIdx : NonNegativeInt) (kind : int) (elems : CustomAttribFixedArg list) : bool =
+            let eltType, _ = elementGens.[(eltIdx.Get) % elementGens.Length]
+            let szarrayType = TypeDefn.OneDimensionalArrayLowerBoundZero eltType
+
+            let arg =
+                match (kind % 3 + 3) % 3 with
+                | 0 -> CustomAttribFixedArg.Array None
+                | 1 -> CustomAttribFixedArg.Array (Some [])
+                | _ -> CustomAttribFixedArg.Array (Some elems)
+
+            let blob = buildFixedArgsBlob [ arg ] [||]
+
+            match CustomAttribute.readFixedArgs [ szarrayType ] blob with
+            | Ok ([ decoded ], offset) -> decoded = arg && offset = blob.Length
+            | _ -> false
+
+        // Element values are drawn from the chosen element type; build a coupled generator
+        // so the property's `elems` list is homogeneous with respect to `eltIdx`.
+        let coupledGen : Gen<NonNegativeInt * int * CustomAttribFixedArg list> =
+            gen {
+                let! idxArb = ArbMap.defaults |> ArbMap.generate<NonNegativeInt>
+                let! kind = ArbMap.defaults |> ArbMap.generate<int>
+                let _, eltGen = elementGens.[(idxArb.Get) % elementGens.Length]
+                let! elems = Gen.listOf eltGen
+                return idxArb, kind, elems
+            }
+
+        let arb = Arb.fromGen coupledGen
+
+        Check.One (propertyConfig, Prop.forAll arb (fun (eltIdx, kind, elems) -> property eltIdx kind elems))

@@ -9,10 +9,9 @@ open System.Reflection.Metadata
 /// </summary>
 /// <remarks>
 /// Not all <c>CorSerializationType</c> values are represented yet:
-/// <c>TYPE</c> (0x50), <c>TAGGED_OBJECT</c> (0x51), <c>ENUM</c> (0x55), and
-/// <c>SZARRAY</c> (0x1d) will be added when the QCall handler needs them.
-/// The current set covers attributes whose ctors take only primitives and strings,
-/// which is the dominant shape on the ResourceManager-init code path.
+/// <c>TYPE</c> (0x50), <c>TAGGED_OBJECT</c> (0x51), and <c>ENUM</c> (0x55) will
+/// be added when a caller needs them. The current set covers attributes whose
+/// ctors take primitives, strings, and SZARRAYs of those.
 /// </remarks>
 [<RequireQualifiedAccess>]
 type CustomAttribFixedArg =
@@ -31,6 +30,12 @@ type CustomAttribFixedArg =
     /// <c>None</c> for the SerString null sentinel (a single <c>0xFF</c> byte);
     /// <c>Some ""</c> for the empty string; <c>Some s</c> for a non-empty UTF-8 string.
     | String of string option
+    /// SZARRAY (ECMA-335 II.23.3): <c>None</c> when <c>NumElem = 0xFFFFFFFF</c>
+    /// (the null-array sentinel); <c>Some []</c> for the empty array;
+    /// <c>Some [e1; e2; ...]</c> for a non-null array in declaration order.
+    /// The element type is fixed by the ctor parameter and is not redundantly
+    /// recorded here.
+    | Array of CustomAttribFixedArg list option
 
 /// <summary>
 /// Represents a custom attribute applied to a type, method, field, or other metadata entity.
@@ -276,7 +281,19 @@ module CustomAttribute =
             else
                 Ok (build blob offset, offset + size)
 
-        let readOne (paramType : TypeDefn) (offset : int) : Result<CustomAttribFixedArg * int, string> =
+        let readUInt32 (offset : int) : Result<uint32 * int, string> =
+            if offset + 4 > len then
+                Error (sprintf "CustomAttrib blob: uint32 at offset %d would overrun blob length %d" offset len)
+            else
+                let v =
+                    uint32 blob.[offset]
+                    ||| (uint32 blob.[offset + 1] <<< 8)
+                    ||| (uint32 blob.[offset + 2] <<< 16)
+                    ||| (uint32 blob.[offset + 3] <<< 24)
+
+                Ok (v, offset + 4)
+
+        let rec readOne (paramType : TypeDefn) (offset : int) : Result<CustomAttribFixedArg * int, string> =
             match paramType with
             | TypeDefn.PrimitiveType pt ->
                 match pt with
@@ -414,10 +431,31 @@ module CustomAttribute =
                             "CustomAttrib blob: TODO: primitive type %O is not yet supported as a CustomAttrib fixed-arg"
                             other
                     )
+            | TypeDefn.OneDimensionalArrayLowerBoundZero eltType ->
+                match readUInt32 offset with
+                | Error e -> Error e
+                | Ok (0xFFFFFFFFu, next) -> Ok (CustomAttribFixedArg.Array None, next)
+                | Ok (numElem, next) ->
+                    let rec readElems
+                        (remaining : int)
+                        (cursor : int)
+                        (acc : CustomAttribFixedArg list)
+                        : Result<CustomAttribFixedArg list * int, string>
+                        =
+                        if remaining = 0 then
+                            Ok (List.rev acc, cursor)
+                        else
+                            match readOne eltType cursor with
+                            | Error e -> Error e
+                            | Ok (value, after) -> readElems (remaining - 1) after (value :: acc)
+
+                    match readElems (int numElem) next [] with
+                    | Error e -> Error e
+                    | Ok (elts, after) -> Ok (CustomAttribFixedArg.Array (Some elts), after)
             | other ->
                 Error (
                     sprintf
-                        "CustomAttrib blob: TODO: non-primitive parameter type %O is not yet supported as a CustomAttrib fixed-arg (need TYPE/ENUM/SZARRAY/TAGGED_OBJECT decoders)"
+                        "CustomAttrib blob: TODO: non-primitive parameter type %O is not yet supported as a CustomAttrib fixed-arg (need TYPE/ENUM/TAGGED_OBJECT decoders)"
                         other
                 )
 
