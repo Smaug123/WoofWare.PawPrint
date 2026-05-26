@@ -48,6 +48,9 @@ module CustomAttribValueLowering =
         | CustomAttribFixedArg.String None -> CliType.ObjectRef None |> Ok
         | CustomAttribFixedArg.String (Some _) ->
             Error "CustomAttribFixedArg.String (Some _) requires allocation; use CustomAttribValueLowering.toCliType"
+        | CustomAttribFixedArg.Array _ ->
+            Error
+                "CustomAttribFixedArg.Array is not yet lowered to CliType (allocating a managed array is not implemented on this path)"
 
     /// <summary>
     /// Lower a fixed arg to a <c>CliType</c>, allocating a managed string on the
@@ -80,6 +83,10 @@ module CustomAttribValueLowering =
                 IlMachineState.allocateManagedString loggerFactory baseClassTypes s state
 
             CliType.ObjectRef (Some addr), state
+        | CustomAttribFixedArg.Array _ ->
+            failwithf
+                "CustomAttribValueLowering.toCliType: TODO: lowering CustomAttribFixedArg.Array to a managed array is not implemented (encountered %A)"
+                arg
         | _ ->
             match tryToPureCliType arg with
             | Ok t -> t, state

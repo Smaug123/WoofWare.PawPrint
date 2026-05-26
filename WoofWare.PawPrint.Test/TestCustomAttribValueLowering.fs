@@ -112,6 +112,21 @@ module TestCustomAttribValueLowering =
         | Ok r -> failwithf "expected Error, got Ok %A" r
 
     [<Test>]
+    let ``tryToPureCliType rejects Array (None)`` () : unit =
+        match CustomAttribValueLowering.tryToPureCliType (CustomAttribFixedArg.Array None) with
+        | Error msg -> msg |> shouldContainText "Array"
+        | Ok r -> failwithf "expected Error, got Ok %A" r
+
+    [<Test>]
+    let ``tryToPureCliType rejects Array (Some _)`` () : unit =
+        let arr =
+            CustomAttribFixedArg.Array (Some [ CustomAttribFixedArg.I4 1 ; CustomAttribFixedArg.I4 2 ])
+
+        match CustomAttribValueLowering.tryToPureCliType arr with
+        | Error msg -> msg |> shouldContainText "Array"
+        | Ok r -> failwithf "expected Error, got Ok %A" r
+
+    [<Test>]
     let ``toCliType: String None routes through pure path`` () : unit =
         let loggerFactory, state = freshState ()
 
@@ -228,6 +243,8 @@ module TestCustomAttribValueLowering =
         | CustomAttribFixedArg.R4 _ -> 4
         | CustomAttribFixedArg.R8 _ -> 8
         | CustomAttribFixedArg.String _ -> 8
+        | CustomAttribFixedArg.Array _ ->
+            failwith "expectedSize: Array is outside genPrimitiveArg's range and has no defined slot size here"
 
     [<Test>]
     let ``tryToPureCliType: every non-allocating arg yields the expected slot size`` () : unit =
