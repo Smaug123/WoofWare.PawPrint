@@ -1,0 +1,280 @@
+namespace WoofWare.PawPrint
+
+open System
+open System.Reflection.Metadata.Ecma335
+
+/// <summary>
+/// Helpers for rendering custom attribute applications in the comment-prefixed
+/// IlDump style. The "Attribute" suffix on attribute type names is stripped
+/// (so <c>SerializableAttribute</c> renders as <c>[Serializable]</c>); blobs
+/// whose ctor signature the reader can't decode fall back to a raw hex dump.
+/// </summary>
+[<RequireQualifiedAccess>]
+module AttributeFormatting =
+
+    /// <summary>
+    /// Returns the custom attributes applied to <paramref name="parent"/> via the
+    /// assembly's <c>CustomAttributesByParentToken</c> index, materialised from the
+    /// <c>Attributes</c> dictionary. Attribute order matches the metadata order.
+    /// </summary>
+    let attributesFor (assembly : DumpedAssembly) (parent : MetadataToken) : CustomAttribute list =
+        let parentRawToken = MetadataToken.toInt parent
+
+        match assembly.CustomAttributesByParentToken.TryGetValue parentRawToken with
+        | false, _ -> []
+        | true, attrTokens ->
+            attrTokens
+            |> Seq.choose (fun t ->
+                let rowNum = t &&& 0x00FFFFFF
+                let handle = MetadataTokens.CustomAttributeHandle rowNum
+
+                match assembly.Attributes.TryGetValue handle with
+                | true, attr -> Some attr
+                | false, _ -> None
+            )
+            |> List.ofSeq
+
+    /// Strip a trailing "Attribute" suffix from a simple type name. The bare
+    /// name "Attribute" is preserved (no infinite-strip).
+    let private stripAttributeSuffix (name : string) : string =
+        let suffix = "Attribute"
+
+        if name.EndsWith (suffix, StringComparison.Ordinal) && name.Length > suffix.Length then
+            name.Substring (0, name.Length - suffix.Length)
+        else
+            name
+
+    /// Apply <c>stripAttributeSuffix</c> to the last name segment of a qualified
+    /// type name (segments are separated by '.' or '/'). The namespace prefix
+    /// and any outer-type prefix are preserved unchanged.
+    let private stripAttributeSuffixOnLastSegment (qualified : string) : string =
+        let lastSlash = qualified.LastIndexOf '/'
+        let lastDot = qualified.LastIndexOf '.'
+        let sep = max lastSlash lastDot
+
+        if sep < 0 then
+            stripAttributeSuffix qualified
+        else
+            let head = qualified.Substring (0, sep + 1)
+            let tail = qualified.Substring (sep + 1)
+            head + stripAttributeSuffix tail
+
+    /// <summary>
+    /// The display name of the attribute type, i.e. the type whose constructor
+    /// <paramref name="attr"/>.Constructor points at. The conventional trailing
+    /// <c>Attribute</c> suffix is stripped from the simple name; the namespace
+    /// (and any outer-type prefix for nested attribute types) is retained.
+    /// </summary>
+    let attributeTypeName (assembly : DumpedAssembly) (attr : CustomAttribute) : string =
+        match attr.Constructor with
+        | MetadataToken.MethodDef handle ->
+            match assembly.Methods.TryGetValue handle with
+            | true, m ->
+                let typeHandle = m.DeclaringType.Definition.Get
+
+                match assembly.TypeDefs.TryGetValue typeHandle with
+                | true, td ->
+                    IlFormatting.qualifyTypeName assembly.TypeDefs td
+                    |> stripAttributeSuffixOnLastSegment
+                | false, _ -> $"TypeDef(%O{typeHandle})"
+            | false, _ -> $"MethodDef(%O{handle})"
+        | MetadataToken.MemberReference handle ->
+            match assembly.Members.TryGetValue handle with
+            | true, m ->
+                IlFormatting.formatMetadataToken assembly m.Parent
+                |> stripAttributeSuffixOnLastSegment
+            | false, _ -> $"MemberRef(%O{handle})"
+        | other -> sprintf "%O" other
+
+    /// Resolve the parameter types declared on the attribute's constructor, so
+    /// that the blob reader can be invoked. Returns <c>None</c> if the ctor
+    /// token is not a kind we know how to look up (e.g. MethodSpec) or the
+    /// member-ref signature is a field rather than a method.
+    let private tryConstructorParamTypes (assembly : DumpedAssembly) (attr : CustomAttribute) : TypeDefn list option =
+        match attr.Constructor with
+        | MetadataToken.MethodDef handle ->
+            match assembly.Methods.TryGetValue handle with
+            | true, m -> Some m.RawSignature.ParameterTypes
+            | false, _ -> None
+        | MetadataToken.MemberReference handle ->
+            match assembly.Members.TryGetValue handle with
+            | true, m ->
+                match m.Signature with
+                | MemberSignature.Method ms -> Some ms.ParameterTypes
+                | MemberSignature.Field _ -> None
+            | false, _ -> None
+        | _ -> None
+
+    /// <summary>
+    /// Render a single decoded fixed arg in a form suitable for inclusion in a
+    /// <c>[Attr(...)]</c> application. Strings and chars are escaped via
+    /// <see cref="IlFormatting.escapeStringLiteral"/>; SZARRAYs render as
+    /// brace-delimited element lists; the null variants of String and Array
+    /// both render as <c>null</c>.
+    /// </summary>
+    let rec formatFixedArg (arg : CustomAttribFixedArg) : string =
+        match arg with
+        | CustomAttribFixedArg.Bool b -> if b then "true" else "false"
+        | CustomAttribFixedArg.Char c -> sprintf "'%s'" (IlFormatting.escapeStringLiteral (string c))
+        | CustomAttribFixedArg.I1 v -> sprintf "%dy" v
+        | CustomAttribFixedArg.U1 v -> sprintf "%duy" v
+        | CustomAttribFixedArg.I2 v -> sprintf "%ds" v
+        | CustomAttribFixedArg.U2 v -> sprintf "%dus" v
+        | CustomAttribFixedArg.I4 v -> sprintf "%d" v
+        | CustomAttribFixedArg.U4 v -> sprintf "%du" v
+        | CustomAttribFixedArg.I8 v -> sprintf "%dL" v
+        | CustomAttribFixedArg.U8 v -> sprintf "%duL" v
+        | CustomAttribFixedArg.R4 v -> sprintf "%gf" v
+        | CustomAttribFixedArg.R8 v -> sprintf "%g" v
+        | CustomAttribFixedArg.String None -> "null"
+        | CustomAttribFixedArg.String (Some s) -> sprintf "\"%s\"" (IlFormatting.escapeStringLiteral s)
+        | CustomAttribFixedArg.Array None -> "null"
+        | CustomAttribFixedArg.Array (Some elts) ->
+            let inner = elts |> List.map formatFixedArg |> String.concat ", "
+            sprintf "{ %s }" inner
+
+    /// Dump the attribute's raw <c>Value</c> blob as space-separated hex bytes.
+    /// Used when the structured decoder can't make progress.
+    let private formatBlobAsHex (attr : CustomAttribute) : string =
+        attr.Value |> Seq.map (sprintf "%02X") |> String.concat " "
+
+    /// Decoded form of a blob: positional args and the raw <c>NumNamed</c>
+    /// count (so callers can surface its presence without us having to decode
+    /// the named-args section in this PR).
+    type private DecodedBlob =
+        {
+            Args : CustomAttribFixedArg list
+            NumNamed : uint16
+        }
+
+    let private tryDecodeBlob (assembly : DumpedAssembly) (attr : CustomAttribute) : Result<DecodedBlob, string> =
+        match tryConstructorParamTypes assembly attr with
+        | None -> Error "unresolved ctor"
+        | Some paramTypes ->
+            match CustomAttribute.readFixedArgs paramTypes attr.Value with
+            | Error msg -> Error msg
+            | Ok (args, offset) ->
+                let numNamed =
+                    let remaining = attr.Value.Length - offset
+
+                    if remaining >= 2 then
+                        (uint16 attr.Value.[offset]) ||| ((uint16 attr.Value.[offset + 1]) <<< 8)
+                    else
+                        0us
+
+                Ok
+                    {
+                        Args = args
+                        NumNamed = numNamed
+                    }
+
+    /// <summary>
+    /// Render an attribute as <c>[Name(args) /* +N named */]</c>. Empty
+    /// positional argument lists collapse to <c>[Name]</c>; when there are no
+    /// positional args but named args are present, the comment trails the
+    /// name directly. Blobs whose ctor signature is unresolved or whose
+    /// decode fails fall back to a parenthesised hex dump.
+    /// </summary>
+    let formatAttributeApplication (assembly : DumpedAssembly) (attr : CustomAttribute) : string =
+        let name = attributeTypeName assembly attr
+
+        match tryDecodeBlob assembly attr with
+        | Error _ ->
+            if attr.Value.Length = 0 then
+                sprintf "[%s]" name
+            else
+                sprintf "[%s(/* blob: %s */)]" name (formatBlobAsHex attr)
+        | Ok decoded ->
+            let argsClause =
+                if List.isEmpty decoded.Args then
+                    ""
+                else
+                    let argsStr = decoded.Args |> List.map formatFixedArg |> String.concat ", "
+
+                    sprintf "(%s)" argsStr
+
+            let namedSuffix =
+                if decoded.NumNamed = 0us then
+                    ""
+                else
+                    sprintf " /* +%d named */" decoded.NumNamed
+
+            sprintf "[%s%s%s]" name argsClause namedSuffix
+
+    /// Render the generic-parameter clause shown after a type or method name
+    /// (e.g. <c>&lt;T, U&gt;</c>). Returns <c>""</c> if there are no generics.
+    let private formatGenericsClause (generics : GenericParamFromMetadata seq) : string =
+        let names = generics |> Seq.map (fun (param, _) -> param.Name) |> List.ofSeq
+
+        if List.isEmpty names then
+            ""
+        else
+            sprintf "<%s>" (String.concat ", " names)
+
+    /// <summary>
+    /// Comment-prefixed header for a TypeDef in attribute-dump mode,
+    /// including a <c>&lt;T, U&gt;</c> clause when the type is generic.
+    /// </summary>
+    let typeHeader (assembly : DumpedAssembly) (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>) : string =
+        let qualified = IlFormatting.qualifyTypeName assembly.TypeDefs typeInfo
+        let generics = formatGenericsClause typeInfo.Generics
+        sprintf "// type %s%s" qualified generics
+
+    /// <summary>
+    /// Comment-prefixed header for a MethodDef in attribute-dump mode. The
+    /// owning type's qualified name is supplied by the caller (so a type-level
+    /// walk doesn't re-resolve it per method).
+    /// </summary>
+    let methodHeader
+        (qualifiedTypeName : string)
+        (method : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
+        : string
+        =
+        let staticStr = if method.IsStatic then "static " else ""
+        let generics = formatGenericsClause method.Generics
+
+        let paramTypes =
+            method.RawSignature.ParameterTypes
+            |> List.map (fun p -> sprintf "%O" p)
+            |> String.concat ", "
+
+        sprintf
+            "// method %s::%s%s%s(%s) : %O"
+            qualifiedTypeName
+            staticStr
+            method.Name
+            generics
+            paramTypes
+            method.RawSignature.ReturnType
+
+    /// Comment-prefixed header for a FieldDef.
+    let fieldHeader (qualifiedTypeName : string) (field : FieldInfo<GenericParamFromMetadata, TypeDefn>) : string =
+        sprintf "// field %s::%s : %O" qualifiedTypeName field.Name field.Signature
+
+    /// Comment-prefixed header for an EventDef.
+    let eventHeader (qualifiedTypeName : string) (event : EventDefn) : string =
+        sprintf "// event %s::%s" qualifiedTypeName event.Name
+
+    /// Comment-prefixed header for a PropertyDef. PropertyDef has no domain
+    /// type, so the name is supplied by the IlDump caller after reading the
+    /// metadata reader's PropertyDefinitions table.
+    let propertyHeader (qualifiedTypeName : string) (propertyName : string) : string =
+        sprintf "// property %s::%s" qualifiedTypeName propertyName
+
+    /// <summary>
+    /// Render an owner header followed by one indented <c>[Attr(args)]</c>
+    /// line per attribute, or an empty list if the owner has no attributes.
+    /// The header is always a comment-prefixed line so it interleaves with
+    /// the existing IL-dump format.
+    /// </summary>
+    let renderOwnerLines (assembly : DumpedAssembly) (header : string) (parent : MetadataToken) : string list =
+        let attrs = attributesFor assembly parent
+
+        match attrs with
+        | [] -> []
+        | _ ->
+            [
+                yield header
+                for attr in attrs do
+                    yield sprintf "//   %s" (formatAttributeApplication assembly attr)
+            ]

@@ -38,6 +38,7 @@
         <Compile Include="Assembly.fs" />
         <Compile Include="AccessCheck.fs" />
         <Compile Include="IlFormatting.fs" />
+        <Compile Include="AttributeFormatting.fs" />
         <Compile Include="TypeConcretisation.fs" />
     </ItemGroup>
 
