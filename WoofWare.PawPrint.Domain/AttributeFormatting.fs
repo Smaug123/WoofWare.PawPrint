@@ -423,6 +423,17 @@ module AttributeFormatting =
     let propertyHeader (qualifiedTypeName : string) (propertyName : string) : string =
         sprintf "// property %s::%s" qualifiedTypeName propertyName
 
+    /// Comment-prefixed header for the assembly manifest row. The simple
+    /// assembly name is used (rather than the full versioned name) so the
+    /// header matches the style of the other comment-prefixed headers.
+    let assemblyHeader (assembly : DumpedAssembly) : string =
+        sprintf "// assembly %s" assembly.Name.Name
+
+    /// Comment-prefixed header for the module definition. The module name is
+    /// supplied by the caller after reading the metadata reader's
+    /// ModuleDefinition row.
+    let moduleHeader (moduleName : string) : string = sprintf "// module %s" moduleName
+
     /// <summary>
     /// Render an owner header followed by one indented <c>[Attr(args)]</c>
     /// line per attribute, or an empty list if the owner has no attributes.

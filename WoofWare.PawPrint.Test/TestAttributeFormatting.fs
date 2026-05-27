@@ -434,3 +434,51 @@ public class Target { }
 
         for n in names do
             n.Contains "<type defined in" |> shouldEqual false
+
+    // ----- assembly- and module-scoped attributes ---------------------------
+
+    [<Test>]
+    let ``renderOwnerLines emits assembly-scoped attributes for AssemblyDefinition token`` () : unit =
+        // [assembly: ...] attributes are stored in the metadata reader's
+        // CustomAttributes table with parent token AssemblyDefinition (row 1).
+        // The attrs-only walker must look them up via that singleton token, not
+        // skip over them because they aren't owned by any TypeDef.
+        let source =
+            """
+using System.Runtime.CompilerServices;
+
+[assembly: InternalsVisibleTo("SomeFriendAssembly")]
+
+public class Placeholder { }
+"""
+
+        let image =
+            Roslyn.compileAssembly
+                "AssemblyScopedAttributeFormattingTest"
+                Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+                []
+                [ source ]
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use stream = new System.IO.MemoryStream (image)
+        let assembly = global.WoofWare.PawPrint.AssemblyApi.read loggerFactory None stream
+
+        let header = AttributeFormatting.assemblyHeader assembly
+
+        let lines =
+            AttributeFormatting.renderOwnerLines
+                assembly
+                header
+                (MetadataToken.AssemblyDefinition System.Reflection.Metadata.EntityHandle.AssemblyDefinition)
+
+        // The header should be the first line, and at least one rendered application line
+        // should mention the friend assembly name from the InternalsVisibleTo attribute.
+        match lines with
+        | [] -> failwith "expected at least the assembly header plus one InternalsVisibleTo line"
+        | first :: rest ->
+            first |> shouldEqual header
+
+            let mentionsFriend = rest |> List.exists (fun l -> l.Contains "SomeFriendAssembly")
+
+            if not mentionsFriend then
+                failwithf "actual rendered lines: %s" (lines |> String.concat " | ")

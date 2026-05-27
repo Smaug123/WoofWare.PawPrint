@@ -3,6 +3,7 @@ namespace WoofWare.PawPrint.IlDump
 open System
 open System.IO
 open System.Reflection.Metadata
+open System.Reflection.Metadata.Ecma335
 open Microsoft.Extensions.Logging
 open WoofWare.PawPrint
 
@@ -171,6 +172,37 @@ module Program =
 
             | Mode.AttrsOnly ->
                 let mutable anyEmitted = false
+
+                let printOwnerGroup (header : string) (parent : MetadataToken) : unit =
+                    let lines = AttributeFormatting.renderOwnerLines assembly header parent
+
+                    if not (List.isEmpty lines) then
+                        if anyEmitted then
+                            printfn ""
+
+                        for line in lines do
+                            printfn $"%s{line}"
+
+                        anyEmitted <- true
+
+                // Assembly- and module-scoped attributes (e.g. [assembly: InternalsVisibleTo],
+                // [module: SkipLocalsInit]) live under the singleton AssemblyDefinition /
+                // ModuleDefinition rows, not under any type. Emit them up front when the user
+                // hasn't narrowed the scope with a type filter; a type filter scopes the
+                // output to types and should suppress these.
+                if Option.isNone typeFilter then
+                    printOwnerGroup
+                        (AttributeFormatting.assemblyHeader assembly)
+                        (MetadataToken.AssemblyDefinition EntityHandle.AssemblyDefinition)
+
+                    let moduleName =
+                        let mr = assembly.PeReader.GetMetadataReader ()
+                        let moduleDef = mr.GetModuleDefinition ()
+                        mr.GetString moduleDef.Name
+
+                    printOwnerGroup
+                        (AttributeFormatting.moduleHeader moduleName)
+                        (MetadataToken.ModuleDefinition EntityHandle.ModuleDefinition)
 
                 for kvp in assembly.TypeDefs do
                     let typeInfo = kvp.Value
