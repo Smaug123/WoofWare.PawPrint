@@ -72,6 +72,30 @@ module TestAttributeFormatting =
         |> shouldEqual "9uL"
 
     [<Test>]
+    let ``formatFixedArg R4 and R8 round-trip their stored value`` () : unit =
+        // Pick a value that "%g" would truncate at its default precision; the rendered string
+        // must reparse to the exact original bits.
+        let v8 = 1.234567890123456
+        let rendered8 = AttributeFormatting.formatFixedArg (CustomAttribFixedArg.R8 v8)
+
+        let parsed8 =
+            System.Double.Parse (rendered8, System.Globalization.CultureInfo.InvariantCulture)
+
+        parsed8 |> shouldEqual v8
+
+        let v4 = 1.2345678f
+        let rendered4 = AttributeFormatting.formatFixedArg (CustomAttribFixedArg.R4 v4)
+        rendered4.EndsWith "f" |> shouldEqual true
+
+        let parsed4 =
+            System.Single.Parse (
+                rendered4.Substring (0, rendered4.Length - 1),
+                System.Globalization.CultureInfo.InvariantCulture
+            )
+
+        parsed4 |> shouldEqual v4
+
+    [<Test>]
     let ``formatFixedArg String None is null and String Some is quoted-escaped`` () : unit =
         AttributeFormatting.formatFixedArg (CustomAttribFixedArg.String None)
         |> shouldEqual "null"
@@ -320,6 +344,51 @@ public class Target { }
 
         for n in names do
             n.Contains "<type defined in" |> shouldEqual false
+
+    [<Test>]
+    let ``formatAttributeApplication decodes a closed-generic ctor whose param is the type parameter`` () : unit =
+        // ms.ParameterTypes on the MemberRef references the open generic via
+        // GenericTypeParameter 0. Without substitution, the blob decoder hits the
+        // unsupported generic-param case and we'd fall back to a raw hex blob — even
+        // though the TypeSpec parent already pins T = int.
+        let source =
+            """
+using System;
+
+[AttributeUsage(AttributeTargets.All)]
+public class MyGenericAttribute<T> : Attribute
+{
+    public MyGenericAttribute(T value) { }
+}
+
+[MyGeneric<int>(42)]
+public class Target { }
+"""
+
+        let image =
+            Roslyn.compileAssembly
+                "GenericAttributeFormattingClosedCtorTest"
+                Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+                []
+                [ source ]
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use stream = new System.IO.MemoryStream (image)
+        let assembly = global.WoofWare.PawPrint.AssemblyApi.read loggerFactory None stream
+
+        let target = assembly.TypeDefs.Values |> Seq.find (fun td -> td.Name = "Target")
+
+        let rendered =
+            AttributeFormatting.attributesFor assembly (MetadataToken.TypeDefinition target.TypeDefHandle)
+            |> List.map (AttributeFormatting.formatAttributeApplication assembly)
+
+        // The decoded form must show the literal 42 — not a "/* blob:" fallback.
+        let found =
+            rendered
+            |> List.exists (fun r -> r.Contains "(42)" && not (r.Contains "/* blob:"))
+
+        if not found then
+            failwithf "actual rendered applications: %s" (rendered |> String.concat " ; ")
 
     [<Test>]
     let ``attributeTypeName renders user-defined type argument by qualified name`` () : unit =

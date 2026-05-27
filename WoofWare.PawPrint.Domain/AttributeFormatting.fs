@@ -189,10 +189,42 @@ module AttributeFormatting =
             | false, _ -> $"MemberRef(%O{handle})"
         | other -> sprintf "%O" other
 
+    /// Substitute occurrences of <c>GenericTypeParameter idx</c> in
+    /// <paramref name="td"/> with the corresponding type from
+    /// <paramref name="typeArgs"/>. Out-of-range indices are left unchanged so
+    /// the consumer can still distinguish "no substitution possible" from a
+    /// successful resolution. <c>GenericMethodParameter</c> is *not* touched —
+    /// those are bound by the enclosing method, not the type spec.
+    let rec private substituteTypeArgs (typeArgs : TypeDefn list) (td : TypeDefn) : TypeDefn =
+        match td with
+        | TypeDefn.GenericTypeParameter idx when idx >= 0 && idx < List.length typeArgs -> List.item idx typeArgs
+        | TypeDefn.Array (elt, rank) -> TypeDefn.Array (substituteTypeArgs typeArgs elt, rank)
+        | TypeDefn.OneDimensionalArrayLowerBoundZero elt ->
+            TypeDefn.OneDimensionalArrayLowerBoundZero (substituteTypeArgs typeArgs elt)
+        | TypeDefn.Pinned t -> TypeDefn.Pinned (substituteTypeArgs typeArgs t)
+        | TypeDefn.Pointer t -> TypeDefn.Pointer (substituteTypeArgs typeArgs t)
+        | TypeDefn.Byref t -> TypeDefn.Byref (substituteTypeArgs typeArgs t)
+        | TypeDefn.Modified (orig, after, req) ->
+            TypeDefn.Modified (substituteTypeArgs typeArgs orig, substituteTypeArgs typeArgs after, req)
+        | TypeDefn.GenericInstantiation (generic, args) ->
+            let generic' = substituteTypeArgs typeArgs generic
+
+            let args' =
+                args
+                |> Seq.map (substituteTypeArgs typeArgs)
+                |> System.Collections.Immutable.ImmutableArray.CreateRange
+
+            TypeDefn.GenericInstantiation (generic', args')
+        | _ -> td
+
     /// Resolve the parameter types declared on the attribute's constructor, so
     /// that the blob reader can be invoked. Returns <c>None</c> if the ctor
     /// token is not a kind we know how to look up (e.g. MethodSpec) or the
-    /// member-ref signature is a field rather than a method.
+    /// member-ref signature is a field rather than a method. When the parent
+    /// of a MemberRef is a <c>TypeSpecification</c> holding a closed generic,
+    /// the TypeSpec's args are substituted into the ctor's parameter types so
+    /// a parameter declared as <c>T</c> resolves to its concrete instantiation
+    /// before the blob decoder runs.
     let private tryConstructorParamTypes (assembly : DumpedAssembly) (attr : CustomAttribute) : TypeDefn list option =
         match attr.Constructor with
         | MetadataToken.MethodDef handle ->
@@ -203,7 +235,21 @@ module AttributeFormatting =
             match assembly.Members.TryGetValue handle with
             | true, m ->
                 match m.Signature with
-                | MemberSignature.Method ms -> Some ms.ParameterTypes
+                | MemberSignature.Method ms ->
+                    let paramTypes =
+                        match m.Parent with
+                        | MetadataToken.TypeSpecification tsHandle ->
+                            match assembly.TypeSpecs.TryGetValue tsHandle with
+                            | true, ts ->
+                                match ts.Signature with
+                                | TypeDefn.GenericInstantiation (_, typeArgs) ->
+                                    let argList = List.ofSeq typeArgs
+                                    ms.ParameterTypes |> List.map (substituteTypeArgs argList)
+                                | _ -> ms.ParameterTypes
+                            | false, _ -> ms.ParameterTypes
+                        | _ -> ms.ParameterTypes
+
+                    Some paramTypes
                 | MemberSignature.Field _ -> None
             | false, _ -> None
         | _ -> None
@@ -237,8 +283,11 @@ module AttributeFormatting =
         | CustomAttribFixedArg.U4 v -> sprintf "%du" v
         | CustomAttribFixedArg.I8 v -> sprintf "%dL" v
         | CustomAttribFixedArg.U8 v -> sprintf "%duL" v
-        | CustomAttribFixedArg.R4 v -> sprintf "%gf" v
-        | CustomAttribFixedArg.R8 v -> sprintf "%g" v
+        | CustomAttribFixedArg.R4 v ->
+            // "R" round-trips the metadata-stored bit pattern; "%g"'s default
+            // precision silently truncates values like 1.234567f.
+            sprintf "%sf" (v.ToString ("R", System.Globalization.CultureInfo.InvariantCulture))
+        | CustomAttribFixedArg.R8 v -> v.ToString ("R", System.Globalization.CultureInfo.InvariantCulture)
         | CustomAttribFixedArg.String None -> "null"
         | CustomAttribFixedArg.String (Some s) -> sprintf "\"%s\"" (IlFormatting.escapeStringLiteral s)
         | CustomAttribFixedArg.Array None -> "null"
