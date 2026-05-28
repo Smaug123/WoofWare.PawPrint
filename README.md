@@ -32,6 +32,7 @@ The following are specifically not implemented:
 
 ## Licence
 
-I haven't yet applied a licence to this project, so you don't get to use it yet; sorry.
+[MIT](./LICENCE.md).
 
-The .NET runtime was used under the [MIT licence](./LICENCE_dotnet.md), although this project should only contain trivial amounts of that code.
+This project was produced with reference to the .NET runtime, which was used under the [MIT licence](./LICENCE_dotnet.md).
+WoofWare.PawPrint may contain small amounts of that code.
