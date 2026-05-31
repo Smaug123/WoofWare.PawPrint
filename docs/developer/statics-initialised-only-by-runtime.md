@@ -1,5 +1,7 @@
 # Runtime-Initialised Statics
 
+*Authorship: LLM*
+
 This document catalogues BCL static fields whose values come from the .NET *runtime* (the JIT or the EE) rather than from any managed `.cctor`. PawPrint has neither a JIT nor an EE startup hook, so it must fake these initialisations. If you are reading this because a guest program is failing with
 
 > Encountered infinite recursion while looking up resource 'Arg_NullReferenceException' in System.Private.CoreLib
