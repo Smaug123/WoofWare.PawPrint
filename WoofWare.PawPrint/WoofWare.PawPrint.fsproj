@@ -125,6 +125,7 @@
     <Compile Include="SignalDispatch.fs" />
     <Compile Include="AbstractMachine.fs" />
     <Compile Include="Program.fs" />
+    <EmbeddedResource Include="version.json" />
   </ItemGroup>
 
   <ItemGroup>
