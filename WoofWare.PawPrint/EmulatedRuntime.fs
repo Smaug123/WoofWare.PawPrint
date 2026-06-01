@@ -15,9 +15,9 @@ type EmulatedRuntime =
     {
         /// The target framework moniker whose semantics this runtime reproduces, e.g. "net10.0".
         TargetFramework : string
-        /// The servicing version of the emulated runtime, e.g. 10.0.6.
+        /// The servicing version of the emulated runtime, e.g. 10.0.7.
         Version : System.Version
-        /// The dotnet/runtime git tag the native implementations were validated against, e.g. "v10.0.6".
+        /// The dotnet/runtime git tag the native implementations were validated against, e.g. "v10.0.7".
         SourceRef : string
         /// The full dotnet/runtime commit SHA corresponding to `SourceRef`; the ground-truth identifier
         /// for the upstream source that PawPrint's native code mirrors.
@@ -34,9 +34,9 @@ module EmulatedRuntime =
     let net10 : EmulatedRuntime =
         {
             TargetFramework = "net10.0"
-            Version = System.Version (10, 0, 6)
-            SourceRef = "v10.0.6"
-            SourceCommit = "7706f546bac1a99b3d891afe3591dc88c67f0cc4"
+            Version = System.Version (10, 0, 7)
+            SourceRef = "v10.0.7"
+            SourceCommit = "b16286c2284fecf303dbc12a0bb152476d662e44"
         }
 
     /// The runtime PawPrint emulates in this build.
