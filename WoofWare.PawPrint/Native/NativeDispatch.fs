@@ -2,7 +2,12 @@ namespace WoofWare.PawPrint
 
 [<RequireQualifiedAccess>]
 module NativeDispatch =
-    let private nativeHandlers : (NativeCallContext -> NativeHandlerResult option) list =
+    // The native/extern boundary is the only runtime-specific surface PawPrint supplies (the managed
+    // BCL is loaded from the guest's own assemblies), so this handler list IS "the native code for a
+    // runtime". It is the net10 set: PawPrint currently emulates only `EmulatedRuntime.net10`. When a
+    // second runtime is added, give it its own list and have `tryExecute` select between them on the
+    // active `EmulatedRuntime` (threaded through the machine config); nothing here forecloses that.
+    let private net10NativeHandlers : (NativeCallContext -> NativeHandlerResult option) list =
         [
             NativeEnvironment.tryExecute
             NativeMonitor.tryExecute
@@ -30,6 +35,6 @@ module NativeDispatch =
         ]
 
     let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
-        nativeHandlers |> List.tryPick (fun handler -> handler ctx)
+        net10NativeHandlers |> List.tryPick (fun handler -> handler ctx)
 
     let failUnimplemented (ctx : NativeCallContext) : NativeHandlerResult = NativeCall.failUnimplemented ctx
