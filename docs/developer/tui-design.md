@@ -1,5 +1,9 @@
 # PawPrint Debugger TUI: Design Document
 
+*Authorship: LLM*
+
+*Status: unimplemented*
+
 ## Philosophy
 
 The purpose of this TUI is to make the entire machine state observable at a glance, and to support the deterministic nature of the runtime (stepping forward, and eventually backward). Every piece of state in `IlMachineState` should be reachable from the UI. The most commonly needed information is visible without navigation; less-frequently-needed state is one keypress away.
