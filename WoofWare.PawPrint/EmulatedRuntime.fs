@@ -19,8 +19,12 @@ type EmulatedRuntime =
         Version : System.Version
         /// The dotnet/runtime git tag the native implementations were validated against, e.g. "v10.0.7".
         SourceRef : string
-        /// The full dotnet/runtime commit SHA corresponding to `SourceRef`; the ground-truth identifier
-        /// for the upstream source that PawPrint's native code mirrors.
+        /// The full dotnet/runtime commit SHA that `SourceRef` resolves to: the public release-tag
+        /// commit, i.e. the upstream source PawPrint's native code is read against and mirrors.
+        ///
+        /// Note this is NOT necessarily the commit the shipped binary was built from: `dotnet --info`
+        /// (and the runtime pack's `.version`) can report an internal build commit that was never
+        /// pushed to the public dotnet/runtime repo. We record the public, readable source commit.
         SourceCommit : string
     }
 
@@ -36,7 +40,7 @@ module EmulatedRuntime =
             TargetFramework = "net10.0"
             Version = System.Version (10, 0, 7)
             SourceRef = "v10.0.7"
-            SourceCommit = "b16286c2284fecf303dbc12a0bb152476d662e44"
+            SourceCommit = "7706f546bac1a99b3d891afe3591dc88c67f0cc4"
         }
 
     /// The runtime PawPrint emulates in this build.
