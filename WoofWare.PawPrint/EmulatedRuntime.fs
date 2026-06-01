@@ -32,10 +32,9 @@ type EmulatedRuntime =
 module EmulatedRuntime =
 
     /// .NET 10. The only runtime PawPrint currently emulates.
-    ///
-    /// Keep these values in step with the runtime pinned by the Nix devshell and the
-    /// `../dotnet-runtime` checkout; the `sync-dotnet-runtime` process establishes both.
     let net10 : EmulatedRuntime =
+        // Keep these values in step with the runtime pinned by the Nix devshell and the
+        // `../dotnet-runtime` checkout; the `sync-dotnet-runtime` process establishes both.
         {
             TargetFramework = "net10.0"
             Version = System.Version (10, 0, 7)
