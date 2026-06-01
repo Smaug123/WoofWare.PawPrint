@@ -1,5 +1,7 @@
 # Pointers And Byte Representations
 
+*Authorship: LLM*
+
 This document describes the model PawPrint currently uses for managed pointers, native-int-like pointer values, and byte views over managed storage.
 
 ## Object References And Byrefs

@@ -1,5 +1,7 @@
 # PawPrint Local Loki Logging
 
+*Authorship: LLM*
+
 Enable JSON-lines file logging by setting `PAWPRINT_LOG_DIR`:
 
 ```bash

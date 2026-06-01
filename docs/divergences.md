@@ -1,5 +1,7 @@
 # Known Divergences from CoreCLR
 
+*Authorship: LLM*
+
 PawPrint aims to be behaviourally equivalent to CoreCLR for managed programs. This document catalogues the cases where it is *deliberately* not, and explains why. Each item here is something that:
 
 * a managed program can observe at runtime,
