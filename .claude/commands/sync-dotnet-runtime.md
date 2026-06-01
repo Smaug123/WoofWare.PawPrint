@@ -21,6 +21,8 @@ Bumping is an edit to `flake.nix` and `WoofWare.PawPrint/EmulatedRuntime.fs` —
    ```
    If the exact `vX.Y.Z` tag isn't published yet (Microsoft cuts servicing releases internally before the public push), fall back to the closest published tag `≤` the runtime version: list with `git ls-remote --tags https://github.com/dotnet/runtime 'v10.0.*'` and pick the highest `≤` ours. Note: locally-cached tags can be stale; trust `git ls-remote`, not a local clone.
 
+   Don't be alarmed that the tagged tree's `eng/Versions.props` self-reports `<PatchVersion>` of `Z-1`: dotnet tags the release commit *before* bumping the in-tree version (confirmed e.g. `v10.0.7` -> `PatchVersion 6`, `v10.0.8` -> `7`). The tag name is the release identity — pin by it, not by the in-tree version string.
+
 3. Update the pin in `flake.nix`:
    - Set `expectedRuntimeVersion` to the new version (e.g. `"10.0.8"`).
    - Set `dotnet-runtime-src.rev` to the public tag commit from step 2, set `hash = pkgs.lib.fakeHash;`, then run `nix develop -c true` and copy the real `got: sha256-…` value back into `hash`.

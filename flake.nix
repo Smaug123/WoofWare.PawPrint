@@ -31,9 +31,14 @@
       # Pin `rev` to the commit the public `v${expectedRuntimeVersion}` tag resolves to — NOT the
       # binary's internal `.version` / `dotnet --info` build commit, which is frequently not pushed
       # to the public repo and so cannot be fetched.
+      #
+      # Heads-up on a dotnet quirk: the release commit is tagged BEFORE the in-tree version is
+      # bumped, so this tree's `eng/Versions.props` self-reports `<PatchVersion>6` even though it is
+      # the v10.0.7 release source. The tag is the release identity; the in-tree version lags by one
+      # (confirmed: v10.0.5 -> 4, v10.0.7 -> 6, v10.0.8 -> 7). Pin by the tag, not the in-tree string.
       dotnet-runtime-src = pkgs.fetchgit {
         url = "https://github.com/dotnet/runtime";
-        rev = "7706f546bac1a99b3d891afe3591dc88c67f0cc4"; # v10.0.7
+        rev = "7706f546bac1a99b3d891afe3591dc88c67f0cc4"; # v10.0.7 (tree self-reports 10.0.6; see above)
         hash = "sha256-eMV1mZ2iy84CiHTOU2vZ5LaDFFAAyGlhetDKmBn0IMs=";
         sparseCheckout = [
           "src/coreclr"
