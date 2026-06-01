@@ -20,6 +20,27 @@
       dotnet-sdk = pkgs.dotnetCorePackages.sdk_10_0;
       dotnet-runtime = pkgs.dotnetCorePackages.runtime_10_0;
       version = "0.1";
+      # The .NET servicing version we emulate. This must equal what nixpkgs provides (enforced by
+      # the `runtime-version-pin` check below) and WoofWare.PawPrint/EmulatedRuntime.fs (enforced by
+      # the TestEmulatedRuntime drift test). When nixpkgs bumps the SDK, bump all of these together.
+      expectedRuntimeVersion = "10.0.7";
+      # Pinned, read-only dotnet/runtime source, for checking upstream behaviour (BCL / QCall /
+      # native helpers) from the devshell as $DOTNET_RUNTIME_SRC. Sparse-checked-out to just the
+      # trees we actually read, to keep the closure small.
+      #
+      # Pin `rev` to the commit the public `v${expectedRuntimeVersion}` tag resolves to — NOT the
+      # binary's internal `.version` / `dotnet --info` build commit, which is frequently not pushed
+      # to the public repo and so cannot be fetched.
+      dotnet-runtime-src = pkgs.fetchgit {
+        url = "https://github.com/dotnet/runtime";
+        rev = "7706f546bac1a99b3d891afe3591dc88c67f0cc4"; # v10.0.7
+        hash = "sha256-eMV1mZ2iy84CiHTOU2vZ5LaDFFAAyGlhetDKmBn0IMs=";
+        sparseCheckout = [
+          "src/coreclr"
+          "src/libraries/System.Private.CoreLib"
+          "eng"
+        ];
+      };
       dotnetTool = dllOverride: toolName: toolVersion: hash:
         pkgs.stdenvNoCC.mkDerivation rec {
           name = toolName;
@@ -62,9 +83,28 @@
           doCheck = true;
         };
       };
+      checks = {
+        # Fails the build (and so `nix flake check` in CI) when nixpkgs's runtime version drifts
+        # away from the version we pin. Forces a deliberate bump of dotnet-runtime-src, of
+        # expectedRuntimeVersion, and of WoofWare.PawPrint/EmulatedRuntime.fs in lockstep.
+        runtime-version-pin =
+          pkgs.runCommand "runtime-version-pin" {}
+          (
+            if dotnet-runtime.version == expectedRuntimeVersion
+            then "touch $out"
+            else ''
+              echo "Runtime pin drift: nixpkgs provides ${dotnet-runtime.version} but expectedRuntimeVersion = ${expectedRuntimeVersion}." >&2
+              echo "Bump dotnet-runtime-src rev (to the public v<new> tag commit), expectedRuntimeVersion, and WoofWare.PawPrint/EmulatedRuntime.fs together." >&2
+              exit 1
+            ''
+          );
+      };
       devShell = pkgs.mkShell {
         buildInputs = [dotnet-sdk];
         DOTNET_CLI_TELEMETRY_OPTOUT = "1";
+        # Pinned read-only dotnet/runtime source for checking upstream behaviour; see the
+        # sync-dotnet-runtime command. Replaces the old ad-hoc ../dotnet-runtime sibling checkout.
+        DOTNET_RUNTIME_SRC = dotnet-runtime-src;
         # Force polling-based file watcher to avoid hangs in
         # FileSystemWatcher.StartRaisingEvents on macOS (FSEvents/CoreFoundation
         # path can deadlock under load when ASP.NET hosts created in tests
