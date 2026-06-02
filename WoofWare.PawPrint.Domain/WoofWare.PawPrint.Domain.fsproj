@@ -3,6 +3,16 @@
     <PropertyGroup>
         <TargetFramework>net8.0</TargetFramework>
         <GenerateDocumentationFile>true</GenerateDocumentationFile>
+        <IsPackable>true</IsPackable>
+        <PackageId>WoofWare.PawPrint.Domain</PackageId>
+        <Authors>Patrick Stevens</Authors>
+        <Copyright>Copyright (c) Patrick Stevens 2026</Copyright>
+        <Description>Shared domain types for WoofWare.PawPrint, an experimental fully-deterministic, fully-managed .NET IL interpreter: IL opcodes, the emulated type system, and metadata-handle wrappers.</Description>
+        <RepositoryType>git</RepositoryType>
+        <RepositoryUrl>https://github.com/Smaug123/WoofWare.PawPrint</RepositoryUrl>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <PackageReadmeFile>README.md</PackageReadmeFile>
+        <PackageTags>dotnet;il;interpreter;metadata;fsharp;woofware</PackageTags>
     </PropertyGroup>
 
     <ItemGroup>
@@ -45,6 +55,10 @@
 
     <ItemGroup>
       <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.2" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <None Include="..\README.md" Pack="true" PackagePath="\" />
     </ItemGroup>
 
 </Project>
