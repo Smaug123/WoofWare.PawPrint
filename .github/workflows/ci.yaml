@@ -107,12 +107,12 @@ jobs:
     - name: Pack
       run: nix develop --command dotnet pack --configuration Release
     - name: Upload NuGet artifact (PawPrint)
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: nuget-package-pawprint
         path: WoofWare.PawPrint/bin/Release/WoofWare.PawPrint.*.nupkg
     - name: Upload NuGet artifact (Domain)
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: nuget-package-domain
         path: WoofWare.PawPrint.Domain/bin/Release/WoofWare.PawPrint.Domain.*.nupkg
@@ -122,7 +122,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download NuGet artifact (PawPrint)
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: nuget-package-pawprint
           path: packed-pawprint
@@ -130,7 +130,7 @@ jobs:
         # Verify that there is exactly one nupkg in the artifact that would be NuGet published
         run: if [[ $(find packed-pawprint -maxdepth 1 -name 'WoofWare.PawPrint.*.nupkg' -printf c | wc -c) -ne "1" ]]; then exit 1; fi
       - name: Download NuGet artifact (Domain)
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: nuget-package-domain
           path: packed-domain
@@ -149,7 +149,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Download NuGet artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ matrix.artifact }}
       - name: Compute package path
@@ -189,7 +189,7 @@ jobs:
       contents: read
     steps:
       - name: Download NuGet artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: nuget-package-domain
           path: packed
@@ -208,7 +208,7 @@ jobs:
       contents: read
     steps:
       - name: Download NuGet artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: nuget-package-pawprint
           path: packed
@@ -234,7 +234,7 @@ jobs:
           extra_nix_config: |
             access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
       - name: Download NuGet artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: nuget-package-domain
           path: packed
@@ -272,7 +272,7 @@ jobs:
           extra_nix_config: |
             access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
       - name: Download NuGet artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: nuget-package-pawprint
           path: packed
@@ -308,7 +308,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Download NuGet artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ matrix.artifact }}
       - name: Compute package path
