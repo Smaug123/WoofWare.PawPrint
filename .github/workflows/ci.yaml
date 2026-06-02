@@ -89,11 +89,241 @@ jobs:
       - name: Flake check
         run: nix flake check
 
+  nuget-pack:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      with:
+        fetch-depth: 0 # so that NerdBank.GitVersioning has access to history
+    - name: Install Nix
+      uses: cachix/install-nix-action@08dcb3a5e62fa31e2da3d490afc4176ef55ecd72 # v30
+      with:
+        extra_nix_config: |
+          access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
+    - name: Restore dependencies
+      run: nix develop --command dotnet restore
+    - name: Build
+      run: nix develop --command dotnet build --no-restore --configuration Release
+    - name: Pack
+      run: nix develop --command dotnet pack --configuration Release
+    - name: Upload NuGet artifact (PawPrint)
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: nuget-package-pawprint
+        path: WoofWare.PawPrint/bin/Release/WoofWare.PawPrint.*.nupkg
+    - name: Upload NuGet artifact (Domain)
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: nuget-package-domain
+        path: WoofWare.PawPrint.Domain/bin/Release/WoofWare.PawPrint.Domain.*.nupkg
+
+  expected-pack:
+    needs: [nuget-pack]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download NuGet artifact (PawPrint)
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: nuget-package-pawprint
+          path: packed-pawprint
+      - name: Check NuGet contents
+        # Verify that there is exactly one nupkg in the artifact that would be NuGet published
+        run: if [[ $(find packed-pawprint -maxdepth 1 -name 'WoofWare.PawPrint.*.nupkg' -printf c | wc -c) -ne "1" ]]; then exit 1; fi
+      - name: Download NuGet artifact (Domain)
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: nuget-package-domain
+          path: packed-domain
+      - name: Check NuGet contents
+        # Verify that there is exactly one nupkg in the artifact that would be NuGet published
+        run: if [[ $(find packed-domain -maxdepth 1 -name 'WoofWare.PawPrint.Domain.*.nupkg' -printf c | wc -c) -ne "1" ]]; then exit 1; fi
+
+  github-release-dry-run:
+    strategy:
+      matrix:
+        artifact:
+        - nuget-package-pawprint
+        - nuget-package-domain
+    runs-on: ubuntu-latest
+    needs: [nuget-pack]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Download NuGet artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ matrix.artifact }}
+      - name: Compute package path
+        id: compute-path
+        run: |
+          find . -maxdepth 1 -type f -name 'WoofWare.PawPrint.*.nupkg' -exec sh -c 'echo "output=$(basename "$1")" >> $GITHUB_OUTPUT' shell {} \;
+      - name: Compute tag name
+        id: compute-tag
+        env:
+          NUPKG_PATH: ${{ steps.compute-path.outputs.output }}
+        run: echo "output=$(basename "$NUPKG_PATH" .nupkg)" >> $GITHUB_OUTPUT
+      - name: Tag and release
+        uses: G-Research/common-actions/github-release@19d7281a0f9f83e13c78f99a610dbc80fc59ba3b
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          target-commitish: ${{ github.sha }}
+          tag: ${{ steps.compute-tag.outputs.output }}
+          binary-contents: ${{ steps.compute-path.outputs.output }}
+          dry-run: true
+
   all-required-checks-complete:
     if: ${{ always() }}
-    needs: [check-dotnet-format, check-nix-format, build, build-nix, flake-check]
+    needs: [check-dotnet-format, check-nix-format, build, build-nix, flake-check, nuget-pack, expected-pack, github-release-dry-run]
     runs-on: ubuntu-latest
     steps:
       - uses: G-Research/common-actions/check-required-lite@2b7dc49cb14f3344fbe6019c14a31165e258c059
         with:
           needs-context: ${{ toJSON(needs) }}
+
+  attestation-domain:
+    runs-on: ubuntu-latest
+    needs: [all-required-checks-complete]
+    if: ${{ !github.event.repository.fork && github.ref == 'refs/heads/main' }}
+    permissions:
+      id-token: write
+      attestations: write
+      contents: read
+    steps:
+      - name: Download NuGet artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: nuget-package-domain
+          path: packed
+      - name: Attest Build Provenance
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-path: "packed/*.nupkg"
+
+  attestation-pawprint:
+    runs-on: ubuntu-latest
+    needs: [all-required-checks-complete]
+    if: ${{ !github.event.repository.fork && github.ref == 'refs/heads/main' }}
+    permissions:
+      id-token: write
+      attestations: write
+      contents: read
+    steps:
+      - name: Download NuGet artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: nuget-package-pawprint
+          path: packed
+      - name: Attest Build Provenance
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-path: "packed/*.nupkg"
+
+  nuget-publish-domain:
+    runs-on: ubuntu-latest
+    if: ${{ !github.event.repository.fork && github.ref == 'refs/heads/main' }}
+    needs: [all-required-checks-complete]
+    environment: main-deploy
+    permissions:
+      id-token: write
+      attestations: write
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install Nix
+        uses: cachix/install-nix-action@08dcb3a5e62fa31e2da3d490afc4176ef55ecd72 # v30
+        with:
+          extra_nix_config: |
+            access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
+      - name: Download NuGet artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: nuget-package-domain
+          path: packed
+      - name: Identify `dotnet`
+        id: dotnet-identify
+        run: nix develop --command bash -c 'echo "dotnet=$(which dotnet)" >> $GITHUB_OUTPUT'
+      - name: Obtain NuGet key
+        uses: NuGet/login@d22cc5f58ff5b88bf9bd452535b4335137e24544
+        id: login
+        with:
+            user: ${{ secrets.NUGET_USER }}
+      - name: Publish to NuGet
+        id: publish-success
+        uses: G-Research/common-actions/publish-nuget@2b7dc49cb14f3344fbe6019c14a31165e258c059
+        with:
+          package-name: WoofWare.PawPrint.Domain
+          nuget-key: ${{ steps.login.outputs.NUGET_API_KEY }}
+          nupkg-dir: packed/
+          dotnet: ${{ steps.dotnet-identify.outputs.dotnet }}
+
+  nuget-publish-pawprint:
+    runs-on: ubuntu-latest
+    if: ${{ !github.event.repository.fork && github.ref == 'refs/heads/main' }}
+    needs: [all-required-checks-complete]
+    environment: main-deploy
+    permissions:
+      id-token: write
+      attestations: write
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install Nix
+        uses: cachix/install-nix-action@08dcb3a5e62fa31e2da3d490afc4176ef55ecd72 # v30
+        with:
+          extra_nix_config: |
+            access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
+      - name: Download NuGet artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: nuget-package-pawprint
+          path: packed
+      - name: Identify `dotnet`
+        id: dotnet-identify
+        run: nix develop --command bash -c 'echo "dotnet=$(which dotnet)" >> $GITHUB_OUTPUT'
+      - name: Obtain NuGet key
+        uses: NuGet/login@d22cc5f58ff5b88bf9bd452535b4335137e24544
+        id: login
+        with:
+            user: ${{ secrets.NUGET_USER }}
+      - name: Publish to NuGet
+        id: publish-success
+        uses: G-Research/common-actions/publish-nuget@2b7dc49cb14f3344fbe6019c14a31165e258c059
+        with:
+          package-name: WoofWare.PawPrint
+          nuget-key: ${{ steps.login.outputs.NUGET_API_KEY }}
+          nupkg-dir: packed/
+          dotnet: ${{ steps.dotnet-identify.outputs.dotnet }}
+
+  github-release:
+    strategy:
+      matrix:
+        artifact:
+        - nuget-package-domain
+        - nuget-package-pawprint
+    runs-on: ubuntu-latest
+    if: ${{ !github.event.repository.fork && github.ref == 'refs/heads/main' }}
+    needs: [all-required-checks-complete]
+    environment: main-deploy
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Download NuGet artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ matrix.artifact }}
+      - name: Compute package path
+        id: compute-path
+        run: |
+          find . -maxdepth 1 -type f -name 'WoofWare.PawPrint.*.nupkg' -exec sh -c 'echo "output=$(basename "$1")" >> $GITHUB_OUTPUT' shell {} \;
+      - name: Compute tag name
+        id: compute-tag
+        env:
+          NUPKG_PATH: ${{ steps.compute-path.outputs.output }}
+        run: echo "output=$(basename "$NUPKG_PATH" .nupkg)" >> $GITHUB_OUTPUT
+      - name: Tag and release
+        uses: G-Research/common-actions/github-release@19d7281a0f9f83e13c78f99a610dbc80fc59ba3b
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          target-commitish: ${{ github.sha }}
+          tag: ${{ steps.compute-tag.outputs.output }}
+          binary-contents: ${{ steps.compute-path.outputs.output }}
