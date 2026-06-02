@@ -3,6 +3,16 @@
   <PropertyGroup>
     <WoofWareMyriadPluginsVersion>7.0.7</WoofWareMyriadPluginsVersion>
     <TargetFramework>net8.0</TargetFramework>
+    <IsPackable>true</IsPackable>
+    <PackageId>WoofWare.PawPrint</PackageId>
+    <Authors>Patrick Stevens</Authors>
+    <Copyright>Copyright (c) Patrick Stevens 2026</Copyright>
+    <Description>An experimental, fully-deterministic, fully-managed .NET IL interpreter written in F#. It reimplements P/Invoke in managed code and keeps all state in memory, enabling time-travel debugging and fuzzing over thread execution order. Emulates .NET 10.</Description>
+    <RepositoryType>git</RepositoryType>
+    <RepositoryUrl>https://github.com/Smaug123/WoofWare.PawPrint</RepositoryUrl>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>dotnet;runtime;il-interpreter;deterministic;net10;time-travel;fsharp;woofware</PackageTags>
   </PropertyGroup>
 
   <ItemGroup>
@@ -140,5 +150,9 @@
 
   <ItemGroup>
     <ProjectReference Include="..\WoofWare.PawPrint.Domain\WoofWare.PawPrint.Domain.fsproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 </Project>
