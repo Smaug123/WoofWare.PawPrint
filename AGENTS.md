@@ -7,7 +7,7 @@ WoofWare.PawPrint is an experimental .NET runtime implementation written in F#. 
 
 This is NOT a high-performance runtime - it's a very slow IL interpreter prioritizing determinism over speed.
 
-You should find the genuine .NET runtime's source checked out at ../dotnet-runtime if you need to check behaviour; shout if it's not. The checkout should be at the .NET 10 servicing tag closest to the runtime version we use (see the `.claude/commands/sync-dotnet-runtime.md` Claude command for how to make this happen). `../dotnet` (without the `-runtime` suffix) is the .NET SDK source and is not what you want.
+If you need to check upstream behaviour, the genuine .NET runtime's source is pinned in `flake.nix` (`dotnet-runtime-src`) and exposed inside the Nix devshell as `$DOTNET_RUNTIME_SRC`. The pin tracks the .NET 10 servicing version the devshell runs (kept honest by the `runtime-version-pin` flake check and the `TestEmulatedRuntime` drift test). To keep the closure small it is sparse-checked-out to the trees we read most — `src/coreclr`, `src/libraries/System.Private.CoreLib`, and `eng`; if you need another tree, add it to the `sparseCheckout` list in `flake.nix`. See the `.claude/commands/sync-dotnet-runtime.md` Claude command for how to bump the pin. (The old ad-hoc `../dotnet-runtime` sibling checkout is no longer used; `../dotnet`, without the `-runtime` suffix, is the .NET SDK source and is not what you want.)
 
 Standard `dotnet` toolchain is provided by the Nix devshell. Run `dotnet` commands as `nix develop -c dotnet ...` rather than invoking `dotnet` directly.
 
