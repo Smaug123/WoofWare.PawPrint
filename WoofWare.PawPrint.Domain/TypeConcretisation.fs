@@ -1005,6 +1005,119 @@ module Concretization =
         let typeDef = assy.TypeDefs.[typeDefinitionHandle]
         ensureBaseTypeAssembliesLoaded loadAssembly assemblies assy.Name typeDef.BaseType
 
+    /// Force-load every assembly needed for CliType.zeroOf to zero-initialise the
+    /// given concrete handle. zeroOf calls DumpedAssembly.isValueType on the top
+    /// type to decide between a zeroed value-type layout and a null reference; if
+    /// the type turns out to be a value type, zeroOf recursively zeros each
+    /// non-static field, which repeats the same isValueType decision on the field
+    /// type. Every one of those isValueType walks fails hard if a TypeRef along
+    /// its base chain points at an assembly which has not yet been loaded.
+    ///
+    /// This helper mirrors zeroOf's traversal exactly:
+    ///   * Byref/Pointer/Array/OneDimArrayZero/FunctionPointer wrapper handles
+    ///     terminate in zeroOf without inspecting their component types, so we
+    ///     don't recurse into them here either. Recursing would follow paths
+    ///     zeroOf never takes, and — for recursively constructed but legal types
+    ///     such as `struct S<T> { S<S<T>>[] Items; }` — that expansion would
+    ///     stack-overflow because every synthesised instantiation is a distinct
+    ///     handle the visited-set can't collapse.
+    ///   * A nominal reference type also terminates in zeroOf (as `ObjectRef
+    ///     None`), so once we've loaded its own base chain we stop; we do NOT
+    ///     recurse into its generic arguments or fields.
+    ///   * A nominal value type is the only case where zeroOf recurses into
+    ///     fields. Each non-static field's TypeDefn is concretized under the
+    ///     outer type's generic context (that's how generic-parameter
+    ///     substitution happens) and then walked. Generic arguments only need
+    ///     priming to the extent they surface as field types, so we don't visit
+    ///     them separately.
+    ///
+    /// concretizeMethod calls this on every ConcreteTypeHandle a subsequent
+    /// zeroOf could encounter for a given method — locals, parameter and return
+    /// types, plus the method's own and declaring type's generic arguments,
+    /// which some intrinsics feed directly into cliTypeZeroOfHandle. A single
+    /// `visited` set is shared across the sweep so no handle is walked twice.
+    let rec ensureBaseAssembliesLoadedForConcreteHandle
+        (loadAssembly : IAssemblyLoad)
+        (baseTypes : BaseClassTypes<DumpedAssembly>)
+        (visited : System.Collections.Generic.HashSet<ConcreteTypeHandle>)
+        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (concreteTypes : AllConcreteTypes)
+        (handle : ConcreteTypeHandle)
+        : ImmutableDictionary<string, DumpedAssembly> * AllConcreteTypes
+        =
+        if not (visited.Add handle) then
+            assemblies, concreteTypes
+        else
+            match handle with
+            | ConcreteTypeHandle.Byref _
+            | ConcreteTypeHandle.Pointer _
+            | ConcreteTypeHandle.OneDimArrayZero _
+            | ConcreteTypeHandle.Array _
+            | ConcreteTypeHandle.FunctionPointer _ ->
+                // Terminal in zeroOf — see the doc comment above.
+                assemblies, concreteTypes
+            | ConcreteTypeHandle.Concrete _ ->
+                match AllConcreteTypes.lookup handle concreteTypes with
+                | None -> assemblies, concreteTypes
+                | Some concreteType ->
+                    let assemblies =
+                        ensureTypeDefinitionBaseAssembliesLoaded
+                            loadAssembly
+                            assemblies
+                            concreteType.Assembly
+                            concreteType.Definition.Get
+
+                    let outerAssembly = assemblies.[concreteType.Assembly.FullName]
+                    let outerTypeDef = outerAssembly.TypeDefs.[concreteType.Definition.Get]
+
+                    // Reference types terminate in zeroOf as null; fields (and,
+                    // by extension, generic arguments only reachable via fields)
+                    // are never inspected. Do NOT descend — descent into a
+                    // reference type's generics or fields can loop forever on
+                    // legal shapes such as `class Box<T> {}` used inside
+                    // `struct S<T> { Box<S<S<T>>> F; }`.
+                    if not (DumpedAssembly.isValueType baseTypes assemblies outerTypeDef) then
+                        assemblies, concreteTypes
+                    else
+                        // Value type: zeroOf recurses into every non-static
+                        // instance field, so each field type's own base-chain
+                        // assemblies must also be loaded. Concretize each
+                        // field's TypeDefn under the outer type's generic
+                        // context (this covers any generic-parameter uses
+                        // inside the field type), then recurse.
+                        outerTypeDef.Fields
+                        |> List.filter (fun field -> not (field.Attributes.HasFlag FieldAttributes.Static))
+                        |> List.fold
+                            (fun (assemblies, concreteTypes) field ->
+                                let ctx : TypeConcretization.ConcretizationContext<DumpedAssembly> =
+                                    {
+                                        TypeConcretization.ConcretizationContext.ConcreteTypes = concreteTypes
+                                        TypeConcretization.ConcretizationContext.LoadedAssemblies = assemblies
+                                        TypeConcretization.ConcretizationContext.BaseTypes = baseTypes
+                                    }
+
+                                // Fields never carry method-level generics; the
+                                // outer type's already-concretized generic
+                                // arguments cover the field's substitution.
+                                let fieldHandle, ctx =
+                                    TypeConcretization.concretizeType
+                                        ctx
+                                        loadAssembly
+                                        concreteType.Assembly
+                                        concreteType.Generics
+                                        ImmutableArray.Empty
+                                        field.Signature
+
+                                ensureBaseAssembliesLoadedForConcreteHandle
+                                    loadAssembly
+                                    baseTypes
+                                    visited
+                                    ctx.LoadedAssemblies
+                                    ctx.ConcreteTypes
+                                    fieldHandle
+                            )
+                            (assemblies, concreteTypes)
+
     /// Concretize a method's signature and body
     let concretizeMethod
         (ctx : AllConcreteTypes)
@@ -1142,7 +1255,55 @@ module Concretization =
                 IsStatic = method.IsStatic
             }
 
-        concretizedMethod, concCtx2.ConcreteTypes, concCtx2.LoadedAssemblies
+        // Every ConcreteTypeHandle this method emits is subsequently fed to
+        // CliType.zeroOf: locals when the frame is set up (MethodState.Empty),
+        // each parameter handle when the caller coerces arguments before invoke
+        // (IlMachineStateExecution.callMethod), and the return handle when a
+        // non-void method returns (IlMachineThreadState.ret). Some intrinsics
+        // — Unsafe.SizeOf<T>, Span<T>.Clear, and their siblings — also feed
+        // handles from MethodInfo.Generics and DeclaringType.Generics directly
+        // into zeroOf without those handles ever appearing in the signature.
+        // zeroOf's base-type walk crashes if a TypeRef along the chain points
+        // at an unloaded assembly, so we make sure every such assembly is
+        // loaded now — while we still hold the IAssemblyLoad capability —
+        // rather than deferring to the effectful edge that only sees a strict
+        // assembly-dictionary.
+        let visited = System.Collections.Generic.HashSet<ConcreteTypeHandle> ()
+        let assemblies = concCtx2.LoadedAssemblies
+        let concreteTypes = concCtx2.ConcreteTypes
+
+        let primeHandle (assemblies, concreteTypes) h =
+            ensureBaseAssembliesLoadedForConcreteHandle loadAssembly baseTypes visited assemblies concreteTypes h
+
+        let assemblies, concreteTypes =
+            signature.ParameterTypes |> List.fold primeHandle (assemblies, concreteTypes)
+
+        let assemblies, concreteTypes =
+            match signature.ReturnType with
+            | MethodReturnType.Void -> assemblies, concreteTypes
+            | MethodReturnType.Returns h -> primeHandle (assemblies, concreteTypes) h
+
+        let assemblies, concreteTypes =
+            match body with
+            | MethodBody.Il instr ->
+                match instr.LocalVars with
+                | None -> assemblies, concreteTypes
+                | Some vars -> vars |> Seq.fold primeHandle (assemblies, concreteTypes)
+            | MethodBody.InternalCall
+            | MethodBody.PInvoke
+            | MethodBody.RuntimeProvided _
+            | MethodBody.Abstract -> assemblies, concreteTypes
+
+        // Method-level generic arguments (Unsafe.SizeOf<T> etc read T here).
+        let assemblies, concreteTypes =
+            genericHandles |> Seq.fold primeHandle (assemblies, concreteTypes)
+
+        // Declaring-type generic arguments (Span<T>.Clear etc read T here).
+        let assemblies, concreteTypes =
+            concretizedDeclaringType.Generics
+            |> Seq.fold primeHandle (assemblies, concreteTypes)
+
+        concretizedMethod, concreteTypes, assemblies
 
     let rec concreteHandleToTypeDefn
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
