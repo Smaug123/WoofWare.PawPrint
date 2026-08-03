@@ -555,9 +555,19 @@ module EmulatedKernel =
     /// "-4294901761"). Reproducing that would mean modelling the platform's
     /// `unsigned long` width, and no real configuration depends on it.
     let private tryParseConfigBase10 (s : string) : int option =
+        // strtoul skips leading whitespace as determined by `isspace` in the C
+        // locale, which is exactly this six-character set. Deliberately NOT
+        // `Char.IsWhiteSpace`, which also accepts U+00A0 and friends: on Unix
+        // the value reaches `strtoul` as UTF-8 bytes, so a non-breaking space
+        // is the two bytes 0xC2 0xA0 and stops the parse dead rather than being
+        // skipped. Using the .NET predicate would make PawPrint accept
+        // configuration the real runtime rejects.
+        let isCLocaleSpace (c : char) : bool =
+            c = ' ' || c = '\t' || c = '\n' || c = '\011' || c = '\012' || c = '\r'
+
         let mutable i = 0
 
-        while i < s.Length && System.Char.IsWhiteSpace s.[i] do
+        while i < s.Length && isCLocaleSpace s.[i] do
             i <- i + 1
 
         if i < s.Length && s.[i] = '+' then
@@ -597,10 +607,21 @@ module EmulatedKernel =
     /// only when the former is absent (coreclr/utilcode/clrconfig.cpp), and
     /// both lookups are case-sensitive on the Unix hosts this project targets.
     let effectiveProcessorCount (kernel : EmulatedKernel) : int =
+        // An empty value counts as absent, and so falls through to the legacy
+        // prefix: CLRConfig's fallback is gated on
+        // `WszGetEnvironmentVariable` returning length zero, which is what a
+        // variable set to the empty string reports. `DOTNET_PROCESSOR_COUNT=`
+        // with `COMPlus_PROCESSOR_COUNT=9` set therefore yields 9 upstream, not
+        // the detected count.
+        let lookup (name : string) : string option =
+            match Map.tryFind name kernel.Environment with
+            | Some "" -> None
+            | other -> other
+
         let configured =
-            match Map.tryFind "DOTNET_PROCESSOR_COUNT" kernel.Environment with
+            match lookup "DOTNET_PROCESSOR_COUNT" with
             | Some v -> Some v
-            | None -> Map.tryFind "COMPlus_PROCESSOR_COUNT" kernel.Environment
+            | None -> lookup "COMPlus_PROCESSOR_COUNT"
 
         match configured |> Option.bind tryParseConfigBase10 with
         | Some count when count > 0 && count <= maxConfiguredProcessorCount -> count

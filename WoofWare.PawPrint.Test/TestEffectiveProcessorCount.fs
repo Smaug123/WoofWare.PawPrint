@@ -101,6 +101,22 @@ module TestEffectiveProcessorCount =
         |> EmulatedKernel.effectiveProcessorCount
         |> shouldEqual 9
 
+    [<Test>]
+    let ``an empty DOTNET_ value counts as absent and falls through to COMPlus_`` () =
+        // CLRConfig gates its fallback on `WszGetEnvironmentVariable` returning
+        // length zero, and a variable set to the empty string reports exactly
+        // that -- so upstream this is 9, not the detected count. Distinct from
+        // the "present but unparseable" case above, which does NOT fall through.
+        kernelWith 3 [ "DOTNET_PROCESSOR_COUNT", "" ; "COMPlus_PROCESSOR_COUNT", "9" ]
+        |> EmulatedKernel.effectiveProcessorCount
+        |> shouldEqual 9
+
+    [<Test>]
+    let ``an empty value in both names falls back to detection`` () =
+        kernelWith 3 [ "DOTNET_PROCESSOR_COUNT", "" ; "COMPlus_PROCESSOR_COUNT", "" ]
+        |> EmulatedKernel.effectiveProcessorCount
+        |> shouldEqual 3
+
     /// Table of `strtoul`-shaped parse cases. CoreCLR reads the knob with
     /// `u16_strtoul(val, &endPtr, 10)` and accepts the result when at least one
     /// digit was consumed, so trailing garbage is tolerated and a leading
@@ -116,8 +132,17 @@ module TestEffectiveProcessorCount =
             // Trailing garbage is ignored by strtoul once digits are consumed.
             [| box "4abc" ; box 4 |]
             [| box "6 " ; box 6 |]
-            // Leading whitespace is skipped.
+            // Leading whitespace is skipped -- but only strtoul's C-locale set.
             [| box "  12" ; box 12 |]
+            [| box "\t12" ; box 12 |]
+            [| box "\n12" ; box 12 |]
+            [| box "\011 12" ; box 12 |]
+            [| box "\012\r12" ; box 12 |]
+            // U+00A0 is whitespace to .NET but not to C `isspace`; on Unix it
+            // reaches strtoul as the bytes 0xC2 0xA0 and halts the parse before
+            // any digit, so the real runtime falls back to detection.
+            [| box "\u00A04" ; box 3 |]
+            [| box "\u20284" ; box 3 |]
             // A leading '+' is accepted by strtoul.
             [| box "+5" ; box 5 |]
             // No digits consumed => failure => fall back to detection (3).
