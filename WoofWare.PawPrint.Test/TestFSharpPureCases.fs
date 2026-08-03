@@ -97,7 +97,7 @@ module TestFSharpPureCases =
         publishOnce.Force ()
         File.ReadAllBytes dllPath
 
-    let testCases : string list = [ "Placeholder" ; "CeqBranch" ]
+    let testCases : string list = [ "Placeholder" ; "CeqBranch" ; "TailCall" ]
 
     // PawPrint cannot yet allocate string argv (Program.allocateArgs is unimplemented),
     // so all F# test cases that require argv dispatch are unimplemented for now.
@@ -185,6 +185,43 @@ module TestFSharpPureCases =
             Assert.Inconclusive $"Test case '%s{testCaseName}' is not yet implemented in PawPrint"
 
         runTest testCaseName
+
+    /// The `TailCall` case only covers the `tail.` prefix if FSC actually emits it, which
+    /// depends on the optimiser (Release + `--tailcalls+`) and on the exact shapes in
+    /// TailCall.fs. Without this guard, a compiler change that stopped emitting `tail.`
+    /// would leave `F# pure tests(TailCall)` silently passing while covering nothing.
+    /// If this fails, re-inspect the IL (`dotnet run --project WoofWare.PawPrint.IlDump --
+    /// <published dll> TailCall`) and reshape TailCall.fs until the prefix comes back.
+    [<Test>]
+    let ``TailCall case really does contain tail. prefixes`` () : unit =
+        let image = loadImage ()
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+        use peImage = new MemoryStream (image)
+
+        let assy = Assembly.read loggerFactory (Some dllPath) peImage
+
+        let tailPrefixed =
+            assy.TypeDefs.Values
+            |> Seq.collect (fun typeInfo -> typeInfo.Methods)
+            |> Seq.filter (fun methodInfo ->
+                methodInfo.DeclaringType.Name = "TailCall"
+                && match MethodInfo.tryIlBody methodInfo with
+                   | None -> false
+                   | Some instructions ->
+                       instructions.Instructions
+                       |> List.exists (fun (op, _offset) ->
+                           match op with
+                           | IlOp.Nullary NullaryIlOp.Tail -> true
+                           | _ -> false
+                       )
+            )
+            |> Seq.map (fun methodInfo -> methodInfo.Name)
+            |> Set.ofSeq
+
+        // `isEven`/`isOdd` are `tail. call`; `applyTail` is `tail. callvirt`. All three are
+        // reached from `TailCall.main`, so the end-to-end case really executes the prefix.
+        tailPrefixed |> shouldEqual (Set.ofList [ "isEven" ; "isOdd" ; "applyTail" ])
 
     [<TestCaseSource(nameof unimplemented)>]
     let ``Unimplemented F# tests have correct real-runtime behaviour`` (testCaseName : string) =

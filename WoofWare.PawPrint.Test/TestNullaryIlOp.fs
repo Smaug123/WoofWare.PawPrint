@@ -431,3 +431,27 @@ module TestNullaryIlOp =
             executeNegCase case
 
         Check.One (config, Prop.forAll (Arb.fromGen genNegCase) executeNegCase)
+
+    /// PawPrint deliberately ignores `tail.` (see NullaryIlOp.fs), so the only thing it
+    /// may do is step over its own two bytes: the arguments the following call will pop
+    /// must be left untouched, and no prefix state may be left behind on the frame for a
+    /// later instruction to trip over.
+    [<Test>]
+    let ``Tail is an executed no-op that steps over its two-byte encoding`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let input = EvalStackValue.Int32 42
+        let state, thread = stateWithNullary loggerFactory NullaryIlOp.Tail input
+
+        match NullaryIlOp.execute loggerFactory baseClassTypes state thread NullaryIlOp.Tail with
+        | ExecutionResult.Stepped (state, whatWeDid, _) ->
+            whatWeDid |> shouldEqual WhatWeDid.Executed
+
+            let methodState = state.ThreadState.[thread].MethodState
+            methodState.EvaluationStack.Values |> shouldEqual [ input ]
+            methodState.PendingPrefix |> shouldEqual PrefixState.empty
+
+            methodState.IlOpIndex
+            |> shouldEqual (IlOp.NumberOfBytes (IlOp.Nullary NullaryIlOp.Tail))
+        | other -> failwith $"Expected Tail to step, got %O{other}"

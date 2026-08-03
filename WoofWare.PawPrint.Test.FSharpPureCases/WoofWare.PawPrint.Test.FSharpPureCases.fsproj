@@ -9,6 +9,7 @@
   <ItemGroup>
     <Compile Include="Placeholder.fs" />
     <Compile Include="CeqBranch.fs" />
+    <Compile Include="TailCall.fs" />
     <Compile Include="Main.fs" />
   </ItemGroup>
 
