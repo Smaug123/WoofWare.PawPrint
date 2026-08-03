@@ -12,23 +12,17 @@ open WoofWare.PawPrint
 
 /// Regression coverage for the invariant that concretizeMethod leaves every
 /// ConcreteTypeHandle it emits (locals, parameters, return type) in a state
-/// where CliType.zeroOf can safely walk its base-type chain — i.e. every
+/// where CliType.zeroOf can safely walk its base-type chain - i.e. every
 /// assembly reachable from a base-type TypeRef is already loaded.
-///
-/// The failure mode this guards is DumpedAssembly.getTypeRef crashing with
-/// "seems pretty unlikely that we could have constructed this object without
-/// loading its base type" when zeroOf → isValueType hits a TypeRef pointing at
-/// an assembly (typically a facade like netstandard) that has not been force-
-/// loaded yet.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestZeroOfBaseAssemblies =
 
     /// FSharp.Core built against netstandard2.1 references `netstandard` for
     /// BCL primitives (including System.ValueType, the base of every F#
-    /// [<Struct>] type). Concretizing a struct from this DLL does not need
+    /// Struct type). Concretizing a struct from this DLL does not need
     /// netstandard, but zero-initialising an instance of that struct does.
-    let private fsharpCoreNetstandard21Path : string =
+    let private fsharpCoreNetstandard21Path' () : string =
         let nugetRoot =
             match Environment.GetEnvironmentVariable "NUGET_PACKAGES" with
             | null
@@ -90,7 +84,7 @@ module TestZeroOfBaseAssemblies =
                 =
                 let referencedInAssembly =
                     match loadedAssemblies.TryGetValue referencedIn.FullName with
-                    | false, _ -> failwithf "Missing loaded assembly %s" referencedIn.FullName
+                    | false, _ -> failwithf $"Missing loaded assembly %s{referencedIn.FullName}"
                     | true, assy -> assy
 
                 let assemblyRef = referencedInAssembly.AssemblyReferences.[handle]
@@ -105,7 +99,7 @@ module TestZeroOfBaseAssemblies =
                             if File.Exists candidate then Some candidate else None
                         )
                         |> Option.defaultWith (fun () ->
-                            failwithf "Test setup could not locate assembly %s on disk" assemblyRef.Name.FullName
+                            failwithf $"Test setup could not locate assembly %s{assemblyRef.Name.FullName} on disk"
                         )
 
                     let dumped = readAssembly path
@@ -118,13 +112,16 @@ module TestZeroOfBaseAssemblies =
             failwith "Expected FSharpValueOption`1 in netstandard2.1 FSharp.Core; nuget layout may have changed"
         )
 
+    let fsharpCoreNetstandard21Path : string Lazy =
+        System.Lazy<_>.Create fsharpCoreNetstandard21Path'
+
     [<Test>]
     let ``ensureBaseAssembliesLoadedForConcreteHandle loads facade assembly reachable via base-type TypeRef``
         ()
         : unit
         =
         let corelib = readAssembly corelibPath
-        let fsharpCore = readAssembly fsharpCoreNetstandard21Path
+        let fsharpCore = readAssembly fsharpCoreNetstandard21Path.Value
 
         let baseTypes = Corelib.getBaseTypes corelib
 
@@ -222,7 +219,7 @@ module TestZeroOfBaseAssemblies =
     [<Test>]
     let ``helper is idempotent and cycle-safe against repeated calls on the same handle`` () : unit =
         let corelib = readAssembly corelibPath
-        let fsharpCore = readAssembly fsharpCoreNetstandard21Path
+        let fsharpCore = readAssembly fsharpCoreNetstandard21Path.Value
         let baseTypes = Corelib.getBaseTypes corelib
 
         let loaded : ImmutableDictionary<string, DumpedAssembly> =
@@ -292,7 +289,7 @@ module TestZeroOfBaseAssemblies =
         // base chain. Without that recursion, zeroOf would still crash when it
         // descended into the field.
         let corelib = readAssembly corelibPath
-        let fsharpCore = readAssembly fsharpCoreNetstandard21Path
+        let fsharpCore = readAssembly fsharpCoreNetstandard21Path.Value
         let baseTypes = Corelib.getBaseTypes corelib
         assertNetstandardAvailable ()
 
@@ -300,7 +297,7 @@ module TestZeroOfBaseAssemblies =
         // that references the netstandard2.1 FSharp.Core we already loaded.
         let outerAssemblyBytes : byte[] =
             let fsharpCoreRef =
-                MetadataReference.CreateFromFile fsharpCoreNetstandard21Path :> MetadataReference
+                MetadataReference.CreateFromFile fsharpCoreNetstandard21Path.Value :> MetadataReference
 
             let source =
                 """
@@ -319,7 +316,7 @@ public struct Outer
         let outerAssembly : DumpedAssembly =
             let _, loggerFactory = LoggerFactory.makeTest ()
             use stream = new MemoryStream (outerAssemblyBytes)
-            global.WoofWare.PawPrint.AssemblyApi.read loggerFactory None stream
+            AssemblyApi.read loggerFactory None stream
 
         let loadAssembly = OnDemandAssemblyLoad [ runtimeDir ]
 
@@ -395,7 +392,7 @@ public struct Outer
 
         let _, loggerFactory = LoggerFactory.makeTest ()
         use stream = new MemoryStream (bytes)
-        global.WoofWare.PawPrint.AssemblyApi.read loggerFactory None stream
+        AssemblyApi.read loggerFactory None stream
 
     [<Test>]
     let ``priming terminates for recursively-nested struct with array-of-recursive field`` () : unit =
@@ -462,13 +459,13 @@ public struct S<T>
             concretizeCtx.LoadedAssemblies
             concretizeCtx.ConcreteTypes
             handle
-        |> ignore
+        |> ignore<_ * _>
 
     [<Test>]
     let ``priming does not descend into generic arguments of reference types`` () : unit =
         // A reference type is terminal in CliType.zeroOf — it becomes
         // `ObjectRef None` without inspecting either its fields or its
-        // generic arguments. The helper must respect that or it will loop
+        // generic arguments. The helper must respect that, or it will loop
         // forever on a legal shape like `struct S<T> { Box<S<S<T>>> F; }`,
         // where the recursion goes S<int> → Box<S<S<int>>> → S<S<int>> →
         // Box<S<S<S<int>>>> → ...
@@ -527,18 +524,18 @@ public struct S<T>
             concretizeCtx.LoadedAssemblies
             concretizeCtx.ConcreteTypes
             handle
-        |> ignore
+        |> ignore<_ * _>
 
     [<Test>]
     let ``concretizeMethod primes method-level generic arguments used only by intrinsics`` () : unit =
         // Regression for Unsafe.SizeOf<T> / Span<T>.Clear / etc: their
         // intrinsic dispatch reads T from methodToCall.Generics (or the
-        // declaring type's generics), NOT from the method's own signature.
+        // declaring type's generics), not from the method's own signature.
         // If concretizeMethod doesn't prime those generic-argument handles,
         // subsequent cliTypeZeroOfHandle on T can still crash with the
         // unloaded-base-assembly exception.
         let corelib = readAssembly corelibPath
-        let fsharpCore = readAssembly fsharpCoreNetstandard21Path
+        let fsharpCore = readAssembly fsharpCoreNetstandard21Path.Value
         let baseTypes = Corelib.getBaseTypes corelib
         assertNetstandardAvailable ()
 
@@ -572,7 +569,7 @@ public static class C
         let loadAssembly = OnDemandAssemblyLoad [ runtimeDir ]
 
         // Concretize FSharpValueOption<int> into the concreteTypes dictionary
-        // (still with netstandard NOT loaded), so we can pass its handle as
+        // (still with netstandard not yet loaded), so we can pass its handle as
         // the method's generic argument. Concretization does not walk base
         // types, so netstandard remains absent at this point.
         let valueOptionTypeDef = getValueOptionTypeDef fsharpCore
