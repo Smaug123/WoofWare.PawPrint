@@ -2176,7 +2176,34 @@ module NullaryIlOp =
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.stepped
-        | Tail -> failwith "TODO: Tail unimplemented"
+        | Tail ->
+            // ECMA-335 III.2.4: `tail.` asks for the caller's frame to be released before
+            // control transfers to the following call/callvirt/calli. Declining that request
+            // is a behaviour the CLI itself exhibits — the spec has the frame silently
+            // retained when the callee is more trusted, and CoreCLR's importer additionally
+            // drops explicit tail calls whenever the caller is synchronized, is a reverse
+            // P/Invoke, is varargs, the callee is native, or the return types aren't tailcall
+            // compatible (see jit/importercalls.cpp `szCanTailCallFailReason`), emitting an
+            // ordinary call instead.
+            //
+            // So PawPrint executes the prefix as a no-op: `tail.` is required to be followed
+            // by a call whose result is immediately `ret`urned, so keeping the frame alive
+            // for that one extra call changes nothing observable except (a) frame lifetime,
+            // which matters only to code that illegally hands out byrefs into the dying
+            // frame, and (b) the depth of the frame stack. Two divergences we accept for now:
+            // a guest stack trace captured inside the callee names the caller that a real
+            // tail call would have erased, and a program that relies on `tail.` for unbounded
+            // recursion (FSC emits it for mutual recursion) grows PawPrint's heap-allocated
+            // frame stack without bound rather than running in constant space. PawPrint
+            // enforces no frame-count limit, so the guest sees no StackOverflowException.
+            //
+            // Nothing is recorded in `PendingPrefix`: a flag set here and read by nobody
+            // would be a lie in the machine state, and the following call has no clearing
+            // logic for it.
+            state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+            |> ExecutionResult.stepped
         | Conv_ovf_i_un -> failwith "TODO: Conv_ovf_i_un unimplemented"
         | Conv_ovf_u_un -> failwith "TODO: Conv_ovf_u_un unimplemented"
         | Conv_ovf_i1_un -> failwith "TODO: Conv_ovf_i1_un unimplemented"

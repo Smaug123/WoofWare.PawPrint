@@ -16,6 +16,9 @@ type PrefixState =
         /// `volatile.` (III.2.5) — applies to the next ldind/stind/ldfld/stfld/ldobj/stobj/initblk/cpblk.
         Volatile : bool
         /// `tail.` (III.2.4) — applies to the next call/callvirt/calli.
+        /// PawPrint never sets this: `tail.` executes as a no-op (see `NullaryIlOp.execute`),
+        /// so there is nothing for the following call to consume. It exists for a future
+        /// implementation that actually releases the caller's frame.
         Tail : bool
         /// `unaligned. alignment` (III.2.3) — applies to the next ldind/stind/ldfld/stfld/ldobj/stobj/initblk/cpblk.
         Unaligned : uint8 option
