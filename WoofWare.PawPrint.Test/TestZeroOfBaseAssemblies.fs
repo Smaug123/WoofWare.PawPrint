@@ -6,6 +6,7 @@ open System.IO
 open System.Reflection
 open System.Reflection.Metadata
 open FsUnitTyped
+open Microsoft.CodeAnalysis
 open NUnit.Framework
 open WoofWare.PawPrint
 
@@ -200,12 +201,13 @@ module TestZeroOfBaseAssemblies =
         // returned assemblies dict.
         let visited = System.Collections.Generic.HashSet<ConcreteTypeHandle> ()
 
-        let loadedAfterHelper =
+        let loadedAfterHelper, _ =
             Concretization.ensureBaseAssembliesLoadedForConcreteHandle
                 (loadAssembly :> IAssemblyLoad)
-                concretizeCtx.ConcreteTypes
+                baseTypes
                 visited
                 concretizeCtx.LoadedAssemblies
+                concretizeCtx.ConcreteTypes
                 handle
 
         // netstandard is now loaded.
@@ -261,20 +263,126 @@ module TestZeroOfBaseAssemblies =
         // condition. Sharing visited across a single call is required only to
         // bound work within one call; between calls, the dict itself is the
         // idempotence guarantee.
-        let firstRun =
+        let firstRun, firstCtx =
             Concretization.ensureBaseAssembliesLoadedForConcreteHandle
                 (loadAssembly :> IAssemblyLoad)
-                concretizeCtx.ConcreteTypes
+                baseTypes
                 (System.Collections.Generic.HashSet ())
                 concretizeCtx.LoadedAssemblies
+                concretizeCtx.ConcreteTypes
                 handle
 
-        let secondRun =
+        let secondRun, _ =
             Concretization.ensureBaseAssembliesLoadedForConcreteHandle
                 (loadAssembly :> IAssemblyLoad)
-                concretizeCtx.ConcreteTypes
+                baseTypes
                 (System.Collections.Generic.HashSet ())
                 firstRun
+                firstCtx
                 handle
 
         secondRun.Count |> shouldEqual firstRun.Count
+
+    [<Test>]
+    let ``helper recurses into instance fields of value types`` () : unit =
+        // Nested-struct regression: the outer struct's own base chain resolves
+        // against System.Runtime (already loaded via corelib references), so
+        // loading the outer's base chain does NOT drag in netstandard. netstandard
+        // becomes necessary only via the field walk into FSharpValueOption`1's
+        // base chain. Without that recursion, zeroOf would still crash when it
+        // descended into the field.
+        let corelib = readAssembly corelibPath
+        let fsharpCore = readAssembly fsharpCoreNetstandard21Path
+        let baseTypes = Corelib.getBaseTypes corelib
+        assertNetstandardAvailable ()
+
+        // Build a C# library `struct Outer { FSharpValueOption<int> Inner; }`
+        // that references the netstandard2.1 FSharp.Core we already loaded.
+        let outerAssemblyBytes : byte[] =
+            let fsharpCoreRef =
+                MetadataReference.CreateFromFile fsharpCoreNetstandard21Path :> MetadataReference
+
+            let source =
+                """
+public struct Outer
+{
+    public Microsoft.FSharp.Core.FSharpValueOption<int> Inner;
+}
+"""
+
+            Roslyn.compileAssembly
+                "NestedStructRegression"
+                OutputKind.DynamicallyLinkedLibrary
+                [ fsharpCoreRef ]
+                [ source ]
+
+        let outerAssembly : DumpedAssembly =
+            let _, loggerFactory = LoggerFactory.makeTest ()
+            use stream = new MemoryStream (outerAssemblyBytes)
+            global.WoofWare.PawPrint.AssemblyApi.read loggerFactory None stream
+
+        let loadAssembly = OnDemandAssemblyLoad [ runtimeDir ]
+
+        // Prime with corelib + FSharp.Core + the wrapper. Deliberately leave
+        // netstandard out; the wrapper's own base chain doesn't need it.
+        let loaded : ImmutableDictionary<string, DumpedAssembly> =
+            [ corelib ; fsharpCore ; outerAssembly ]
+            |> Seq.map (fun a -> System.Collections.Generic.KeyValuePair (a.Name.FullName, a))
+            |> ImmutableDictionary.CreateRange
+
+        let outerTypeDef =
+            outerAssembly.TryGetTopLevelTypeDef "" "Outer"
+            |> Option.defaultWith (fun () -> failwith "Failed to find compiled Outer struct in the test assembly")
+
+        let concretizeCtx : TypeConcretization.ConcretizationContext<DumpedAssembly> =
+            {
+                ConcreteTypes = Corelib.concretizeAll loaded baseTypes AllConcreteTypes.Empty
+                LoadedAssemblies = loaded
+                BaseTypes = baseTypes
+            }
+
+        let outerHandle, concretizeCtx =
+            TypeConcretization.concretizeType
+                concretizeCtx
+                (loadAssembly :> IAssemblyLoad)
+                outerAssembly.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                (TypeDefn.FromDefinition (outerTypeDef.Identity, SignatureTypeKind.ValueType))
+
+        // Sanity: Outer's own base-chain load does not need netstandard.
+        // We measure the state before running the helper, by explicitly
+        // loading only the outer's base chain and confirming netstandard is
+        // still absent.
+        let assembliesAfterOuterBaseChain =
+            Concretization.ensureTypeDefinitionBaseAssembliesLoaded
+                (loadAssembly :> IAssemblyLoad)
+                concretizeCtx.LoadedAssemblies
+                outerAssembly.Name
+                outerTypeDef.TypeDefHandle
+
+        assembliesAfterOuterBaseChain.Keys
+        |> Seq.exists (fun (n : string) -> n.StartsWith ("netstandard,", StringComparison.OrdinalIgnoreCase))
+        |> shouldEqual false
+
+        // Now run the full helper. It must descend into Outer's instance
+        // field (FSharpValueOption<int>) and, through that field's base chain,
+        // finally load netstandard.
+        let loadedAfterHelper, _ =
+            Concretization.ensureBaseAssembliesLoadedForConcreteHandle
+                (loadAssembly :> IAssemblyLoad)
+                baseTypes
+                (System.Collections.Generic.HashSet ())
+                assembliesAfterOuterBaseChain
+                concretizeCtx.ConcreteTypes
+                outerHandle
+
+        loadedAfterHelper.Keys
+        |> Seq.exists (fun (n : string) -> n.StartsWith ("netstandard,", StringComparison.OrdinalIgnoreCase))
+        |> shouldEqual true
+
+        // And isValueType on the nested field type succeeds too.
+        let valueOptionTypeDef = getValueOptionTypeDef fsharpCore
+
+        DumpedAssembly.isValueType baseTypes loadedAfterHelper valueOptionTypeDef
+        |> shouldEqual true

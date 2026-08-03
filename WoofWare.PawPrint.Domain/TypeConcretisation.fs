@@ -1005,27 +1005,35 @@ module Concretization =
         let typeDef = assy.TypeDefs.[typeDefinitionHandle]
         ensureBaseTypeAssembliesLoaded loadAssembly assemblies assy.Name typeDef.BaseType
 
-    /// Force-load every assembly needed to walk the base-type chain of the given
-    /// concrete handle (and any handles it structurally wraps, and its generic
-    /// arguments). CliType.zeroOf invokes DumpedAssembly.isValueType on a concretized
-    /// type to decide whether it needs a zeroed value-type layout or a null reference;
-    /// that walk fails hard if a TypeRef along the base chain points at an assembly
-    /// which has not yet been loaded. concretizeMethod calls this on every handle it
-    /// emits (locals, parameter types, and the return type) so that subsequent
-    /// zero-initialization is guaranteed to have every assembly it needs.
+    /// Force-load every assembly needed for CliType.zeroOf to zero-initialise the
+    /// given concrete handle. zeroOf calls DumpedAssembly.isValueType on the top
+    /// type to decide between a zeroed value-type layout and a null reference; if
+    /// the type turns out to be a value type, zeroOf recursively zeros each
+    /// non-static field, which repeats the same isValueType decision on the field
+    /// type. Every one of those isValueType walks fails hard if a TypeRef along
+    /// its base chain points at an assembly which has not yet been loaded.
     ///
-    /// The `visited` set is shared across sibling calls so the same handle is not
-    /// walked twice within one concretizeMethod invocation.
+    /// This helper mirrors zeroOf's traversal: it loads the base chain of the top
+    /// type, its structural sub-handles (byref/pointer/array element, function-
+    /// pointer parameters and return, generic arguments), and — if the type is a
+    /// value type — recursively primes every non-static field. Field types are
+    /// concretized under the outer type's generic context in the process, so the
+    /// caller receives an updated `AllConcreteTypes` as well.
+    ///
+    /// concretizeMethod calls this on every ConcreteTypeHandle it emits (locals,
+    /// parameter types, return type), sharing a single `visited` set so the same
+    /// handle is not walked twice within one concretizeMethod invocation.
     let rec ensureBaseAssembliesLoadedForConcreteHandle
         (loadAssembly : IAssemblyLoad)
-        (concreteTypes : AllConcreteTypes)
+        (baseTypes : BaseClassTypes<DumpedAssembly>)
         (visited : System.Collections.Generic.HashSet<ConcreteTypeHandle>)
         (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (concreteTypes : AllConcreteTypes)
         (handle : ConcreteTypeHandle)
-        : ImmutableDictionary<string, DumpedAssembly>
+        : ImmutableDictionary<string, DumpedAssembly> * AllConcreteTypes
         =
         if not (visited.Add handle) then
-            assemblies
+            assemblies, concreteTypes
         else
             match handle with
             | ConcreteTypeHandle.Byref inner
@@ -1035,25 +1043,49 @@ module Concretization =
                 // (zeroOf answers them structurally without touching isValueType),
                 // but the element type may still be zeroed later — e.g. via ldobj into
                 // a struct local — so recurse into it.
-                ensureBaseAssembliesLoadedForConcreteHandle loadAssembly concreteTypes visited assemblies inner
+                ensureBaseAssembliesLoadedForConcreteHandle
+                    loadAssembly
+                    baseTypes
+                    visited
+                    assemblies
+                    concreteTypes
+                    inner
             | ConcreteTypeHandle.Array (element, _) ->
-                ensureBaseAssembliesLoadedForConcreteHandle loadAssembly concreteTypes visited assemblies element
+                ensureBaseAssembliesLoadedForConcreteHandle
+                    loadAssembly
+                    baseTypes
+                    visited
+                    assemblies
+                    concreteTypes
+                    element
             | ConcreteTypeHandle.FunctionPointer signature ->
-                let assemblies =
+                let assemblies, concreteTypes =
                     signature.ParameterTypes
                     |> List.fold
-                        (fun assemblies h ->
-                            ensureBaseAssembliesLoadedForConcreteHandle loadAssembly concreteTypes visited assemblies h
+                        (fun (assemblies, concreteTypes) h ->
+                            ensureBaseAssembliesLoadedForConcreteHandle
+                                loadAssembly
+                                baseTypes
+                                visited
+                                assemblies
+                                concreteTypes
+                                h
                         )
-                        assemblies
+                        (assemblies, concreteTypes)
 
                 match signature.ReturnType with
-                | MethodReturnType.Void -> assemblies
+                | MethodReturnType.Void -> assemblies, concreteTypes
                 | MethodReturnType.Returns h ->
-                    ensureBaseAssembliesLoadedForConcreteHandle loadAssembly concreteTypes visited assemblies h
+                    ensureBaseAssembliesLoadedForConcreteHandle
+                        loadAssembly
+                        baseTypes
+                        visited
+                        assemblies
+                        concreteTypes
+                        h
             | ConcreteTypeHandle.Concrete _ ->
                 match AllConcreteTypes.lookup handle concreteTypes with
-                | None -> assemblies
+                | None -> assemblies, concreteTypes
                 | Some concreteType ->
                     let assemblies =
                         ensureTypeDefinitionBaseAssembliesLoaded
@@ -1065,17 +1097,64 @@ module Concretization =
                     // Generic arguments may themselves appear in later zeroOf calls
                     // (via field concretization or via ldobj-style access on generic
                     // fields), so ensure their base chains are loaded too.
-                    concreteType.Generics
-                    |> Seq.fold
-                        (fun assemblies genHandle ->
-                            ensureBaseAssembliesLoadedForConcreteHandle
-                                loadAssembly
-                                concreteTypes
-                                visited
-                                assemblies
-                                genHandle
-                        )
-                        assemblies
+                    let assemblies, concreteTypes =
+                        concreteType.Generics
+                        |> Seq.fold
+                            (fun (assemblies, concreteTypes) genHandle ->
+                                ensureBaseAssembliesLoadedForConcreteHandle
+                                    loadAssembly
+                                    baseTypes
+                                    visited
+                                    assemblies
+                                    concreteTypes
+                                    genHandle
+                            )
+                            (assemblies, concreteTypes)
+
+                    // If the type is a value type, zeroOf will recursively
+                    // zero-initialise every non-static instance field, so each
+                    // field type's own base-chain assemblies must also be loaded.
+                    // Concretize each field's TypeDefn under the outer type's
+                    // generic context, then recurse. The base-chain load above
+                    // is what makes this isValueType call safe.
+                    let outerAssembly = assemblies.[concreteType.Assembly.FullName]
+                    let outerTypeDef = outerAssembly.TypeDefs.[concreteType.Definition.Get]
+
+                    if not (DumpedAssembly.isValueType baseTypes assemblies outerTypeDef) then
+                        assemblies, concreteTypes
+                    else
+                        outerTypeDef.Fields
+                        |> List.filter (fun field -> not (field.Attributes.HasFlag FieldAttributes.Static))
+                        |> List.fold
+                            (fun (assemblies, concreteTypes) field ->
+                                let ctx : TypeConcretization.ConcretizationContext<DumpedAssembly> =
+                                    {
+                                        TypeConcretization.ConcretizationContext.ConcreteTypes = concreteTypes
+                                        TypeConcretization.ConcretizationContext.LoadedAssemblies = assemblies
+                                        TypeConcretization.ConcretizationContext.BaseTypes = baseTypes
+                                    }
+
+                                // Fields never carry method-level generics; the
+                                // outer type's already-concretized generic
+                                // arguments cover the field's substitution.
+                                let fieldHandle, ctx =
+                                    TypeConcretization.concretizeType
+                                        ctx
+                                        loadAssembly
+                                        concreteType.Assembly
+                                        concreteType.Generics
+                                        ImmutableArray.Empty
+                                        field.Signature
+
+                                ensureBaseAssembliesLoadedForConcreteHandle
+                                    loadAssembly
+                                    baseTypes
+                                    visited
+                                    ctx.LoadedAssemblies
+                                    ctx.ConcreteTypes
+                                    fieldHandle
+                            )
+                            (assemblies, concreteTypes)
 
     /// Concretize a method's signature and body
     let concretizeMethod
@@ -1225,49 +1304,52 @@ module Concretization =
         // to the effectful edge that only sees a strict assembly-dictionary.
         let visited = System.Collections.Generic.HashSet<ConcreteTypeHandle> ()
         let assemblies = concCtx2.LoadedAssemblies
+        let concreteTypes = concCtx2.ConcreteTypes
 
-        let assemblies =
+        let assemblies, concreteTypes =
             signature.ParameterTypes
             |> List.fold
-                (fun assemblies h ->
+                (fun (assemblies, concreteTypes) h ->
                     ensureBaseAssembliesLoadedForConcreteHandle
                         loadAssembly
-                        concCtx2.ConcreteTypes
+                        baseTypes
                         visited
                         assemblies
+                        concreteTypes
                         h
                 )
-                assemblies
+                (assemblies, concreteTypes)
 
-        let assemblies =
+        let assemblies, concreteTypes =
             match signature.ReturnType with
-            | MethodReturnType.Void -> assemblies
+            | MethodReturnType.Void -> assemblies, concreteTypes
             | MethodReturnType.Returns h ->
-                ensureBaseAssembliesLoadedForConcreteHandle loadAssembly concCtx2.ConcreteTypes visited assemblies h
+                ensureBaseAssembliesLoadedForConcreteHandle loadAssembly baseTypes visited assemblies concreteTypes h
 
-        let assemblies =
+        let assemblies, concreteTypes =
             match body with
             | MethodBody.Il instr ->
                 match instr.LocalVars with
-                | None -> assemblies
+                | None -> assemblies, concreteTypes
                 | Some vars ->
                     vars
                     |> Seq.fold
-                        (fun assemblies h ->
+                        (fun (assemblies, concreteTypes) h ->
                             ensureBaseAssembliesLoadedForConcreteHandle
                                 loadAssembly
-                                concCtx2.ConcreteTypes
+                                baseTypes
                                 visited
                                 assemblies
+                                concreteTypes
                                 h
                         )
-                        assemblies
+                        (assemblies, concreteTypes)
             | MethodBody.InternalCall
             | MethodBody.PInvoke
             | MethodBody.RuntimeProvided _
-            | MethodBody.Abstract -> assemblies
+            | MethodBody.Abstract -> assemblies, concreteTypes
 
-        concretizedMethod, concCtx2.ConcreteTypes, assemblies
+        concretizedMethod, concreteTypes, assemblies
 
     let rec concreteHandleToTypeDefn
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
