@@ -20,11 +20,11 @@ type EndToEndTestCase =
     {
         FileName : string
         ExpectedReturnCode : int
-        /// Guest environment overlay passed to `Program.run`. Layered on top
-        /// of `EmulatedKernel.defaultEnvironment` so the
-        /// invariant-globalization default is always present even when this
-        /// map is empty.
-        Environment : Map<string, string>
+        /// Kernel configuration passed to `Program.run`: guest environment
+        /// overlay (layered on top of `EmulatedKernel.defaultEnvironment`, so
+        /// the invariant-globalization default is always present even when the
+        /// overlay is empty) plus the reported processor count.
+        KernelConfig : KernelConfig
         ExpectsUnhandledException : bool
         /// Optional assertion run against the final PawPrint state once the
         /// guest has exited. Used by impure tests that want to verify

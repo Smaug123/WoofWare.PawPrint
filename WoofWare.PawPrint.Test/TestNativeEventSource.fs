@@ -59,7 +59,14 @@ public static class Entry
         use peImage = new MemoryStream (image)
 
         match
-            Program.prepare loggerFactory (Some "NativeEventSourceTest.cs") peImage dotnetRuntimes Map.empty None []
+            Program.prepare
+                loggerFactory
+                (Some "NativeEventSourceTest.cs")
+                peImage
+                dotnetRuntimes
+                KernelConfig.Default
+                None
+                []
         with
         | Program.ProgramStartResult.Ready prepared -> prepared
         | Program.ProgramStartResult.CompletedBeforeMain outcome ->

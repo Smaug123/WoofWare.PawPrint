@@ -172,7 +172,7 @@ class Program
                 loggerFactory
                 dllPath
                 dotnetRuntimes
-                Map.empty
+                KernelConfig.Default
                 None
                 []
                 token

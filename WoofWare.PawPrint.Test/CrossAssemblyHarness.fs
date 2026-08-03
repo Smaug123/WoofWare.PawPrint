@@ -97,7 +97,9 @@ module CrossAssemblyHarness =
 
         try
             let terminalState, terminatingThread =
-                match Program.run loggerFactory (Some entryPath) peImage dotnetRuntimeDirs Map.empty None [] with
+                match
+                    Program.run loggerFactory (Some entryPath) peImage dotnetRuntimeDirs KernelConfig.Default None []
+                with
                 | RunOutcome.GuestUnhandledException (_, _, exn) ->
                     failwith $"Guest threw unhandled exception: %O{exn.ExceptionObject}"
                 | RunOutcome.FailFast (_, _, message) ->

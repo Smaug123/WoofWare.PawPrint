@@ -53,7 +53,7 @@ module TestPureCases =
     let runPawPrintSource
         (sourceName : string)
         (source : string)
-        (env : Map<string, string>)
+        (kernelConfig : KernelConfig)
         (assertResult : byte array -> RunOutcome -> unit)
         : unit
         =
@@ -71,7 +71,7 @@ module TestPureCases =
 
         try
             let pawPrintResult =
-                Program.run loggerFactory (Some sourceName) peImage dotnetRuntimes env None []
+                Program.run loggerFactory (Some sourceName) peImage dotnetRuntimes kernelConfig None []
 
             assertResult image pawPrintResult
         with _ ->
@@ -86,7 +86,7 @@ module TestPureCases =
         runPawPrintSource
             case.FileName
             source
-            case.Environment
+            case.KernelConfig
             (fun image pawPrintResult ->
                 let realResult = RealRuntime.executeWithRealRuntime [||] image
 
@@ -175,7 +175,7 @@ class Program
         runPawPrintSource
             "RethrowStackTrace.cs"
             source
-            Map.empty
+            KernelConfig.Default
             (fun _image pawPrintResult ->
                 match pawPrintResult with
                 | RunOutcome.GuestUnhandledException (_, _, exn) ->
@@ -203,7 +203,7 @@ class Program
         runPawPrintSource
             "EmulatedEnvironmentInvariantGlobalization.cs"
             source
-            Map.empty
+            KernelConfig.Default
             (fun _image pawPrintResult ->
                 match pawPrintResult with
                 | RunOutcome.NormalExit (terminalState, terminatingThread) ->
@@ -266,7 +266,9 @@ class Program
         runPawPrintSource
             "EmulatedEnvironmentConfiguredVariables.cs"
             source
-            ([ "PAWPRINT_TEST_VARIABLE", "configured" ] |> Map.ofList)
+            { KernelConfig.Default with
+                Environment = [ "PAWPRINT_TEST_VARIABLE", "configured" ] |> Map.ofList
+            }
             (fun _image pawPrintResult ->
                 match pawPrintResult with
                 | RunOutcome.NormalExit (terminalState, terminatingThread) ->
@@ -323,7 +325,9 @@ class Program
         runPawPrintSource
             "EmulatedEnvironmentCaseSensitiveLookup.cs"
             source
-            ([ "PaWpRiNt_MiXeD_CaSe_KeY", "found" ] |> Map.ofList)
+            { KernelConfig.Default with
+                Environment = [ "PaWpRiNt_MiXeD_CaSe_KeY", "found" ] |> Map.ofList
+            }
             (fun _image pawPrintResult ->
                 match pawPrintResult with
                 | RunOutcome.NormalExit (terminalState, terminatingThread) ->
@@ -369,7 +373,7 @@ class Program
         runPawPrintSource
             "EmulatedEnvironmentMissingVariableLastPInvokeError.cs"
             source
-            Map.empty
+            KernelConfig.Default
             (fun _image pawPrintResult ->
                 match pawPrintResult with
                 | RunOutcome.NormalExit (terminalState, terminatingThread) ->
@@ -406,7 +410,7 @@ class Program
         runPawPrintSource
             "EnvironmentFailFast.cs"
             source
-            Map.empty
+            KernelConfig.Default
             (fun _image pawPrintResult ->
                 match pawPrintResult with
                 | RunOutcome.FailFast (_, _, message) -> message |> shouldEqual (Some "boom")
@@ -423,7 +427,7 @@ class Program
         {
             FileName = fileName
             ExpectedReturnCode = 0
-            Environment = Map.empty
+            KernelConfig = KernelConfig.Default
             ExpectsUnhandledException = false
             AssertTerminalState = None
         }
@@ -437,7 +441,7 @@ class Program
         {
             FileName = fileName
             ExpectedReturnCode = exitCode
-            Environment = Map.empty
+            KernelConfig = KernelConfig.Default
             ExpectsUnhandledException = false
             AssertTerminalState = None
         }
@@ -448,7 +452,7 @@ class Program
         {
             FileName = fileName
             ExpectedReturnCode = 0 // not checked; both runtimes are expected to throw
-            Environment = Map.empty
+            KernelConfig = KernelConfig.Default
             ExpectsUnhandledException = true
             AssertTerminalState = None
         }
@@ -473,7 +477,7 @@ class Program
         {
             FileName = fileName
             ExpectedReturnCode = 0
-            Environment = Map.empty
+            KernelConfig = KernelConfig.Default
             ExpectsUnhandledException = false
             AssertTerminalState = None
         }

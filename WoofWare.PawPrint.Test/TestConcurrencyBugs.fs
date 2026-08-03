@@ -189,7 +189,9 @@ module TestConcurrencyBugs =
         use peImage = new MemoryStream (image)
         let logger = loggerFactory.CreateLogger "TestConcurrencyBugs"
 
-        match Program.prepare loggerFactory (Some sourceName) peImage dotnetRuntimes Map.empty (Some seed) [] with
+        match
+            Program.prepare loggerFactory (Some sourceName) peImage dotnetRuntimes KernelConfig.Default (Some seed) []
+        with
         | Program.ProgramStartResult.CompletedBeforeMain outcome ->
             // A worker spawned during a static cctor terminated the process
             // before Main got to run. For these scenarios that almost

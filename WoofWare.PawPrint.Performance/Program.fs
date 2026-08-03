@@ -158,7 +158,7 @@ type StackHeavyProgramBenchmarks () =
                 (Some sourceName)
                 peImage
                 dotnetRuntimeDirs
-                Map.empty
+                KernelConfig.Default
                 None
                 []
         with

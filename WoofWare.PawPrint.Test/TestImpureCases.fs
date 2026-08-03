@@ -33,7 +33,7 @@ module TestImpureCases =
                 // these bytes.
                 FileName = "WriteLine.cs"
                 ExpectedReturnCode = 1
-                Environment = Map.empty
+                KernelConfig = KernelConfig.Default
                 ExpectsUnhandledException = false
                 AssertTerminalState =
                     Some (fun state ->
@@ -47,6 +47,24 @@ module TestImpureCases =
                     )
             }
             {
+                // A host-configured `KernelConfig.ProcessorCount` must actually
+                // reach the guest, and must do so before the entry type's
+                // `.cctor` runs — CoreLib latches `Environment.ProcessorCount`
+                // into a static on first read, so applying the configuration any
+                // later than `Program.prepare` does would leave a guest that
+                // reads it during static initialisation observing the default.
+                // 4 rather than 1 so that a regression to "always the default"
+                // is a failure rather than a coincidence.
+                FileName = "ProcessorCountConfigured.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        ProcessorCount = 4
+                    }
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // `Environment.Exit` from the entry thread. Exercises the same
                 // `ProcessExit` path as `ExitFromWorker.cs` below, but with the
                 // caller being the thread whose return would otherwise have
@@ -55,7 +73,7 @@ module TestImpureCases =
                 // surface as exit code 100 instead of 1.
                 FileName = "InstaQuit.cs"
                 ExpectedReturnCode = 1
-                Environment = Map.empty
+                KernelConfig = KernelConfig.Default
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -64,7 +82,7 @@ module TestImpureCases =
                 // must terminate with the worker's exit code, not just that worker thread.
                 FileName = "ExitFromWorker.cs"
                 ExpectedReturnCode = 7
-                Environment = Map.empty
+                KernelConfig = KernelConfig.Default
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -82,7 +100,7 @@ module TestImpureCases =
                 // as a wrong exit code.
                 FileName = "SystemNativeWriteSuccess.cs"
                 ExpectedReturnCode = 0
-                Environment = Map.empty
+                KernelConfig = KernelConfig.Default
                 ExpectsUnhandledException = false
                 AssertTerminalState =
                     Some (fun state ->
@@ -114,7 +132,7 @@ module TestImpureCases =
                 // P/Invoke handler through to the registry.
                 FileName = "SystemNativeClose.cs"
                 ExpectedReturnCode = 0
-                Environment = Map.empty
+                KernelConfig = KernelConfig.Default
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -128,7 +146,7 @@ module TestImpureCases =
                 // makes the answer stable by construction.
                 FileName = "SystemNativeIsATty.cs"
                 ExpectedReturnCode = 0
-                Environment = Map.empty
+                KernelConfig = KernelConfig.Default
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -151,7 +169,7 @@ module TestImpureCases =
         try
             let terminalState, terminatingThread =
                 match
-                    Program.run loggerFactory (Some case.FileName) peImage dotnetRuntimes case.Environment None []
+                    Program.run loggerFactory (Some case.FileName) peImage dotnetRuntimes case.KernelConfig None []
                 with
                 | RunOutcome.GuestUnhandledException (_, _, exn) ->
                     failwith $"Guest threw unhandled exception: %O{exn.ExceptionObject}"

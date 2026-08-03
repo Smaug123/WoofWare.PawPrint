@@ -446,10 +446,15 @@ type EmulatedKernel =
         /// *control flow* between runs — the single worst kind of
         /// nondeterminism for a runtime whose purpose is bit-for-bit replay.
         ///
-        /// Defaults to 1 (see `EmulatedKernel.initial`). Must be >= 1: the
-        /// real property is documented as always positive and BCL callers
-        /// divide by it, so `NativeEnvironment` asserts the invariant at the
-        /// point of use rather than trusting construction.
+        /// Defaults to 1 (see `EmulatedKernel.initial`); hosts choose a
+        /// different value via `KernelConfig.ProcessorCount`, which
+        /// `Program.prepare` applies before the entry type's `.cctor` is
+        /// pumped — CoreLib latches `Environment.ProcessorCount` into a static
+        /// on first read, so a later change would not be observed.
+        ///
+        /// Must be >= 1: the real property is documented as always positive
+        /// and BCL callers divide by it, so `NativeEnvironment` asserts the
+        /// invariant at the point of use rather than trusting construction.
         ProcessorCount : int
         /// Pure data model of the simulated process's signal disposition,
         /// per-thread sigprocmasks, and pending-signal queue. Populated by
@@ -488,7 +493,7 @@ module EmulatedKernel =
     /// only single-processor behaviour has ever been exercised end-to-end),
     /// and because a fixed default is a prerequisite for replayability.
     /// Hosts that want to exercise the guest's multi-processor code paths
-    /// raise it with `EmulatedKernel.withProcessorCount`.
+    /// raise it via `KernelConfig.ProcessorCount`.
     [<Literal>]
     let defaultProcessorCount : int = 1
 
@@ -544,3 +549,48 @@ module EmulatedKernel =
         { kernel with
             Environment = merged
         }
+
+/// Host-supplied configuration for the simulated process's kernel, applied by
+/// `Program.prepare` before any guest code runs.
+///
+/// This has to be a parameter of `prepare` rather than something a host applies
+/// to `PreparedProgram.State` afterwards: `prepare` pumps the entry type's
+/// `.cctor`, and several of these values are latched by CoreLib during static
+/// initialisation. `Environment.ProcessorCount` is the sharp case — CoreLib
+/// declares it as `public static int ProcessorCount { get; } = GetProcessorCount()`
+/// (Environment.cs), so the very first read freezes the value for the lifetime
+/// of the process and a post-`prepare` record-copy would silently have no
+/// effect on a guest that touched it during startup.
+///
+/// New kernel knobs belong here rather than as further positional parameters on
+/// `prepare`/`run`, so that adding one does not churn every call site.
+type KernelConfig =
+    {
+        /// Environment variables overlaid on top of
+        /// `EmulatedKernel.defaultEnvironment`. Keys the caller does not set
+        /// keep their seeded defaults, so the invariant-globalization switch
+        /// survives a caller who supplies an unrelated overlay.
+        Environment : Map<string, string>
+        /// Logical processor count the guest observes via
+        /// `Environment.ProcessorCount`. Must be at least 1.
+        ProcessorCount : int
+    }
+
+    /// Configuration a host gets if it expresses no preference: no environment
+    /// overlay, and the default single processor.
+    static member Default : KernelConfig =
+        {
+            Environment = Map.empty
+            ProcessorCount = EmulatedKernel.defaultProcessorCount
+        }
+
+[<RequireQualifiedAccess>]
+module KernelConfig =
+    /// Apply a host configuration to a freshly-minted kernel. Each field is
+    /// applied through its own `EmulatedKernel` setter, so the validation those
+    /// setters perform (e.g. rejecting a non-positive processor count) also
+    /// guards the configuration path.
+    let applyTo (config : KernelConfig) (kernel : EmulatedKernel) : EmulatedKernel =
+        kernel
+        |> EmulatedKernel.withEnvironment config.Environment
+        |> EmulatedKernel.withProcessorCount config.ProcessorCount
