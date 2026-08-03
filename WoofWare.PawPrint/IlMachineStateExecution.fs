@@ -1685,16 +1685,7 @@ module IlMachineStateExecution =
                     $"checkArrayStoreVariance: array allocation at %O{arrayAddress} has non-array ConcreteType %O{other}"
 
         let storedElementIsReference =
-            match storedElement with
-            | ConcreteTypeHandle.OneDimArrayZero _
-            | ConcreteTypeHandle.Array _ -> true
-            | ConcreteTypeHandle.Byref _
-            | ConcreteTypeHandle.Pointer _
-            | ConcreteTypeHandle.FunctionPointer _ -> false
-            | ConcreteTypeHandle.Concrete _ ->
-                match IlMachineState.tryGetConcreteTypeInfo state storedElement with
-                | Some (_, typeInfo) -> DumpedAssembly.isReferenceType baseClassTypes state._LoadedAssemblies typeInfo
-                | None -> failwith $"checkArrayStoreVariance: array element handle %O{storedElement} has no TypeDef row"
+            IlMachineState.isReferenceTypeHandle baseClassTypes "checkArrayStoreVariance" state storedElement
 
         if not storedElementIsReference then
             // Value-type element store: variance does not apply. Numeric coercion
