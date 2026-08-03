@@ -280,6 +280,41 @@ module internal UnaryMetadataObjectOps =
                 ctorType.Name
             )
 
+        // The CLI's variable-size-object case: types whose instance size depends on the
+        // constructor arguments, which CoreCLR flags `CORINFO_FLG_VAROBJSIZE` (set whenever
+        // the MethodTable `HasComponentSize` — see `vm/jitinterface.cpp`). The runtime cannot
+        // allocate before the constructor runs, so it allocates nothing and passes no `this`;
+        // the constructor allocates the object and effectively returns it. Both the JIT
+        // (`jit/importer.cpp`, CEE_NEWOBJ: "At present this can only be String",
+        // `newObjThisPtr = nullptr`) and the CoreCLR interpreter (`interpreter/compiler.cpp`,
+        // `doCallInsteadOfNew = true`) special-case it this way.
+        //
+        // Arrays are the CLI's only other variable-size case and never reach here:
+        // multi-dimensional array constructors were diverted to `executeMultiDimArrayNewobj`
+        // above, and szarrays go through `newarr` rather than `newobj`. So, exactly as CoreCLR
+        // asserts, this is System.String and nothing else.
+        if TypeInfo.NominallyEqual ctorType baseClassTypes.String then
+            let threadState = state.ThreadState.[thread]
+
+            IlMachineStateExecution.callMethod
+                loggerFactory
+                baseClassTypes
+                None
+                ConstructionState.ConstructingVariableSize
+                false
+                false
+                true
+                concretizedCtor.Generics
+                concretizedCtor
+                thread
+                threadState
+                None
+                false
+                false // wrapExceptionInTargetInvocation
+                state,
+            WhatWeDid.Executed
+        else
+
         let state, allFields =
             IlMachineState.collectAllInstanceFields loggerFactory baseClassTypes state declaringTypeHandle
 
@@ -321,7 +356,7 @@ module internal UnaryMetadataObjectOps =
             loggerFactory
             baseClassTypes
             None
-            (Some allocatedAddr)
+            (ConstructionState.Constructing allocatedAddr)
             false
             false
             true

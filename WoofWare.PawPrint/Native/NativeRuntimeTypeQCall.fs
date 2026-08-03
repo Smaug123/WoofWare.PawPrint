@@ -741,7 +741,7 @@ module NativeRuntimeTypeQCall =
                         ctx.LoggerFactory
                         ctx.BaseClassTypes
                         None
-                        None
+                        ConstructionState.NotConstructing
                         false
                         false
                         false

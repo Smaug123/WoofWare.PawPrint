@@ -24,7 +24,7 @@ module Intrinsics =
     let call
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<_>)
-        (wasConstructing : ManagedHeapAddress option)
+        (wasConstructing : ConstructionState)
         (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (currentThread : ThreadId)
         (state : IlMachineState)
@@ -35,17 +35,7 @@ module Intrinsics =
         // Predicates shared by the Interlocked.CompareExchange / Interlocked.Exchange intrinsic arms,
         // which both dispatch by the (location, value, [comparand]) shape of the overload.
         let isReferenceTypeHandle (handle : ConcreteTypeHandle) : bool =
-            match handle with
-            | ConcreteTypeHandle.OneDimArrayZero _
-            | ConcreteTypeHandle.Array _ -> true
-            | ConcreteTypeHandle.Byref _
-            | ConcreteTypeHandle.Pointer _
-            | ConcreteTypeHandle.FunctionPointer _ -> false
-            | ConcreteTypeHandle.Concrete _ ->
-                match IlMachineState.tryGetConcreteTypeInfo state handle with
-                | Some (_, typeInfo) -> DumpedAssembly.isReferenceType baseClassTypes state._LoadedAssemblies typeInfo
-                | None ->
-                    failwith $"Interlocked reference-type intrinsic: concrete type handle %O{handle} has no TypeDef row"
+            IlMachineState.isReferenceTypeHandle baseClassTypes "Interlocked reference-type intrinsic" state handle
 
         let isNativeIntPrimitive (primitive : PrimitiveType) : bool =
             match primitive with

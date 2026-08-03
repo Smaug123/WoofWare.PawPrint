@@ -63,8 +63,8 @@ module IlMachineState =
 
     let mapFrame = IlMachineThreadState.mapFrame
 
-    let withReplacedConstructedObject =
-        IlMachineThreadState.withReplacedConstructedObject
+    let withSuppliedConstructedObject =
+        IlMachineThreadState.withSuppliedConstructedObject
 
     let markActiveFrameWrapInTargetInvocation =
         IlMachineThreadState.markActiveFrameWrapInTargetInvocation
@@ -218,6 +218,8 @@ module IlMachineState =
     let resolveTypeMetadataToken = IlMachineRuntimeMetadata.resolveTypeMetadataToken
 
     let tryGetConcreteTypeInfo = IlMachineRuntimeMetadata.tryGetConcreteTypeInfo
+
+    let isReferenceTypeHandle = IlMachineRuntimeMetadata.isReferenceTypeHandle
 
     let requiredOwnInstanceFieldId = IlMachineRuntimeMetadata.requiredOwnInstanceFieldId
 
