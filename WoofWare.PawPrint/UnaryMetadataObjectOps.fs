@@ -661,6 +661,36 @@ module internal UnaryMetadataObjectOps =
 
         state, WhatWeDid.Executed
 
+    /// The CLI value logically held by a boxed object whose runtime type is `handle`; the inverse
+    /// of the shape `executeBox` writes. Callers must already have established that
+    /// `contents.Declared = handle` — both `executeBox` paths guarantee it, by constructing the
+    /// heap object's contents with `CliValueType.OfFields ... handle`.
+    ///
+    /// Three shapes come back out, matching the three `executeBox` writes:
+    ///   - primitive-like (IntPtr, RuntimeTypeHandle, an enum, ...): keep it wrapped, since the
+    ///     push path flattens it via the `PrimitiveLikeKind` invariant;
+    ///   - a genuine multi-field value type: keep it wrapped;
+    ///   - a bare primitive (Int32, Float64, ...), which `box` stored in a synthetic single-field
+    ///     struct: read field 0 back by offset and size. `box` guarantees that shape, so this is a
+    ///     nominal dereference rather than a structural guess.
+    let private unboxedContents
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (handle : ConcreteTypeHandle)
+        (contents : CliValueType)
+        (state : IlMachineState)
+        : CliType * IlMachineState
+        =
+        if contents.PrimitiveLikeKind.IsSome then
+            CliType.ValueType contents, state
+        else
+            let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes handle
+
+            match zero with
+            | CliType.ValueType _ -> CliType.ValueType contents, state
+            | _ ->
+                let size = (CliType.SizeOf zero).Size
+                CliValueType.DereferenceFieldAt 0 size contents, state
+
     let executeUnboxAny (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
@@ -732,7 +762,96 @@ module internal UnaryMetadataObjectOps =
             DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies targetDefn
 
         if isNullable then
-            failwith "TODO: Unbox_Any for Nullable<T> unimplemented"
+            // ECMA-335 III.4.33 / CoreCLR `Nullable::UnBox` (src/coreclr/vm/object.cpp). `box` of a
+            // `Nullable<T>` never produces a boxed Nullable — it yields null, or a boxed `T` — so
+            // unboxing has to reconstruct the Nullable from those two forms:
+            //   - a null operand yields a zeroed Nullable (`hasValue = false`). This is the one
+            //     value-typed `unbox.any` target that accepts null instead of raising
+            //     NullReferenceException;
+            //   - a boxed `T` yields `hasValue = true` with that value;
+            //   - anything else is an InvalidCastException.
+            // The match against `T` is exact equivalence, not assignability
+            // (`Nullable::IsNullableForTypeHelper` compares against `GetInstantiation()[0]`).
+            if targetConcreteType.Generics.Length <> 1 then
+                failwith
+                    $"Unbox_Any: %O{targetConcreteTypeHandle} classified as System.Nullable`1 but has %d{targetConcreteType.Generics.Length} generic arguments, expected exactly 1"
+
+            let underlyingHandle = targetConcreteType.Generics.[0]
+
+            // Built from the zero rather than hand-rolled, so the layout, field ids and offsets
+            // match every other way a `Nullable<T>` comes into existence.
+            let nullableZero, state =
+                IlMachineState.cliTypeZeroOfHandle state baseClassTypes targetConcreteTypeHandle
+
+            let zeroCvt =
+                match nullableZero with
+                | CliType.ValueType cvt -> cvt
+                | other ->
+                    failwith
+                        $"Unbox_Any: zero of Nullable`1 %O{targetConcreteTypeHandle} was %O{other}, expected a value type"
+
+            match actualObj with
+            | EvalStackValue.NullObjectRef ->
+                state
+                |> IlMachineState.pushToEvalStack nullableZero thread
+                |> IlMachineState.advanceProgramCounter thread
+                |> Tuple.withRight WhatWeDid.Executed
+            | EvalStackValue.ObjectRef addr ->
+                let boxedOpt =
+                    match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
+                    | true, v -> Some v
+                    | false, _ ->
+                        match state.ManagedHeap.Arrays.TryGetValue addr with
+                        // An array can never be a boxed T for any T that Nullable admits.
+                        | true, _ -> None
+                        | false, _ -> failwith $"Unbox_Any: could not find managed object with address {addr}"
+
+                match boxedOpt with
+                | Some boxed when boxed.ConcreteType = underlyingHandle ->
+                    let value, state =
+                        unboxedContents baseClassTypes underlyingHandle boxed.Contents state
+
+                    // No coercion needed: `unboxedContents` decides its shape from
+                    // `cliTypeZeroOfHandle underlyingHandle`, which is the same computation that
+                    // produced the zero of the `value` field we are overwriting.
+                    let hasValueField =
+                        IlMachineState.requiredOwnInstanceFieldId state zeroCvt.Declared "hasValue"
+
+                    let valueField =
+                        IlMachineState.requiredOwnInstanceFieldId state zeroCvt.Declared "value"
+
+                    let result =
+                        zeroCvt
+                        |> CliValueType.WithFieldSetById hasValueField (CliType.ofBool true)
+                        |> CliValueType.WithFieldSetById valueField value
+
+                    state
+                    |> IlMachineState.pushToEvalStack (CliType.ValueType result) thread
+                    |> IlMachineState.advanceProgramCounter thread
+                    |> Tuple.withRight WhatWeDid.Executed
+                | Some boxed when boxed.ConcreteType = targetConcreteTypeHandle ->
+                    // CoreCLR has a "for safety's sake" arm here that copies a genuinely boxed
+                    // `Nullable<T>` straight through. Nothing in this interpreter can produce one:
+                    // `executeBox` never boxes a Nullable as itself, and the only other boxing path
+                    // (the `constrained.` callvirt fallback in UnaryMetadataCallOps) requires the
+                    // method to be unresolvable on the value type and declared on
+                    // Object/ValueType/Enum — whereas `Nullable<T>` overrides all three, and by an
+                    // explicit CoreLib invariant ("Do NOT add any interfaces to Nullable!",
+                    // Nullable.cs) implements no interfaces to dispatch through either.
+                    // So this is unreachable rather than merely untested; fail loudly if that
+                    // assumption ever stops holding, instead of silently answering
+                    // InvalidCastException like the arm below.
+                    failwith
+                        $"Unbox_Any: operand at %O{addr} is a boxed Nullable`1 (%O{targetConcreteTypeHandle}), which no PawPrint boxing path can create; CoreCLR's Nullable::UnBox copies it through, but that arm is deliberately unmodelled here"
+                | Some _
+                | None ->
+                    IlMachineStateExecution.raiseRuntimeException
+                        loggerFactory
+                        baseClassTypes
+                        baseClassTypes.InvalidCastException
+                        thread
+                        state
+            | other -> failwith $"Unbox_Any (Nullable`1 target): unexpected eval stack value {other}"
         elif not isValueType then
             // Reference-type target: behave exactly like castclass.
             castToReferenceType
@@ -780,35 +899,8 @@ module internal UnaryMetadataObjectOps =
                 // underlying integral type (spec's "same type-verifier type"). Needs a generic-method
                 // test to exercise; not in scope for this PR.
                 if boxed.ConcreteType = targetConcreteTypeHandle then
-                    // Push the boxed value back onto the eval stack. The push path
-                    // (EvalStackValue.ofCliType) handles primitive-like value types
-                    // (IntPtr, RuntimeTypeHandle, enums, ...) via the flatten invariant,
-                    // and leaves genuine user-defined value types as UserDefinedValueType.
-                    //
-                    // For primitive targets (Int32, Float64, etc.) the Box path stored
-                    // the value in a single-field struct (e.g. { value__ = Int32 42 }).
-                    // The zero of such types is a non-ValueType CliType, so we detect
-                    // them here and extract the inner field before pushing.
                     let toPush, state =
-                        if boxed.Contents.PrimitiveLikeKind.IsSome then
-                            // Primitive-like (incl. enum): ofCliType will flatten on push.
-                            CliType.ValueType boxed.Contents, state
-                        else
-                            let targetZero, state =
-                                IlMachineState.cliTypeZeroOfHandle state baseClassTypes targetConcreteTypeHandle
-
-                            match targetZero with
-                            | CliType.ValueType _ ->
-                                // Genuine user-defined value type: keep wrapped.
-                                CliType.ValueType boxed.Contents, state
-                            | _ ->
-                                // Primitive target: Box stored the value in a single instance
-                                // field at offset 0 whose Size matches the primitive. Read it
-                                // back by offset/size — the Box path guarantees the shape, so
-                                // this is a nominal dereference, not a structural guess.
-                                let size = (CliType.SizeOf targetZero).Size
-
-                                CliValueType.DereferenceFieldAt 0 size boxed.Contents, state
+                        unboxedContents baseClassTypes targetConcreteTypeHandle boxed.Contents state
 
                     state
                     |> IlMachineState.pushToEvalStack toPush thread
