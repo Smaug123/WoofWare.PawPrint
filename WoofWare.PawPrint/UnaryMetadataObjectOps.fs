@@ -7,6 +7,62 @@ open Microsoft.Extensions.Logging
 
 [<RequireQualifiedAccess>]
 module internal UnaryMetadataObjectOps =
+    /// ECMA-335 III.4.3 (`castclass`) and III.4.33 (`unbox.any` whose type token denotes a
+    /// reference type) specify identical behaviour once the operand and the target type are in
+    /// hand: a null operand passes through; an operand whose runtime type is assignable to the
+    /// target passes through unchanged; anything else raises InvalidCastException.
+    ///
+    /// `opName` appears only in the diagnostic for eval-stack shapes we do not model.
+    let private castToReferenceType
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (opName : string)
+        (thread : ThreadId)
+        (targetConcreteType : ConcreteTypeHandle)
+        (actualObj : EvalStackValue)
+        (state : IlMachineState)
+        : IlMachineState * WhatWeDid
+        =
+        match actualObj with
+        | EvalStackValue.NullObjectRef ->
+            // Per ECMA-335 III.4.3: null ref is always valid for a cast to a reference type.
+            let state =
+                state
+                |> IlMachineState.pushToEvalStack' EvalStackValue.NullObjectRef thread
+                |> IlMachineState.advanceProgramCounter thread
+
+            state, WhatWeDid.Executed
+        | EvalStackValue.ObjectRef addr ->
+            // `getObjectConcreteType` consults both the array and the non-array side of the heap,
+            // so array operands need no special-casing here; `isConcreteTypeAssignableTo` already
+            // understands array handles (rank, element covariance, the SZ-array implicit generic
+            // interfaces, and the `System.Array` base chain).
+            let objConcreteType = ManagedHeap.getObjectConcreteType addr state.ManagedHeap
+
+            let state, isAssignable =
+                IlMachineState.isConcreteTypeAssignableTo
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    objConcreteType
+                    targetConcreteType
+
+            if isAssignable then
+                let state =
+                    state
+                    |> IlMachineState.pushToEvalStack' actualObj thread
+                    |> IlMachineState.advanceProgramCounter thread
+
+                state, WhatWeDid.Executed
+            else
+                IlMachineStateExecution.raiseRuntimeException
+                    loggerFactory
+                    baseClassTypes
+                    baseClassTypes.InvalidCastException
+                    thread
+                    state
+        | other -> failwith $"%s{opName}: unexpected eval stack value {other}"
+
     let executeCastclass (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
@@ -36,41 +92,7 @@ module internal UnaryMetadataObjectOps =
                 currentMethod.Generics
                 targetType
 
-        match actualObj with
-        | EvalStackValue.NullObjectRef ->
-            // Per ECMA-335 III.4.3: null ref is always valid for castclass on reference types.
-            let state =
-                state
-                |> IlMachineState.pushToEvalStack' EvalStackValue.NullObjectRef thread
-                |> IlMachineState.advanceProgramCounter thread
-
-            state, WhatWeDid.Executed
-        | EvalStackValue.ObjectRef addr ->
-            let objConcreteType = ManagedHeap.getObjectConcreteType addr state.ManagedHeap
-
-            let state, isAssignable =
-                IlMachineState.isConcreteTypeAssignableTo
-                    loggerFactory
-                    baseClassTypes
-                    state
-                    objConcreteType
-                    targetConcreteType
-
-            if isAssignable then
-                let state =
-                    state
-                    |> IlMachineState.pushToEvalStack' actualObj thread
-                    |> IlMachineState.advanceProgramCounter thread
-
-                state, WhatWeDid.Executed
-            else
-                IlMachineStateExecution.raiseRuntimeException
-                    loggerFactory
-                    baseClassTypes
-                    baseClassTypes.InvalidCastException
-                    thread
-                    state
-        | other -> failwith $"Castclass: unexpected eval stack value {other}"
+        castToReferenceType loggerFactory baseClassTypes "Castclass" thread targetConcreteType actualObj state
 
     /// Implements `newobj T[<rank>]::.ctor(int32, ..., int32)` — the runtime-synthesized constructor
     /// for a multi-dimensional array of element type `elementType`. Pops `rank` Int32 lengths off
@@ -669,6 +691,33 @@ module internal UnaryMetadataObjectOps =
                 currentMethod.Generics
                 targetType
 
+        // The type token need not denote a nominal type: `unbox.any !!T` with `T = int[]`
+        // concretizes to a structural array handle, which by design has no row in
+        // `AllConcreteTypes` and no TypeDef to interrogate. Dispatch on the shape of the handle
+        // before touching any metadata.
+        match targetConcreteTypeHandle with
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _ ->
+            // Array types are reference types, and are never `Nullable<T>`, so III.4.33 reduces
+            // to castclass.
+            castToReferenceType
+                loggerFactory
+                baseClassTypes
+                "Unbox_Any (reference-type target)"
+                thread
+                targetConcreteTypeHandle
+                actualObj
+                state
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ ->
+            // ECMA-335 III.4.33 requires `typeTok` to denote a boxable type, and none of these
+            // are; nor can any of them be a generic argument, so `unbox.any !!T` cannot reach
+            // here either. Metadata that gets here would be rejected by the real runtime too.
+            failwith
+                $"Unbox_Any: type token denotes byref/pointer/function-pointer type %O{targetConcreteTypeHandle}, which is not a boxable type as ECMA-335 III.4.33 requires; this is invalid IL"
+        | ConcreteTypeHandle.Concrete _ ->
+
         let targetConcreteType =
             AllConcreteTypes.lookup targetConcreteTypeHandle state.ConcreteTypes
             |> Option.get
@@ -686,43 +735,14 @@ module internal UnaryMetadataObjectOps =
             failwith "TODO: Unbox_Any for Nullable<T> unimplemented"
         elif not isValueType then
             // Reference-type target: behave exactly like castclass.
-            // TODO: factor the shared castclass/unbox.any reference-type logic into a helper.
-            match actualObj with
-            | EvalStackValue.NullObjectRef ->
+            castToReferenceType
+                loggerFactory
+                baseClassTypes
+                "Unbox_Any (reference-type target)"
+                thread
+                targetConcreteTypeHandle
+                actualObj
                 state
-                |> IlMachineState.pushToEvalStack' EvalStackValue.NullObjectRef thread
-                |> IlMachineState.advanceProgramCounter thread
-                |> Tuple.withRight WhatWeDid.Executed
-            | EvalStackValue.ObjectRef addr ->
-                let objConcreteType =
-                    match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
-                    | true, v -> v.ConcreteType
-                    | false, _ ->
-                        match state.ManagedHeap.Arrays.TryGetValue addr with
-                        | true, _v -> failwith "TODO: Unbox_Any on array objects (reference-type target)"
-                        | false, _ -> failwith $"Unbox_Any: could not find managed object with address {addr}"
-
-                let state, isAssignable =
-                    IlMachineState.isConcreteTypeAssignableTo
-                        loggerFactory
-                        baseClassTypes
-                        state
-                        objConcreteType
-                        targetConcreteTypeHandle
-
-                if isAssignable then
-                    state
-                    |> IlMachineState.pushToEvalStack' actualObj thread
-                    |> IlMachineState.advanceProgramCounter thread
-                    |> Tuple.withRight WhatWeDid.Executed
-                else
-                    IlMachineStateExecution.raiseRuntimeException
-                        loggerFactory
-                        baseClassTypes
-                        baseClassTypes.InvalidCastException
-                        thread
-                        state
-            | other -> failwith $"Unbox_Any (reference-type target): unexpected eval stack value {other}"
         else
             // Value-type target, non-Nullable.
             match actualObj with
