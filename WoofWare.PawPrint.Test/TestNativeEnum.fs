@@ -8,7 +8,6 @@ open Microsoft.CodeAnalysis
 open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
-open WoofWare.PawPrint.ExternImplementations
 
 [<TestFixture>]
 module TestNativeEnum =
@@ -103,17 +102,7 @@ public static class Entry
 
         use peImage = new MemoryStream (image)
 
-        match
-            Program.prepare
-                loggerFactory
-                (Some "NativeEnumTest.cs")
-                peImage
-                dotnetRuntimes
-                (MockEnv.make ())
-                Map.empty
-                None
-                []
-        with
+        match Program.prepare loggerFactory (Some "NativeEnumTest.cs") peImage dotnetRuntimes Map.empty None [] with
         | Program.ProgramStartResult.Ready prepared -> prepared
         | Program.ProgramStartResult.CompletedBeforeMain outcome ->
             failwith $"expected enum test program to be ready before Main, got %O{outcome}"
@@ -313,7 +302,6 @@ public static class Entry
         let ctx : NativeCallContext =
             {
                 LoggerFactory = loggerFactory
-                Implementations = MockEnv.make ()
                 BaseClassTypes = baseClassTypes
                 Thread = prepared.EntryThread
                 State = state

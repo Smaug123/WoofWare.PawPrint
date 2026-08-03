@@ -7,7 +7,6 @@ open Microsoft.CodeAnalysis
 open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
-open WoofWare.PawPrint.ExternImplementations
 
 /// Direct-call test for the `ThreadNative_YieldThread` QCall handler. Pins the
 /// outcome shape promised by the `WhatWeDid.VoluntaryYield` design: the handler
@@ -39,17 +38,7 @@ public static class Entry
 
         use peImage = new MemoryStream (image)
 
-        match
-            Program.prepare
-                loggerFactory
-                (Some "ThreadYieldTest.cs")
-                peImage
-                dotnetRuntimes
-                (MockEnv.make ())
-                Map.empty
-                None
-                []
-        with
+        match Program.prepare loggerFactory (Some "ThreadYieldTest.cs") peImage dotnetRuntimes Map.empty None [] with
         | Program.ProgramStartResult.Ready prepared -> prepared
         | Program.ProgramStartResult.CompletedBeforeMain outcome ->
             failwith $"expected program to be ready before Main, got %O{outcome}"
@@ -122,7 +111,6 @@ public static class Entry
         let ctx : NativeCallContext =
             {
                 LoggerFactory = loggerFactory
-                Implementations = MockEnv.make ()
                 BaseClassTypes = baseClassTypes
                 Thread = prepared.EntryThread
                 State = state

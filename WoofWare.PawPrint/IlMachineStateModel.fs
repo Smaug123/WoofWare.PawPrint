@@ -336,12 +336,12 @@ type NativeHandlerResult =
     /// The handler produced a terminating `ExecutionResult` (one of `Terminated`,
     /// `ProcessExit`, `FailFast`, or `UnhandledException`) that the dispatcher should
     /// surface to the run loop verbatim, bypassing native-frame management. This variant
-    /// only arises from native bridges that delegate to ExternImpls whose interface is
-    /// typed in terms of `ExecutionResult` (e.g. `ISystem_Environment._Exit`/`FailFast`).
-    /// The embedded `ExecutionResult` is never a `Stepped` value — use
-    /// `NativeHandlerResult.ofExecutionResult` to construct one from an arbitrary
-    /// ExternImpl result, which routes `Stepped(Executed)` to `Completed` and rejects
-    /// other `Stepped` shapes as logic errors.
+    /// arises from handlers whose method tears the simulated process down rather than
+    /// returning to the guest — `Environment._Exit` and `Environment.FailFast` are the
+    /// canonical cases. The embedded `ExecutionResult` must never be a `Stepped` value;
+    /// `NativeHandlerResult.ofExecutionResult` enforces that when constructing one from
+    /// an arbitrary `ExecutionResult`, routing `Stepped(Executed)` to `Completed` and
+    /// rejecting other `Stepped` shapes as logic errors.
     | Terminating of ExecutionResult
 
 /// Result of returning from a method frame via `Ret`.

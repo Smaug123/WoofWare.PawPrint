@@ -125,15 +125,7 @@ module TestFSharpPureCases =
             let realResult = RealRuntime.executeWithRealRuntime [| testCaseName |] image
 
             let pawPrintResult =
-                Program.run
-                    loggerFactory
-                    (Some dllPath)
-                    peImage
-                    dotnetRuntimes
-                    (MockEnv.make ())
-                    Map.empty
-                    None
-                    [ testCaseName ]
+                Program.run loggerFactory (Some dllPath) peImage dotnetRuntimes Map.empty None [ testCaseName ]
 
             match realResult, pawPrintResult with
             | RealRuntimeResult.NormalExit exitCode, RunOutcome.NormalExit (terminalState, terminatingThread) ->

@@ -315,7 +315,6 @@ module Program =
     let stepPrepared
         (loggerFactory : ILoggerFactory)
         (logger : ILogger)
-        impls
         (prepared : PreparedProgram)
         : ProgramStepOutcome
         =
@@ -469,9 +468,7 @@ module Program =
             // remaining thread is blocked, so progress is impossible.
             ProgramStepOutcome.Deadlocked (prepared, deadlockDescription prepared.State)
         | Some nextThread ->
-            match
-                AbstractMachine.executeOneStep loggerFactory impls prepared.BaseClassTypes prepared.State nextThread
-            with
+            match AbstractMachine.executeOneStep loggerFactory prepared.BaseClassTypes prepared.State nextThread with
             | ExecutionResult.Terminated (state, terminatingThread) ->
                 if terminatingThread = prepared.EntryThread then
                     ProgramStepOutcome.Completed (RunOutcome.NormalExit (state, prepared.EntryThread))
@@ -526,25 +523,18 @@ module Program =
                     whatWeDid
                 )
 
-    let rec pumpPrepared
-        (loggerFactory : ILoggerFactory)
-        (logger : ILogger)
-        impls
-        (prepared : PreparedProgram)
-        : RunOutcome
-        =
-        match stepPrepared loggerFactory logger impls prepared with
+    let rec pumpPrepared (loggerFactory : ILoggerFactory) (logger : ILogger) (prepared : PreparedProgram) : RunOutcome =
+        match stepPrepared loggerFactory logger prepared with
         | ProgramStepOutcome.Completed outcome -> outcome
         | ProgramStepOutcome.Deadlocked (_, stuck) ->
             failwith $"Deadlock: no runnable threads and entry thread has not terminated. Stuck: {stuck}"
         | ProgramStepOutcome.InstructionStepped (prepared, _, _)
-        | ProgramStepOutcome.WorkerTerminated (prepared, _) -> pumpPrepared loggerFactory logger impls prepared
+        | ProgramStepOutcome.WorkerTerminated (prepared, _) -> pumpPrepared loggerFactory logger prepared
 
     let internal pumpToReturn
         (loggerFactory : ILoggerFactory)
         (logger : ILogger)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        impls
         (entryThread : ThreadId)
         (state : IlMachineState)
         : RunOutcome
@@ -557,7 +547,7 @@ module Program =
                 LastRan = entryThread
             }
 
-        pumpPrepared loggerFactory logger impls prepared
+        pumpPrepared loggerFactory logger prepared
 
     /// Reads the guest assembly and performs the one-time setup needed before Main is ready to schedule.
     ///
@@ -575,7 +565,6 @@ module Program =
         (originalPath : string option)
         (fileStream : Stream)
         (dotnetRuntimeDirs : ImmutableArray<string>)
-        impls
         (env : Map<string, string>)
         (pctSeed : uint64 option)
         (argv : string list)
@@ -818,7 +807,7 @@ module Program =
         // We might be in the middle of class construction. Pump the static constructors to completion.
         // We haven't yet entered the main method!
 
-        match pumpToReturn loggerFactory logger baseClassTypes impls mainThread state with
+        match pumpToReturn loggerFactory logger baseClassTypes mainThread state with
         | RunOutcome.GuestUnhandledException _ as outcome ->
             // Either the entry thread's .cctor raised an unhandled exception, or a worker
             // spawned during cctor pumping did. In both cases the CLR would terminate the
@@ -911,7 +900,6 @@ module Program =
         (originalPath : string option)
         (fileStream : Stream)
         (dotnetRuntimeDirs : ImmutableArray<string>)
-        impls
         (env : Map<string, string>)
         (pctSeed : uint64 option)
         (argv : string list)
@@ -919,6 +907,6 @@ module Program =
         =
         let logger = loggerFactory.CreateLogger "Program"
 
-        match prepare loggerFactory originalPath fileStream dotnetRuntimeDirs impls env pctSeed argv with
+        match prepare loggerFactory originalPath fileStream dotnetRuntimeDirs env pctSeed argv with
         | ProgramStartResult.CompletedBeforeMain outcome -> outcome
-        | ProgramStartResult.Ready prepared -> pumpPrepared loggerFactory logger impls prepared
+        | ProgramStartResult.Ready prepared -> pumpPrepared loggerFactory logger prepared

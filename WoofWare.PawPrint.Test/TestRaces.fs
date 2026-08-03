@@ -6,7 +6,6 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
-open WoofWare.PawPrint.ExternImplementations
 open WoofWare.PawPrint.Test
 
 [<TestFixture>]
@@ -36,9 +35,7 @@ module TestRaces =
         use _loggerFactoryResource = loggerFactory
         use peImage = new MemoryStream (image)
 
-        match
-            Program.run loggerFactory (Some sourceName) peImage dotnetRuntimes (MockEnv.make ()) Map.empty seed []
-        with
+        match Program.run loggerFactory (Some sourceName) peImage dotnetRuntimes Map.empty seed [] with
         | RunOutcome.NormalExit (terminalState, terminatingThread)
         | RunOutcome.ProcessExit (terminalState, terminatingThread) ->
             match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with

@@ -7,7 +7,6 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
-open WoofWare.PawPrint.ExternImplementations
 open WoofWare.PawPrint.Test
 
 [<TestFixture>]
@@ -34,7 +33,6 @@ module TestImpureCases =
                 // these bytes.
                 FileName = "WriteLine.cs"
                 ExpectedReturnCode = 1
-                NativeImpls = NativeImpls.PassThru ()
                 Environment = Map.empty
                 ExpectsUnhandledException = false
                 AssertTerminalState =
@@ -49,31 +47,17 @@ module TestImpureCases =
                     )
             }
             {
+                // `Environment.Exit` from the entry thread. Exercises the same
+                // `ProcessExit` path as `ExitFromWorker.cs` below, but with the
+                // caller being the thread whose return would otherwise have
+                // supplied the exit code: `Main` goes on to `return 100`, so a
+                // regression that let the guest keep running past `_Exit` would
+                // surface as exit code 100 instead of 1.
                 FileName = "InstaQuit.cs"
                 ExpectedReturnCode = 1
                 Environment = Map.empty
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
-                NativeImpls =
-                    let mock = MockEnv.make ()
-                    let env = mock.System_Environment
-
-                    { mock with
-                        System_Environment =
-                            { System_EnvironmentMock.Empty with
-                                GetProcessorCount =
-                                    fun thread state ->
-                                        let state =
-                                            state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) thread
-
-                                        (state, WhatWeDid.Executed) |> ExecutionResult.stepped
-                                GetCurrentManagedThreadId = env.GetCurrentManagedThreadId
-                                _Exit =
-                                    fun thread state ->
-                                        let state = state |> IlMachineState.loadArgument thread 0
-                                        ExecutionResult.Terminated (state, thread)
-                            }
-                    }
             }
             {
                 // Exercises Environment.Exit called from a worker thread: the whole process
@@ -83,12 +67,6 @@ module TestImpureCases =
                 Environment = Map.empty
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
-                NativeImpls =
-                    let mock = MockEnv.make ()
-
-                    { mock with
-                        System_Environment = System_Environment.passThru
-                    }
             }
             {
                 // Exercises the SystemNative_Write success path: a guest that
@@ -106,7 +84,6 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 Environment = Map.empty
                 ExpectsUnhandledException = false
-                NativeImpls = NativeImpls.PassThru ()
                 AssertTerminalState =
                     Some (fun state ->
                         // The guest writes the literal "hi\n" (3 bytes) to
@@ -139,7 +116,6 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 Environment = Map.empty
                 ExpectsUnhandledException = false
-                NativeImpls = NativeImpls.PassThru ()
                 AssertTerminalState = None
             }
             {
@@ -154,7 +130,6 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 Environment = Map.empty
                 ExpectsUnhandledException = false
-                NativeImpls = NativeImpls.PassThru ()
                 AssertTerminalState = None
             }
         ]
@@ -176,15 +151,7 @@ module TestImpureCases =
         try
             let terminalState, terminatingThread =
                 match
-                    Program.run
-                        loggerFactory
-                        (Some case.FileName)
-                        peImage
-                        dotnetRuntimes
-                        case.NativeImpls
-                        case.Environment
-                        None
-                        []
+                    Program.run loggerFactory (Some case.FileName) peImage dotnetRuntimes case.Environment None []
                 with
                 | RunOutcome.GuestUnhandledException (_, _, exn) ->
                     failwith $"Guest threw unhandled exception: %O{exn.ExceptionObject}"

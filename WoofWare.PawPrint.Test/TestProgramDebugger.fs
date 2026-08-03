@@ -9,7 +9,6 @@ open Microsoft.Extensions.Logging
 open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
-open WoofWare.PawPrint.ExternImplementations
 
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
@@ -86,7 +85,6 @@ class Program
     let private stepToCompletion
         (loggerFactory : ILoggerFactory)
         (logger : ILogger)
-        (impls : NativeImpls)
         (prepared : Program.PreparedProgram)
         : RunOutcome
         =
@@ -94,7 +92,7 @@ class Program
             if remainingSteps = 0 then
                 failwith "Prepared debugger stepper did not finish within the step limit"
 
-            match Program.stepPrepared loggerFactory logger impls prepared with
+            match Program.stepPrepared loggerFactory logger prepared with
             | Program.ProgramStepOutcome.Completed outcome -> outcome
             | Program.ProgramStepOutcome.Deadlocked (_, stuck) ->
                 failwith $"Prepared debugger stepper deadlocked: %s{stuck}"
@@ -116,23 +114,13 @@ class Program
                 DotnetRuntime.SelectForDll typeof<RunResult>.Assembly.Location
                 |> ImmutableArray.CreateRange
 
-            let impls = MockEnv.make ()
-
             let _, normalLoggerFactory = LoggerFactory.makeTest ()
             use _normalLoggerFactoryResource = normalLoggerFactory
 
             let normalOutcome =
                 use stream = new MemoryStream (image)
 
-                Program.run
-                    normalLoggerFactory
-                    (Some "DebuggerProperty.cs")
-                    stream
-                    dotnetRuntimes
-                    impls
-                    Map.empty
-                    None
-                    []
+                Program.run normalLoggerFactory (Some "DebuggerProperty.cs") stream dotnetRuntimes Map.empty None []
 
             let _, debuggerLoggerFactory = LoggerFactory.makeTest ()
             use _debuggerLoggerFactoryResource = debuggerLoggerFactory
@@ -147,13 +135,11 @@ class Program
                         (Some "DebuggerProperty.cs")
                         stream
                         dotnetRuntimes
-                        impls
                         Map.empty
                         None
                         []
                 with
-                | Program.ProgramStartResult.Ready prepared ->
-                    stepToCompletion debuggerLoggerFactory logger impls prepared
+                | Program.ProgramStartResult.Ready prepared -> stepToCompletion debuggerLoggerFactory logger prepared
                 | Program.ProgramStartResult.CompletedBeforeMain outcome -> outcome
 
             outcomeSignature debuggerOutcome |> shouldEqual (outcomeSignature normalOutcome)

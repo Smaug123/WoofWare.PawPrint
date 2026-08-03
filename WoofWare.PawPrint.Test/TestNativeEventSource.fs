@@ -7,7 +7,6 @@ open Microsoft.CodeAnalysis
 open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
-open WoofWare.PawPrint.ExternImplementations
 
 /// Direct-call tests for the `XplatEventLogger` QCall handlers in
 /// `NativeEventSource`. The handlers are reached from Linux-built CoreLib
@@ -60,15 +59,7 @@ public static class Entry
         use peImage = new MemoryStream (image)
 
         match
-            Program.prepare
-                loggerFactory
-                (Some "NativeEventSourceTest.cs")
-                peImage
-                dotnetRuntimes
-                (MockEnv.make ())
-                Map.empty
-                None
-                []
+            Program.prepare loggerFactory (Some "NativeEventSourceTest.cs") peImage dotnetRuntimes Map.empty None []
         with
         | Program.ProgramStartResult.Ready prepared -> prepared
         | Program.ProgramStartResult.CompletedBeforeMain outcome ->
@@ -143,7 +134,6 @@ public static class Entry
 
         {
             LoggerFactory = loggerFactory
-            Implementations = MockEnv.make ()
             BaseClassTypes = prepared.BaseClassTypes
             Thread = prepared.EntryThread
             State = state

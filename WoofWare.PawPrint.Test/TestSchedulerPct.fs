@@ -6,7 +6,6 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
-open WoofWare.PawPrint.ExternImplementations
 
 /// Pins the contract of the PCT scheduling policy.
 ///
@@ -280,7 +279,7 @@ module TestSchedulerPct =
 
         use peImage = new MemoryStream (image)
 
-        Program.run loggerFactory (Some sourceName) peImage dotnetRuntimes (MockEnv.make ()) Map.empty seed []
+        Program.run loggerFactory (Some sourceName) peImage dotnetRuntimes Map.empty seed []
 
     /// Project a RunOutcome to its salient bit: the terminating thread's
     /// top-of-stack int32 if the run finished normally, or a tag describing

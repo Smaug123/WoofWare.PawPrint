@@ -1,12 +1,10 @@
 namespace WoofWare.PawPrint
 
 open Microsoft.Extensions.Logging
-open WoofWare.PawPrint.ExternImplementations
 
 type NativeCallContext =
     {
         LoggerFactory : ILoggerFactory
-        Implementations : ISystem_Environment_Env
         BaseClassTypes : BaseClassTypes<DumpedAssembly>
         Thread : ThreadId
         State : IlMachineState
@@ -589,4 +587,4 @@ module NativeCall =
             | MethodReturnType.Returns retType -> formatTypeHandle retType
 
         failwith
-            $"Unimplemented native method (%s{implKind}): %s{ctx.TargetAssembly.Name.Name} %s{ctx.TargetType.Namespace}.%s{ctx.TargetType.Name}::%s{instruction.ExecutingMethod.Name}(%s{paramStr}) -> %s{retStr}. Add a mock implementation in ExternImplementations."
+            $"Unimplemented native method (%s{implKind}): %s{ctx.TargetAssembly.Name.Name} %s{ctx.TargetType.Namespace}.%s{ctx.TargetType.Name}::%s{instruction.ExecutingMethod.Name}(%s{paramStr}) -> %s{retStr}. Implement it as a handler in Native/ and register that handler in NativeDispatch."

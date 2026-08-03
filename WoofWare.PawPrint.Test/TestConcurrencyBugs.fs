@@ -188,9 +188,8 @@ module TestConcurrencyBugs =
         use _loggerFactoryResource = loggerFactory
         use peImage = new MemoryStream (image)
         let logger = loggerFactory.CreateLogger "TestConcurrencyBugs"
-        let impls = MockEnv.make ()
 
-        match Program.prepare loggerFactory (Some sourceName) peImage dotnetRuntimes impls Map.empty (Some seed) [] with
+        match Program.prepare loggerFactory (Some sourceName) peImage dotnetRuntimes Map.empty (Some seed) [] with
         | Program.ProgramStartResult.CompletedBeforeMain outcome ->
             // A worker spawned during a static cctor terminated the process
             // before Main got to run. For these scenarios that almost
@@ -205,7 +204,7 @@ module TestConcurrencyBugs =
             RunSummary.CompletedBeforeMain (sprintf "%A" inner)
         | Program.ProgramStartResult.Ready prepared ->
             let rec loop (prepared : Program.PreparedProgram) : RunSummary =
-                match Program.stepPrepared loggerFactory logger impls prepared with
+                match Program.stepPrepared loggerFactory logger prepared with
                 | Program.ProgramStepOutcome.Completed outcome -> classifyRunOutcome outcome
                 | Program.ProgramStepOutcome.Deadlocked (_, stuck) -> RunSummary.Deadlock stuck
                 | Program.ProgramStepOutcome.InstructionStepped (p, _, _) -> loop p

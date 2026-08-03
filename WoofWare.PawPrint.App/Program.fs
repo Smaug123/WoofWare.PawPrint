@@ -8,7 +8,6 @@ open Microsoft.Extensions.Logging
 open Microsoft.Extensions.Logging.Console
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint.Logging
-open WoofWare.PawPrint.ExternImplementations
 
 module AppProgram =
     let private usage =
@@ -154,8 +153,6 @@ module AppProgram =
             let dotnetRuntimes =
                 DotnetRuntime.SelectForDll dllPath |> ImmutableArray.CreateRange
 
-            let impls = NativeImpls.PassThru ()
-
             use fileStream = new FileStream (dllPath, FileMode.Open, FileAccess.Read)
 
             let exitCodeFromStack (state : IlMachineState) (thread : ThreadId) : int =
@@ -210,9 +207,7 @@ module AppProgram =
                     out.Flush ()
                     err.Flush ()
 
-            match
-                Program.run loggerFactory (Some dllPath) fileStream dotnetRuntimes impls hostEnvironment pctSeed args
-            with
+            match Program.run loggerFactory (Some dllPath) fileStream dotnetRuntimes hostEnvironment pctSeed args with
             | RunOutcome.NormalExit (state, thread)
             | RunOutcome.ProcessExit (state, thread) ->
                 drainStandardStreams state
@@ -272,13 +267,11 @@ module AppProgram =
             let dotnetRuntimes =
                 DotnetRuntime.SelectForDll dllPath |> ImmutableArray.CreateRange
 
-            let impls = NativeImpls.PassThru ()
-
             match pctSeed with
             | Some seed -> eprintfn "PCT seed: 0x%016X" seed
             | None -> ()
 
-            DebuggerServer.run loggerFactory dllPath dotnetRuntimes impls hostEnvironment pctSeed args
+            DebuggerServer.run loggerFactory dllPath dotnetRuntimes hostEnvironment pctSeed args
 
         match mode with
         | AppMode.RunGuest (dllPath, pctSeed, args) -> runNormal dllPath pctSeed args

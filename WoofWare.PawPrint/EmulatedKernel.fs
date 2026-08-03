@@ -436,6 +436,21 @@ type EmulatedKernel =
         /// of this default at startup, and tests can pass their own overlay
         /// via `Program.run`.
         Environment : Map<string, string>
+        /// Number of logical processors the simulated process observes, as
+        /// reported by `Environment.ProcessorCount`. Deliberately a value in
+        /// kernel state rather than a host read: real CoreCLR answers this
+        /// from `GetSystemInfo` / `sched_getaffinity`, which would make a
+        /// replay depend on the machine that produced it. Guests size thread
+        /// pools, partition `Parallel.For` ranges, and stripe arrays off this
+        /// number, so letting the host leak in here would change guest
+        /// *control flow* between runs — the single worst kind of
+        /// nondeterminism for a runtime whose purpose is bit-for-bit replay.
+        ///
+        /// Defaults to 1 (see `EmulatedKernel.initial`). Must be >= 1: the
+        /// real property is documented as always positive and BCL callers
+        /// divide by it, so `NativeEnvironment` asserts the invariant at the
+        /// point of use rather than trusting construction.
+        ProcessorCount : int
         /// Pure data model of the simulated process's signal disposition,
         /// per-thread sigprocmasks, and pending-signal queue. Populated by
         /// future slices: nothing in the simulator dispatches signals yet,
@@ -467,6 +482,16 @@ module EmulatedKernel =
     /// observes, so treat it as part of PawPrint's replay contract.
     let cryptoRandomInitialState : uint64 = 0x243F6A8885A308D3UL
 
+    /// Logical-processor count a freshly-minted simulated process reports.
+    /// One, because that is the value every existing run already observed
+    /// (the test harness hard-coded it and the CLI read the host's count, so
+    /// only single-processor behaviour has ever been exercised end-to-end),
+    /// and because a fixed default is a prerequisite for replayability.
+    /// Hosts that want to exercise the guest's multi-processor code paths
+    /// raise it with `EmulatedKernel.withProcessorCount`.
+    [<Literal>]
+    let defaultProcessorCount : int = 1
+
     let initial : EmulatedKernel =
         {
             LastPInvokeError = 0
@@ -486,7 +511,19 @@ module EmulatedKernel =
             CryptoRandomState = cryptoRandomInitialState
             OutputLog = ImmutableArray<OutputLogEntry>.Empty
             Environment = defaultEnvironment
+            ProcessorCount = defaultProcessorCount
             Signals = SignalState.empty
+        }
+
+    /// Set the logical-processor count the simulated process reports. Rejects
+    /// non-positive values at the boundary rather than letting them reach a
+    /// guest that will divide by them.
+    let withProcessorCount (count : int) (kernel : EmulatedKernel) : EmulatedKernel =
+        if count < 1 then
+            failwith $"ProcessorCount must be at least 1; got %d{count}"
+
+        { kernel with
+            ProcessorCount = count
         }
 
     /// Overlay the supplied environment variables on top of the kernel's
