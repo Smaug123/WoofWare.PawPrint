@@ -589,19 +589,49 @@ module NativeMemoryPool =
         let updated = MemoryBlock.writeBytes (string blockId) offset bytes block
         setBlock blockId updated pool
 
+/// Whether a frame was entered by a `newobj` in its caller, and if so under which of
+/// the CLI's two object-construction calling conventions. On return, this decides what
+/// (if anything) gets pushed onto the caller's evaluation stack.
+type ConstructionState =
+    /// The frame was entered by an ordinary `call`/`callvirt`, not a `newobj`. Whatever
+    /// the method's signature says it returns is what gets pushed.
+    | NotConstructing
+    /// Fixed-size object: `newobj` allocated the object *before* the constructor ran and
+    /// passed its address as `this`, so the address is known up front. On return we push
+    /// that address (or, for value types, the object's now-complete contents).
+    | Constructing of ManagedHeapAddress
+    /// Variable-size object, i.e. one whose instance size depends on its constructor
+    /// arguments. CoreCLR flags these `CORINFO_FLG_VAROBJSIZE` (set whenever the
+    /// MethodTable `HasComponentSize`; see `jitinterface.cpp`), and both the JIT and the
+    /// CoreCLR interpreter special-case `newobj` on them: nothing is allocated up front
+    /// and *no `this` is passed* — the constructor allocates the object itself and
+    /// effectively returns it, despite a `void` signature. See `importer.cpp`
+    /// ("At present this can only be String", `newObjThisPtr = nullptr`) and
+    /// `interpreter/compiler.cpp` (`doCallInsteadOfNew = true`).
+    ///
+    /// Arrays are the CLI's other variable-size case, but they never reach here: array
+    /// `newobj` is diverted to the multi-dim allocation path in `executeNewobj`, and
+    /// szarrays go through `newarr`. So in practice this case means `System.String`.
+    ///
+    /// A frame in this state has not yet nominated its object. The constructor must call
+    /// `IlMachineState.withSuppliedConstructedObject`, which moves it to `Constructing`;
+    /// `returnStackFrame` fails loudly on a frame that returns still in this state.
+    | ConstructingVariableSize
+
 type MethodReturnState =
     {
         /// Handle to the caller's frame
         JumpTo : FrameId
         WasInitialisingType : ConcreteTypeHandle option
-        /// The Newobj instruction means we need to push a reference immediately after Ret.
-        WasConstructingObj : ManagedHeapAddress option
+        /// Whether a Newobj instruction in the caller is awaiting an object reference to be
+        /// pushed immediately after Ret, and under which construction calling convention.
+        Constructing : ConstructionState
         /// The IL offset of the call/callvirt/newobj instruction in the caller that created
         /// this frame. Exception dispatch must use this (not the caller's resumed IlOpIndex)
         /// so that handler lookup sees the call site inside the protected region, even when
         /// the advanced resume PC falls outside it.
         CallSiteIlOpIndex : int
-        /// When true, the constructed object (WasConstructingObj) should be dispatched as a
+        /// When true, the constructed object (see `Constructing`) should be dispatched as a
         /// managed exception on return instead of being pushed onto the caller's eval stack.
         /// Used by raiseRuntimeException to run exception ctors via the dispatch loop.
         DispatchAsExceptionOnReturn : bool
@@ -803,6 +833,9 @@ and MethodState =
     /// `args` must be populated with entries of the right type.
     /// If `method` is an instance method, `args` must be of length 1+numParams.
     /// If `method` is static, `args` must be of length numParams.
+    /// The exception is a frame entered under the variable-size newobj convention
+    /// (`ConstructionState.ConstructingVariableSize`), which receives no `this` despite
+    /// the constructor being an instance method, and so takes numParams entries.
     static member Empty
         (concreteTypes : AllConcreteTypes)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -815,13 +848,34 @@ and MethodState =
         : Result<MethodState, WoofWare.PawPrint.AssemblyReference list>
         =
         do
-            if method.IsStatic then
-                if args.Length <> method.Parameters.Length then
-                    failwith
-                        $"Static method {method.Name} should have had %i{method.Parameters.Length} parameters, but was given %i{args.Length}"
-            else if args.Length <> method.Parameters.Length + 1 then
+            // A frame entered under the variable-size (CORINFO_FLG_VAROBJSIZE) newobj
+            // convention gets no `this` slot even though the constructor is an instance
+            // method: CoreCLR calls it with a null this-pointer and the constructor
+            // allocates the object itself. See `ConstructionState.ConstructingVariableSize`.
+            let isVariableSizeCtorFrame =
+                match returnState with
+                | None -> false
+                | Some returnState ->
+                    match returnState.Constructing with
+                    | ConstructionState.ConstructingVariableSize -> true
+                    | ConstructionState.Constructing _
+                    | ConstructionState.NotConstructing -> false
+
+            let expectsThis = not method.IsStatic && not isVariableSizeCtorFrame
+
+            let expected = method.Parameters.Length + (if expectsThis then 1 else 0)
+
+            if args.Length <> expected then
+                let shape =
+                    if method.IsStatic then
+                        "Static method"
+                    elif isVariableSizeCtorFrame then
+                        "Variable-size constructor"
+                    else
+                        "Non-static method"
+
                 failwith
-                    $"Non-static method {method.Name} should have had %i{method.Parameters.Length + 1} parameters, but was given %i{args.Length}"
+                    $"%s{shape} {method.Name} should have had %i{expected} parameters, but was given %i{args.Length}"
 
         let localVariableSig =
             match MethodInfo.tryIlBody method with

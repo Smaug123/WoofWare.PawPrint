@@ -72,7 +72,7 @@ module internal IntrinsicHelpers =
         loggerFactory : ILoggerFactory ->
         baseClassTypes : BaseClassTypes<DumpedAssembly> ->
         currentThread : ThreadId ->
-        wasConstructing : ManagedHeapAddress option ->
+        wasConstructing : ConstructionState ->
         methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> ->
         state : IlMachineState ->
             IlMachineState

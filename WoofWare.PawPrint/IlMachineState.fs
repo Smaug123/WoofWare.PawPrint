@@ -63,8 +63,8 @@ module IlMachineState =
 
     let mapFrame = IlMachineThreadState.mapFrame
 
-    let withReplacedConstructedObject =
-        IlMachineThreadState.withReplacedConstructedObject
+    let withSuppliedConstructedObject =
+        IlMachineThreadState.withSuppliedConstructedObject
 
     let markActiveFrameWrapInTargetInvocation =
         IlMachineThreadState.markActiveFrameWrapInTargetInvocation
@@ -105,6 +105,8 @@ module IlMachineState =
     let allocateArray = IlMachineThreadState.allocateArray
 
     let allocateMultiDimArray = IlMachineThreadState.allocateMultiDimArray
+
+    let cloneArray = IlMachineThreadState.cloneArray
 
     let allocateStringData = IlMachineThreadState.allocateStringData
 

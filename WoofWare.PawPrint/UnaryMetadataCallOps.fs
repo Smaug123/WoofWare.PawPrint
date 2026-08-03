@@ -642,7 +642,7 @@ module internal UnaryMetadataCallOps =
                 loggerFactory
                 baseClassTypes
                 None
-                None
+                ConstructionState.NotConstructing
                 false
                 false
                 true
@@ -1032,7 +1032,7 @@ module internal UnaryMetadataCallOps =
             loggerFactory
             baseClassTypes
             None
-            None
+            ConstructionState.NotConstructing
             performInterfaceResolution
             false
             true
