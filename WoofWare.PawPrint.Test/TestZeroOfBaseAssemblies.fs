@@ -386,3 +386,237 @@ public struct Outer
 
         DumpedAssembly.isValueType baseTypes loadedAfterHelper valueOptionTypeDef
         |> shouldEqual true
+
+    /// Shared setup for the recursively-constructed-type regressions: compile
+    /// a single small C# library and load it alongside corelib.
+    let private loadCompiledLibrary (assemblyName : string) (source : string) : DumpedAssembly =
+        let bytes =
+            Roslyn.compileAssembly assemblyName OutputKind.DynamicallyLinkedLibrary [] [ source ]
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use stream = new MemoryStream (bytes)
+        global.WoofWare.PawPrint.AssemblyApi.read loggerFactory None stream
+
+    [<Test>]
+    let ``priming terminates for recursively-nested struct with array-of-recursive field`` () : unit =
+        // ECMA-335 forbids a struct that directly contains itself by value
+        // (infinite size), but it is perfectly legal for a struct's field to
+        // be an *array* of a deeper instantiation of itself. Arrays are
+        // terminal in CliType.zeroOf (returned as `ObjectRef None` without
+        // inspecting their element type), so the helper must also treat them
+        // as terminal — otherwise priming `S<int>` would synthesise
+        // `S<S<int>>`, then `S<S<S<int>>>`, and so on forever, because every
+        // synthesised instantiation is a distinct ConcreteTypeHandle the
+        // visited-set cannot collapse.
+        let corelib = readAssembly corelibPath
+        let baseTypes = Corelib.getBaseTypes corelib
+
+        let asm =
+            loadCompiledLibrary
+                "ArrayRecursiveStructRegression"
+                """
+public struct S<T>
+{
+    public S<S<T>>[] Items;
+}
+"""
+
+        let sTypeDef =
+            asm.TryGetTopLevelTypeDef "" "S`1"
+            |> Option.defaultWith (fun () -> failwith "Failed to find compiled struct S<T>")
+
+        let loaded : ImmutableDictionary<string, DumpedAssembly> =
+            [ corelib ; asm ]
+            |> Seq.map (fun a -> System.Collections.Generic.KeyValuePair (a.Name.FullName, a))
+            |> ImmutableDictionary.CreateRange
+
+        let loadAssembly = OnDemandAssemblyLoad [ runtimeDir ]
+
+        let concretizeCtx : TypeConcretization.ConcretizationContext<DumpedAssembly> =
+            {
+                ConcreteTypes = Corelib.concretizeAll loaded baseTypes AllConcreteTypes.Empty
+                LoadedAssemblies = loaded
+                BaseTypes = baseTypes
+            }
+
+        let sIntDefn : TypeDefn =
+            TypeDefn.GenericInstantiation (
+                TypeDefn.FromDefinition (sTypeDef.Identity, SignatureTypeKind.ValueType),
+                ImmutableArray.CreateRange [ TypeDefn.PrimitiveType PrimitiveType.Int32 ]
+            )
+
+        let handle, concretizeCtx =
+            TypeConcretization.concretizeType
+                concretizeCtx
+                (loadAssembly :> IAssemblyLoad)
+                asm.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                sIntDefn
+
+        // The helper must terminate (i.e. not blow the stack or run forever).
+        Concretization.ensureBaseAssembliesLoadedForConcreteHandle
+            (loadAssembly :> IAssemblyLoad)
+            baseTypes
+            (System.Collections.Generic.HashSet ())
+            concretizeCtx.LoadedAssemblies
+            concretizeCtx.ConcreteTypes
+            handle
+        |> ignore
+
+    [<Test>]
+    let ``priming does not descend into generic arguments of reference types`` () : unit =
+        // A reference type is terminal in CliType.zeroOf — it becomes
+        // `ObjectRef None` without inspecting either its fields or its
+        // generic arguments. The helper must respect that or it will loop
+        // forever on a legal shape like `struct S<T> { Box<S<S<T>>> F; }`,
+        // where the recursion goes S<int> → Box<S<S<int>>> → S<S<int>> →
+        // Box<S<S<S<int>>>> → ...
+        let corelib = readAssembly corelibPath
+        let baseTypes = Corelib.getBaseTypes corelib
+
+        let asm =
+            loadCompiledLibrary
+                "RefTypeRecursiveGenericArgRegression"
+                """
+public class Box<T> { }
+public struct S<T>
+{
+    public Box<S<S<T>>> Field;
+}
+"""
+
+        let sTypeDef =
+            asm.TryGetTopLevelTypeDef "" "S`1"
+            |> Option.defaultWith (fun () -> failwith "Failed to find compiled struct S<T>")
+
+        let loaded : ImmutableDictionary<string, DumpedAssembly> =
+            [ corelib ; asm ]
+            |> Seq.map (fun a -> System.Collections.Generic.KeyValuePair (a.Name.FullName, a))
+            |> ImmutableDictionary.CreateRange
+
+        let loadAssembly = OnDemandAssemblyLoad [ runtimeDir ]
+
+        let concretizeCtx : TypeConcretization.ConcretizationContext<DumpedAssembly> =
+            {
+                ConcreteTypes = Corelib.concretizeAll loaded baseTypes AllConcreteTypes.Empty
+                LoadedAssemblies = loaded
+                BaseTypes = baseTypes
+            }
+
+        let sIntDefn : TypeDefn =
+            TypeDefn.GenericInstantiation (
+                TypeDefn.FromDefinition (sTypeDef.Identity, SignatureTypeKind.ValueType),
+                ImmutableArray.CreateRange [ TypeDefn.PrimitiveType PrimitiveType.Int32 ]
+            )
+
+        let handle, concretizeCtx =
+            TypeConcretization.concretizeType
+                concretizeCtx
+                (loadAssembly :> IAssemblyLoad)
+                asm.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                sIntDefn
+
+        // Must terminate.
+        Concretization.ensureBaseAssembliesLoadedForConcreteHandle
+            (loadAssembly :> IAssemblyLoad)
+            baseTypes
+            (System.Collections.Generic.HashSet ())
+            concretizeCtx.LoadedAssemblies
+            concretizeCtx.ConcreteTypes
+            handle
+        |> ignore
+
+    [<Test>]
+    let ``concretizeMethod primes method-level generic arguments used only by intrinsics`` () : unit =
+        // Regression for Unsafe.SizeOf<T> / Span<T>.Clear / etc: their
+        // intrinsic dispatch reads T from methodToCall.Generics (or the
+        // declaring type's generics), NOT from the method's own signature.
+        // If concretizeMethod doesn't prime those generic-argument handles,
+        // subsequent cliTypeZeroOfHandle on T can still crash with the
+        // unloaded-base-assembly exception.
+        let corelib = readAssembly corelibPath
+        let fsharpCore = readAssembly fsharpCoreNetstandard21Path
+        let baseTypes = Corelib.getBaseTypes corelib
+        assertNetstandardAvailable ()
+
+        // A minimal generic method that never mentions T in its signature —
+        // the only place T appears is in methodToCall.Generics after
+        // concretization.
+        let asm =
+            loadCompiledLibrary
+                "IntrinsicGenericArgRegression"
+                """
+public static class C
+{
+    public static void M<T>() {}
+}
+"""
+
+        let holderTypeDef =
+            asm.TryGetTopLevelTypeDef "" "C"
+            |> Option.defaultWith (fun () -> failwith "Failed to find compiled type C")
+
+        let mMethod =
+            holderTypeDef.Methods
+            |> List.tryFind (fun m -> m.Name = "M")
+            |> Option.defaultWith (fun () -> failwith "Failed to find method M<T>")
+
+        let loaded : ImmutableDictionary<string, DumpedAssembly> =
+            [ corelib ; fsharpCore ; asm ]
+            |> Seq.map (fun a -> System.Collections.Generic.KeyValuePair (a.Name.FullName, a))
+            |> ImmutableDictionary.CreateRange
+
+        let loadAssembly = OnDemandAssemblyLoad [ runtimeDir ]
+
+        // Concretize FSharpValueOption<int> into the concreteTypes dictionary
+        // (still with netstandard NOT loaded), so we can pass its handle as
+        // the method's generic argument. Concretization does not walk base
+        // types, so netstandard remains absent at this point.
+        let valueOptionTypeDef = getValueOptionTypeDef fsharpCore
+
+        let valueOptionInt : TypeDefn =
+            TypeDefn.GenericInstantiation (
+                TypeDefn.FromDefinition (valueOptionTypeDef.Identity, SignatureTypeKind.ValueType),
+                ImmutableArray.CreateRange [ TypeDefn.PrimitiveType PrimitiveType.Int32 ]
+            )
+
+        let concretizeCtx : TypeConcretization.ConcretizationContext<DumpedAssembly> =
+            {
+                ConcreteTypes = Corelib.concretizeAll loaded baseTypes AllConcreteTypes.Empty
+                LoadedAssemblies = loaded
+                BaseTypes = baseTypes
+            }
+
+        let valueOptionHandle, concretizeCtx =
+            TypeConcretization.concretizeType
+                concretizeCtx
+                (loadAssembly :> IAssemblyLoad)
+                fsharpCore.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                valueOptionInt
+
+        // Sanity: concretization alone did not need netstandard.
+        concretizeCtx.LoadedAssemblies.Keys
+        |> Seq.exists (fun (n : string) -> n.StartsWith ("netstandard,", StringComparison.OrdinalIgnoreCase))
+        |> shouldEqual false
+
+        let _, _, loadedAfter =
+            Concretization.concretizeMethod
+                concretizeCtx.ConcreteTypes
+                (loadAssembly :> IAssemblyLoad)
+                concretizeCtx.LoadedAssemblies
+                baseTypes
+                mMethod
+                ImmutableArray.Empty
+                (ImmutableArray.CreateRange [ valueOptionHandle ])
+
+        // The sweep must have primed the method's generic argument, which
+        // means walking FSharpValueOption<int>'s base chain, which means
+        // netstandard is now loaded.
+        loadedAfter.Keys
+        |> Seq.exists (fun (n : string) -> n.StartsWith ("netstandard,", StringComparison.OrdinalIgnoreCase))
+        |> shouldEqual true
