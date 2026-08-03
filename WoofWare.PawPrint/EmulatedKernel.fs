@@ -531,6 +531,81 @@ module EmulatedKernel =
             ProcessorCount = count
         }
 
+    /// Largest value CoreCLR will accept from the processor-count
+    /// configuration knob (`MAX_PROCESSOR_COUNT` in
+    /// coreclr/utilcode/util.cpp). Values above this fall back to detection.
+    [<Literal>]
+    let private maxConfiguredProcessorCount : int = 0xffff
+
+    /// `strtoul`-shaped base-10 parse of a CLRConfig integer value, returning
+    /// `None` where CoreCLR's `CLRConfig::GetConfigDWORD` would report failure
+    /// (and hence substitute the knob's declared default of 0).
+    ///
+    /// Matches `u16_strtoul(val, &endPtr, 10)` plus the
+    /// `errno != ERANGE && endPtr != val` success test in
+    /// coreclr/utilcode/clrconfig.cpp: leading whitespace is skipped, at least
+    /// one digit is required, and trailing garbage is ignored — so "4abc"
+    /// really does yield 4 on the real runtime, and we reproduce that rather
+    /// than being stricter than the thing we emulate.
+    ///
+    /// Deliberate divergence: a leading '-' is rejected here, whereas C
+    /// `strtoul` would wrap it into a huge unsigned value. Every such value is
+    /// then rejected by the caller's `<= 0xffff` window anyway, except for
+    /// contrived inputs chosen to wrap exactly back into it (e.g.
+    /// "-4294901761"). Reproducing that would mean modelling the platform's
+    /// `unsigned long` width, and no real configuration depends on it.
+    let private tryParseConfigBase10 (s : string) : int option =
+        let mutable i = 0
+
+        while i < s.Length && System.Char.IsWhiteSpace s.[i] do
+            i <- i + 1
+
+        if i < s.Length && s.[i] = '+' then
+            i <- i + 1
+        elif i < s.Length && s.[i] = '-' then
+            // See the divergence note above.
+            i <- s.Length + 1
+
+        let digitStart = i
+        let mutable acc = 0L
+
+        while i < s.Length && s.[i] >= '0' && s.[i] <= '9' do
+            // Saturate rather than overflow: anything this large is out of the
+            // caller's acceptance window regardless of its exact value.
+            acc <- min (acc * 10L + int64 (int s.[i] - int '0')) (int64 maxConfiguredProcessorCount + 1L)
+            i <- i + 1
+
+        if i > s.Length || i = digitStart then
+            None
+        else
+            Some (int acc)
+
+    /// Processor count the guest actually observes from
+    /// `Environment.ProcessorCount`.
+    ///
+    /// CoreCLR's `GetCurrentProcessCpuCount` (coreclr/utilcode/util.cpp) gives
+    /// the `PROCESSOR_COUNT` configuration knob precedence over CPU detection,
+    /// accepting it only when it lands in `(0, MAX_PROCESSOR_COUNT]`, and
+    /// otherwise falling back to affinity/quota detection. PawPrint reproduces
+    /// that shape with `ProcessorCount` standing in for the detection result.
+    ///
+    /// Reading the knob out of the *kernel's* environment table (rather than
+    /// the host process's) is what keeps this deterministic: the table is
+    /// recorded state that a replay reconstructs exactly, so honouring the
+    /// standard knob costs nothing in reproducibility. `CLRConfig` tries the
+    /// `DOTNET_` prefix first and falls back to the legacy `COMPlus_` prefix
+    /// only when the former is absent (coreclr/utilcode/clrconfig.cpp), and
+    /// both lookups are case-sensitive on the Unix hosts this project targets.
+    let effectiveProcessorCount (kernel : EmulatedKernel) : int =
+        let configured =
+            match Map.tryFind "DOTNET_PROCESSOR_COUNT" kernel.Environment with
+            | Some v -> Some v
+            | None -> Map.tryFind "COMPlus_PROCESSOR_COUNT" kernel.Environment
+
+        match configured |> Option.bind tryParseConfigBase10 with
+        | Some count when count > 0 && count <= maxConfiguredProcessorCount -> count
+        | _ -> kernel.ProcessorCount
+
     /// Overlay the supplied environment variables on top of the kernel's
     /// existing `Environment` map. Used by `Program.run` / the CLI to layer
     /// host or test-supplied env vars on top of `defaultEnvironment` without

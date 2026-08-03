@@ -65,6 +65,23 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // Same guest, reached the other way: the count comes from the
+                // guest-visible `DOTNET_PROCESSOR_COUNT` knob rather than from
+                // `KernelConfig.ProcessorCount`, which stays at its default.
+                // Covers the whole chain (env overlay -> kernel table ->
+                // `effectiveProcessorCount` -> the native handler), where
+                // `TestEffectiveProcessorCount` covers the resolution rules
+                // themselves.
+                FileName = "ProcessorCountConfigured.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        Environment = Map.ofList [ "DOTNET_PROCESSOR_COUNT", "4" ]
+                    }
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // `Environment.Exit` from the entry thread. Exercises the same
                 // `ProcessExit` path as `ExitFromWorker.cs` below, but with the
                 // caller being the thread whose return would otherwise have

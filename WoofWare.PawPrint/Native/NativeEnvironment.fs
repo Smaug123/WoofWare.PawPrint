@@ -39,7 +39,11 @@ module NativeEnvironment =
             // Answered from kernel state, never from the host: see the
             // `EmulatedKernel.ProcessorCount` doc comment for why a host read
             // here would be a replayability bug rather than a mere impurity.
-            let processorCount = state.Kernel.ProcessorCount
+            // `effectiveProcessorCount` also applies the guest-visible
+            // `DOTNET_PROCESSOR_COUNT` / `COMPlus_PROCESSOR_COUNT` override
+            // with CoreCLR's precedence, reading it from the kernel's own
+            // (recorded, replayable) environment table.
+            let processorCount = EmulatedKernel.effectiveProcessorCount state.Kernel
 
             if processorCount < 1 then
                 // `Environment.ProcessorCount` is documented as always
