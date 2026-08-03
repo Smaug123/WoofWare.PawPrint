@@ -177,7 +177,7 @@ module AbstractMachine =
                     loggerFactory
                     baseClassTypes
                     None
-                    None
+                    ConstructionState.NotConstructing
                     false
                     false
                     false

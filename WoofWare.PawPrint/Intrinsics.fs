@@ -24,7 +24,7 @@ module Intrinsics =
     let call
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<_>)
-        (wasConstructing : ManagedHeapAddress option)
+        (wasConstructing : ConstructionState)
         (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (currentThread : ThreadId)
         (state : IlMachineState)

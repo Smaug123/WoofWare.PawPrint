@@ -793,7 +793,7 @@ module IlMachineStateExecution =
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (wasInitialising : ConcreteTypeHandle option)
-        (wasConstructing : ManagedHeapAddress option)
+        (wasConstructing : ConstructionState)
         (performInterfaceResolution : bool)
         (wasClassConstructor : bool)
         (advanceProgramCounterOfCaller : bool)
@@ -1074,7 +1074,7 @@ module IlMachineStateExecution =
                         loggerFactory
                         baseClassTypes
                         None
-                        (Some allocatedAddr)
+                        (ConstructionState.Constructing allocatedAddr)
                         false
                         false
                         advanceProgramCounterOfCaller
@@ -1211,73 +1211,90 @@ module IlMachineStateExecution =
             else
                 CliType.ObjectRef None
 
+        // Pop exactly the method's declared parameters, leaving no `this` slot in the
+        // resulting `Arguments` array. Shared by genuinely static methods and by
+        // variable-size constructors, which CoreCLR calls with no `this` at all (see
+        // `ConstructionState.ConstructingVariableSize`).
+        let popDeclaredParametersOnly () =
+            let args = ImmutableArray.CreateBuilder methodToCall.Parameters.Length
+            let mutable currentState = activeMethodState
+
+            for i = methodToCall.Parameters.Length - 1 downto 0 do
+                let arg, newState = popAndCoerceArg argZeroObjects.[i] currentState
+                args.Add arg
+                currentState <- newState
+
+            args.Reverse ()
+            args.ToImmutable (), currentState
+
         // Collect arguments based on calling convention
         let args, afterPop =
             if methodToCall.IsStatic then
-                // Static method: pop args in reverse order
-                let args = ImmutableArray.CreateBuilder methodToCall.Parameters.Length
-                let mutable currentState = activeMethodState
-
-                for i = methodToCall.Parameters.Length - 1 downto 0 do
-                    let arg, newState = popAndCoerceArg argZeroObjects.[i] currentState
-                    args.Add arg
-                    currentState <- newState
-
-                args.Reverse ()
-                args.ToImmutable (), currentState
+                popDeclaredParametersOnly ()
             else
+
+            match wasConstructing with
+            | ConstructionState.ConstructingVariableSize ->
+                // Variable-size constructor: `executeNewobj` pushed no `this`, so the eval
+                // stack holds only the declared arguments. The constructor's `Arguments`
+                // array is correspondingly `this`-less, and the object it allocates is
+                // handed back via `withSuppliedConstructedObject`.
+                popDeclaredParametersOnly ()
+            | ConstructionState.Constructing _ ->
                 // Instance method: handle `this` pointer
                 let argCount = methodToCall.Parameters.Length
                 let args = ImmutableArray.CreateBuilder (argCount + 1)
                 let mutable currentState = activeMethodState
                 let thisArgTarget = thisArgCoercionTarget methodToCall
 
-                match wasConstructing with
-                | Some _ ->
-                    // Constructor: `this` is on top of stack, by our own odd little calling convention
-                    // where Newobj puts the object pointer on top
-                    let thisArg, newState = popAndCoerceArg thisArgTarget currentState
+                // Constructor: `this` is on top of stack, by our own odd little calling convention
+                // where Newobj puts the object pointer on top
+                let thisArg, newState = popAndCoerceArg thisArgTarget currentState
 
+                currentState <- newState
+
+                // Pop remaining args in reverse
+                for i = argCount - 1 downto 0 do
+                    let arg, newState = popAndCoerceArg argZeroObjects.[i] currentState
+                    args.Add arg
                     currentState <- newState
 
-                    // Pop remaining args in reverse
-                    for i = argCount - 1 downto 0 do
-                        let arg, newState = popAndCoerceArg argZeroObjects.[i] currentState
-                        args.Add arg
-                        currentState <- newState
+                args.Add thisArg
+                args.Reverse ()
+                args.ToImmutable (), currentState
+            | ConstructionState.NotConstructing ->
+                // Instance method: handle `this` pointer
+                let argCount = methodToCall.Parameters.Length
+                let args = ImmutableArray.CreateBuilder (argCount + 1)
+                let mutable currentState = activeMethodState
+                let thisArgTarget = thisArgCoercionTarget methodToCall
 
-                    args.Add thisArg
-                    args.Reverse ()
-                    args.ToImmutable (), currentState
-                | None ->
-                    // Regular instance method: args then `this`
-                    for i = argCount - 1 downto 0 do
-                        let arg, newState = popAndCoerceArg argZeroObjects.[i] currentState
-                        args.Add arg
-                        currentState <- newState
-
-                    let thisArg, newState =
-                        let rawThis, newState = MethodState.popFromStack currentState
-
-                        let coerced =
-                            match thisArgTarget, rawThis with
-                            | CliType.RuntimePointer _, EvalStackValue.ObjectRef addr ->
-                                // Boxed value type receiver: implicit unbox to managed pointer
-                                // into the heap object's value data.
-                                CliType.RuntimePointer (
-                                    CliRuntimePointer.Managed (
-                                        ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [])
-                                    )
-                                )
-                            | _ -> EvalStackValue.toCliTypeCoerced thisArgTarget rawThis
-
-                        coerced, newState
-
-                    args.Add thisArg
+                // Regular instance method: args then `this`
+                for i = argCount - 1 downto 0 do
+                    let arg, newState = popAndCoerceArg argZeroObjects.[i] currentState
+                    args.Add arg
                     currentState <- newState
 
-                    args.Reverse ()
-                    args.ToImmutable (), currentState
+                let thisArg, newState =
+                    let rawThis, newState = MethodState.popFromStack currentState
+
+                    let coerced =
+                        match thisArgTarget, rawThis with
+                        | CliType.RuntimePointer _, EvalStackValue.ObjectRef addr ->
+                            // Boxed value type receiver: implicit unbox to managed pointer
+                            // into the heap object's value data.
+                            CliType.RuntimePointer (
+                                CliRuntimePointer.Managed (ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, []))
+                            )
+                        | _ -> EvalStackValue.toCliTypeCoerced thisArgTarget rawThis
+
+                    coerced, newState
+
+                args.Add thisArg
+                currentState <- newState
+
+                args.Reverse ()
+                args.ToImmutable (), currentState
 
         // Helper to create new frame with assembly loading
         let rec createNewFrame state =
@@ -1286,7 +1303,7 @@ module IlMachineStateExecution =
                     {
                         JumpTo = threadState.ActiveMethodState
                         WasInitialisingType = wasInitialising
-                        WasConstructingObj = wasConstructing
+                        Constructing = wasConstructing
                         CallSiteIlOpIndex = callSiteIlOpIndexOverride |> Option.defaultValue afterPop.IlOpIndex
                         DispatchAsExceptionOnReturn = dispatchAsExceptionOnReturn
                         WrapExceptionInTargetInvocation = wrapExceptionInTargetInvocation
@@ -1485,7 +1502,7 @@ module IlMachineStateExecution =
                     loggerFactory
                     baseClassTypes
                     (Some ty)
-                    None
+                    ConstructionState.NotConstructing
                     true
                     true
                     false
@@ -1626,7 +1643,7 @@ module IlMachineStateExecution =
             loggerFactory
             baseClassTypes
             None
-            (Some addr) // weAreConstructingObj
+            (ConstructionState.Constructing addr) // weAreConstructingObj
             false // no interface resolution
             false // wasClassConstructor
             false // do NOT advance caller PC — dispatch needs the faulting instruction's offset

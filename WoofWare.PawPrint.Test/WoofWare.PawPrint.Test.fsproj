@@ -84,6 +84,7 @@
     <Compile Include="TestNativeEventSource.fs" />
     <Compile Include="TestSchedulerVoluntaryYield.fs" />
     <Compile Include="TestSchedulerPct.fs" />
+    <Compile Include="TestVariableSizeNewobj.fs" />
     <Compile Include="TestPureCases.fs" />
     <Compile Include="TestFSharpPureCases.fs" />
     <Compile Include="TestImpureCases.fs" />
