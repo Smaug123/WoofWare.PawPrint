@@ -74,10 +74,12 @@ let runGuest (dllPath : string) : int * ImmutableArray<OutputLogEntry> =
             | EvalStackValue.Int32 i -> i
             | ret -> failwith $"expected program to return an int, but it returned %O{ret}"
 
-    // PawPrint never writes to the host's stdout/stderr during execution: the guest's
-    // writes are accumulated in the kernel's output log, in the order the guest made
-    // them, so that a run stays deterministic and replayable. Drain the log at the end
-    // if you want to see the output.
+    // The guest's own writes to stdout/stderr never reach the host's streams during
+    // execution: they're accumulated in the kernel's output log, in the order the guest
+    // made them, so that a run stays deterministic and replayable. Drain the log at the
+    // end if you want to see the output. (PawPrint's *own* logging is a separate matter:
+    // the `loggerFactory` above sends it wherever you configured, and `AddConsole` with
+    // its default settings will indeed write to the host console during the run.)
     exitCode, terminalState.Kernel.OutputLog
 ```
 
