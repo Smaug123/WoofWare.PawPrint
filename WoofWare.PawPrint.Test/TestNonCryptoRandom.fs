@@ -142,6 +142,22 @@ module TestNonCryptoRandom =
         |> shouldEqual NonCryptoRandom.initialState
 
     [<Test>]
+    let ``EmulatedKernel.initial seeds CryptoRandomState distinctly`` () : unit =
+        // `SystemNative_GetCryptographicallySecureRandomBytes` draws from its
+        // own stream so that non-crypto consumers (`new Random()`, `HashCode`,
+        // Marvin) can't shift the bytes `Guid.NewGuid` observes. That property
+        // only holds if the two seeds actually differ: sharing a seed would
+        // make the two streams emit identical byte sequences from a fresh
+        // kernel, which is both surprising and a sign the streams got merged.
+        EmulatedKernel.initial.CryptoRandomState
+        |> shouldEqual EmulatedKernel.cryptoRandomInitialState
+
+        EmulatedKernel.initial.CryptoRandomState |> shouldNotEqual 0UL
+
+        EmulatedKernel.initial.CryptoRandomState
+        |> shouldNotEqual EmulatedKernel.initial.NonCryptoRandomState
+
+    [<Test>]
     let ``nextDouble is pure in the starting state`` () : unit =
         // Same input state ⇒ same (value, newState). Determinism is the
         // whole point — schedule fuzzing needs to be able to replay a seed
