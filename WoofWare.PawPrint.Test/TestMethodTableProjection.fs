@@ -3101,7 +3101,12 @@ public unsafe struct PointerWrapper
             match frame.ReturnState with
             | Some returnState ->
                 returnState.DispatchAsExceptionOnReturn |> shouldEqual true
-                returnState.WasConstructingObj |> Option.isSome |> shouldEqual true
+
+                // NullReferenceException is a fixed-size type, so the exception object was
+                // allocated up front and handed to the ctor as `this`.
+                match returnState.Constructing with
+                | ConstructionState.Constructing _ -> ()
+                | other -> failwith $"Expected the NullReferenceException ctor frame to be constructing, got %O{other}"
             | None -> failwith "Expected NullReferenceException constructor frame to have a return state"
         | other -> failwith $"Expected Stind_ref wrapped null to raise a managed exception, got %O{other}"
 

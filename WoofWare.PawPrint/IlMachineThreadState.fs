@@ -38,12 +38,22 @@ module IlMachineThreadState =
             ThreadState = state.ThreadState |> Map.add thread threadState
         }
 
-    /// Replace the `WasConstructingObj` of the active frame's `ReturnState` with `Some newAddr`.
-    /// Used by InternalCall constructors that allocate the constructed object themselves
-    /// (e.g. `String..ctor(char*)`): the placeholder allocated by `executeNewobj` is discarded
-    /// and the next `returnStackFrame` pushes `newAddr` onto the caller's eval stack instead.
-    /// Fails loudly if invoked outside a constructor frame.
-    let withReplacedConstructedObject
+    /// Nominate `newAddr` as the object constructed by the active variable-size
+    /// constructor frame, moving its `ConstructionState` from `ConstructingVariableSize`
+    /// to `Constructing newAddr`. The next `returnStackFrame` then pushes `newAddr` onto
+    /// the caller's eval stack, completing the `newobj`.
+    ///
+    /// This is the second half of the `CORINFO_FLG_VAROBJSIZE` calling convention (see
+    /// `ConstructionState.ConstructingVariableSize`): `executeNewobj` deliberately
+    /// allocated nothing and passed no `this`, so the constructor — currently only
+    /// `String..ctor(char*)` and `String..ctor(ReadOnlySpan<char>)` — is the sole party
+    /// that knows the object's address.
+    ///
+    /// Fails loudly if the active frame is not a variable-size constructor frame: calling
+    /// it on a fixed-size `Constructing` frame would silently orphan the object that
+    /// `newobj` already allocated and handed the ctor as `this`, which is exactly the
+    /// class of bug this convention exists to prevent.
+    let withSuppliedConstructedObject
         (newAddr : ManagedHeapAddress)
         (thread : ThreadId)
         (state : IlMachineState)
@@ -56,18 +66,21 @@ module IlMachineThreadState =
             match frame.ReturnState with
             | None ->
                 failwith
-                    $"withReplacedConstructedObject: active frame %s{frame.ExecutingMethod.Name} has no ReturnState; cannot redirect a non-existent constructor return"
+                    $"withSuppliedConstructedObject: active frame %s{frame.ExecutingMethod.Name} has no ReturnState; cannot supply an object for a non-existent constructor return"
             | Some returnState ->
-                match returnState.WasConstructingObj with
-                | None ->
+                match returnState.Constructing with
+                | ConstructionState.NotConstructing ->
                     failwith
-                        $"withReplacedConstructedObject: active frame %s{frame.ExecutingMethod.Name} is not a constructor frame (WasConstructingObj is None)"
-                | Some _ ->
+                        $"withSuppliedConstructedObject: active frame %s{frame.ExecutingMethod.Name} is not a constructor frame (ConstructionState is NotConstructing)"
+                | ConstructionState.Constructing existing ->
+                    failwith
+                        $"withSuppliedConstructedObject: active frame %s{frame.ExecutingMethod.Name} is a fixed-size constructor frame already constructing %O{existing}; only variable-size (CORINFO_FLG_VAROBJSIZE) constructors supply their own object, and overwriting here would orphan the object newobj passed as `this`"
+                | ConstructionState.ConstructingVariableSize ->
                     { frame with
                         ReturnState =
                             Some
                                 { returnState with
-                                    WasConstructingObj = Some newAddr
+                                    Constructing = ConstructionState.Constructing newAddr
                                 }
                     }
 
@@ -181,11 +194,12 @@ module IlMachineThreadState =
         match threadStateWithSyntheticFrame.MethodState.ReturnState with
         | None -> ReturnFrameResult.NoFrameToReturn
         | Some returnState ->
-            match returnState.WasConstructingObj with
-            | Some _ ->
+            match returnState.Constructing with
+            | ConstructionState.Constructing _
+            | ConstructionState.ConstructingVariableSize ->
                 failwith
                     $"Synthetic stack frame %s{threadStateWithSyntheticFrame.MethodState.ExecutingMethod.Name} unexpectedly represented object construction"
-            | None ->
+            | ConstructionState.NotConstructing ->
                 if returnState.DispatchAsExceptionOnReturn then
                     failwith
                         $"Synthetic stack frame %s{threadStateWithSyntheticFrame.MethodState.ExecutingMethod.Name} unexpectedly requested exception dispatch on return"
@@ -249,8 +263,16 @@ module IlMachineThreadState =
                 ThreadState = state.ThreadState |> Map.add currentThread threadState
             }
 
-        match returnState.WasConstructingObj with
-        | Some constructing ->
+        match returnState.Constructing with
+        | ConstructionState.ConstructingVariableSize ->
+            // The variable-size (CORINFO_FLG_VAROBJSIZE) convention: `newobj` allocated
+            // nothing and passed no `this`, so the constructor was the only party that
+            // could name the object. Reaching `ret` without having called
+            // `withSuppliedConstructedObject` means it never did, and there is nothing
+            // to push for the pending `newobj`.
+            failwith
+                $"Variable-size constructor %s{returningMethodState.ExecutingMethod.Name} returned without supplying a constructed object; it must call IlMachineState.withSuppliedConstructedObject before returning"
+        | ConstructionState.Constructing constructing ->
             if returnState.DispatchAsExceptionOnReturn then
                 // This ctor was constructing a runtime-synthesised exception object.
                 // Don't push it onto the eval stack; signal to the caller that exception
@@ -280,7 +302,7 @@ module IlMachineThreadState =
             else
                 state |> pushToEvalStack (CliType.ofManagedObject constructing) currentThread
             |> ReturnFrameResult.NormalReturn
-        | None ->
+        | ConstructionState.NotConstructing ->
             let retType = returningMethodState.ExecutingMethod.Signature.ReturnType
 
             match retType, returningMethodState.EvaluationStack.Values with
