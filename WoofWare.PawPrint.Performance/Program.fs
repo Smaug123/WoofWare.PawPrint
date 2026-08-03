@@ -10,7 +10,6 @@ open Microsoft.CodeAnalysis.CSharp
 open Microsoft.Extensions.Logging.Abstractions
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
-open WoofWare.PawPrint.ExternImplementations
 
 [<RequireQualifiedAccess>]
 module private Roslyn =
@@ -143,11 +142,6 @@ public static class Program
 type StackHeavyProgramBenchmarks () =
     let sourceName = "PerformanceBaseline.StackHeavy.cs"
 
-    let nativeImpls : NativeImpls =
-        {
-            System_Environment = System_EnvironmentMock.Empty
-        }
-
     let mutable image : byte array = Array.empty
     let mutable expectedExitCode : int = 0
     let mutable dotnetRuntimeDirs : ImmutableArray<string> = ImmutableArray.Empty
@@ -164,7 +158,6 @@ type StackHeavyProgramBenchmarks () =
                 (Some sourceName)
                 peImage
                 dotnetRuntimeDirs
-                nativeImpls
                 Map.empty
                 None
                 []
