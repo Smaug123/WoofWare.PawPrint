@@ -153,12 +153,63 @@ module IntrinsicMethodKeys =
                 ]
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/ArgumentNullException.cs#L54
             anyParams "System.Private.CoreLib" "System.ArgumentNullException" "ThrowIfNull"
+            // The instance `String.Equals(string)` overload — the one that implements
+            // `IEquatable<string>`, so interface dispatch through `IEquatable<string>::Equals`
+            // resolves to it. Its `[Intrinsic]` is a pure codegen hint ("Unrolled and vectorized
+            // for half-constant input"), so the managed body is the semantic definition:
+            // ReferenceEquals, a null check, a Length compare, then `EqualsHelper`. All of those
+            // are already-modelled string primitives. (The *static* two-argument
+            // `String.Equals(string, string)` overload is handled explicitly in Intrinsics.fs
+            // instead; this pattern is parameter-count-specific so the two do not overlap.)
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/String.Comparison.cs#L607-L625
+            pattern
+                "System.Private.CoreLib"
+                "System.String"
+                "Equals"
+                [ IntrinsicParameterPattern.Exact "System.String" ]
+            // `SZArrayHelper.GetEnumerator<T>` is where an SZ-array's implicit
+            // `IEnumerable<T>::GetEnumerator` lands, so classifying against the resolved method
+            // reaches it. It is the only `[Intrinsic]` member of `SZArrayHelper`, and the
+            // attribute is purely an exact-return-type hint: the JIT marks the call `isSpecial`
+            // ("We may know the exact type these return") and asks the VM for the concrete
+            // enumerator class to sharpen devirtualization. It does not replace the body — the
+            // VM's `getSZArrayHelperEnumeratorClassHelper` says it "Mirrors the logic in BCL's
+            // SZArrayHelper::GetEnumerator", i.e. the managed body is the source of truth.
+            //
+            // That body is `Unsafe.As<T[]>(this)`, a `Length` read, then either
+            // `SZGenericArrayEnumerator<T>.Empty` or a `new SZGenericArrayEnumerator<T>`. The
+            // `Unsafe.As` is the documented "`this` is really the array, not an SZArrayHelper"
+            // convention, which PawPrint's SZ-array interface dispatch already establishes.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/coreclr/System.Private.CoreLib/src/System/Array.CoreCLR.cs#L398-L407
+            pattern "System.Private.CoreLib" "System.SZArrayHelper" "GetEnumerator" []
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/coreclr/System.Private.CoreLib/src/System/Type.CoreCLR.cs#L82
             pattern
                 "System.Private.CoreLib"
                 "System.Type"
                 "GetTypeFromHandle"
                 [ IntrinsicParameterPattern.Exact "System.RuntimeTypeHandle" ]
+            // `RuntimeType.TypeHandle`'s getter overrides the [Intrinsic] `Type.TypeHandle`
+            // getter and carries its own [Intrinsic] solely "to avoid round-trip
+            // handle -> RuntimeType -> handle in JIT" (its own source comment), so the managed
+            // body is the semantic definition. That body is
+            // `ldarg.0; newobj RuntimeTypeHandle::.ctor(RuntimeType); ret`, and the ctor is
+            // `internal RuntimeTypeHandle(RuntimeType? type) { m_type = type; }` — a single store
+            // into a field PawPrint already models.
+            //
+            // Going through the real `newobj` means `UnaryMetadataObjectOps` runs
+            // `ensureTypeInitialised` for `RuntimeTypeHandle` on every `.TypeHandle` access.
+            // `RuntimeTypeHandle` has no `.cctor`, so that is inert; it is also what a real
+            // `newobj` does.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/RuntimeType.cs#L27-L31
+            pattern "System.Private.CoreLib" "System.RuntimeType" "get_TypeHandle" []
+            // The base `Type.TypeHandle` getter is `[Intrinsic]` with an IL body of
+            // `throw new NotSupportedException()`, and that throw is the behaviour we want.
+            // Under `callvirt` on any PawPrint-created receiver, virtual resolution selects the
+            // `RuntimeType` override above, so this body runs only for a `Type` subclass that
+            // does not override it — where throwing is exactly right — or for a non-virtual
+            // `call`, where ECMA-335 dispatches statically to this body and .NET throws too.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Type.cs#L467-L471
+            pattern "System.Private.CoreLib" "System.Type" "get_TypeHandle" []
             // .NET 10 added [Intrinsic] to RuntimeTypeHandle.ToIntPtr; the IL body delegates
             // to the Value getter which reads RuntimeType.m_handle, a field PawPrint already
             // populates with NativeIntSource.TypeHandlePtr. Executing the IL is safe and
