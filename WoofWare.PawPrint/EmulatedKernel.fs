@@ -387,6 +387,27 @@ type EmulatedKernel =
         /// `Random()` ctor retries until it sees a non-zero seed, so a
         /// constant-zero substitute would hang at construction time.
         NonCryptoRandomState : uint64
+        /// Deterministic state for the splitmix64 PRNG that backs
+        /// `SystemNative_GetCryptographicallySecureRandomBytes` — the entry
+        /// point `Guid.NewGuid` draws its 16 bytes from on Unix, and the one
+        /// CoreLib's `Interop.GetCryptographicallySecureRandomBytes` wrapper
+        /// turns into a `CryptographicException` on any non-zero return.
+        /// PawPrint substitutes the same seeded PRNG it uses for the
+        /// non-crypto entry point: the output is emphatically *not*
+        /// cryptographically secure, but nothing inside a deterministic
+        /// interpreter can be, and reproducibility is the property this
+        /// runtime exists to provide. Guests that need real entropy must not
+        /// run under PawPrint.
+        ///
+        /// Deliberately a *separate* stream from `NonCryptoRandomState`,
+        /// per the guidance on `NonCryptoRandom`: sharing one state would
+        /// make an added `new Random()` (or any other non-crypto consumer)
+        /// silently shift every subsequent `Guid.NewGuid`, which is exactly
+        /// the kind of spooky action at a distance that makes a recorded
+        /// trace hard to reason about. Seeded from a constant distinct from
+        /// `NonCryptoRandom.initialState` so the two streams do not emit
+        /// identical byte sequences.
+        CryptoRandomState : uint64
         /// Ordered, append-only log of every write the guest has performed
         /// against a writable standard stream via `SystemNative_Write`.
         /// Each entry carries the destination `Role` and the exact byte
@@ -437,6 +458,15 @@ module EmulatedKernel =
     let defaultEnvironment : Map<string, string> =
         Map.ofList [ "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT", "1" ]
 
+    /// Seed for `EmulatedKernel.CryptoRandomState`. The first 64 bits of the
+    /// fractional part of pi — a nothing-up-my-sleeve constant chosen purely
+    /// so that the crypto-entropy stream starts somewhere other than
+    /// `NonCryptoRandom.initialState` (the golden-ratio constant). Any
+    /// non-zero value distinct from that one would do; splitmix64 has no weak
+    /// seeds. Changing it changes every `Guid.NewGuid` a recorded trace
+    /// observes, so treat it as part of PawPrint's replay contract.
+    let cryptoRandomInitialState : uint64 = 0x243F6A8885A308D3UL
+
     let initial : EmulatedKernel =
         {
             LastPInvokeError = 0
@@ -453,6 +483,7 @@ module EmulatedKernel =
             StepCounter = 0L
             VirtualClockMs = 0L
             NonCryptoRandomState = NonCryptoRandom.initialState
+            CryptoRandomState = cryptoRandomInitialState
             OutputLog = ImmutableArray<OutputLogEntry>.Empty
             Environment = defaultEnvironment
             Signals = SignalState.empty

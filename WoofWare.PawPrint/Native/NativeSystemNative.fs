@@ -94,6 +94,85 @@ module NativeSystemNative =
         | CliType.Numeric (CliNumericType.Int32 count) -> checkedCount (int64 count)
         | other -> failwith $"%s{operation}: expected UIntPtr allocation size, got %O{other}"
 
+    /// Shared body of `SystemNative_GetNonCryptographicallySecureRandomBytes`
+    /// and `SystemNative_GetCryptographicallySecureRandomBytes`. The two entry
+    /// points declare the identical `(byte* buffer, int32 bufferLength)`
+    /// argument list and differ only in which host entropy source backs them
+    /// (and, here, in which kernel PRNG stream they advance), so the decode,
+    /// validation, and buffer-fill are factored into one place.
+    ///
+    /// CoreCLR fills these buffers from the host: `arc4random_buf` on
+    /// BSD/macOS, BCrypt/`BCryptGenRandom` on Windows, `/dev/urandom` (XOR'd
+    /// with `lrand48()` for the non-crypto variant) on Linux — see
+    /// minipal/random.c. PawPrint refuses host entropy because the whole
+    /// runtime is built around bit-for-bit reproducibility, so we substitute a
+    /// seeded splitmix64 step. That is *strictly* more deterministic than the
+    /// real CLR (where each Random ctor, Guid.NewGuid, Marvin seed, and
+    /// HashCode seed is unreproducible) and is what enables time-travel
+    /// debugging across runs that touch any of those paths. It also means the
+    /// "cryptographically secure" entry point is nothing of the sort under
+    /// PawPrint; no deterministic interpreter can honour that contract, and a
+    /// guest whose security depends on it must not run here.
+    ///
+    /// Returning a constant (e.g. all zeros) is not viable: the BCL's Random
+    /// ctor at Random.Xoshiro{128,256}StarStarImpl explicitly retries until
+    /// the buffer is non-zero, so a constant-zero substitute hangs at
+    /// `new Random()`.
+    ///
+    /// Returns the updated machine state and the advanced PRNG state; the
+    /// caller writes the latter back to whichever kernel field it owns.
+    let private drawRandomBytesInto
+        (ctx : NativeCallContext)
+        (operation : string)
+        (prngState : uint64)
+        : IlMachineState * uint64
+        =
+        let state = ctx.State
+
+        let buffer =
+            NativeCall.managedPointerOfPointerArgument operation "buffer" ctx.Instruction.Arguments.[0]
+
+        let length = NativeCall.int32Argument operation ctx.Instruction.Arguments.[1]
+
+        if length < 0 then
+            // CoreCLR's `pal_random.c` does not validate `bufferLength`;
+            // a negative value would underflow `(size_t)bufferLength` in
+            // the C call. CoreLib callers never pass negative lengths,
+            // so seeing one here means a guest bug we want to surface
+            // rather than a silently truncated buffer.
+            failwith $"%s{operation}: bufferLength %d{length} is negative"
+        elif length = 0 then
+            // Match the C behaviour of `arc4random_buf(buf, 0)` /
+            // `read(fd, buf, 0)`: no-op, do not even dereference
+            // `buffer` (which CoreLib may pass as a null pointer
+            // for an empty span), and do not advance the PRNG.
+            state, prngState
+        else
+            match buffer with
+            | ManagedPointerSource.Null ->
+                failwith
+                    $"%s{operation}: refused to fill %d{length} bytes through null buffer pointer (CoreLib should not invoke this entry point with a null destination for a non-zero length)"
+            | _ ->
+                let bytes, newPrngState = NonCryptoRandom.drawBytes length prngState
+
+                let byteConcreteType =
+                    NativeCall.requiredByteConcreteType operation ctx.BaseClassTypes state
+
+                let mutable state = state
+
+                for i = 0 to length - 1 do
+                    let dest =
+                        ManagedPointerByteView.addByteOffset ctx.BaseClassTypes state byteConcreteType i buffer
+
+                    state <-
+                        IlMachineState.writeManagedByrefBytesOrTypedCell
+                            ctx.BaseClassTypes
+                            state
+                            dest
+                            (CliType.Numeric (CliNumericType.UInt8 bytes.[i]))
+
+                state, newPrngState
+
     let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
@@ -462,76 +541,55 @@ module NativeSystemNative =
           [ ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
             ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Void ->
-            // CoreCLR fills this buffer from the host's non-crypto PRNG
-            // (`arc4random_buf` on BSD/macOS, BCrypt on Windows,
-            // `/dev/urandom` XOR'd with `lrand48()` on Linux — see
-            // minipal/random.c). PawPrint refuses host entropy because the
-            // whole runtime is built around bit-for-bit reproducibility,
-            // so we substitute a seeded splitmix64 step kept in
-            // `EmulatedKernel.NonCryptoRandomState`. That is *strictly*
-            // more deterministic than the real CLR (where each Random
-            // ctor, Guid.NewGuid, Marvin seed, and HashCode seed is
-            // unreproducible) and is what enables time-travel
-            // debugging across runs that touch any of those paths.
+            let state, newPrngState =
+                drawRandomBytesInto
+                    ctx
+                    "SystemNative_GetNonCryptographicallySecureRandomBytes"
+                    state.Kernel.NonCryptoRandomState
+
+            state.MapKernel (fun kernel ->
+                { kernel with
+                    NonCryptoRandomState = newPrngState
+                }
+            )
+            |> NativeHandlerResult.completed
+            |> Some
+        | Some "SystemNative_GetCryptographicallySecureRandomBytes",
+          [ ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            // Same substitute PRNG as the non-crypto entry point (see
+            // `drawRandomBytesInto`), drawn from its own kernel stream so
+            // that a guest's `Random`/`HashCode` draws don't perturb the
+            // sequence `Guid.NewGuid` observes.
             //
-            // Returning a constant (e.g. all zeros) is not viable: the
-            // BCL's Random ctor at Random.Xoshiro{128,256}StarStarImpl
-            // explicitly retries until the buffer is non-zero, so a
-            // constant-zero substitute hangs at `new Random()`.
-            let operation = "SystemNative_GetNonCryptographicallySecureRandomBytes"
-
-            let buffer =
-                NativeCall.managedPointerOfPointerArgument operation "buffer" instruction.Arguments.[0]
-
-            let length = NativeCall.int32Argument operation instruction.Arguments.[1]
-
-            if length < 0 then
-                // CoreCLR's `pal_random.c` does not validate `bufferLength`;
-                // a negative value would underflow `(size_t)bufferLength` in
-                // the C call. CoreLib callers never pass negative lengths,
-                // so seeing one here means a guest bug we want to surface
-                // rather than a silently truncated buffer.
-                failwith $"%s{operation}: bufferLength %d{length} is negative"
+            // Unlike its non-crypto sibling this entry point reports status:
+            // `Interop.GetCryptographicallySecureRandomBytes` branches on the
+            // result with `brfalse` and throws `CryptographicException` for
+            // anything non-zero. PawPrint's substitute has no failure mode —
+            // there is no host entropy source to be exhausted or unreadable —
+            // so it always reports success. Malformed arguments abort loudly
+            // inside `drawRandomBytesInto` rather than being reported as
+            // entropy failure, because a negative length or a null
+            // destination is a guest/interpreter bug, not the condition
+            // `CryptographicException` is meant to describe.
+            let state, newPrngState =
+                drawRandomBytesInto
+                    ctx
+                    "SystemNative_GetCryptographicallySecureRandomBytes"
+                    state.Kernel.CryptoRandomState
 
             let state =
-                if length = 0 then
-                    // Match the C behaviour of `arc4random_buf(buf, 0)` /
-                    // `read(fd, buf, 0)`: no-op, do not even dereference
-                    // `buffer` (which CoreLib may pass as a null pointer
-                    // for an empty span).
-                    state
-                else
-                    match buffer with
-                    | ManagedPointerSource.Null ->
-                        failwith
-                            $"%s{operation}: refused to fill %d{length} bytes through null buffer pointer (CoreLib should not invoke this entry point with a null destination for a non-zero length)"
-                    | _ ->
-                        let bytes, newPrngState =
-                            NonCryptoRandom.drawBytes length state.Kernel.NonCryptoRandomState
+                state.MapKernel (fun kernel ->
+                    { kernel with
+                        CryptoRandomState = newPrngState
+                    }
+                )
 
-                        let byteConcreteType =
-                            NativeCall.requiredByteConcreteType operation ctx.BaseClassTypes state
-
-                        let mutable state = state
-
-                        for i = 0 to length - 1 do
-                            let dest =
-                                ManagedPointerByteView.addByteOffset ctx.BaseClassTypes state byteConcreteType i buffer
-
-                            state <-
-                                IlMachineState.writeManagedByrefBytesOrTypedCell
-                                    ctx.BaseClassTypes
-                                    state
-                                    dest
-                                    (CliType.Numeric (CliNumericType.UInt8 bytes.[i]))
-
-                        state.MapKernel (fun kernel ->
-                            { kernel with
-                                NonCryptoRandomState = newPrngState
-                            }
-                        )
-
-            NativeHandlerResult.completed state |> Some
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
         | Some "SystemNative_Free", [ ConcretePointer _ ], MethodReturnType.Void ->
             let ptr =
                 NativeCall.managedPointerOfPointerArgument "SystemNative_Free" "ptr" instruction.Arguments.[0]
