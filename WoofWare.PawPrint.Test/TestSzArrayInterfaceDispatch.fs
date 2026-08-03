@@ -13,10 +13,10 @@ open WoofWare.PawPrint
 /// `GetActualImplementationForArrayGenericIListOrIReadOnlyListMethod`). The end-to-end cases in
 /// `sourcesPure/ArrayInterface*.cs` exercise the slots C# syntax can reach; these properties
 /// quantify over *every* method of *every* one of the five interfaces, crossed with a
-/// deliberately awkward pool of element/argument type pairs, and assert the two things a
-/// behavioural test cannot observe: that dispatch always lands on a callable body, and that the
-/// shim is instantiated over the *interface's* type argument rather than the array's element
-/// type.
+/// deliberately awkward pool of element/argument type pairs, and assert what a behavioural test
+/// can only observe indirectly: that dispatch always lands on a callable body, and that the shim
+/// is instantiated per CoreCLR's rule — the interface's type argument, canonicalised to
+/// `System.Object` for reference types on every interface but `IEnumerable<T>`.
 [<TestFixture>]
 module TestSzArrayInterfaceDispatch =
 
@@ -177,20 +177,41 @@ module TestSzArrayInterfaceDispatch =
 
     let private propertyConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 400
 
+    let private objectHandle : ConcreteTypeHandle =
+        AllConcreteTypes.getRequiredNonGenericHandle concreteTypes bct.Object
+
+    /// CoreCLR's rule for which type the shim is instantiated over (`array.cpp`): the
+    /// interface's type argument, except that a reference-type argument is canonicalised to
+    /// `System.Object` on every interface but `IEnumerable<T>`. Recomputed here from the
+    /// interface and the argument's own metadata, independently of how the interpreter derives
+    /// it.
+    let private expectedInstantiation (case : DispatchCase) (argumentHandle : ConcreteTypeHandle) =
+        let argumentIsReferenceType =
+            DumpedAssembly.isReferenceType bct loaded case.ArgumentType
+
+        if case.InterfaceName = "IEnumerable`1" || not argumentIsReferenceType then
+            argumentHandle
+        else
+            objectHandle
+
     /// The load-bearing property. Whenever a well-typed program can hold an `elem[]` in an
     /// `I<arg>` local — i.e. whenever the cast the interpreter itself performs would succeed —
     /// dispatching any slot of `I<arg>` must land on a concrete, callable `SZArrayHelper`
-    /// method. Returning `None` here is what produced the original bug: `callMethod` falls back
-    /// to the abstract interface method and the interpreter trips its abstract-body guard.
+    /// method, instantiated per CoreCLR's rule. Returning `None` is what produced the original
+    /// bug: `callMethod` falls back to the abstract interface method and the interpreter trips
+    /// its abstract-body guard.
     [<Test>]
     let ``assignable SZ-array receivers always dispatch to a callable SZArrayHelper body`` () =
         // The property is conditional on assignability, so it would pass vacuously if the pool
-        // never produced an assignable pair. Count the ones that reach the assertions, and
-        // separately the ones where the interface argument differs from the element type, since
-        // those are the only cases that discriminate "T from the interface" from "T from the
-        // element type".
+        // never produced an assignable pair. Track both halves of the instantiation rule so a
+        // pool that stopped reaching one of them fails loudly instead of quietly weakening.
         let mutable exercised = 0
-        let mutable exercisedCovariant = 0
+        // Assignable cases where the interface argument differs from the element type *and* the
+        // rule preserves it — the only ones that discriminate "T from the interface" from
+        // "T from the array's element type".
+        let mutable exercisedPreservedCovariant = 0
+        // Assignable cases where the rule canonicalises to System.Object.
+        let mutable exercisedCanonicalised = 0
 
         let property (case : DispatchCase) : bool =
             let state, arrayHandle, interfaceHandle, argumentHandle, concretizedMethod =
@@ -205,10 +226,14 @@ module TestSzArrayInterfaceDispatch =
                 true
             else
 
+            let expected = expectedInstantiation case argumentHandle
+
             exercised <- exercised + 1
 
-            if case.ElementTypeName <> case.ArgumentTypeName then
-                exercisedCovariant <- exercisedCovariant + 1
+            if expected = objectHandle && argumentHandle <> objectHandle then
+                exercisedCanonicalised <- exercisedCanonicalised + 1
+            elif case.ElementTypeName <> case.ArgumentTypeName then
+                exercisedPreservedCovariant <- exercisedPreservedCovariant + 1
 
             let _, resolved = resolve state concretizedMethod arrayHandle
 
@@ -219,10 +244,10 @@ module TestSzArrayInterfaceDispatch =
 
             resolved.DeclaringType.Identity |> shouldEqual bct.SZArrayHelper.Identity
 
-            // Sub-decision (b): the shim is instantiated over the *interface's* type argument,
-            // not the array's element type. For the covariant cases in the pool those differ,
-            // so this genuinely discriminates.
-            Seq.toList resolved.Generics |> shouldEqual [ argumentHandle ]
+            // The shim is instantiated from the *interface's* type argument (not the array's
+            // element type), modulo CoreCLR's reference-type canonicalisation. Getting this
+            // wrong is observable: see `sourcesPure/ArrayInterfaceEqualityComparer.cs`.
+            Seq.toList resolved.Generics |> shouldEqual [ expected ]
 
             // The whole point: an interpretable body, not another abstract slot.
             match resolved.Body with
@@ -242,9 +267,13 @@ module TestSzArrayInterfaceDispatch =
             failwith
                 $"property was near-vacuous: only %i{exercised} of the generated cases were assignable, so the assertions barely ran"
 
-        if exercisedCovariant < 10 then
+        if exercisedPreservedCovariant < 5 then
             failwith
-                $"property never meaningfully exercised covariance: only %i{exercisedCovariant} assignable cases had an interface argument differing from the element type"
+                $"property never exercised a preserved non-identical instantiation: only %i{exercisedPreservedCovariant} such cases, so it cannot tell the interface's argument from the array's element type"
+
+        if exercisedCanonicalised < 5 then
+            failwith
+                $"property never exercised the reference-type canonicalisation to System.Object: only %i{exercisedCanonicalised} such cases"
 
     /// Multi-dimensional arrays are excluded from the carve-out (CoreCLR reaches
     /// `IsImplicitInterfaceOfSZArray` only for SZ arrays), so they must never be handed an

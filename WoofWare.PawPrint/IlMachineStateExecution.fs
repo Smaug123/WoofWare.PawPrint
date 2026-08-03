@@ -110,9 +110,6 @@ module IlMachineStateExecution =
         // and the stored value's real runtime type. So
         // `((IList<object>) new string[3])[0] = new object()` still throws.
         //
-        // CoreCLR additionally substitutes `object` for any reference-type `theT` on every slot
-        // but `GetEnumerator`; its own comment calls that an optimisation ("causes fewer methods
-        // to be instantiated"), so we skip it and keep the more precise instantiation.
         let theT =
             match Seq.toList methodToCall.DeclaringType.Generics with
             | [ t ] -> t
@@ -156,6 +153,55 @@ module IlMachineStateExecution =
             failwith
                 $"System.SZArrayHelper::%s{implementation.Name} should be an instance method; the SZ-array receiver is passed as its `this`"
 
+        // CoreCLR canonicalises a reference-type `theT` to `System.Object` on every slot except
+        // `GetEnumerator` (`array.cpp`, gated on `startingMethod[inheritanceDepth]`, i.e. on the
+        // interface rather than the individual method — `GetEnumerator` is always reached
+        // through `IEnumerable`1`, so preserving it there and canonicalising the other four
+        // interfaces is the same rule).
+        //
+        // Its comment calls this an optimisation ("causes fewer methods to be instantiated"),
+        // but it is *observable*, so we must reproduce it rather than keep the more precise
+        // instantiation. `Contains`/`IndexOf` bottom out in `EqualityComparer<T>.Default`:
+        // `EqualityComparer<object>` dispatches through the virtual `object.Equals(object)`,
+        // whereas `EqualityComparer<B>` for a `B : IEquatable<B>` dispatches through
+        // `IEquatable<B>.Equals(B)`. A type implementing the two inconsistently therefore gives
+        // different answers depending on the instantiation; see
+        // `sourcesPure/ArrayInterfaceEqualityComparer.cs`, which fails against the real runtime
+        // without this.
+        //
+        // `GetEnumerator` is the exception because the enumerator it returns is itself typed:
+        // `IEnumerable<B>.GetEnumerator()` must yield an `IEnumerator<B>`, not an
+        // `IEnumerator<object>`.
+        let isReferenceType (handle : ConcreteTypeHandle) : bool =
+            match handle with
+            | ConcreteTypeHandle.OneDimArrayZero _
+            | ConcreteTypeHandle.Array _ -> true
+            | ConcreteTypeHandle.Byref _
+            | ConcreteTypeHandle.Pointer _
+            | ConcreteTypeHandle.FunctionPointer _ -> false
+            | ConcreteTypeHandle.Concrete _ ->
+                match IlMachineState.tryGetConcreteTypeInfo state handle with
+                | Some (_, typeInfo) -> DumpedAssembly.isReferenceType baseClassTypes state._LoadedAssemblies typeInfo
+                | None ->
+                    failwith
+                        $"SZ-array interface dispatch: type argument %O{handle} of %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name} has no TypeDef row"
+
+        let dispatchThroughEnumerable =
+            methodToCall.DeclaringType.Identity = baseClassTypes.IEnumerableGeneric.Identity
+
+        let state, instantiation =
+            if dispatchThroughEnumerable || not (isReferenceType theT) then
+                state, theT
+            else
+                DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Object
+                |> IlMachineState.concretizeType
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    baseClassTypes.Corelib.Name
+                    ImmutableArray.Empty
+                    ImmutableArray.Empty
+
         // `this` is the array, not an SZArrayHelper — exactly the lie CoreCLR tells (see the
         // "! Warning: \"this\" is an array, not an SZArrayHelper" comments in
         // `Array.CoreCLR.cs`). It survives our calling convention because `SZArrayHelper` is a
@@ -167,7 +213,7 @@ module IlMachineStateExecution =
                 baseClassTypes
                 ImmutableArray.Empty
                 implementation
-                (ImmutableArray.Create theT)
+                (ImmutableArray.Create instantiation)
                 state
 
         Some (state, meth)
