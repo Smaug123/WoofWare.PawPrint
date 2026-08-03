@@ -56,6 +56,7 @@
     <Compile Include="TestMethodReturnType.fs" />
     <Compile Include="TestFunctionPointerConcretization.fs" />
     <Compile Include="TestZeroOfBaseAssemblies.fs" />
+    <Compile Include="TestAssemblyDictionaryKeying.fs" />
     <Compile Include="TestGenericParamConstraints.fs" />
     <Compile Include="TestGcHandleRegistry.fs" />
     <Compile Include="TestFileDescriptorRegistry.fs" />
