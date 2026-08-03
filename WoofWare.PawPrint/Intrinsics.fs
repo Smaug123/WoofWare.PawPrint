@@ -2397,6 +2397,47 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack' toPush currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> Some
+        | "System.Private.CoreLib", "Array", "Clone" ->
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Array.cs#L1071-L1077
+            // The managed body is `return MemberwiseClone();`, and CoreCLR's MemberwiseClone
+            // (Object.CoreCLR.cs) allocates an uninitialised clone via the
+            // RuntimeHelpers.AllocateUninitializedClone QCall and then raw-byte-copies the
+            // object payload. PawPrint stores array elements as `CliType` cells rather than
+            // bytes, so the byte-copy formulation is not the primitive available to us here:
+            // reproducing it would have to flatten every element to bytes and would lose the
+            // provenance of non-`Verbatim` cells (the same reason `SpanHelpers.Memmove` is
+            // intercepted rather than executed). The host-provided primitive on our side of
+            // the boundary is "allocate a same-shaped array holding the same element cells",
+            // which `IlMachineState.cloneArray` performs directly.
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [],
+              MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                                          "System",
+                                                                          "Object",
+                                                                          generics)) when generics.IsEmpty -> ()
+            | _ -> failwith "bad signature Array.Clone"
+
+            let receiver, state = IlMachineState.popEvalStack currentThread state
+
+            match receiver with
+            | EvalStackValue.ObjectRef addr ->
+                let clone, state = IlMachineState.cloneArray addr state
+
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.ObjectRef clone) currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Some
+            | EvalStackValue.NullObjectRef
+            | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
+                // Unreachable from any C#-emitted call site: `Array.Clone` is an instance method,
+                // so callvirt's own null check (UnaryMetadataCallOps.executeCallvirt) raises the
+                // NullReferenceException before we get here. Only hand-written IL using a
+                // non-virtual `call` could reach this, and Intrinsics.fs is compiled before
+                // IlMachineStateExecution.fs so it cannot use `raiseRuntimeException` to
+                // synthesise a properly-constructed NRE.
+                failwith
+                    "TODO: Array.Clone was reached by a non-virtual `call` on a null receiver; should raise NullReferenceException"
+            | other -> failwith $"Array.Clone: expected an object reference receiver, got %O{other}"
         | "System.Private.CoreLib", "Enum", "HasFlag" ->
             // https://github.com/dotnet/runtime/blob/dbd3e33df9ccf74b91045e095477726c2bf83916/src/libraries/System.Private.CoreLib/src/System/Enum.cs#L398
             // Enum.HasFlag(Enum flag) returns (thisValue & flagValue) == flagValue

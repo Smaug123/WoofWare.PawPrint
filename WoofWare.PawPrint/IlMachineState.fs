@@ -106,6 +106,8 @@ module IlMachineState =
 
     let allocateMultiDimArray = IlMachineThreadState.allocateMultiDimArray
 
+    let cloneArray = IlMachineThreadState.cloneArray
+
     let allocateStringData = IlMachineThreadState.allocateStringData
 
     let setStringData = IlMachineThreadState.setStringData
