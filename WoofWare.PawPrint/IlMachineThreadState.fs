@@ -640,6 +640,33 @@ module IlMachineThreadState =
 
         alloc, state
 
+    /// Allocate a fresh array object that is a shallow copy of the array at `source`: same
+    /// element type, same rank, same per-dimension lengths, and the same element values.
+    /// `CliType` cells are immutable, so sharing the backing `ImmutableArray` gives exactly
+    /// the shallow-copy semantics `System.Array.Clone` promises: a later write through
+    /// either array replaces only that array's cell, while reference-typed elements continue
+    /// to name the same heap objects from both arrays.
+    /// Fails if `source` is not an array — callers must have established that already.
+    let cloneArray (source : ManagedHeapAddress) (state : IlMachineState) : ManagedHeapAddress * IlMachineState =
+        match state.ManagedHeap.Arrays.TryGetValue source with
+        | false, _ ->
+            let what =
+                if state.ManagedHeap.NonArrayObjects.ContainsKey source then
+                    "a non-array object"
+                else
+                    "not allocated"
+
+            failwith $"cloneArray: address %O{source} is %s{what} on the managed heap, so has no array to clone"
+        | true, source ->
+            let alloc, heap = state.ManagedHeap |> ManagedHeap.allocateArray source
+
+            let state =
+                { state with
+                    ManagedHeap = heap
+                }
+
+            alloc, state
+
     let allocateStringData (len : int) (state : IlMachineState) : int * IlMachineState =
         let addr, heap = state.ManagedHeap |> ManagedHeap.allocateString len
 
