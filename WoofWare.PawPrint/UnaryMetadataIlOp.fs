@@ -18,7 +18,7 @@ module internal UnaryMetadataIlOp =
         let activeAssy =
             state.LoadedAssembly sourcedMetadataToken.SourceAssembly
             |> Option.defaultWith (fun () ->
-                let available = state._LoadedAssemblies.Keys |> String.concat " ; "
+                let available = state._LoadedAssemblies.DefinitionNames |> String.concat " ; "
 
                 failwith
                     $"Metadata token source assembly %O{sourcedMetadataToken.SourceAssembly} is not loaded; available assemblies: {available}"

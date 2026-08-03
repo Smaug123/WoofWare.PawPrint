@@ -428,7 +428,7 @@ module internal UnaryMetadataObjectOps =
             AllConcreteTypes.lookup typeHandle state.ConcreteTypes |> Option.get
 
         let defn =
-            state._LoadedAssemblies.[targetType.Assembly.FullName].TypeDefs.[targetType.Definition.Get]
+            state._LoadedAssemblies.[targetType.Assembly].TypeDefs.[targetType.Definition.Get]
 
         let isNullable =
             InternalTypeKind.kind baseClassTypes targetType = InternalTypeKind.Nullable
@@ -467,15 +467,14 @@ module internal UnaryMetadataObjectOps =
                                     AllConcreteTypes.lookup underlyingTypeHandle state.ConcreteTypes |> Option.get
 
                                 let underlyingDefn =
-                                    state._LoadedAssemblies.[underlyingConcreteType.Assembly.FullName].TypeDefs
+                                    state._LoadedAssemblies.[underlyingConcreteType.Assembly].TypeDefs
                                         .[underlyingConcreteType.Definition.Get]
 
                                 let underlyingInstanceFields =
                                     underlyingDefn.Fields
                                     |> List.filter (fun field -> not (field.Attributes.HasFlag FieldAttributes.Static))
 
-                                let underlyingAssembly =
-                                    state._LoadedAssemblies.[underlyingConcreteType.Assembly.FullName]
+                                let underlyingAssembly = state._LoadedAssemblies.[underlyingConcreteType.Assembly]
 
                                 let valueAsEval = EvalStackValue.ofCliType value
 
@@ -532,7 +531,7 @@ module internal UnaryMetadataObjectOps =
                     | _ ->
                         // Primitive value on the eval stack (Int32, Int64, Float, etc.)
                         // Construct a CliValueType from the type definition's instance fields
-                        let targetAssembly = state._LoadedAssemblies.[targetType.Assembly.FullName]
+                        let targetAssembly = state._LoadedAssemblies.[targetType.Assembly]
 
                         let instanceFields =
                             defn.Fields
@@ -753,7 +752,7 @@ module internal UnaryMetadataObjectOps =
             |> Option.get
 
         let targetDefn =
-            state._LoadedAssemblies.[targetConcreteType.Assembly.FullName].TypeDefs.[targetConcreteType.Definition.Get]
+            state._LoadedAssemblies.[targetConcreteType.Assembly].TypeDefs.[targetConcreteType.Definition.Get]
 
         let isNullable =
             InternalTypeKind.kind baseClassTypes targetConcreteType = InternalTypeKind.Nullable

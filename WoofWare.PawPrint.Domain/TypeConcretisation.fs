@@ -453,11 +453,38 @@ module ConcreteActivePatterns =
         | _ -> None
 
 type IAssemblyLoad =
+    /// <param name="referencedIn">
+    /// The <em>definition</em> identity of the assembly whose AssemblyReference table
+    /// <c>handle</c> indexes. AssemblyReferenceHandles are only meaningful relative to the
+    /// assembly that declares them.
+    /// </param>
     abstract LoadAssembly :
-        loadedAssemblies : ImmutableDictionary<string, DumpedAssembly> ->
+        loadedAssemblies : LoadedAssemblies ->
         referencedIn : AssemblyName ->
         handle : AssemblyReferenceHandle ->
-            ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly
+            LoadedAssemblies * DumpedAssembly
+
+[<RequireQualifiedAccess>]
+module IAssemblyLoad =
+    /// <summary>
+    /// An <c>IAssemblyLoad</c> which refuses to go to disk: it binds an AssemblyReference only if
+    /// the load context already holds the assembly. Use it where everything that could possibly
+    /// be needed has provably been loaded already, so that a miss is a bug rather than a cue to
+    /// read a file.
+    /// </summary>
+    let alreadyLoadedOnly : IAssemblyLoad =
+        { new IAssemblyLoad with
+            member _.LoadAssembly loaded referencedIn handle =
+                let targetRef = loaded.[referencedIn].AssemblyReferences.[handle]
+
+                match loaded.TryResolveReference targetRef with
+                | Some target -> loaded, target
+                | None ->
+                    failwithf
+                        "Assembly %s, referenced by %s, is not loaded, and this context is not permitted to load it."
+                        targetRef.Name.FullName
+                        referencedIn.FullName
+        }
 
 [<RequireQualifiedAccess>]
 module TypeConcretization =
@@ -466,7 +493,7 @@ module TypeConcretization =
             /// All concrete types created so far
             ConcreteTypes : AllConcreteTypes
             /// For resolving type references
-            LoadedAssemblies : ImmutableDictionary<string, DumpedAssembly>
+            LoadedAssemblies : LoadedAssemblies
             BaseTypes : BaseClassTypes<'corelib>
         }
 
@@ -520,10 +547,7 @@ module TypeConcretization =
             : (DumpedAssembly * ResolvedTypeIdentity * WoofWare.PawPrint.TypeInfo<_, _>) *
               ConcretizationContext<'corelib>
             =
-            let currentAssy =
-                match ctx.LoadedAssemblies.TryGetValue currentAssembly.FullName with
-                | false, _ -> failwithf "Current assembly %s not loaded" currentAssembly.FullName
-                | true, assy -> assy
+            let currentAssy = ctx.LoadedAssemblies.[currentAssembly]
 
             match Assembly.resolveTypeRef ctx.LoadedAssemblies currentAssy ImmutableArray.Empty typeRef with
             | TypeResolutionResult.Resolved (targetAssy, identity, typeInfo) -> (targetAssy, identity, typeInfo), ctx
@@ -535,7 +559,11 @@ module TypeConcretization =
 
                 let newCtx =
                     { ctx with
-                        LoadedAssemblies = newAssemblies
+                        LoadedAssemblies =
+                            LoadedAssemblies.assertReferenceBound
+                                $"type reference %s{typeRef.Name}"
+                                assemblyRef
+                                newAssemblies
                     }
 
                 go newCtx
@@ -600,11 +628,7 @@ module TypeConcretization =
         : ConcreteTypeHandle * ConcretizationContext<'corelib>
         =
 
-        let assembly =
-            match ctx.LoadedAssemblies.TryGetValue identity.AssemblyFullName with
-            | false, _ ->
-                failwithf "Cannot concretize type definition - assembly %s not loaded" identity.AssemblyFullName
-            | true, assy -> assy
+        let assembly = ctx.LoadedAssemblies.ByDefinitionName identity.AssemblyFullName
 
         let typeInfo = Assembly.resolveTypeIdentityDefinition assembly identity
 
@@ -819,7 +843,9 @@ module TypeConcretization =
         let baseIdentity, baseNamespace, baseName, ctxAfterArgs =
             match genericDef with
             | FromDefinition (identity, _) ->
-                let currentAssy = ctxAfterArgs.LoadedAssemblies.[identity.AssemblyFullName]
+                let currentAssy =
+                    ctxAfterArgs.LoadedAssemblies.ByDefinitionName identity.AssemblyFullName
+
                 let typeDef = Assembly.resolveTypeIdentityDefinition currentAssy identity
                 identity, typeDef.Namespace, typeDef.Name, ctxAfterArgs
             | FromReference (typeRef, _) ->
@@ -888,14 +914,14 @@ module Concretization =
     /// Helper to ensure base type assembly is loaded
     let private loadAssemblyReferenceByName
         (loadAssembly : IAssemblyLoad)
-        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (assemblies : LoadedAssemblies)
         (referencedInAssembly : DumpedAssembly)
         (targetAssemblyName : AssemblyName)
-        : ImmutableDictionary<string, DumpedAssembly>
+        : LoadedAssemblies
         =
-        match assemblies.TryGetValue targetAssemblyName.FullName with
-        | true, _ -> assemblies
-        | false, _ ->
+        if assemblies.ContainsDefinition targetAssemblyName then
+            assemblies
+        else
             let handle =
                 referencedInAssembly.AssemblyReferences
                 |> Seq.tryPick (fun (KeyValue (assemblyRefHandle, assemblyRef)) ->
@@ -918,10 +944,10 @@ module Concretization =
 
     let rec private ensureTypeRefResolved
         (loadAssembly : IAssemblyLoad)
-        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (assemblies : LoadedAssemblies)
         (sourceAssembly : DumpedAssembly)
         (typeRef : TypeRef)
-        : ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly * TypeDefinitionHandle
+        : LoadedAssemblies * DumpedAssembly * TypeDefinitionHandle
         =
         match Assembly.resolveTypeRef assemblies sourceAssembly ImmutableArray.Empty typeRef with
         | TypeResolutionResult.Resolved (resolvedAssembly, _, resolvedType) ->
@@ -929,22 +955,26 @@ module Concretization =
         | TypeResolutionResult.FirstLoadAssy assemblyRef ->
             let handle, referencedIn = assemblyRef.Handle
             let newAssemblies, _ = loadAssembly.LoadAssembly assemblies referencedIn handle
-            let refreshedSourceAssembly = newAssemblies.[sourceAssembly.Name.FullName]
+
+            let newAssemblies =
+                LoadedAssemblies.assertReferenceBound $"base type reference %s{typeRef.Name}" assemblyRef newAssemblies
+
+            let refreshedSourceAssembly = newAssemblies.[sourceAssembly.Name]
             ensureTypeRefResolved loadAssembly newAssemblies refreshedSourceAssembly typeRef
 
     let rec private ensureTypeDefnResolved
         (loadAssembly : IAssemblyLoad)
-        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (assemblies : LoadedAssemblies)
         (sourceAssembly : DumpedAssembly)
         (ty : TypeDefn)
-        : ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly * TypeDefinitionHandle
+        : LoadedAssemblies * DumpedAssembly * TypeDefinitionHandle
         =
         match ty with
         | TypeDefn.GenericInstantiation (generic, _) ->
             ensureTypeDefnResolved loadAssembly assemblies sourceAssembly generic
         | TypeDefn.Modified (_, afterMod, _) -> ensureTypeDefnResolved loadAssembly assemblies sourceAssembly afterMod
         | TypeDefn.FromDefinition (identity, _) ->
-            let resolvedAssembly = assemblies.[identity.AssemblyFullName]
+            let resolvedAssembly = assemblies.ByDefinitionName identity.AssemblyFullName
             assemblies, resolvedAssembly, identity.TypeDefinition.Get
         | TypeDefn.FromReference (typeRef, _) -> ensureTypeRefResolved loadAssembly assemblies sourceAssembly typeRef
         | unexpected ->
@@ -955,19 +985,19 @@ module Concretization =
 
     let rec private ensureBaseTypeAssembliesLoaded
         (loadAssembly : IAssemblyLoad)
-        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (assemblies : LoadedAssemblies)
         (assyName : AssemblyName)
         (baseTypeInfo : BaseTypeInfo option)
-        : ImmutableDictionary<string, DumpedAssembly>
+        : LoadedAssemblies
         =
         match baseTypeInfo with
         | None -> assemblies
         | Some (BaseTypeInfo.TypeDef handle) ->
-            let assy = assemblies.[assyName.FullName]
+            let assy = assemblies.[assyName]
             let baseType = assy.TypeDefs.[handle]
             ensureBaseTypeAssembliesLoaded loadAssembly assemblies assy.Name baseType.BaseType
         | Some (BaseTypeInfo.TypeRef handle) ->
-            let assy = assemblies.[assyName.FullName]
+            let assy = assemblies.[assyName]
             let typeRef = assy.TypeRefs.[handle]
 
             let newAssemblies, resolvedAssembly, resolvedHandle =
@@ -976,16 +1006,16 @@ module Concretization =
             let resolvedType = resolvedAssembly.TypeDefs.[resolvedHandle]
             ensureBaseTypeAssembliesLoaded loadAssembly newAssemblies resolvedAssembly.Name resolvedType.BaseType
         | Some (BaseTypeInfo.ForeignAssemblyType (assemblyName, handle)) ->
-            let assy = assemblies.[assyName.FullName]
+            let assy = assemblies.[assyName]
 
             let newAssemblies =
                 loadAssemblyReferenceByName loadAssembly assemblies assy assemblyName
 
-            let targetAssembly = newAssemblies.[assemblyName.FullName]
+            let targetAssembly = newAssemblies.[assemblyName]
             let targetType = targetAssembly.TypeDefs.[handle]
             ensureBaseTypeAssembliesLoaded loadAssembly newAssemblies targetAssembly.Name targetType.BaseType
         | Some (BaseTypeInfo.TypeSpec handle) ->
-            let assy = assemblies.[assyName.FullName]
+            let assy = assemblies.[assyName]
             let typeSpec = assy.TypeSpecs.[handle].Signature
 
             let newAssemblies, resolvedAssembly, resolvedHandle =
@@ -996,12 +1026,12 @@ module Concretization =
 
     let ensureTypeDefinitionBaseAssembliesLoaded
         (loadAssembly : IAssemblyLoad)
-        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (assemblies : LoadedAssemblies)
         (assemblyName : AssemblyName)
         (typeDefinitionHandle : TypeDefinitionHandle)
-        : ImmutableDictionary<string, DumpedAssembly>
+        : LoadedAssemblies
         =
-        let assy = assemblies.[assemblyName.FullName]
+        let assy = assemblies.[assemblyName]
         let typeDef = assy.TypeDefs.[typeDefinitionHandle]
         ensureBaseTypeAssembliesLoaded loadAssembly assemblies assy.Name typeDef.BaseType
 
@@ -1040,10 +1070,10 @@ module Concretization =
         (loadAssembly : IAssemblyLoad)
         (baseTypes : BaseClassTypes<DumpedAssembly>)
         (visited : System.Collections.Generic.HashSet<ConcreteTypeHandle>)
-        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (assemblies : LoadedAssemblies)
         (concreteTypes : AllConcreteTypes)
         (handle : ConcreteTypeHandle)
-        : ImmutableDictionary<string, DumpedAssembly> * AllConcreteTypes
+        : LoadedAssemblies * AllConcreteTypes
         =
         if not (visited.Add handle) then
             assemblies, concreteTypes
@@ -1067,7 +1097,7 @@ module Concretization =
                             concreteType.Assembly
                             concreteType.Definition.Get
 
-                    let outerAssembly = assemblies.[concreteType.Assembly.FullName]
+                    let outerAssembly = assemblies.[concreteType.Assembly]
                     let outerTypeDef = outerAssembly.TypeDefs.[concreteType.Definition.Get]
 
                     // Reference types terminate in zeroOf as null; fields (and,
@@ -1122,14 +1152,14 @@ module Concretization =
     let concretizeMethod
         (ctx : AllConcreteTypes)
         (loadAssembly : IAssemblyLoad)
-        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (assemblies : LoadedAssemblies)
         (baseTypes : BaseClassTypes<DumpedAssembly>)
         (method : WoofWare.PawPrint.MethodInfo<'ty, GenericParamFromMetadata, TypeDefn>)
         (typeArgs : ImmutableArray<ConcreteTypeHandle>)
         (methodArgs : ImmutableArray<ConcreteTypeHandle>)
         : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
           AllConcreteTypes *
-          ImmutableDictionary<string, DumpedAssembly>
+          LoadedAssemblies
         =
 
         // Ensure base type assemblies are loaded for the declaring type
@@ -1151,7 +1181,7 @@ module Concretization =
         let declaringTypeDefn =
             if method.DeclaringType._Generics.IsEmpty then
                 // Non-generic type - determine the SignatureTypeKind
-                let assy = concCtx.LoadedAssemblies.[method.DeclaringType.Assembly.FullName]
+                let assy = concCtx.LoadedAssemblies.[method.DeclaringType.Assembly]
                 let arg = assy.TypeDefs.[method.DeclaringType.Definition.Get]
 
                 let signatureTypeKind =
@@ -1160,7 +1190,7 @@ module Concretization =
                 TypeDefn.FromDefinition (method.DeclaringType.Identity, signatureTypeKind)
             else
                 // Generic type - create a GenericInstantiation
-                let assy = concCtx.LoadedAssemblies.[method.DeclaringType.Assembly.FullName]
+                let assy = concCtx.LoadedAssemblies.[method.DeclaringType.Assembly]
                 let arg = assy.TypeDefs.[method.DeclaringType.Definition.Get]
 
                 let signatureTypeKind =
@@ -1309,7 +1339,7 @@ module Concretization =
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (handle : ConcreteTypeHandle)
         (concreteTypes : AllConcreteTypes)
-        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (assemblies : LoadedAssemblies)
         : TypeDefn
         =
         match handle with
@@ -1347,7 +1377,7 @@ module Concretization =
             | Some concreteType ->
 
             // Determine SignatureTypeKind
-            let assy = assemblies.[concreteType.Assembly.FullName]
+            let assy = assemblies.[concreteType.Assembly]
             let typeDef = assy.TypeDefs.[concreteType.Definition.Get]
 
             let signatureTypeKind =

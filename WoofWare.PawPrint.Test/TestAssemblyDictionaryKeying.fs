@@ -1,33 +1,22 @@
 namespace WoofWare.PawPrint.Test
 
-open System
 open System.Collections.Immutable
 open System.IO
-open System.Reflection
-open System.Reflection.Metadata
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
 
-/// The loaded-assemblies dictionary is populated by two different keying conventions.
+/// An assembly has two identities and they are not interchangeable: the *definition* identity it
+/// declares for itself, and the *reference* identity by which some other assembly names it.
+/// Everything downstream of type resolution — `DumpedAssembly.Name`, `ConcreteType.Assembly`,
+/// `ResolvedTypeIdentity.AssemblyFullName` — carries a definition identity, so an assembly must be
+/// findable by that identity no matter which reference caused it to be loaded.
 ///
-///   * `IlMachineState.WithLoadedAssembly` (and `IlMachineState.initial`) key by the
-///     assembly's own *AssemblyDefinition* identity.
-///   * `TypeResolution.loadAssembly` keys by the *AssemblyReference* that triggered the
-///     load: `assemblies.SetItem (assemblyRef.Name.FullName, assy)`.
-///
-/// Every consumer, however, looks an assembly up by its definition identity:
-/// `Concretization.ensureTypeDefinitionBaseAssembliesLoaded` indexes
-/// `assemblies.[assemblyName.FullName]`, where `assemblyName` is a `DumpedAssembly.Name`
-/// or a `ConcreteType.Assembly`, both of which come from
-/// `ResolvedTypeIdentity.ofTypeDefinition` and are therefore definition identities.
-///
-/// A reference identity need not equal the referent's definition identity. In the .NET 10
-/// shared framework the .NET Framework compatibility facades (mscorlib, System,
-/// System.Core, System.Xml, ...) reference their implementation assemblies with
-/// `Version=0.0.0.0`; six assemblies there — including
-/// `System.IO.FileSystem.AccessControl` — are referenced *only* that way, so they can
-/// never be found again once loaded.
+/// This used to fail: the load context was keyed by whichever AssemblyReference triggered the
+/// load. In the .NET shared framework the .NET Framework compatibility facades reference their
+/// implementation assemblies with `Version=0.0.0.0`, and six assemblies there — including
+/// `System.IO.FileSystem.AccessControl` — are referenced *only* that way, so they could never be
+/// found again once loaded.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestAssemblyDictionaryKeying =
@@ -47,124 +36,96 @@ module TestAssemblyDictionaryKeying =
 
         candidate
 
-    /// Byte-for-byte the keying production uses: `TypeResolution.loadAssembly` inserts the
-    /// freshly-read assembly under the FullName taken from the AssemblyReference that
-    /// caused the load, *not* under the assembly's own definition name.
-    type private ProductionKeyedAssemblyLoad (searchDirs : string list) =
-        interface IAssemblyLoad with
-            member _.LoadAssembly
-                (loadedAssemblies : ImmutableDictionary<string, DumpedAssembly>)
-                (referencedIn : AssemblyName)
-                (handle : AssemblyReferenceHandle)
-                : ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly
-                =
-                let referencedInAssembly =
-                    match loadedAssemblies.TryGetValue referencedIn.FullName with
-                    | false, _ -> failwithf $"Missing loaded assembly %s{referencedIn.FullName}"
-                    | true, assy -> assy
+    /// The production loader. Tests must not hand-roll an `IAssemblyLoad`: this bug was invisible
+    /// to the suite for exactly as long as the test fakes keyed their dictionaries differently
+    /// from production.
+    let private loader () : IAssemblyLoad =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        TypeResolution.directoryLoader loggerFactory [ runtimeDir ]
 
-                let assemblyRef = referencedInAssembly.AssemblyReferences.[handle]
-
-                match loadedAssemblies.TryGetValue assemblyRef.Name.FullName with
-                | true, assy -> loadedAssemblies, assy
-                | false, _ ->
-                    let path =
-                        searchDirs
-                        |> List.tryPick (fun dir ->
-                            let candidate = Path.Combine (dir, assemblyRef.Name.Name + ".dll")
-                            if File.Exists candidate then Some candidate else None
-                        )
-                        |> Option.defaultWith (fun () ->
-                            failwithf $"Test setup could not locate assembly %s{assemblyRef.Name.FullName} on disk"
-                        )
-
-                    let dumped = readAssembly path
-                    // The production keying: the *reference's* FullName, not `dumped.Name.FullName`.
-                    loadedAssemblies.SetItem (assemblyRef.Name.FullName, dumped), dumped
-
-    /// Resolve a top-level type by name out of `fromAssembly`, loading referenced
-    /// assemblies on demand exactly as production does.
+    /// Resolve a top-level type by name out of `fromAssembly`, loading referenced assemblies on
+    /// demand through the production loader.
     let private resolveWithLoads
         (loadAssembly : IAssemblyLoad)
-        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (assemblies : LoadedAssemblies)
         (fromAssembly : DumpedAssembly)
         (ns : string)
         (name : string)
-        : ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly * ResolvedTypeIdentity
+        : LoadedAssemblies * DumpedAssembly * ResolvedTypeIdentity
         =
-        let rec go
-            (assemblies : ImmutableDictionary<string, DumpedAssembly>)
-            : ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly * ResolvedTypeIdentity
-            =
+        let rec go (assemblies : LoadedAssemblies) : LoadedAssemblies * DumpedAssembly * ResolvedTypeIdentity =
             match Assembly.resolveTopLevelTypeFromName fromAssembly assemblies (Some ns) name ImmutableArray.Empty with
             | TypeResolutionResult.Resolved (assy, identity, _) -> assemblies, assy, identity
             | TypeResolutionResult.FirstLoadAssy assyRef ->
                 let handle, referencedIn = assyRef.Handle
                 let assemblies, _ = loadAssembly.LoadAssembly assemblies referencedIn handle
-                go assemblies
+
+                // Same guard production uses: a load that leaves the reference unbound would make
+                // this retry spin forever, so fail with a diagnosis instead of hanging.
+                go (LoadedAssemblies.assertReferenceBound $"%s{ns}.%s{name}" assyRef assemblies)
 
         go assemblies
 
-    /// Set up the reported scenario: `mscorlib` forwards
-    /// `System.Security.AccessControl.FileSystemRights` to
-    /// `System.IO.FileSystem.AccessControl` through an AssemblyReference whose Version is
-    /// 0.0.0.0, while the real DLL's AssemblyDefinition Version is the shared framework's.
-    /// No other assembly in the shared framework references it at all, so this is the only
-    /// way the interpreter can ever come to load it.
+    /// The one reference in `mscorlib` that names `System.IO.FileSystem.AccessControl`.
+    let private forwardingReference (mscorlib : DumpedAssembly) : AssemblyReference =
+        mscorlib.AssemblyReferences.Values
+        |> Seq.filter (fun r -> r.Name.Name = "System.IO.FileSystem.AccessControl")
+        |> Seq.exactlyOne
+
+    /// The reported scenario: `mscorlib` forwards `System.Security.AccessControl.FileSystemRights`
+    /// to `System.IO.FileSystem.AccessControl` through an AssemblyReference whose Version is
+    /// 0.0.0.0, while the real DLL's AssemblyDefinition Version is the shared framework's. No other
+    /// assembly in the shared framework references it at all, so this is the only way the
+    /// interpreter can ever come to load it.
     let private loadForwardedAccessControlType
         ()
-        : IAssemblyLoad *
-          ImmutableDictionary<string, DumpedAssembly> *
-          DumpedAssembly *
-          DumpedAssembly *
-          ResolvedTypeIdentity
+        : LoadedAssemblies * DumpedAssembly * DumpedAssembly * DumpedAssembly * ResolvedTypeIdentity
         =
         let mscorlibPath = requireFile "mscorlib.dll"
         requireFile "System.IO.FileSystem.AccessControl.dll" |> ignore
 
         let corelib = readAssembly corelibPath
         let mscorlib = readAssembly mscorlibPath
-
-        let loaded : ImmutableDictionary<string, DumpedAssembly> =
-            [ corelib ; mscorlib ]
-            |> Seq.map (fun a -> System.Collections.Generic.KeyValuePair (a.Name.FullName, a))
-            |> ImmutableDictionary.CreateRange
-
-        let loadAssembly = ProductionKeyedAssemblyLoad [ runtimeDir ] :> IAssemblyLoad
+        let loaded = LoadedAssemblies.ofAssemblies [ corelib ; mscorlib ]
 
         let loaded, targetAssembly, identity =
-            resolveWithLoads loadAssembly loaded mscorlib "System.Security.AccessControl" "FileSystemRights"
+            resolveWithLoads (loader ()) loaded mscorlib "System.Security.AccessControl" "FileSystemRights"
 
-        // Sanity: we really did land in the forwarded-to assembly, via a reference whose
-        // identity differs from that assembly's own definition identity.
+        // Sanity: we really did land in the forwarded-to assembly, and this really is the
+        // ref-identity-differs-from-def-identity case the fix is about.
         targetAssembly.Name.Name |> shouldEqual "System.IO.FileSystem.AccessControl"
 
-        let referenceKey =
-            loaded.Keys
-            |> Seq.filter (fun k -> k.StartsWith ("System.IO.FileSystem.AccessControl,", StringComparison.Ordinal))
-            |> Seq.exactlyOne
+        (forwardingReference mscorlib).Name.FullName
+        |> shouldNotEqual targetAssembly.Name.FullName
 
-        referenceKey |> shouldNotEqual targetAssembly.Name.FullName
         identity.AssemblyFullName |> shouldEqual targetAssembly.Name.FullName
 
-        loadAssembly, loaded, corelib, targetAssembly, identity
+        loaded, corelib, mscorlib, targetAssembly, identity
 
-    /// An assembly that has been loaded must be findable by its definition identity,
-    /// which is the only identity `ConcreteType.Assembly`, `DumpedAssembly.Name` and
-    /// `ResolvedTypeIdentity.AssemblyFullName` ever carry.
+    /// The invariant the whole design rests on: whatever route got an assembly into the load
+    /// context, it is findable by the only identity its consumers ever hold.
     [<Test>]
-    let ``a loaded assembly is keyed by its definition identity`` () : unit =
-        let _, loaded, _, targetAssembly, _ = loadForwardedAccessControlType ()
+    let ``a loaded assembly is findable by its definition identity`` () : unit =
+        let loaded, _, _, targetAssembly, _ = loadForwardedAccessControlType ()
 
-        loaded.ContainsKey targetAssembly.Name.FullName |> shouldEqual true
+        loaded.ContainsDefinition targetAssembly.Name |> shouldEqual true
+        loaded.TryByDefinition targetAssembly.Name |> Option.isSome |> shouldEqual true
+
+    /// ...and the reference that got us there still resolves, so we do not go back to disk.
+    [<Test>]
+    let ``the reference that triggered the load still resolves to the same assembly`` () : unit =
+        let loaded, _, mscorlib, targetAssembly, _ = loadForwardedAccessControlType ()
+
+        match loaded.TryResolveReference (forwardingReference mscorlib) with
+        | None -> Assert.Fail "Expected the recorded binding to resolve the forwarding reference"
+        | Some resolved -> resolved.Name.FullName |> shouldEqual targetAssembly.Name.FullName
 
     [<Test>]
     let ``ensureTypeDefinitionBaseAssembliesLoaded succeeds for a type reached through a forwarding facade`` () : unit =
-        let loadAssembly, loaded, _, targetAssembly, identity =
-            loadForwardedAccessControlType ()
+        let loaded, _, _, targetAssembly, identity = loadForwardedAccessControlType ()
 
         Concretization.ensureTypeDefinitionBaseAssembliesLoaded
-            loadAssembly
+            (loader ())
             loaded
             targetAssembly.Name
             identity.TypeDefinition.Get
@@ -172,7 +133,7 @@ module TestAssemblyDictionaryKeying =
 
     [<Test>]
     let ``concretizeTypeDefinition succeeds for a type reached through a forwarding facade`` () : unit =
-        let _, loaded, corelib, _, identity = loadForwardedAccessControlType ()
+        let loaded, corelib, _, _, identity = loadForwardedAccessControlType ()
 
         let baseTypes = Corelib.getBaseTypes corelib
 
@@ -184,3 +145,41 @@ module TestAssemblyDictionaryKeying =
             }
 
         TypeConcretization.concretizeTypeDefinition ctx identity |> ignore
+
+    /// A reference whose identity differs from every loaded assembly's definition identity must
+    /// NOT resolve — otherwise the binder would be inventing bindings it has not made.
+    [<Test>]
+    let ``a mismatched reference does not resolve against an unbound load context`` () : unit =
+        let mscorlibPath = requireFile "mscorlib.dll"
+        let corelib = readAssembly corelibPath
+        let mscorlib = readAssembly mscorlibPath
+        let loaded = LoadedAssemblies.ofAssemblies [ corelib ; mscorlib ]
+
+        let reference = forwardingReference mscorlib
+
+        loaded.TryResolveReference reference |> Option.isSome |> shouldEqual false
+
+    /// A reference whose identity happens to equal an already-loaded assembly's definition
+    /// identity must resolve to it without going to disk — the CLR's exact-identity match. This is
+    /// how an assembly registered directly (the entry assembly, or a fixture that exists only in
+    /// memory, never written to a runtime dir) is found the first time something references it.
+    [<Test>]
+    let ``an exact identity match resolves with no recorded binding`` () : unit =
+        let mscorlibPath = requireFile "mscorlib.dll"
+        let mscorlib = readAssembly mscorlibPath
+        let reference = forwardingReference mscorlib
+
+        // Stand in for "an assembly registered directly whose definition identity is exactly what
+        // some reference names": load the referent and register it under the reference's identity.
+        let target = readAssembly (requireFile "System.IO.FileSystem.AccessControl.dll")
+
+        let loaded =
+            (LoadedAssemblies.empty.WithBoundReference reference target |> fst).WithLoadedAssembly target
+
+        // Now build a fresh context holding only an assembly whose definition identity equals the
+        // reference's identity, with no binding recorded at all.
+        let bindingFree = LoadedAssemblies.ofAssemblies [ target ]
+        bindingFree.TryResolveReference reference |> Option.isSome |> shouldEqual false
+
+        // ...whereas the recorded binding does resolve.
+        loaded.TryResolveReference reference |> Option.isSome |> shouldEqual true

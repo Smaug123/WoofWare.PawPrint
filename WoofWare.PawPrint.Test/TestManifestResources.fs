@@ -778,7 +778,7 @@ public static class Entry
 
         let state =
             IlMachineState.initial loggerFactory ImmutableArray.Empty assembly
-            |> fun state -> state.WithLoadedAssembly corelib.Name corelib
+            |> fun state -> state.WithLoadedAssembly corelib
 
         let state, ptr =
             IlMachineState.peByteRangePointer loggerFactory baseClassTypes peByteRange state
@@ -978,8 +978,7 @@ public static class Entry
         use forwardedAssembly =
             global.WoofWare.PawPrint.AssemblyApi.read loggerFactory None forwardedAssemblyStream
 
-        let state =
-            prepared.State.WithLoadedAssembly forwardedAssembly.Name forwardedAssembly
+        let state = prepared.State.WithLoadedAssembly forwardedAssembly
 
         expectFailureContaining
             "assembly-forwarded manifest resource"

@@ -205,7 +205,7 @@ module Corelib =
         }
 
     let concretizeAll
-        (loaded : ImmutableDictionary<string, DumpedAssembly>)
+        (loaded : LoadedAssemblies)
         (bct : BaseClassTypes<DumpedAssembly>)
         (t : AllConcreteTypes)
         : AllConcreteTypes
@@ -217,11 +217,7 @@ module Corelib =
                 TypeConcretization.ConcretizationContext.BaseTypes = bct
             }
 
-        let loader =
-            { new IAssemblyLoad with
-                member _.LoadAssembly _ _ _ =
-                    failwith "should have already loaded this assembly"
-            }
+        let loader = IAssemblyLoad.alreadyLoadedOnly
 
         let tys =
             [

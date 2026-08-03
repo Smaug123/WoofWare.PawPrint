@@ -839,7 +839,7 @@ and MethodState =
     static member Empty
         (concreteTypes : AllConcreteTypes)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (loadedAssemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (loadedAssemblies : LoadedAssemblies)
         (containingAssembly : DumpedAssembly)
         (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (methodGenerics : ImmutableArray<ConcreteTypeHandle>)

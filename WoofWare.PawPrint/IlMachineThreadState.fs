@@ -332,7 +332,6 @@ module IlMachineThreadState =
         (entryAssembly : DumpedAssembly)
         : IlMachineState
         =
-        let assyName = entryAssembly.ThisAssemblyDefinition.Name
         let logger = lf.CreateLogger "IlMachineState"
 
         let state =
@@ -344,7 +343,7 @@ module IlMachineThreadState =
                 ManagedHeap = ManagedHeap.empty
                 ThreadState = Map.empty
                 InternedStrings = ImmutableDictionary.Empty
-                _LoadedAssemblies = ImmutableDictionary.Empty
+                _LoadedAssemblies = LoadedAssemblies.empty
                 _Statics = ImmutableDictionary.Empty
                 TypeInitTable = ImmutableDictionary.Empty
                 DotnetRuntimeDirs = dotnetRuntimeDirs
@@ -363,7 +362,7 @@ module IlMachineThreadState =
                 Scheduling = SchedulerState.RoundRobin
             }
 
-        state.WithLoadedAssembly assyName entryAssembly
+        state.WithLoadedAssembly entryAssembly
 
     let addThread (newThreadState : MethodState) (state : IlMachineState) : IlMachineState * ThreadId =
         let thread = ThreadId state.NextThreadId

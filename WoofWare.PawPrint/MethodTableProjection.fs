@@ -100,7 +100,8 @@ module internal MethodTableProjection =
         match AllConcreteTypes.lookup handle state.ConcreteTypes with
         | None -> None
         | Some concreteType ->
-            let assembly = state._LoadedAssemblies.[concreteType.Identity.AssemblyFullName]
+            let assembly =
+                state._LoadedAssemblies.ByDefinitionName concreteType.Identity.AssemblyFullName
 
             Some (concreteType, assembly.TypeDefs.[concreteType.Identity.TypeDefinition.Get])
 

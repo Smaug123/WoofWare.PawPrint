@@ -14,22 +14,22 @@ module TypeIdentityTestHelpers =
             member _.LoadAssembly _loadedAssemblies _referencedIn _handle =
                 failwith "Test unexpectedly attempted to load an assembly"
 
-    type RecordingAssemblyLoad (availableAssemblies : ImmutableDictionary<string, DumpedAssembly>) =
+    type RecordingAssemblyLoad (availableAssemblies : LoadedAssemblies) =
         let calls = ResizeArray<string * string> ()
 
         member _.Calls : (string * string) list = calls |> Seq.toList
 
         interface IAssemblyLoad with
             member _.LoadAssembly
-                (loadedAssemblies : ImmutableDictionary<string, DumpedAssembly>)
+                (loadedAssemblies : LoadedAssemblies)
                 (referencedIn : System.Reflection.AssemblyName)
                 (handle : AssemblyReferenceHandle)
-                : ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly
+                : LoadedAssemblies * DumpedAssembly
                 =
                 let referencedInAssembly =
-                    match loadedAssemblies.TryGetValue referencedIn.FullName with
-                    | false, _ -> failwithf "Missing loaded assembly %s" referencedIn.FullName
-                    | true, assy -> assy
+                    match loadedAssemblies.TryByDefinition referencedIn with
+                    | None -> failwithf "Missing loaded assembly %s" referencedIn.FullName
+                    | Some assy -> assy
 
                 let assemblyRef =
                     match referencedInAssembly.AssemblyReferences.TryGetValue handle with
@@ -37,12 +37,14 @@ module TypeIdentityTestHelpers =
                     | true, assyRef -> assyRef
 
                 let targetAssembly =
-                    match availableAssemblies.TryGetValue assemblyRef.Name.FullName with
-                    | false, _ -> failwithf "Missing available assembly %s" assemblyRef.Name.FullName
-                    | true, assy -> assy
+                    match availableAssemblies.TryResolveReference assemblyRef with
+                    | None -> failwithf "Missing available assembly %s" assemblyRef.Name.FullName
+                    | Some assy -> assy
 
                 calls.Add (referencedIn.FullName, targetAssembly.Name.FullName)
-                loadedAssemblies.SetItem (targetAssembly.Name.FullName, targetAssembly), targetAssembly
+                // Same bookkeeping production does: register under the definition identity and
+                // record the binding that got us here.
+                loadedAssemblies.WithBoundReference assemblyRef targetAssembly
 
     // Factory intentionally undisposed: f's return value (e.g. a DumpedAssembly) may close over
     // the factory's sinks, so disposing here would silently drop later log events.
@@ -63,10 +65,8 @@ module TypeIdentityTestHelpers =
 
     let metadataReferenceFromImage (bytes : byte[]) : MetadataReference = MetadataReference.CreateFromImage bytes
 
-    let loadedAssemblies (assemblies : DumpedAssembly list) : ImmutableDictionary<string, DumpedAssembly> =
-        assemblies
-        |> Seq.map (fun assy -> KeyValuePair (assy.Name.FullName, assy))
-        |> ImmutableDictionary.CreateRange
+    let loadedAssemblies (assemblies : DumpedAssembly list) : LoadedAssemblies =
+        LoadedAssemblies.ofAssemblies assemblies
 
     let emptyConcretizationContext
         (assemblies : DumpedAssembly list)
