@@ -219,6 +219,8 @@ module IlMachineState =
 
     let tryGetConcreteTypeInfo = IlMachineRuntimeMetadata.tryGetConcreteTypeInfo
 
+    let isReferenceTypeHandle = IlMachineRuntimeMetadata.isReferenceTypeHandle
+
     let requiredOwnInstanceFieldId = IlMachineRuntimeMetadata.requiredOwnInstanceFieldId
 
     let isConcreteTypeAssignableTo = IlMachineRuntimeMetadata.isConcreteTypeAssignableTo
