@@ -78,3 +78,25 @@ A guest can see any of these only through `BitConverter`, since C# has no way to
 `Math.Sqrt` is the exception to everything above, and appears in this section only for the NaN bullet. `squareRoot` is one of the operations IEEE 754 *requires* to be correctly rounded (§5.4.1, not the recommendation of §9.2), the JIT lowers it to a hardware instruction rather than to a libm call, and every platform's instruction obeys — so there is exactly one right answer for every argument and PawPrint returns it. `TestDeterministicMath.fs` asserts bit-for-bit agreement with the host as a property, which is an assertion the other three functions cannot make; `sourcesPure/MathSqrt.cs` correspondingly pins irrational roots exactly, where its `Pow`/`Cos`/`Sin` siblings can only assert identities and slack bounds.
 
 Computing it in-tree anyway is not about changing the answer, then, but about where the guarantee comes from: the interpreter promises correct rounding on its own account rather than inheriting it from whatever machine the recording happened on, and the tests get an exact oracle out of it.
+
+## `calli` through a null function pointer
+
+**CoreCLR**: Faults. On osx-arm64 the process dies with SIGSEGV (exit 139); the null address is called directly, and nothing converts that into a managed exception the guest could catch. Because the fault is a hardware trap rather than a runtime check, exactly what a program observes depends on the platform's signal handling rather than on any CLI rule.
+
+**PawPrint**: Raises a catchable `NullReferenceException` at the `calli` site, before consuming the function pointer or any arguments from the evaluation stack. A guest `try`/`catch (NullReferenceException)` around the call therefore runs.
+
+**Spec status**: Compliant, and strictly closer to the specification than CoreCLR. ECMA-335 III.3.20 lists `NullReferenceException` as the exception `calli` throws when the function pointer is null.
+
+**Why we chose this**: PawPrint has no host address space to fault in — a null function pointer is just a value we can recognise, so we are free to implement the specified behaviour rather than emulate a segfault. Reproducing the fault would mean tearing down the simulated process in a way that carries no information, and would make the interpreter's behaviour depend on the host platform's signal handling, which is precisely the kind of nondeterminism PawPrint exists to eliminate.
+
+**Observable example**:
+
+```csharp
+delegate*<int, int> nil = null;
+try { nil(1); }
+catch (NullReferenceException) { /* PawPrint: reached. CoreCLR: process is already dead. */ }
+```
+
+**Testing note**: This divergence is why the case cannot be a `sourcesPure` comparison test — running the real runtime in-process would take the test host down. It is covered by a PawPrint-only test, `calli through a null function pointer throws NullReferenceException` in `TestPureCases.fs`.
+
+**Where this lives in code**: `UnaryMetadataCallOps.executeCalli`.

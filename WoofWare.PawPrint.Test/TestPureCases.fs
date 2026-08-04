@@ -161,6 +161,51 @@ module TestPureCases =
                 | _, RunOutcome.ProcessExit _ -> failwith "unreachable: normalised away above"
             )
 
+    /// `calli` through a null function pointer. This cannot be a comparison test in
+    /// `sourcesPure`: the real runtime does not raise a catchable NullReferenceException
+    /// here, it segfaults (observed as exit 139 on osx-arm64), which would take the test
+    /// host down with it. PawPrint instead implements the behaviour ECMA-335 III.3.20
+    /// actually specifies. See docs/divergences.md.
+    [<Test>]
+    let ``calli through a null function pointer throws NullReferenceException`` () =
+        let source =
+            """
+using System;
+
+public class Program
+{
+    public static unsafe int Main(string[] args)
+    {
+        delegate*<int, int> nil = null;
+        try
+        {
+            nil(1);
+            return 1;
+        }
+        catch (NullReferenceException)
+        {
+            return 0;
+        }
+    }
+}
+"""
+
+        runPawPrintSource
+            "CalliNullFunctionPointer.cs"
+            source
+            KernelConfig.Default
+            (fun _image pawPrintResult ->
+                match pawPrintResult with
+                | RunOutcome.NormalExit (terminalState, terminatingThread) ->
+                    match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
+                    | EvalStackValue.Int32 (Int32Source.Verbatim exitCode) :: _ -> exitCode |> shouldEqual 0
+                    | [] -> failwith "expected program to return an int, but it returned void"
+                    | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
+                | outcome ->
+                    failwith
+                        $"Expected the guest to catch a NullReferenceException from the null calli, got %O{outcome}"
+            )
+
     [<Test>]
     let ``Unhandled rethrow preserves original throw stack frame`` () =
         let source =

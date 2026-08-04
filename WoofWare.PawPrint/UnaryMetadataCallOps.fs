@@ -1108,3 +1108,127 @@ module internal UnaryMetadataCallOps =
             )
         |> IlMachineState.advanceProgramCounter thread
         |> Tuple.withRight WhatWeDid.Executed
+
+    /// `calli` (ECMA-335 III.3.20). The function pointer sits on top of the eval stack,
+    /// above the arguments; the metadata token is a StandaloneSignature describing the
+    /// *call site*, not the callee.
+    ///
+    /// Design note. We drive the actual invocation from the `MethodInfo` carried by the
+    /// function-pointer value (`NativeIntSource.FunctionPointer`), exactly as the delegate
+    /// dispatch path does in `AbstractMachine.dispatchDelegateInvoke` — `callMethod` pops
+    /// arguments according to the callee's own signature, so that is the single source of
+    /// truth for argument handling. The call-site signature is used only to *validate*
+    /// that the two agree on how many eval-stack slots this call consumes. Without that
+    /// check, a mismatch (whether from a bug in our own `ldftn`/function-pointer
+    /// representation, or from genuinely divergent IL) would silently pop the wrong number
+    /// of values and corrupt the frame — a failure that surfaces arbitrarily far from its
+    /// cause. We deliberately do not use the call-site signature's parameter *types* to
+    /// coerce arguments: `callMethod` already coerces from the callee signature, and a
+    /// second source of truth would be worse than none.
+    let executeCalli (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
+        let loggerFactory = ctx.LoggerFactory
+        let baseClassTypes = ctx.BaseClassTypes
+        let activeAssy = ctx.ActiveAssembly
+        let thread = ctx.Thread
+
+        let callSiteSignature =
+            match ctx.MetadataToken with
+            | MetadataToken.StandaloneSignature handle ->
+                let metadataReader = activeAssy.PeReader.GetMetadataReader ()
+
+                (metadataReader.GetStandaloneSignature handle)
+                    .DecodeMethodSignature (TypeDefn.typeProvider activeAssy.Name, ())
+                |> TypeMethodSignature.make (
+                    function
+                    | TypeDefn.Void -> MethodReturnType.Void
+                    | retType -> MethodReturnType.Returns retType
+                )
+            | k -> failwith $"calli: expected a StandaloneSignature metadata token describing the call site, got %O{k}"
+
+        // Peek rather than pop: `loadClass` below may suspend this instruction for class
+        // initialisation, in which case the PC is not advanced and the whole `calli` is
+        // re-executed later. Popping here would lose the function pointer on that retry.
+        let fnPtr = IlMachineState.peekEvalStack thread state
+
+        match fnPtr with
+        | None -> failwith "calli: eval stack was empty; expected a function pointer on top"
+        | Some (EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L)) ->
+            // ECMA-335 III.3.20: calli throws NullReferenceException if the function
+            // pointer is null. Don't advance the PC; exception dispatch needs the
+            // faulting instruction's offset.
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                baseClassTypes
+                baseClassTypes.NullReferenceException
+                thread
+                state
+        | Some fnPtrValue ->
+
+        let methodToCall =
+            match fnPtrValue with
+            | EvalStackValue.NativeInt (NativeIntSource.FunctionPointer mi) -> mi
+            | other ->
+                // Anything else is either a genuinely bogus value or a pointer provenance
+                // our `NativeIntSource` model can't yet render as a callable target; either
+                // way, calling through it would be a guess.
+                failwith $"calli: expected a function pointer on top of the eval stack, got %O{other}"
+
+        // Slots this call consumes: the callee's declared parameters, plus `this` when the
+        // callee is an instance method.
+        let calleeSlots =
+            methodToCall.Parameters.Length + (if methodToCall.IsStatic then 0 else 1)
+
+        // Slots the call site pushed: its declared parameters, plus `this` when the
+        // call-site signature carries HASTHIS. Note these need not agree on *which* of the
+        // two supplies `this`: CoreCLR takes the address of an instance method (e.g. a
+        // constructor, via `GetMultiCallableAddrOfCode`) and calls it through a call site
+        // whose signature is static with the receiver as an explicit leading argument.
+        // Only the total slot count is required to match.
+        let callSiteSlots =
+            callSiteSignature.ParameterTypes.Length
+            + (if callSiteSignature.Header.Get.IsInstance then 1 else 0)
+
+        if calleeSlots <> callSiteSlots then
+            failwith
+                $"calli: call-site signature consumes %d{callSiteSlots} eval-stack slots but target %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}::%s{methodToCall.Name} consumes %d{calleeSlots}; refusing to execute a call that would corrupt the frame"
+
+        let declaringTypeHandle =
+            AllConcreteTypes.findExistingConcreteType
+                state.ConcreteTypes
+                methodToCall.DeclaringType.Identity
+                methodToCall.DeclaringType.Generics
+            |> Option.defaultWith (fun () ->
+                failwith
+                    $"calli: declaring type %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name} of the target method is not registered in AllConcreteTypes"
+            )
+
+        match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
+        | NothingToDo state ->
+            // Only now is it safe to consume the function pointer.
+            let _, state = IlMachineState.popEvalStack thread state
+            let threadState = state.ThreadState.[thread]
+
+            IlMachineStateExecution.callMethod
+                loggerFactory
+                baseClassTypes
+                None
+                ConstructionState.NotConstructing
+                false
+                false
+                true
+                methodToCall.Generics
+                methodToCall
+                thread
+                threadState
+                None
+                false
+                false // wrapExceptionInTargetInvocation
+                state,
+            WhatWeDid.Executed
+        | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
+        | ThrowingTypeInitializationException state -> state, WhatWeDid.ThrowingTypeInitializationException
+        | Blocked (state, blockedBy) ->
+            // Park this thread on the other thread's in-progress cctor. The PC has not been
+            // advanced and we have not popped the function pointer, so re-executing this
+            // `calli` when the scheduler wakes us sees exactly the stack we started with.
+            state, WhatWeDid.BlockedOnClassInit blockedBy
