@@ -425,11 +425,71 @@ module NativeCall =
 
         ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), []), state
 
+    /// Allocate a block on the simulated process's native heap (the pool that backs
+    /// <c>malloc</c> / <c>Marshal.AllocHGlobal</c>), fill it with <paramref name="bytes"/>, and
+    /// return a pointer to its base address.
+    ///
+    /// Use this — rather than <c>allocateBlobByteArray</c> — whenever the guest is going to
+    /// <c>free</c> the result, which is the case for every entry point modelled on a native
+    /// function that returns <c>strdup</c>'d or <c>malloc</c>'d memory. Only a native-heap block
+    /// base is a legal argument to <c>SystemNative_Free</c>; a byref into a managed
+    /// <c>byte[]</c> is refused there (correctly — freeing it would be nonsense).
+    let allocateNativeHeapBlob
+        (operation : string)
+        (bytes : byte array)
+        (state : IlMachineState)
+        : ManagedPointerSource * IlMachineState
+        =
+        // ZeroInitialized rather than Uninitialized: every byte is overwritten
+        // immediately below, so there is nothing for the use-of-uninit detector to
+        // catch, and a zeroed block gives a saner picture if a future caller
+        // under-fills its allocation.
+        let ptr, state =
+            IlMachineState.allocateNativeMemory MemoryBlockInitialization.ZeroInitialized bytes.Length state
+
+        let blockId =
+            match ptr with
+            | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (blockId, 0), []) -> blockId
+            | other ->
+                failwith
+                    $"%s{operation}: allocateNativeMemory returned an unexpected pointer shape (%O{other}); this is an interpreter bug"
+
+        let state =
+            state.MapKernel (fun kernel ->
+                { kernel with
+                    NativeMemoryPool = NativeMemoryPool.writeBytes blockId 0 bytes kernel.NativeMemoryPool
+                }
+            )
+
+        ptr, state
+
+    /// Allocate a native-heap block holding the UTF-8 encoding of <paramref name="value"/>
+    /// followed by a single trailing null byte, and return a pointer to its base address.
+    /// This is PawPrint's <c>strdup</c>: the resulting pointer is a C string the guest may
+    /// read and then <c>free</c> (which is exactly what CoreLib's
+    /// <c>Utf8StringMarshaller.Free</c> does with the return value of a
+    /// <c>StringMarshalling.Utf8</c> <c>LibraryImport</c>).
+    let allocateNativeHeapNullTerminatedUtf8
+        (operation : string)
+        (value : string)
+        (state : IlMachineState)
+        : ManagedPointerSource * IlMachineState
+        =
+        let bytes = System.Text.Encoding.UTF8.GetBytes value
+        let storage = Array.zeroCreate<byte> (bytes.Length + 1)
+        Array.blit bytes 0 storage 0 bytes.Length
+
+        allocateNativeHeapBlob operation storage state
+
     /// Allocate a managed <c>byte[]</c> holding the UTF-8 encoding of <paramref name="value"/>
     /// followed by a single trailing null byte, and return a byref to its first element. The
     /// resulting pointer is suitable for managed code that expects a C-style null-terminated
     /// UTF-8 string (e.g. CoreLib's <c>MdUtf8String(void*)</c> ctor, which calls
     /// <c>string.strlen</c> on the pointer).
+    ///
+    /// The buffer lives on the *managed* heap, so the guest must not <c>free</c> it. Where the
+    /// native function being modelled hands ownership to the caller, use
+    /// <c>allocateNativeHeapNullTerminatedUtf8</c> instead.
     let allocateNullTerminatedUtf8
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (value : string)
