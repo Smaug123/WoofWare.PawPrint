@@ -59,18 +59,35 @@ module TestSharedFrameworkForwardSweep =
 
         // Only top-level forwards: nested ones are reached through their parent, which this
         // already covers, and `TryGetTopLevelExportedType` is the entry point resolution uses.
-        let topLevelForwards =
+        //
+        // Some facades forward to assemblies that are not part of the shared framework at all
+        // (System.Transactions forwards two types to System.Security.Permissions, which ships as a
+        // separate NuGet package). "The target is not installed" is a different fact from "we
+        // loaded it and then could not find it", and only the latter is what this sweep is about.
+        // The split is made structurally, on whether the target DLL exists, rather than by matching
+        // exception text — a text filter here would hide the very regression we are looking for.
+        let allForwards, skippedForMissingTarget =
             facade.ExportedTypes.Values
-            |> Seq.filter (fun e ->
+            |> Seq.choose (fun e ->
                 match e.Data with
-                | ExportedTypeData.ForwardsTo _ -> true
+                | ExportedTypeData.ForwardsTo assyRefHandle ->
+                    let target = facade.AssemblyReferences.[assyRefHandle]
+                    Some (e, File.Exists (Path.Combine (runtimeDir, target.Name.Name + ".dll")))
                 | ExportedTypeData.ParentExportedType _
-                | ExportedTypeData.AssemblyFile _ -> false
+                | ExportedTypeData.AssemblyFile _ -> None
             )
             |> Seq.toList
+            |> List.partition snd
+            |> fun (present, absent) -> present |> List.map fst, absent |> List.map fst
+
+        if not skippedForMissingTarget.IsEmpty then
+            TestContext.Progress.WriteLine
+                $"%s{facadeName}: skipping %d{skippedForMissingTarget.Length} forwards whose target assembly is not present in the shared framework"
+
+        let topLevelForwards = allForwards
 
         if topLevelForwards.IsEmpty then
-            Assert.Ignore $"%s{facadeName} declares no top-level type forwards"
+            Assert.Ignore $"%s{facadeName} declares no top-level type forwards with a resolvable target"
 
         for exported in topLevelForwards do
             let ns = exported.Namespace |> Option.defaultValue "<global>"
@@ -105,10 +122,11 @@ module TestSharedFrameworkForwardSweep =
                     failures.Add
                         $"%s{describe}: identity names %s{identity.AssemblyFullName}, which is not in the load context"
             with e ->
-                // Unimplemented corners of the metadata surface (e.g. AssemblyFile exports) are
-                // not what this test is about; only identity-lookup failures are.
-                if e.Message.Contains "not loaded" || e :? Collections.Generic.KeyNotFoundException then
-                    failures.Add $"%s{describe}: %s{e.Message}"
+                // Every exception is a failure. An earlier version filtered on the message text,
+                // which silently swallowed the exact regression this sweep exists to catch:
+                // `assertReferenceBound` says "still not bound", not "not loaded". A filter here
+                // can only ever hide the thing we are looking for.
+                failures.Add $"%s{describe}: %s{e.GetType().Name}: %s{e.Message}"
 
         if failures.Count > 0 then
             let sample = failures |> Seq.truncate 10 |> String.concat "\n  "
@@ -116,4 +134,5 @@ module TestSharedFrameworkForwardSweep =
             Assert.Fail
                 $"%d{failures.Count} of %d{topLevelForwards.Length} forwards from %s{facadeName} failed identity lookup:\n  %s{sample}"
 
-        resolvedCount |> shouldBeGreaterThan 0
+        // Every forward must have resolved, not merely "at least one".
+        resolvedCount |> shouldEqual topLevelForwards.Length

@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint.Test
 
+open System
 open System.IO
 open System.Reflection
 open FsCheck
@@ -20,6 +21,12 @@ module TestLoadedAssemblies =
     let private readAssembly (path : string) : DumpedAssembly =
         let _, loggerFactory = LoggerFactory.makeTest ()
         Assembly.readFile loggerFactory path
+
+    /// Bypasses the process-lifetime parse cache, so this really does produce a fresh instance.
+    let private readUncached (path : string) : DumpedAssembly =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use stream = new MemoryStream (File.ReadAllBytes path)
+        AssemblyApi.read loggerFactory (Some path) stream
 
     /// Real assemblies from the pinned shared framework, which is where genuinely mismatching
     /// (reference, definition) identity pairs actually occur. Synthesising `DumpedAssembly`
@@ -214,10 +221,21 @@ module TestLoadedAssemblies =
         (second.DefinitionNames |> Seq.length)
         |> shouldEqual (first.DefinitionNames |> Seq.length)
 
-        // A freshly-read copy of the same assembly must not displace the instance already held.
-        let reread = readAssembly assy.OriginalPath.Value
+        // A genuinely distinct instance of the same assembly must not displace the one already
+        // held. `Assembly.readFile` memoises by path, so it would hand back a reference-equal
+        // value and never exercise the branch; read uncached to get a real second instance.
+        let reread = readUncached assy.OriginalPath.Value
+        Object.ReferenceEquals (reread, assy) |> shouldEqual false
+        reread.Name.FullName |> shouldEqual assy.Name.FullName
+
         let third, canonicalThird = second.WithBoundReference reference reread
-        canonicalThird.Name.FullName |> shouldEqual assy.Name.FullName
+
+        // The instance already held wins: exactly one DumpedAssembly per definition identity.
+        Object.ReferenceEquals (canonicalThird, assy) |> shouldEqual true
 
         (third.DefinitionNames |> Seq.length)
         |> shouldEqual (second.DefinitionNames |> Seq.length)
+
+        match third.TryByDefinition assy.Name with
+        | None -> Assert.Fail "Expected the assembly to remain findable by its definition identity"
+        | Some held -> Object.ReferenceEquals (held, assy) |> shouldEqual true

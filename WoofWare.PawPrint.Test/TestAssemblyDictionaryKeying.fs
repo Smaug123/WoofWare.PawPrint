@@ -159,27 +159,68 @@ module TestAssemblyDictionaryKeying =
 
         loaded.TryResolveReference reference |> Option.isSome |> shouldEqual false
 
-    /// A reference whose identity happens to equal an already-loaded assembly's definition
-    /// identity must resolve to it without going to disk — the CLR's exact-identity match. This is
-    /// how an assembly registered directly (the entry assembly, or a fixture that exists only in
+    /// A reference whose identity *genuinely* equals an already-loaded assembly's definition
+    /// identity must resolve to it with no recorded binding — the CLR's exact-identity match. This
+    /// is how an assembly registered directly (the entry assembly, or a fixture that exists only in
     /// memory, never written to a runtime dir) is found the first time something references it.
+    ///
+    /// Finding such a pair takes searching: the facades are precisely the assemblies whose
+    /// references do NOT match, so we scan for a (reference, referent) pair whose FullNames agree.
     [<Test>]
     let ``an exact identity match resolves with no recorded binding`` () : unit =
-        let mscorlibPath = requireFile "mscorlib.dll"
-        let mscorlib = readAssembly mscorlibPath
-        let reference = forwardingReference mscorlib
+        let matchingPair =
+            Directory.EnumerateFiles (runtimeDir, "*.dll")
+            |> Seq.sort
+            |> Seq.truncate 40
+            |> Seq.collect (fun path ->
+                (readAssembly path).AssemblyReferences.Values
+                |> Seq.choose (fun reference ->
+                    let candidate = Path.Combine (runtimeDir, reference.Name.Name + ".dll")
 
-        // Stand in for "an assembly registered directly whose definition identity is exactly what
-        // some reference names": load the referent and register it under the reference's identity.
+                    if not (File.Exists candidate) then
+                        None
+                    else
+
+                    let referent = readAssembly candidate
+
+                    if referent.Name.FullName = reference.Name.FullName then
+                        Some (reference, referent)
+                    else
+                        None
+                )
+            )
+            |> Seq.tryHead
+
+        match matchingPair with
+        | None ->
+            Assert.Ignore
+                "No assembly reference in the shared framework exactly matches its referent's definition identity; cannot exercise the exact-identity fallback."
+        | Some (reference, referent) ->
+            // No binding has ever been recorded for this reference.
+            let loaded = LoadedAssemblies.ofAssemblies [ referent ]
+
+            match loaded.TryResolveReference reference with
+            | None ->
+                Assert.Fail
+                    $"Expected reference %s{reference.Name.FullName} to resolve by exact identity match against the loaded definition of the same name"
+            | Some resolved -> resolved.Name.FullName |> shouldEqual referent.Name.FullName
+
+    /// The exact-identity fallback must not fire on a *mismatched* reference, or the binder would
+    /// be inventing bindings it never made.
+    [<Test>]
+    let ``the exact identity fallback does not fire on a mismatched reference`` () : unit =
+        let mscorlib = readAssembly (requireFile "mscorlib.dll")
+        let reference = forwardingReference mscorlib
         let target = readAssembly (requireFile "System.IO.FileSystem.AccessControl.dll")
 
-        let loaded =
-            (LoadedAssemblies.empty.WithBoundReference reference target |> fst).WithLoadedAssembly target
+        // The reference names this very assembly, but with a different version, so it must not
+        // resolve until a binding is recorded.
+        reference.Name.Name |> shouldEqual target.Name.Name
+        reference.Name.FullName |> shouldNotEqual target.Name.FullName
 
-        // Now build a fresh context holding only an assembly whose definition identity equals the
-        // reference's identity, with no binding recorded at all.
         let bindingFree = LoadedAssemblies.ofAssemblies [ target ]
         bindingFree.TryResolveReference reference |> Option.isSome |> shouldEqual false
 
-        // ...whereas the recorded binding does resolve.
-        loaded.TryResolveReference reference |> Option.isSome |> shouldEqual true
+        // ...and once bound, it does.
+        let bound, _ = bindingFree.WithBoundReference reference target
+        bound.TryResolveReference reference |> Option.isSome |> shouldEqual true
