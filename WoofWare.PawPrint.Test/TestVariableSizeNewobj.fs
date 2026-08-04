@@ -6,7 +6,6 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
-open WoofWare.PawPrint.ExternImplementations
 open WoofWare.PawPrint.Test
 
 /// `newobj` on `System.String` is the CLR's variable-size-object case
@@ -84,9 +83,7 @@ module TestVariableSizeNewobj =
         use peImage = new MemoryStream (image)
 
         try
-            let nativeImpls = NativeImpls.PassThru ()
-
-            match Program.run loggerFactory (Some sourceName) peImage dotnetRuntimes nativeImpls Map.empty None [] with
+            match Program.run loggerFactory (Some sourceName) peImage dotnetRuntimes KernelConfig.Default None [] with
             | RunOutcome.NormalExit (state, terminatingThread) ->
                 match state.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
                 | EvalStackValue.Int32 0 :: _ -> ()
