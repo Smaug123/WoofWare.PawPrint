@@ -244,36 +244,6 @@ module IlMachineRuntimeMetadata =
 
         state, DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies resolved, assy
 
-    let private ensureAssemblyLoadedByName
-        (loggerFactory : ILoggerFactory)
-        (state : IlMachineState)
-        (referencedInAssembly : DumpedAssembly)
-        (assemblyName : AssemblyName)
-        : IlMachineState * DumpedAssembly
-        =
-        match state.LoadedAssembly assemblyName with
-        | Some loadedAssembly -> state, loadedAssembly
-        | None ->
-            let handle =
-                referencedInAssembly.AssemblyReferences
-                |> Seq.tryPick (fun (KeyValue (assemblyRefHandle, assemblyRef)) ->
-                    if assemblyRef.Name.FullName = assemblyName.FullName then
-                        Some assemblyRefHandle
-                    else
-                        None
-                )
-                |> Option.defaultWith (fun () ->
-                    failwithf
-                        "Assembly %s needs base assembly %s, but no AssemblyReferenceHandle was found"
-                        referencedInAssembly.Name.FullName
-                        assemblyName.FullName
-                )
-
-            let state, loadedAssembly, _ =
-                IlMachineTypeResolution.loadAssembly loggerFactory referencedInAssembly handle state
-
-            state, loadedAssembly
-
     /// Resolve a BaseTypeInfo to the assembly and TypeDefn of the base type.
     let resolveBaseTypeInfo
         (loggerFactory : ILoggerFactory)
@@ -304,16 +274,6 @@ module IlMachineRuntimeMetadata =
                 DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies resolved
 
             state, assy, typeDefn
-        | BaseTypeInfo.ForeignAssemblyType (assemblyName, handle) ->
-            let state, foreignAssembly =
-                ensureAssemblyLoadedByName loggerFactory state currentAssembly assemblyName
-
-            let typeInfo = foreignAssembly.TypeDefs.[handle]
-
-            let typeDefn =
-                DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies typeInfo
-
-            state, foreignAssembly, typeDefn
         | BaseTypeInfo.TypeSpec handle ->
             let signature = currentAssembly.TypeSpecs.[handle].Signature
             state, currentAssembly, signature
