@@ -1150,9 +1150,28 @@ module internal UnaryMetadataCallOps =
         // re-executed later. Popping here would lose the function pointer on that retry.
         let fnPtr = IlMachineState.peekEvalStack thread state
 
-        match fnPtr with
-        | None -> failwith "calli: eval stack was empty; expected a function pointer on top"
-        | Some (EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L)) ->
+        // A function pointer is recognised by its `FunctionPointer` provenance; anything
+        // that is semantically zero is a null pointer. The `FunctionPointer` case must be
+        // matched first — `NativeIntSource.isZero` has no answer for it (and says so).
+        let methodToCall =
+            match fnPtr with
+            | None -> failwith "calli: eval stack was empty; expected a function pointer on top"
+            | Some (EvalStackValue.NativeInt (NativeIntSource.FunctionPointer mi)) -> Some mi
+            | Some (EvalStackValue.NativeInt src) when NativeIntSource.isZero src ->
+                // Every spelling of a null function pointer lands here, not just
+                // `Verbatim 0L`: `ldnull; conv.i` yields
+                // `ManagedPointer ManagedPointerSource.Null`, which is zero throughout
+                // PawPrint. Reusing the existing predicate keeps this arm honest as new
+                // `NativeIntSource` cases appear.
+                None
+            | Some other ->
+                // Anything else is either a genuinely bogus value or a pointer provenance
+                // our `NativeIntSource` model can't yet render as a callable target; either
+                // way, calling through it would be a guess.
+                failwith $"calli: expected a function pointer on top of the eval stack, got %O{other}"
+
+        match methodToCall with
+        | None ->
             // ECMA-335 III.3.20: calli throws NullReferenceException if the function
             // pointer is null. Don't advance the PC; exception dispatch needs the
             // faulting instruction's offset.
@@ -1162,16 +1181,7 @@ module internal UnaryMetadataCallOps =
                 baseClassTypes.NullReferenceException
                 thread
                 state
-        | Some fnPtrValue ->
-
-        let methodToCall =
-            match fnPtrValue with
-            | EvalStackValue.NativeInt (NativeIntSource.FunctionPointer mi) -> mi
-            | other ->
-                // Anything else is either a genuinely bogus value or a pointer provenance
-                // our `NativeIntSource` model can't yet render as a callable target; either
-                // way, calling through it would be a guess.
-                failwith $"calli: expected a function pointer on top of the eval stack, got %O{other}"
+        | Some methodToCall ->
 
         // Slots this call consumes: the callee's declared parameters, plus `this` when the
         // callee is an instance method.
@@ -1179,18 +1189,47 @@ module internal UnaryMetadataCallOps =
             methodToCall.Parameters.Length + (if methodToCall.IsStatic then 0 else 1)
 
         // Slots the call site pushed: its declared parameters, plus `this` when the
-        // call-site signature carries HASTHIS. Note these need not agree on *which* of the
-        // two supplies `this`: CoreCLR takes the address of an instance method (e.g. a
-        // constructor, via `GetMultiCallableAddrOfCode`) and calls it through a call site
-        // whose signature is static with the receiver as an explicit leading argument.
-        // Only the total slot count is required to match.
+        // signature carries an *implicit* receiver. Under EXPLICITTHIS (ECMA-335 II.15.3)
+        // HASTHIS is also set, but the receiver is already the first entry in
+        // ParameterTypes, so counting it again would reject legal instance stubs.
+        //
+        // Note the two sides need not agree on *which* of them supplies `this`: CoreCLR
+        // takes the address of an instance method (e.g. a constructor, via
+        // `GetMultiCallableAddrOfCode`) and calls it through a call site whose signature is
+        // static with the receiver as an explicit leading argument. Only the total matters.
+        let callSiteHeader = callSiteSignature.Header.Get
+
+        let callSiteHasImplicitThis =
+            callSiteHeader.IsInstance
+            && not (callSiteHeader.Attributes.HasFlag SignatureAttributes.ExplicitThis)
+
         let callSiteSlots =
             callSiteSignature.ParameterTypes.Length
-            + (if callSiteSignature.Header.Get.IsInstance then 1 else 0)
+            + (if callSiteHasImplicitThis then 1 else 0)
 
         if calleeSlots <> callSiteSlots then
             failwith
                 $"calli: call-site signature consumes %d{callSiteSlots} eval-stack slots but target %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}::%s{methodToCall.Name} consumes %d{calleeSlots}; refusing to execute a call that would corrupt the frame"
+
+        // Whether a result is left on the caller's stack is decided by the *callee*
+        // signature, because that is what `callMethod` and the frame return use. If the
+        // call site disagrees about void-ness, the caller's stack ends up one slot short
+        // (calling a void target through a value-returning signature, so the following
+        // load underflows) or one slot long (the reverse, leaving junk behind). Neither is
+        // recoverable, and both would surface far from here.
+        let returnsValue (ret : MethodReturnType<'a>) : bool =
+            match ret with
+            | MethodReturnType.Void -> false
+            | MethodReturnType.Returns _ -> true
+
+        let callSiteReturnsValue = returnsValue callSiteSignature.ReturnType
+        let calleeReturnsValue = returnsValue methodToCall.Signature.ReturnType
+
+        if callSiteReturnsValue <> calleeReturnsValue then
+            let describe (b : bool) = if b then "a value" else "void"
+
+            failwith
+                $"calli: call-site signature returns %s{describe callSiteReturnsValue} but target %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}::%s{methodToCall.Name} returns %s{describe calleeReturnsValue}; refusing to execute a call that would leave the caller's eval stack the wrong depth"
 
         let declaringTypeHandle =
             AllConcreteTypes.findExistingConcreteType

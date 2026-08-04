@@ -176,16 +176,21 @@ public class Program
 {
     public static unsafe int Main(string[] args)
     {
-        delegate*<int, int> nil = null;
-        try
-        {
-            nil(1);
-            return 1;
-        }
-        catch (NullReferenceException)
-        {
-            return 0;
-        }
+        // Two spellings of a null function pointer. Both currently reach the interpreter
+        // as a verbatim zero, so this does not by itself exercise the other zero-valued
+        // `NativeIntSource` shapes that `executeCalli` accepts as null (notably
+        // `ManagedPointer ManagedPointerSource.Null`); that handling is deliberately
+        // broader than any C# spelling reachable today. (`IntPtr.Zero.ToPointer()` would
+        // be a third spelling, but it needs `ldsflda` of a MemberReference, which is a
+        // separate unimplemented gap.)
+        delegate*<int, int> a = null;
+        delegate*<int, int> b = (delegate*<int, int>)(void*)null;
+
+        int caught = 0;
+        try { a(1); } catch (NullReferenceException) { caught += 1; }
+        try { b(1); } catch (NullReferenceException) { caught += 2; }
+
+        return caught == 3 ? 0 : caught;
     }
 }
 """
