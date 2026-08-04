@@ -262,6 +262,86 @@ module OutputLogEntry =
 
         builder.ToImmutable ()
 
+/// Identity of the Unix-shaped platform the simulated process believes it is
+/// running on. Consulted by the `SystemNative_*` entry points that report
+/// host identity — today only `SystemNative_GetUnixRelease`, which surfaces
+/// as `Environment.OSVersion` on a Unix CoreLib.
+///
+/// This is a value in kernel state rather than a host read, for the same
+/// reason `ProcessorCount` is: real CoreCLR answers it from `uname(2)`, which
+/// would make a replay depend on the machine that produced it — and worse,
+/// guests branch on `Environment.OSVersion` (feature detection, quirk
+/// workarounds), so letting the host leak in here would change guest
+/// *control flow* between runs.
+///
+/// Modelled as a closed set of platform identities rather than as a bag of
+/// loose `utsname` strings so that the facts we report stay mutually
+/// consistent as more of `utsname` gets implemented: a future
+/// `SystemNative_GetUnixVersion` or `SystemNative_GetOSArchitecture` is a new
+/// total *function* over this DU, not a new independently-settable string
+/// that could claim a Darwin release alongside an x86_64 machine.
+[<RequireQualifiedAccess>]
+type SimulatedUnixPlatform =
+    /// 64-bit x86 Linux, kernel release shaped like Ubuntu 24.04 LTS. The
+    /// default: it is the platform PawPrint's CI runs on, and the one whose
+    /// CoreLib actually routes `Environment.OSVersion` through
+    /// `SystemNative_GetUnixRelease` at all (the macOS CoreLib goes via
+    /// `Interop.libobjc.GetOperatingSystemVersion` instead).
+    | LinuxX64
+    /// 64-bit ARM macOS. Note that `uname -r` on macOS reports the *Darwin*
+    /// kernel release, not the macOS product version — so this is `24.6.0`
+    /// (macOS 15.6), not `15.6.0`.
+    | MacOsArm64
+    /// Explicit `utsname.release`, for guests that need a specific kernel
+    /// version string (e.g. to exercise a version-sniffing code path, or the
+    /// integer-overflow branch in CoreLib's
+    /// `Environment.FindAndParseNextNumber`). Validated by
+    /// `SimulatedUnixPlatform.unixRelease`; see there for what a legal
+    /// release string is.
+    | Custom of release : string
+
+[<RequireQualifiedAccess>]
+module SimulatedUnixPlatform =
+    /// Loosest ceiling any Unix we model imposes on `utsname.release`:
+    /// macOS's `_SYS_NAMELEN` is 256 (including the NUL), while Linux's
+    /// `_UTSNAME_LENGTH` is only 65. We bound `Custom` by the looser of the
+    /// two because the case deliberately does not say which platform it is
+    /// impersonating, so neither limit is uniquely correct — but an
+    /// unbounded string could hand a guest a release no real `uname` could
+    /// ever produce.
+    [<Literal>]
+    let private maxReleaseLength : int = 255
+
+    /// The `utsname.release` string this platform reports, i.e. exactly what
+    /// `uname -r` would print. Part of PawPrint's replay contract: changing a
+    /// preset's value changes the `Environment.OSVersion` every recorded
+    /// trace on that platform observes.
+    ///
+    /// Rejects a `Custom` payload that no real `uname` could produce: empty
+    /// (every Unix fills `release`), longer than `maxReleaseLength`, or
+    /// containing a byte outside printable ASCII. The last is load-bearing
+    /// rather than fussy — the value is handed to the guest as a C string of
+    /// single bytes, so a non-ASCII character has no faithful encoding here,
+    /// and an embedded NUL would silently truncate the string the guest sees.
+    let unixRelease (platform : SimulatedUnixPlatform) : string =
+        match platform with
+        | SimulatedUnixPlatform.LinuxX64 -> "6.8.0-51-generic"
+        | SimulatedUnixPlatform.MacOsArm64 -> "24.6.0"
+        | SimulatedUnixPlatform.Custom release ->
+            if String.length release = 0 then
+                failwith
+                    "SimulatedUnixPlatform.Custom: release string is empty, but every Unix `uname(2)` fills `utsname.release`"
+
+            if String.length release > maxReleaseLength then
+                failwith
+                    $"SimulatedUnixPlatform.Custom: release string is %d{String.length release} characters, exceeding the %d{maxReleaseLength}-character limit any Unix `utsname.release` can hold"
+
+            match release |> Seq.tryFindIndex (fun c -> c < ' ' || c > '~') with
+            | Some i ->
+                failwith
+                    $"SimulatedUnixPlatform.Custom: release string contains non-printable-ASCII character U+%04X{int release.[i]} at index %d{i}; `utsname.release` is reported to the guest as single-byte characters, so only printable ASCII round-trips faithfully"
+            | None -> release
+
 /// Aggregates the slice of `IlMachineState` that models host-kernel /
 /// syscall-emulation state: process-wide last-error registers, the native
 /// heap pool backing `Marshal.AllocHGlobal`, the Unix file-descriptor table,
@@ -494,6 +574,19 @@ type EmulatedKernel =
         /// and BCL callers divide by it, so `NativeEnvironment` asserts the
         /// invariant at the point of use rather than trusting construction.
         ProcessorCount : int
+        /// Unix-shaped platform identity the simulated process reports, as
+        /// observed through `SystemNative_GetUnixRelease` (and hence
+        /// `Environment.OSVersion` on a Unix CoreLib). Deliberately kernel
+        /// state rather than a host `uname(2)` read; see
+        /// `SimulatedUnixPlatform` for why.
+        ///
+        /// Unlike `ProcessorCount`, CoreLib does *not* latch this during
+        /// static initialisation — `Environment.OSVersion` is a lazily
+        /// populated static that is only computed on first read — but hosts
+        /// should still set it via `KernelConfig` rather than by record-copy
+        /// after startup, so that the value is fixed for the whole run and a
+        /// guest cannot observe it changing under it.
+        UnixPlatform : SimulatedUnixPlatform
         /// Pure data model of the simulated process's signal disposition,
         /// per-thread sigprocmasks, and pending-signal queue. Populated by
         /// future slices: nothing in the simulator dispatches signals yet,
@@ -554,6 +647,14 @@ module EmulatedKernel =
     [<Literal>]
     let maxWallClockEpochMs : int64 = 253402300799999L
 
+    /// Unix platform identity a freshly-minted simulated process reports.
+    /// Linux/x64 because that is the platform whose CoreLib actually routes
+    /// `Environment.OSVersion` through `SystemNative_GetUnixRelease` (the
+    /// macOS CoreLib uses `Interop.libobjc.GetOperatingSystemVersion`
+    /// instead), and because it is what PawPrint's CI runs on. Hosts choose
+    /// a different identity via `KernelConfig.UnixPlatform`.
+    let defaultUnixPlatform : SimulatedUnixPlatform = SimulatedUnixPlatform.LinuxX64
+
     let initial : EmulatedKernel =
         {
             LastPInvokeError = 0
@@ -575,7 +676,20 @@ module EmulatedKernel =
             OutputLog = ImmutableArray<OutputLogEntry>.Empty
             Environment = defaultEnvironment
             ProcessorCount = defaultProcessorCount
+            UnixPlatform = defaultUnixPlatform
             Signals = SignalState.empty
+        }
+
+    /// Set the Unix platform identity the simulated process reports. Forces
+    /// the release string eagerly so that an invalid `Custom` payload fails
+    /// at configuration time — where the caller can see which knob is wrong —
+    /// rather than at the first `Environment.OSVersion` read deep inside
+    /// guest code.
+    let withUnixPlatform (platform : SimulatedUnixPlatform) (kernel : EmulatedKernel) : EmulatedKernel =
+        SimulatedUnixPlatform.unixRelease platform |> ignore<string>
+
+        { kernel with
+            UnixPlatform = platform
         }
 
     /// Set the logical-processor count the simulated process reports. Rejects
@@ -792,16 +906,20 @@ type KernelConfig =
         /// contract: reading the host's real clock to fill it in would make a
         /// recorded trace's timestamps depend on when it was recorded.
         WallClockEpochMs : int64
+        /// Unix platform identity the guest observes via
+        /// `Environment.OSVersion` (on a Unix CoreLib).
+        UnixPlatform : SimulatedUnixPlatform
     }
 
     /// Configuration a host gets if it expresses no preference: no environment
-    /// overlay, the default single processor, and a wall clock booting at the
-    /// Unix epoch.
+    /// overlay, the default single processor, a wall clock booting at the Unix
+    /// epoch, and the default Unix platform.
     static member Default : KernelConfig =
         {
             Environment = Map.empty
             ProcessorCount = EmulatedKernel.defaultProcessorCount
             WallClockEpochMs = 0L
+            UnixPlatform = EmulatedKernel.defaultUnixPlatform
         }
 
 [<RequireQualifiedAccess>]
@@ -815,3 +933,4 @@ module KernelConfig =
         |> EmulatedKernel.withEnvironment config.Environment
         |> EmulatedKernel.withProcessorCount config.ProcessorCount
         |> EmulatedKernel.withWallClockEpochMs config.WallClockEpochMs
+        |> EmulatedKernel.withUnixPlatform config.UnixPlatform
