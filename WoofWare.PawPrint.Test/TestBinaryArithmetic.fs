@@ -456,6 +456,478 @@ module TestBinaryArithmetic =
         execute ArithmeticOperation.sub state (arrayPointer arr 3) (EvalStackValue.Int32 2)
         |> expectArrayPointer arr 1
 
+    /// Weighted towards the range boundaries, so `sub.ovf`'s trapping regime is
+    /// exercised as often as its ordinary arithmetic one.
+    let private genOverflowProneInt32 : Gen<int32> =
+        Gen.frequency
+            [
+                2, ArbMap.defaults |> ArbMap.generate<int32>
+                2, Gen.choose (-8, 8)
+                3,
+                Gen.elements
+                    [
+                        System.Int32.MinValue
+                        System.Int32.MinValue + 1
+                        System.Int32.MaxValue
+                        System.Int32.MaxValue - 1
+                        0
+                        -1
+                        1
+                    ]
+            ]
+
+    let private genOverflowProneInt64 : Gen<int64> =
+        Gen.frequency
+            [
+                2, ArbMap.defaults |> ArbMap.generate<int64>
+                2, Gen.choose (-8, 8) |> Gen.map int64<int>
+                3,
+                Gen.elements
+                    [
+                        System.Int64.MinValue
+                        System.Int64.MinValue + 1L
+                        System.Int64.MaxValue
+                        System.Int64.MaxValue - 1L
+                        0L
+                        -1L
+                        1L
+                        int64<int32> System.Int32.MinValue
+                        int64<int32> System.Int32.MaxValue
+                    ]
+            ]
+
+    /// `None` means the operation raised OverflowException, which `Sub_ovf`
+    /// translates into a guest `System.OverflowException`.
+    let private trySubOvf
+        (state : IlMachineState)
+        (val1 : EvalStackValue)
+        (val2 : EvalStackValue)
+        : EvalStackValue option
+        =
+        try
+            execute ArithmeticOperation.subOvf state val1 val2 |> Some
+        with :? System.OverflowException ->
+            None
+
+    [<Test>]
+    let ``sub ovf on int32 traps exactly when the exact difference leaves int32 range`` () : unit =
+        let state = state ()
+        let mutable trapped = 0
+        let mutable computed = 0
+
+        let property (a : int32, b : int32) : unit =
+            let exact = bigint a - bigint b
+
+            let inRange =
+                exact >= bigint System.Int32.MinValue && exact <= bigint System.Int32.MaxValue
+
+            match trySubOvf state (EvalStackValue.Int32 a) (EvalStackValue.Int32 b) with
+            | Some actual ->
+                computed <- computed + 1
+
+                if not inRange then
+                    failwith
+                        $"sub.ovf %d{a} - %d{b} returned %O{actual}, but the exact difference %O{exact} is outside int32"
+
+                actual |> shouldEqual (EvalStackValue.Int32 (int32 exact))
+                // In range, the checked and unchecked forms must agree.
+                actual
+                |> shouldEqual (execute ArithmeticOperation.sub state (EvalStackValue.Int32 a) (EvalStackValue.Int32 b))
+            | None ->
+                trapped <- trapped + 1
+
+                if inRange then
+                    failwith $"sub.ovf %d{a} - %d{b} trapped, but the exact difference %O{exact} fits in int32"
+
+        Check.One (
+            propertyConfig,
+            Prop.forAll (Arb.fromGen (Gen.zip genOverflowProneInt32 genOverflowProneInt32)) property
+        )
+
+        if trapped = 0 || computed = 0 then
+            failwith $"generator missed a regime: trapped=%d{trapped}, computed=%d{computed}"
+
+    [<Test>]
+    let ``sub ovf on int64 traps exactly when the exact difference leaves int64 range`` () : unit =
+        let state = state ()
+        let mutable trapped = 0
+        let mutable computed = 0
+
+        let property (a : int64, b : int64) : unit =
+            let exact = bigint a - bigint b
+
+            let inRange =
+                exact >= bigint System.Int64.MinValue && exact <= bigint System.Int64.MaxValue
+
+            let val1 = EvalStackValue.Int64 (Int64Source.Verbatim a)
+            let val2 = EvalStackValue.Int64 (Int64Source.Verbatim b)
+
+            match trySubOvf state val1 val2 with
+            | Some actual ->
+                computed <- computed + 1
+
+                if not inRange then
+                    failwith
+                        $"sub.ovf %d{a} - %d{b} returned %O{actual}, but the exact difference %O{exact} is outside int64"
+
+                actual
+                |> shouldEqual (EvalStackValue.Int64 (Int64Source.Verbatim (int64 exact)))
+
+                actual |> shouldEqual (execute ArithmeticOperation.sub state val1 val2)
+            | None ->
+                trapped <- trapped + 1
+
+                if inRange then
+                    failwith $"sub.ovf %d{a} - %d{b} trapped, but the exact difference %O{exact} fits in int64"
+
+        Check.One (
+            propertyConfig,
+            Prop.forAll (Arb.fromGen (Gen.zip genOverflowProneInt64 genOverflowProneInt64)) property
+        )
+
+        if trapped = 0 || computed = 0 then
+            failwith $"generator missed a regime: trapped=%d{trapped}, computed=%d{computed}"
+
+    let private placeholderPointer (bits : int64) : EvalStackValue =
+        EvalStackValue.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits)
+
+    /// Bit patterns for the byrefs produced by `Unsafe.AsRef<T>((void*)bits)`.
+    /// Zero is excluded: the placeholder invariant is that it never carries
+    /// zero (that bit pattern is `Null`).
+    let private genPlaceholderBits : Gen<int64> =
+        Gen.frequency
+            [
+                2, ArbMap.defaults |> ArbMap.generate<int64>
+                3,
+                Gen.elements
+                    [
+                        System.Int64.MinValue
+                        System.Int64.MinValue + 1L
+                        System.Int64.MaxValue
+                        System.Int64.MaxValue - 1L
+                        -1L
+                        1L
+                        8L
+                    ]
+            ]
+        |> Gen.map (fun bits -> if bits = 0L then 1L else bits)
+
+    let private byteHandle : ConcreteTypeHandle =
+        AllConcreteTypes.getRequiredNonGenericHandle concreteTypes baseClassTypes.Byte
+
+    let private nullPointer : EvalStackValue =
+        EvalStackValue.ManagedPointer ManagedPointerSource.Null
+
+    /// `Null` is the bit pattern 0, so offsetting it must give the byref with
+    /// the offset as its bit pattern — the same answer the `Unsafe.Add<T>`
+    /// intrinsic already produces (IntrinsicHelpers.offsetManagedPointerByElements).
+    [<Test>]
+    let ``offsetting the null byref treats it as the zero bit pattern`` () : unit =
+        let state = state ()
+        let mutable zeroResults = 0
+        let mutable nonZeroResults = 0
+
+        let property (offset : int32) : unit =
+            let v = EvalStackValue.Int32 offset
+
+            let expect (expectedBits : int64) (actual : EvalStackValue) : unit =
+                actual
+                |> shouldEqual (EvalStackValue.ManagedPointer (ManagedPointerSource.ofBitPattern expectedBits))
+
+            execute ArithmeticOperation.add state nullPointer v |> expect (int64 offset)
+            // `int32 + &` is legal and also yields a byref.
+            execute ArithmeticOperation.add state v nullPointer |> expect (int64 offset)
+            execute ArithmeticOperation.addOvf state nullPointer v |> expect (int64 offset)
+            execute ArithmeticOperation.sub state nullPointer v |> expect (-(int64 offset))
+
+            execute ArithmeticOperation.subOvf state nullPointer v
+            |> expect (-(int64 offset))
+
+            if offset = 0 then
+                zeroResults <- zeroResults + 1
+            else
+                nonZeroResults <- nonZeroResults + 1
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genOverflowProneInt32) property)
+
+        if zeroResults = 0 || nonZeroResults = 0 then
+            failwith $"generator missed a regime: zero=%d{zeroResults}, nonZero=%d{nonZeroResults}"
+
+    [<Test>]
+    let ``subtracting Int32 MinValue from the null byref is representable`` () : unit =
+        // The exact reason this was deferred from the Sub_ovf change: the
+        // symbolic offset model cannot negate Int32.MinValue, but the null
+        // byref is not symbolic — it is the bit pattern 0.
+        let state = state ()
+        let expected = placeholderPointer 2147483648L
+
+        execute ArithmeticOperation.sub state nullPointer (EvalStackValue.Int32 System.Int32.MinValue)
+        |> shouldEqual expected
+
+        trySubOvf state nullPointer (EvalStackValue.Int32 System.Int32.MinValue)
+        |> shouldEqual (Some expected)
+
+    [<Test>]
+    let ``subtracting two bit-pattern byrefs yields a native int, including null`` () : unit =
+        // ECMA-335: `& - & -> native int`. Null is just the zero bit pattern,
+        // so this must hold when either or both sides are null.
+        let state = state ()
+
+        execute ArithmeticOperation.sub state nullPointer nullPointer
+        |> shouldEqual (EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L))
+
+        execute ArithmeticOperation.sub state (placeholderPointer 24L) nullPointer
+        |> shouldEqual (EvalStackValue.NativeInt (NativeIntSource.Verbatim 24L))
+
+        execute ArithmeticOperation.sub state nullPointer (placeholderPointer 24L)
+        |> shouldEqual (EvalStackValue.NativeInt (NativeIntSource.Verbatim -24L))
+
+    [<Test>]
+    let ``opcode and Unsafe Add intrinsic agree on bit-pattern byrefs`` () : unit =
+        // The inconsistency this change exists to remove: the same arithmetic
+        // reached the byref path through `Unsafe.Add<T>` and the numeric path
+        // through the `add` opcode.
+        let mutable nullCases = 0
+        let mutable placeholderCases = 0
+
+        let property (bits : int64, offset : int32) : unit =
+            let start, viaOpcodeState =
+                if bits = 0L then
+                    nullCases <- nullCases + 1
+                    nullPointer, state ()
+                else
+                    placeholderCases <- placeholderCases + 1
+                    placeholderPointer bits, state ()
+
+            let viaOpcode =
+                execute ArithmeticOperation.add viaOpcodeState start (EvalStackValue.Int32 offset)
+
+            // Byte elements, so "offset by n elements" is "offset by n bytes"
+            // and the two paths are directly comparable.
+            let viaIntrinsic, _ =
+                IntrinsicHelpers.offsetManagedPointerByElements baseClassTypes (state ()) byteHandle offset start
+
+            if viaOpcode <> viaIntrinsic then
+                failwith
+                    $"add opcode gave %O{viaOpcode} but Unsafe.Add intrinsic gave %O{viaIntrinsic} for %O{start} + %d{offset}"
+
+        let genBits = Gen.frequency [ 1, Gen.constant 0L ; 3, genPlaceholderBits ]
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen (Gen.zip genBits genOverflowProneInt32)) property)
+
+        if nullCases = 0 || placeholderCases = 0 then
+            failwith $"generator missed a regime: null=%d{nullCases}, placeholder=%d{placeholderCases}"
+
+    [<Test>]
+    let ``sub ovf on bit-pattern byrefs traps exactly when the difference leaves native int range`` () : unit =
+        // A `NativeIntPlaceholder`'s payload is a real native-int bit pattern,
+        // not a symbolic offset, so this is the one pointer shape where the
+        // checked form has machine-width bits to overflow.
+        let state = state ()
+        let mutable trapped = 0
+        let mutable computed = 0
+
+        let property (bits1 : int64, bits2 : int64) : unit =
+            let exact = bigint bits1 - bigint bits2
+
+            let inRange =
+                exact >= bigint System.Int64.MinValue && exact <= bigint System.Int64.MaxValue
+
+            let val1 = placeholderPointer bits1
+            let val2 = placeholderPointer bits2
+
+            // Unchecked `sub` wraps whatever happens; that is the behaviour
+            // `sub.ovf` must not share.
+            execute ArithmeticOperation.sub state val1 val2
+            |> shouldEqual (EvalStackValue.NativeInt (NativeIntSource.Verbatim (bits1 - bits2)))
+
+            match trySubOvf state val1 val2 with
+            | Some actual ->
+                computed <- computed + 1
+
+                if not inRange then
+                    failwith
+                        $"sub.ovf on placeholders %d{bits1} - %d{bits2} returned %O{actual}, but %O{exact} is outside native int"
+
+                actual
+                |> shouldEqual (EvalStackValue.NativeInt (NativeIntSource.Verbatim (int64 exact)))
+            | None ->
+                trapped <- trapped + 1
+
+                if inRange then
+                    failwith $"sub.ovf on placeholders %d{bits1} - %d{bits2} trapped, but %O{exact} fits in native int"
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen (Gen.zip genPlaceholderBits genPlaceholderBits)) property)
+
+        if trapped = 0 || computed = 0 then
+            failwith $"generator missed a regime: trapped=%d{trapped}, computed=%d{computed}"
+
+    [<Test>]
+    let ``sub ovf traps when negating the minimum bit-pattern byref`` () : unit =
+        let state = state ()
+        let nullPtr = EvalStackValue.ManagedPointer ManagedPointerSource.Null
+
+        // `Null - placeholder` is `0 - bits`, which overflows only at Int64.MinValue.
+        trySubOvf state nullPtr (placeholderPointer (System.Int64.MinValue + 1L))
+        |> shouldEqual (Some (EvalStackValue.NativeInt (NativeIntSource.Verbatim System.Int64.MaxValue)))
+
+        trySubOvf state nullPtr (placeholderPointer System.Int64.MinValue)
+        |> shouldEqual None
+
+        // Unchecked `sub` wraps instead.
+        execute ArithmeticOperation.sub state nullPtr (placeholderPointer System.Int64.MinValue)
+        |> shouldEqual (EvalStackValue.NativeInt (NativeIntSource.Verbatim System.Int64.MinValue))
+
+    [<Test>]
+    let ``checked pointer offsetting of a bit-pattern byref traps exactly on native int overflow`` () : unit =
+        let state = state ()
+        let mutable addTrapped = 0
+        let mutable addComputed = 0
+        let mutable subTrapped = 0
+        let mutable subComputed = 0
+
+        let expectedPointer (bits : bigint) : EvalStackValue =
+            if bits = bigint 0 then
+                EvalStackValue.ManagedPointer ManagedPointerSource.Null
+            else
+                placeholderPointer (int64 bits)
+
+        let check
+            (checkedOp : IArithmeticOperation)
+            (uncheckedOp : IArithmeticOperation)
+            (exact : bigint)
+            (val1 : EvalStackValue)
+            (val2 : EvalStackValue)
+            : bool
+            =
+            let inRange =
+                exact >= bigint System.Int64.MinValue && exact <= bigint System.Int64.MaxValue
+
+            // The unchecked form always produces a (wrapped) pointer.
+            execute uncheckedOp state val1 val2 |> ignore
+
+            match
+                (try
+                    execute checkedOp state val1 val2 |> Some
+                 with :? System.OverflowException ->
+                     None)
+            with
+            | Some actual ->
+                if not inRange then
+                    failwith
+                        $"%s{checkedOp.Name} of %O{val1} and %O{val2} returned %O{actual}, but %O{exact} is outside native int"
+
+                actual |> shouldEqual (expectedPointer exact)
+                false
+            | None ->
+                if inRange then
+                    failwith $"%s{checkedOp.Name} of %O{val1} and %O{val2} trapped, but %O{exact} fits in native int"
+
+                true
+
+        let property (bits : int64, offset : int32) : unit =
+            let ptr = placeholderPointer bits
+            let v = EvalStackValue.Int32 offset
+
+            if check ArithmeticOperation.addOvf ArithmeticOperation.add (bigint bits + bigint offset) ptr v then
+                addTrapped <- addTrapped + 1
+            else
+                addComputed <- addComputed + 1
+
+            if check ArithmeticOperation.subOvf ArithmeticOperation.sub (bigint bits - bigint offset) ptr v then
+                subTrapped <- subTrapped + 1
+            else
+                subComputed <- subComputed + 1
+
+        Check.One (
+            propertyConfig,
+            Prop.forAll (Arb.fromGen (Gen.zip genPlaceholderBits genOverflowProneInt32)) property
+        )
+
+        if addTrapped = 0 || addComputed = 0 || subTrapped = 0 || subComputed = 0 then
+            failwith
+                $"generator missed a regime: addTrapped=%d{addTrapped}, addComputed=%d{addComputed}, subTrapped=%d{subTrapped}, subComputed=%d{subComputed}"
+
+    [<Test>]
+    let ``subtracting Int32 MinValue from a bit-pattern byref does not need to negate the offset`` () : unit =
+        // `-Int32.MinValue` is not an int32, so the symbolic offset model
+        // refuses it; a placeholder's payload is an int64 bit pattern, so the
+        // subtraction is exact. The real runtime computes 2147483649 here.
+        let state = state ()
+        let expected = placeholderPointer 2147483649L
+
+        execute ArithmeticOperation.sub state (placeholderPointer 1L) (EvalStackValue.Int32 System.Int32.MinValue)
+        |> shouldEqual expected
+
+        trySubOvf state (placeholderPointer 1L) (EvalStackValue.Int32 System.Int32.MinValue)
+        |> shouldEqual (Some expected)
+
+        // Still out of range when it genuinely overflows native int.
+        trySubOvf state (placeholderPointer System.Int64.MaxValue) (EvalStackValue.Int32 System.Int32.MinValue)
+        |> shouldEqual None
+
+    [<Test>]
+    let ``sub ovf shares sub's pointer semantics`` () : unit =
+        // ECMA-335 III.3.68 gives sub.ovf the same `& - int -> &` and
+        // `& - & -> native int` signatures as sub. Our pointers are symbolic
+        // (a root plus offsets), so away from the bit-pattern placeholders
+        // there is nothing to trap on and the two ops must be
+        // indistinguishable. The placeholder cases below stay far from the
+        // native-int boundary, so they agree here too; the trapping regime is
+        // covered by the properties above.
+        let state, arr1, arr2 = stateWithTwoIntArrays [ 10 ; 20 ; 30 ; 40 ] [ 50 ; 60 ]
+        let nullPtr = EvalStackValue.ManagedPointer ManagedPointerSource.Null
+
+        let placeholder (bits : int64) : EvalStackValue =
+            EvalStackValue.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits)
+
+        let cases : (EvalStackValue * EvalStackValue) list =
+            [
+                arrayPointer arr1 3, EvalStackValue.Int32 2
+                arrayPointer arr1 1, EvalStackValue.Int32 -1
+                arrayPointer arr1 2, EvalStackValue.NativeInt (NativeIntSource.Verbatim 1L)
+                arrayPointer arr1 3, arrayPointer arr1 1
+                arrayPointer arr1 1, arrayPointer arr1 3
+                arrayPointer arr1 1, arrayPointer arr2 0
+                byteViewPointer arr1 1 3, byteViewPointer arr1 0 1
+                arrayPointer arr1 2, nullPtr
+                nullPtr, nullPtr
+                placeholder 64L, placeholder 24L
+                placeholder 64L, nullPtr
+                nullPtr, placeholder 24L
+                EvalStackValue.Int32 7, nullPtr
+            ]
+
+        // Shapes our pointer model declines to subtract at all (here: an array
+        // byte view against a plain array byref). Both ops must refuse them;
+        // the messages are deliberately not compared, only the refusal.
+        let refused : (EvalStackValue * EvalStackValue) list =
+            [ byteViewPointer arr1 1 3, arrayPointer arr1 0 ]
+
+        let run (op : IArithmeticOperation) (val1 : EvalStackValue) (val2 : EvalStackValue) : EvalStackValue option =
+            try
+                execute op state val1 val2 |> Some
+            with _ ->
+                None
+
+        for val1, val2 in cases do
+            let expected = execute ArithmeticOperation.sub state val1 val2
+
+            match trySubOvf state val1 val2 with
+            | Some actual ->
+                if actual <> expected then
+                    failwith $"sub.ovf %O{val1} - %O{val2} gave %O{actual}, but sub gave %O{expected}"
+            | None -> failwith $"sub.ovf %O{val1} - %O{val2} trapped, but sub gave %O{expected}"
+
+        for val1, val2 in refused do
+            match run ArithmeticOperation.sub val1 val2 with
+            | Some result -> failwith $"expected sub to refuse %O{val1} - %O{val2}, but it gave %O{result}"
+            | None ->
+
+            match run ArithmeticOperation.subOvf val1 val2 with
+            | Some result -> failwith $"sub refused %O{val1} - %O{val2}, but sub.ovf gave %O{result}"
+            | None -> ()
+
     [<Test>]
     let ``subtracting two plain byrefs in the same array returns byte delta`` () : unit =
         let state, arr = stateWithIntArray [ 10 ; 20 ; 30 ; 40 ]

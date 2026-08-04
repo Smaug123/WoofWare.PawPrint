@@ -230,22 +230,15 @@ module internal IntrinsicHelpers =
         // project off a null managed pointer.
         let placeholderBits =
             match src with
-            | EvalStackValue.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits) -> Some bits
-            | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> Some 0L
-            | _ -> None
+            | EvalStackValue.ManagedPointer ptr -> ManagedPointerSource.tryBitPatternBits ptr
+            | _ -> ValueNone
 
         match placeholderBits with
-        | Some bits ->
-            let newBits = bits + int64 offset * int64 tSize
-
-            let ptrSrc =
-                if newBits = 0L then
-                    ManagedPointerSource.Null
-                else
-                    ManagedPointerSource.NativeIntPlaceholder newBits
+        | ValueSome bits ->
+            let ptrSrc = bits + int64 offset * int64 tSize |> ManagedPointerSource.ofBitPattern
 
             EvalStackValue.ManagedPointer ptrSrc, state
-        | None ->
+        | ValueNone ->
 
         let ptr : EvalStackValue =
             match src with

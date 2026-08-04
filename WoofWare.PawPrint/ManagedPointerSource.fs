@@ -299,6 +299,30 @@ type NormalisedManagedPointerSource = private | NormalisedManagedPointerSource o
 
 [<RequireQualifiedAccess>]
 module ManagedPointerSource =
+    /// A *bit-pattern byref* is one that carries a raw native-int value rather
+    /// than referring to any storage: the `Unsafe.AsRef<T>((void*)bits)`
+    /// placeholder, and `Null`, which is simply the bit pattern 0. Arithmetic
+    /// on these is plain int64 bit arithmetic — there is no root to walk and
+    /// no int32 offset model involved, so callers must handle them before
+    /// decomposing a byref into root-plus-offset.
+    ///
+    /// Contrast `tryStableAddressBits`, which deliberately also answers for
+    /// symbolic byrefs so that alignment masks can see their low bits.
+    let tryBitPatternBits (src : ManagedPointerSource) : int64 voption =
+        match src with
+        | ManagedPointerSource.Null -> ValueSome 0L
+        | ManagedPointerSource.NativeIntPlaceholder bits -> ValueSome bits
+        | ManagedPointerSource.Byref _ -> ValueNone
+
+    /// Inverse of <see cref="tryBitPatternBits"/>. Zero normalises back to
+    /// `Null` so the placeholder invariant ("never carries zero") holds and
+    /// `Unsafe.IsNullRef` agrees with the CLR's bit-pattern definition.
+    let ofBitPattern (bits : int64) : ManagedPointerSource =
+        if bits = 0L then
+            ManagedPointerSource.Null
+        else
+            ManagedPointerSource.NativeIntPlaceholder bits
+
     let internal tryGetArrayRoot (src : ManagedPointerSource) : ManagedHeapAddress option =
         match src with
         | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (array, _), _) -> Some array

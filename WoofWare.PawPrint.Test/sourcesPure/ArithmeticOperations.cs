@@ -97,6 +97,88 @@ public class TestArithmeticOperations
         return 0;
     }
     
+    // Test Sub_ovf: Subtraction with overflow check
+    public static int TestSubtractWithOverflow()
+    {
+        // Normal subtraction should work. Locals rather than literals, so the
+        // C# compiler can't constant-fold the `sub.ovf` away.
+        try
+        {
+            int a = 300;
+            int b = 200;
+            if (checked(a - b) != 100) return 140;
+        }
+        catch (OverflowException)
+        {
+            return 141;
+        }
+
+        // Underflow should throw
+        try
+        {
+            int min = int.MinValue;
+            int one = 1;
+            int result = checked(min - one);
+            return 142; // Should not reach here
+        }
+        catch (OverflowException)
+        {
+            // Expected
+        }
+
+        // Overflow off the top: MaxValue - (-1)
+        try
+        {
+            int max = int.MaxValue;
+            int negOne = -1;
+            int result = checked(max - negOne);
+            return 143; // Should not reach here
+        }
+        catch (OverflowException)
+        {
+            // Expected
+        }
+
+        // Right at the boundary, but in range
+        try
+        {
+            int max = int.MaxValue;
+            int zero = 0;
+            if (checked(max - zero) != int.MaxValue) return 144;
+        }
+        catch (OverflowException)
+        {
+            return 145;
+        }
+
+        // 64-bit underflow should throw
+        try
+        {
+            long min = long.MinValue;
+            long one = 1L;
+            long result = checked(min - one);
+            return 146; // Should not reach here
+        }
+        catch (OverflowException)
+        {
+            // Expected
+        }
+
+        // 64-bit subtraction that exceeds the int32 range but not int64
+        try
+        {
+            long a = 5000000000L;
+            long b = 2000000000L;
+            if (checked(a - b) != 3000000000L) return 147;
+        }
+        catch (OverflowException)
+        {
+            return 148;
+        }
+
+        return 0;
+    }
+
     // Test Mul: Multiplication
     public static int TestMultiply()
     {
@@ -343,7 +425,10 @@ public class TestArithmeticOperations
         
         result = TestSubtract();
         if (result != 0) return 1200 + result;
-        
+
+        result = TestSubtractWithOverflow();
+        if (result != 0) return 1250 + result;
+
         result = TestMultiply();
         if (result != 0) return 1300 + result;
         

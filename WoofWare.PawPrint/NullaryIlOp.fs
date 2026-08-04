@@ -1269,7 +1269,31 @@ module NullaryIlOp =
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.stepped
-        | Sub_ovf -> failwith "TODO: Sub_ovf unimplemented"
+        | Sub_ovf ->
+            let val2, state = IlMachineState.popEvalStack currentThread state
+            let val1, state = IlMachineState.popEvalStack currentThread state
+
+            match
+                try
+                    BinaryArithmetic.execute corelib ArithmeticOperation.subOvf state val1 val2
+                    |> Ok
+                with :? OverflowException as e ->
+                    Error e
+            with
+            | Ok (result, state) ->
+                state
+                |> IlMachineState.pushToEvalStack' result currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Tuple.withRight WhatWeDid.Executed
+                |> ExecutionResult.stepped
+            | Error _ ->
+                IlMachineStateExecution.raiseRuntimeException
+                    loggerFactory
+                    corelib
+                    corelib.OverflowException
+                    currentThread
+                    state
+                |> ExecutionResult.stepped
         | Sub_ovf_un -> failwith "TODO: Sub_ovf_un unimplemented"
         | Add ->
             let val2, state = IlMachineState.popEvalStack currentThread state
