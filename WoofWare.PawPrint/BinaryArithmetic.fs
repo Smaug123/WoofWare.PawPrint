@@ -644,8 +644,12 @@ module ArithmeticOperation =
             subPlaceholderBits behaviour bits (int64 val2) |> placeholderResult
         | _ ->
 
-        // Symbolic byrefs carry an int32 offset, which genuinely cannot
-        // express the negation of Int32.MinValue.
+        // Every other byref is symbolic: its offset is an int32, which cannot
+        // express the negation of Int32.MinValue. Known limitation: this also
+        // rejects the null byref, for which the CLR gives native int
+        // 2147483648 — representable, but not by the `Choice2Of2 : int`
+        // payload we return, so supporting it needs the interface widened
+        // first. `sub` has always behaved this way; `sub.ovf` inherits it.
         if val2 = System.Int32.MinValue then
             failwith "managed pointer subtraction by Int32.MinValue would overflow the interpreter's int32 offset model"
 
