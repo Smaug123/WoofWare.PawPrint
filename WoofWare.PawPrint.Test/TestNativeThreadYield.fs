@@ -7,7 +7,6 @@ open Microsoft.CodeAnalysis
 open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
-open WoofWare.PawPrint.ExternImplementations
 
 /// Direct-call test for the `ThreadNative_YieldThread` QCall handler. Pins the
 /// outcome shape promised by the `WhatWeDid.VoluntaryYield` design: the handler
@@ -45,8 +44,7 @@ public static class Entry
                 (Some "ThreadYieldTest.cs")
                 peImage
                 dotnetRuntimes
-                (MockEnv.make ())
-                Map.empty
+                KernelConfig.Default
                 None
                 []
         with
@@ -122,7 +120,6 @@ public static class Entry
         let ctx : NativeCallContext =
             {
                 LoggerFactory = loggerFactory
-                Implementations = MockEnv.make ()
                 BaseClassTypes = baseClassTypes
                 Thread = prepared.EntryThread
                 State = state

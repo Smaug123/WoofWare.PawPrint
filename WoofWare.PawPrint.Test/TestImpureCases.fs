@@ -7,7 +7,6 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
-open WoofWare.PawPrint.ExternImplementations
 open WoofWare.PawPrint.Test
 
 [<TestFixture>]
@@ -34,8 +33,7 @@ module TestImpureCases =
                 // these bytes.
                 FileName = "WriteLine.cs"
                 ExpectedReturnCode = 1
-                NativeImpls = NativeImpls.PassThru ()
-                Environment = Map.empty
+                KernelConfig = KernelConfig.Default
                 ExpectsUnhandledException = false
                 AssertTerminalState =
                     Some (fun state ->
@@ -49,46 +47,61 @@ module TestImpureCases =
                     )
             }
             {
-                FileName = "InstaQuit.cs"
-                ExpectedReturnCode = 1
-                Environment = Map.empty
+                // A host-configured `KernelConfig.ProcessorCount` must actually
+                // reach the guest, and must do so before the entry type's
+                // `.cctor` runs — CoreLib latches `Environment.ProcessorCount`
+                // into a static on first read, so applying the configuration any
+                // later than `Program.prepare` does would leave a guest that
+                // reads it during static initialisation observing the default.
+                // 4 rather than 1 so that a regression to "always the default"
+                // is a failure rather than a coincidence.
+                FileName = "ProcessorCountConfigured.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        ProcessorCount = 4
+                    }
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
-                NativeImpls =
-                    let mock = MockEnv.make ()
-                    let env = mock.System_Environment
-
-                    { mock with
-                        System_Environment =
-                            { System_EnvironmentMock.Empty with
-                                GetProcessorCount =
-                                    fun thread state ->
-                                        let state =
-                                            state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) thread
-
-                                        (state, WhatWeDid.Executed) |> ExecutionResult.stepped
-                                GetCurrentManagedThreadId = env.GetCurrentManagedThreadId
-                                _Exit =
-                                    fun thread state ->
-                                        let state = state |> IlMachineState.loadArgument thread 0
-                                        ExecutionResult.Terminated (state, thread)
-                            }
+            }
+            {
+                // Same guest, reached the other way: the count comes from the
+                // guest-visible `DOTNET_PROCESSOR_COUNT` knob rather than from
+                // `KernelConfig.ProcessorCount`, which stays at its default.
+                // Covers the whole chain (env overlay -> kernel table ->
+                // `effectiveProcessorCount` -> the native handler), where
+                // `TestEffectiveProcessorCount` covers the resolution rules
+                // themselves.
+                FileName = "ProcessorCountConfigured.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        Environment = Map.ofList [ "DOTNET_PROCESSOR_COUNT", "4" ]
                     }
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // `Environment.Exit` from the entry thread. Exercises the same
+                // `ProcessExit` path as `ExitFromWorker.cs` below, but with the
+                // caller being the thread whose return would otherwise have
+                // supplied the exit code: `Main` goes on to `return 100`, so a
+                // regression that let the guest keep running past `_Exit` would
+                // surface as exit code 100 instead of 1.
+                FileName = "InstaQuit.cs"
+                ExpectedReturnCode = 1
+                KernelConfig = KernelConfig.Default
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
             }
             {
                 // Exercises Environment.Exit called from a worker thread: the whole process
                 // must terminate with the worker's exit code, not just that worker thread.
                 FileName = "ExitFromWorker.cs"
                 ExpectedReturnCode = 7
-                Environment = Map.empty
+                KernelConfig = KernelConfig.Default
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
-                NativeImpls =
-                    let mock = MockEnv.make ()
-
-                    { mock with
-                        System_Environment = System_Environment.passThru
-                    }
             }
             {
                 // Exercises the SystemNative_Write success path: a guest that
@@ -104,9 +117,8 @@ module TestImpureCases =
                 // as a wrong exit code.
                 FileName = "SystemNativeWriteSuccess.cs"
                 ExpectedReturnCode = 0
-                Environment = Map.empty
+                KernelConfig = KernelConfig.Default
                 ExpectsUnhandledException = false
-                NativeImpls = NativeImpls.PassThru ()
                 AssertTerminalState =
                     Some (fun state ->
                         // The guest writes the literal "hi\n" (3 bytes) to
@@ -137,9 +149,8 @@ module TestImpureCases =
                 // P/Invoke handler through to the registry.
                 FileName = "SystemNativeClose.cs"
                 ExpectedReturnCode = 0
-                Environment = Map.empty
+                KernelConfig = KernelConfig.Default
                 ExpectsUnhandledException = false
-                NativeImpls = NativeImpls.PassThru ()
                 AssertTerminalState = None
             }
             {
@@ -152,9 +163,8 @@ module TestImpureCases =
                 // makes the answer stable by construction.
                 FileName = "SystemNativeIsATty.cs"
                 ExpectedReturnCode = 0
-                Environment = Map.empty
+                KernelConfig = KernelConfig.Default
                 ExpectsUnhandledException = false
-                NativeImpls = NativeImpls.PassThru ()
                 AssertTerminalState = None
             }
         ]
@@ -176,15 +186,7 @@ module TestImpureCases =
         try
             let terminalState, terminatingThread =
                 match
-                    Program.run
-                        loggerFactory
-                        (Some case.FileName)
-                        peImage
-                        dotnetRuntimes
-                        case.NativeImpls
-                        case.Environment
-                        None
-                        []
+                    Program.run loggerFactory (Some case.FileName) peImage dotnetRuntimes case.KernelConfig None []
                 with
                 | RunOutcome.GuestUnhandledException (_, _, exn) ->
                     failwith $"Guest threw unhandled exception: %O{exn.ExceptionObject}"

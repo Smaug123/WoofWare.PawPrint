@@ -43,7 +43,7 @@ module TestHardwareIntrinsicsProfile =
         use peImage = new MemoryStream (image)
 
         try
-            Program.run loggerFactory (Some sourceFileName) peImage dotnetRuntimes (MockEnv.make ()) Map.empty None []
+            Program.run loggerFactory (Some sourceFileName) peImage dotnetRuntimes KernelConfig.Default None []
         with _ ->
             for message in messages () do
                 System.Console.Error.WriteLine $"{message}"

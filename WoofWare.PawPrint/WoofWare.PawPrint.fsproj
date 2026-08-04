@@ -84,14 +84,6 @@
     <Compile Include="UnaryStringTokenIlOp.fs" />
     <Compile Include="UnaryConstIlOp.fs" />
     <Compile Include="SwitchIlOp.fs" />
-    <Compile Include="ExternImplementations\System.Environment.fs" />
-    <Compile Include="ExternImplementations\GeneratedSystem.Environment.fs">
-      <MyriadFile>ExternImplementations\System.Environment.fs</MyriadFile>
-      <MyriadParams>
-        <ISystem_Environment>GenerateMock(false)</ISystem_Environment>
-      </MyriadParams>
-    </Compile>
-    <Compile Include="ExternImplementations\NativeImpls.fs" />
     <Compile Include="Scheduler.fs" />
     <Compile Include="LowLevelMonitor.fs" />
     <Compile Include="WaitHandle.fs" />

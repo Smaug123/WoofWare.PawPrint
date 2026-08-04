@@ -38,6 +38,7 @@
     <Compile Include="TestUnaryConstIlOp.fs" />
     <Compile Include="TestUnaryMetadataIlOp.fs" />
     <Compile Include="TestMethodTableProjection.fs" />
+    <Compile Include="TestSzArrayInterfaceDispatch.fs" />
     <Compile Include="TestCrossAssemblyTypeInitialisation.fs" />
     <Compile Include="TestCrossAssemblyCastclass.fs" />
     <Compile Include="TestCrossAssemblyDispatch.fs" />
@@ -77,6 +78,7 @@
     <Compile Include="TestSignalHandler.fs" />
     <Compile Include="TestSignalDispatcherThread.fs" />
     <Compile Include="TestSignalDispatch.fs" />
+    <Compile Include="TestEffectiveProcessorCount.fs" />
     <Compile Include="TestSignalTermination.fs" />
     <Compile Include="TestWaitHandle.fs" />
     <Compile Include="TestSyncBlockMonitor.fs" />
@@ -84,6 +86,7 @@
     <Compile Include="TestNativeEventSource.fs" />
     <Compile Include="TestSchedulerVoluntaryYield.fs" />
     <Compile Include="TestSchedulerPct.fs" />
+    <Compile Include="TestVariableSizeNewobj.fs" />
     <Compile Include="TestPureCases.fs" />
     <Compile Include="TestFSharpPureCases.fs" />
     <Compile Include="TestImpureCases.fs" />

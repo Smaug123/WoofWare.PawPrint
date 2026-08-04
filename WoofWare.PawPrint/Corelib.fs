@@ -138,6 +138,10 @@ module Corelib =
         let iReadOnlyCollectionGeneric =
             findCorelibType corelib "System.Collections.Generic" "IReadOnlyCollection`1"
 
+        // The shim class supplying the bodies for those five interfaces on an SZ array.
+        // Internal to the corelib, so it is only reachable via the dispatch carve-out.
+        let szArrayHelper = findCorelibType corelib "System" "SZArrayHelper"
+
         {
             Corelib = corelib
             String = stringType
@@ -197,6 +201,7 @@ module Corelib =
             ICollectionGeneric = iCollectionGeneric
             IReadOnlyListGeneric = iReadOnlyListGeneric
             IReadOnlyCollectionGeneric = iReadOnlyCollectionGeneric
+            SZArrayHelper = szArrayHelper
         }
 
     let concretizeAll

@@ -51,7 +51,6 @@ class Program
                 ]
             EntryAssemblyName = "CastclassCross.Entry"
             ExpectedReturnCode = 0
-            NativeImpls = MockEnv.make ()
         }
         |> CrossAssemblyHarness.runTest
 
@@ -100,7 +99,6 @@ class Program
                 ]
             EntryAssemblyName = "CastclassCrossGeneric.Entry"
             ExpectedReturnCode = 0
-            NativeImpls = MockEnv.make ()
         }
         |> CrossAssemblyHarness.runTest
 
@@ -147,7 +145,6 @@ class Program
                 ]
             EntryAssemblyName = "CastclassCrossInterface.Entry"
             ExpectedReturnCode = 0
-            NativeImpls = MockEnv.make ()
         }
         |> CrossAssemblyHarness.runTest
 
@@ -208,6 +205,5 @@ class Program
                 ]
             EntryAssemblyName = "CastclassChain.Entry"
             ExpectedReturnCode = 0
-            NativeImpls = MockEnv.make ()
         }
         |> CrossAssemblyHarness.runTest

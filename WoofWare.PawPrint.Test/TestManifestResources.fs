@@ -71,7 +71,6 @@ public static class Entry
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
         (sourceName : string)
         (image : byte[])
-        (implementations : WoofWare.PawPrint.ExternImplementations.ISystem_Environment_Env)
         : Program.PreparedProgram
         =
         let dotnetRuntimes =
@@ -80,9 +79,7 @@ public static class Entry
 
         use peImage = new MemoryStream (image)
 
-        match
-            Program.prepare loggerFactory (Some sourceName) peImage dotnetRuntimes implementations Map.empty None []
-        with
+        match Program.prepare loggerFactory (Some sourceName) peImage dotnetRuntimes KernelConfig.Default None [] with
         | Program.ProgramStartResult.Ready prepared -> prepared
         | Program.ProgramStartResult.CompletedBeforeMain outcome ->
             failwith $"expected program to be ready before Main, but got %O{outcome}"
@@ -289,7 +286,6 @@ public static class Entry
 
     let private invokeAssemblyNativeGetResourceWithArguments
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
-        (implementations : WoofWare.PawPrint.ExternImplementations.ISystem_Environment_Env)
         (prepared : Program.PreparedProgram)
         (state : IlMachineState)
         (arguments : CliType list)
@@ -310,7 +306,6 @@ public static class Entry
         let ctx : NativeCallContext =
             {
                 LoggerFactory = loggerFactory
-                Implementations = implementations
                 BaseClassTypes = baseClassTypes
                 Thread = prepared.EntryThread
                 State = state
@@ -330,7 +325,6 @@ public static class Entry
 
     let private invokeAssemblyNativeGetResourceForAssembly
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
-        (implementations : WoofWare.PawPrint.ExternImplementations.ISystem_Environment_Env)
         (prepared : Program.PreparedProgram)
         (state : IlMachineState)
         (assemblyFullName : string)
@@ -349,7 +343,6 @@ public static class Entry
 
         invokeAssemblyNativeGetResourceWithArguments
             loggerFactory
-            implementations
             prepared
             state
             [
@@ -361,7 +354,6 @@ public static class Entry
 
     let private invokeAssemblyNativeGetResource
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
-        (implementations : WoofWare.PawPrint.ExternImplementations.ISystem_Environment_Env)
         (prepared : Program.PreparedProgram)
         (state : IlMachineState)
         (resourceName : string)
@@ -371,7 +363,6 @@ public static class Entry
 
         invokeAssemblyNativeGetResourceForAssembly
             loggerFactory
-            implementations
             prepared
             state
             sourceAssembly.Name.FullName
@@ -842,13 +833,11 @@ public static class Entry
 
         use _loggerFactoryResource = loggerFactory
 
-        let mockEnv = MockEnv.make ()
-
         let prepared =
-            prepareResourceExecutable loggerFactory "AssemblyNativeGetResource.cs" image mockEnv
+            prepareResourceExecutable loggerFactory "AssemblyNativeGetResource.cs" image
 
         let state, missingLength, missingReturn =
-            invokeAssemblyNativeGetResource loggerFactory mockEnv prepared prepared.State "PawPrint.MissingPayload.bin"
+            invokeAssemblyNativeGetResource loggerFactory prepared prepared.State "PawPrint.MissingPayload.bin"
 
         missingLength |> shouldEqual 0u
 
@@ -856,7 +845,7 @@ public static class Entry
         |> shouldEqual (EvalStackValue.ManagedPointer ManagedPointerSource.Null)
 
         let state, emptyLength, emptyReturn =
-            invokeAssemblyNativeGetResource loggerFactory mockEnv prepared state emptyResourceName
+            invokeAssemblyNativeGetResource loggerFactory prepared state emptyResourceName
 
         emptyLength |> shouldEqual 0u
 
@@ -878,7 +867,7 @@ public static class Entry
         | other -> failwith $"expected managed resource pointer for empty manifest resource, got %O{other}"
 
         let state, length, ret =
-            invokeAssemblyNativeGetResource loggerFactory mockEnv prepared state resourceName
+            invokeAssemblyNativeGetResource loggerFactory prepared state resourceName
 
         length |> shouldEqual (uint32 resourceBytes.Length)
 
@@ -895,13 +884,11 @@ public static class Entry
 
         use _loggerFactoryResource = loggerFactory
 
-        let mockEnv = MockEnv.make ()
-
         let image =
             compileResourceExecutableImage [ embeddedResource "PawPrint.Payload.bin" [| 0x01uy |] ] simpleMainSource
 
         let prepared =
-            prepareResourceExecutable loggerFactory "AssemblyNativeGetResourceFailures.cs" image mockEnv
+            prepareResourceExecutable loggerFactory "AssemblyNativeGetResourceFailures.cs" image
 
         let expectFailureContaining (expected : string) (action : unit -> unit) : unit =
             let ex = Assert.Throws<System.Exception> (fun () -> action ())
@@ -922,7 +909,6 @@ public static class Entry
 
                 invokeAssemblyNativeGetResourceWithArguments
                     loggerFactory
-                    mockEnv
                     prepared
                     state
                     [
@@ -947,7 +933,6 @@ public static class Entry
 
                 invokeAssemblyNativeGetResourceWithArguments
                     loggerFactory
-                    mockEnv
                     prepared
                     state
                     [
@@ -962,7 +947,7 @@ public static class Entry
         expectFailureContaining
             "empty resource name"
             (fun () ->
-                invokeAssemblyNativeGetResource loggerFactory mockEnv prepared prepared.State ""
+                invokeAssemblyNativeGetResource loggerFactory prepared prepared.State ""
                 |> ignore<IlMachineState * uint32 * EvalStackValue>
             )
 
@@ -974,17 +959,12 @@ public static class Entry
                 simpleMainSource
 
         let linkedPrepared =
-            prepareResourceExecutable loggerFactory "AssemblyNativeGetResourceLinkedFailure.cs" linkedImage mockEnv
+            prepareResourceExecutable loggerFactory "AssemblyNativeGetResourceLinkedFailure.cs" linkedImage
 
         expectFailureContaining
             "external-file manifest resource"
             (fun () ->
-                invokeAssemblyNativeGetResource
-                    loggerFactory
-                    mockEnv
-                    linkedPrepared
-                    linkedPrepared.State
-                    linkedResourceName
+                invokeAssemblyNativeGetResource loggerFactory linkedPrepared linkedPrepared.State linkedResourceName
                 |> ignore<IlMachineState * uint32 * EvalStackValue>
             )
 
@@ -1006,7 +986,6 @@ public static class Entry
             (fun () ->
                 invokeAssemblyNativeGetResourceForAssembly
                     loggerFactory
-                    mockEnv
                     prepared
                     state
                     forwardedAssembly.Name.FullName

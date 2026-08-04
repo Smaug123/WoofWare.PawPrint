@@ -8,7 +8,6 @@ open FsUnitTyped
 open Microsoft.CodeAnalysis
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
-open WoofWare.PawPrint.ExternImplementations
 
 type CrossAssemblySpec =
     {
@@ -41,7 +40,6 @@ type CrossAssemblyEndToEndTestCase =
         Assemblies : CrossAssemblySpec list
         EntryAssemblyName : string
         ExpectedReturnCode : int
-        NativeImpls : NativeImpls
     }
 
 [<RequireQualifiedAccess>]
@@ -80,7 +78,7 @@ module CrossAssemblyHarness =
             File.WriteAllBytes (Path.Combine (tempDir, assemblyName + ".dll"), bytes)
         )
 
-    let private executeWithPawPrint (entryPath : string) (entryBytes : byte[]) (nativeImpls : NativeImpls) : int =
+    let private executeWithPawPrint (entryPath : string) (entryBytes : byte[]) : int =
         let assy = typeof<RunResult>.Assembly
 
         let messages, loggerFactory =
@@ -100,7 +98,7 @@ module CrossAssemblyHarness =
         try
             let terminalState, terminatingThread =
                 match
-                    Program.run loggerFactory (Some entryPath) peImage dotnetRuntimeDirs nativeImpls Map.empty None []
+                    Program.run loggerFactory (Some entryPath) peImage dotnetRuntimeDirs KernelConfig.Default None []
                 with
                 | RunOutcome.GuestUnhandledException (_, _, exn) ->
                     failwith $"Guest threw unhandled exception: %O{exn.ExceptionObject}"
@@ -170,7 +168,7 @@ module CrossAssemblyHarness =
             let realResult = executeWithRealRuntime entryPath
             realResult |> shouldEqual case.ExpectedReturnCode
 
-            let pawPrintResult = executeWithPawPrint entryPath entryBytes case.NativeImpls
+            let pawPrintResult = executeWithPawPrint entryPath entryBytes
             pawPrintResult |> shouldEqual realResult
         finally
             try

@@ -7,7 +7,6 @@ open FsUnitTyped
 open Microsoft.Extensions.Logging
 open NUnit.Framework
 open WoofWare.PawPrint
-open WoofWare.PawPrint.ExternImplementations
 
 [<TestFixture>]
 module TestNativeSignature =
@@ -393,7 +392,6 @@ public sealed class GenericFieldHost<T>
         let ctx : NativeCallContext =
             {
                 LoggerFactory = fixture.LoggerFactory
-                Implementations = MockEnv.make ()
                 BaseClassTypes = fixture.BaseClassTypes
                 Thread = thread
                 State = state

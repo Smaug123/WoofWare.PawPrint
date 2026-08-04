@@ -1,7 +1,5 @@
 namespace WoofWare.PawPrint
 
-open WoofWare.PawPrint.ExternImplementations
-
 [<RequireQualifiedAccess>]
 module NativeEnvironment =
     /// Read a UTF-16 char* argument, returning None for a null pointer and Some <string> otherwise.
@@ -38,30 +36,71 @@ module NativeEnvironment =
           "GetProcessorCount",
           [],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
-            let env = ISystem_Environment_Env.get ctx.Implementations
+            // Answered from kernel state, never from the host: see the
+            // `EmulatedKernel.ProcessorCount` doc comment for why a host read
+            // here would be a replayability bug rather than a mere impurity.
+            // `effectiveProcessorCount` also applies the guest-visible
+            // `DOTNET_PROCESSOR_COUNT` / `COMPlus_PROCESSOR_COUNT` override
+            // with CoreCLR's precedence, reading it from the kernel's own
+            // (recorded, replayable) environment table.
+            let processorCount = EmulatedKernel.effectiveProcessorCount state.Kernel
 
-            env.GetProcessorCount ctx.Thread state
-            |> NativeHandlerResult.ofExecutionResult
-            |> Some
+            if processorCount < 1 then
+                // `Environment.ProcessorCount` is documented as always
+                // positive, and CoreLib callers (ThreadPool sizing,
+                // `Parallel` partitioning) divide by it. A kernel built by
+                // record-copy can bypass `EmulatedKernel.withProcessorCount`,
+                // so re-assert here: the guest must never observe a value
+                // that the real property could not produce.
+                failwith
+                    $"Environment.GetProcessorCount: kernel ProcessorCount is %d{processorCount}, which is not a legal value for Environment.ProcessorCount (must be at least 1)"
+
+            let state =
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 processorCount) ctx.Thread
+
+            NativeHandlerResult.Completed (state, StepEffect.NoEffect) |> Some
         | "System.Private.CoreLib",
           "System",
           "Environment",
           "get_CurrentManagedThreadId",
           [],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
-            let env = ISystem_Environment_Env.get ctx.Implementations
+            let state =
+                state
+                |> IlMachineState.pushToEvalStack'
+                    (EvalStackValue.Int32 (IlMachineState.getCurrentManagedThreadId ctx.Thread state))
+                    ctx.Thread
 
-            env.GetCurrentManagedThreadId ctx.Thread state
-            |> NativeHandlerResult.ofExecutionResult
-            |> Some
+            NativeHandlerResult.Completed (state, StepEffect.NoEffect) |> Some
         | "System.Private.CoreLib",
           "System",
           "Environment",
           "_Exit",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Void ->
-            let env = ISystem_Environment_Env.get ctx.Implementations
-            env._Exit ctx.Thread state |> NativeHandlerResult.ofExecutionResult |> Some
+            // `Environment.Exit(int)` is `=> _Exit(exitCode)` and nothing else
+            // (see the pinned runtime's
+            // src/coreclr/System.Private.CoreLib/src/System/Environment.CoreCLR.cs:
+            // `_Exit` is a QCall to `Environment_Exit`). So reaching here means
+            // the process is going away right now: no managed shutdown work
+            // remains, no further guest code runs, and the exit applies to the
+            // whole process regardless of which thread called it.
+            //
+            // Hence `ProcessExit`, not `Terminated`. `Terminated` is
+            // thread-scoped — `Program.stepPrepared` only ends the run when the
+            // terminating thread is the entry thread — so using it here would
+            // silently reduce `Environment.Exit` on a worker to "that worker
+            // finished" and let the process keep running.
+            //
+            // Push the exit code (arg 0) onto the eval stack first: both
+            // `RunOutcome.ProcessExit` and `RunOutcome.NormalExit` read the exit
+            // code off the reporting thread's eval stack.
+            let state = state |> IlMachineState.loadArgument ctx.Thread 0
+
+            ExecutionResult.ProcessExit (state, ctx.Thread)
+            |> NativeHandlerResult.Terminating
+            |> Some
         | "System.Private.CoreLib", "System", "Environment", _, _, _ when
             NativeCall.tryQCallEntryPoint ctx = Some "Environment_FailFast"
             ->
@@ -100,13 +139,20 @@ module NativeEnvironment =
 
                 let message = tryReadOptionalUtf16 operation "message" ctx instruction.Arguments.[1]
 
-                let errorSource =
+                // Read (and thereby validate the shape of) `errorSource` even
+                // though the abort outcome does not carry it: a malformed
+                // pointer here is a guest/marshalling bug we want to surface at
+                // the boundary rather than silently ignore.
+                let _errorSource =
                     tryReadOptionalUtf16 operation "errorSource" ctx instruction.Arguments.[3]
 
-                let env = ISystem_Environment_Env.get ctx.Implementations
-
-                env.FailFast ctx.Thread message errorSource state
-                |> NativeHandlerResult.ofExecutionResult
+                // FailFast aborts the process. We deliberately do not load the
+                // StackCrawlMark / exception / errorSource arguments onto the
+                // eval stack because the caller never returns — the run loop
+                // converts `ExecutionResult.FailFast` directly into
+                // `RunOutcome.FailFast` for the host to surface.
+                ExecutionResult.FailFast (state, ctx.Thread, message)
+                |> NativeHandlerResult.Terminating
                 |> Some
             | paramTypes, returnType ->
                 failwith

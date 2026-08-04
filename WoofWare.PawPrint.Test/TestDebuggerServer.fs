@@ -14,7 +14,6 @@ open Microsoft.Extensions.Hosting
 open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
-open WoofWare.PawPrint.ExternImplementations
 
 [<TestFixture>]
 module TestDebuggerServer =
@@ -31,22 +30,41 @@ class Program
 }
 """
 
-    let private processorCountSource =
+    /// Guest that executes a handful of ordinary IL steps and then calls a
+    /// P/Invoke PawPrint cannot possibly implement, so the interpreter throws
+    /// from `NativeDispatch.failUnimplemented` partway through the run. Used by
+    /// the tests below that assert the debugger server preserves the steps it
+    /// already completed when a host primitive fails.
+    ///
+    /// The import deliberately names a library that does not exist rather than
+    /// a real-but-not-yet-implemented BCL primitive: this test is about the
+    /// server's failure reporting, and pinning it to a genuine gap would make
+    /// it start passing vacuously (or fail outright) the day that gap is
+    /// closed.
+    let private unimplementedNativeSource =
         """
 using System;
+using System.Runtime.InteropServices;
 
 class Program
 {
+    [DllImport("PawPrintNonexistentNativeLibrary")]
+    private static extern int PawPrintNoSuchNativeFunction();
+
     static int Main(string[] args)
     {
         int before = 41;
         before += 1;
-        return before + Environment.ProcessorCount;
+        return before + PawPrintNoSuchNativeFunction();
     }
 }
 """
 
-    let private processorCountFailure = "debugger test processor count failure"
+    /// Substring the interpreter's unimplemented-native failure is expected to
+    /// carry. Matched as a substring rather than compared whole because
+    /// `NativeCall.failUnimplemented` formats the full signature into its
+    /// message, and that formatting is not this test's contract.
+    let private unimplementedNativeMarker = "PawPrintNoSuchNativeFunction"
 
     let private infiniteSource =
         """
@@ -140,7 +158,7 @@ class Program
         File.WriteAllBytes (dllPath, Roslyn.compile [ source ])
         tempDir, dllPath
 
-    let private startServerWithImpls (source : string) (impls : NativeImpls) : RunningServer =
+    let private startServer (source : string) : RunningServer =
         let tempDir, dllPath = compileToTempDll source
 
         let dotnetRuntimes =
@@ -154,8 +172,7 @@ class Program
                 loggerFactory
                 dllPath
                 dotnetRuntimes
-                impls
-                Map.empty
+                KernelConfig.Default
                 None
                 []
                 token
@@ -169,20 +186,6 @@ class Program
             LoggerFactory = loggerFactory
             BaseUrl = DebuggerServer.baseUrl app
             TempDir = tempDir
-        }
-
-    let private startServer (source : string) : RunningServer =
-        startServerWithImpls source (NativeImpls.PassThru ())
-
-    let private nativeImplsWithThrowingProcessorCount () : NativeImpls =
-        let systemEnvironment =
-            { System_EnvironmentMock.Empty with
-                GetProcessorCount = fun (_thread : ThreadId) (_state : IlMachineState) -> failwith processorCountFailure
-            }
-            :> ISystem_Environment
-
-        { NativeImpls.PassThru () with
-            System_Environment = systemEnvironment
         }
 
     let private client (server : RunningServer) (token : string option) : HttpClient =
@@ -235,8 +238,8 @@ class Program
 
             failureRoot.GetProperty("operation").GetString () |> shouldEqual operation
 
-            failureRoot.GetProperty("error").GetString ()
-            |> shouldEqual processorCountFailure
+            failureRoot.GetProperty("error").GetString().Contains (unimplementedNativeMarker, StringComparison.Ordinal)
+            |> shouldEqual true
 
             let exceptionType = failureRoot.GetProperty("exceptionType").GetString ()
 
@@ -302,8 +305,7 @@ class Program
     [<Test>]
     let ``Debugger HTTP run keeps completed steps when a host primitive fails`` () : Task =
         task {
-            use server =
-                startServerWithImpls processorCountSource (nativeImplsWithThrowingProcessorCount ())
+            use server = startServer unimplementedNativeSource
 
             use client = client server (Some token)
 
@@ -324,8 +326,7 @@ class Program
     [<Test>]
     let ``Debugger HTTP step keeps completed steps when a host primitive fails`` () : Task =
         task {
-            use server =
-                startServerWithImpls processorCountSource (nativeImplsWithThrowingProcessorCount ())
+            use server = startServer unimplementedNativeSource
 
             use client = client server (Some token)
 

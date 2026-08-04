@@ -1256,6 +1256,34 @@ module IlMachineRuntimeMetadata =
         | ConcreteTypeHandle.Pointer _
         | ConcreteTypeHandle.FunctionPointer _ -> None
 
+    /// Does this handle denote a reference type (as opposed to a value type)?
+    ///
+    /// The structural handles answer without any metadata: arrays of every rank are reference
+    /// types, while byrefs, pointers and function pointers are not (they are neither, strictly,
+    /// but every caller asks this question to decide whether reference-type rules — covariance,
+    /// array-store checks, atomic reference exchange — apply, and for those the answer is "no").
+    /// Nominal handles defer to the TypeDef row.
+    ///
+    /// `context` names the caller in the diagnostic raised when a nominal handle has no TypeDef
+    /// row, which would be a bug in whatever produced the handle.
+    let isReferenceTypeHandle
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (context : string)
+        (state : IlMachineState)
+        (handle : ConcreteTypeHandle)
+        : bool
+        =
+        match handle with
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _ -> true
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ -> false
+        | ConcreteTypeHandle.Concrete _ ->
+            match tryGetConcreteTypeInfo state handle with
+            | Some (_, typeInfo) -> DumpedAssembly.isReferenceType baseClassTypes state._LoadedAssemblies typeInfo
+            | None -> failwith $"%s{context}: concrete type handle %O{handle} has no TypeDef row"
+
     let requiredOwnInstanceFieldId
         (state : IlMachineState)
         (declaringType : ConcreteTypeHandle)
@@ -1286,17 +1314,8 @@ module IlMachineRuntimeMetadata =
             state, true
         else
 
-        let isReferenceTypeHandle (state : IlMachineState) (handle : ConcreteTypeHandle) : bool =
-            match handle with
-            | ConcreteTypeHandle.OneDimArrayZero _
-            | ConcreteTypeHandle.Array _ -> true
-            | ConcreteTypeHandle.Byref _
-            | ConcreteTypeHandle.Pointer _
-            | ConcreteTypeHandle.FunctionPointer _ -> false
-            | ConcreteTypeHandle.Concrete _ ->
-                match tryGetConcreteTypeInfo state handle with
-                | Some (_, typeInfo) -> DumpedAssembly.isReferenceType baseClassTypes state._LoadedAssemblies typeInfo
-                | None -> failwith $"isReferenceTypeHandle: concrete type handle %O{handle} has no TypeDef row"
+        let isReferenceTypeHandle =
+            isReferenceTypeHandle baseClassTypes "isConcreteTypeAssignableTo"
 
         let arrayShape (handle : ConcreteTypeHandle) : (ConcreteTypeHandle * int option) option =
             match handle with
@@ -1653,16 +1672,7 @@ module IlMachineRuntimeMetadata =
             | ConcreteTypeHandle.OneDimArrayZero objElement ->
                 match tryGetConcreteTypeInfo state targetType with
                 | Some (targetCt, _) when targetCt.Generics.Length = 1 ->
-                    let targetId = targetCt.Identity
-
-                    let isImplicit =
-                        targetId = baseClassTypes.IListGeneric.Identity
-                        || targetId = baseClassTypes.IEnumerableGeneric.Identity
-                        || targetId = baseClassTypes.ICollectionGeneric.Identity
-                        || targetId = baseClassTypes.IReadOnlyListGeneric.Identity
-                        || targetId = baseClassTypes.IReadOnlyCollectionGeneric.Identity
-
-                    if isImplicit then
+                    if baseClassTypes.IsImplicitInterfaceOfSzArray targetCt.Identity then
                         let targetElement = targetCt.Generics.[0]
                         let state, compatible = elementCovariantlyCompatible state objElement targetElement
                         Some (state, compatible)

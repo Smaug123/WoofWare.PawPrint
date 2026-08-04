@@ -3,7 +3,6 @@ namespace WoofWare.PawPrint
 open System.Collections.Immutable
 open Microsoft.Extensions.Logging
 open Microsoft.FSharp.Core
-open WoofWare.PawPrint.ExternImplementations
 
 [<RequireQualifiedAccess>]
 module AbstractMachine =
@@ -11,7 +10,6 @@ module AbstractMachine =
 
     let executeOneStep
         (loggerFactory : ILoggerFactory)
-        impls
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (thread : ThreadId)
@@ -31,7 +29,6 @@ module AbstractMachine =
             let nativeContext =
                 {
                     LoggerFactory = loggerFactory
-                    Implementations = impls
                     BaseClassTypes = baseClassTypes
                     Thread = thread
                     State = state
@@ -177,7 +174,7 @@ module AbstractMachine =
                     loggerFactory
                     baseClassTypes
                     None
-                    None
+                    ConstructionState.NotConstructing
                     false
                     false
                     false
