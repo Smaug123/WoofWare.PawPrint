@@ -168,6 +168,53 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Exact "System.ReadOnlySpan`1"
                     IntrinsicParameterPattern.Exact "System.ReadOnlySpan`1"
                 ]
+            // The mirror image of StartsWith above: the same length guard and the same
+            // SpanHelpers.SequenceEqual(ref byte, ref byte, nuint) call, but comparing at
+            // `span.Length - value.Length` rather than at 0. That offset is applied by
+            // `Unsafe.Add<T>(ref T, nint)` (with the count zero-extended through `conv.u`),
+            // which is an implemented boundary; every other callee is shared with StartsWith.
+            // The same caveat applies: for a T where IsBitwiseEquatable is false, the IL falls
+            // through to the generic SpanHelpers.SequenceEqual<T>, which PawPrint does not
+            // implement, so such a T fails loudly there rather than silently misbehaving.
+            // https://github.com/dotnet/runtime/blob/HEAD/src/libraries/System.Private.CoreLib/src/System/MemoryExtensions.cs#L3601
+            pattern
+                "System.Private.CoreLib"
+                "System.MemoryExtensions"
+                "EndsWith"
+                [
+                    IntrinsicParameterPattern.Exact "System.ReadOnlySpan`1"
+                    IntrinsicParameterPattern.Exact "System.ReadOnlySpan`1"
+                ]
+            // The Span<T>-receiver siblings of the two overloads above. Each IL body is
+            // `ldarg.0; call Span<T>::op_Implicit; ldarg.1; call <the ReadOnlySpan<T> overload>; ret`
+            // — both callees are themselves allowlisted, so there is nothing further to review.
+            //
+            // These are not reachable from C# 13 or later: they carry
+            // [OverloadResolutionPriority(-1)], so once the first-class span conversion makes the
+            // ReadOnlySpan<T> overload applicable to a Span<T> receiver, the priority pruning
+            // removes these from the candidate set — even for an explicit
+            // `MemoryExtensions.StartsWith<T>(span, value)` call or a method-group conversion.
+            // They are therefore reachable only from assemblies built by an older compiler (or
+            // another language), which PawPrint can be pointed at but the pure-source test
+            // harness cannot produce; hence no end-to-end coverage for these two specifically.
+            // https://github.com/dotnet/runtime/blob/HEAD/src/libraries/System.Private.CoreLib/src/System/MemoryExtensions.cs#L3553
+            pattern
+                "System.Private.CoreLib"
+                "System.MemoryExtensions"
+                "StartsWith"
+                [
+                    IntrinsicParameterPattern.Exact "System.Span`1"
+                    IntrinsicParameterPattern.Exact "System.ReadOnlySpan`1"
+                ]
+            // https://github.com/dotnet/runtime/blob/HEAD/src/libraries/System.Private.CoreLib/src/System/MemoryExtensions.cs#L3593
+            pattern
+                "System.Private.CoreLib"
+                "System.MemoryExtensions"
+                "EndsWith"
+                [
+                    IntrinsicParameterPattern.Exact "System.Span`1"
+                    IntrinsicParameterPattern.Exact "System.ReadOnlySpan`1"
+                ]
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/ArgumentNullException.cs#L54
             anyParams "System.Private.CoreLib" "System.ArgumentNullException" "ThrowIfNull"
             // The instance `String.Equals(string)` overload — the one that implements
