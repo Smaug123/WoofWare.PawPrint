@@ -3749,3 +3749,68 @@ public unsafe struct PointerWrapper
 
         readAt 0 |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 0xAAuy))
         readAt 2 |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 0xBBuy))
+
+    [<Test>]
+    let ``reinterpretAs is the identity on the non-anchored pointer forms`` () : unit =
+        // `Unsafe.As` is a pure change of type view and never dereferences, so it is
+        // defined on pointers that carry no storage: the null byref, and the
+        // `Unsafe.AsRef<T>((void*)bits)` bit-pattern placeholder. The BCL depends on
+        // this — the bitwise-equatable path of SequenceEqual/StartsWith/EndsWith
+        // reinterprets `MemoryMarshal.GetReference(span)` before it checks the length,
+        // so a `default` span arrives here with a null byref.
+        let byteType = concreteTypeFor bct.Byte
+
+        ManagedPointerSource.reinterpretAs byteType ManagedPointerSource.Null
+        |> shouldEqual ManagedPointerSource.Null
+
+        let property (bits : int64) : unit =
+            // Placeholders normalise a zero bit pattern to `Null`, so they never carry 0.
+            let bits = if bits = 0L then 1L else bits
+            let src = ManagedPointerSource.NativeIntPlaceholder bits
+            ManagedPointerSource.reinterpretAs byteType src |> shouldEqual src
+
+        Check.QuickThrowOnFailure property
+
+        // The general `appendProjection` still refuses both, and must: it also serves
+        // dereferencing navigations such as `Field`, where a null source is a
+        // NullReferenceException rather than an address-preserving no-op.
+        let ex =
+            Assert.Throws<System.Exception> (fun () ->
+                ManagedPointerSource.appendProjection
+                    (ByrefProjection.ReinterpretAs byteType)
+                    ManagedPointerSource.Null
+                |> ignore
+            )
+
+        ex.Message |> shouldContainText "cannot project from null managed pointer"
+
+    [<Test>]
+    let ``reinterpretAs on an anchored byref matches appendProjection`` () : unit =
+        let byteType = concreteTypeFor bct.Byte
+        let int32Type = concreteTypeFor bct.Int32
+
+        let ptr =
+            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (ManagedHeapAddress 123, 4), [])
+
+        ManagedPointerSource.reinterpretAs byteType ptr
+        |> shouldEqual (ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs byteType) ptr)
+
+        // The collapse rules are inherited: reinterpreting twice to the same view is
+        // idempotent rather than stacking two projections.
+        ptr
+        |> ManagedPointerSource.reinterpretAs byteType
+        |> ManagedPointerSource.reinterpretAs byteType
+        |> shouldEqual (ManagedPointerSource.reinterpretAs byteType ptr)
+
+        // A trailing byte cursor survives a change of view, since the reinterpret is
+        // address-preserving: the caller is still at the same byte.
+        ptr
+        |> ManagedPointerSource.reinterpretAs byteType
+        |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset 3)
+        |> ManagedPointerSource.reinterpretAs int32Type
+        |> shouldEqual (
+            ManagedPointerSource.Byref (
+                ByrefRoot.ArrayElement (ManagedHeapAddress 123, 4),
+                [ ByrefProjection.ReinterpretAs int32Type ; ByrefProjection.ByteOffset 3 ]
+            )
+        )

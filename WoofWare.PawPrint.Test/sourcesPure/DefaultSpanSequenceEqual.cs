@@ -2,20 +2,19 @@ using System;
 
 namespace DefaultSpanSequenceEqualTest
 {
-    // Records a gap that predates the MemoryExtensions prefix/suffix work: a `default`
-    // span carries a null byref in `_reference`, and every bitwise-equatable span
-    // intrinsic of this shape reinterprets `MemoryMarshal.GetReference(span)` through
-    // `Unsafe.As<T, byte>` before it ever looks at the length. Appending that
-    // reinterpret projection to a null managed pointer fails with
-    // "cannot project from null managed pointer" (ManagedPointerSource.fs:477),
-    // even though the real runtime never dereferences the pointer when the length is 0.
+    // Guards null-backed spans across the bitwise-equatable span intrinsics. A `default`
+    // span carries a null byref in `_reference`, and every intrinsic of this shape
+    // reinterprets `MemoryMarshal.GetReference(span)` through `Unsafe.As<T, byte>` before
+    // it ever looks at the length. That reinterpret is address-preserving and never
+    // dereferences, so it has to be defined on a null byref
+    // (`ManagedPointerSource.reinterpretAs`); it used to fail with
+    // "cannot project from null managed pointer".
     //
     // `ReadOnlySpan<T>.Empty` is `default`, so it is affected identically; a zero-length
     // *array*-backed span is not, because its `_reference` points at the array.
     //
     // SequenceEqual is named here because it is the oldest of the affected intrinsics;
-    // StartsWith and EndsWith fail the same way, so fixing the null-byref projection
-    // should make all of them work at once.
+    // StartsWith and EndsWith went the same way, which is why all three are covered.
     class Program
     {
         static int Main(string[] args)

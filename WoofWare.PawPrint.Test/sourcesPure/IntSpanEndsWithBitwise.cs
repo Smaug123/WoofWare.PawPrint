@@ -201,15 +201,6 @@ namespace IntSpanEndsWithBitwiseTest
 
             // String-backed char spans reach the element data through a different byref
             // root than array-backed ones do.
-            //
-            // Null-backed spans — `default` and `ReadOnlySpan<T>.Empty`, which is `default` —
-            // are deliberately not covered here. Every span intrinsic of this shape
-            // reinterprets `MemoryMarshal.GetReference(span)` via `Unsafe.As<T, byte>` before
-            // looking at the length, and that reinterpret cannot yet be applied to a null
-            // byref. The gap predates EndsWith (`SequenceEqual` hits it too) and is recorded
-            // separately in sourcesPure/DefaultSpanSequenceEqual.cs. The zero-length cases
-            // above are array-backed, so their `_reference` points at the array rather than
-            // being null, and they do exercise the length logic.
             ReadOnlySpan<char> strSpan = "xabcabcx".AsSpan(1, 6);
 
             if (!strSpan.EndsWith("abc".AsSpan()))
@@ -231,6 +222,13 @@ namespace IntSpanEndsWithBitwiseTest
             if (strSpan.EndsWith("xabcabc".AsSpan()))
             {
                 return 23;
+            }
+
+            // A null-backed value: ReadOnlySpan<T>.Empty is `default`, so its `_reference`
+            // is a null byref rather than a pointer into any storage.
+            if (!strSpan.EndsWith(ReadOnlySpan<char>.Empty))
+            {
+                return 24;
             }
 
             return 0;
