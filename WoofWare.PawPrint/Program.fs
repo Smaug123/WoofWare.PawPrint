@@ -653,13 +653,6 @@ module Program =
                 let baseType = currentAssembly.TypeDefs.[typeDefHandle]
                 continueWithGeneric state baseType currentAssembly
             | BaseTypeInfo.TypeSpec _ -> failwith "Type specs not yet supported in base type traversal"
-            | BaseTypeInfo.ForeignAssemblyType (assemblyName, typeDefHandle) ->
-                // Base type is in a foreign assembly
-                match state._LoadedAssemblies.TryByDefinition assemblyName with
-                | Some foreignAssembly ->
-                    let baseType = foreignAssembly.TypeDefs.[typeDefHandle]
-                    continueWithGeneric state baseType foreignAssembly
-                | None -> failwith $"Foreign assembly {assemblyName.FullName} not loaded"
 
         let rec findCoreLibraryAssemblyFromGeneric
             (state : IlMachineState)
