@@ -136,23 +136,38 @@ module Intrinsics =
 
             let arg, state = IlMachineState.popEvalStack currentThread state
 
-            let concreteType, state =
+            // A null receiver raises `NullReferenceException`: `Object.GetType`'s body starts
+            // `MethodTable* pMT = RuntimeHelpers.GetMethodTable(this)`, which the JIT expands to a
+            // bare indirection at offset 0, so the access faults and the runtime translates it.
+            //
+            // Not reachable from C#, which emits `callvirt` for `GetType()` — and
+            // `executeCallvirt`'s own null check fires before `callMethod` is entered, so the
+            // intrinsic never sees a null receiver. `constrained.callvirt` on a value type boxes
+            // first, so it cannot produce one either. Only hand-written
+            // `ldnull; call instance Object::GetType()` gets here, and there is no ilasm in this
+            // repo to write that with; `NullReceiverGuards.cs` pins the guard instead.
+            // `None` means the receiver was null.
+            let receiver : (ConcreteTypeHandle * IlMachineState) option =
                 // Normal Object.GetType dispatch arrives here with an ObjectRef. The managed-pointer
                 // arms are deliberately defensive for future receiver shapes and direct intrinsic use;
                 // constrained.callvirt on value types boxes before dispatching this intrinsic.
                 match arg with
-                | EvalStackValue.ObjectRef addr -> ManagedHeap.getObjectConcreteType addr state.ManagedHeap, state
+                | EvalStackValue.ObjectRef addr ->
+                    Some (ManagedHeap.getObjectConcreteType addr state.ManagedHeap, state)
                 | EvalStackValue.ManagedPointer ManagedPointerSource.Null
-                | EvalStackValue.NullObjectRef ->
-                    failwith "TODO: Object.GetType receiver was null; throw NullReferenceException"
+                | EvalStackValue.NullObjectRef -> None
                 | EvalStackValue.ManagedPointer ptr ->
                     match IlMachineState.readManagedByref baseClassTypes state ptr with
-                    | CliType.ObjectRef (Some addr) -> ManagedHeap.getObjectConcreteType addr state.ManagedHeap, state
-                    | CliType.ObjectRef None ->
-                        failwith "TODO: Object.GetType receiver was null; throw NullReferenceException"
-                    | CliType.ValueType valueType -> valueType.Declared, state
+                    | CliType.ObjectRef (Some addr) ->
+                        Some (ManagedHeap.getObjectConcreteType addr state.ManagedHeap, state)
+                    | CliType.ObjectRef None -> None
+                    | CliType.ValueType valueType -> Some (valueType.Declared, state)
                     | other -> failwith $"Object.GetType: expected object ref or value type receiver, got %O{other}"
                 | other -> failwith $"Object.GetType: expected object ref or managed pointer receiver, got %O{other}"
+
+            match receiver with
+            | None -> IntrinsicResult.RaiseException (state, baseClassTypes.NullReferenceException, None)
+            | Some (concreteType, state) ->
 
             let runtimeTypeAddr, state =
                 IlMachineState.getOrAllocateType
@@ -182,10 +197,24 @@ module Intrinsics =
 
             let arg, state = IlMachineState.popEvalStack currentThread state
 
+            match arg with
+            | EvalStackValue.NullObjectRef ->
+                // The JIT expands this to a bare load at offset 0 (`gtNewMethodTableLookup`, which
+                // asserts `VPTR_OFFS == 0`), so a null argument faults into
+                // `NullReferenceException`.
+                //
+                // Not reachable from C#: the method is `internal` to CoreLib and returns
+                // `MethodTable*`, an internal type, so it cannot be named from a test source — not
+                // even via `[UnsafeAccessor]`, whose signature match would need that return type.
+                // Every CoreLib caller null-guards first, except the non-generic
+                // `MemoryMarshal.GetArrayDataReference(Array)`, which PawPrint does not yet handle
+                // at all (its arm assumes a generic overload).
+                IntrinsicResult.RaiseException (state, baseClassTypes.NullReferenceException, None)
+            | _ ->
+
             let addr =
                 match arg with
                 | EvalStackValue.ObjectRef addr -> addr
-                | EvalStackValue.NullObjectRef -> failwith "TODO: throw NullReferenceException"
                 | other -> failwith $"RuntimeHelpers.GetMethodTable: expected ObjectRef, got %O{other}"
 
             let concreteType = ManagedHeap.getObjectConcreteType addr state.ManagedHeap
@@ -1379,9 +1408,11 @@ module Intrinsics =
             // RuntimeTypeHandle.GetFields returned, so we recover the FieldHandle by reading
             // the heap object's `m_fieldHandle` slot and resolving it against the id-keyed
             // index. Both RuntimeFieldInfoStub and RtFieldInfo declare a field with that name.
-            let fieldHandle : FieldHandle =
+            // `None` means `m_fieldHandle` was zero, i.e. the `RuntimeFieldHandle` points at a
+            // field info that names no field.
+            let fieldHandle : FieldHandle option =
                 match FieldHandleRegistry.resolveFieldFromAddress runtimeFieldInfoAddr state.FieldHandles with
-                | Some fh -> fh
+                | Some fh -> Some fh
                 | None ->
 
                 let heapObj = ManagedHeap.get runtimeFieldInfoAddr state.ManagedHeap
@@ -1408,21 +1439,52 @@ module Intrinsics =
                         AllocatedNonArrayObject.DereferenceFieldById fieldId heapObj
                         |> CliType.unwrapPrimitiveLikeDeep
                     with
-                    | CliType.RuntimePointer (CliRuntimePointer.FieldRegistryHandle id) -> id
-                    | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr id)) -> id
+                    | CliType.RuntimePointer (CliRuntimePointer.FieldRegistryHandle id) -> Some id
+                    | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr id)) -> Some id
+                    // All four spellings of a zero `IntPtr`. `ManagedPointerSource.Null` is the
+                    // canonical one — it is what `CliType.zeroOfPrimitive` plants for
+                    // `IntPtr.Zero`, and so what a zero-initialised `m_fieldHandle` actually holds
+                    // — so omitting it would send the very case this arm exists for into the
+                    // host-failure arm below. `Verbatim 0L` is the spelling that arrives from
+                    // integer arithmetic.
                     | CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L)
-                    | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) ->
-                        failwith
-                            "TODO: throw ArgumentException for InitializeArray with null field handle (m_fieldHandle was zero)"
+                    | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null)
+                    | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
+                    | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)) ->
+                        None
                     | other ->
                         failwith
                             $"InitializeArray: m_fieldHandle on %s{typeInfo.Namespace}.%s{typeInfo.Name} did not contain a field-registry handle, got %O{other}"
 
+                match fieldHandleId with
+                | None -> None
+                | Some fieldHandleId ->
+
                 match FieldHandleRegistry.resolveFieldFromId fieldHandleId state.FieldHandles with
-                | Some fh -> fh
+                | Some fh -> Some fh
                 | None ->
                     failwith
                         $"InitializeArray: m_fieldHandle id %d{fieldHandleId} on object at %O{runtimeFieldInfoAddr} (type %s{typeInfo.Namespace}.%s{typeInfo.Name}) was not present in the field handle registry"
+
+            match fieldHandle with
+            | None ->
+                // A zero `m_fieldHandle` is a *non-null* `RuntimeFieldHandle` (`m_ptr` points at a
+                // real field info) whose field info names no field, so `IsNullHandle()` is false
+                // and the `Argument_InvalidHandle` branch above is not the one taken. CoreCLR
+                // instead reaches `if (!RuntimeFieldHandle.GetRVAFieldInfo(...)) throw new
+                // ArgumentException(SR.Argument_BadFieldForInitializeArray)`, and the QCall returns
+                // FALSE for a null `FieldDesc*` — a different message from the null-handle case.
+                //
+                // Defensive: PawPrint's `FieldHandleRegistry` only ever writes real ids, and
+                // reflection populates `m_fieldHandle` from real ids too, so
+                // `default(RuntimeFieldHandle)` lands on the `IsNullHandle` check above instead.
+                // No C# reaches here.
+                IntrinsicResult.RaiseException (
+                    state,
+                    baseClassTypes.ArgumentException,
+                    Some "The field is invalid for initializing array or span."
+                )
+            | Some fieldHandle ->
 
             // Get the assembly and field definition
             let assemblyFullName = fieldHandle.GetAssemblyFullName ()
@@ -2343,14 +2405,16 @@ module Intrinsics =
                 |> IntrinsicResult.Completed
             | EvalStackValue.NullObjectRef
             | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
+                // `Array.Clone`'s body is `return MemberwiseClone()`, whose first act is to touch
+                // `this` (`ref byte src = ref this.GetRawData()`), so a null receiver faults into
+                // `NullReferenceException`.
+                //
                 // Unreachable from any C#-emitted call site: `Array.Clone` is an instance method,
                 // so callvirt's own null check (UnaryMetadataCallOps.executeCallvirt) raises the
-                // NullReferenceException before we get here. Only hand-written IL using a
-                // non-virtual `call` could reach this, and Intrinsics.fs is compiled before
-                // IlMachineStateExecution.fs so it cannot use `raiseRuntimeException` to
-                // synthesise a properly-constructed NRE.
-                failwith
-                    "TODO: Array.Clone was reached by a non-virtual `call` on a null receiver; should raise NullReferenceException"
+                // NullReferenceException before we get here — `NullReceiverGuards.cs` pins that,
+                // for the direct and the `ICloneable` form. Only hand-written IL using a
+                // non-virtual `call` could reach this arm.
+                IntrinsicResult.RaiseException (state, baseClassTypes.NullReferenceException, None)
             | other -> failwith $"Array.Clone: expected an object reference receiver, got %O{other}"
         | "System.Private.CoreLib", "Array", (("GetLength" | "GetLowerBound" | "GetUpperBound") as boundKind) ->
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Array.cs#L763-L806
@@ -2440,8 +2504,7 @@ module Intrinsics =
                 // Unreachable from C#-emitted code: these are instance methods, so callvirt's own
                 // null check (UnaryMetadataCallOps.executeCallvirt) raises the NullReferenceException
                 // first. See the matching note on the Array.Clone arm above.
-                failwith
-                    $"TODO: Array.%s{boundKind} was reached by a non-virtual `call` on a null receiver; should raise NullReferenceException"
+                IntrinsicResult.RaiseException (state, baseClassTypes.NullReferenceException, None)
             | other -> failwith $"Array.%s{boundKind}: expected an object reference receiver, got %O{other}"
         | "System.Private.CoreLib", "Enum", "HasFlag" ->
             // https://github.com/dotnet/runtime/blob/dbd3e33df9ccf74b91045e095477726c2bf83916/src/libraries/System.Private.CoreLib/src/System/Enum.cs#L398
