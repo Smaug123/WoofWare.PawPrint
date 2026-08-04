@@ -257,6 +257,52 @@ module TestAttributeFormatting =
         let header = AttributeFormatting.typeHeader corelib exn
         header |> shouldEqual "// type System.Exception"
 
+    // ----- field header: static-ness and explicit layout ---------------------
+
+    [<Test>]
+    let ``fieldHeader marks a static field static, mirroring methodHeader`` () : unit =
+        let str = findTypeByName "System.String"
+
+        let empty = str.Fields |> List.find (fun f -> f.Name = "Empty")
+
+        // The signature rendering is TypeDefn's business; assert only the prefix
+        // this header controls.
+        AttributeFormatting.fieldHeader "System.String" empty
+        |> fun h -> h.StartsWith "// field System.String::static Empty : " |> shouldEqual true
+
+    [<Test>]
+    let ``fieldHeader omits the static marker for an instance field`` () : unit =
+        let str = findTypeByName "System.String"
+
+        let length = str.Fields |> List.find (fun f -> f.Name = "_stringLength")
+
+        AttributeFormatting.fieldHeader "System.String" length
+        |> fun h -> h.StartsWith "// field System.String::_stringLength : " |> shouldEqual true
+
+    [<Test>]
+    let ``fieldHeader reports an explicit field offset`` () : unit =
+        // Search corelib for any explicitly-laid-out field rather than hard-coding a
+        // type whose layout may change between servicing releases.
+        let found =
+            corelib.TypeDefs.Values
+            |> Seq.collect (fun td ->
+                td.Fields
+                |> Seq.choose (fun f ->
+                    match f.Offset with
+                    | None -> None
+                    | Some offset -> Some (IlFormatting.qualifyTypeName corelib.TypeDefs td, f, offset)
+                )
+            )
+            |> Seq.sortBy (fun (qualified, f, _) -> qualified, f.Name)
+            |> Seq.tryHead
+
+        match found with
+        | None -> Assert.Inconclusive "corelib declares no explicitly-laid-out fields; nothing to exercise"
+        | Some (qualified, field, offset) ->
+
+        let header = AttributeFormatting.fieldHeader qualified field
+        header.EndsWith (sprintf " @ 0x%X" offset) |> shouldEqual true
+
     // ----- renderOwnerLines: skips empty owners ------------------------------
 
     [<Test>]

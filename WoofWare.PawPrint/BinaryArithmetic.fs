@@ -94,19 +94,24 @@ type IArithmeticOperation =
     /// as you obtain it.
     abstract CrossArrayOffsets : SyntheticCrossArrayOffset -> SyntheticCrossArrayOffset -> int64
 
-    abstract Int32ManagedPtr :
+    /// `int op &`. The offset is a native int (int64 on this 64-bit
+    /// interpreter): a bit-pattern byref can legitimately be offset by more
+    /// than an int32 holds, and it is the symbolic byref path — whose offsets
+    /// really are int32 — that narrows and fails.
+    abstract Int64ManagedPtr :
         BaseClassTypes<DumpedAssembly> ->
         IlMachineState ->
-        int32 ->
+        int64 ->
         ManagedPointerSource ->
-            Choice<ManagedPointerSource, int>
+            Choice<ManagedPointerSource, int64>
 
-    abstract ManagedPtrInt32 :
+    /// `& op int`. See <see cref="Int64ManagedPtr"/> for the offset width.
+    abstract ManagedPtrInt64 :
         BaseClassTypes<DumpedAssembly> ->
         IlMachineState ->
         ManagedPointerSource ->
-        int32 ->
-            Choice<ManagedPointerSource, int>
+        int64 ->
+            Choice<ManagedPointerSource, int64>
 
     abstract ManagedPtrManagedPtr :
         BaseClassTypes<DumpedAssembly> ->
@@ -134,6 +139,22 @@ module ArithmeticOperation =
         match behaviour with
         | OverflowBehaviour.Wrap -> a - b
         | OverflowBehaviour.Trap -> Checked.(-) a b
+
+    /// Symbolic byrefs are a root plus an int32 offset (an array index, a
+    /// field byte offset), so an offset that does not fit genuinely cannot be
+    /// applied to one. Bit-pattern byrefs must be peeled off before this is
+    /// reached — their offsets are native-int wide.
+    ///
+    /// 64-bit assumption: on 32-bit, the BCL's wraparound idiom intentionally
+    /// produces oversize int64 offsets and relies on a subsequent `conv.u`
+    /// truncating mod 2^32. We don't model that, so an oversize offset onto a
+    /// symbolic byref is an error rather than a truncation.
+    let private narrowSymbolicOffset (v : int64) : int32 =
+        if v > int64<int32> System.Int32.MaxValue || v < int64<int32> System.Int32.MinValue then
+            failwith
+                $"managed pointer arithmetic: offset %d{v} does not fit the int32 symbolic byref offset model (array indices and field byte offsets are int32); only bit-pattern byrefs accept native-int-wide offsets"
+
+        int32<int64> v
 
     let private checkedAddInt32 (context : string) (a : int) (b : int) : int =
         let result = int64 a + int64 b
@@ -214,13 +235,13 @@ module ArithmeticOperation =
 
             verbatimInt64 byteDelta
 
-    let private addInt32ManagedPtr
+    let private addOffsetToManagedPtr
         (behaviour : OverflowBehaviour)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        (v : int32)
+        (offset : int64)
         (ptr : ManagedPointerSource)
-        : Choice<ManagedPointerSource, int>
+        : Choice<ManagedPointerSource, int64>
         =
         match ManagedPointerSource.tryBitPatternBits ptr with
         | ValueSome bits ->
@@ -228,11 +249,14 @@ module ArithmeticOperation =
             // produces an empty span whose pointer is the placeholder; callers
             // then form an end pointer by adding `length * elementSize` (which is
             // zero for an empty span, but in general arithmetic on the bits is
-            // legitimate as long as no dereference occurs).
-            addPlaceholderBits behaviour bits (int64 v)
+            // legitimate as long as no dereference occurs). No narrowing here:
+            // the bits are a native int, so the offset may be wider than int32.
+            addPlaceholderBits behaviour bits offset
             |> ManagedPointerSource.ofBitPattern
             |> Choice1Of2
         | ValueNone ->
+
+        let v = narrowSymbolicOffset offset
 
         match ArithmeticTarget.decompose ptr with
         | ArithmeticTarget.StackMemoryTarget (thread, frame, block, byteOffset) ->
@@ -304,20 +328,20 @@ module ArithmeticOperation =
             |> ManagedPointerByteView.addByteOffsetToByteView baseClassTypes state v
             |> Choice1Of2
 
-    let private mulInt32ManagedPtr
+    let private mulOffsetManagedPtr
         (state : IlMachineState)
-        (v : int32)
+        (v : int64)
         (ptr : ManagedPointerSource)
-        : Choice<ManagedPointerSource, int>
+        : Choice<ManagedPointerSource, int64>
         =
-        if v = 0 then
-            Choice2Of2 0
-        elif v = 1 then
+        if v = 0L then
+            Choice2Of2 0L
+        elif v = 1L then
             Choice1Of2 ptr
         else
 
         match ptr with
-        | ManagedPointerSource.Null -> Choice2Of2 0
+        | ManagedPointerSource.Null -> Choice2Of2 0L
         | _ -> failwith "refusing to multiply pointers"
 
     let add =
@@ -341,11 +365,11 @@ module ArithmeticOperation =
                 | _, ManagedPointerSource.Null -> Choice1Of2 ptr1
                 | _, _ -> failwith "refusing to add two managed pointers"
 
-            member _.Int32ManagedPtr baseClassTypes state val1 ptr2 =
-                addInt32ManagedPtr OverflowBehaviour.Wrap baseClassTypes state val1 ptr2
+            member _.Int64ManagedPtr baseClassTypes state val1 ptr2 =
+                addOffsetToManagedPtr OverflowBehaviour.Wrap baseClassTypes state val1 ptr2
 
-            member _.ManagedPtrInt32 baseClassTypes state ptr1 val2 =
-                addInt32ManagedPtr OverflowBehaviour.Wrap baseClassTypes state val2 ptr1
+            member _.ManagedPtrInt64 baseClassTypes state ptr1 val2 =
+                addOffsetToManagedPtr OverflowBehaviour.Wrap baseClassTypes state val2 ptr1
 
             member _.Name = "add"
         }
@@ -371,11 +395,11 @@ module ArithmeticOperation =
                 | _, ManagedPointerSource.Null -> Choice1Of2 ptr1
                 | _, _ -> failwith "refusing to add two managed pointers"
 
-            member _.Int32ManagedPtr baseClassTypes state val1 ptr2 =
-                addInt32ManagedPtr OverflowBehaviour.Trap baseClassTypes state val1 ptr2
+            member _.Int64ManagedPtr baseClassTypes state val1 ptr2 =
+                addOffsetToManagedPtr OverflowBehaviour.Trap baseClassTypes state val1 ptr2
 
-            member _.ManagedPtrInt32 baseClassTypes state ptr1 val2 =
-                addInt32ManagedPtr OverflowBehaviour.Trap baseClassTypes state val2 ptr1
+            member _.ManagedPtrInt64 baseClassTypes state ptr1 val2 =
+                addOffsetToManagedPtr OverflowBehaviour.Trap baseClassTypes state val2 ptr1
 
             member _.Name = "add.ovf"
         }
@@ -615,36 +639,37 @@ module ArithmeticOperation =
                 failwith
                     $"TODO: subtracting incompatible managed pointer targets is not implemented: %O{target1} vs %O{target2} (%O{ptr1} vs %O{ptr2})"
 
-    let private subInt32ManagedPtr (val1 : int32) (ptr2 : ManagedPointerSource) : Choice<ManagedPointerSource, int> =
+    /// `int - &` is not in the ECMA-335 table, so this only tolerates the
+    /// degenerate null case, where the byref contributes the bit pattern 0 and
+    /// the result is just the integer.
+    let private subOffsetManagedPtr (val1 : int64) (ptr2 : ManagedPointerSource) : Choice<ManagedPointerSource, int64> =
         match ptr2 with
         | ManagedPointerSource.Null -> Choice2Of2 val1
         | _ -> failwith "refusing to subtract a pointer"
 
-    let private subManagedPtrInt32
+    let private subOffsetFromManagedPtr
         (behaviour : OverflowBehaviour)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (ptr1 : ManagedPointerSource)
-        (val2 : int32)
-        : Choice<ManagedPointerSource, int>
+        (offset : int64)
+        : Choice<ManagedPointerSource, int64>
         =
         match ManagedPointerSource.tryBitPatternBits ptr1 with
         | ValueSome bits ->
-            // Subtract directly instead of routing through
-            // `addInt32ManagedPtr`'s negation: a bit-pattern byref's payload is
-            // an int64, so `bits - Int32.MinValue` is perfectly representable
-            // even though `-Int32.MinValue` is not an int32.
-            subPlaceholderBits behaviour bits (int64 val2)
+            // Subtract directly rather than routing through the negation
+            // below: `bits - Int64.MinValue` must trap under a checked op
+            // rather than silently wrapping through `-offset`.
+            subPlaceholderBits behaviour bits offset
             |> ManagedPointerSource.ofBitPattern
             |> Choice1Of2
         | ValueNone ->
 
-        // Every remaining byref is symbolic: its offset really is an int32,
-        // which cannot express the negation of Int32.MinValue.
-        if val2 = System.Int32.MinValue then
-            failwith "managed pointer subtraction by Int32.MinValue would overflow the interpreter's int32 offset model"
+        if offset = System.Int64.MinValue then
+            failwith
+                "managed pointer subtraction by Int64.MinValue is not representable: negating it overflows native int"
 
-        addInt32ManagedPtr behaviour baseClassTypes state (-val2) ptr1
+        addOffsetToManagedPtr behaviour baseClassTypes state (-offset) ptr1
 
     let sub =
         { new IArithmeticOperation with
@@ -664,10 +689,10 @@ module ArithmeticOperation =
             member _.ManagedPtrManagedPtr baseClassTypes state ptr1 ptr2 =
                 subManagedPtrManagedPtr OverflowBehaviour.Wrap baseClassTypes state ptr1 ptr2
 
-            member _.Int32ManagedPtr _ _ val1 ptr2 = subInt32ManagedPtr val1 ptr2
+            member _.Int64ManagedPtr _ _ val1 ptr2 = subOffsetManagedPtr val1 ptr2
 
-            member _.ManagedPtrInt32 baseClassTypes state ptr1 val2 =
-                subManagedPtrInt32 OverflowBehaviour.Wrap baseClassTypes state ptr1 val2
+            member _.ManagedPtrInt64 baseClassTypes state ptr1 val2 =
+                subOffsetFromManagedPtr OverflowBehaviour.Wrap baseClassTypes state ptr1 val2
 
             member _.Name = "sub"
         }
@@ -696,10 +721,10 @@ module ArithmeticOperation =
             member _.ManagedPtrManagedPtr baseClassTypes state ptr1 ptr2 =
                 subManagedPtrManagedPtr OverflowBehaviour.Trap baseClassTypes state ptr1 ptr2
 
-            member _.Int32ManagedPtr _ _ val1 ptr2 = subInt32ManagedPtr val1 ptr2
+            member _.Int64ManagedPtr _ _ val1 ptr2 = subOffsetManagedPtr val1 ptr2
 
-            member _.ManagedPtrInt32 baseClassTypes state ptr1 val2 =
-                subManagedPtrInt32 OverflowBehaviour.Trap baseClassTypes state ptr1 val2
+            member _.ManagedPtrInt64 baseClassTypes state ptr1 val2 =
+                subOffsetFromManagedPtr OverflowBehaviour.Trap baseClassTypes state ptr1 val2
 
             member _.Name = "sub.ovf"
         }
@@ -722,8 +747,8 @@ module ArithmeticOperation =
                 | _, ManagedPointerSource.Null -> Choice2Of2 (NativeIntSource.Verbatim 0L)
                 | _, _ -> failwith "refusing to multiply two managed pointers"
 
-            member _.Int32ManagedPtr _ state a ptr = mulInt32ManagedPtr state a ptr
-            member _.ManagedPtrInt32 _ state ptr a = mulInt32ManagedPtr state a ptr
+            member _.Int64ManagedPtr _ state a ptr = mulOffsetManagedPtr state a ptr
+            member _.ManagedPtrInt64 _ state ptr a = mulOffsetManagedPtr state a ptr
 
             member _.Name = "mul"
         }
@@ -742,9 +767,9 @@ module ArithmeticOperation =
 
             member _.ManagedPtrManagedPtr _ _ ptr1 ptr2 = failwith "refusing to rem pointers"
 
-            member _.Int32ManagedPtr _ _ a ptr = failwith "refusing to rem pointer"
+            member _.Int64ManagedPtr _ _ a ptr = failwith "refusing to rem pointer"
 
-            member _.ManagedPtrInt32 _ _ ptr a = failwith "refusing to rem pointer"
+            member _.ManagedPtrInt64 _ _ ptr a = failwith "refusing to rem pointer"
 
             member _.Name = "rem"
         }
@@ -766,9 +791,9 @@ module ArithmeticOperation =
 
             member _.ManagedPtrManagedPtr _ _ ptr1 ptr2 = failwith "refusing to rem.un pointers"
 
-            member _.Int32ManagedPtr _ _ a ptr = failwith "refusing to rem.un pointer"
+            member _.Int64ManagedPtr _ _ a ptr = failwith "refusing to rem.un pointer"
 
-            member _.ManagedPtrInt32 _ _ ptr a = failwith "refusing to rem.un pointer"
+            member _.ManagedPtrInt64 _ _ ptr a = failwith "refusing to rem.un pointer"
 
             member _.Name = "rem.un"
         }
@@ -791,8 +816,8 @@ module ArithmeticOperation =
                 | _, ManagedPointerSource.Null -> Choice2Of2 (NativeIntSource.Verbatim 0L)
                 | _, _ -> failwith "refusing to multiply two managed pointers"
 
-            member _.Int32ManagedPtr _ state a ptr = mulInt32ManagedPtr state a ptr
-            member _.ManagedPtrInt32 _ state a ptr = mulInt32ManagedPtr state ptr a
+            member _.Int64ManagedPtr _ state a ptr = mulOffsetManagedPtr state a ptr
+            member _.ManagedPtrInt64 _ state a ptr = mulOffsetManagedPtr state ptr a
 
             member _.Name = "mul_ovf"
         }
@@ -815,8 +840,8 @@ module ArithmeticOperation =
             member _.ManagedPtrManagedPtr _ _ ptr1 ptr2 =
                 failwith $"refusing to mul.ovf.un two managed pointers: %O{ptr1} and %O{ptr2}"
 
-            member _.Int32ManagedPtr _ state a ptr = mulInt32ManagedPtr state a ptr
-            member _.ManagedPtrInt32 _ state a ptr = mulInt32ManagedPtr state ptr a
+            member _.Int64ManagedPtr _ state a ptr = mulOffsetManagedPtr state a ptr
+            member _.ManagedPtrInt64 _ state a ptr = mulOffsetManagedPtr state ptr a
 
             member _.Name = "mul.ovf.un"
         }
@@ -838,14 +863,14 @@ module ArithmeticOperation =
                 | ManagedPointerSource.Null, _ -> Choice2Of2 (NativeIntSource.Verbatim 0L)
                 | _, _ -> failwith "refusing to divide two managed pointers"
 
-            member _.Int32ManagedPtr _ _ a ptr =
-                if a = 0 then
-                    Choice2Of2 0
+            member _.Int64ManagedPtr _ _ a ptr =
+                if a = 0L then
+                    Choice2Of2 0L
                 else
                     failwith "refusing to divide pointers"
 
-            member _.ManagedPtrInt32 _ _ ptr a =
-                if a = 1 then
+            member _.ManagedPtrInt64 _ _ ptr a =
+                if a = 1L then
                     Choice1Of2 ptr
                 else
                     failwith "refusing to divide a pointer"
@@ -874,48 +899,39 @@ module BinaryArithmetic =
             | Choice1Of2 ptr -> EvalStackValue.ManagedPointer ptr
             | Choice2Of2 offset -> EvalStackValue.NativeInt offset
 
-        let managedPtrChoiceAsNativeInt (result : Choice<ManagedPointerSource, int>) : EvalStackValue =
+        let managedPtrChoiceAsNativeInt (result : Choice<ManagedPointerSource, int64>) : EvalStackValue =
             match result with
             | Choice1Of2 ptr -> EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr)
-            | Choice2Of2 i -> EvalStackValue.NativeInt (NativeIntSource.Verbatim (int64<int32> i))
+            | Choice2Of2 i -> EvalStackValue.NativeInt (NativeIntSource.Verbatim i)
 
         let managedPtrManagedPtrAsNativeInt (result : Choice<ManagedPointerSource, NativeIntSource>) : EvalStackValue =
             match result with
             | Choice1Of2 ptr -> EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr)
             | Choice2Of2 offset -> EvalStackValue.NativeInt offset
 
-        let nativeIntOffsetForPointerArithmetic (src : NativeIntSource) : int32 =
+        // The offset stays native-int wide here. Narrowing to the int32
+        // symbolic offset model is the *pointer* path's business
+        // (`narrowSymbolicOffset`), because only a symbolic byref has an
+        // int32 offset; a bit-pattern byref's offset is a native int and may
+        // legitimately exceed int32.
+        let nativeIntOffsetForPointerArithmetic (src : NativeIntSource) : int64 =
             match src with
-            | NativeIntSource.Verbatim n ->
-                if n > int64<int32> System.Int32.MaxValue || n < int64<int32> System.Int32.MinValue then
-                    failwith $"managed pointer arithmetic (%s{op.Name}): nativeint offset does not fit in int32: %d{n}"
-
-                int32<int64> n
-            | NativeIntSource.ManagedPointer ManagedPointerSource.Null -> 0
+            | NativeIntSource.Verbatim n -> n
+            // A null byref used as an offset is the bit pattern 0.
+            | NativeIntSource.ManagedPointer ManagedPointerSource.Null -> 0L
             | v ->
                 failwith
                     $"managed pointer arithmetic (%s{op.Name}): refusing to use non-verbatim native int %O{v} as pointer offset"
 
-        // 64-bit assumption: an int64 offset that does not fit in int32 cannot
-        // be applied to a managed pointer in our model. On 32-bit, the BCL's
-        // wraparound idiom intentionally produces oversize int64s and relies
-        // on the subsequent Conv.U truncating mod 2^32; we don't model that.
-        let widenedInt64OffsetForPointerArithmetic (n : int64) : int32 =
-            if n > int64<int32> System.Int32.MaxValue || n < int64<int32> System.Int32.MinValue then
-                failwith
-                    $"managed pointer arithmetic (%s{op.Name}): int64 offset does not fit in int32: %d{n} (the WidenedNativeInt arms are 64-bit-only — on 32-bit, oversize offsets would truncate mod 2^32)"
-
-            int32<int64> n
-
         let widenedManagedPtrChoiceAsInt64
             (signed : bool)
-            (result : Choice<ManagedPointerSource, int>)
+            (result : Choice<ManagedPointerSource, int64>)
             : EvalStackValue
             =
             match result with
             | Choice1Of2 ptr ->
                 EvalStackValue.Int64 (Int64Source.widenedNativeInt (NativeIntSource.ManagedPointer ptr) signed)
-            | Choice2Of2 i -> EvalStackValue.Int64 (Int64Source.Verbatim (int64<int32> i))
+            | Choice2Of2 i -> EvalStackValue.Int64 (Int64Source.Verbatim i)
 
         let materialise (src : NativeIntSource) (counters : PointerHashCounters) : int64 * PointerHashCounters =
             PointerHashSynthesis.materialiseHashBits $"BinaryArithmetic.%s{op.Name}" src counters
@@ -927,7 +943,7 @@ module BinaryArithmetic =
         | EvalStackValue.Int32 val1, EvalStackValue.Int32 val2 ->
             op.Int32Int32 val1 val2 |> EvalStackValue.Int32 |> withState
         | EvalStackValue.Int32 val1, EvalStackValue.NativeInt (NativeIntSource.ManagedPointer val2) ->
-            op.Int32ManagedPtr baseClassTypes state val1 val2
+            op.Int64ManagedPtr baseClassTypes state (int64<int32> val1) val2
             |> managedPtrChoiceAsNativeInt
             |> withState
         | EvalStackValue.Int32 val1, EvalStackValue.NativeInt val2 ->
@@ -942,9 +958,17 @@ module BinaryArithmetic =
             |> EvalStackValue.NativeInt
             |> withState
         | EvalStackValue.Int32 val1, EvalStackValue.ManagedPointer val2 ->
-            match op.Int32ManagedPtr baseClassTypes state val1 val2 with
+            match op.Int64ManagedPtr baseClassTypes state (int64<int32> val1) val2 with
             | Choice1Of2 v -> EvalStackValue.ManagedPointer v |> withState
-            | Choice2Of2 i -> EvalStackValue.Int32 i |> withState
+            | Choice2Of2 i ->
+                // The numeric arms of `int op &` only ever hand back the input
+                // integer or zero, so this cannot overflow; assert rather than
+                // silently truncating if that ever changes.
+                if i > int64<int32> System.Int32.MaxValue || i < int64<int32> System.Int32.MinValue then
+                    failwith
+                        $"managed pointer arithmetic (%s{op.Name}): int32 operand yielded out-of-range numeric result %d{i}"
+
+                EvalStackValue.Int32 (int32<int64> i) |> withState
         | EvalStackValue.Int32 val1, EvalStackValue.ObjectRef val2 ->
             failwith "" |> EvalStackValue.ObjectRef |> withState
         | EvalStackValue.Int32 _, EvalStackValue.NullObjectRef -> failwith ""
@@ -981,16 +1005,12 @@ module BinaryArithmetic =
             |> withState
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (NativeIntSource.ManagedPointer val1, signed)),
           EvalStackValue.Int64 (Int64Source.Verbatim val2) ->
-            let val2 = widenedInt64OffsetForPointerArithmetic val2
-
-            op.ManagedPtrInt32 baseClassTypes state val1 val2
+            op.ManagedPtrInt64 baseClassTypes state val1 val2
             |> widenedManagedPtrChoiceAsInt64 signed
             |> withState
         | EvalStackValue.Int64 (Int64Source.Verbatim val1),
           EvalStackValue.Int64 (Int64Source.WidenedNativeInt (NativeIntSource.ManagedPointer val2, signed)) ->
-            let val1 = widenedInt64OffsetForPointerArithmetic val1
-
-            op.Int32ManagedPtr baseClassTypes state val1 val2
+            op.Int64ManagedPtr baseClassTypes state val1 val2
             |> widenedManagedPtrChoiceAsInt64 signed
             |> withState
         // Arithmetic on a widened non-managed-pointer source materialises the
@@ -1063,7 +1083,7 @@ module BinaryArithmetic =
 
                 op.Int64Int64 val1 val2 |> Int64Source.OpaqueHashBits |> EvalStackValue.Int64, state
         | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer val1), EvalStackValue.Int32 val2 ->
-            op.ManagedPtrInt32 baseClassTypes state val1 val2
+            op.ManagedPtrInt64 baseClassTypes state val1 (int64<int32> val2)
             |> managedPtrChoiceAsNativeInt
             |> withState
         | EvalStackValue.NativeInt val1, EvalStackValue.Int32 val2 ->
@@ -1085,13 +1105,13 @@ module BinaryArithmetic =
         | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer val1), EvalStackValue.NativeInt val2 ->
             let val2 = nativeIntOffsetForPointerArithmetic val2
 
-            op.ManagedPtrInt32 baseClassTypes state val1 val2
+            op.ManagedPtrInt64 baseClassTypes state val1 val2
             |> managedPtrChoiceAsNativeInt
             |> withState
         | EvalStackValue.NativeInt val1, EvalStackValue.NativeInt (NativeIntSource.ManagedPointer val2) ->
             let val1 = nativeIntOffsetForPointerArithmetic val1
 
-            op.Int32ManagedPtr baseClassTypes state val1 val2
+            op.Int64ManagedPtr baseClassTypes state val1 val2
             |> managedPtrChoiceAsNativeInt
             |> withState
         | EvalStackValue.NativeInt val1, EvalStackValue.NativeInt val2 ->
@@ -1120,11 +1140,9 @@ module BinaryArithmetic =
         | EvalStackValue.NativeInt val1, EvalStackValue.ManagedPointer val2 ->
             let val1 = nativeIntOffsetForPointerArithmetic val1
 
-            match op.Int32ManagedPtr baseClassTypes state val1 val2 with
+            match op.Int64ManagedPtr baseClassTypes state val1 val2 with
             | Choice1Of2 v -> EvalStackValue.ManagedPointer v |> withState
-            | Choice2Of2 i ->
-                EvalStackValue.NativeInt (NativeIntSource.Verbatim (int64<int32> i))
-                |> withState
+            | Choice2Of2 i -> EvalStackValue.NativeInt (NativeIntSource.Verbatim i) |> withState
         | EvalStackValue.NativeInt val1, EvalStackValue.ObjectRef val2 ->
             failwith "" |> EvalStackValue.ObjectRef |> withState
         | EvalStackValue.NativeInt _, EvalStackValue.NullObjectRef -> failwith ""
@@ -1137,20 +1155,16 @@ module BinaryArithmetic =
         | EvalStackValue.ManagedPointer val1, EvalStackValue.NativeInt val2 ->
             let val2 = nativeIntOffsetForPointerArithmetic val2
 
-            match op.ManagedPtrInt32 baseClassTypes state val1 val2 with
+            match op.ManagedPtrInt64 baseClassTypes state val1 val2 with
             | Choice1Of2 result -> EvalStackValue.ManagedPointer result |> withState
-            | Choice2Of2 result ->
-                EvalStackValue.NativeInt (NativeIntSource.Verbatim (int64<int32> result))
-                |> withState
+            | Choice2Of2 result -> EvalStackValue.NativeInt (NativeIntSource.Verbatim result) |> withState
         | EvalStackValue.ObjectRef val1, EvalStackValue.NativeInt val2 ->
             failwith "" |> EvalStackValue.ObjectRef |> withState
         | EvalStackValue.NullObjectRef, EvalStackValue.NativeInt _ -> failwith ""
         | EvalStackValue.ManagedPointer val1, EvalStackValue.Int32 val2 ->
-            match op.ManagedPtrInt32 baseClassTypes state val1 val2 with
+            match op.ManagedPtrInt64 baseClassTypes state val1 (int64<int32> val2) with
             | Choice1Of2 result -> EvalStackValue.ManagedPointer result |> withState
-            | Choice2Of2 result ->
-                EvalStackValue.NativeInt (NativeIntSource.Verbatim (int64<int32> result))
-                |> withState
+            | Choice2Of2 result -> EvalStackValue.NativeInt (NativeIntSource.Verbatim result) |> withState
         | EvalStackValue.ObjectRef val1, EvalStackValue.Int32 val2 ->
             failwith "" |> EvalStackValue.ObjectRef |> withState
         | EvalStackValue.NullObjectRef, EvalStackValue.Int32 _ -> failwith ""

@@ -222,7 +222,7 @@ module internal IntrinsicHelpers =
         // anchored byrefs. `Unsafe.Add<T>(ref placeholder, n)` advances
         // by `n * sizeof(T)` bytes; if the result lands on zero,
         // normalise to Null so `IsNullRef` agrees with the bit-pattern
-        // definition (mirrors `BinaryArithmetic.addInt32ManagedPtr`).
+        // definition (mirrors `BinaryArithmetic.addOffsetToManagedPtr`).
         // `Null` is the bit pattern `0`, so adding to it must follow the
         // same bit-arithmetic route — otherwise a chained
         // `Unsafe.Add(Unsafe.Add(placeholder, -n), n)` whose middle step
