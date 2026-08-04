@@ -192,6 +192,134 @@ module NativeSystemNative =
           [],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
             pushInt32 state.Kernel.LastSystemError ctx |> Some
+        | Some "SystemNative_GetCpuUtilization",
+          [ ConcretePointer _ ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Double) ->
+            // `double SystemNative_GetCpuUtilization(ProcessCpuInformation* previous)`
+            // (declared in `src/native/libs/System.Native/pal_time.h`, defined
+            // in `pal_time.c` -- note *not* `pal_process.c`, where you might
+            // reasonably look first. That tree is outside our sparse
+            // dotnet/runtime checkout, so it was checked by fetching the file
+            // at the pinned commit rather than from `$DOTNET_RUNTIME_SRC`.)
+            // It is a stateful sampler: it reads the process's cumulative user/kernel CPU
+            // time, diffs it against whatever `*previous` held from the
+            // caller's last call, overwrites `*previous` with the fresh
+            // sample, and returns the percentage of wall-clock time since
+            // that last call spent running this process. CoreLib reaches it
+            // from `PortableThreadPool.Unix`'s `CpuUtilizationReader`
+            // (divides by `Environment.ProcessorCount` to feed the thread
+            // pool's hill-climbing/starvation heuristics),
+            // `RuntimeEventSourceHelper.Unix` (same, for an `EventCounter`
+            // trace event), and -- via the struct's *cumulative* fields
+            // rather than the return value -- the public `Environment.CpuUsage`
+            // and `AppDomain.MonitoringTotalProcessorTime` properties.
+            //
+            // The generated P/Invoke stub takes the struct by raw pointer
+            // (matched loosely here as `ConcretePointer _`, confirmed via
+            // IlDump against real CoreLib metadata to be `ptr[...]`, not a
+            // managed byref: `Interop.Sys.GetCpuUtilization` is
+            // `[LibraryImport]`-generated and pins the caller's `ref` before
+            // calling through). `ProcessCpuInformation` itself -- also
+            // confirmed via metadata, since managed code never reads it
+            // directly -- is `[StructLayout(LayoutKind.Sequential)]` with
+            // three `ulong` fields (lastRecordedCurrentTime,
+            // lastRecordedKernelTime, lastRecordedUserTime), of which only
+            // the latter two are ever read back by managed code.
+            //
+            // PawPrint has no model of per-process CPU consumption: nothing
+            // in the interpreter tracks "how much host CPU time was spent
+            // executing this guest's instructions" as a quantity, and there
+            // is no simulated contention for a virtual CPU that would make
+            // "utilization" mean anything for a guest's own workload either.
+            // Two structurally different designs were considered for what to
+            // report instead:
+            //
+            //  1. A constant zero, with no new `EmulatedKernel` state. Zero
+            //     is not a lie of omission the way an invented nonzero
+            //     reading would be -- it is a value the real function
+            //     legitimately returns (freshly-started process, or a
+            //     genuinely idle one), and it is a first-class *supported*
+            //     operating mode of the one heuristic that meaningfully
+            //     consumes it: GateThread's own doc comment for
+            //     `DOTNET_ThreadPool_CpuUtilizationIntervalMs` says setting
+            //     it to 0 makes "components behave as though CPU utilization
+            //     is low". A synthetic nonzero number, by contrast, would
+            //     have no ground truth behind it -- there is no simulated
+            //     workload it could be measuring -- so it would be a more
+            //     dishonest answer than zero, not a more realistic one.
+            //  2. A settable `EmulatedKernel`/`KernelConfig` scalar, on the
+            //     model of `ProcessorCount` and `UnixPlatform`: fixed for the
+            //     process's lifetime, host-overridable, so a future test
+            //     could script "the guest observes nonzero CPU load" (e.g.
+            //     to exercise hill-climbing thread-count decisions).
+            //
+            // (2) was rejected for now: `ProcessorCount`/`UnixPlatform` earn
+            // their configurability because they are *identity* facts with a
+            // family of present or future readers (multiple `SystemNative_*`
+            // entry points agreeing on one coherent platform), and because
+            // guest-observable behaviour can depend on them (division,
+            // capacity planning). CPU utilization has exactly one consumer
+            // -- this entry point -- and its only effect on real .NET is
+            // tuning internal thread-pool heuristics that PawPrint (a slow,
+            // single-purpose interpreter that promises determinism, not
+            // throughput) makes no performance claims about. A knob with no
+            // producer of meaningful values and no present consumer is
+            // speculative generality; add it if and when a concrete test
+            // needs to drive that heuristic.
+            //
+            // So: always return 0, and always zero-fill the caller's struct
+            // (real native code unconditionally overwrites `*previous` with
+            // the fresh sample on every call, so this does too, rather than
+            // leaving stale/garbage caller data behind). The pointer is
+            // untyped (`void*`) at this boundary, so the zero-fill is done as
+            // raw bytes -- the same shape `drawRandomBytesInto` above uses --
+            // rather than resolving `ProcessCpuInformation`'s own
+            // `ConcreteTypeHandle` just to describe three all-zero `ulong`s.
+            let ptr =
+                NativeCall.managedPointerOfPointerArgument
+                    "SystemNative_GetCpuUtilization"
+                    "previous"
+                    instruction.Arguments.[0]
+
+            match ptr with
+            | ManagedPointerSource.Null ->
+                failwith
+                    "SystemNative_GetCpuUtilization: refused to write through null `previous` pointer (CoreLib should not invoke this entry point with a null destination -- ProcessCpuInformation is a fixed `ref` local, never null in valid IL)"
+            | _ -> ()
+
+            let byteConcreteType =
+                NativeCall.requiredByteConcreteType "SystemNative_GetCpuUtilization" ctx.BaseClassTypes state
+
+            let mutable state = state
+
+            // sizeof(ProcessCpuInformation) = 3 fields * sizeof(ulong) = 24 bytes, verified
+            // against both the managed declaration (via IlDump) and the native struct in
+            // `pal_time.h` (no padding, three `uint64_t`).
+            //
+            // Known tech debt: this width is a literal with no structural link to either
+            // declaration, and nothing would catch it drifting. The managed-BCL drift test
+            // does not cover native `pal_*` headers. It is a literal because the boundary here
+            // is genuinely untyped (`void*`), so deriving it would mean resolving
+            // `ProcessCpuInformation`'s own ConcreteTypeHandle purely to describe three
+            // all-zero `ulong`s. Note the bounds check in `MemoryBlock.writeBytes` is only a
+            // partial safety net: it bounds against the whole backing memory block, not
+            // against this struct's own extent, so a too-large width could in principle write
+            // into adjacent memory within the same block rather than failing loudly.
+            for i = 0 to 23 do
+                let dest =
+                    ManagedPointerByteView.addByteOffset ctx.BaseClassTypes state byteConcreteType i ptr
+
+                state <-
+                    IlMachineState.writeManagedByrefBytesOrTypedCell
+                        ctx.BaseClassTypes
+                        state
+                        dest
+                        (CliType.Numeric (CliNumericType.UInt8 0uy))
+
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Float 0.0) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
         | Some "SystemNative_GetLowResolutionTimestamp",
           [],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int64) ->
