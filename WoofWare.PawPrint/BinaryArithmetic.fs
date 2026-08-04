@@ -6,8 +6,11 @@ type private FieldContainer =
     | HeapObject of ManagedHeapAddress
     | ByrefContainer of ManagedPointerSource
 
+/// A *symbolic* byref decomposed into the storage it refers to plus an
+/// offset. Bit-pattern byrefs (`Null`, `NativeIntPlaceholder`) are not
+/// representable here: they refer to no storage, so callers must peel them
+/// off with `ManagedPointerSource.tryBitPatternBits` before decomposing.
 type private ArithmeticTarget =
-    | NullTarget
     | StackMemoryTarget of ThreadId * FrameId * StackMemoryBlockId * int
     | NativeMemoryTarget of NativeMemoryBlockId * int
     | ArrayTarget of ManagedHeapAddress * int
@@ -27,7 +30,9 @@ module private ArithmeticTarget =
 
     let decompose (ptr : ManagedPointerSource) : ArithmeticTarget =
         match ptr with
-        | ManagedPointerSource.Null -> ArithmeticTarget.NullTarget
+        | ManagedPointerSource.Null ->
+            failwith
+                "refusing to decompose the null byref into root-plus-offset; it is the bit pattern 0, and callers must handle bit-pattern byrefs before decomposing"
         | ManagedPointerSource.NativeIntPlaceholder bits ->
             failwith
                 $"refusing to do pointer arithmetic on fake non-null byref @ 0x%x{bits}; the placeholder must never be advanced"
@@ -130,16 +135,6 @@ module ArithmeticOperation =
         | OverflowBehaviour.Wrap -> a - b
         | OverflowBehaviour.Trap -> Checked.(-) a b
 
-    /// Re-tag the result of placeholder bit arithmetic. A zero result must
-    /// normalise back to `Null` so the placeholder invariant ("never carries
-    /// zero") holds and `Unsafe.IsNullRef` agrees with the CLR's bit-pattern
-    /// definition.
-    let private placeholderResult (newBits : int64) : Choice<ManagedPointerSource, int> =
-        if newBits = 0L then
-            Choice1Of2 ManagedPointerSource.Null
-        else
-            Choice1Of2 (ManagedPointerSource.NativeIntPlaceholder newBits)
-
     let private checkedAddInt32 (context : string) (a : int) (b : int) : int =
         let result = int64 a + int64 b
 
@@ -227,18 +222,19 @@ module ArithmeticOperation =
         (ptr : ManagedPointerSource)
         : Choice<ManagedPointerSource, int>
         =
-        match ptr with
-        | ManagedPointerSource.NativeIntPlaceholder bits ->
+        match ManagedPointerSource.tryBitPatternBits ptr with
+        | ValueSome bits ->
             // `(void*)bits + v = (void*)(bits + v)`. GetNonNullPinnableReference
             // produces an empty span whose pointer is the placeholder; callers
             // then form an end pointer by adding `length * elementSize` (which is
             // zero for an empty span, but in general arithmetic on the bits is
             // legitimate as long as no dereference occurs).
-            addPlaceholderBits behaviour bits (int64 v) |> placeholderResult
-        | _ ->
+            addPlaceholderBits behaviour bits (int64 v)
+            |> ManagedPointerSource.ofBitPattern
+            |> Choice1Of2
+        | ValueNone ->
 
         match ArithmeticTarget.decompose ptr with
-        | ArithmeticTarget.NullTarget -> Choice2Of2 v
         | ArithmeticTarget.StackMemoryTarget (thread, frame, block, byteOffset) ->
             let byteOffset = checkedAddInt32 "localloc byte offset" byteOffset v
 
@@ -399,24 +395,21 @@ module ArithmeticOperation =
         (ptr2 : ManagedPointerSource)
         : Choice<ManagedPointerSource, NativeIntSource>
         =
+        match ManagedPointerSource.tryBitPatternBits ptr1, ManagedPointerSource.tryBitPatternBits ptr2 with
+        // `& - & -> native int`. Both sides are raw bit patterns here
+        // (`Unsafe.AsRef<T>((void*)bits)`, or `Null` at bits = 0), so the
+        // difference is plain bit subtraction: GetNonNullPinnableReference
+        // uses `endPtr - startPtr` to recover an empty span's byte length,
+        // which is 0 when the two share a bit pattern. `0 - Int64.MinValue`
+        // overflows, so the checked form traps here. This must precede the
+        // generic `Null`-on-the-right arm below, which would otherwise
+        // return the left byref for `placeholder - Null`.
+        | ValueSome bits1, ValueSome bits2 -> subPlaceholderBits behaviour bits1 bits2 |> verbatimInt64 |> Choice2Of2
+        | _ ->
+
         match ptr1, ptr2 with
-        // `Unsafe.AsRef<T>((void*)bits)` produces a bit-pattern byref,
-        // and the null managed pointer is just the placeholder at
-        // `bits = 0`. Pointer subtraction over these is plain bit
-        // subtraction: GetNonNullPinnableReference uses
-        // `endPtr - startPtr` to recover an empty span's byte length
-        // (0 when the placeholders share a bit pattern). These arms
-        // must precede the generic `Null`-on-either-side arms below,
-        // which would otherwise return the left ManagedPointer
-        // (Choice1Of2) for `placeholder - Null` or refuse the
-        // `Null - placeholder` case.
-        | ManagedPointerSource.NativeIntPlaceholder bits1, ManagedPointerSource.NativeIntPlaceholder bits2 ->
-            subPlaceholderBits behaviour bits1 bits2 |> verbatimInt64 |> Choice2Of2
-        | ManagedPointerSource.NativeIntPlaceholder bits1, ManagedPointerSource.Null ->
-            bits1 |> verbatimInt64 |> Choice2Of2
-        | ManagedPointerSource.Null, ManagedPointerSource.NativeIntPlaceholder bits2 ->
-            // `0 - Int64.MinValue` overflows, so the checked form traps here.
-            subPlaceholderBits behaviour 0L bits2 |> verbatimInt64 |> Choice2Of2
+        // Subtracting the zero bit pattern from a symbolic byref leaves it
+        // where it was.
         | ptr1, ManagedPointerSource.Null -> Choice1Of2 ptr1
         | ManagedPointerSource.Null, _ -> failwith "refusing to create negative pointer"
         | ManagedPointerSource.NativeIntPlaceholder _, _
@@ -635,21 +628,19 @@ module ArithmeticOperation =
         (val2 : int32)
         : Choice<ManagedPointerSource, int>
         =
-        match ptr1 with
-        | ManagedPointerSource.NativeIntPlaceholder bits ->
+        match ManagedPointerSource.tryBitPatternBits ptr1 with
+        | ValueSome bits ->
             // Subtract directly instead of routing through
-            // `addInt32ManagedPtr`'s negation: a placeholder's payload is an
-            // int64 bit pattern, so `bits - Int32.MinValue` is perfectly
-            // representable even though `-Int32.MinValue` is not an int32.
-            subPlaceholderBits behaviour bits (int64 val2) |> placeholderResult
-        | _ ->
+            // `addInt32ManagedPtr`'s negation: a bit-pattern byref's payload is
+            // an int64, so `bits - Int32.MinValue` is perfectly representable
+            // even though `-Int32.MinValue` is not an int32.
+            subPlaceholderBits behaviour bits (int64 val2)
+            |> ManagedPointerSource.ofBitPattern
+            |> Choice1Of2
+        | ValueNone ->
 
-        // Every other byref is symbolic: its offset is an int32, which cannot
-        // express the negation of Int32.MinValue. Known limitation: this also
-        // rejects the null byref, for which the CLR gives native int
-        // 2147483648 — representable, but not by the `Choice2Of2 : int`
-        // payload we return, so supporting it needs the interface widened
-        // first. `sub` has always behaved this way; `sub.ovf` inherits it.
+        // Every remaining byref is symbolic: its offset really is an int32,
+        // which cannot express the negation of Int32.MinValue.
         if val2 = System.Int32.MinValue then
             failwith "managed pointer subtraction by Int32.MinValue would overflow the interpreter's int32 offset model"
 

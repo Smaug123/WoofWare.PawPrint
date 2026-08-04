@@ -612,6 +612,112 @@ module TestBinaryArithmetic =
             ]
         |> Gen.map (fun bits -> if bits = 0L then 1L else bits)
 
+    let private byteHandle : ConcreteTypeHandle =
+        AllConcreteTypes.getRequiredNonGenericHandle concreteTypes baseClassTypes.Byte
+
+    let private nullPointer : EvalStackValue =
+        EvalStackValue.ManagedPointer ManagedPointerSource.Null
+
+    /// `Null` is the bit pattern 0, so offsetting it must give the byref with
+    /// the offset as its bit pattern — the same answer the `Unsafe.Add<T>`
+    /// intrinsic already produces (IntrinsicHelpers.offsetManagedPointerByElements).
+    [<Test>]
+    let ``offsetting the null byref treats it as the zero bit pattern`` () : unit =
+        let state = state ()
+        let mutable zeroResults = 0
+        let mutable nonZeroResults = 0
+
+        let property (offset : int32) : unit =
+            let v = EvalStackValue.Int32 offset
+
+            let expect (expectedBits : int64) (actual : EvalStackValue) : unit =
+                actual
+                |> shouldEqual (EvalStackValue.ManagedPointer (ManagedPointerSource.ofBitPattern expectedBits))
+
+            execute ArithmeticOperation.add state nullPointer v |> expect (int64 offset)
+            // `int32 + &` is legal and also yields a byref.
+            execute ArithmeticOperation.add state v nullPointer |> expect (int64 offset)
+            execute ArithmeticOperation.addOvf state nullPointer v |> expect (int64 offset)
+            execute ArithmeticOperation.sub state nullPointer v |> expect (-(int64 offset))
+
+            execute ArithmeticOperation.subOvf state nullPointer v
+            |> expect (-(int64 offset))
+
+            if offset = 0 then
+                zeroResults <- zeroResults + 1
+            else
+                nonZeroResults <- nonZeroResults + 1
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genOverflowProneInt32) property)
+
+        if zeroResults = 0 || nonZeroResults = 0 then
+            failwith $"generator missed a regime: zero=%d{zeroResults}, nonZero=%d{nonZeroResults}"
+
+    [<Test>]
+    let ``subtracting Int32 MinValue from the null byref is representable`` () : unit =
+        // The exact reason this was deferred from the Sub_ovf change: the
+        // symbolic offset model cannot negate Int32.MinValue, but the null
+        // byref is not symbolic — it is the bit pattern 0.
+        let state = state ()
+        let expected = placeholderPointer 2147483648L
+
+        execute ArithmeticOperation.sub state nullPointer (EvalStackValue.Int32 System.Int32.MinValue)
+        |> shouldEqual expected
+
+        trySubOvf state nullPointer (EvalStackValue.Int32 System.Int32.MinValue)
+        |> shouldEqual (Some expected)
+
+    [<Test>]
+    let ``subtracting two bit-pattern byrefs yields a native int, including null`` () : unit =
+        // ECMA-335: `& - & -> native int`. Null is just the zero bit pattern,
+        // so this must hold when either or both sides are null.
+        let state = state ()
+
+        execute ArithmeticOperation.sub state nullPointer nullPointer
+        |> shouldEqual (EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L))
+
+        execute ArithmeticOperation.sub state (placeholderPointer 24L) nullPointer
+        |> shouldEqual (EvalStackValue.NativeInt (NativeIntSource.Verbatim 24L))
+
+        execute ArithmeticOperation.sub state nullPointer (placeholderPointer 24L)
+        |> shouldEqual (EvalStackValue.NativeInt (NativeIntSource.Verbatim -24L))
+
+    [<Test>]
+    let ``opcode and Unsafe Add intrinsic agree on bit-pattern byrefs`` () : unit =
+        // The inconsistency this change exists to remove: the same arithmetic
+        // reached the byref path through `Unsafe.Add<T>` and the numeric path
+        // through the `add` opcode.
+        let mutable nullCases = 0
+        let mutable placeholderCases = 0
+
+        let property (bits : int64, offset : int32) : unit =
+            let start, viaOpcodeState =
+                if bits = 0L then
+                    nullCases <- nullCases + 1
+                    nullPointer, state ()
+                else
+                    placeholderCases <- placeholderCases + 1
+                    placeholderPointer bits, state ()
+
+            let viaOpcode =
+                execute ArithmeticOperation.add viaOpcodeState start (EvalStackValue.Int32 offset)
+
+            // Byte elements, so "offset by n elements" is "offset by n bytes"
+            // and the two paths are directly comparable.
+            let viaIntrinsic, _ =
+                IntrinsicHelpers.offsetManagedPointerByElements baseClassTypes (state ()) byteHandle offset start
+
+            if viaOpcode <> viaIntrinsic then
+                failwith
+                    $"add opcode gave %O{viaOpcode} but Unsafe.Add intrinsic gave %O{viaIntrinsic} for %O{start} + %d{offset}"
+
+        let genBits = Gen.frequency [ 1, Gen.constant 0L ; 3, genPlaceholderBits ]
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen (Gen.zip genBits genOverflowProneInt32)) property)
+
+        if nullCases = 0 || placeholderCases = 0 then
+            failwith $"generator missed a regime: null=%d{nullCases}, placeholder=%d{placeholderCases}"
+
     [<Test>]
     let ``sub ovf on bit-pattern byrefs traps exactly when the difference leaves native int range`` () : unit =
         // A `NativeIntPlaceholder`'s payload is a real native-int bit pattern,

@@ -1800,27 +1800,15 @@ module Intrinsics =
             // chain `placeholder + (-bits)` (which normalises to `Null`) +
             // another `AddByteOffset` would fall into the byref path and try
             // to project off a null managed pointer.
-            let placeholderBits =
-                match srcPtr with
-                | ManagedPointerSource.NativeIntPlaceholder bits -> Some bits
-                | ManagedPointerSource.Null -> Some 0L
-                | _ -> None
-
-            match placeholderBits with
-            | Some bits ->
-                let newBits = bits + int64 offset
-
-                let ptr =
-                    if newBits = 0L then
-                        ManagedPointerSource.Null
-                    else
-                        ManagedPointerSource.NativeIntPlaceholder newBits
+            match ManagedPointerSource.tryBitPatternBits srcPtr with
+            | ValueSome bits ->
+                let ptr = bits + int64 offset |> ManagedPointerSource.ofBitPattern
 
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
                 |> Some
-            | None ->
+            | ValueNone ->
 
             // `addByteOffsetUnderReinterpret` anchors the byte cursor under `ReinterpretAs T`
             // before appending the offset, so it works regardless of whether the source byref
@@ -1934,14 +1922,13 @@ module Intrinsics =
             // the bit-difference, matching the IL `sub` semantics implemented
             // in BinaryArithmetic. Null is the placeholder for bits=0, so
             // pairings with Null are still well-defined as bit subtraction.
-            let asPlaceholderBits (v : EvalStackValue) : int64 option =
+            let asPlaceholderBits (v : EvalStackValue) : int64 voption =
                 match v with
-                | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> Some 0L
-                | EvalStackValue.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits) -> Some bits
-                | _ -> None
+                | EvalStackValue.ManagedPointer ptr -> ManagedPointerSource.tryBitPatternBits ptr
+                | _ -> ValueNone
 
             match asPlaceholderBits origin, asPlaceholderBits target with
-            | Some originBits, Some targetBits ->
+            | ValueSome originBits, ValueSome targetBits ->
                 let byteOffset = targetBits - originBits
 
                 state
