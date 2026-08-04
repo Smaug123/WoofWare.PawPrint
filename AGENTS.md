@@ -58,8 +58,10 @@ nix develop -c dotnet run --project WoofWare.PawPrint.App/WoofWare.PawPrint.App.
 
 **WoofWare.PawPrint.IlDump**
 - Small CLI tool for disassembling IL from .NET assemblies, using the same assembly-reading infrastructure as the interpreter
-- Usage: `nix develop -c dotnet run --project WoofWare.PawPrint.IlDump -- <dll-path> [TypeName] [MethodName]`
-- Filters are case-insensitive substring matches
+- Usage: `nix develop -c dotnet run --project WoofWare.PawPrint.IlDump -- <dll-path> [TypeName] [MemberName]`
+- Filters are case-insensitive substring matches; an empty filter argument means "no narrowing", so `-- <dll> "" Foo` searches every type for a member named `Foo`
+- Default mode dumps each matching type as a `// type` header, one line per field/property/event, then the full IL of each matching method. A type filter that matches a type but no member still prints the type header, so "no such member" is distinguishable from "no such type"
+- `--attrs-only` instead dumps custom attribute applications, and emits only those members which carry attributes
 
 ### Key Design Patterns
 
