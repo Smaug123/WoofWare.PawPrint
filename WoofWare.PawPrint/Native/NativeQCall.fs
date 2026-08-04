@@ -85,6 +85,11 @@ module NativeQCall =
             NativeMetadataUpdater.tryExecuteQCall "AssemblyNative_IsApplyUpdateSupported"
             "CustomAttribute_CreateCustomAttributeInstance",
             NativeCustomAttribute.tryExecuteQCall "CustomAttribute_CreateCustomAttributeInstance"
+            // The primitive underneath every `BindingFlags.IgnoreCase` reflection
+            // member lookup: `RuntimeType.RuntimeTypeCache.Filter.Match` routes a
+            // case-insensitive list type through `MdUtf8String.EqualsCaseInsensitive`.
+            "MdUtf8String_EqualsCaseInsensitive",
+            NativeMdUtf8String.tryExecuteQCall "MdUtf8String_EqualsCaseInsensitive"
             // The CoreLib source is a Kernel32 LibraryImport, but the runtime
             // assembly we execute presents this PAL entry point through QCall
             // import metadata.

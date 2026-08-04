@@ -151,6 +151,23 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Exact "System.ReadOnlySpan`1"
                     IntrinsicParameterPattern.Exact "System.ReadOnlySpan`1"
                 ]
+            // Same shape as SequenceEqual above, with `value.Length <= span.Length` in place of
+            // the equal-lengths check: the IL is `get_Length`, RuntimeHelpers.IsBitwiseEquatable<T>,
+            // MemoryMarshal.GetReference, Unsafe.As<T, byte>, `sizeof T`, then
+            // SpanHelpers.SequenceEqual(ref byte, ref byte, nuint) — all modelled boundaries.
+            // The `[Intrinsic]` marker is only so the JIT can unroll/vectorise half-constant input.
+            // As with SequenceEqual, the non-bitwise-equatable fallback bottoms out in the generic
+            // SpanHelpers.SequenceEqual<T>, which PawPrint does not yet implement; executing this
+            // IL for such a T therefore fails loudly there rather than silently misbehaving.
+            // https://github.com/dotnet/runtime/blob/HEAD/src/libraries/System.Private.CoreLib/src/System/MemoryExtensions.cs#L3561
+            pattern
+                "System.Private.CoreLib"
+                "System.MemoryExtensions"
+                "StartsWith"
+                [
+                    IntrinsicParameterPattern.Exact "System.ReadOnlySpan`1"
+                    IntrinsicParameterPattern.Exact "System.ReadOnlySpan`1"
+                ]
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/ArgumentNullException.cs#L54
             anyParams "System.Private.CoreLib" "System.ArgumentNullException" "ThrowIfNull"
             // The instance `String.Equals(string)` overload — the one that implements

@@ -1010,12 +1010,9 @@ module IlMachineStateExecution =
         // because the *type-level* `[Intrinsic]` check below is keyed on it; see there.
         let callSiteMethod = methodToCall
 
-        // Virtual/interface resolution runs BEFORE the `[Intrinsic]` classification below, so
+        // Virtual/interface resolution runs before the `[Intrinsic]` classification below, so
         // that `isIntrinsic` and `intrinsicKey` describe the method we are actually about to
-        // execute. Classifying the pre-resolution method instead lets a `callvirt` of a
-        // non-intrinsic abstract declaration (e.g. `ICloneable::Clone`) resolve to an
-        // `[Intrinsic]` override (`Array::Clone`) whose IL body would then be interpreted —
-        // which is exactly what `[Intrinsic]` means we must not do.
+        // execute.
         let shouldPerformVirtualResolution =
             performInterfaceResolution
             && not methodToCall.IsStatic
@@ -1069,21 +1066,17 @@ module IlMachineStateExecution =
         let declaringType =
             declaringAssy.TypeDefs.[methodToCall.DeclaringType.Definition.Get]
 
-        // The two `[Intrinsic]` checks deliberately use different methods as their basis, and the
-        // difference is load-bearing:
+        // The two `[Intrinsic]` checks deliberately use different methods as their basis.
         //
         //  * Method-level `[Intrinsic]` (above) is a property of the body we are about to run, so
-        //    it is keyed on the POST-resolution method. That is the whole point of hoisting
-        //    resolution: `callvirt ICloneable::Clone()` must be recognised as `Array::Clone`.
+        //    it is keyed on the post-resolution method. For example,
+        //    `callvirt ICloneable::Clone()` must be recognised as `Array::Clone`.
         //
-        //  * Type-level `[Intrinsic]` is a property of the CALL SITE's static type. It marks a
+        //  * Type-level `[Intrinsic]` is a property of the call site's static type. It marks a
         //    type whose own API surface the JIT knows (`Int128`, `Vector128<T>`, ...); it says
         //    nothing about that type's `System.Object` overrides. `Int128.GetHashCode` is plain
         //    `HashCode.Combine(_lower, _upper)` and carries no method-level attribute, so
         //    `callvirt Object::GetHashCode()` on a boxed `Int128` must interpret it as normal.
-        //    Keying this check on the resolved override would instead reject every virtual call
-        //    that happens to land on one of those types. `BoxedIntrinsicTypeVirtualCall.cs`
-        //    pins the behaviour.
         //
         // When no resolution happened the two coincide, so this only diverges for `callvirt`.
         let callSiteDeclaringAssy =
@@ -1102,12 +1095,10 @@ module IlMachineStateExecution =
             callSiteDeclaringAssy.TypeDefs.[callSiteMethod.DeclaringType.Definition.Get]
 
         // An abstract call-site declaration has no IL of its own, so a type-level `[Intrinsic]`
-        // inherited from it is a hint about the *interface*, not about the override we resolved
+        // inherited from it is a hint about the interface, not about the override we resolved
         // to. `IEnumerator<T>` carries a type-level `[Intrinsic]`, so without this suppression
         // every `callvirt IEnumerator<T>::get_Current()` would be rejected even though it
-        // resolves to an ordinary `SZGenericArrayEnumerator<T>` body. This mirrors the
-        // `isAbstractBody` suppression below, which on the pre-hoist ordering covered this case
-        // because the classification saw the abstract declaration.
+        // resolves to an ordinary `SZGenericArrayEnumerator<T>` body.
         let callSiteBodyIsAbstract =
             match callSiteMethod.Body with
             | MethodBody.Abstract -> true
@@ -1122,11 +1113,9 @@ module IlMachineStateExecution =
 
         // `[Intrinsic]` on an abstract/interface method is a JIT inlining hint for the
         // call site only — there is no IL to interpret. Virtual resolution has already run
-        // above, so `methodToCall` is normally the concrete override and this guard is
-        // rarely load-bearing; it still matters when resolution was skipped
-        // (`performInterfaceResolution = false`) or found no implementation, where we'd
-        // otherwise fail any callvirt of an abstract `[Intrinsic]` method
-        // (e.g. IEnumerable`1::GetEnumerator) that has no body to run.
+        // above, so `methodToCall` is normally the concrete override and this guard rarely
+        // triggers. It only matters when resolution was skipped (`performInterfaceResolution = false`)
+        // or found no implementation.
         let isAbstractBody =
             match methodToCall.Body with
             | MethodBody.Abstract -> true
@@ -1431,12 +1420,11 @@ module IlMachineStateExecution =
         // Get zero values for all parameters.
         //
         // These are the coercion targets for the popped arguments below, and they are
-        // deliberately derived from the POST-resolution `methodToCall` — i.e. the body we are
-        // about to execute, not the declaration named at the call site. The two genuinely
+        // deliberately derived from the `methodToCall` post-resolution — i.e. the body we are
+        // about to execute, not the declaration named at the call site. The two
         // differ under `in`-variance: dispatching `IContravariant<string>::Set(string)` selects
         // a body declaring `Set(object)`, and the argument must be coerced to the body's
         // parameter type. `thisArgCoercionTarget` and `createNewFrame` below share that basis.
-        // See `ContravariantExplicitMethodImpl.cs` and `VirtualOverrideArgumentCoercion.cs`.
         let state, argZeroObjects =
             ((state, []), methodToCall.Signature.ParameterTypes)
             ||> List.fold (fun (state, zeros) tyHandle ->

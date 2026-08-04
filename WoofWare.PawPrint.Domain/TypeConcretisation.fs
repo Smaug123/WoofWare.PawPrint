@@ -911,65 +911,6 @@ module Concretization =
         =
         TypeConcretization.concretizeMethodSignature ctx loadAssembly assembly typeArgs methodArgs signature
 
-    /// <summary>
-    /// Get the assembly whose <em>definition</em> identity is
-    /// <paramref name="targetAssemblyName"/>, loading it via
-    /// <paramref name="referencedInAssembly"/>'s AssemblyReference table if we do not hold it yet.
-    /// Returns the assembly itself, not a name for the caller to look up again.
-    /// </summary>
-    /// <remarks>
-    /// <paramref name="targetAssemblyName"/> comes from <c>BaseTypeInfo.ForeignAssemblyType</c>,
-    /// whose payload is a definition identity — see the doc comment on that case. Every other
-    /// consumer of it reads it that way too (<c>Program.handleBaseTypeInfo</c>,
-    /// <c>TypeInfo.resolveBaseType</c>), so this must not accept a reference identity: doing so
-    /// would leave those consumers unable to find what it loaded, since the load context is keyed
-    /// by definition identity.
-    ///
-    /// Loading, though, can only go through an AssemblyReference, and a reference whose identity
-    /// differs from its referent's cannot be found from the definition identity alone. That case
-    /// fails loudly rather than guessing.
-    /// </remarks>
-    let private loadAssemblyReferenceByName
-        (loadAssembly : IAssemblyLoad)
-        (assemblies : LoadedAssemblies)
-        (referencedInAssembly : DumpedAssembly)
-        (targetAssemblyName : AssemblyName)
-        : LoadedAssemblies * DumpedAssembly
-        =
-        match assemblies.TryByDefinition targetAssemblyName with
-        | Some assy -> assemblies, assy
-        | None ->
-
-        let handle =
-            referencedInAssembly.AssemblyReferences
-            |> Seq.tryPick (fun (KeyValue (assemblyRefHandle, assemblyRef)) ->
-                if assemblyRef.Name.FullName = targetAssemblyName.FullName then
-                    Some assemblyRefHandle
-                else
-                    None
-            )
-            |> Option.defaultWith (fun () ->
-                failwithf
-                    "Assembly %s needs base assembly %s, which is not loaded and is not named by any of its AssemblyReferences."
-                    referencedInAssembly.Name.FullName
-                    targetAssemblyName.FullName
-            )
-
-        let assemblies, loaded =
-            loadAssembly.LoadAssembly assemblies referencedInAssembly.Name handle
-
-        // The reference we followed named the target by its definition identity, so this is what
-        // every downstream definition-identity lookup will ask for. If it is not, the DU's
-        // contract has been violated upstream and later lookups would fail confusingly.
-        if loaded.Name.FullName <> targetAssemblyName.FullName then
-            failwithf
-                "Loading base assembly %s via %s produced %s instead; BaseTypeInfo.ForeignAssemblyType must carry a definition identity."
-                targetAssemblyName.FullName
-                referencedInAssembly.Name.FullName
-                loaded.Name.FullName
-
-        assemblies, loaded
-
     let rec private ensureTypeRefResolved
         (loadAssembly : IAssemblyLoad)
         (assemblies : LoadedAssemblies)
@@ -1033,14 +974,6 @@ module Concretization =
 
             let resolvedType = resolvedAssembly.TypeDefs.[resolvedHandle]
             ensureBaseTypeAssembliesLoaded loadAssembly newAssemblies resolvedAssembly.Name resolvedType.BaseType
-        | Some (BaseTypeInfo.ForeignAssemblyType (assemblyName, handle)) ->
-            let assy = assemblies.[assyName]
-
-            let newAssemblies, targetAssembly =
-                loadAssemblyReferenceByName loadAssembly assemblies assy assemblyName
-
-            let targetType = targetAssembly.TypeDefs.[handle]
-            ensureBaseTypeAssembliesLoaded loadAssembly newAssemblies targetAssembly.Name targetType.BaseType
         | Some (BaseTypeInfo.TypeSpec handle) ->
             let assy = assemblies.[assyName]
             let typeSpec = assy.TypeSpecs.[handle].Signature

@@ -355,9 +355,11 @@ type EmulatedKernel =
         /// `SystemNative_GetLowResolutionTimestamp` (the PAL backing
         /// `Environment.TickCount64` on Unix) and intended to be the single
         /// source of truth for every elapsed-time computation the guest
-        /// performs — `SystemNative_GetTimestamp` (nanoseconds) and any
-        /// future `DateTime.UtcNow` shim will derive from the same field
-        /// rather than maintain a parallel clock.
+        /// performs — `SystemNative_GetSystemTimeAsTicks` (the wall clock
+        /// behind `DateTime.UtcNow`) already derives from it via
+        /// `EmulatedKernel.systemTimeAsTicks`, and a future
+        /// `SystemNative_GetTimestamp` (nanoseconds) should too, rather than
+        /// maintaining a parallel clock.
         ///
         /// The driver loop advances this by 1 ms each time it increments
         /// `StepCounter`, so the guest sees one wall-clock millisecond per
@@ -377,6 +379,42 @@ type EmulatedKernel =
         /// matching jump in `StepCounter` (which would skew the spurious-
         /// wakeup schedule).
         VirtualClockMs : int64
+        /// Wall-clock time, in milliseconds since the Unix epoch, that the
+        /// simulated process boots at — i.e. the wall-clock reading that
+        /// corresponds to `VirtualClockMs = 0`. The realtime clock the guest
+        /// observes is the affine image of the monotonic one:
+        /// `systemTimeAsTicks = (WallClockEpochMs + VirtualClockMs) * 10_000`.
+        ///
+        /// Deliberately *not* a second mutable clock advanced alongside
+        /// `VirtualClockMs`. A parallel field would be behaviourally identical
+        /// today while silently drifting out of step the first time someone
+        /// adds a new way for the monotonic clock to advance (the driver's
+        /// deadline jump is exactly such a path) and forgets to update both.
+        /// The cost is that the two clocks cannot diverge — real
+        /// `CLOCK_REALTIME` can step backwards under NTP correction or
+        /// `date -s`, and guest code that computes a duration as
+        /// `DateTime.UtcNow - start` and assumes the result is non-negative is
+        /// a real bug class. Modelling that means promoting this field to a
+        /// mutable clock plus a scriptable skew strategy in the shape of
+        /// `SpuriousWakeupStrategy`; it is deliberately deferred until there
+        /// is a guest bug to hunt, and this field's arithmetic survives the
+        /// change unaltered.
+        ///
+        /// Defaults to 0, so a default run reports a `DateTime.UtcNow` a few
+        /// milliseconds after 1970-01-01T00:00:00Z. That is chosen precisely
+        /// because it looks wrong to a human: a timestamp in a PawPrint trace
+        /// is synthetic, and a plausible-looking "today" would invite someone
+        /// to read meaning into it. Hosts that want the guest to run in a more
+        /// conventional date regime set `KernelConfig.WallClockEpochMs`; that
+        /// value is then part of the run's replay contract, exactly like the
+        /// PRNG seeds.
+        ///
+        /// Must lie in `[0, maxWallClockEpochMs]`: CoreLib builds the result
+        /// with `DateTime`'s *unvalidated* private ctor
+        /// (`new DateTime(((ulong)(GetSystemTimeAsTicks() + UnixEpochTicks)) | KindUtc)`
+        /// in DateTime.Unix.cs), so an out-of-range value would reach the guest
+        /// as a silently corrupt `DateTime` rather than an exception.
+        WallClockEpochMs : int64
         /// Deterministic state for the splitmix64 PRNG that backs
         /// `SystemNative_GetNonCryptographicallySecureRandomBytes`. Real
         /// CoreCLR fills this buffer from `arc4random_buf` /
@@ -497,6 +535,25 @@ module EmulatedKernel =
     [<Literal>]
     let defaultProcessorCount : int = 1
 
+    /// 100ns ticks per millisecond. The `SystemNative_GetSystemTime*` family
+    /// speaks in ticks while PawPrint's virtual clock speaks in milliseconds,
+    /// so every wall-clock derivation goes through this factor. A consequence
+    /// is that every tick value the guest ever observes is a multiple of
+    /// 10,000: `DateTime.UtcNow` has millisecond granularity here, where real
+    /// `clock_gettime(CLOCK_REALTIME)` is far finer.
+    [<Literal>]
+    let ticksPerMillisecond : int64 = 10_000L
+
+    /// Largest legal `EmulatedKernel.WallClockEpochMs`: 9999-12-31T23:59:59.999Z
+    /// as milliseconds since the Unix epoch, which is the last instant
+    /// `System.DateTime` can represent
+    /// (`(DateTime.MaxValue.Ticks - DateTime.UnixEpoch.Ticks) / ticksPerMillisecond`).
+    /// Beyond this the ticks CoreLib adds `UnixEpochTicks` to no longer name a
+    /// `DateTime`, and because `DateTime.UtcNow` uses the unvalidated private
+    /// ctor the guest would observe the corruption rather than an exception.
+    [<Literal>]
+    let maxWallClockEpochMs : int64 = 253402300799999L
+
     let initial : EmulatedKernel =
         {
             LastPInvokeError = 0
@@ -512,6 +569,7 @@ module EmulatedKernel =
             SyncBlockSpuriousWakeup = SyncBlockSpuriousWakeupStrategy.Disabled
             StepCounter = 0L
             VirtualClockMs = 0L
+            WallClockEpochMs = 0L
             NonCryptoRandomState = NonCryptoRandom.initialState
             CryptoRandomState = cryptoRandomInitialState
             OutputLog = ImmutableArray<OutputLogEntry>.Empty
@@ -530,6 +588,60 @@ module EmulatedKernel =
         { kernel with
             ProcessorCount = count
         }
+
+    /// Set the wall-clock reading the simulated process boots at. Rejects
+    /// values outside the range `System.DateTime` can represent at the
+    /// boundary, rather than letting them reach a guest that would receive a
+    /// silently corrupt `DateTime` from `DateTime.UtcNow`'s unvalidated ctor.
+    let withWallClockEpochMs (epochMs : int64) (kernel : EmulatedKernel) : EmulatedKernel =
+        if epochMs < 0L then
+            failwith
+                $"WallClockEpochMs must be non-negative (PawPrint does not model a simulated process booting before the Unix epoch); got %d{epochMs}"
+
+        if epochMs > maxWallClockEpochMs then
+            failwith
+                $"WallClockEpochMs must be at most %d{maxWallClockEpochMs} (9999-12-31T23:59:59.999Z, the last instant System.DateTime can represent); got %d{epochMs}"
+
+        { kernel with
+            WallClockEpochMs = epochMs
+        }
+
+    /// Wall-clock time the simulated process currently observes, in 100ns ticks
+    /// since the Unix epoch: exactly what `SystemNative_GetSystemTimeAsTicks`
+    /// returns, and hence (once CoreLib has added `UnixEpochTicks` and stamped
+    /// `DateTimeKind.Utc`) what `DateTime.UtcNow` reports.
+    ///
+    /// Pure: reading the clock never advances it, so two threads reading on the
+    /// same scheduler tick observe the same instant — the same property
+    /// `VirtualClockMs` guarantees for `Environment.TickCount64`, and the
+    /// reason this is a plain derivation rather than an advance-on-read
+    /// counter. That does mean `DateTime.UtcNow` is only *weakly* monotonic
+    /// here: repeated reads within one scheduler tick are equal, so it is not
+    /// a source of unique values. Real `clock_gettime(CLOCK_REALTIME)` makes no
+    /// uniqueness guarantee either, so guest code relying on one is broken on
+    /// the real runtime too and should be caught rather than accommodated.
+    let systemTimeAsTicks (kernel : EmulatedKernel) : int64 =
+        // A kernel built by record-copy can bypass `withWallClockEpochMs`, so
+        // re-assert the invariant here: the guest must never observe a tick
+        // count that names no `DateTime`. Checking both operands first also
+        // establishes that neither the addition nor the multiplication below
+        // can overflow (each is at most `maxWallClockEpochMs`, whose doubled
+        // value scaled by `ticksPerMillisecond` still fits in an int64).
+        if kernel.WallClockEpochMs < 0L || kernel.WallClockEpochMs > maxWallClockEpochMs then
+            failwith
+                $"kernel WallClockEpochMs is %d{kernel.WallClockEpochMs}, which is outside the range [0, %d{maxWallClockEpochMs}] that System.DateTime can represent"
+
+        if kernel.VirtualClockMs < 0L || kernel.VirtualClockMs > maxWallClockEpochMs then
+            failwith
+                $"kernel VirtualClockMs is %d{kernel.VirtualClockMs}, which is outside the range [0, %d{maxWallClockEpochMs}] a wall-clock reading can be derived from"
+
+        let ms = kernel.WallClockEpochMs + kernel.VirtualClockMs
+
+        if ms > maxWallClockEpochMs then
+            failwith
+                $"simulated wall clock has reached %d{ms} ms since the Unix epoch, past the %d{maxWallClockEpochMs} ms that System.DateTime can represent; lower KernelConfig.WallClockEpochMs"
+
+        ms * ticksPerMillisecond
 
     /// Largest value CoreCLR will accept from the processor-count
     /// configuration knob (`MAX_PROCESSOR_COUNT` in
@@ -670,14 +782,26 @@ type KernelConfig =
         /// Logical processor count the guest observes via
         /// `Environment.ProcessorCount`. Must be at least 1.
         ProcessorCount : int
+        /// Wall-clock reading, in milliseconds since the Unix epoch, that the
+        /// simulated process boots at — the instant `DateTime.UtcNow` reports
+        /// before the virtual clock has advanced. Must lie in
+        /// `[0, EmulatedKernel.maxWallClockEpochMs]`. See
+        /// `EmulatedKernel.WallClockEpochMs` for why the default of 0 (and
+        /// hence a guest that thinks it is 1970) is the honest choice, and note
+        /// that whatever a host picks here becomes part of that run's replay
+        /// contract: reading the host's real clock to fill it in would make a
+        /// recorded trace's timestamps depend on when it was recorded.
+        WallClockEpochMs : int64
     }
 
     /// Configuration a host gets if it expresses no preference: no environment
-    /// overlay, and the default single processor.
+    /// overlay, the default single processor, and a wall clock booting at the
+    /// Unix epoch.
     static member Default : KernelConfig =
         {
             Environment = Map.empty
             ProcessorCount = EmulatedKernel.defaultProcessorCount
+            WallClockEpochMs = 0L
         }
 
 [<RequireQualifiedAccess>]
@@ -690,3 +814,4 @@ module KernelConfig =
         kernel
         |> EmulatedKernel.withEnvironment config.Environment
         |> EmulatedKernel.withProcessorCount config.ProcessorCount
+        |> EmulatedKernel.withWallClockEpochMs config.WallClockEpochMs

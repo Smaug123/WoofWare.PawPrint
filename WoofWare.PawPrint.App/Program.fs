@@ -134,8 +134,10 @@ module AppProgram =
         // Environment variables are the *only* thing the CLI takes from the host:
         // the rest of `KernelConfig` keeps its defaults. In particular the guest's
         // `Environment.ProcessorCount` stays at the deterministic default rather
-        // than reporting this machine's core count, so a run recorded here replays
-        // identically elsewhere. Env vars are a deliberate exception because the
+        // than reporting this machine's core count, and its `DateTime.UtcNow`
+        // starts at the Unix epoch rather than at this machine's clock, so a run
+        // recorded here replays identically elsewhere — and at the same *times*.
+        // Env vars are a deliberate exception because the
         // guest's whole reason to run under the CLI is to see the invoker's
         // configuration — and unlike the core count they are visible in, and
         // reproducible from, the recorded kernel state.

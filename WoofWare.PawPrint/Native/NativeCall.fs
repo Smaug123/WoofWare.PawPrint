@@ -362,6 +362,40 @@ module NativeCall =
 
             loop 0 []
 
+    /// Read exactly <paramref name="byteCount"/> bytes of raw UTF-8 from the guest, without
+    /// looking for a null terminator. CoreCLR's metadata strings are counted rather than
+    /// terminated (see <c>MdUtf8String</c>, which carries an explicit byte length), so
+    /// entry points that receive a length must not scan past it.
+    let readCountedUtf8Bytes
+        (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (ptr : ManagedPointerSource)
+        (byteCount : int)
+        : byte array
+        =
+        if byteCount < 0 then
+            failwith $"%s{operation}: negative UTF-8 byte count %d{byteCount}"
+        elif byteCount = 0 then
+            // A zero-length buffer is legitimately pinned from an empty span, which the
+            // guest presents as a null pointer; don't dereference it.
+            Array.empty
+        else
+
+        match ptr with
+        | ManagedPointerSource.Null ->
+            failwith
+                $"%s{operation}: cannot read %d{byteCount} UTF-8 bytes from a null pointer; callers must pass byteCount=0 when the pointer is null"
+        | ManagedPointerSource.NativeIntPlaceholder bits ->
+            failwith
+                $"%s{operation}: cannot read UTF-8 bytes from fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
+        | ManagedPointerSource.Byref _ ->
+            let byteConcreteType = requiredByteConcreteType operation baseClassTypes state
+
+            Array.init
+                byteCount
+                (fun byteIndex -> readUtf8Byte operation baseClassTypes state byteConcreteType ptr byteIndex)
+
     /// Allocate a managed <c>byte[]</c> backing buffer for an unmanaged-looking blob and return
     /// a byref to its first element. Shared by callers that need to materialise <c>ConstArray</c>
     /// or null-terminated UTF-8 results across the native boundary.

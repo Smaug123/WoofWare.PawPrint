@@ -118,6 +118,7 @@
     <Compile Include="Native\NativeEventPipe.fs" />
     <Compile Include="Native\NativeEventSource.fs" />
     <Compile Include="Native\NativeCustomAttribute.fs" />
+    <Compile Include="Native\NativeMdUtf8String.fs" />
     <Compile Include="Native\NativeQCall.fs" />
     <Compile Include="Native\NativeType.fs" />
     <Compile Include="Native\NativeString.fs" />

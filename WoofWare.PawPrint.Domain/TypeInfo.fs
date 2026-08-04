@@ -28,20 +28,6 @@ type BaseTypeInfo =
     | TypeDef of TypeDefinitionHandle
     | TypeRef of TypeReferenceHandle
     | TypeSpec of TypeSpecificationHandle
-    /// <summary>
-    /// A base type living in another assembly, already resolved to that assembly and a TypeDef
-    /// within it.
-    /// </summary>
-    /// <remarks>
-    /// <c>assemblyName</c> is the target's <em>definition</em> identity — the identity it declares
-    /// for itself — not the reference identity by which some other assembly names it. The two
-    /// routinely differ (the .NET Framework compatibility facades reference their implementation
-    /// assemblies as <c>Version=0.0.0.0</c>), and every consumer of this case looks the assembly up
-    /// by definition identity, so a reference identity here would not be found.
-    ///
-    /// Nothing currently constructs this case; whatever first does must honour that contract.
-    /// </remarks>
-    | ForeignAssemblyType of assemblyName : AssemblyName * TypeDefinitionHandle
 
 type MethodImplParsed =
     {
@@ -472,7 +458,6 @@ module TypeInfo =
 
     let rec private resolveBaseType<'corelib, 'generic, 'field>
         (baseClassTypes : BaseClassTypes<'corelib>)
-        (assemblies : AssemblyName -> 'corelib)
         (getName : 'corelib -> AssemblyName)
         (getTypeDef : 'corelib -> TypeDefinitionHandle -> TypeInfo<'generic, 'field>)
         (getTypeRef : 'corelib -> TypeReferenceHandle -> 'corelib * TypeInfo<'generic, 'field>)
@@ -493,15 +478,7 @@ module TypeInfo =
             | None ->
                 let baseType = getTypeDef sourceAssy typeDefinitionHandle
 
-                resolveBaseType
-                    baseClassTypes
-                    assemblies
-                    getName
-                    getTypeDef
-                    getTypeRef
-                    getTypeSpec
-                    sourceAssy
-                    baseType.BaseType
+                resolveBaseType baseClassTypes getName getTypeDef getTypeRef getTypeSpec sourceAssy baseType.BaseType
         | BaseTypeInfo.TypeRef typeReferenceHandle ->
             let targetAssy, typeRef = getTypeRef sourceAssy typeReferenceHandle
 
@@ -510,15 +487,7 @@ module TypeInfo =
             | None ->
                 let baseType = getTypeDef targetAssy typeRef.TypeDefHandle
 
-                resolveBaseType
-                    baseClassTypes
-                    assemblies
-                    getName
-                    getTypeDef
-                    getTypeRef
-                    getTypeSpec
-                    targetAssy
-                    baseType.BaseType
+                resolveBaseType baseClassTypes getName getTypeDef getTypeRef getTypeSpec targetAssy baseType.BaseType
         | BaseTypeInfo.TypeSpec typeSpecificationHandle ->
             let resolvedAssy, resolvedHandle = getTypeSpec sourceAssy typeSpecificationHandle
 
@@ -527,27 +496,7 @@ module TypeInfo =
             | None ->
                 let baseType = getTypeDef resolvedAssy resolvedHandle
 
-                resolveBaseType
-                    baseClassTypes
-                    assemblies
-                    getName
-                    getTypeDef
-                    getTypeRef
-                    getTypeSpec
-                    resolvedAssy
-                    baseType.BaseType
-        | BaseTypeInfo.ForeignAssemblyType (assemblyName, typeDefinitionHandle) ->
-            let targetAssy = assemblies assemblyName
-
-            resolveBaseType
-                baseClassTypes
-                assemblies
-                getName
-                getTypeDef
-                getTypeRef
-                getTypeSpec
-                targetAssy
-                (Some (BaseTypeInfo.TypeDef typeDefinitionHandle))
+                resolveBaseType baseClassTypes getName getTypeDef getTypeRef getTypeSpec resolvedAssy baseType.BaseType
 
     /// ECMA "value type": transitively inherits from System.ValueType (possibly via System.Enum),
     /// but is NOT exactly System.ValueType or System.Enum themselves.
@@ -570,7 +519,6 @@ module TypeInfo =
             match
                 resolveBaseType
                     baseClassTypes
-                    assemblies
                     getName
                     getTypeDef
                     getTypeRef
