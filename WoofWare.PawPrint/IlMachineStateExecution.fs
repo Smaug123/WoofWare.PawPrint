@@ -1712,9 +1712,11 @@ module IlMachineStateExecution =
                             match methodInstr.LocalVars with
                             | None -> state, None
                             | Some localVars ->
-                                // Concretize each local variable type
+                                // Concretize each local variable type. The result is indexed by
+                                // local-variable slot, so it must preserve the declaration order
+                                // of `localVars`.
                                 let state, convertedVars =
-                                    ((state, []), localVars)
+                                    ((state, ImmutableArray.CreateBuilder<ConcreteTypeHandle> ()), localVars)
                                     ||> Seq.fold (fun (state, acc) typeDefn ->
                                         let state, handle =
                                             IlMachineState.concretizeType
@@ -1726,9 +1728,10 @@ module IlMachineStateExecution =
                                                 ImmutableArray.Empty // no method generics for cctor
                                                 typeDefn
 
-                                        state, handle :: acc
+                                        acc.Add handle
+                                        state, acc
                                     )
-                                    |> Tuple.rmap ImmutableArray.CreateRange
+                                    |> Tuple.rmap (fun builder -> builder.ToImmutable ())
 
                                 state, Some convertedVars
 
