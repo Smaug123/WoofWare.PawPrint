@@ -1537,8 +1537,11 @@ module Intrinsics =
                         // that AreSame / ceq on the result compares equal to the input.
                         EvalStackValue.ManagedPointer src
                     | EvalStackValue.ManagedPointer src ->
-                        ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs to_) src
-                        |> EvalStackValue.ManagedPointer
+                        // `reinterpretAs` rather than a bare `appendProjection`: the change of
+                        // type view is address-preserving and never dereferences, so it is also
+                        // defined on a null byref and on an `Unsafe.AsRef<T>((void*)bits)`
+                        // placeholder, neither of which can carry a projection.
+                        ManagedPointerSource.reinterpretAs to_ src |> EvalStackValue.ManagedPointer
                     | EvalStackValue.ObjectRef addr -> failwith "todo: Unsafe.As on ObjectRef"
                     | EvalStackValue.UserDefinedValueType evalStackValueUserType -> failwith "todo"
 

@@ -531,6 +531,31 @@ module ManagedPointerSource =
 
             ManagedPointerSource.Byref (root, newProjs)
 
+    /// Apply an address-preserving change of type view to a managed pointer.
+    /// `Unsafe.As<TFrom, TTo>` never dereferences its argument, so unlike the
+    /// general `appendProjection` this is total: it is defined on the two
+    /// non-anchored pointer forms as well.
+    ///
+    /// An anchored byref gains a `ReinterpretAs` projection. A null byref, and
+    /// the `Unsafe.AsRef<T>((void*)bits)` bit-pattern placeholder, are returned
+    /// unchanged — neither denotes storage whose type view could change, and
+    /// both are pure addresses that the reinterpret leaves alone. The BCL relies
+    /// on this: the bitwise-equatable path of `SequenceEqual`/`StartsWith`/
+    /// `EndsWith` reinterprets `MemoryMarshal.GetReference(span)` through
+    /// `Unsafe.As<T, byte>` *before* it checks the length, so a `default` span
+    /// (or `ReadOnlySpan<T>.Empty`, which is `default`) reaches here with a null
+    /// byref that is never subsequently dereferenced.
+    ///
+    /// Producing a null byref stays safe because every read and write path
+    /// rejects `ManagedPointerSource.Null` loudly (see the `readManagedByref`
+    /// and `writeManagedByref` families in `IlMachineManagedByref`), which is
+    /// the NullReferenceException the real runtime would raise.
+    let reinterpretAs (target : ConcreteType<ConcreteTypeHandle>) (src : ManagedPointerSource) : ManagedPointerSource =
+        match src with
+        | ManagedPointerSource.Null
+        | ManagedPointerSource.NativeIntPlaceholder _ -> src
+        | ManagedPointerSource.Byref _ -> appendProjection (ByrefProjection.ReinterpretAs target) src
+
     let private normaliseTrailingByteOffset
         (tryGetCellSize : ByrefRoot -> int option)
         (advanceRoot : ByrefRoot -> int -> ByrefRoot option)
