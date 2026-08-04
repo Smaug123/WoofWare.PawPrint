@@ -61,6 +61,48 @@ module internal UnaryMetadataArrayOps =
 
         state, WhatWeDid.Executed
 
+    /// Resolves the array element-type token shared by Ldelem and Stelem (ECMA-335 III.4.9
+    /// "Ldelem", III.4.20 "Stelem"): both instructions' `type` operand is a metadata token
+    /// that must be a TypeDef, TypeRef, or TypeSpec naming the array's element type, and the
+    /// resolution rules for each token kind don't depend on which of the two instructions is
+    /// doing the resolving.
+    let private resolveElementTypeToken
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (activeAssy : DumpedAssembly)
+        (declaringTypeGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (metadataToken : MetadataToken)
+        (opName : string)
+        (state : IlMachineState)
+        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
+        =
+        match metadataToken with
+        | MetadataToken.TypeDefinition defn ->
+            state,
+            activeAssy,
+            activeAssy.TypeDefs.[defn]
+            |> TypeInfo.mapGeneric (fun (p, _) -> TypeDefn.GenericTypeParameter p.SequenceNumber)
+        | MetadataToken.TypeSpecification spec ->
+            IlMachineState.resolveTypeFromSpecConcrete
+                loggerFactory
+                baseClassTypes
+                spec
+                activeAssy
+                declaringTypeGenerics
+                methodGenerics
+                state
+        | MetadataToken.TypeReference refHandle ->
+            // A bare TypeRef in an ldelem/stelem token is a closed type name: a TypeRef row
+            // is only ever a (namespace, name, resolution scope) triple, with nowhere to
+            // record generic arguments, so a parametric element type always reaches these
+            // instructions through a TypeSpec instead (e.g. `ldelem !!T` / `stelem !!T`
+            // encode a TypeSpec wrapping a GenericTypeParameter). The generic-args array
+            // here is therefore always empty -- this falls out of the TypeReference token
+            // kind itself, not of which instruction is consuming it.
+            IlMachineTypeResolution.resolveType loggerFactory refHandle ImmutableArray.Empty activeAssy state
+        | x -> failwith $"TODO: {opName} element type resolution unimplemented for {x}"
+
     let executeLdelema (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
@@ -185,25 +227,15 @@ module internal UnaryMetadataArrayOps =
         let declaringTypeGenerics = currentMethod.DeclaringType.Generics
 
         let state, assy, elementType =
-            match metadataToken with
-            | MetadataToken.TypeDefinition defn ->
-                state,
-                activeAssy,
-                activeAssy.TypeDefs.[defn]
-                |> TypeInfo.mapGeneric (fun (p, _) -> TypeDefn.GenericTypeParameter p.SequenceNumber)
-            | MetadataToken.TypeSpecification spec ->
-                let state, assy, ty =
-                    IlMachineState.resolveTypeFromSpecConcrete
-                        loggerFactory
-                        baseClassTypes
-                        spec
-                        activeAssy
-                        declaringTypeGenerics
-                        currentMethod.Generics
-                        state
-
-                state, assy, ty
-            | x -> failwith $"TODO: Stelem element type resolution unimplemented for {x}"
+            resolveElementTypeToken
+                loggerFactory
+                baseClassTypes
+                activeAssy
+                declaringTypeGenerics
+                currentMethod.Generics
+                metadataToken
+                "Stelem"
+                state
 
         let contents, state = IlMachineState.popEvalStack thread state
         let index, state = IlMachineState.popEvalStack thread state
@@ -276,31 +308,15 @@ module internal UnaryMetadataArrayOps =
         let declaringTypeGenerics = currentMethod.DeclaringType.Generics
 
         let state, assy, elementType =
-            match metadataToken with
-            | MetadataToken.TypeDefinition defn ->
-                state,
-                activeAssy,
-                activeAssy.TypeDefs.[defn]
-                |> TypeInfo.mapGeneric (fun (p, _) -> TypeDefn.GenericTypeParameter p.SequenceNumber)
-            | MetadataToken.TypeSpecification spec ->
-                let state, assy, ty =
-                    IlMachineState.resolveTypeFromSpecConcrete
-                        loggerFactory
-                        baseClassTypes
-                        spec
-                        activeAssy
-                        declaringTypeGenerics
-                        currentMethod.Generics
-                        state
-
-                state, assy, ty
-            | MetadataToken.TypeReference refHandle ->
-                // A bare TypeRef in a Ldelem token is a closed type name: parametric
-                // element types reach ldelem through TypeSpec (e.g. ldelem !!T encodes
-                // a TypeSpec wrapping a GenericTypeParameter), so the generic-args
-                // array here is always empty.
-                IlMachineTypeResolution.resolveType loggerFactory refHandle ImmutableArray.Empty activeAssy state
-            | x -> failwith $"TODO: Ldelem element type resolution unimplemented for {x}"
+            resolveElementTypeToken
+                loggerFactory
+                baseClassTypes
+                activeAssy
+                declaringTypeGenerics
+                currentMethod.Generics
+                metadataToken
+                "Ldelem"
+                state
 
         let index, state = IlMachineState.popEvalStack thread state
 
