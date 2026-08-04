@@ -135,15 +135,15 @@ module NativeString =
             // https://github.com/dotnet/runtime/blob/v10.0.7/src/coreclr/System.Private.CoreLib/src/System/String.CoreCLR.cs
             let operation = "String..ctor(ReadOnlySpan<char>)"
 
-            // Newobj-driven constructor frames carry `this` as Arguments.[0]
-            // (the placeholder allocated by executeNewobj) and the user-visible
-            // ReadOnlySpan<char> as Arguments.[1].
-            if instruction.Arguments.Length <> 2 then
+            // String is a variable-size object, so `executeNewobj` allocated nothing and
+            // passed no `this` (see ConstructionState.ConstructingVariableSize). The frame's
+            // only argument is the user-visible ReadOnlySpan<char>.
+            if instruction.Arguments.Length <> 1 then
                 failwith
-                    $"%s{operation}: expected 2 arguments (this, ReadOnlySpan<char>) after matching signature, got %d{instruction.Arguments.Length}"
+                    $"%s{operation}: expected 1 argument (ReadOnlySpan<char>) after matching signature, got %d{instruction.Arguments.Length}"
 
             let span : CliValueType =
-                match CliType.unwrapPrimitiveLikeDeep instruction.Arguments.[1] with
+                match CliType.unwrapPrimitiveLikeDeep instruction.Arguments.[0] with
                 | CliType.ValueType vt -> vt
                 | other -> failwith $"%s{operation}: expected ReadOnlySpan<char> value type, got %O{other}"
 
@@ -241,10 +241,11 @@ module NativeString =
                 else
                     IlMachineState.allocateManagedString ctx.LoggerFactory ctx.BaseClassTypes contents state
 
-            // Redirect the pending newobj result to our freshly-allocated string;
-            // the placeholder allocated by executeNewobj is left as garbage.
+            // Hand the freshly-allocated string back to the pending newobj: under the
+            // variable-size convention the constructor is the only party that knows the
+            // object's address, and `returnStackFrame` pushes it on our behalf.
             state
-            |> IlMachineState.withReplacedConstructedObject newAddr ctx.Thread
+            |> IlMachineState.withSuppliedConstructedObject newAddr ctx.Thread
             |> fun state -> NativeHandlerResult.completed state
             |> Some
         | "System.Private.CoreLib",
@@ -255,15 +256,15 @@ module NativeString =
           MethodReturnType.Void ->
             let operation = "String..ctor(char*)"
 
-            // Newobj-driven constructor frames carry `this` as Arguments.[0]
-            // (the placeholder allocated by executeNewobj) and the user-visible
-            // char* as Arguments.[1].
-            if instruction.Arguments.Length <> 2 then
+            // String is a variable-size object, so `executeNewobj` allocated nothing and
+            // passed no `this` (see ConstructionState.ConstructingVariableSize). The frame's
+            // only argument is the user-visible char*.
+            if instruction.Arguments.Length <> 1 then
                 failwith
-                    $"%s{operation}: expected 2 arguments (this, char*) after matching signature, got %d{instruction.Arguments.Length}"
+                    $"%s{operation}: expected 1 argument (char*) after matching signature, got %d{instruction.Arguments.Length}"
 
             let ptr =
-                NativeCall.managedPointerOfPointerArgument operation "value" instruction.Arguments.[1]
+                NativeCall.managedPointerOfPointerArgument operation "value" instruction.Arguments.[0]
 
             // CoreCLR's String.Ctor(char*) returns String.Empty when ptr == null
             // or the first char is NUL, rather than throwing or allocating fresh.
@@ -291,10 +292,11 @@ module NativeString =
                 else
                     IlMachineState.allocateManagedString ctx.LoggerFactory ctx.BaseClassTypes contents state
 
-            // Redirect the pending newobj result to our freshly-allocated string;
-            // the placeholder allocated by executeNewobj is left as garbage.
+            // Hand the freshly-allocated string back to the pending newobj: under the
+            // variable-size convention the constructor is the only party that knows the
+            // object's address, and `returnStackFrame` pushes it on our behalf.
             state
-            |> IlMachineState.withReplacedConstructedObject newAddr ctx.Thread
+            |> IlMachineState.withSuppliedConstructedObject newAddr ctx.Thread
             |> fun state -> NativeHandlerResult.completed state
             |> Some
         | _ -> None

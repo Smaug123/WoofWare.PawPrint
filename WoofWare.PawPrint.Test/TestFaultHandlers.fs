@@ -135,7 +135,7 @@ module TestFaultHandlers =
             {
                 JumpTo = callerFrameId
                 WasInitialisingType = None
-                WasConstructingObj = None
+                Constructing = ConstructionState.NotConstructing
                 CallSiteIlOpIndex = threadState.MethodState.IlOpIndex
                 DispatchAsExceptionOnReturn = false
                 WrapExceptionInTargetInvocation = false
