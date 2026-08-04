@@ -217,26 +217,8 @@ module NativeEventSource =
                 |> NativeHandlerResult.completed
                 |> Some
             | Some value ->
-                let bytes = packUtf16WithNullTerminator value
-
                 let ptr, state =
-                    IlMachineThreadState.allocateNativeMemory
-                        MemoryBlockInitialization.ZeroInitialized
-                        bytes.Length
-                        state
-
-                let blockId =
-                    match ptr with
-                    | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (blockId, 0), []) -> blockId
-                    | other ->
-                        failwith $"%s{operation}: allocateNativeMemory returned an unexpected pointer shape (%O{other})"
-
-                let state =
-                    state.MapKernel (fun k ->
-                        { k with
-                            NativeMemoryPool = NativeMemoryPool.writeBytes blockId 0 bytes k.NativeMemoryPool
-                        }
-                    )
+                    NativeCall.allocateNativeHeapBlob operation (packUtf16WithNullTerminator value) state
 
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) ctx.Thread

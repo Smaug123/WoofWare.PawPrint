@@ -225,6 +225,41 @@ module NativeSystemNative =
                 ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
+        | Some "SystemNative_GetUnixRelease", [], MethodReturnType.Returns (ConcretePointer _) ->
+            // `char* SystemNative_GetUnixRelease(void)` (pal_runtimeinformation.c)
+            // is `uname(&u)` followed by `strdup(u.release)`, i.e. it hands the
+            // caller an owned C string. CoreLib reaches it from
+            // `Environment.OSVersion` via a `StringMarshalling.Utf8`
+            // `LibraryImport`, whose generated stub is `() -> byte*` and whose
+            // wrapper calls `Utf8StringMarshaller.ConvertToManaged` and then
+            // `Utf8StringMarshaller.Free` -> `NativeMemory.Free` ->
+            // `SystemNative_Free`. So the pointer we return has to be a
+            // native-heap block *base* (a byref into a managed `byte[]` is
+            // refused by our `SystemNative_Free`), and it has to be a fresh
+            // allocation per call — the guest owns and frees each one.
+            //
+            // The pointee type is matched loosely (`ConcretePointer _`): the
+            // entry-point name plus zero parameters already pins the call
+            // unambiguously, and a guest that hand-rolls the `[DllImport]` as
+            // `void*`-returning rather than `byte*`-returning means exactly the
+            // same thing here.
+            //
+            // PawPrint answers from `Kernel.UnixPlatform` rather than the host's
+            // `uname(2)`: guests branch on `Environment.OSVersion`, so a host
+            // read here would change guest control flow between runs. There is
+            // correspondingly no failure path — real native code returns NULL if
+            // `uname` fails or `strdup` cannot allocate, neither of which has an
+            // analogue in the simulator — so we never return null, and (like the
+            // C code on success) we leave errno untouched.
+            let release = SimulatedUnixPlatform.unixRelease state.Kernel.UnixPlatform
+
+            let ptr, state =
+                NativeCall.allocateNativeHeapNullTerminatedUtf8 "SystemNative_GetUnixRelease" release state
+
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
         | Some "SystemNative_SetErrNo",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Void ->
