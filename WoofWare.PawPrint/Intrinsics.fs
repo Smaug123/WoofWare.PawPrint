@@ -2253,6 +2253,133 @@ module Intrinsics =
                 failwith
                     "TODO: Array.Clone was reached by a non-virtual `call` on a null receiver; should raise NullReferenceException"
             | other -> failwith $"Array.Clone: expected an object reference receiver, got %O{other}"
+        | "System.Private.CoreLib", "Array", (("GetLength" | "GetLowerBound" | "GetUpperBound") as boundKind) ->
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Array.cs#L763-L806
+            // All three are `[Intrinsic]` and every upstream body bottoms out in
+            // `this.GetMultiDimensionalArrayBounds()`, a raw walk over the inline bounds block
+            // CoreCLR lays out between the object header and the element data. PawPrint does not
+            // model that block at all (see the explicit failure in RawArrayDataProjection's
+            // sibling, `RuntimeFieldProjection`), so — as with `Array.Clone` above — the byte-level
+            // formulation is not the primitive available on our side of the boundary. The shape is
+            // held structurally instead, on `AllocatedArray.Lengths`.
+            //
+            // Upstream's `rank` comes from the MethodTable's multi-dim rank field, which is 0 for a
+            // szarray, hence its `rank == 0 && dimension == 0` special case. PawPrint stores a
+            // szarray as `Lengths = [| totalLength |]`, so indexing `Lengths` uniformly reproduces
+            // both the szarray and the multi-dim answers with no special case. Upstream's bound
+            // check is the unsigned `(uint)dimension >= (uint)rank`; the signed pair below is
+            // equivalent over the whole of Int32, including Int32.MinValue.
+            //
+            // `GetLongLength` is not itself `[Intrinsic]` — it just widens `GetLength`, so it starts
+            // working via ordinary interpretation once this arm exists.
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+              MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) -> ()
+            | _ -> failwith $"bad signature Array.%s{boundKind}"
+
+            // Instance method with one argument: the receiver sits below the argument.
+            let dimensionArg, state = IlMachineState.popEvalStack currentThread state
+            let receiver, state = IlMachineState.popEvalStack currentThread state
+
+            let dimension =
+                match dimensionArg with
+                | EvalStackValue.Int32 d -> d
+                | other -> failwith $"Array.%s{boundKind}: expected an Int32 dimension, got %O{other}"
+
+            match receiver with
+            | EvalStackValue.ObjectRef addr ->
+                let arr =
+                    match state.ManagedHeap.Arrays.TryGetValue addr with
+                    | true, arr -> arr
+                    | false, _ -> failwith $"Array.%s{boundKind}: no array allocated at %O{addr}"
+
+                // The stored shape and the receiver's concrete type must agree on rank. Both are
+                // written together by `allocateArray` / `allocateMultiDimArray`, so this cannot
+                // currently fire; it is here to catch representation drift rather than to handle a
+                // reachable case.
+                let declaredRank =
+                    match arr.ConcreteType with
+                    | ConcreteTypeHandle.OneDimArrayZero _ -> 1
+                    | ConcreteTypeHandle.Array (_, rank) -> rank
+                    | other -> failwith $"Array.%s{boundKind}: array at %O{addr} has non-array concrete type %O{other}"
+
+                if arr.Lengths.Length <> declaredRank then
+                    failwith
+                        $"Array.%s{boundKind}: array at %O{addr} has concrete-type rank %d{declaredRank} but %d{arr.Lengths.Length} stored dimension length(s)"
+
+                if dimension < 0 || dimension >= arr.Lengths.Length then
+                    // Both arguments are already popped, so the eval stack is clean for dispatch.
+                    let exnAddr, exnTypeHandle, state =
+                        ExceptionDispatching.allocateRuntimeException
+                            loggerFactory
+                            baseClassTypes
+                            baseClassTypes.IndexOutOfRangeException
+                            state
+
+                    let state =
+                        ExceptionDispatching.overwriteHResultPostCtor baseClassTypes exnAddr exnTypeHandle state
+
+                    // `allocateRuntimeException` does not run a constructor, so populate `_message`
+                    // explicitly with the string the CLR would have passed
+                    // (`SR.IndexOutOfRange_ArrayRankIndex`); otherwise a guest that catches this and
+                    // reads `.Message` sees the generic "Exception of type X was thrown" fallback.
+                    let state =
+                        IlMachineState.setExceptionMessage
+                            loggerFactory
+                            baseClassTypes
+                            exnAddr
+                            "Array does not have that many dimensions."
+                            state
+
+                    match
+                        ExceptionDispatching.throwExceptionObject
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            currentThread
+                            exnAddr
+                            exnTypeHandle
+                    with
+                    | ExceptionDispatchResult.HandlerFound state -> Some state
+                    | ExceptionDispatchResult.ExceptionUnhandled _ ->
+                        // KNOWN GAP, shared with the `Enum.HasFlag` arms below and the three
+                        // `ExceptionUnhandled` sites in `IlMachineStateExecution`: `Intrinsics.call`
+                        // returns `IlMachineState option`, which cannot express "the guest died of an
+                        // unhandled exception". Propagating it needs the effect-description return
+                        // type discussed in this commit's message, threaded through `callMethod` and
+                        // `UnaryMetadataIlOp.execute` up to `AbstractMachine.executeOneStep`. Until
+                        // then an uncaught out-of-range dimension takes down the interpreter instead
+                        // of being reported as a guest unhandled exception. This is deliberately not
+                        // pinned by a test: `TestPureCases`'s `unimplemented` category asserts the
+                        // real runtime exits normally, and there is no category for "PawPrint cannot
+                        // do this yet AND the real runtime throws".
+                        failwith
+                            $"TODO: Array.%s{boundKind} dimension %d{dimension} was out of range for rank %d{arr.Lengths.Length}, and the resulting IndexOutOfRangeException found no handler; PawPrint cannot yet surface an unhandled guest exception raised from an intrinsic"
+                else
+
+                let result =
+                    match boundKind with
+                    | "GetLength" -> arr.Lengths.[dimension]
+                    // PawPrint has no representation for a non-zero lower bound:
+                    // `allocateMultiDimArray` documents that only the zero-lower-bound constructor
+                    // form is modelled, and no guest-reachable path produces anything else. Revisit
+                    // this arm if `Array.CreateInstance(Type, int[], int[])` is ever implemented.
+                    | "GetLowerBound" -> 0
+                    | "GetUpperBound" -> arr.Lengths.[dimension] - 1
+                    | other -> failwith $"logic error: unreachable Array bound accessor %s{other}"
+
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 result) currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Some
+            | EvalStackValue.NullObjectRef
+            | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
+                // Unreachable from C#-emitted code: these are instance methods, so callvirt's own
+                // null check (UnaryMetadataCallOps.executeCallvirt) raises the NullReferenceException
+                // first. See the matching note on the Array.Clone arm above.
+                failwith
+                    $"TODO: Array.%s{boundKind} was reached by a non-virtual `call` on a null receiver; should raise NullReferenceException"
+            | other -> failwith $"Array.%s{boundKind}: expected an object reference receiver, got %O{other}"
         | "System.Private.CoreLib", "Enum", "HasFlag" ->
             // https://github.com/dotnet/runtime/blob/dbd3e33df9ccf74b91045e095477726c2bf83916/src/libraries/System.Private.CoreLib/src/System/Enum.cs#L398
             // Enum.HasFlag(Enum flag) returns (thisValue & flagValue) == flagValue
