@@ -1256,6 +1256,284 @@ module IlMachineRuntimeMetadata =
         | ConcreteTypeHandle.Pointer _
         | ConcreteTypeHandle.FunctionPointer _ -> None
 
+    /// Returns true if `handle` is a CLR enum value type — a nominal type whose immediate runtime
+    /// base is `System.Enum`.
+    let isEnumValueType
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (handle : ConcreteTypeHandle)
+        : IlMachineState * bool
+        =
+        match handle with
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ -> state, false
+        | ConcreteTypeHandle.Concrete _ ->
+            let state, baseHandle =
+                resolveBaseConcreteType loggerFactory baseClassTypes state handle
+
+            match baseHandle with
+            | None -> state, false
+            | Some bh ->
+                match AllConcreteTypes.lookup bh state.ConcreteTypes with
+                | Some baseTy -> state, baseTy.Identity = baseClassTypes.Enum.Identity
+                | None -> state, false
+
+    /// For an enum `ConcreteTypeHandle`, return the `ConcreteTypeHandle` of its underlying integer
+    /// type by concretising the signature of its sole instance field (`value__`, the CLR-reserved
+    /// name for the integer slot of an enum; ECMA-335 §II.14.3). Returns `None` if `handle` is not
+    /// an enum, has no TypeDef row, or — defensively — has a malformed Fields list. The caller is
+    /// expected to have first verified enum-ness via `isEnumValueType`; this helper does the
+    /// metadata read.
+    let enumUnderlyingHandle
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (handle : ConcreteTypeHandle)
+        : (IlMachineState * ConcreteTypeHandle) option
+        =
+        match tryGetConcreteTypeInfo state handle with
+        | None -> None
+        | Some (ct, typeInfo) ->
+            let instanceFields =
+                typeInfo.Fields
+                |> List.filter (fun f -> not (f.Attributes.HasFlag FieldAttributes.Static))
+
+            match instanceFields with
+            | [ valueField ] when valueField.Name = "value__" ->
+                let assy = state._LoadedAssemblies.[ct.Identity.AssemblyFullName]
+
+                let state, underlying =
+                    IlMachineTypeResolution.concretizeType
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        assy.Name
+                        ct.Generics
+                        ImmutableArray.Empty
+                        valueField.Signature
+
+                Some (state, underlying)
+            | _ -> None
+
+    /// CoreCLR `MethodTable::GetPrimitiveCorElementType`, restricted to the question `unbox` asks
+    /// of it: which primitive `CorElementType` does this handle report, if it is in the
+    /// primitive-value-type category at all?
+    ///
+    /// The category is CoreCLR's `enum_flag_Category_PrimitiveValueType`, which *includes enums*
+    /// (see the `// Enum is included` remarks in RuntimeHelpers.CoreCLR.cs); an enum reports the
+    /// element type of its underlying integer. Everything else — user structs, `Nullable\`1`,
+    /// `System.Decimal`, reference types, the structural handles — answers `None`.
+    ///
+    /// The identity is returned *exactly*: `Int32` and `UInt32` are different answers, as are
+    /// `Char`/`UInt16`, `Boolean`/`Byte` and `IntPtr`/`Int64`. This is deliberately narrower than
+    /// both ECMA-335's verification types and the array-element rule below, each of which collapses
+    /// signedness — see `unboxPermitted` for why we make that distinction.
+    let primitiveElementIdentity
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (handle : ConcreteTypeHandle)
+        : IlMachineState * ResolvedTypeIdentity option
+        =
+        // The built-in primitives, each its own distinct answer. Not a normalisation table: the
+        // pairs that other CLR rules collapse (Int32/UInt32, Char/UInt16, Boolean/Byte,
+        // IntPtr/UIntPtr) are listed separately precisely so they stay distinct here.
+        // Takes `state` explicitly rather than capturing it: `enumUnderlyingHandle` concretises the
+        // underlying type, so the enum branch below must consult the state it returns, not the one
+        // this function was entered with.
+        let builtInPrimitiveIdentity
+            (state : IlMachineState)
+            (handle : ConcreteTypeHandle)
+            : ResolvedTypeIdentity option
+            =
+            match tryGetConcreteTypeInfo state handle with
+            | None -> None
+            | Some (ct, _) when not ct.Generics.IsEmpty -> None
+            | Some (ct, _) ->
+                let id = ct.Identity
+
+                let isPrimitive =
+                    [
+                        baseClassTypes.Boolean
+                        baseClassTypes.Char
+                        baseClassTypes.SByte
+                        baseClassTypes.Byte
+                        baseClassTypes.Int16
+                        baseClassTypes.UInt16
+                        baseClassTypes.Int32
+                        baseClassTypes.UInt32
+                        baseClassTypes.Int64
+                        baseClassTypes.UInt64
+                        baseClassTypes.IntPtr
+                        baseClassTypes.UIntPtr
+                        baseClassTypes.Single
+                        baseClassTypes.Double
+                    ]
+                    |> List.exists (fun ty -> ty.Identity = id)
+
+                if isPrimitive then
+                    Some id
+                else if
+                    // CoreCLR puts three CoreLib handle structs in the primitive category too,
+                    // by name, reporting ELEMENT_TYPE_I — the same element type as `IntPtr`
+                    // (MethodTableBuilder, the `g_RuntimeMethodHandleInternalName` /
+                    // `g_RuntimeFieldHandleInternalName` / `g_RuntimeArgumentHandleName` arms of
+                    // `SetInternalCorElementType`). So `unbox.any IntPtr` on one of them is legal.
+                    // PawPrint already flattens the two `*HandleInternal` structs to a
+                    // runtime-pointer NativeInt, so they can be honoured exactly.
+                    //
+                    // `RuntimeArgumentHandle` is deliberately absent: PawPrint has no
+                    // `PrimitiveLikeKind` for it, so it is not stored flattened and answering
+                    // `Some` here would license an unbox this interpreter cannot materialise.
+                    // It stays unclassified, which costs an InvalidCastException in a case only
+                    // `__arglist` IL can reach.
+                    id = baseClassTypes.RuntimeMethodHandleInternal.Identity
+                    || id = baseClassTypes.RuntimeFieldHandleInternal.Identity
+                then
+                    Some baseClassTypes.IntPtr.Identity
+                else
+                    None
+
+        match handle with
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ -> state, None
+        | ConcreteTypeHandle.Concrete _ ->
+            match builtInPrimitiveIdentity state handle with
+            | Some id -> state, Some id
+            | None ->
+                // An enum is in the primitive category too, reporting the element type of its
+                // underlying integer. That underlying must itself be a built-in primitive — the
+                // CLR type loader will not admit an enum whose `value__` is anything else — so
+                // this resolves in exactly one step rather than recursing.
+                let state, isEnum = isEnumValueType loggerFactory baseClassTypes state handle
+
+                if not isEnum then
+                    state, None
+                else
+                    match enumUnderlyingHandle loggerFactory baseClassTypes state handle with
+                    | None -> state, None
+                    | Some (state, underlying) -> state, builtInPrimitiveIdentity state underlying
+
+    /// Does PawPrint store values of `handle` in the flattened form that the eval stack expects for
+    /// a bare primitive?
+    ///
+    /// True for the built-in primitives themselves, and for enums over the fixed-width integers.
+    /// False for enums over `bool`, `char` or a native int: ECMA-335 II.14.3 permits those and the
+    /// CLR does load them (C# cannot declare one, but Reflection.Emit can), yet
+    /// `CliValueType.IsEnumStructural` deliberately answers false for them, so their storage stays
+    /// a wrapped `CliValueType`.
+    let private unboxMaterialisesFlattened
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (handle : ConcreteTypeHandle)
+        : IlMachineState * bool
+        =
+        let state, isEnum = isEnumValueType loggerFactory baseClassTypes state handle
+
+        if not isEnum then
+            // The caller has already established a primitive element identity for `handle`, so it
+            // is either a built-in primitive (flattened by definition) or one of the two
+            // `*HandleInternal` structs, which `PrimitiveLikeKind.FlattenToRuntimePointer` flattens.
+            state, true
+        else
+            match enumUnderlyingHandle loggerFactory baseClassTypes state handle with
+            | None -> state, false
+            | Some (state, underlying) ->
+                let state, underlyingId =
+                    primitiveElementIdentity loggerFactory baseClassTypes state underlying
+
+                match underlyingId with
+                | None -> state, false
+                | Some underlyingId ->
+                    [
+                        baseClassTypes.SByte
+                        baseClassTypes.Byte
+                        baseClassTypes.Int16
+                        baseClassTypes.UInt16
+                        baseClassTypes.Int32
+                        baseClassTypes.UInt32
+                        baseClassTypes.Int64
+                        baseClassTypes.UInt64
+                    ]
+                    |> List.exists (fun ty -> ty.Identity = underlyingId)
+                    |> fun flattenable -> state, flattenable
+
+    /// CoreCLR `CastHelpers.Unbox_Helper`: `unbox` and the value-typed form of `unbox.any` accept a
+    /// boxed operand when the two handles are identical, or when both types are in the primitive
+    /// category and report the *same* primitive element type. That second clause is what lets a
+    /// boxed enum unbox to its underlying integer and back.
+    ///
+    /// It is narrower than it first looks, and deliberately so:
+    ///   - ECMA-335's verification types collapse signedness (`int32` and `uint32` share one), but
+    ///     this does not: `(uint)(object)1` raises InvalidCastException on a real runtime;
+    ///   - the array-element rule (`CanCastParam`, via `valueElementNormalisedIdentity` below)
+    ///     *does* collapse signedness, which is why `(uint[])(object)new int[1]` succeeds while the
+    ///     scalar cast fails. Do not reach for that helper here — the two rules genuinely differ.
+    ///
+    /// `Nullable\`1` never reaches this predicate: it matches its argument by exact equivalence
+    /// (`Nullable::IsNullableForTypeHelper`), so a boxed enum is not a `T?` of its underlying type.
+    let unboxPermitted
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (boxedType : ConcreteTypeHandle)
+        (targetType : ConcreteTypeHandle)
+        : IlMachineState * bool
+        =
+        if boxedType = targetType then
+            state, true
+        else
+
+        let state, boxedPrimitive =
+            primitiveElementIdentity loggerFactory baseClassTypes state boxedType
+
+        match boxedPrimitive with
+        | None -> state, false
+        | Some boxedPrimitive ->
+            let state, targetPrimitive =
+                primitiveElementIdentity loggerFactory baseClassTypes state targetType
+
+            match targetPrimitive with
+            | None -> state, false
+            | Some targetPrimitive ->
+                if boxedPrimitive <> targetPrimitive then
+                    state, false
+                else
+                    // About to license the relaxation, which pairs two *different* handles. Both
+                    // sides must be ones PawPrint stores in flattened form, and for different
+                    // reasons:
+                    //   - the boxed side drives materialisation, so an unflattened one would push a
+                    //     wrapped `UserDefinedValueType` where the next instruction expects a bare
+                    //     stack primitive;
+                    //   - the target side is the slot the value lands in, and `toCliTypeCoerced`
+                    //     rejects a bare primitive into a value-type slot unless that slot is
+                    //     primitive-like (see the `failwith` in its `CliType.ValueType` arm), so an
+                    //     unflattened target would abort on the following `stloc`/`stfld` instead.
+                    // The identity case never reaches here, so this only ever rejects genuinely
+                    // mixed pairs. Fail loudly rather than answering `false`, which would raise
+                    // InvalidCastException where a real runtime would succeed.
+                    let state, boxedFlattened =
+                        unboxMaterialisesFlattened loggerFactory baseClassTypes state boxedType
+
+                    let state, targetFlattened =
+                        unboxMaterialisesFlattened loggerFactory baseClassTypes state targetType
+
+                    if boxedFlattened && targetFlattened then
+                        state, true
+                    else
+                        let offender = if boxedFlattened then targetType else boxedType
+
+                        failwith
+                            $"unbox of %O{boxedType} to %O{targetType}: CoreCLR permits this (both report the same primitive element type), but PawPrint does not store %O{offender} in flattened form — see CliValueType.IsEnumStructural, which covers only enums over the fixed-width integers, not over bool/char/native int"
+
     /// Does this handle denote a reference type (as opposed to a value type)?
     ///
     /// The structural handles answer without any metadata: arrays of every rank are reference
@@ -1491,65 +1769,6 @@ module IlMachineRuntimeMetadata =
 
             loop state 0
 
-        // Returns true if `handle` is a CLR enum value type — a nominal type whose
-        // immediate runtime base is `System.Enum`. Used by the array-element
-        // assignability rule below to detect cases where ECMA-335 / CoreCLR
-        // enum-underlying-type equivalence (e.g. `MyEnum : int` ↔ `int`, or two
-        // enums sharing an underlying integer) might permit a store.
-        let isEnumValueType (state : IlMachineState) (handle : ConcreteTypeHandle) : IlMachineState * bool =
-            match handle with
-            | ConcreteTypeHandle.OneDimArrayZero _
-            | ConcreteTypeHandle.Array _
-            | ConcreteTypeHandle.Byref _
-            | ConcreteTypeHandle.Pointer _
-            | ConcreteTypeHandle.FunctionPointer _ -> state, false
-            | ConcreteTypeHandle.Concrete _ ->
-                let state, baseHandle =
-                    resolveBaseConcreteType loggerFactory baseClassTypes state handle
-
-                match baseHandle with
-                | None -> state, false
-                | Some bh ->
-                    match AllConcreteTypes.lookup bh state.ConcreteTypes with
-                    | Some baseTy -> state, baseTy.Identity = baseClassTypes.Enum.Identity
-                    | None -> state, false
-
-        // For an enum `ConcreteTypeHandle`, return the `ConcreteTypeHandle` of its
-        // underlying integer type by concretising the signature of its sole instance
-        // field (`value__`, the CLR-reserved name for the integer slot of an enum;
-        // ECMA-335 §II.14.3). Returns `None` if `handle` is not an enum, has no TypeDef
-        // row, or — defensively — has a malformed Fields list. The caller is expected
-        // to have first verified enum-ness via `isEnumValueType`; this helper does the
-        // metadata read.
-        let enumUnderlyingHandle
-            (state : IlMachineState)
-            (handle : ConcreteTypeHandle)
-            : (IlMachineState * ConcreteTypeHandle) option
-            =
-            match tryGetConcreteTypeInfo state handle with
-            | None -> None
-            | Some (ct, typeInfo) ->
-                let instanceFields =
-                    typeInfo.Fields
-                    |> List.filter (fun f -> not (f.Attributes.HasFlag FieldAttributes.Static))
-
-                match instanceFields with
-                | [ valueField ] when valueField.Name = "value__" ->
-                    let assy = state._LoadedAssemblies.[ct.Identity.AssemblyFullName]
-
-                    let state, underlying =
-                        IlMachineTypeResolution.concretizeType
-                            loggerFactory
-                            baseClassTypes
-                            state
-                            assy.Name
-                            ct.Generics
-                            ImmutableArray.Empty
-                            valueField.Signature
-
-                    Some (state, underlying)
-                | _ -> None
-
         // ECMA-335 III.8.7 / CoreCLR `GetNormalizedIntegralArrayElementType`:
         // signed and unsigned primitive integers of equal width are interchangeable
         // as array element types (`int[]` ↔ `uint[]`, `short[]` ↔ `ushort[]`, etc.).
@@ -1588,10 +1807,10 @@ module IlMachineRuntimeMetadata =
             (handle : ConcreteTypeHandle)
             : IlMachineState * ResolvedTypeIdentity option
             =
-            let state, isEnum = isEnumValueType state handle
+            let state, isEnum = isEnumValueType loggerFactory baseClassTypes state handle
 
             if isEnum then
-                match enumUnderlyingHandle state handle with
+                match enumUnderlyingHandle loggerFactory baseClassTypes state handle with
                 | None -> state, None
                 | Some (state, underlying) -> state, normalizedPrimitiveIntegerIdentity underlying
             else

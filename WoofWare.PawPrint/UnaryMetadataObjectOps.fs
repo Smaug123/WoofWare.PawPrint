@@ -894,13 +894,25 @@ module internal UnaryMetadataObjectOps =
                         state
                 | Some boxed ->
 
-                // Exact-type match per ECMA-335 III.4.33, not assignability.
-                // TODO: relax to underlying-type equivalence so a boxed enum can be unboxed to its
-                // underlying integral type (spec's "same type-verifier type"). Needs a generic-method
-                // test to exercise; not in scope for this PR.
-                if boxed.ConcreteType = targetConcreteTypeHandle then
+                // Handle identity, or same-primitive-element-type per CoreCLR
+                // `CastHelpers.Unbox_Helper` — the clause that lets a boxed enum unbox to its
+                // underlying integer and back. Not assignability, and narrower than ECMA-335's
+                // verification types: see `unboxPermitted`.
+                let state, permitted =
+                    IlMachineState.unboxPermitted
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        boxed.ConcreteType
+                        targetConcreteTypeHandle
+
+                if permitted then
+                    // Materialise using the *boxed object's* handle, not the target's: that is the
+                    // handle its `Contents` were built with, which is the precondition
+                    // `unboxedContents` documents. Under the enum relaxation the two can differ,
+                    // and it is the push/store path that reconciles the result with the target.
                     let toPush, state =
-                        unboxedContents baseClassTypes targetConcreteTypeHandle boxed.Contents state
+                        unboxedContents baseClassTypes boxed.ConcreteType boxed.Contents state
 
                     state
                     |> IlMachineState.pushToEvalStack toPush thread
