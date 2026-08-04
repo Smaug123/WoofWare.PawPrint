@@ -207,6 +207,24 @@ module NativeSystemNative =
                 ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
+        | Some "SystemNative_GetSystemTimeAsTicks",
+          [],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int64) ->
+            // PAL entry behind `DateTime.UtcNow` on Unix: 100ns ticks since the
+            // Unix epoch, which CoreLib offsets by `UnixEpochTicks` and stamps
+            // `DateTimeKind.Utc` (DateTime.Unix.cs). Real CoreCLR reads
+            // `clock_gettime(CLOCK_REALTIME)`; PawPrint derives the wall clock
+            // from the same deterministic virtual clock that backs
+            // `Environment.TickCount64`, offset by the kernel's boot-time
+            // wall-clock reading. Read-only, like every other clock observer:
+            // the scheduler is the sole writer of `VirtualClockMs`, and
+            // `WallClockEpochMs` never changes after configuration.
+            state
+            |> IlMachineState.pushToEvalStack'
+                (EvalStackValue.Int64 (Int64Source.Verbatim (EmulatedKernel.systemTimeAsTicks state.Kernel)))
+                ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
         | Some "SystemNative_SetErrNo",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Void ->
