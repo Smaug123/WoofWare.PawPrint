@@ -239,3 +239,201 @@ module TestLoadedAssemblies =
         match third.TryByDefinition assy.Name with
         | None -> Assert.Fail "Expected the assembly to remain findable by its definition identity"
         | Some held -> Object.ReferenceEquals (held, assy) |> shouldEqual true
+
+    /// Two *different* builds can make the identical identity claim — trivially so for unsigned
+    /// assemblies, whose entire identity is `Foo, Version=0.0.0.0, Culture=neutral,
+    /// PublicKeyToken=null`. Silently keeping one and discarding the other would mean resolving
+    /// and executing metadata the caller did not ask for, so this must crash.
+    ///
+    /// A coarser fingerprint than the module version ID (type counts, say) would let exactly this
+    /// case through: both assemblies below define one type.
+    /// Two single-type assemblies with one name and different contents. Both would pass a
+    /// type-count check, which is why the guard fingerprints on MVID.
+    let private conflictingBuildBytes () : (DumpedAssembly * byte[]) * (DumpedAssembly * byte[]) =
+        let corelibReference =
+            TypeIdentityTestHelpers.metadataReferenceFromImage (File.ReadAllBytes corelibPath)
+
+        let compile (source : string) : DumpedAssembly * byte[] =
+            let bytes =
+                TypeIdentityTestHelpers.compileLibrary "Ambiguous" [ corelibReference ] [ source ]
+
+            TypeIdentityTestHelpers.dumpedAssembly None bytes, bytes
+
+        let first = compile "namespace N { public class OnlyType { public int A; } }"
+        let second = compile "namespace N { public class OnlyType { public string B; } }"
+
+        // Same declared identity, same type count, genuinely different builds.
+        (fst second).Name.FullName |> shouldEqual (fst first).Name.FullName
+        (fst second).TypeDefs.Count |> shouldEqual (fst first).TypeDefs.Count
+        (fst second).ModuleVersionId |> shouldNotEqual (fst first).ModuleVersionId
+
+        first, second
+
+    let private conflictingBuilds () : DumpedAssembly * DumpedAssembly =
+        let first, second = conflictingBuildBytes ()
+        fst first, fst second
+
+    let private expectCollisionRejected (act : unit -> unit) : unit =
+        let thrown =
+            try
+                act ()
+                None
+            with e ->
+                Some e.Message
+
+        match thrown with
+        | None -> Assert.Fail "Expected two different builds claiming one identity to be rejected"
+        | Some msg -> msg |> shouldContainText "module version IDs"
+
+    [<Test>]
+    let ``two different builds claiming one identity is a hard error when binding a reference`` () : unit =
+        if references.Value.Length = 0 then
+            Assert.Ignore "No shared-framework assemblies found next to corelib"
+
+        let first, second = conflictingBuilds ()
+        let _, reference = references.Value.[0]
+        let loaded, _ = LoadedAssemblies.empty.WithBoundReference reference first
+
+        expectCollisionRejected (fun () -> loaded.WithBoundReference reference second |> ignore)
+
+    /// Direct registration must enforce the same rule, or it is a way around the guard.
+    [<Test>]
+    let ``two different builds claiming one identity is a hard error when registering directly`` () : unit =
+        let first, second = conflictingBuilds ()
+        let loaded = LoadedAssemblies.empty.WithLoadedAssembly first
+
+        expectCollisionRejected (fun () -> loaded.WithLoadedAssembly second |> ignore)
+        expectCollisionRejected (fun () -> LoadedAssemblies.ofAssemblies [ first ; second ] |> ignore)
+
+    /// ...while staying idempotent for the same build, which is the common case: the entry
+    /// assembly is registered directly and is also discoverable on disk.
+    [<Test>]
+    let ``registering the same build twice is idempotent`` () : unit =
+        let first, _ = conflictingBuilds ()
+
+        let once = LoadedAssemblies.empty.WithLoadedAssembly first
+        let twice = once.WithLoadedAssembly first
+
+        (twice.DefinitionNames |> Seq.length)
+        |> shouldEqual (once.DefinitionNames |> Seq.length)
+
+        match twice.TryByDefinition first.Name with
+        | None -> Assert.Fail "Expected the assembly to remain findable by its definition identity"
+        | Some held -> Object.ReferenceEquals (held, first) |> shouldEqual true
+
+    /// Two distinct reads of one file are byte-identical, so they must be accepted as the same
+    /// assembly — otherwise every entry assembly that is also discoverable on disk would crash.
+    [<Test>]
+    let ``distinct instances of one image compare as the same assembly`` () : unit =
+        if pool.Value.Length = 0 then
+            Assert.Ignore "No shared-framework assemblies found next to corelib"
+
+        let assy = pool.Value.[0]
+        let reread = readUncached assy.OriginalPath.Value
+
+        Object.ReferenceEquals (reread, assy) |> shouldEqual false
+        assy.HasSameContentAs reread |> shouldEqual true
+
+    /// The MVID is an assertion stamped into the image, not a digest of it: an IL rewriter that
+    /// preserves it, or crafted metadata, gives two different images claiming to be one build.
+    /// Sameness must therefore be decided on content, so that such a pair is still rejected.
+    [<Test>]
+    let ``images sharing an MVID but differing in content are not the same assembly`` () : unit =
+        let (first, _), (second, originalSecondBytes) = conflictingBuildBytes ()
+
+        // Splice `first`'s MVID GUID bytes over `second`'s, leaving the rest of its metadata
+        // alone, to synthesise the MVID collision an equality-on-MVID check would wave through.
+        let secondBytes = Array.copy originalSecondBytes
+        let firstMvid = first.ModuleVersionId.ToByteArray ()
+        let secondMvid = second.ModuleVersionId.ToByteArray ()
+
+        let mvidOffset =
+            let rec find (i : int) =
+                if i + secondMvid.Length > secondBytes.Length then
+                    None
+                elif Span(secondBytes, i, secondMvid.Length).SequenceEqual (Span secondMvid) then
+                    Some i
+                else
+                    find (i + 1)
+
+            find 0
+
+        match mvidOffset with
+        | None -> Assert.Ignore "Could not locate the MVID bytes in the compiled image"
+        | Some offset ->
+            Array.blit firstMvid 0 secondBytes offset firstMvid.Length
+            let spliced = TypeIdentityTestHelpers.dumpedAssembly None secondBytes
+
+            // Same declared identity, and now the same MVID — but different metadata.
+            spliced.Name.FullName |> shouldEqual first.Name.FullName
+            spliced.ModuleVersionId |> shouldEqual first.ModuleVersionId
+            first.HasSameContentAs spliced |> shouldEqual false
+
+            let loaded = LoadedAssemblies.empty.WithLoadedAssembly first
+            expectCollisionRejected (fun () -> loaded.WithLoadedAssembly spliced |> ignore)
+
+    /// IL method bodies live outside the metadata block, and PawPrint reads them through
+    /// `PEReader.GetMethodBody`. Two images can therefore agree on every byte of metadata — same
+    /// MVID, same type and method rows, same signatures — and still execute differently. Comparing
+    /// only metadata would call such a pair the same assembly and silently run the wrong one.
+    [<Test>]
+    let ``images differing only in an IL method body are not the same assembly`` () : unit =
+        let corelibReference =
+            TypeIdentityTestHelpers.metadataReferenceFromImage (File.ReadAllBytes corelibPath)
+
+        // Two constants of equal encoded width, so the two `ldc.i4` bodies are the same length and
+        // the metadata — which records only the body's RVA and size — is unaffected.
+        let compile (returned : string) : byte[] =
+            let source =
+                $"namespace N {{ public static class C {{ public static int M() {{ return %s{returned}; }} }} }}"
+
+            TypeIdentityTestHelpers.compileLibrary "SameMetadata" [ corelibReference ] [ source ]
+
+        let firstBytes = compile "1122867"
+        let secondBytes = compile "1146447" |> Array.copy
+
+        firstBytes.Length |> shouldEqual secondBytes.Length
+
+        let first = TypeIdentityTestHelpers.dumpedAssembly None firstBytes
+        let unspliced = TypeIdentityTestHelpers.dumpedAssembly None secondBytes
+
+        // Roslyn stamps a fresh MVID per build and the MVID lives in metadata, so splice it across
+        // to leave the IL bodies as the only difference between the two images.
+        let firstMvid = first.ModuleVersionId.ToByteArray ()
+        let secondMvid = unspliced.ModuleVersionId.ToByteArray ()
+
+        let mvidOffset =
+            let rec find (i : int) =
+                if i + secondMvid.Length > secondBytes.Length then
+                    None
+                elif Span(secondBytes, i, secondMvid.Length).SequenceEqual (Span secondMvid) then
+                    Some i
+                else
+                    find (i + 1)
+
+            find 0
+
+        match mvidOffset with
+        | None -> Assert.Ignore "Could not locate the MVID bytes in the compiled image"
+        | Some offset ->
+
+        Array.blit firstMvid 0 secondBytes offset firstMvid.Length
+        let second = TypeIdentityTestHelpers.dumpedAssembly None secondBytes
+
+        let metadataOf (assy : DumpedAssembly) : byte array =
+            assy.PeReader.GetMetadata().GetContent () |> Seq.toArray
+
+        // If the compiler varied metadata beyond the MVID, this pair does not isolate an
+        // IL-body-only difference and so cannot make the point.
+        if metadataOf first <> metadataOf second then
+            Assert.Ignore
+                "Compiler produced metadata differing beyond the MVID; cannot isolate an IL-body-only difference."
+
+        // Byte-identical metadata — so a metadata-only comparison would call these the same
+        // assembly — yet the images differ, and they differ precisely in the IL.
+        first.ModuleVersionId |> shouldEqual second.ModuleVersionId
+        firstBytes |> shouldNotEqual secondBytes
+        first.HasSameContentAs second |> shouldEqual false
+
+        let loaded = LoadedAssemblies.empty.WithLoadedAssembly first
+        expectCollisionRejected (fun () -> loaded.WithLoadedAssembly second |> ignore)

@@ -157,6 +157,17 @@ type DumpedAssembly =
         OwnsPeReader : bool
 
         /// <summary>
+        /// SHA-256 of the entire PE image: the identity of this assembly's <em>content</em>, as
+        /// opposed to the identity it declares for itself. See <c>HasSameContentAs</c>.
+        /// </summary>
+        /// <remarks>
+        /// Computed while the backing stream is known to be open, because it cannot be computed
+        /// later: <c>PEReader</c> reads lazily, and callers of <c>Assembly.read</c> own the stream
+        /// they pass and may close it as soon as the parse returns.
+        /// </remarks>
+        ContentHash : ImmutableArray<byte>
+
+        /// <summary>
         /// Dictionary of all custom attributes in this assembly, keyed by their handle.
         /// </summary>
         Attributes : ImmutableDictionary<CustomAttributeHandle, WoofWare.PawPrint.CustomAttribute>
@@ -305,6 +316,50 @@ type DumpedAssembly =
 
     member this.Name = this.ThisAssemblyDefinition.Name
 
+    /// <summary>
+    /// The module version ID: a GUID the compiler stamps afresh on every build. Useful for
+    /// reporting, but it is metadata like any other — see <c>HasSameContentAs</c>.
+    /// </summary>
+    member this.ModuleVersionId : Guid =
+        let metadata = this.PeReader.GetMetadataReader ()
+        metadata.GetGuid (metadata.GetModuleDefinition().Mvid)
+
+    /// <summary>
+    /// Whether this and <paramref name="other"/> are byte-identical PE images, i.e. the same
+    /// assembly by every observation this interpreter can make of it.
+    /// </summary>
+    /// <remarks>
+    /// This is how to ask "are these two <c>DumpedAssembly</c> values the same assembly?" when they
+    /// are not reference-equal. Weaker proxies do not hold:
+    ///
+    /// <para>
+    /// The declared identity (name, version, culture, public key) is a <em>claim</em>, not a
+    /// fingerprint — two different builds can make the identical claim, most obviously for unsigned
+    /// assemblies whose whole identity is
+    /// "Foo, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null".
+    /// </para>
+    ///
+    /// <para>
+    /// The MVID is likewise only an assertion of sameness stamped into the image, not a digest of
+    /// it: an IL rewriter that preserves the MVID, or hand-crafted metadata, yields differing
+    /// images that claim to be one build.
+    /// </para>
+    ///
+    /// <para>
+    /// Even the metadata block is not enough. It excludes IL method bodies and manifest-resource
+    /// payloads, which live elsewhere in the image and which we read through
+    /// <c>PEReader.GetMethodBody</c> and <c>PEReader.GetSectionData</c> — so two images agreeing on
+    /// metadata can still execute differently.
+    /// </para>
+    ///
+    /// Hence the whole image. Comparing more than we strictly consume can only ever cost us a
+    /// spurious crash on two images we would have treated alike, which is the safe direction to
+    /// err: correctness over availability.
+    /// </remarks>
+    member this.HasSameContentAs (other : DumpedAssembly) : bool =
+        Object.ReferenceEquals (this, other)
+        || this.ContentHash.AsSpan().SequenceEqual (other.ContentHash.AsSpan ())
+
     member this.TryGetTopLevelTypeDef
         (``namespace`` : string)
         (name : string)
@@ -440,16 +495,47 @@ type LoadedAssemblies =
         | false, _ -> this.TryByDefinitionName refFullName
 
     /// <summary>
-    /// Register an assembly under its own definition identity. If an assembly with that
-    /// identity is already loaded, the existing instance wins and this is a no-op.
+    /// The canonical instance for <paramref name="assy"/>'s definition identity: whatever we
+    /// already hold under that identity, or <paramref name="assy"/> itself if we hold nothing.
+    /// </summary>
+    /// <remarks>
+    /// Every route into the load context goes through here, so that none of them can register a
+    /// second, conflicting build under an identity already spoken for. Two distinct assemblies
+    /// claiming one definition identity means silently picking one of two different sets of
+    /// metadata to resolve and execute against; there is no safe choice, so crash.
+    ///
+    /// Sameness is decided by comparing metadata content, not by trusting any identifier the image
+    /// carries — see <c>DumpedAssembly.HasSameContentAs</c>. The comparison only runs when two
+    /// non-reference-equal instances collide, which is rare.
+    /// </remarks>
+    member private this.Canonicalise (assy : DumpedAssembly) (describeRequester : unit -> string) : DumpedAssembly =
+        match this.ByDefinition.TryGetValue assy.Name.FullName with
+        | false, _ -> assy
+        | true, existing ->
+            if not (existing.HasSameContentAs assy) then
+                failwithf
+                    "Two different assemblies both claim definition identity %s (module version IDs %O and %O, and their metadata differs). Refusing to guess which one %s refers to."
+                    assy.Name.FullName
+                    existing.ModuleVersionId
+                    assy.ModuleVersionId
+                    (describeRequester ())
+
+            existing
+
+    /// <summary>
+    /// Register an assembly under its own definition identity. Idempotent for the same build: if
+    /// that identity is already loaded, the existing instance wins. Registering a *different*
+    /// build under an identity we already hold is an error — see <c>Canonicalise</c>.
     /// </summary>
     member this.WithLoadedAssembly (assy : DumpedAssembly) : LoadedAssemblies =
-        if this.ByDefinition.ContainsKey assy.Name.FullName then
-            this
-        else
+        let canonical = this.Canonicalise assy (fun () -> "this direct registration")
+
+        if Object.ReferenceEquals (canonical, assy) then
             { this with
                 ByDefinition = this.ByDefinition.SetItem (assy.Name.FullName, assy)
             }
+        else
+            this
 
     /// <summary>
     /// Record that <paramref name="reference"/> binds to <paramref name="assy"/>, registering
@@ -463,23 +549,7 @@ type LoadedAssemblies =
         : LoadedAssemblies * DumpedAssembly
         =
         let definitionName = assy.Name.FullName
-
-        let canonical =
-            match this.ByDefinition.TryGetValue definitionName with
-            | false, _ -> assy
-            | true, existing ->
-                // Two distinct assemblies claiming one definition identity means we would be
-                // silently picking one of two different sets of metadata. Crash instead.
-                if not (Object.ReferenceEquals (existing, assy)) then
-                    if existing.TypeDefs.Count <> assy.TypeDefs.Count then
-                        failwithf
-                            "Two different assemblies both claim definition identity %s (%d type definitions vs %d). Refusing to guess which one %s refers to."
-                            definitionName
-                            existing.TypeDefs.Count
-                            assy.TypeDefs.Count
-                            reference.Name.FullName
-
-                existing
+        let canonical = this.Canonicalise assy (fun () -> reference.Name.FullName)
 
         let result =
             {
@@ -561,6 +631,14 @@ module Assembly =
         =
         let peReader = new PEReader (dllBytes)
         let metadataReader = peReader.GetMetadataReader ()
+
+        // Must happen here, not on demand: PEReader reads lazily, and callers of `read` own the
+        // stream they handed us and are free to close it the moment this returns.
+        let contentHash =
+            let image = peReader.GetEntireImage ()
+
+            System.Security.Cryptography.SHA256.HashData (image.GetContent().AsSpan ())
+            |> ImmutableArray.Create<byte>
 
         let assy = metadataReader.GetAssemblyDefinition () |> AssemblyDefinition.make
 
@@ -736,6 +814,7 @@ module Assembly =
             NonRootNamespaces = nonRootNamespaces
             PeReader = peReader
             OwnsPeReader = true
+            ContentHash = contentHash
             Attributes = attrs
             CustomAttributesByParentToken = customAttributesByParentToken
             ExportedTypes = exportedTypes
