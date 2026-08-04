@@ -126,6 +126,18 @@ public class TestUnboxFieldAccess
 
         if (((Point) boxedPoint).X != 5) return 17;
 
+        // A real BCL user of the instruction, so this exercises it against CoreLib's own IL and
+        // not just against this assembly's: `System.Index.Equals(object)` is compiled as
+        // `isinst Index; unbox Index; ldfld Index::_value` (it is the only bare `unbox` in all of
+        // System.Private.CoreLib).
+        Index index = new Index(3);
+        if (!index.Equals((object) new Index(3))) return 18;
+        if (index.Equals((object) new Index(4))) return 19;
+
+        // The `isinst` guard means a non-Index never reaches the `unbox`.
+        if (index.Equals((object) "not an index")) return 20;
+        if (index.Equals((object) null)) return 21;
+
         return 0;
     }
 

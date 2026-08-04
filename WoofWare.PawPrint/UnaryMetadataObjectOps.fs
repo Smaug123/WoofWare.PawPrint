@@ -672,6 +672,31 @@ module internal UnaryMetadataObjectOps =
     ///   - a bare primitive (Int32, Float64, ...), which `box` stored in a synthetic single-field
     ///     struct: read field 0 back by offset and size. `box` guarantees that shape, so this is a
     ///     nominal dereference rather than a structural guess.
+    /// `Some zero` exactly when `executeBox` stored a *bare* primitive inside a synthetic
+    /// single-field struct, `zero` being the zero of that primitive (whose size is the field's
+    /// extent). `None` when the boxed storage is the value type's own fields — either because it
+    /// is primitive-like (IntPtr, RuntimeTypeHandle, an enum, ...) and stays wrapped, or because
+    /// it is a genuine value type.
+    ///
+    /// This distinction is what separates "a byref to the box addresses the value directly" from
+    /// "it addresses a wrapper around the value", so both `unboxedContents` and `executeUnbox`
+    /// hang off it.
+    let private barePrimitiveBoxShape
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (handle : ConcreteTypeHandle)
+        (contents : CliValueType)
+        (state : IlMachineState)
+        : CliType option * IlMachineState
+        =
+        if contents.PrimitiveLikeKind.IsSome then
+            None, state
+        else
+            let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes handle
+
+            match zero with
+            | CliType.ValueType _ -> None, state
+            | bare -> Some bare, state
+
     let private unboxedContents
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (handle : ConcreteTypeHandle)
@@ -679,16 +704,13 @@ module internal UnaryMetadataObjectOps =
         (state : IlMachineState)
         : CliType * IlMachineState
         =
-        if contents.PrimitiveLikeKind.IsSome then
-            CliType.ValueType contents, state
-        else
-            let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes handle
+        let shape, state = barePrimitiveBoxShape baseClassTypes handle contents state
 
-            match zero with
-            | CliType.ValueType _ -> CliType.ValueType contents, state
-            | _ ->
-                let size = (CliType.SizeOf zero).Size
-                CliValueType.DereferenceFieldAt 0 size contents, state
+        match shape with
+        | None -> CliType.ValueType contents, state
+        | Some zero ->
+            let size = (CliType.SizeOf zero).Size
+            CliValueType.DereferenceFieldAt 0 size contents, state
 
     /// The outcome of the type test that ECMA-335 III.4.32 (`unbox`) and the value-type arm of
     /// III.4.33 (`unbox.any`) share; CoreCLR routes both through `CastHelpers.Unbox_Helper`.
@@ -1058,15 +1080,25 @@ module internal UnaryMetadataObjectOps =
             // `HeapValue` denotes the whole boxed value (see `CellAwareCopy`), so the aliasing
             // III.4.32 requires falls out: reads and writes through this pointer go to the box
             // itself, not to a copy.
+            let barePrimitive, state =
+                barePrimitiveBoxShape baseClassTypes boxed.ConcreteType boxed.Contents state
+
+            // A bare `HeapValue` byref denotes the box's storage *as stored*, which is only the
+            // same thing as the token's type when the box holds the target type's own fields.
+            // Two cases break that, and both need the pointer to carry its static type:
+            //   - `box` of a bare primitive stores it inside a synthetic single-field struct, so
+            //     the storage is a wrapper around the value rather than the value. Without the
+            //     view, `ldind`/`ldobj` take the untyped read (`executeLdind` only routes to the
+            //     typed byte-view read for a trailing-byte-view pointer) and surface the wrapper;
+            //   - the enum/underlying relaxation in `unboxPermitted`, where the box holds e.g. an
+            //     `IntEnum` while the token says `int32`.
+            // Neither is reachable from C#, which emits `unbox` only for a field read and so only
+            // ever for a genuine multi-field struct; they are therefore not covered end-to-end by
+            // the differential tests.
             let projections =
-                if boxed.ConcreteType = targetConcreteTypeHandle then
+                if barePrimitive.IsNone && boxed.ConcreteType = targetConcreteTypeHandle then
                     []
                 else
-                    // Reachable only through the enum/underlying relaxation in `unboxPermitted`,
-                    // where the box holds e.g. an `IntEnum` while the token says `int32`. The
-                    // pointer must be typed as the token says, so view the storage as the target.
-                    // C# cannot emit this shape (an enum has no accessible field to read through
-                    // the pointer), so it is not covered by the differential tests.
                     [ ByrefProjection.ReinterpretAs targetConcreteType ]
 
             let ptr =
