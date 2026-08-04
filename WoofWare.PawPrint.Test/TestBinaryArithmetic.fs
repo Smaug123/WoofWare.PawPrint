@@ -612,17 +612,6 @@ module TestBinaryArithmetic =
             ]
         |> Gen.map (fun bits -> if bits = 0L then 1L else bits)
 
-    /// Excludes Int32.MinValue, which `sub`'s symbolic offset model refuses
-    /// outright (it cannot represent the negation) rather than computing.
-    let private genNegatableInt32Offset : Gen<int32> =
-        genOverflowProneInt32
-        |> Gen.map (fun v ->
-            if v = System.Int32.MinValue then
-                System.Int32.MinValue + 1
-            else
-                v
-        )
-
     [<Test>]
     let ``sub ovf on bit-pattern byrefs traps exactly when the difference leaves native int range`` () : unit =
         // A `NativeIntPlaceholder`'s payload is a real native-int bit pattern,
@@ -746,12 +735,30 @@ module TestBinaryArithmetic =
 
         Check.One (
             propertyConfig,
-            Prop.forAll (Arb.fromGen (Gen.zip genPlaceholderBits genNegatableInt32Offset)) property
+            Prop.forAll (Arb.fromGen (Gen.zip genPlaceholderBits genOverflowProneInt32)) property
         )
 
         if addTrapped = 0 || addComputed = 0 || subTrapped = 0 || subComputed = 0 then
             failwith
                 $"generator missed a regime: addTrapped=%d{addTrapped}, addComputed=%d{addComputed}, subTrapped=%d{subTrapped}, subComputed=%d{subComputed}"
+
+    [<Test>]
+    let ``subtracting Int32 MinValue from a bit-pattern byref does not need to negate the offset`` () : unit =
+        // `-Int32.MinValue` is not an int32, so the symbolic offset model
+        // refuses it; a placeholder's payload is an int64 bit pattern, so the
+        // subtraction is exact. The real runtime computes 2147483649 here.
+        let state = state ()
+        let expected = placeholderPointer 2147483649L
+
+        execute ArithmeticOperation.sub state (placeholderPointer 1L) (EvalStackValue.Int32 System.Int32.MinValue)
+        |> shouldEqual expected
+
+        trySubOvf state (placeholderPointer 1L) (EvalStackValue.Int32 System.Int32.MinValue)
+        |> shouldEqual (Some expected)
+
+        // Still out of range when it genuinely overflows native int.
+        trySubOvf state (placeholderPointer System.Int64.MaxValue) (EvalStackValue.Int32 System.Int32.MinValue)
+        |> shouldEqual None
 
     [<Test>]
     let ``sub ovf shares sub's pointer semantics`` () : unit =

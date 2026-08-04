@@ -130,6 +130,16 @@ module ArithmeticOperation =
         | OverflowBehaviour.Wrap -> a - b
         | OverflowBehaviour.Trap -> Checked.(-) a b
 
+    /// Re-tag the result of placeholder bit arithmetic. A zero result must
+    /// normalise back to `Null` so the placeholder invariant ("never carries
+    /// zero") holds and `Unsafe.IsNullRef` agrees with the CLR's bit-pattern
+    /// definition.
+    let private placeholderResult (newBits : int64) : Choice<ManagedPointerSource, int> =
+        if newBits = 0L then
+            Choice1Of2 ManagedPointerSource.Null
+        else
+            Choice1Of2 (ManagedPointerSource.NativeIntPlaceholder newBits)
+
     let private checkedAddInt32 (context : string) (a : int) (b : int) : int =
         let result = int64 a + int64 b
 
@@ -223,16 +233,8 @@ module ArithmeticOperation =
             // produces an empty span whose pointer is the placeholder; callers
             // then form an end pointer by adding `length * elementSize` (which is
             // zero for an empty span, but in general arithmetic on the bits is
-            // legitimate as long as no dereference occurs). A zero result must
-            // normalise back to `Null` so the placeholder invariant ("never
-            // carries zero") holds and `Unsafe.IsNullRef` agrees with the CLR's
-            // bit-pattern definition.
-            let newBits = addPlaceholderBits behaviour bits (int64 v)
-
-            if newBits = 0L then
-                Choice1Of2 ManagedPointerSource.Null
-            else
-                Choice1Of2 (ManagedPointerSource.NativeIntPlaceholder newBits)
+            // legitimate as long as no dereference occurs).
+            addPlaceholderBits behaviour bits (int64 v) |> placeholderResult
         | _ ->
 
         match ArithmeticTarget.decompose ptr with
@@ -633,6 +635,17 @@ module ArithmeticOperation =
         (val2 : int32)
         : Choice<ManagedPointerSource, int>
         =
+        match ptr1 with
+        | ManagedPointerSource.NativeIntPlaceholder bits ->
+            // Subtract directly instead of routing through
+            // `addInt32ManagedPtr`'s negation: a placeholder's payload is an
+            // int64 bit pattern, so `bits - Int32.MinValue` is perfectly
+            // representable even though `-Int32.MinValue` is not an int32.
+            subPlaceholderBits behaviour bits (int64 val2) |> placeholderResult
+        | _ ->
+
+        // Symbolic byrefs carry an int32 offset, which genuinely cannot
+        // express the negation of Int32.MinValue.
         if val2 = System.Int32.MinValue then
             failwith "managed pointer subtraction by Int32.MinValue would overflow the interpreter's int32 offset model"
 
