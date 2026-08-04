@@ -287,6 +287,48 @@ type ExecutionResult =
         terminatingThread : ThreadId *
         CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
 
+/// Outcome of invoking a hand-written JIT intrinsic (`Intrinsics.call`). This is the
+/// intrinsic analogue of `NativeHandlerResult` below, and exists for the same reason:
+/// an intrinsic must be able to say "raise a guest exception" without being able to
+/// perform the raise itself.
+///
+/// `Intrinsics.fs` compiles before `IlMachineStateExecution.fs`, so it cannot call
+/// `raiseRuntimeException`. Rather than duplicate exception machinery on the wrong side of
+/// that boundary, an intrinsic returns a *description* of the exception it wants and
+/// `IlMachineStateExecution.callMethod` performs it.
+///
+/// That indirection is not merely a compile-order workaround: it is what makes an unhandled
+/// guest exception expressible at all. `raiseRuntimeException` defers dispatch — it pushes
+/// the exception type's ctor frame and arms `ConstructedObjectDisposition.DispatchAsException`,
+/// so the handler
+/// search happens later, on the ctor's `Ret` in `NullaryIlOp`, which returns
+/// `ExecutionResult` and can therefore report `ExecutionResult.UnhandledException`. An
+/// intrinsic that dispatched inline would have to confront `ExceptionUnhandled` from a
+/// context with no way to report it, which is exactly how `Enum.HasFlag` used to
+/// host-`failwith` on a guest that legitimately died.
+type IntrinsicResult =
+    /// There is no hand-written implementation for this intrinsic key. The caller reports
+    /// this as an unimplemented intrinsic; it is NOT an instruction to interpret the
+    /// method's own IL (that decision is `Intrinsics.isSafeIntrinsic`, taken earlier).
+    | Unrecognised
+    /// The intrinsic ran to completion, and has already advanced the caller's program
+    /// counter itself.
+    | Completed of IlMachineState
+    /// The intrinsic wants `exnType` raised at the current instruction. The intrinsic must
+    /// NOT have advanced the program counter: exception dispatch keys both the handler
+    /// search and the stack trace on the faulting instruction's offset. `exnType` must be a
+    /// non-generic BCL exception type with a parameterless constructor — see
+    /// `IlMachineStateExecution.raiseRuntimeException`, which the caller invokes on the
+    /// intrinsic's behalf.
+    ///
+    /// `message` names the string the CLR would have passed to a message-taking ctor
+    /// overload; `None` accepts the parameterless ctor's default resource string, which is
+    /// correct wherever the CLR itself throws with no argument.
+    | RaiseException of
+        IlMachineState *
+        exnType : TypeInfo<GenericParamFromMetadata, TypeDefn> *
+        message : string option
+
 /// Outcome of invoking a native handler (QCall, P/Invoke shim, or other host-provided
 /// primitive registered under `WoofWare.PawPrint.Native`). Each variant names a single
 /// dispatcher decision, so the dispatcher's pattern match is total and the convention
@@ -358,8 +400,14 @@ type ReturnFrameResult =
     /// The caller should dispatch this object as a managed exception instead of pushing it
     /// onto the eval stack.  Before dispatching, the caller MUST call
     /// ExceptionDispatching.overwriteHResultPostCtor to apply the CLR's post-ctor
-    /// SetHResult(GetHR()) step.
-    | DispatchException of IlMachineState * exceptionAddr : ManagedHeapAddress * exceptionType : ConcreteTypeHandle
+    /// SetHResult(GetHR()) step, and then, when `message` is `Some`, overwrite `_message`
+    /// with it (see `ConstructedObjectDisposition.DispatchAsException` for why that has to
+    /// happen after the ctor rather than before it).
+    | DispatchException of
+        IlMachineState *
+        exceptionAddr : ManagedHeapAddress *
+        exceptionType : ConcreteTypeHandle *
+        message : string option
 
 /// Result of a complete program run (the pump loop having finished).
 type RunOutcome =
@@ -522,7 +570,8 @@ module NativeHandlerResult =
     /// Any `Stepped` value with a `WhatWeDid` other than `Executed` is rejected as a logic
     /// error: ExternImpls are not authorised to drive cctor / managed-call / exception
     /// re-entry directly, because those decisions require structural support (re-entry
-    /// markers, `dispatchAsExceptionOnReturn` arming) that ExternImpls don't have access to.
+    /// markers, `ConstructedObjectDisposition.DispatchAsException` arming) that ExternImpls don't
+    /// have access to.
     /// `VoluntaryYield` is rejected here for the same structural-boundary reason: the yield
     /// signal is produced at the native-handler return shape via `NativeHandlerResult.Yielded`,
     /// not threaded back through `ExecutionResult`. If an ExternImpl ever needs to yield, the

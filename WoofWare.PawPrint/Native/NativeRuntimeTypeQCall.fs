@@ -750,7 +750,7 @@ module NativeRuntimeTypeQCall =
                         ctx.Thread
                         threadState
                         None
-                        false
+                        ConstructedObjectDisposition.PushToCaller
                         false // wrapExceptionInTargetInvocation
                         state
 

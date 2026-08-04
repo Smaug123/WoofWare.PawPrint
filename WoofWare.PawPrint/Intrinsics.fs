@@ -28,7 +28,7 @@ module Intrinsics =
         (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (currentThread : ThreadId)
         (state : IlMachineState)
-        : IlMachineState option
+        : IntrinsicResult
         =
         let intrinsicKey = methodKey state methodToCall
 
@@ -77,7 +77,7 @@ module Intrinsics =
             state
             |> IlMachineState.pushToEvalStack (CliType.ofBool false) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+            |> IntrinsicResult.Completed
         | "System.Private.CoreLib", ("ReadOnlySpan`1" | "Span`1"), ".ctor" when
             intrinsicKey.ParameterShapes = [ "*" ; "System.Int32" ]
             && (intrinsicKey.DeclaringTypeFullName = "System.ReadOnlySpan`1"
@@ -90,16 +90,18 @@ module Intrinsics =
                 wasConstructing
                 methodToCall
                 state
-            |> Some
+            |> IntrinsicResult.Completed
         | "System.Private.CoreLib", ("ReadOnlySpan`1" | "Span`1"), "ToString" ->
             spanToString loggerFactory baseClassTypes currentThread methodToCall state
-            |> Some
+            |> IntrinsicResult.Completed
         | "System.Private.CoreLib", "MemoryExtensions", "Equals" ->
-            memoryExtensionsEquals baseClassTypes currentThread methodToCall state |> Some
+            memoryExtensionsEquals baseClassTypes currentThread methodToCall state
+            |> IntrinsicResult.Completed
         | "System.Private.CoreLib", "SpanHelpers", "SequenceEqual" when
             isSpanHelpersByteSequenceEqual state methodToCall
             ->
-            spanHelpersSequenceEqual baseClassTypes currentThread methodToCall state |> Some
+            spanHelpersSequenceEqual baseClassTypes currentThread methodToCall state
+            |> IntrinsicResult.Completed
         | "System.Private.CoreLib", ("Vector128" | "Vector256" | "Vector512"), "get_IsHardwareAccelerated"
         | "System.Private.CoreLib", "Vector", "get_IsHardwareAccelerated" when
             // System.Runtime.Intrinsics.Vector{128,256,512}.IsHardwareAccelerated and
@@ -122,7 +124,7 @@ module Intrinsics =
 
             IlMachineState.pushToEvalStack (CliType.ofBool isAccelerated) currentThread state
             |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+            |> IntrinsicResult.Completed
         | "System.Private.CoreLib", "Object", "GetType" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [],
@@ -162,7 +164,7 @@ module Intrinsics =
             state
             |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some runtimeTypeAddr)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+            |> IntrinsicResult.Completed
         | "System.Private.CoreLib", "RuntimeHelpers", "GetMethodTable" ->
             match methodToCall.Signature.ParameterTypes with
             | [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ] -> ()
@@ -193,7 +195,7 @@ module Intrinsics =
                 (EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed concreteType)))
                 currentThread
             |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+            |> IntrinsicResult.Completed
         | "System.Private.CoreLib", "Type", "get_IsValueType" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
@@ -271,7 +273,7 @@ module Intrinsics =
 
             IlMachineState.pushToEvalStack (CliType.ofBool isValueType) currentThread state
             |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+            |> IntrinsicResult.Completed
         | "System.Private.CoreLib", "Unsafe", "AsPointer" ->
             // Method signature: 1 generic parameter, we take a Byref of that parameter, and return a TypeDefn.Pointer(Void)
             let arg, state = IlMachineState.popEvalStack currentThread state
@@ -283,7 +285,7 @@ module Intrinsics =
 
             IlMachineState.pushToEvalStack (CliType.RuntimePointer toPush) currentThread state
             |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+            |> IntrinsicResult.Completed
         | "System.Private.CoreLib", "Unsafe", "SkipInit" ->
             // `SkipInit<T>(out T)` is a JIT intrinsic that deliberately leaves
             // the byref target untouched. PawPrint's storage is already
@@ -304,7 +306,9 @@ module Intrinsics =
             | EvalStackValue.ManagedPointer _ -> ()
             | other -> failwith $"Unsafe.SkipInit: expected managed byref argument, got %O{other}"
 
-            state |> IlMachineState.advanceProgramCounter currentThread |> Some
+            state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> IntrinsicResult.Completed
         | "System.Private.CoreLib", "Unsafe", "AsRef" ->
             // `AsRef<T>(ref readonly T)` and `AsRef<T>(void* source)` are JIT
             // intrinsics. The CoreLib bodies in this runtime throw
@@ -359,7 +363,7 @@ module Intrinsics =
             state
             |> IlMachineState.pushToEvalStack' toPush currentThread
             |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+            |> IntrinsicResult.Completed
         | "System.Private.CoreLib", "Unsafe", "NullRef" ->
             // CoreCLR's UNSAFE__BYREF_NULLREF intrinsic replaces the CoreLib
             // body with a null managed byref (`ldc.i4.0; conv.u; ret`).
@@ -379,7 +383,7 @@ module Intrinsics =
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ManagedPointerSource.Null) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+            |> IntrinsicResult.Completed
         | "System.Private.CoreLib", "Unsafe", "IsNullRef" ->
             // The JIT intrinsic compares the byref argument against the null
             // managed byref.
@@ -408,7 +412,7 @@ module Intrinsics =
             state
             |> IlMachineState.pushToEvalStack (CliType.ofBool isNullRef) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+            |> IntrinsicResult.Completed
         | "System.Private.CoreLib", "Interlocked", ("Add" | "ExchangeAdd") ->
             // `Add` returns the newly-stored sum; the private `ExchangeAdd`
             // primitive returns the original value. The read-modify-write
@@ -499,13 +503,13 @@ module Intrinsics =
               MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes)
             | [ ConcreteByref (ConcreteUInt32 state.ConcreteTypes) ; ConcreteUInt32 state.ConcreteTypes ],
               MethodReturnType.Returns (ConcreteUInt32 state.ConcreteTypes) ->
-                executeInt32 methodToCall.Name state |> Some
+                executeInt32 methodToCall.Name state |> IntrinsicResult.Completed
             | [ ConcreteByref (ConcreteInt64 state.ConcreteTypes) ; ConcreteInt64 state.ConcreteTypes ],
               MethodReturnType.Returns (ConcreteInt64 state.ConcreteTypes)
             | [ ConcreteByref (ConcreteUInt64 state.ConcreteTypes) ; ConcreteUInt64 state.ConcreteTypes ],
               MethodReturnType.Returns (ConcreteUInt64 state.ConcreteTypes) ->
-                executeInt64 methodToCall.Name state |> Some
-            | _ -> None
+                executeInt64 methodToCall.Name state |> IntrinsicResult.Completed
+            | _ -> IntrinsicResult.Unrecognised
 
         | "System.Private.CoreLib", "Interlocked", "MemoryBarrier" ->
             // [Intrinsic] public static void MemoryBarrier() => MemoryBarrier();
@@ -521,7 +525,9 @@ module Intrinsics =
             | [], MethodReturnType.Void -> ()
             | _ -> failwith $"Interlocked.MemoryBarrier: unexpected signature %A{methodToCall.Signature}"
 
-            state |> IlMachineState.advanceProgramCounter currentThread |> Some
+            state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> IntrinsicResult.Completed
 
         | "System.Private.CoreLib", "Interlocked", "CompareExchange" ->
             // The native-int-shaped overloads need their own path: the shipped IL wrappers do
@@ -615,7 +621,7 @@ module Intrinsics =
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt currentSrc) currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
-                |> Some
+                |> IntrinsicResult.Completed
             | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes locationPrimitive)
                 ConcretePrimitive state.ConcreteTypes valuePrimitive
                 ConcretePrimitive state.ConcreteTypes comparandPrimitive ],
@@ -625,7 +631,8 @@ module Intrinsics =
                 && locationPrimitive = comparandPrimitive
                 && locationPrimitive = returnPrimitive
                 ->
-                executeScalarInteger "Interlocked.CompareExchange" state |> Some
+                executeScalarInteger "Interlocked.CompareExchange" state
+                |> IntrinsicResult.Completed
             | [ ConcreteByref locationType ; valueType ; comparandType ], MethodReturnType.Returns returnType when
                 locationType = valueType
                 && locationType = comparandType
@@ -667,13 +674,13 @@ module Intrinsics =
                 state
                 |> IlMachineState.pushToEvalStack currentValue currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
-                |> Some
+                |> IntrinsicResult.Completed
             | _ ->
                 // The float/double overloads are not yet intrinsified. Their shipped IL bodies
                 // reinterpret-cast to integer overloads, so falling through would either re-enter
                 // this intrinsic path or lose the bit-level shape of the floating-point value.
                 // When a caller needs one of these, add a dedicated intrinsic arm.
-                None
+                IntrinsicResult.Unrecognised
         | "System.Private.CoreLib", "Interlocked", "Exchange" ->
             // Same intrinsic-boundary motivation as CompareExchange: the shipped CoreLib
             // bodies for Exchange ride Unsafe.As / InternalCall paths that would either
@@ -752,7 +759,7 @@ module Intrinsics =
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt currentSrc) currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
-                |> Some
+                |> IntrinsicResult.Completed
             | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes locationPrimitive)
                 ConcretePrimitive state.ConcreteTypes valuePrimitive ],
               MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes returnPrimitive) when
@@ -760,7 +767,8 @@ module Intrinsics =
                 && locationPrimitive = valuePrimitive
                 && locationPrimitive = returnPrimitive
                 ->
-                executeScalarIntegerExchange "Interlocked.Exchange" state |> Some
+                executeScalarIntegerExchange "Interlocked.Exchange" state
+                |> IntrinsicResult.Completed
             | [ ConcreteByref locationType ; valueType ], MethodReturnType.Returns returnType when
                 locationType = valueType
                 && locationType = returnType
@@ -784,11 +792,11 @@ module Intrinsics =
                 state
                 |> IlMachineState.pushToEvalStack currentValue currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
-                |> Some
+                |> IntrinsicResult.Completed
             | _ ->
                 // The float/double overloads are not yet intrinsified, matching the
                 // CompareExchange precedent above. Add a dedicated arm when first needed.
-                None
+                IntrinsicResult.Unrecognised
         | "System.Private.CoreLib", "Thread", "FastPollGC" ->
             // [Intrinsic] internal static void Thread.FastPollGC() => Thread.FastPollGC();
             // The managed IL body is an infinite self-recursive call; the JIT replaces
@@ -800,7 +808,9 @@ module Intrinsics =
             | [], MethodReturnType.Void -> ()
             | _ -> failwith $"Thread.FastPollGC: unexpected signature %A{methodToCall.Signature}"
 
-            state |> IlMachineState.advanceProgramCounter currentThread |> Some
+            state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> IntrinsicResult.Completed
         | "System.Private.CoreLib", "Volatile", ("ReadBarrier" | "WriteBarrier") ->
             // [Intrinsic] public static void Volatile.{Read,Write}Barrier() => Volatile.{Read,Write}Barrier();
             // Same shape as Thread.FastPollGC: the managed body is infinite self-recursion
@@ -814,7 +824,9 @@ module Intrinsics =
             | [], MethodReturnType.Void -> ()
             | _ -> failwith $"Volatile.%s{methodToCall.Name}: unexpected signature %A{methodToCall.Signature}"
 
-            state |> IlMachineState.advanceProgramCounter currentThread |> Some
+            state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> IntrinsicResult.Completed
         | "System.Private.CoreLib", "BitConverter", "SingleToInt32Bits" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteSingle state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) -> ()
@@ -830,7 +842,7 @@ module Intrinsics =
             state
             |> IlMachineState.pushToEvalStack' result currentThread
             |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+            |> IntrinsicResult.Completed
         | "System.Private.CoreLib", "BitConverter", "Int32BitsToSingle" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteInt32 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteSingle state.ConcreteTypes) -> ()
@@ -849,7 +861,7 @@ module Intrinsics =
             state
             |> IlMachineState.pushToEvalStack result currentThread
             |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+            |> IntrinsicResult.Completed
         | "System.Private.CoreLib", "BitConverter", "DoubleToUInt64Bits" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteDouble state.ConcreteTypes ], MethodReturnType.Returns (ConcreteUInt64 state.ConcreteTypes) ->
@@ -873,7 +885,7 @@ module Intrinsics =
             state
             |> IlMachineState.pushToEvalStack result currentThread
             |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+            |> IntrinsicResult.Completed
         | "System.Private.CoreLib", "BitConverter", "UInt64BitsToDouble" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteUInt64 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteDouble state.ConcreteTypes) ->
@@ -893,7 +905,7 @@ module Intrinsics =
             state
             |> IlMachineState.pushToEvalStack result currentThread
             |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+            |> IntrinsicResult.Completed
         | "System.Private.CoreLib", "BitConverter", "Int64BitsToDouble" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteInt64 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteDouble state.ConcreteTypes) -> ()
@@ -912,7 +924,7 @@ module Intrinsics =
             state
             |> IlMachineState.pushToEvalStack result currentThread
             |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+            |> IntrinsicResult.Completed
         | "System.Private.CoreLib", "BitConverter", "DoubleToInt64Bits" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteDouble state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt64 state.ConcreteTypes) -> ()
@@ -929,7 +941,7 @@ module Intrinsics =
             state
             |> IlMachineState.pushToEvalStack' result currentThread
             |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+            |> IntrinsicResult.Completed
         | "System.Private.CoreLib", "BitConverter", "SingleToUInt32Bits" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteSingle state.ConcreteTypes ], MethodReturnType.Returns (ConcreteUInt32 state.ConcreteTypes) ->
@@ -949,7 +961,7 @@ module Intrinsics =
             state
             |> IlMachineState.pushToEvalStack' result currentThread
             |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+            |> IntrinsicResult.Completed
         | "System.Private.CoreLib", "BitConverter", "UInt32BitsToSingle" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteUInt32 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteSingle state.ConcreteTypes) ->
@@ -969,7 +981,7 @@ module Intrinsics =
             state
             |> IlMachineState.pushToEvalStack' result currentThread
             |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+            |> IntrinsicResult.Completed
         | "System.Private.CoreLib", "BitOperations", "Log2" ->
             // BitOperations.Log2 is a JIT intrinsic in the real CLR. The BCL IL body falls
             // through to a software fallback that reads from a De Bruijn lookup table backed
@@ -990,7 +1002,7 @@ module Intrinsics =
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 result) currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
-                |> Some
+                |> IntrinsicResult.Completed
             | [ ConcreteUInt64 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) ->
                 let arg, state = IlMachineState.popEvalStack currentThread state
 
@@ -1004,7 +1016,7 @@ module Intrinsics =
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 result) currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
-                |> Some
+                |> IntrinsicResult.Completed
             | [ ConcreteUIntPtr state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) ->
                 let arg, state = IlMachineState.popEvalStack currentThread state
 
@@ -1021,7 +1033,7 @@ module Intrinsics =
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 result) currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
-                |> Some
+                |> IntrinsicResult.Completed
             | _ -> failwith $"BitOperations.Log2: unexpected signature %s{formatMethodKey intrinsicKey}"
         | "System.Private.CoreLib", "String", "Equals" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
@@ -1059,8 +1071,8 @@ module Intrinsics =
                 state
                 |> IlMachineState.pushToEvalStack (CliType.ofBool areEqual) currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
-                |> Some
-            | _ -> None
+                |> IntrinsicResult.Completed
+            | _ -> IntrinsicResult.Unrecognised
         | "System.Private.CoreLib", "Unsafe", "ReadUnaligned" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L558
             // Semantically this returns the T that would be read by
@@ -1099,7 +1111,7 @@ module Intrinsics =
                     |> IlMachineState.pushToEvalStack v currentThread
                     |> IlMachineState.advanceProgramCounter currentThread
 
-                Some state
+                IntrinsicResult.Completed state
             | [ ConcretePointer _ ] ->
 
                 let t =
@@ -1120,8 +1132,8 @@ module Intrinsics =
                     |> IlMachineState.pushToEvalStack v currentThread
                     |> IlMachineState.advanceProgramCounter currentThread
 
-                Some state
-            | _ -> None
+                IntrinsicResult.Completed state
+            | _ -> IntrinsicResult.Unrecognised
         | "System.Private.CoreLib", "Unsafe", "WriteUnaligned" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L609
             // Symmetric to ReadUnaligned: writes a T through a byte-level
@@ -1166,7 +1178,7 @@ module Intrinsics =
                     IlMachineState.writeManagedByrefBytesOrTypedCell baseClassTypes state src valueAsCli
 
                 let state = state |> IlMachineState.advanceProgramCounter currentThread
-                Some state
+                IntrinsicResult.Completed state
             | [ ConcretePointer _ ; _ ] ->
 
                 let t =
@@ -1196,8 +1208,8 @@ module Intrinsics =
                     IlMachineState.writeManagedByrefBytesOrTypedCell baseClassTypes state src valueAsCli
 
                 let state = state |> IlMachineState.advanceProgramCounter currentThread
-                Some state
-            | _ -> None
+                IntrinsicResult.Completed state
+            | _ -> IntrinsicResult.Unrecognised
         | "System.Private.CoreLib", "Unsafe", ("CopyBlock" | "CopyBlockUnaligned") ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L313
             // The CoreLib bodies throw PlatformNotSupportedException; the real JIT replaces
@@ -1210,8 +1222,10 @@ module Intrinsics =
               MethodReturnType.Void
             | [ ConcretePointer _ ; ConcretePointer _ ; ConcreteUInt32 state.ConcreteTypes ], MethodReturnType.Void ->
                 let operation = $"Unsafe.%s{methodToCall.Name}"
-                executeUnsafeCopyBlock baseClassTypes currentThread operation state |> Some
-            | _ -> None
+
+                executeUnsafeCopyBlock baseClassTypes currentThread operation state
+                |> IntrinsicResult.Completed
+            | _ -> IntrinsicResult.Unrecognised
         | "System.Private.CoreLib", "SpanHelpers", "Memmove" ->
             // `[Intrinsic] internal static void Memmove(ref byte dest, ref byte src, nuint len)`
             // (SpanHelpers.ByteMemOps.cs:37). The managed body executes the platform-tuned
@@ -1227,8 +1241,10 @@ module Intrinsics =
                 ConcreteUIntPtr state.ConcreteTypes ],
               MethodReturnType.Void ->
                 let operation = "SpanHelpers.Memmove"
-                executeSpanHelpersMemmove baseClassTypes currentThread operation state |> Some
-            | _ -> None
+
+                executeSpanHelpersMemmove baseClassTypes currentThread operation state
+                |> IntrinsicResult.Completed
+            | _ -> IntrinsicResult.Unrecognised
         | "System.Private.CoreLib", "String", "op_Implicit" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ par ], MethodReturnType.Returns ret ->
@@ -1248,7 +1264,7 @@ module Intrinsics =
                         if gen.Namespace = "System" && gen.Name = "Char" then
                             // This is just an optimisation
                             // https://github.com/dotnet/runtime/blob/ab105b51f8b50ec5567d7cfe9001ca54dd6f64c3/src/libraries/System.Private.CoreLib/src/System/String.cs#L363-L366
-                            None
+                            IntrinsicResult.Unrecognised
                         else
                             failwith "TODO: unexpected params to String.op_Implicit"
                     | _ -> failwith "TODO: unexpected params to String.op_Implicit"
@@ -1293,7 +1309,7 @@ module Intrinsics =
                 |> IlMachineState.pushToEvalStack (CliType.ofBool result) currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
 
-            Some state
+            IntrinsicResult.Completed state
         | "System.Private.CoreLib", "RuntimeHelpers", "InitializeArray" ->
             // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/coreclr/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.CoreCLR.cs#L18
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
@@ -1446,7 +1462,7 @@ module Intrinsics =
                     state
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
-            Some state
+            IntrinsicResult.Completed state
         | "System.Private.CoreLib", "RuntimeHelpers", "IsBitwiseEquatable" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
@@ -1484,7 +1500,7 @@ module Intrinsics =
             state
             |> IlMachineState.pushToEvalStack (CliType.ofBool result) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+            |> IntrinsicResult.Completed
         | "System.Private.CoreLib", "GC", "KeepAlive" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ], MethodReturnType.Void -> ()
@@ -1492,7 +1508,9 @@ module Intrinsics =
 
             let _, state = IlMachineState.popEvalStack currentThread state
 
-            state |> IlMachineState.advanceProgramCounter currentThread |> Some
+            state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> IntrinsicResult.Completed
         | "System.Private.CoreLib", "Unsafe", "As" ->
             // https://github.com/dotnet/runtime/blob/721fdf6dcb032da1f883d30884e222e35e3d3c99/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L64
             let byrefAs () =
@@ -1563,7 +1581,7 @@ module Intrinsics =
                     |> IlMachineState.pushToEvalStack' ptr currentThread
                     |> IlMachineState.advanceProgramCounter currentThread
 
-                Some state
+                IntrinsicResult.Completed state
 
             match methodToCall.Signature.ParameterTypes, Seq.toList methodToCall.Generics with
             | [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ], [ target ] ->
@@ -1578,7 +1596,7 @@ module Intrinsics =
                     state
                     |> IlMachineState.pushToEvalStack' obj currentThread
                     |> IlMachineState.advanceProgramCounter currentThread
-                    |> Some
+                    |> IntrinsicResult.Completed
                 | other -> failwith $"Unsafe.As<T>(object): expected object reference, got %O{other}"
             | _ -> byrefAs ()
         | "System.Private.CoreLib", "Unsafe", "BitCast" ->
@@ -1651,7 +1669,7 @@ module Intrinsics =
                 state
                 |> IlMachineState.pushToEvalStack result currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
-                |> Some
+                |> IntrinsicResult.Completed
         | "System.Private.CoreLib", "Unsafe", "SizeOf" ->
             // https://github.com/dotnet/runtime/blob/721fdf6dcb032da1f883d30884e222e35e3d3c99/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L51
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
@@ -1670,7 +1688,7 @@ module Intrinsics =
             state
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 size)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+            |> IntrinsicResult.Completed
         | "System.Private.CoreLib", "Unsafe", "AreSame" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L55
             // The source-level IL body throws PlatformNotSupportedException; the JIT replaces it with ceq on two byrefs.
@@ -1718,7 +1736,7 @@ module Intrinsics =
             state
             |> IlMachineState.pushToEvalStack (CliType.ofBool areSame) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+            |> IntrinsicResult.Completed
         | "System.Private.CoreLib", "Unsafe", "Add" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L99
             // The source-level IL body throws PlatformNotSupportedException; the JIT replaces it with sizeof + conv.i + mul + add.
@@ -1766,7 +1784,7 @@ module Intrinsics =
             state
             |> IlMachineState.pushToEvalStack' ptr currentThread
             |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+            |> IntrinsicResult.Completed
         | "System.Private.CoreLib", "Unsafe", "AddByteOffset" ->
             // CoreCLR's managed body throws PlatformNotSupportedException; the JIT replaces
             // the call with raw byref + native-int addition. Both overloads (IntPtr and
@@ -1823,7 +1841,7 @@ module Intrinsics =
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
-                |> Some
+                |> IntrinsicResult.Completed
             | ValueNone ->
 
             // `addByteOffsetUnderReinterpret` anchors the byte cursor under `ReinterpretAs T`
@@ -1913,7 +1931,7 @@ module Intrinsics =
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+            |> IntrinsicResult.Completed
         | "System.Private.CoreLib", "Unsafe", "ByteOffset" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L69
             // The source-level IL body throws PlatformNotSupportedException; the JIT replaces it with sub on two byrefs.
@@ -1952,7 +1970,7 @@ module Intrinsics =
                     (EvalStackValue.NativeInt (NativeIntSource.Verbatim byteOffset))
                     currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
-                |> Some
+                |> IntrinsicResult.Completed
             | _ ->
 
             // ByteOffset measures the byte distance between two byref address
@@ -2031,7 +2049,7 @@ module Intrinsics =
                     (EvalStackValue.NativeInt (NativeIntSource.Verbatim byteOffset))
                     currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
-                |> Some
+                |> IntrinsicResult.Completed
             else
                 let byteOffset =
                     NativeIntSource.syntheticCrossStorageByteOffset storage1 originOffset storage2 targetOffset
@@ -2039,7 +2057,7 @@ module Intrinsics =
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt byteOffset) currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
-                |> Some
+                |> IntrinsicResult.Completed
         | "System.Private.CoreLib", ("ReadOnlySpan`1" | "Span`1"), "get_Item" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/ReadOnlySpan.cs#L141
             // The source-level body returns `ref Unsafe.Add(ref _reference, index)`;
@@ -2109,7 +2127,7 @@ module Intrinsics =
             state
             |> IlMachineState.pushToEvalStack' ptr currentThread
             |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+            |> IntrinsicResult.Completed
         | "System.Private.CoreLib", "Span`1", "Clear" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/Span.cs#L280
             // Span<T>.Clear is a JIT intrinsic; the BCL IL falls through to
@@ -2177,10 +2195,12 @@ module Intrinsics =
                     IlMachineState.writeManagedByrefWithBase baseClassTypes state byrefSrc zero
                 )
 
-            state |> IlMachineState.advanceProgramCounter currentThread |> Some
+            state
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> IntrinsicResult.Completed
         | "System.Private.CoreLib", "RuntimeHelpers", "CreateSpan" ->
             // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.cs#L153
-            None
+            IntrinsicResult.Unrecognised
         | "System.Private.CoreLib", "MemoryMarshal", "GetArrayDataReference" ->
             // https://github.com/dotnet/runtime/blob/d258af50034c192bf7f0a18856bf83d2903d98ae/src/coreclr/System.Private.CoreLib/src/System/Runtime/InteropServices/MemoryMarshal.CoreCLR.cs#L20
             let generic = Seq.exactlyOne methodToCall.Generics
@@ -2214,7 +2234,7 @@ module Intrinsics =
             state
             |> IlMachineState.pushToEvalStack' toPush currentThread
             |> IlMachineState.advanceProgramCounter currentThread
-            |> Some
+            |> IntrinsicResult.Completed
         | "System.Private.CoreLib", "Array", "Clone" ->
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Array.cs#L1071-L1077
             // The managed body is `return MemberwiseClone();`, and CoreCLR's MemberwiseClone
@@ -2244,7 +2264,7 @@ module Intrinsics =
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.ObjectRef clone) currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
-                |> Some
+                |> IntrinsicResult.Completed
             | EvalStackValue.NullObjectRef
             | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
                 // Unreachable from any C#-emitted call site: `Array.Clone` is an instance method,
@@ -2311,53 +2331,17 @@ module Intrinsics =
                         $"Array.%s{boundKind}: array at %O{addr} has concrete-type rank %d{declaredRank} but %d{arr.Lengths.Length} stored dimension length(s)"
 
                 if dimension < 0 || dimension >= arr.Lengths.Length then
-                    // Both arguments are already popped, so the eval stack is clean for dispatch.
-                    let exnAddr, exnTypeHandle, state =
-                        ExceptionDispatching.allocateRuntimeException
-                            loggerFactory
-                            baseClassTypes
-                            baseClassTypes.IndexOutOfRangeException
-                            state
-
-                    let state =
-                        ExceptionDispatching.overwriteHResultPostCtor baseClassTypes exnAddr exnTypeHandle state
-
-                    // `allocateRuntimeException` does not run a constructor, so populate `_message`
-                    // explicitly with the string the CLR would have passed
-                    // (`SR.IndexOutOfRange_ArrayRankIndex`); otherwise a guest that catches this and
-                    // reads `.Message` sees the generic "Exception of type X was thrown" fallback.
-                    let state =
-                        IlMachineState.setExceptionMessage
-                            loggerFactory
-                            baseClassTypes
-                            exnAddr
-                            "Array does not have that many dimensions."
-                            state
-
-                    match
-                        ExceptionDispatching.throwExceptionObject
-                            loggerFactory
-                            baseClassTypes
-                            state
-                            currentThread
-                            exnAddr
-                            exnTypeHandle
-                    with
-                    | ExceptionDispatchResult.HandlerFound state -> Some state
-                    | ExceptionDispatchResult.ExceptionUnhandled _ ->
-                        // KNOWN GAP, shared with the `Enum.HasFlag` arms below and the three
-                        // `ExceptionUnhandled` sites in `IlMachineStateExecution`: `Intrinsics.call`
-                        // returns `IlMachineState option`, which cannot express "the guest died of an
-                        // unhandled exception". Propagating it needs the effect-description return
-                        // type discussed in this commit's message, threaded through `callMethod` and
-                        // `UnaryMetadataIlOp.execute` up to `AbstractMachine.executeOneStep`. Until
-                        // then an uncaught out-of-range dimension takes down the interpreter instead
-                        // of being reported as a guest unhandled exception. This is deliberately not
-                        // pinned by a test: `TestPureCases`'s `unimplemented` category asserts the
-                        // real runtime exits normally, and there is no category for "PawPrint cannot
-                        // do this yet AND the real runtime throws".
-                        failwith
-                            $"TODO: Array.%s{boundKind} dimension %d{dimension} was out of range for rank %d{arr.Lengths.Length}, and the resulting IndexOutOfRangeException found no handler; PawPrint cannot yet surface an unhandled guest exception raised from an intrinsic"
+                    // Both arguments are already popped, so the eval stack is clean for dispatch,
+                    // and the PC has deliberately not been advanced.
+                    //
+                    // The message is the string the CLR would have passed
+                    // (`SR.IndexOutOfRange_ArrayRankIndex`); the parameterless ctor's default
+                    // ("Index was outside the bounds of the array.") is the wrong one here.
+                    IntrinsicResult.RaiseException (
+                        state,
+                        baseClassTypes.IndexOutOfRangeException,
+                        Some "Array does not have that many dimensions."
+                    )
                 else
 
                 let result =
@@ -2374,7 +2358,7 @@ module Intrinsics =
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 result) currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
-                |> Some
+                |> IntrinsicResult.Completed
             | EvalStackValue.NullObjectRef
             | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
                 // Unreachable from C#-emitted code: these are instance methods, so callvirt's own
@@ -2400,34 +2384,18 @@ module Intrinsics =
                 let flagObj = ManagedHeap.get flagAddr state.ManagedHeap
 
                 if thisObj.ConcreteType <> flagObj.ConcreteType then
-                    // Type mismatch: raise ArgumentException.
+                    // Type mismatch: raise ArgumentException (Enum.cs:403-404).
                     // We must pop the two args before raising, so the eval stack is clean.
                     let _, state = IlMachineState.popEvalStack currentThread state
                     let _, state = IlMachineState.popEvalStack currentThread state
 
-                    let exnAddr, exnTypeHandle, state =
-                        ExceptionDispatching.allocateRuntimeException
-                            loggerFactory
-                            baseClassTypes
-                            baseClassTypes.ArgumentException
-                            state
-
-                    let state =
-                        ExceptionDispatching.overwriteHResultPostCtor baseClassTypes exnAddr exnTypeHandle state
-
-                    match
-                        ExceptionDispatching.throwExceptionObject
-                            loggerFactory
-                            baseClassTypes
-                            state
-                            currentThread
-                            exnAddr
-                            exnTypeHandle
-                    with
-                    | ExceptionDispatchResult.HandlerFound state -> Some state
-                    | ExceptionDispatchResult.ExceptionUnhandled _ ->
-                        failwith
-                            "Enum.HasFlag type mismatch: ArgumentException was unhandled (no catch handler in caller)"
+                    // No message: the CLR's is `SR.Argument_EnumTypeDoesNotMatch` formatted with
+                    // `flag.GetType()` and `GetType()`, and rendering those two the way
+                    // `Type.ToString()` would (nested types are `Outer+Inner`, generics are
+                    // backtick-arity) is a fidelity question of its own. A half-right string would
+                    // be worse than the parameterless ctor's honest default, which is already an
+                    // improvement on the null `_message` this arm used to leave behind.
+                    IntrinsicResult.RaiseException (state, baseClassTypes.ArgumentException, None)
                 else
                     let flag, state = IlMachineState.popEvalStack currentThread state
                     let thisVal, state = IlMachineState.popEvalStack currentThread state
@@ -2454,33 +2422,19 @@ module Intrinsics =
                     state
                     |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (if result then 1 else 0)) currentThread
                     |> IlMachineState.advanceProgramCounter currentThread
-                    |> Some
+                    |> IntrinsicResult.Completed
             | Some _, Some EvalStackValue.NullObjectRef ->
-                // Null flag: raise ArgumentNullException.
+                // Null flag: `ArgumentNullException.ThrowIfNull(flag)` (Enum.cs:401), which runs
+                // before the type-equivalence check above.
                 let _, state = IlMachineState.popEvalStack currentThread state
                 let _, state = IlMachineState.popEvalStack currentThread state
 
-                let exnAddr, exnTypeHandle, state =
-                    ExceptionDispatching.allocateRuntimeException
-                        loggerFactory
-                        baseClassTypes
-                        baseClassTypes.ArgumentNullException
-                        state
-
-                let state =
-                    ExceptionDispatching.overwriteHResultPostCtor baseClassTypes exnAddr exnTypeHandle state
-
-                match
-                    ExceptionDispatching.throwExceptionObject
-                        loggerFactory
-                        baseClassTypes
-                        state
-                        currentThread
-                        exnAddr
-                        exnTypeHandle
-                with
-                | ExceptionDispatchResult.HandlerFound state -> Some state
-                | ExceptionDispatchResult.ExceptionUnhandled _ ->
-                    failwith "Enum.HasFlag null flag: ArgumentNullException was unhandled (no catch handler in caller)"
+                // No message: the CLR's `.Message` here is "Value cannot be null. (Parameter
+                // 'flag')", but that suffix is synthesised by `ArgumentException.Message` from
+                // `_paramName`, which this channel cannot set. Writing the suffix into `_message`
+                // would make `.Message` right while `.ParamName` stayed null — two fields
+                // disagreeing about whether a parameter name is known. The parameterless ctor's
+                // "Value cannot be null." is at least self-consistent.
+                IntrinsicResult.RaiseException (state, baseClassTypes.ArgumentNullException, None)
             | _ -> failwith $"Enum.HasFlag: expected two ObjectRefs on eval stack"
-        | _ -> None
+        | _ -> IntrinsicResult.Unrecognised
