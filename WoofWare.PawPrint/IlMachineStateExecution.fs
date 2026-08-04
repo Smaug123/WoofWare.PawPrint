@@ -1024,7 +1024,7 @@ module IlMachineStateExecution =
                 let callingObj =
                     match
                         activeMethodState.EvaluationStack
-                        |> EvalStack.PeekNthFromTop methodToCall.Parameters.Length
+                        |> EvalStack.PeekNthFromTop (MethodInfo.arity methodToCall)
                     with
                     | None -> failwith "unexpectedly no `this` on the eval stack of instance method"
                     | Some this -> this
@@ -1189,7 +1189,7 @@ module IlMachineStateExecution =
                     | Some typeDef ->
                         let hasExplicitParameterlessCtor =
                             typeDef.Methods
-                            |> List.exists (fun m -> m.Name = ".ctor" && not m.IsStatic && m.Parameters.IsEmpty)
+                            |> List.exists (fun m -> m.Name = ".ctor" && not m.IsStatic && MethodInfo.arity m = 0)
 
                         if hasExplicitParameterlessCtor then
                             failwith
@@ -1242,7 +1242,9 @@ module IlMachineStateExecution =
 
                 let ctor =
                     typeDef.Methods
-                    |> List.tryFind (fun m -> m.Name = ".ctor" && not m.IsStatic && m.Parameters.IsEmpty && isPublic m)
+                    |> List.tryFind (fun m ->
+                        m.Name = ".ctor" && not m.IsStatic && MethodInfo.arity m = 0 && isPublic m
+                    )
 
                 match ctor with
                 | None ->
@@ -1251,7 +1253,7 @@ module IlMachineStateExecution =
                     let hasNonPublicParameterless =
                         typeDef.Methods
                         |> List.exists (fun m ->
-                            m.Name = ".ctor" && not m.IsStatic && m.Parameters.IsEmpty && not (isPublic m)
+                            m.Name = ".ctor" && not m.IsStatic && MethodInfo.arity m = 0 && not (isPublic m)
                         )
 
                     let reason =
@@ -1459,10 +1461,10 @@ module IlMachineStateExecution =
         // variable-size constructors, which CoreCLR calls with no `this` at all (see
         // `ConstructionState.ConstructingVariableSize`).
         let popDeclaredParametersOnly () =
-            let args = ImmutableArray.CreateBuilder methodToCall.Parameters.Length
+            let args = ImmutableArray.CreateBuilder (MethodInfo.arity methodToCall)
             let mutable currentState = activeMethodState
 
-            for i = methodToCall.Parameters.Length - 1 downto 0 do
+            for i = MethodInfo.arity methodToCall - 1 downto 0 do
                 let arg, newState = popAndCoerceArg argZeroObjects.[i] currentState
                 args.Add arg
                 currentState <- newState
@@ -1485,7 +1487,7 @@ module IlMachineStateExecution =
                 popDeclaredParametersOnly ()
             | ConstructionState.Constructing _ ->
                 // Instance method: handle `this` pointer
-                let argCount = methodToCall.Parameters.Length
+                let argCount = MethodInfo.arity methodToCall
                 let args = ImmutableArray.CreateBuilder (argCount + 1)
                 let mutable currentState = activeMethodState
                 let thisArgTarget = thisArgCoercionTarget methodToCall
@@ -1507,7 +1509,7 @@ module IlMachineStateExecution =
                 args.ToImmutable (), currentState
             | ConstructionState.NotConstructing ->
                 // Instance method: handle `this` pointer
-                let argCount = methodToCall.Parameters.Length
+                let argCount = MethodInfo.arity methodToCall
                 let args = ImmutableArray.CreateBuilder (argCount + 1)
                 let mutable currentState = activeMethodState
                 let thisArgTarget = thisArgCoercionTarget methodToCall
@@ -1669,7 +1671,7 @@ module IlMachineStateExecution =
             // Find the class constructor (.cctor) if it exists
             let cctor =
                 typeDef.Methods
-                |> List.tryFind (fun method -> method.Name = ".cctor" && method.IsStatic && method.Parameters.IsEmpty)
+                |> List.tryFind (fun method -> method.Name = ".cctor" && method.IsStatic && MethodInfo.arity method = 0)
 
             match cctor with
             | Some cctorMethod ->
@@ -1851,7 +1853,7 @@ module IlMachineStateExecution =
 
         let ctor =
             typeDef.Methods
-            |> List.tryFind (fun method -> method.Name = ".ctor" && not method.IsStatic && method.Parameters.IsEmpty)
+            |> List.tryFind (fun method -> method.Name = ".ctor" && not method.IsStatic && MethodInfo.arity method = 0)
             |> Option.defaultWith (fun () ->
                 failwith
                     $"raiseRuntimeException: no parameterless .ctor found on %s{exceptionTypeInfo.Namespace}.%s{exceptionTypeInfo.Name}"

@@ -706,7 +706,7 @@ module NativeRuntimeTypeQCall =
 
                 let ctor =
                     typeInfo.Methods
-                    |> List.tryFind (fun m -> m.Name = ".ctor" && not m.IsStatic && m.Parameters.IsEmpty)
+                    |> List.tryFind (fun m -> m.Name = ".ctor" && not m.IsStatic && MethodInfo.arity m = 0)
                     |> Option.defaultWith (fun () ->
                         failwith
                             $"%s{operation}: no parameterless .ctor found on %s{typeInfo.Namespace}.%s{typeInfo.Name}"

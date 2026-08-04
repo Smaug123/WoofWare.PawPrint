@@ -272,8 +272,27 @@ type MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars> =
         Body : MethodBody<'methodVars>
 
         /// <summary>
-        /// The parameters of this method.
+        /// The parameters of this method, as read from the metadata Param table.
         /// </summary>
+        /// <remarks>
+        /// <para>
+        /// The Param table only carries a row per parameter that has metadata worth recording
+        /// (a name, a default value, marshalling info) — <see cref="Parameter.readAll"/> also
+        /// drops any row with <c>SequenceNumber = 0</c> (an unnamed "ref return" row some
+        /// compilers emit). Consequently <c>Parameters.Length</c> is <b>not</b> a reliable
+        /// arity: it can be short, or entirely empty, for a method whose parameters carry no
+        /// metadata at all — the F# compiler emits abstract member declarations this way, with
+        /// zero Param rows regardless of declared arity.
+        /// </para>
+        /// <para>
+        /// Do not use this field, or its <c>Length</c>/<c>IsEmpty</c>, to answer "how many
+        /// parameters does this method take?" or "is this method parameterless?". Use
+        /// <see cref="MethodInfo.arity"/> instead, which is derived from
+        /// <see cref="MethodInfo.Signature"/> and is therefore always accurate. Reserve this
+        /// field for call sites that genuinely want per-parameter metadata (names, default
+        /// values).
+        /// </para>
+        /// </remarks>
         Parameters : Parameter ImmutableArray
 
         /// <summary>
@@ -322,6 +341,13 @@ module MethodInfo =
         && a.DeclaringType.Generics = b.DeclaringType.Generics
         && a.Handle = b.Handle
         && a.Generics = b.Generics
+
+    /// The true number of declared parameters (excluding `this`), independent of how many
+    /// Param-table rows the metadata happened to carry. See the doc comment on
+    /// <see cref="MethodInfo.Parameters"/> for why `Parameters.Length`/`IsEmpty` must not be
+    /// used for this: the Param table is metadata-only and can under-count, or be entirely
+    /// empty, relative to the method's real declared arity.
+    let arity (m : MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars>) : int = m.Signature.ParameterTypes.Length
 
     let private isIntrinsicAttributeType (namespaceName : string) (typeName : string) : bool =
         namespaceName = "System.Runtime.CompilerServices"
