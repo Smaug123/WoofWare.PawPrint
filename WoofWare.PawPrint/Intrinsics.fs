@@ -1098,20 +1098,27 @@ module Intrinsics =
 
                 let ptr, state = IlMachineState.popEvalStack currentThread state
 
-                let src =
-                    match ptr with
-                    | EvalStackValue.ManagedPointer src -> src
-                    | EvalStackValue.NullObjectRef -> failwith "TODO: Unsafe.ReadUnaligned on null should throw NRE"
-                    | _ -> failwith $"TODO: Unsafe.ReadUnaligned: expected ManagedPointer, got %O{ptr}"
+                match ptr with
+                // A null byref is `ManagedPointer ManagedPointerSource.Null` — that is what
+                // `Unsafe.NullRef` and `Unsafe.AsRef(void*)` produce — so it must be matched
+                // *before* the general `ManagedPointer` arm, which would otherwise carry it into
+                // the byref machinery. `NullObjectRef` is the same condition reached from
+                // hand-written IL.
+                //
+                // `ReadUnaligned`'s body is `ldarg.0; unaligned. 1; ldobj !!T; ret`: no explicit
+                // null check, so the load at address 0 faults and the runtime translates it into
+                // the ordinary parameterless `NullReferenceException`.
+                | EvalStackValue.ManagedPointer ManagedPointerSource.Null
+                | EvalStackValue.NullObjectRef ->
+                    IntrinsicResult.RaiseException (state, baseClassTypes.NullReferenceException, None)
+                | EvalStackValue.ManagedPointer src ->
+                    let v = IlMachineState.readManagedByrefBytesAs baseClassTypes state src tZero
 
-                let v = IlMachineState.readManagedByrefBytesAs baseClassTypes state src tZero
-
-                let state =
                     state
                     |> IlMachineState.pushToEvalStack v currentThread
                     |> IlMachineState.advanceProgramCounter currentThread
-
-                IntrinsicResult.Completed state
+                    |> IntrinsicResult.Completed
+                | _ -> failwith $"TODO: Unsafe.ReadUnaligned: expected ManagedPointer, got %O{ptr}"
             | [ ConcretePointer _ ] ->
 
                 let t =
@@ -1157,28 +1164,31 @@ module Intrinsics =
                 let value, state = IlMachineState.popEvalStack currentThread state
                 let ptr, state = IlMachineState.popEvalStack currentThread state
 
-                let src =
-                    match ptr with
-                    | EvalStackValue.ManagedPointer src -> src
-                    | EvalStackValue.NullObjectRef -> failwith "TODO: Unsafe.WriteUnaligned on null should throw NRE"
-                    | _ -> failwith $"TODO: Unsafe.WriteUnaligned: expected ManagedPointer, got %O{ptr}"
+                match ptr with
+                // As for `ReadUnaligned` above: the C#-reachable null byref is the
+                // `ManagedPointerSource.Null` spelling, so it must precede the general
+                // `ManagedPointer` arm. `WriteUnaligned`'s body is
+                // `ldarg.0; ldarg.1; unaligned. 1; stobj !!T; ret`, with no null check, so the
+                // store at address 0 faults into a parameterless `NullReferenceException`.
+                | EvalStackValue.ManagedPointer ManagedPointerSource.Null
+                | EvalStackValue.NullObjectRef ->
+                    IntrinsicResult.RaiseException (state, baseClassTypes.NullReferenceException, None)
+                | EvalStackValue.ManagedPointer src ->
+                    // Coerce the stack value to a CliType shaped like T: sub-int
+                    // primitives arrive as Int32 and must narrow back to their
+                    // CliType flavour before the byte helpers write it.
+                    let valueAsCli = EvalStackValue.toCliTypeCoerced tZero value
 
-                // Coerce the stack value to a CliType shaped like T: sub-int
-                // primitives arrive as Int32 and must narrow back to their
-                // CliType flavour before the byte helpers write it.
-                let valueAsCli = EvalStackValue.toCliTypeCoerced tZero value
+                    let valueSize = CliType.sizeOf valueAsCli
 
-                let valueSize = CliType.sizeOf valueAsCli
+                    if valueSize <> tSize then
+                        failwith
+                            $"Unsafe.WriteUnaligned: coerced value has size %d{valueSize}, expected %d{tSize} for %O{valueAsCli}"
 
-                if valueSize <> tSize then
-                    failwith
-                        $"Unsafe.WriteUnaligned: coerced value has size %d{valueSize}, expected %d{tSize} for %O{valueAsCli}"
-
-                let state =
                     IlMachineState.writeManagedByrefBytesOrTypedCell baseClassTypes state src valueAsCli
-
-                let state = state |> IlMachineState.advanceProgramCounter currentThread
-                IntrinsicResult.Completed state
+                    |> IlMachineState.advanceProgramCounter currentThread
+                    |> IntrinsicResult.Completed
+                | _ -> failwith $"TODO: Unsafe.WriteUnaligned: expected ManagedPointer, got %O{ptr}"
             | [ ConcretePointer _ ; _ ] ->
 
                 let t =
@@ -1321,11 +1331,33 @@ module Intrinsics =
             let fldHandle, state = IlMachineState.popEvalStack currentThread state
             let arrayRef, state = IlMachineState.popEvalStack currentThread state
 
+            // Argument validation, in the BCL's order:
+            //
+            //     if (array is null) ThrowHelper.ThrowArgumentNullException(ExceptionArgument.array);
+            //     if (fldHandle.IsNullHandle()) throw new ArgumentException(SR.Argument_InvalidHandle);
+            //
+            // Note the first is an `ArgumentNullException`, not the `NullReferenceException` the
+            // shape of the check suggests. The JIT only expands this intrinsic when it recognises
+            // a `newarr` plus a constant `ldtoken`, which a null argument never matches, so the
+            // managed body — and hence these checks — is what really runs.
+            //
+            // Both arguments are already popped and the PC has not advanced, as the raise needs.
+            match arrayRef, fldHandle with
+            | EvalStackValue.NullObjectRef, _ ->
+                // No message: the CLR's is "Value cannot be null. (Parameter 'array')", but that
+                // suffix comes from `_paramName` via `ArgumentException.Message`, and this channel
+                // cannot set `_paramName`. Writing the suffix into `_message` alone would leave
+                // `.Message` and `.ParamName` disagreeing about whether the name is known.
+                IntrinsicResult.RaiseException (state, baseClassTypes.ArgumentNullException, None)
+            | _, EvalStackValue.NullObjectRef ->
+                // `RuntimeFieldHandle.IsNullHandle()` is `m_ptr == null`, which is exactly this
+                // flattened `NullObjectRef` (see the primitive-like note below).
+                IntrinsicResult.RaiseException (state, baseClassTypes.ArgumentException, Some "The handle is invalid.")
+            | _ ->
+
             // Extract the array address
             let arrayAddr : ManagedHeapAddress =
                 match arrayRef with
-                | EvalStackValue.NullObjectRef ->
-                    failwith "TODO: throw NullReferenceException for InitializeArray on null array"
                 | EvalStackValue.ObjectRef addr -> addr
                 | other -> failwith $"InitializeArray: expected array object ref, got %O{other}"
 
@@ -1339,8 +1371,6 @@ module Intrinsics =
             let runtimeFieldInfoAddr : ManagedHeapAddress =
                 match fldHandle with
                 | EvalStackValue.ObjectRef addr -> addr
-                | EvalStackValue.NullObjectRef ->
-                    failwith "TODO: throw ArgumentException for InitializeArray with null field handle"
                 | other -> failwith $"InitializeArray: expected RuntimeFieldHandle ObjectRef, got %O{other}"
 
             // The address-keyed registry index is populated when PawPrint allocates a
@@ -1646,22 +1676,56 @@ module Intrinsics =
                 | CliByteAddressability.ByteAddressable -> true
                 | CliByteAddressability.Rejected _ -> false
 
-            if fromSize <> toSize || not inputAddressable || not targetAddressable then
-                // The BCL throws `NotSupportedException` for these cases. Raising guest exceptions
-                // from intrinsic dispatch is not yet wired (Intrinsics.fs compiles before
-                // IlMachineStateExecution.fs, so `raiseRuntimeException` is not in scope here).
-                // Host-fail for now with a precise diagnostic; mirrors the existing
-                // `Unsafe.ReadUnaligned` null-target TODO above.
+            // `!typeof(T).IsValueType` from the BCL guard. Reference types are pointer-sized on
+            // both sides, so the size clause does not catch them; without this they would reach
+            // PawPrint's byte model and be rejected as a host failure instead of the
+            // `NotSupportedException` the BCL raises. The JIT declines to expand for them for
+            // exactly this reason ("Fallback to the software implementation to throw for
+            // reference types").
+            //
+            // Byrefs, pointers, function pointers and arrays are TypeDescs, for which CoreCLR's
+            // `IsValueTypeImpl` resolves to `IsSubclassOf(typeof(ValueType))` — false for all of
+            // them. Same reasoning as `Type.get_IsValueType` above.
+            let isValueTypeHandle (handle : ConcreteTypeHandle) : bool =
+                match handle with
+                | ConcreteTypeHandle.Byref _
+                | ConcreteTypeHandle.Pointer _
+                | ConcreteTypeHandle.FunctionPointer _
+                | ConcreteTypeHandle.OneDimArrayZero _
+                | ConcreteTypeHandle.Array _ -> false
+                | ConcreteTypeHandle.Concrete _ ->
+                    match AllConcreteTypes.lookup handle state.ConcreteTypes with
+                    | Some ty ->
+                        state.LoadedAssembly(ty.Assembly).Value.TypeDefs.[ty.Definition.Get]
+                        |> DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies
+                    | None -> failwith $"Unsafe.BitCast: expected nominal concrete type handle, got %O{handle}"
+
+            // The BCL's guard is a single `if` with three clauses, all of which mean
+            // `NotSupportedException` via `ThrowHelper.ThrowNotSupportedException` — the
+            // parameterless ctor, hence no message override.
+            //
+            // The two addressability clauses below are PawPrint's own stricter rule, described
+            // above, and are NOT part of that guard: the BCL accepts those inputs
+            // (`Unsafe.BitCast<IntPtr, long>` is legal .NET). Raising a guest exception for them
+            // would make PawPrint throw where the real runtime succeeds, so they stay a host
+            // failure with a precise diagnostic. Because the value-type clause is checked first,
+            // what reaches them is only a *value* type whose provenance the byte model cannot
+            // render — the genuine PawPrint-only restriction.
+            if
+                fromSize <> toSize
+                || not (isValueTypeHandle fromHandle)
+                || not (isValueTypeHandle toHandle)
+            then
+                IntrinsicResult.RaiseException (state, baseClassTypes.NotSupportedException, None)
+            elif not inputAddressable || not targetAddressable then
                 let reason =
-                    if fromSize <> toSize then
-                        $"size mismatch (TFrom = %d{fromSize} bytes, TTo = %d{toSize} bytes)"
-                    elif not inputAddressable then
+                    if not inputAddressable then
                         $"input is not byte-addressable: %s{(CliType.ByteAddressability inputCli).Description}"
                     else
                         $"target is not byte-addressable: %s{(CliType.ByteAddressability toZero).Description}"
 
                 failwith
-                    $"TODO: Unsafe.BitCast<%O{fromHandle}, %O{toHandle}> should throw NotSupportedException (%s{reason})"
+                    $"TODO: Unsafe.BitCast<%O{fromHandle}, %O{toHandle}> is rejected by PawPrint's byte model, though the BCL would allow it (%s{reason})"
             else
                 let bytes = CliType.ToBytes inputCli
                 let result = CliType.OfBytesLike toZero bytes
@@ -2104,8 +2168,14 @@ module Intrinsics =
                 | other -> failwith $"%s{spanTypeName}.get_Item expected _length to be int32, got %O{other}"
 
             if uint32<int32> index >= uint32<int32> length then
-                failwith
-                    $"TODO: %s{spanTypeName}.get_Item index %d{index} outside length %d{length}; throw IndexOutOfRangeException"
+                // `ThrowHelper.ThrowIndexOutOfRangeException()`, i.e. the parameterless ctor, so
+                // no message override. Both arguments are already popped and the PC has not been
+                // advanced, which is what the raise needs.
+                //
+                // The unsigned comparison is the BCL's own: it folds the negative-index case into
+                // the same branch.
+                IntrinsicResult.RaiseException (state, baseClassTypes.IndexOutOfRangeException, None)
+            else
 
             let reference : EvalStackValue =
                 let referenceField =
@@ -2214,27 +2284,33 @@ module Intrinsics =
 
             let arr, state = IlMachineState.popEvalStack currentThread state
 
-            let toPush =
-                match arr with
-                | EvalStackValue.Int32 _
-                | EvalStackValue.Int64 _
-                | EvalStackValue.Float _ -> failwith "expected reference"
-                | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
-                | EvalStackValue.ObjectRef addr ->
-                    if not (state.ManagedHeap.Arrays.ContainsKey addr) then
-                        failwith "array not found"
+            match arr with
+            | EvalStackValue.Int32 _
+            | EvalStackValue.Int64 _
+            | EvalStackValue.Float _ -> failwith "expected reference"
+            | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
+            | EvalStackValue.ObjectRef addr ->
+                if not (state.ManagedHeap.Arrays.ContainsKey addr) then
+                    failwith "array not found"
 
+                let toPush =
                     ManagedPointerSource.Byref (ByrefRoot.ArrayElement (addr, 0), [])
                     |> EvalStackValue.ManagedPointer
-                | EvalStackValue.NullObjectRef
-                | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> failwith "TODO: raise NRE"
-                | EvalStackValue.UserDefinedValueType evalStackValueUserType -> failwith "todo"
-                | EvalStackValue.ManagedPointer _ -> failwith "todo"
 
-            state
-            |> IlMachineState.pushToEvalStack' toPush currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
-            |> IntrinsicResult.Completed
+                state
+                |> IlMachineState.pushToEvalStack' toPush currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> IntrinsicResult.Completed
+            | EvalStackValue.NullObjectRef
+            | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
+                // The null case is a documented `NullReferenceException`
+                // (`<exception cref="NullReferenceException">` on the method), and the JIT emits
+                // an explicit `gtNewNullCheck` for it rather than relying on the load faulting,
+                // so it is guaranteed rather than incidental. The parameterless ctor's message is
+                // the one the runtime produces.
+                IntrinsicResult.RaiseException (state, baseClassTypes.NullReferenceException, None)
+            | EvalStackValue.UserDefinedValueType evalStackValueUserType -> failwith "todo"
+            | EvalStackValue.ManagedPointer _ -> failwith "todo"
         | "System.Private.CoreLib", "Array", "Clone" ->
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Array.cs#L1071-L1077
             // The managed body is `return MemberwiseClone();`, and CoreCLR's MemberwiseClone
