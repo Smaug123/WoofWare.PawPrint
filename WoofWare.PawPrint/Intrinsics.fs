@@ -1530,7 +1530,20 @@ module Intrinsics =
                     | EvalStackValue.Int64 _
                     | EvalStackValue.Float _ -> failwith "expected pointer type"
                     | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
-                    | EvalStackValue.NullObjectRef -> failwith "todo: Unsafe.As on null"
+                    | EvalStackValue.NullObjectRef ->
+                        // A null byref spelled as an object reference, which is what hand-written
+                        // IL produces; `reinterpretAs` below handles the
+                        // `ManagedPointer ManagedPointerSource.Null` spelling that guest C#
+                        // produces, but it takes a `ManagedPointerSource` and so cannot see this
+                        // one. Same answer either way: `Unsafe.As` does not null-check (its CoreLib
+                        // body is `ldarg.0; ret`, and the JIT's `NI_SRCS_UNSAFE_As` expansion is a
+                        // bare `impPopStack().val`), and reinterpreting is address-preserving, so
+                        // null in means null out.
+                        //
+                        // Normalising to the managed-pointer spelling matches how `Unsafe.NullRef`
+                        // and `Unsafe.AsRef(void*)` above represent a null byref, so that
+                        // `Unsafe.IsNullRef` recognises the result.
+                        EvalStackValue.ManagedPointer ManagedPointerSource.Null
                     | EvalStackValue.ManagedPointer src when from = to_ ->
                         // Unsafe.As<T,T> is a no-op: same address and same type view.
                         // Skipping the projection keeps the representation canonical so
