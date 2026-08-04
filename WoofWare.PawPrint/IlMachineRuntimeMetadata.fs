@@ -1375,7 +1375,28 @@ module IlMachineRuntimeMetadata =
                     ]
                     |> List.exists (fun ty -> ty.Identity = id)
 
-                if isPrimitive then Some id else None
+                if isPrimitive then
+                    Some id
+                else if
+                    // CoreCLR puts three CoreLib handle structs in the primitive category too,
+                    // by name, reporting ELEMENT_TYPE_I — the same element type as `IntPtr`
+                    // (MethodTableBuilder, the `g_RuntimeMethodHandleInternalName` /
+                    // `g_RuntimeFieldHandleInternalName` / `g_RuntimeArgumentHandleName` arms of
+                    // `SetInternalCorElementType`). So `unbox.any IntPtr` on one of them is legal.
+                    // PawPrint already flattens the two `*HandleInternal` structs to a
+                    // runtime-pointer NativeInt, so they can be honoured exactly.
+                    //
+                    // `RuntimeArgumentHandle` is deliberately absent: PawPrint has no
+                    // `PrimitiveLikeKind` for it, so it is not stored flattened and answering
+                    // `Some` here would license an unbox this interpreter cannot materialise.
+                    // It stays unclassified, which costs an InvalidCastException in a case only
+                    // `__arglist` IL can reach.
+                    id = baseClassTypes.RuntimeMethodHandleInternal.Identity
+                    || id = baseClassTypes.RuntimeFieldHandleInternal.Identity
+                then
+                    Some baseClassTypes.IntPtr.Identity
+                else
+                    None
 
         match handle with
         | ConcreteTypeHandle.OneDimArrayZero _
@@ -1419,8 +1440,9 @@ module IlMachineRuntimeMetadata =
         let state, isEnum = isEnumValueType loggerFactory baseClassTypes state handle
 
         if not isEnum then
-            // A built-in primitive is flattened by definition; nothing else reaches here, because
-            // the caller has already established a primitive element identity for `handle`.
+            // The caller has already established a primitive element identity for `handle`, so it
+            // is either a built-in primitive (flattened by definition) or one of the two
+            // `*HandleInternal` structs, which `PrimitiveLikeKind.FlattenToRuntimePointer` flattens.
             state, true
         else
             match enumUnderlyingHandle loggerFactory baseClassTypes state handle with
