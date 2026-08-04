@@ -456,6 +456,197 @@ module TestBinaryArithmetic =
         execute ArithmeticOperation.sub state (arrayPointer arr 3) (EvalStackValue.Int32 2)
         |> expectArrayPointer arr 1
 
+    /// Weighted towards the range boundaries, so `sub.ovf`'s trapping regime is
+    /// exercised as often as its ordinary arithmetic one.
+    let private genOverflowProneInt32 : Gen<int32> =
+        Gen.frequency
+            [
+                2, ArbMap.defaults |> ArbMap.generate<int32>
+                2, Gen.choose (-8, 8)
+                3,
+                Gen.elements
+                    [
+                        System.Int32.MinValue
+                        System.Int32.MinValue + 1
+                        System.Int32.MaxValue
+                        System.Int32.MaxValue - 1
+                        0
+                        -1
+                        1
+                    ]
+            ]
+
+    let private genOverflowProneInt64 : Gen<int64> =
+        Gen.frequency
+            [
+                2, ArbMap.defaults |> ArbMap.generate<int64>
+                2, Gen.choose (-8, 8) |> Gen.map int64<int>
+                3,
+                Gen.elements
+                    [
+                        System.Int64.MinValue
+                        System.Int64.MinValue + 1L
+                        System.Int64.MaxValue
+                        System.Int64.MaxValue - 1L
+                        0L
+                        -1L
+                        1L
+                        int64<int32> System.Int32.MinValue
+                        int64<int32> System.Int32.MaxValue
+                    ]
+            ]
+
+    /// `None` means the operation raised OverflowException, which `Sub_ovf`
+    /// translates into a guest `System.OverflowException`.
+    let private trySubOvf
+        (state : IlMachineState)
+        (val1 : EvalStackValue)
+        (val2 : EvalStackValue)
+        : EvalStackValue option
+        =
+        try
+            execute ArithmeticOperation.subOvf state val1 val2 |> Some
+        with :? System.OverflowException ->
+            None
+
+    [<Test>]
+    let ``sub ovf on int32 traps exactly when the exact difference leaves int32 range`` () : unit =
+        let state = state ()
+        let mutable trapped = 0
+        let mutable computed = 0
+
+        let property (a : int32, b : int32) : unit =
+            let exact = bigint a - bigint b
+
+            let inRange =
+                exact >= bigint System.Int32.MinValue && exact <= bigint System.Int32.MaxValue
+
+            match trySubOvf state (EvalStackValue.Int32 a) (EvalStackValue.Int32 b) with
+            | Some actual ->
+                computed <- computed + 1
+
+                if not inRange then
+                    failwith
+                        $"sub.ovf %d{a} - %d{b} returned %O{actual}, but the exact difference %O{exact} is outside int32"
+
+                actual |> shouldEqual (EvalStackValue.Int32 (int32 exact))
+                // In range, the checked and unchecked forms must agree.
+                actual
+                |> shouldEqual (execute ArithmeticOperation.sub state (EvalStackValue.Int32 a) (EvalStackValue.Int32 b))
+            | None ->
+                trapped <- trapped + 1
+
+                if inRange then
+                    failwith $"sub.ovf %d{a} - %d{b} trapped, but the exact difference %O{exact} fits in int32"
+
+        Check.One (
+            propertyConfig,
+            Prop.forAll (Arb.fromGen (Gen.zip genOverflowProneInt32 genOverflowProneInt32)) property
+        )
+
+        if trapped = 0 || computed = 0 then
+            failwith $"generator missed a regime: trapped=%d{trapped}, computed=%d{computed}"
+
+    [<Test>]
+    let ``sub ovf on int64 traps exactly when the exact difference leaves int64 range`` () : unit =
+        let state = state ()
+        let mutable trapped = 0
+        let mutable computed = 0
+
+        let property (a : int64, b : int64) : unit =
+            let exact = bigint a - bigint b
+
+            let inRange =
+                exact >= bigint System.Int64.MinValue && exact <= bigint System.Int64.MaxValue
+
+            let val1 = EvalStackValue.Int64 (Int64Source.Verbatim a)
+            let val2 = EvalStackValue.Int64 (Int64Source.Verbatim b)
+
+            match trySubOvf state val1 val2 with
+            | Some actual ->
+                computed <- computed + 1
+
+                if not inRange then
+                    failwith
+                        $"sub.ovf %d{a} - %d{b} returned %O{actual}, but the exact difference %O{exact} is outside int64"
+
+                actual
+                |> shouldEqual (EvalStackValue.Int64 (Int64Source.Verbatim (int64 exact)))
+
+                actual |> shouldEqual (execute ArithmeticOperation.sub state val1 val2)
+            | None ->
+                trapped <- trapped + 1
+
+                if inRange then
+                    failwith $"sub.ovf %d{a} - %d{b} trapped, but the exact difference %O{exact} fits in int64"
+
+        Check.One (
+            propertyConfig,
+            Prop.forAll (Arb.fromGen (Gen.zip genOverflowProneInt64 genOverflowProneInt64)) property
+        )
+
+        if trapped = 0 || computed = 0 then
+            failwith $"generator missed a regime: trapped=%d{trapped}, computed=%d{computed}"
+
+    [<Test>]
+    let ``sub ovf shares sub's pointer semantics`` () : unit =
+        // ECMA-335 III.3.68 gives sub.ovf the same `& - int -> &` and
+        // `& - & -> native int` signatures as sub, and our pointer model is
+        // symbolic, so there is nothing extra to trap on: the two ops must be
+        // indistinguishable on every pointer shape.
+        let state, arr1, arr2 = stateWithTwoIntArrays [ 10 ; 20 ; 30 ; 40 ] [ 50 ; 60 ]
+        let nullPtr = EvalStackValue.ManagedPointer ManagedPointerSource.Null
+
+        let placeholder (bits : int64) : EvalStackValue =
+            EvalStackValue.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits)
+
+        let cases : (EvalStackValue * EvalStackValue) list =
+            [
+                arrayPointer arr1 3, EvalStackValue.Int32 2
+                arrayPointer arr1 1, EvalStackValue.Int32 -1
+                arrayPointer arr1 2, EvalStackValue.NativeInt (NativeIntSource.Verbatim 1L)
+                arrayPointer arr1 3, arrayPointer arr1 1
+                arrayPointer arr1 1, arrayPointer arr1 3
+                arrayPointer arr1 1, arrayPointer arr2 0
+                byteViewPointer arr1 1 3, byteViewPointer arr1 0 1
+                arrayPointer arr1 2, nullPtr
+                nullPtr, nullPtr
+                placeholder 64L, placeholder 24L
+                placeholder 64L, nullPtr
+                nullPtr, placeholder 24L
+                EvalStackValue.Int32 7, nullPtr
+            ]
+
+        // Shapes our pointer model declines to subtract at all (here: an array
+        // byte view against a plain array byref). Both ops must refuse them;
+        // the messages are deliberately not compared, only the refusal.
+        let refused : (EvalStackValue * EvalStackValue) list =
+            [ byteViewPointer arr1 1 3, arrayPointer arr1 0 ]
+
+        let run (op : IArithmeticOperation) (val1 : EvalStackValue) (val2 : EvalStackValue) : EvalStackValue option =
+            try
+                execute op state val1 val2 |> Some
+            with _ ->
+                None
+
+        for val1, val2 in cases do
+            let expected = execute ArithmeticOperation.sub state val1 val2
+
+            match trySubOvf state val1 val2 with
+            | Some actual ->
+                if actual <> expected then
+                    failwith $"sub.ovf %O{val1} - %O{val2} gave %O{actual}, but sub gave %O{expected}"
+            | None -> failwith $"sub.ovf %O{val1} - %O{val2} trapped, but sub gave %O{expected}"
+
+        for val1, val2 in refused do
+            match run ArithmeticOperation.sub val1 val2 with
+            | Some result -> failwith $"expected sub to refuse %O{val1} - %O{val2}, but it gave %O{result}"
+            | None ->
+
+            match run ArithmeticOperation.subOvf val1 val2 with
+            | Some result -> failwith $"sub refused %O{val1} - %O{val2}, but sub.ovf gave %O{result}"
+            | None -> ()
+
     [<Test>]
     let ``subtracting two plain byrefs in the same array returns byte delta`` () : unit =
         let state, arr = stateWithIntArray [ 10 ; 20 ; 30 ; 40 ]

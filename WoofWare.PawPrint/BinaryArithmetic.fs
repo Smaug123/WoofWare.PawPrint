@@ -355,6 +355,258 @@ module ArithmeticOperation =
             member _.Name = "add.ovf"
         }
 
+    /// Pointer arithmetic is identical for `sub` and `sub.ovf`: ECMA-335 gives
+    /// both the same `& - int -> &` and `& - & -> native int` signatures, and
+    /// our pointer model is symbolic (offsets, not addresses), so there are no
+    /// machine-width bits to overflow. The int32 offset model's own limits are
+    /// enforced by `checkedAddInt32`, which fails loudly rather than throwing
+    /// OverflowException into the guest.
+    let private subManagedPtrManagedPtr
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (ptr1 : ManagedPointerSource)
+        (ptr2 : ManagedPointerSource)
+        : Choice<ManagedPointerSource, NativeIntSource>
+        =
+        match ptr1, ptr2 with
+        // `Unsafe.AsRef<T>((void*)bits)` produces a bit-pattern byref,
+        // and the null managed pointer is just the placeholder at
+        // `bits = 0`. Pointer subtraction over these is plain bit
+        // subtraction: GetNonNullPinnableReference uses
+        // `endPtr - startPtr` to recover an empty span's byte length
+        // (0 when the placeholders share a bit pattern). These arms
+        // must precede the generic `Null`-on-either-side arms below,
+        // which would otherwise return the left ManagedPointer
+        // (Choice1Of2) for `placeholder - Null` or refuse the
+        // `Null - placeholder` case.
+        | ManagedPointerSource.NativeIntPlaceholder bits1, ManagedPointerSource.NativeIntPlaceholder bits2 ->
+            bits1 - bits2 |> verbatimInt64 |> Choice2Of2
+        | ManagedPointerSource.NativeIntPlaceholder bits1, ManagedPointerSource.Null ->
+            bits1 |> verbatimInt64 |> Choice2Of2
+        | ManagedPointerSource.Null, ManagedPointerSource.NativeIntPlaceholder bits2 ->
+            -bits2 |> verbatimInt64 |> Choice2Of2
+        | ptr1, ManagedPointerSource.Null -> Choice1Of2 ptr1
+        | ManagedPointerSource.Null, _ -> failwith "refusing to create negative pointer"
+        | ManagedPointerSource.NativeIntPlaceholder _, _
+        | _, ManagedPointerSource.NativeIntPlaceholder _ ->
+            failwith $"refusing to subtract through fake non-null byref placeholder: %O{ptr1} and %O{ptr2}"
+        | ManagedPointerSource.Byref (ByrefRoot.Argument _, _), _
+        | _, ManagedPointerSource.Byref (ByrefRoot.Argument _, _) ->
+            failwith $"refusing to operate on pointers to arguments: %O{ptr1} and %O{ptr2}"
+        | ManagedPointerSource.Byref _, ManagedPointerSource.Byref _ ->
+            match ArithmeticTarget.decompose ptr1, ArithmeticTarget.decompose ptr2 with
+            | ArithmeticTarget.StackMemoryTarget (thread1, frame1, block1, byteOffset1),
+              ArithmeticTarget.StackMemoryTarget (thread2, frame2, block2, byteOffset2) ->
+                if thread1 = thread2 && frame1 = frame2 && block1 = block2 then
+                    int64 byteOffset1 - int64 byteOffset2 |> verbatimInt64 |> Choice2Of2
+                else
+                    NativeIntSource.syntheticCrossStorageByteOffset
+                        (ByteStorageIdentity.StackMemory (thread2, frame2, block2))
+                        (int64 byteOffset2)
+                        (ByteStorageIdentity.StackMemory (thread1, frame1, block1))
+                        (int64 byteOffset1)
+                    |> Choice2Of2
+            | ArithmeticTarget.NativeMemoryTarget (block1, byteOffset1),
+              ArithmeticTarget.NativeMemoryTarget (block2, byteOffset2) ->
+                if block1 = block2 then
+                    int64 byteOffset1 - int64 byteOffset2 |> verbatimInt64 |> Choice2Of2
+                else
+                    NativeIntSource.syntheticCrossStorageByteOffset
+                        (ByteStorageIdentity.NativeMemory block2)
+                        (int64 byteOffset2)
+                        (ByteStorageIdentity.NativeMemory block1)
+                        (int64 byteOffset1)
+                    |> Choice2Of2
+            | ArithmeticTarget.ArrayTarget (arr1, index1), ArithmeticTarget.ArrayTarget (arr2, index2) ->
+                subtractArrayByteLocations baseClassTypes state arr1 index1 0 arr2 index2 0
+                |> Choice2Of2
+            | ArithmeticTarget.StringTarget (str1, index1), ArithmeticTarget.StringTarget (str2, index2) ->
+                if str1 <> str2 then
+                    failwith $"refusing to subtract character pointers into different strings: %O{str1} vs %O{str2}"
+
+                (int64 index1 - int64 index2) * 2L |> verbatimInt64 |> Choice2Of2
+            | ArithmeticTarget.ByteViewTarget (ByrefRoot.ArrayElement (arr1, index1), prefix1, _, offset1),
+              ArithmeticTarget.ByteViewTarget (ByrefRoot.ArrayElement (arr2, index2), prefix2, _, offset2) when
+                prefix1 = prefix2
+                ->
+                subtractArrayByteLocations baseClassTypes state arr1 index1 offset1 arr2 index2 offset2
+                |> Choice2Of2
+            | ArithmeticTarget.ByteViewTarget (ByrefRoot.StackMemoryByte (thread1, frame1, block1, rootOffset1),
+                                               prefix1,
+                                               _,
+                                               offset1),
+              ArithmeticTarget.ByteViewTarget (ByrefRoot.StackMemoryByte (thread2, frame2, block2, rootOffset2),
+                                               prefix2,
+                                               _,
+                                               offset2) when prefix1 = prefix2 ->
+                let byteOffset1 = int64 rootOffset1 + int64 offset1
+                let byteOffset2 = int64 rootOffset2 + int64 offset2
+
+                if thread1 = thread2 && frame1 = frame2 && block1 = block2 then
+                    byteOffset1 - byteOffset2 |> verbatimInt64 |> Choice2Of2
+                else
+                    NativeIntSource.syntheticCrossStorageByteOffset
+                        (ByteStorageIdentity.StackMemory (thread2, frame2, block2))
+                        byteOffset2
+                        (ByteStorageIdentity.StackMemory (thread1, frame1, block1))
+                        byteOffset1
+                    |> Choice2Of2
+            | ArithmeticTarget.ByteViewTarget (ByrefRoot.StackMemoryByte (thread1, frame1, block1, rootOffset1),
+                                               [],
+                                               _,
+                                               offset1),
+              ArithmeticTarget.StackMemoryTarget (thread2, frame2, block2, byteOffset2) ->
+                let byteOffset1 = int64 rootOffset1 + int64 offset1
+
+                if thread1 = thread2 && frame1 = frame2 && block1 = block2 then
+                    byteOffset1 - int64 byteOffset2 |> verbatimInt64 |> Choice2Of2
+                else
+                    NativeIntSource.syntheticCrossStorageByteOffset
+                        (ByteStorageIdentity.StackMemory (thread2, frame2, block2))
+                        (int64 byteOffset2)
+                        (ByteStorageIdentity.StackMemory (thread1, frame1, block1))
+                        byteOffset1
+                    |> Choice2Of2
+            | ArithmeticTarget.StackMemoryTarget (thread1, frame1, block1, byteOffset1),
+              ArithmeticTarget.ByteViewTarget (ByrefRoot.StackMemoryByte (thread2, frame2, block2, rootOffset2),
+                                               [],
+                                               _,
+                                               offset2) ->
+                let byteOffset2 = int64 rootOffset2 + int64 offset2
+
+                if thread1 = thread2 && frame1 = frame2 && block1 = block2 then
+                    int64 byteOffset1 - byteOffset2 |> verbatimInt64 |> Choice2Of2
+                else
+                    NativeIntSource.syntheticCrossStorageByteOffset
+                        (ByteStorageIdentity.StackMemory (thread2, frame2, block2))
+                        byteOffset2
+                        (ByteStorageIdentity.StackMemory (thread1, frame1, block1))
+                        (int64 byteOffset1)
+                    |> Choice2Of2
+            | ArithmeticTarget.ByteViewTarget (ByrefRoot.NativeMemoryByte (block1, rootOffset1), prefix1, _, offset1),
+              ArithmeticTarget.ByteViewTarget (ByrefRoot.NativeMemoryByte (block2, rootOffset2), prefix2, _, offset2) when
+                prefix1 = prefix2
+                ->
+                let byteOffset1 = int64 rootOffset1 + int64 offset1
+                let byteOffset2 = int64 rootOffset2 + int64 offset2
+
+                if block1 = block2 then
+                    byteOffset1 - byteOffset2 |> verbatimInt64 |> Choice2Of2
+                else
+                    NativeIntSource.syntheticCrossStorageByteOffset
+                        (ByteStorageIdentity.NativeMemory block2)
+                        byteOffset2
+                        (ByteStorageIdentity.NativeMemory block1)
+                        byteOffset1
+                    |> Choice2Of2
+            | ArithmeticTarget.ByteViewTarget (ByrefRoot.NativeMemoryByte (block1, rootOffset1), [], _, offset1),
+              ArithmeticTarget.NativeMemoryTarget (block2, byteOffset2) ->
+                let byteOffset1 = int64 rootOffset1 + int64 offset1
+
+                if block1 = block2 then
+                    byteOffset1 - int64 byteOffset2 |> verbatimInt64 |> Choice2Of2
+                else
+                    NativeIntSource.syntheticCrossStorageByteOffset
+                        (ByteStorageIdentity.NativeMemory block2)
+                        (int64 byteOffset2)
+                        (ByteStorageIdentity.NativeMemory block1)
+                        byteOffset1
+                    |> Choice2Of2
+            | ArithmeticTarget.NativeMemoryTarget (block1, byteOffset1),
+              ArithmeticTarget.ByteViewTarget (ByrefRoot.NativeMemoryByte (block2, rootOffset2), [], _, offset2) ->
+                let byteOffset2 = int64 rootOffset2 + int64 offset2
+
+                if block1 = block2 then
+                    int64 byteOffset1 - byteOffset2 |> verbatimInt64 |> Choice2Of2
+                else
+                    NativeIntSource.syntheticCrossStorageByteOffset
+                        (ByteStorageIdentity.NativeMemory block2)
+                        byteOffset2
+                        (ByteStorageIdentity.NativeMemory block1)
+                        (int64 byteOffset1)
+                    |> Choice2Of2
+            | ArithmeticTarget.ByteViewTarget (ByrefRoot.StringCharAt (str1, index1), prefix1, _, offset1),
+              ArithmeticTarget.ByteViewTarget (ByrefRoot.StringCharAt (str2, index2), prefix2, _, offset2) when
+                prefix1 = prefix2
+                ->
+                if str1 <> str2 then
+                    failwith
+                        $"refusing to subtract character byte-view pointers into different strings: %O{str1} vs %O{str2}"
+
+                ((int64 index1 * 2L + int64 offset1) - (int64 index2 * 2L + int64 offset2))
+                |> verbatimInt64
+                |> Choice2Of2
+            | ArithmeticTarget.ByteViewTarget (ByrefRoot.StringCharAt (str1, index1), [], _, offset1),
+              ArithmeticTarget.StringTarget (str2, index2) ->
+                if str1 <> str2 then
+                    failwith
+                        $"refusing to subtract character byte-view pointer from pointer into different string: %O{str1} vs %O{str2}"
+
+                ((int64 index1 * 2L + int64 offset1) - int64 index2 * 2L)
+                |> verbatimInt64
+                |> Choice2Of2
+            | ArithmeticTarget.StringTarget (str1, index1),
+              ArithmeticTarget.ByteViewTarget (ByrefRoot.StringCharAt (str2, index2), [], _, offset2) ->
+                if str1 <> str2 then
+                    failwith
+                        $"refusing to subtract character pointer from byte-view pointer into different string: %O{str1} vs %O{str2}"
+
+                (int64 index1 * 2L - (int64 index2 * 2L + int64 offset2))
+                |> verbatimInt64
+                |> Choice2Of2
+            | ArithmeticTarget.FieldTarget (container1, field1), ArithmeticTarget.FieldTarget (container2, field2) ->
+                if container1 <> container2 then
+                    failwith
+                        $"refusing to subtract pointers to fields of different containers: %O{container1} vs %O{container2}"
+
+                let obj1 = ArithmeticTarget.getFieldContainerValue baseClassTypes state container1
+                let obj2 = ArithmeticTarget.getFieldContainerValue baseClassTypes state container2
+
+                let offset1, _ = CliType.getFieldLayoutById field1 obj1
+                let offset2, _ = CliType.getFieldLayoutById field2 obj2
+
+                int64 offset1 - int64 offset2 |> verbatimInt64 |> Choice2Of2
+            | ArithmeticTarget.ByteViewTarget (root1, prefix1, _, off1),
+              ArithmeticTarget.ByteViewTarget (root2, prefix2, _, off2) when root1 = root2 && prefix1 = prefix2 ->
+                // Same underlying storage; subtraction is the byte-offset
+                // delta regardless of which `ReinterpretAs` type was used
+                // on each side (the view is address-preserving).
+                int64 off1 - int64 off2 |> verbatimInt64 |> Choice2Of2
+            | ArithmeticTarget.StackMemoryTarget _, _
+            | _, ArithmeticTarget.StackMemoryTarget _ ->
+                failwith $"refusing to subtract localloc byte pointer from incompatible pointer: %O{ptr1} vs %O{ptr2}"
+            | ArithmeticTarget.NativeMemoryTarget _, _
+            | _, ArithmeticTarget.NativeMemoryTarget _ ->
+                failwith
+                    $"refusing to subtract native memory byte pointer from incompatible pointer: %O{ptr1} vs %O{ptr2}"
+            | ArithmeticTarget.ArrayTarget _, _
+            | _, ArithmeticTarget.ArrayTarget _ ->
+                failwith $"refusing to subtract array element pointer from incompatible pointer: %O{ptr1} vs %O{ptr2}"
+            | ArithmeticTarget.StringTarget _, _
+            | _, ArithmeticTarget.StringTarget _ ->
+                failwith
+                    $"refusing to subtract string character pointer from incompatible pointer: %O{ptr1} vs %O{ptr2}"
+            | target1, target2 ->
+                failwith
+                    $"TODO: subtracting incompatible managed pointer targets is not implemented: %O{target1} vs %O{target2} (%O{ptr1} vs %O{ptr2})"
+
+    let private subInt32ManagedPtr (val1 : int32) (ptr2 : ManagedPointerSource) : Choice<ManagedPointerSource, int> =
+        match ptr2 with
+        | ManagedPointerSource.Null -> Choice2Of2 val1
+        | _ -> failwith "refusing to subtract a pointer"
+
+    let private subManagedPtrInt32
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (ptr1 : ManagedPointerSource)
+        (val2 : int32)
+        : Choice<ManagedPointerSource, int>
+        =
+        if val2 = System.Int32.MinValue then
+            failwith "managed pointer subtraction by Int32.MinValue would overflow the interpreter's int32 offset model"
+
+        addInt32ManagedPtr baseClassTypes state (-val2) ptr1
+
     let sub =
         { new IArithmeticOperation with
             member _.Int32Int32 a b = (# "sub" a b : int32 #)
@@ -371,249 +623,46 @@ module ArithmeticOperation =
                     failwith "refusing to sub SyntheticCrossArrayOffsets"
 
             member _.ManagedPtrManagedPtr baseClassTypes state ptr1 ptr2 =
-                match ptr1, ptr2 with
-                // `Unsafe.AsRef<T>((void*)bits)` produces a bit-pattern byref,
-                // and the null managed pointer is just the placeholder at
-                // `bits = 0`. Pointer subtraction over these is plain bit
-                // subtraction: GetNonNullPinnableReference uses
-                // `endPtr - startPtr` to recover an empty span's byte length
-                // (0 when the placeholders share a bit pattern). These arms
-                // must precede the generic `Null`-on-either-side arms below,
-                // which would otherwise return the left ManagedPointer
-                // (Choice1Of2) for `placeholder - Null` or refuse the
-                // `Null - placeholder` case.
-                | ManagedPointerSource.NativeIntPlaceholder bits1, ManagedPointerSource.NativeIntPlaceholder bits2 ->
-                    bits1 - bits2 |> verbatimInt64 |> Choice2Of2
-                | ManagedPointerSource.NativeIntPlaceholder bits1, ManagedPointerSource.Null ->
-                    bits1 |> verbatimInt64 |> Choice2Of2
-                | ManagedPointerSource.Null, ManagedPointerSource.NativeIntPlaceholder bits2 ->
-                    -bits2 |> verbatimInt64 |> Choice2Of2
-                | ptr1, ManagedPointerSource.Null -> Choice1Of2 ptr1
-                | ManagedPointerSource.Null, _ -> failwith "refusing to create negative pointer"
-                | ManagedPointerSource.NativeIntPlaceholder _, _
-                | _, ManagedPointerSource.NativeIntPlaceholder _ ->
-                    failwith $"refusing to subtract through fake non-null byref placeholder: %O{ptr1} and %O{ptr2}"
-                | ManagedPointerSource.Byref (ByrefRoot.Argument _, _), _
-                | _, ManagedPointerSource.Byref (ByrefRoot.Argument _, _) ->
-                    failwith $"refusing to operate on pointers to arguments: %O{ptr1} and %O{ptr2}"
-                | ManagedPointerSource.Byref _, ManagedPointerSource.Byref _ ->
-                    match ArithmeticTarget.decompose ptr1, ArithmeticTarget.decompose ptr2 with
-                    | ArithmeticTarget.StackMemoryTarget (thread1, frame1, block1, byteOffset1),
-                      ArithmeticTarget.StackMemoryTarget (thread2, frame2, block2, byteOffset2) ->
-                        if thread1 = thread2 && frame1 = frame2 && block1 = block2 then
-                            int64 byteOffset1 - int64 byteOffset2 |> verbatimInt64 |> Choice2Of2
-                        else
-                            NativeIntSource.syntheticCrossStorageByteOffset
-                                (ByteStorageIdentity.StackMemory (thread2, frame2, block2))
-                                (int64 byteOffset2)
-                                (ByteStorageIdentity.StackMemory (thread1, frame1, block1))
-                                (int64 byteOffset1)
-                            |> Choice2Of2
-                    | ArithmeticTarget.NativeMemoryTarget (block1, byteOffset1),
-                      ArithmeticTarget.NativeMemoryTarget (block2, byteOffset2) ->
-                        if block1 = block2 then
-                            int64 byteOffset1 - int64 byteOffset2 |> verbatimInt64 |> Choice2Of2
-                        else
-                            NativeIntSource.syntheticCrossStorageByteOffset
-                                (ByteStorageIdentity.NativeMemory block2)
-                                (int64 byteOffset2)
-                                (ByteStorageIdentity.NativeMemory block1)
-                                (int64 byteOffset1)
-                            |> Choice2Of2
-                    | ArithmeticTarget.ArrayTarget (arr1, index1), ArithmeticTarget.ArrayTarget (arr2, index2) ->
-                        subtractArrayByteLocations baseClassTypes state arr1 index1 0 arr2 index2 0
-                        |> Choice2Of2
-                    | ArithmeticTarget.StringTarget (str1, index1), ArithmeticTarget.StringTarget (str2, index2) ->
-                        if str1 <> str2 then
-                            failwith
-                                $"refusing to subtract character pointers into different strings: %O{str1} vs %O{str2}"
+                subManagedPtrManagedPtr baseClassTypes state ptr1 ptr2
 
-                        (int64 index1 - int64 index2) * 2L |> verbatimInt64 |> Choice2Of2
-                    | ArithmeticTarget.ByteViewTarget (ByrefRoot.ArrayElement (arr1, index1), prefix1, _, offset1),
-                      ArithmeticTarget.ByteViewTarget (ByrefRoot.ArrayElement (arr2, index2), prefix2, _, offset2) when
-                        prefix1 = prefix2
-                        ->
-                        subtractArrayByteLocations baseClassTypes state arr1 index1 offset1 arr2 index2 offset2
-                        |> Choice2Of2
-                    | ArithmeticTarget.ByteViewTarget (ByrefRoot.StackMemoryByte (thread1, frame1, block1, rootOffset1),
-                                                       prefix1,
-                                                       _,
-                                                       offset1),
-                      ArithmeticTarget.ByteViewTarget (ByrefRoot.StackMemoryByte (thread2, frame2, block2, rootOffset2),
-                                                       prefix2,
-                                                       _,
-                                                       offset2) when prefix1 = prefix2 ->
-                        let byteOffset1 = int64 rootOffset1 + int64 offset1
-                        let byteOffset2 = int64 rootOffset2 + int64 offset2
-
-                        if thread1 = thread2 && frame1 = frame2 && block1 = block2 then
-                            byteOffset1 - byteOffset2 |> verbatimInt64 |> Choice2Of2
-                        else
-                            NativeIntSource.syntheticCrossStorageByteOffset
-                                (ByteStorageIdentity.StackMemory (thread2, frame2, block2))
-                                byteOffset2
-                                (ByteStorageIdentity.StackMemory (thread1, frame1, block1))
-                                byteOffset1
-                            |> Choice2Of2
-                    | ArithmeticTarget.ByteViewTarget (ByrefRoot.StackMemoryByte (thread1, frame1, block1, rootOffset1),
-                                                       [],
-                                                       _,
-                                                       offset1),
-                      ArithmeticTarget.StackMemoryTarget (thread2, frame2, block2, byteOffset2) ->
-                        let byteOffset1 = int64 rootOffset1 + int64 offset1
-
-                        if thread1 = thread2 && frame1 = frame2 && block1 = block2 then
-                            byteOffset1 - int64 byteOffset2 |> verbatimInt64 |> Choice2Of2
-                        else
-                            NativeIntSource.syntheticCrossStorageByteOffset
-                                (ByteStorageIdentity.StackMemory (thread2, frame2, block2))
-                                (int64 byteOffset2)
-                                (ByteStorageIdentity.StackMemory (thread1, frame1, block1))
-                                byteOffset1
-                            |> Choice2Of2
-                    | ArithmeticTarget.StackMemoryTarget (thread1, frame1, block1, byteOffset1),
-                      ArithmeticTarget.ByteViewTarget (ByrefRoot.StackMemoryByte (thread2, frame2, block2, rootOffset2),
-                                                       [],
-                                                       _,
-                                                       offset2) ->
-                        let byteOffset2 = int64 rootOffset2 + int64 offset2
-
-                        if thread1 = thread2 && frame1 = frame2 && block1 = block2 then
-                            int64 byteOffset1 - byteOffset2 |> verbatimInt64 |> Choice2Of2
-                        else
-                            NativeIntSource.syntheticCrossStorageByteOffset
-                                (ByteStorageIdentity.StackMemory (thread2, frame2, block2))
-                                byteOffset2
-                                (ByteStorageIdentity.StackMemory (thread1, frame1, block1))
-                                (int64 byteOffset1)
-                            |> Choice2Of2
-                    | ArithmeticTarget.ByteViewTarget (ByrefRoot.NativeMemoryByte (block1, rootOffset1),
-                                                       prefix1,
-                                                       _,
-                                                       offset1),
-                      ArithmeticTarget.ByteViewTarget (ByrefRoot.NativeMemoryByte (block2, rootOffset2),
-                                                       prefix2,
-                                                       _,
-                                                       offset2) when prefix1 = prefix2 ->
-                        let byteOffset1 = int64 rootOffset1 + int64 offset1
-                        let byteOffset2 = int64 rootOffset2 + int64 offset2
-
-                        if block1 = block2 then
-                            byteOffset1 - byteOffset2 |> verbatimInt64 |> Choice2Of2
-                        else
-                            NativeIntSource.syntheticCrossStorageByteOffset
-                                (ByteStorageIdentity.NativeMemory block2)
-                                byteOffset2
-                                (ByteStorageIdentity.NativeMemory block1)
-                                byteOffset1
-                            |> Choice2Of2
-                    | ArithmeticTarget.ByteViewTarget (ByrefRoot.NativeMemoryByte (block1, rootOffset1), [], _, offset1),
-                      ArithmeticTarget.NativeMemoryTarget (block2, byteOffset2) ->
-                        let byteOffset1 = int64 rootOffset1 + int64 offset1
-
-                        if block1 = block2 then
-                            byteOffset1 - int64 byteOffset2 |> verbatimInt64 |> Choice2Of2
-                        else
-                            NativeIntSource.syntheticCrossStorageByteOffset
-                                (ByteStorageIdentity.NativeMemory block2)
-                                (int64 byteOffset2)
-                                (ByteStorageIdentity.NativeMemory block1)
-                                byteOffset1
-                            |> Choice2Of2
-                    | ArithmeticTarget.NativeMemoryTarget (block1, byteOffset1),
-                      ArithmeticTarget.ByteViewTarget (ByrefRoot.NativeMemoryByte (block2, rootOffset2), [], _, offset2) ->
-                        let byteOffset2 = int64 rootOffset2 + int64 offset2
-
-                        if block1 = block2 then
-                            int64 byteOffset1 - byteOffset2 |> verbatimInt64 |> Choice2Of2
-                        else
-                            NativeIntSource.syntheticCrossStorageByteOffset
-                                (ByteStorageIdentity.NativeMemory block2)
-                                byteOffset2
-                                (ByteStorageIdentity.NativeMemory block1)
-                                (int64 byteOffset1)
-                            |> Choice2Of2
-                    | ArithmeticTarget.ByteViewTarget (ByrefRoot.StringCharAt (str1, index1), prefix1, _, offset1),
-                      ArithmeticTarget.ByteViewTarget (ByrefRoot.StringCharAt (str2, index2), prefix2, _, offset2) when
-                        prefix1 = prefix2
-                        ->
-                        if str1 <> str2 then
-                            failwith
-                                $"refusing to subtract character byte-view pointers into different strings: %O{str1} vs %O{str2}"
-
-                        ((int64 index1 * 2L + int64 offset1) - (int64 index2 * 2L + int64 offset2))
-                        |> verbatimInt64
-                        |> Choice2Of2
-                    | ArithmeticTarget.ByteViewTarget (ByrefRoot.StringCharAt (str1, index1), [], _, offset1),
-                      ArithmeticTarget.StringTarget (str2, index2) ->
-                        if str1 <> str2 then
-                            failwith
-                                $"refusing to subtract character byte-view pointer from pointer into different string: %O{str1} vs %O{str2}"
-
-                        ((int64 index1 * 2L + int64 offset1) - int64 index2 * 2L)
-                        |> verbatimInt64
-                        |> Choice2Of2
-                    | ArithmeticTarget.StringTarget (str1, index1),
-                      ArithmeticTarget.ByteViewTarget (ByrefRoot.StringCharAt (str2, index2), [], _, offset2) ->
-                        if str1 <> str2 then
-                            failwith
-                                $"refusing to subtract character pointer from byte-view pointer into different string: %O{str1} vs %O{str2}"
-
-                        (int64 index1 * 2L - (int64 index2 * 2L + int64 offset2))
-                        |> verbatimInt64
-                        |> Choice2Of2
-                    | ArithmeticTarget.FieldTarget (container1, field1),
-                      ArithmeticTarget.FieldTarget (container2, field2) ->
-                        if container1 <> container2 then
-                            failwith
-                                $"refusing to subtract pointers to fields of different containers: %O{container1} vs %O{container2}"
-
-                        let obj1 = ArithmeticTarget.getFieldContainerValue baseClassTypes state container1
-                        let obj2 = ArithmeticTarget.getFieldContainerValue baseClassTypes state container2
-
-                        let offset1, _ = CliType.getFieldLayoutById field1 obj1
-                        let offset2, _ = CliType.getFieldLayoutById field2 obj2
-
-                        int64 offset1 - int64 offset2 |> verbatimInt64 |> Choice2Of2
-                    | ArithmeticTarget.ByteViewTarget (root1, prefix1, _, off1),
-                      ArithmeticTarget.ByteViewTarget (root2, prefix2, _, off2) when root1 = root2 && prefix1 = prefix2 ->
-                        // Same underlying storage; subtraction is the byte-offset
-                        // delta regardless of which `ReinterpretAs` type was used
-                        // on each side (the view is address-preserving).
-                        int64 off1 - int64 off2 |> verbatimInt64 |> Choice2Of2
-                    | ArithmeticTarget.StackMemoryTarget _, _
-                    | _, ArithmeticTarget.StackMemoryTarget _ ->
-                        failwith
-                            $"refusing to subtract localloc byte pointer from incompatible pointer: %O{ptr1} vs %O{ptr2}"
-                    | ArithmeticTarget.NativeMemoryTarget _, _
-                    | _, ArithmeticTarget.NativeMemoryTarget _ ->
-                        failwith
-                            $"refusing to subtract native memory byte pointer from incompatible pointer: %O{ptr1} vs %O{ptr2}"
-                    | ArithmeticTarget.ArrayTarget _, _
-                    | _, ArithmeticTarget.ArrayTarget _ ->
-                        failwith
-                            $"refusing to subtract array element pointer from incompatible pointer: %O{ptr1} vs %O{ptr2}"
-                    | ArithmeticTarget.StringTarget _, _
-                    | _, ArithmeticTarget.StringTarget _ ->
-                        failwith
-                            $"refusing to subtract string character pointer from incompatible pointer: %O{ptr1} vs %O{ptr2}"
-                    | target1, target2 ->
-                        failwith
-                            $"TODO: subtracting incompatible managed pointer targets is not implemented: %O{target1} vs %O{target2} (%O{ptr1} vs %O{ptr2})"
-
-            member _.Int32ManagedPtr _ state val1 ptr2 =
-                match ptr2 with
-                | ManagedPointerSource.Null -> Choice2Of2 val1
-                | _ -> failwith "refusing to subtract a pointer"
+            member _.Int32ManagedPtr _ _ val1 ptr2 = subInt32ManagedPtr val1 ptr2
 
             member _.ManagedPtrInt32 baseClassTypes state ptr1 val2 =
-                if val2 = System.Int32.MinValue then
-                    failwith
-                        "managed pointer subtraction by Int32.MinValue would overflow the interpreter's int32 offset model"
-
-                addInt32ManagedPtr baseClassTypes state (-val2) ptr1
+                subManagedPtrInt32 baseClassTypes state ptr1 val2
 
             member _.Name = "sub"
+        }
+
+    let subOvf =
+        { new IArithmeticOperation with
+            member _.Int32Int32 a b = (# "sub.ovf" a b : int32 #)
+            member _.Int64Int64 a b = (# "sub.ovf" a b : int64 #)
+
+            // ECMA-335 III.3.68: sub.ovf takes int32, int64, native int and &.
+            // Floats have no overflow trap, so a verifier would reject float
+            // operands here; reaching this arm means the IL was malformed.
+            member _.FloatFloat a b =
+                failwith $"refusing to sub.ovf float values: %f{a} and %f{b}"
+
+            member _.NativeIntNativeInt a b = (# "sub.ovf" a b : nativeint #)
+            member _.Int32NativeInt a b = (# "sub.ovf" a b : nativeint #)
+            member _.NativeIntInt32 a b = (# "sub.ovf" a b : nativeint #)
+
+            member _.CrossArrayOffsets a b =
+                if a = b then
+                    0L
+                else
+                    failwith "refusing to sub_ovf SyntheticCrossArrayOffsets"
+
+            member _.ManagedPtrManagedPtr baseClassTypes state ptr1 ptr2 =
+                subManagedPtrManagedPtr baseClassTypes state ptr1 ptr2
+
+            member _.Int32ManagedPtr _ _ val1 ptr2 = subInt32ManagedPtr val1 ptr2
+
+            member _.ManagedPtrInt32 baseClassTypes state ptr1 val2 =
+                subManagedPtrInt32 baseClassTypes state ptr1 val2
+
+            member _.Name = "sub.ovf"
         }
 
     let mul =
