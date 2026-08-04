@@ -126,6 +126,95 @@ module NativeRuntimeTypeFCall =
         | "System.Private.CoreLib",
           "System",
           "RuntimeTypeHandle",
+          "GetUtf8NameInternal",
+          [ ConcretePointer (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                               "System.Runtime.CompilerServices",
+                                                               "MethodTable",
+                                                               methodTableGenerics)) ],
+          MethodReturnType.Returns (ConcretePointer (ConcreteVoid state.ConcreteTypes)) when methodTableGenerics.IsEmpty ->
+            // CoreCLR's RuntimeTypeHandle::GetUtf8Name (runtimehandles.cpp:732) is an FCall
+            // that reads the type's UTF-8 name straight out of the metadata string heap:
+            // `GetNameOfTypeDef(pMT->GetCl(), &name, NULL)`. That is the TypeDef row's Name
+            // column, so it is the *short* name — no namespace, no declaring type for a
+            // nested type, and the arity mangling of a generic type is retained
+            // (`IList`1`). For a generic instantiation the MethodTable's `GetCl()` is the
+            // open definition's token, so `IList<int>` also answers `IList`1`.
+            //
+            // PawPrint materialises the name as a freshly-allocated null-terminated UTF-8
+            // byte[] and returns a byref to it; the managed wrapper wraps that in
+            // MdUtf8String, which strlens the pointer to discover the byte length. Mirrors
+            // the RuntimeMethodHandle / RuntimeFieldHandle GetUtf8NameInternal handlers.
+            let operation = "RuntimeTypeHandle.GetUtf8NameInternal"
+
+            if instruction.Arguments.Length <> 1 then
+                failwith $"%s{operation}: expected one native argument, got %d{instruction.Arguments.Length}"
+
+            let typeHandleTarget =
+                NativeCall.runtimeTypeHandleTargetOfEvalStackValue
+                    operation
+                    (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
+
+            // Only a type with a TypeDef row has a name to read. CoreCLR asserts exactly
+            // this (`_ASSERTE(!IsNilToken(tkTypeDef))`) and relies on the managed wrapper
+            // RuntimeTypeHandle.GetUtf8Name (RuntimeHandles.cs:667-673) having already
+            // thrown ArgumentException for TypeDescs and for arrays — whose MethodTables
+            // are synthesised and carry a nil token. Reaching here with one of those shapes
+            // means the wrapper's guard was bypassed, so fail rather than invent a name.
+            let name =
+                match typeHandleTarget with
+                | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as typeHandle) ->
+                    match IlMachineState.tryGetConcreteTypeInfo state typeHandle with
+                    | Some (_, typeInfo) -> typeInfo.Name
+                    | None -> failwith $"%s{operation}: concrete type handle was not registered: %O{typeHandle}"
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+                    // CoreCLR's canonical MethodTable for an open definition (`G<__Canon>`)
+                    // carries the definition's own TypeDef token, and the managed wrapper
+                    // lets it through: it is neither a TypeDesc nor an array. So
+                    // `typeof(G<>)` legitimately names itself, and our identity already
+                    // holds exactly the token `GetCl()` would return.
+                    //
+                    // Not covered by a test: every route that would deliver an open
+                    // definition here is blocked further upstream today —
+                    // `PopulateNestedClasses`' name filter (`RuntimeType.CoreCLR.cs:1130`)
+                    // needs nested-type enumeration, which fails in
+                    // `NativeMetadataImport.tryExecuteQCall`, and `PopulateInterfaces` on an
+                    // open definition needs bound-shared interface MTs, which
+                    // `RuntimeTypeHandle_GetInterfaces` refuses. Handling it is still right:
+                    // the alternative is failing loudly on input CoreCLR accepts.
+                    let assembly =
+                        state.LoadedAssembly identity.Assembly
+                        |> Option.defaultWith (fun () ->
+                            failwith
+                                $"%s{operation}: assembly for open generic type definition is not loaded: %s{identity.AssemblyFullName}"
+                        )
+
+                    assembly.TypeDefs.[identity.TypeDefinition.Get].Name
+                | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.OneDimArrayZero _ as typeHandle)
+                | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Array _ as typeHandle) ->
+                    failwith
+                        $"%s{operation}: array type %O{typeHandle} reached the FCall; arrays have no TypeDef row, and the managed wrapper throws ArgumentException for them before this point"
+                | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref _ as typeHandle)
+                | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Pointer _ as typeHandle)
+                | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.FunctionPointer _ as typeHandle) ->
+                    failwith
+                        $"%s{operation}: TypeDesc handle %O{typeHandle} reached the FCall; the managed wrapper throws ArgumentException for `IsTypeDesc` before this point"
+                | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
+                    failwith
+                        $"%s{operation}: generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get} reached the FCall; the managed wrapper throws ArgumentException for `IsTypeDesc` before this point"
+                | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+                    failwith
+                        $"%s{operation}: method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get} reached the FCall; the managed wrapper throws ArgumentException for `IsTypeDesc` before this point"
+
+            let namePtr, state =
+                NativeCall.allocateNullTerminatedUtf8 ctx.BaseClassTypes name state
+
+            let state =
+                IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer namePtr) ctx.Thread state
+
+            NativeHandlerResult.completed state |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
           "GetInterfaces",
           [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
           MethodReturnType.Returns (ConcreteTypeHandle.OneDimArrayZero (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
