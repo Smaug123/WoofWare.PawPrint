@@ -1083,23 +1083,27 @@ module internal UnaryMetadataObjectOps =
             let barePrimitive, state =
                 barePrimitiveBoxShape baseClassTypes boxed.ConcreteType boxed.Contents state
 
-            // A bare `HeapValue` byref denotes the box's storage *as stored*, which is only the
-            // same thing as the token's type when the box holds the target type's own fields.
-            // Two cases break that, and both need the pointer to carry its static type:
-            //   - `box` of a bare primitive stores it inside a synthetic single-field struct, so
-            //     the storage is a wrapper around the value rather than the value. Without the
-            //     view, `ldind`/`ldobj` take the untyped read (`executeLdind` only routes to the
-            //     typed byte-view read for a trailing-byte-view pointer) and surface the wrapper;
-            //   - the enum/underlying relaxation in `unboxPermitted`, where the box holds e.g. an
-            //     `IntEnum` while the token says `int32`.
-            // Neither is reachable from C#, which emits `unbox` only for a field read and so only
-            // ever for a genuine multi-field struct; they are therefore not covered end-to-end by
-            // the differential tests.
+            // A bare `HeapValue` byref denotes the box's storage *as stored*, and an untyped read
+            // of it (which is what `ldind`/`ldobj` do — `executeLdind` routes to the typed
+            // byte-view read only for a trailing-byte-view pointer) yields that storage verbatim.
+            // That is already right for everything except one shape:
+            //   - a genuine value type reads back as itself;
+            //   - a primitive-like one (IntPtr, the `*HandleInternal` structs, an enum) is
+            //     flattened to its underlying value on push, by the eval-stack invariant in
+            //     `EvalStack.Push'`. That preserves pointer provenance, which a byte
+            //     reinterpretation would destroy — and it covers the enum/underlying relaxation
+            //     in `unboxPermitted` without any help from us;
+            //   - but `box` of a *bare* primitive stores it inside a synthetic single-field
+            //     struct, which is not primitive-like and so is not flattened. Only here does the
+            //     pointer need to carry its static type, so that reads and writes go through the
+            //     byte-view path and see the payload rather than the wrapper.
+            // None of this is reachable from C#, which emits `unbox` only for a field read and so
+            // only ever for a genuine value type; it is not covered end-to-end by the
+            // differential tests.
             let projections =
-                if barePrimitive.IsNone && boxed.ConcreteType = targetConcreteTypeHandle then
-                    []
-                else
-                    [ ByrefProjection.ReinterpretAs targetConcreteType ]
+                match barePrimitive with
+                | None -> []
+                | Some _ -> [ ByrefProjection.ReinterpretAs targetConcreteType ]
 
             let ptr =
                 CliType.RuntimePointer (
