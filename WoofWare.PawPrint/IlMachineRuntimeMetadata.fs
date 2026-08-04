@@ -1486,21 +1486,33 @@ module IlMachineRuntimeMetadata =
                 if boxedPrimitive <> targetPrimitive then
                     state, false
                 else
-                    // About to license the relaxation. The unbox will materialise the value from
-                    // the *boxed* object's handle, so that side must be one PawPrint stores
-                    // flattened; otherwise the push would leave a wrapped `UserDefinedValueType`
-                    // where the next instruction expects a bare stack primitive, and misread it.
-                    // Fail loudly rather than answering `false`, which would raise
+                    // About to license the relaxation, which pairs two *different* handles. Both
+                    // sides must be ones PawPrint stores in flattened form, and for different
+                    // reasons:
+                    //   - the boxed side drives materialisation, so an unflattened one would push a
+                    //     wrapped `UserDefinedValueType` where the next instruction expects a bare
+                    //     stack primitive;
+                    //   - the target side is the slot the value lands in, and `toCliTypeCoerced`
+                    //     rejects a bare primitive into a value-type slot unless that slot is
+                    //     primitive-like (see the `failwith` in its `CliType.ValueType` arm), so an
+                    //     unflattened target would abort on the following `stloc`/`stfld` instead.
+                    // The identity case never reaches here, so this only ever rejects genuinely
+                    // mixed pairs. Fail loudly rather than answering `false`, which would raise
                     // InvalidCastException where a real runtime succeeds — a quieter way of being
-                    // wrong. (The target side needs no such check: it never drives materialisation.)
-                    let state, flattened =
+                    // wrong.
+                    let state, boxedFlattened =
                         unboxMaterialisesFlattened loggerFactory baseClassTypes state boxedType
 
-                    if flattened then
+                    let state, targetFlattened =
+                        unboxMaterialisesFlattened loggerFactory baseClassTypes state targetType
+
+                    if boxedFlattened && targetFlattened then
                         state, true
                     else
+                        let offender = if boxedFlattened then targetType else boxedType
+
                         failwith
-                            $"unbox of %O{boxedType} to %O{targetType}: CoreCLR permits this (both report the same primitive element type), but PawPrint does not store the boxed type in flattened form — see CliValueType.IsEnumStructural, which covers only enums over the fixed-width integers, not over bool/char/native int"
+                            $"unbox of %O{boxedType} to %O{targetType}: CoreCLR permits this (both report the same primitive element type), but PawPrint does not store %O{offender} in flattened form — see CliValueType.IsEnumStructural, which covers only enums over the fixed-width integers, not over bool/char/native int"
 
     /// Does this handle denote a reference type (as opposed to a value type)?
     ///
