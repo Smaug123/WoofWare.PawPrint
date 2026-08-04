@@ -1411,8 +1411,7 @@ module IlMachineRuntimeMetadata =
                 // An enum is in the primitive category too, reporting the element type of its
                 // underlying integer. That underlying must itself be a built-in primitive — the
                 // CLR type loader will not admit an enum whose `value__` is anything else — so
-                // this resolves in exactly one step rather than recursing. Keeping it non-recursive
-                // means malformed metadata answers `None` instead of risking an unbounded walk.
+                // this resolves in exactly one step rather than recursing.
                 let state, isEnum = isEnumValueType loggerFactory baseClassTypes state handle
 
                 if not isEnum then
