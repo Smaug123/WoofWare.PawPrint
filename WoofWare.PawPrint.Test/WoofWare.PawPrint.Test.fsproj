@@ -38,6 +38,7 @@
     <Compile Include="TestUnaryConstIlOp.fs" />
     <Compile Include="TestUnaryMetadataIlOp.fs" />
     <Compile Include="TestMethodTableProjection.fs" />
+    <Compile Include="TestSzArrayInterfaceDispatch.fs" />
     <Compile Include="TestCrossAssemblyTypeInitialisation.fs" />
     <Compile Include="TestCrossAssemblyCastclass.fs" />
     <Compile Include="TestCrossAssemblyDispatch.fs" />

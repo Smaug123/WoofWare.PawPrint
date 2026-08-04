@@ -62,6 +62,162 @@ module IlMachineStateExecution =
         =
         IlMachineState.isConcreteTypeAssignableTo loggerFactory baseClassTypes state objToCast possibleTargetType
 
+    /// An SZ array implicitly implements five generic interfaces (see
+    /// `BaseClassTypes.IsImplicitInterfaceOfSzArray`), but nothing in the metadata says so:
+    /// `System.Array` does not list them among its implemented interfaces, and `T[]` has no
+    /// TypeDef row of its own to carry a MethodImpl. The runtime supplies the bodies instead,
+    /// from the corelib-internal shim `System.SZArrayHelper`, whose methods take the array
+    /// itself as `this` and immediately re-view it via `Unsafe.As<T[]>(this)`. CoreCLR does
+    /// this in `MethodTable::FindDispatchImpl` (`src/coreclr/vm/methodtable.cpp`) →
+    /// `GetActualImplementationForArrayGenericIListOrIReadOnlyListMethod`
+    /// (`src/coreclr/vm/array.cpp`).
+    ///
+    /// Returns `None` when the (receiver, interface) pair is not in the carve-out, leaving
+    /// ordinary resolution to run.
+    let private tryResolveSzArrayImplicitInterfaceMethod
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (dispatchTypeHandle : ConcreteTypeHandle)
+        (state : IlMachineState)
+        : (IlMachineState * WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>) option
+        =
+        match dispatchTypeHandle with
+        // Multi-dimensional arrays deliberately do *not* participate: CoreCLR's
+        // `IsImplicitInterfaceOfSZArray` is reached only for SZ arrays, and
+        // `isConcreteTypeAssignableTo` already refuses the corresponding cast.
+        | ConcreteTypeHandle.Array _
+        | ConcreteTypeHandle.Concrete _
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ -> None
+        | ConcreteTypeHandle.OneDimArrayZero _ ->
+
+        if not (baseClassTypes.IsImplicitInterfaceOfSzArray methodToCall.DeclaringType.Identity) then
+            None
+        else
+
+        // `theT` is the *interface's* type argument, not the array's element type
+        // (`methodtable.cpp`: `TypeHandle theT = pIfcMT->GetInstantiation()[0];`). Under
+        // covariance those differ — `((ICollection<object>) new string[3])` dispatches to
+        // `get_Count<object>` over a `string[]`.
+        //
+        // That is safe even for the mutating slots, because the store check does not consult
+        // this `T`: `SZArrayHelper.set_Item<T>` bottoms out in a `stelem`, and
+        // `UnaryMetadataArrayOps.executeStelem` uses the token-resolved element type only to
+        // pick a coercion target, delegating the ArrayTypeMismatchException decision to
+        // `checkArrayStoreVariance`, which reads the array's real allocation-time element type
+        // and the stored value's real runtime type. So
+        // `((IList<object>) new string[3])[0] = new object()` still throws.
+        //
+        let theT =
+            match Seq.toList methodToCall.DeclaringType.Generics with
+            | [ t ] -> t
+            | generics ->
+                failwith
+                    $"SZ-array implicit interface %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name} should have exactly one generic argument, got %i{List.length generics}"
+
+        // CoreCLR maps interface slot → shim method by slot arithmetic, but asserts the result
+        // equals `MemberLoader::FindMethodByName(g_pSZArrayHelperClass, pItfcMeth->GetName())`.
+        // Name lookup is therefore the specified-equivalent, and `SZArrayHelper`'s method names
+        // are pairwise distinct, so `exactlyOne` is the honest reading rather than a heuristic.
+        let implementation =
+            baseClassTypes.SZArrayHelper.Methods
+            |> List.filter (fun meth -> meth.Name = methodToCall.Name)
+
+        let implementation =
+            match implementation with
+            | [ impl ] -> impl
+            | [] ->
+                failwith
+                    $"System.SZArrayHelper has no method named %s{methodToCall.Name}, needed to dispatch %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}::%s{methodToCall.Name} on an SZ-array receiver"
+            | _ ->
+                failwith
+                    $"System.SZArrayHelper has multiple methods named %s{methodToCall.Name}; the SZ-array dispatch carve-out relies on shim method names being unique"
+
+        // Every shim method is a one-generic-parameter instance method whose parameters are the
+        // interface method's with `T` substituted, so these must line up. If a future corelib
+        // breaks that, fail here rather than silently building a mis-shaped frame.
+        if implementation.Signature.GenericParameterCount <> 1 then
+            failwith
+                $"System.SZArrayHelper::%s{implementation.Name} should take exactly one generic parameter, got %i{implementation.Signature.GenericParameterCount}"
+
+        if
+            implementation.Signature.RequiredParameterCount
+            <> methodToCall.Signature.RequiredParameterCount
+        then
+            failwith
+                $"System.SZArrayHelper::%s{implementation.Name} takes %i{implementation.Signature.RequiredParameterCount} parameters but the interface slot %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}::%s{methodToCall.Name} takes %i{methodToCall.Signature.RequiredParameterCount}"
+
+        if implementation.IsStatic then
+            failwith
+                $"System.SZArrayHelper::%s{implementation.Name} should be an instance method; the SZ-array receiver is passed as its `this`"
+
+        // CoreCLR canonicalises a reference-type `theT` to `System.Object` on every slot except
+        // `GetEnumerator` (`array.cpp`, gated on `startingMethod[inheritanceDepth]`, i.e. on the
+        // interface rather than the individual method — `GetEnumerator` is always reached
+        // through `IEnumerable`1`, so preserving it there and canonicalising the other four
+        // interfaces is the same rule).
+        //
+        // Its comment calls this an optimisation ("causes fewer methods to be instantiated"),
+        // but it is *observable*, so we must reproduce it rather than keep the more precise
+        // instantiation. `Contains`/`IndexOf` bottom out in `EqualityComparer<T>.Default`:
+        // `EqualityComparer<object>` dispatches through the virtual `object.Equals(object)`,
+        // whereas `EqualityComparer<B>` for a `B : IEquatable<B>` dispatches through
+        // `IEquatable<B>.Equals(B)`. A type implementing the two inconsistently therefore gives
+        // different answers depending on the instantiation; see
+        // `sourcesPure/ArrayInterfaceEqualityComparer.cs`, which fails against the real runtime
+        // without this.
+        //
+        // `GetEnumerator` is the exception because the enumerator it returns is itself typed:
+        // `IEnumerable<B>.GetEnumerator()` must yield an `IEnumerator<B>`, not an
+        // `IEnumerator<object>`.
+        let isReferenceType (handle : ConcreteTypeHandle) : bool =
+            match handle with
+            | ConcreteTypeHandle.OneDimArrayZero _
+            | ConcreteTypeHandle.Array _ -> true
+            | ConcreteTypeHandle.Byref _
+            | ConcreteTypeHandle.Pointer _
+            | ConcreteTypeHandle.FunctionPointer _ -> false
+            | ConcreteTypeHandle.Concrete _ ->
+                match IlMachineState.tryGetConcreteTypeInfo state handle with
+                | Some (_, typeInfo) -> DumpedAssembly.isReferenceType baseClassTypes state._LoadedAssemblies typeInfo
+                | None ->
+                    failwith
+                        $"SZ-array interface dispatch: type argument %O{handle} of %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name} has no TypeDef row"
+
+        let dispatchThroughEnumerable =
+            methodToCall.DeclaringType.Identity = baseClassTypes.IEnumerableGeneric.Identity
+
+        let state, instantiation =
+            if dispatchThroughEnumerable || not (isReferenceType theT) then
+                state, theT
+            else
+                DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Object
+                |> IlMachineState.concretizeType
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    baseClassTypes.Corelib.Name
+                    ImmutableArray.Empty
+                    ImmutableArray.Empty
+
+        // `this` is the array, not an SZArrayHelper — exactly the lie CoreCLR tells (see the
+        // "! Warning: \"this\" is an array, not an SZArrayHelper" comments in
+        // `Array.CoreCLR.cs`). It survives our calling convention because `SZArrayHelper` is a
+        // reference type, so `callMethod`'s `thisArgCoercionTarget` yields `CliType.ObjectRef`,
+        // whose coercion passes the object reference through without a type check.
+        let state, meth, _ =
+            ExecutionConcretization.concretizeMethodWithAllGenerics
+                loggerFactory
+                baseClassTypes
+                ImmutableArray.Empty
+                implementation
+                (ImmutableArray.Create instantiation)
+                state
+
+        Some (state, meth)
+
     let tryResolveVirtualImplementation
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -81,6 +237,43 @@ module IlMachineStateExecution =
             methodToCall.DeclaringType.Name,
             methodToCall.Name
         )
+
+        // The SZ-array carve-out runs *before* the ordinary walks, unlike CoreCLR, which reaches
+        // it only after its dispatch map misses. CoreCLR can afford that ordering because its
+        // lookup is exact-slot; ours matches on name and signature, which is fuzzier. Running
+        // first is safe and total: when the receiver is an SZ array and the target is one of the
+        // five interfaces, the answer is always SZArrayHelper. Nothing on the receiver's fixed
+        // class chain can shadow it either, structurally rather than by coincidence — an array's
+        // only ancestors are `System.Array` and `System.Object`, and every collection member of
+        // `System.Array` is an *explicit* implementation of the corresponding **non-generic**
+        // interface, so its metadata name is `System.Collections.IList.Contains` and can match
+        // neither the plain name nor the `System.Collections.Generic.ICollection`1.Contains`
+        // form that `interfaceExplicitNamedMethod` below constructs.
+        //
+        // Gated on `walkBaseTypes` because `false` means "exact-type, non-virtual dispatch" (the
+        // `constrained.` value-type probe), and this redirect is inherently a synthetic *virtual*
+        // substitute with no exact-type reading. Array receivers cannot reach those call sites
+        // today — `constrained.` on an array takes ECMA case 1 in `executeCallvirt` and re-enters
+        // ordinary virtual dispatch — but gating keeps that invariant checkable from here alone.
+        match
+            if walkBaseTypes then
+                tryResolveSzArrayImplicitInterfaceMethod
+                    loggerFactory
+                    baseClassTypes
+                    methodToCall
+                    dispatchTypeHandle
+                    state
+            else
+                None
+        with
+        | Some (state, impl) ->
+            logger.LogDebug (
+                "Dispatching SZ-array implicit interface method {MethodName} to System.SZArrayHelper",
+                methodToCall.Name
+            )
+
+            state, Some impl
+        | None ->
 
         let declaringAssy = state.LoadedAssembly(methodToCall.DeclaringType.Assembly).Value
 

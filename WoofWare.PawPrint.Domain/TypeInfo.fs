@@ -269,7 +269,31 @@ type BaseClassTypes<'corelib> =
         /// `System.Collections.Generic.IReadOnlyCollection<T>`. One of the five interfaces
         /// in the SZ-array implicit-interface set.
         IReadOnlyCollectionGeneric : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        /// `System.SZArrayHelper`, the corelib shim class whose generic methods provide the
+        /// bodies for the five implicit generic interfaces of an SZ array. CoreCLR redirects
+        /// `(ICollection<T>)someArray).Meth(...)` to `SZArrayHelper.Meth<T>` with the array
+        /// itself passed as `this` (`GetActualImplementationForArrayGenericIListOrIReadOnlyListMethod`,
+        /// `src/coreclr/vm/array.cpp`); every body begins `T[] @this = Unsafe.As<T[]>(this)`.
+        SZArrayHelper : TypeInfo<GenericParamFromMetadata, TypeDefn>
     }
+
+    /// True when `identity` names one of the five CoreLib generic interfaces that a
+    /// single-dimensional zero-bound array implicitly implements: CoreCLR's
+    /// `IsImplicitInterfaceOfSZArray` (`src/coreclr/vm/array.cpp`). This is the sole
+    /// definition of that set; both the assignability carve-out
+    /// (`IlMachineRuntimeMetadata.isConcreteTypeAssignableTo`) and the dispatch carve-out
+    /// (`IlMachineStateExecution.tryResolveVirtualImplementation`) must agree on it, so
+    /// neither should re-enumerate the interfaces itself.
+    ///
+    /// Note this asks only about the interface's *definition*; whether a particular array
+    /// actually implements a particular instantiation additionally requires the element
+    /// types to be compatible (`elementCovariantlyCompatible`).
+    member this.IsImplicitInterfaceOfSzArray (identity : ResolvedTypeIdentity) : bool =
+        identity = this.IListGeneric.Identity
+        || identity = this.IEnumerableGeneric.Identity
+        || identity = this.ICollectionGeneric.Identity
+        || identity = this.IReadOnlyListGeneric.Identity
+        || identity = this.IReadOnlyCollectionGeneric.Identity
 
 [<RequireQualifiedAccess>]
 module TypeInfo =

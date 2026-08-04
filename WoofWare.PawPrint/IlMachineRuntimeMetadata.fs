@@ -1672,16 +1672,7 @@ module IlMachineRuntimeMetadata =
             | ConcreteTypeHandle.OneDimArrayZero objElement ->
                 match tryGetConcreteTypeInfo state targetType with
                 | Some (targetCt, _) when targetCt.Generics.Length = 1 ->
-                    let targetId = targetCt.Identity
-
-                    let isImplicit =
-                        targetId = baseClassTypes.IListGeneric.Identity
-                        || targetId = baseClassTypes.IEnumerableGeneric.Identity
-                        || targetId = baseClassTypes.ICollectionGeneric.Identity
-                        || targetId = baseClassTypes.IReadOnlyListGeneric.Identity
-                        || targetId = baseClassTypes.IReadOnlyCollectionGeneric.Identity
-
-                    if isImplicit then
+                    if baseClassTypes.IsImplicitInterfaceOfSzArray targetCt.Identity then
                         let targetElement = targetCt.Generics.[0]
                         let state, compatible = elementCovariantlyCompatible state objElement targetElement
                         Some (state, compatible)
