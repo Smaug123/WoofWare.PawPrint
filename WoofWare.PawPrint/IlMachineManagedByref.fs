@@ -369,12 +369,30 @@ module IlMachineManagedByref =
                     let pool = NativeMemoryPool.writeCell block byteOffset updated pool
                     IlMachineThreadState.setNativeMemoryPool pool state
         | ByrefRoot.HeapValue addr ->
+            let existing = ManagedHeap.get addr state.ManagedHeap
+
             let contents =
                 match updated with
                 | CliType.ValueType contents -> contents
-                | other -> failwith $"cannot write non-value-type {other} through heap value byref"
+                | bare ->
+                    // `box` of a *bare* primitive stores it inside a synthetic single-field
+                    // struct — the shape `UnaryMetadataObjectOps.unboxedContents` reads back
+                    // out — so a byref to the whole boxed value addresses that wrapper, not the
+                    // primitive directly. A typed write of the bare primitive (`unbox int32`
+                    // then `stobj int32`, say) must therefore be installed into the wrapper's
+                    // field; replacing the wrapper outright would destroy the boxed object's
+                    // shape. Requiring a unique field at offset 0 of the same size *and* CLI
+                    // constructor keeps an unrelated value of coincidentally equal width — an
+                    // object reference over a boxed `int64`, say — from being smuggled in.
+                    let candidates =
+                        CliValueType.TryFieldsAt 0 existing.Contents
+                        |> List.filter (fun f -> f.Size = CliType.sizeOf bare && sameCliConstructor f.Contents bare)
 
-            let existing = ManagedHeap.get addr state.ManagedHeap
+                    match candidates with
+                    | [ f ] -> CliValueType.WithFieldSetById f.Id bare existing.Contents
+                    | _ ->
+                        failwith
+                            $"cannot write non-value-type {bare} through heap value byref to %O{existing.ConcreteType}: its contents are not a single-field wrapper around a value of matching shape"
 
             if System.Object.ReferenceEquals (contents, existing.Contents) then
                 state
