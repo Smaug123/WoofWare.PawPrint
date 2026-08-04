@@ -65,6 +65,18 @@ module private ArithmeticTarget =
         | FieldContainer.HeapObject addr -> CliType.ValueType (ManagedHeap.get addr state.ManagedHeap).Contents
         | FieldContainer.ByrefContainer ptr -> IlMachineState.readManagedByref baseClassTypes state ptr
 
+/// Whether an arithmetic operation wraps on overflow (`add`, `sub`) or traps
+/// (`add.ovf`, `sub.ovf`). This is only observable in the pointer helpers at
+/// the `NativeIntPlaceholder` arms: everywhere else our pointers are symbolic
+/// (a root plus offsets), and the offsets have no machine-width bit pattern
+/// that could overflow. A placeholder's payload, by contrast, is a genuine
+/// native-int bit pattern from `(void*)bits`, so the checked forms must trap on
+/// it exactly as the CLR would.
+[<RequireQualifiedAccess>]
+type private OverflowBehaviour =
+    | Wrap
+    | Trap
+
 type IArithmeticOperation =
     abstract Int32Int32 : int32 -> int32 -> int32
     abstract Int32NativeInt : int32 -> nativeint -> nativeint
@@ -103,6 +115,20 @@ type IArithmeticOperation =
 [<RequireQualifiedAccess>]
 module ArithmeticOperation =
     let private verbatimInt64 (value : int64) : NativeIntSource = NativeIntSource.Verbatim value
+
+    /// Arithmetic on a `NativeIntPlaceholder`'s bit pattern. `Trap` raises
+    /// OverflowException, which the opcode handlers turn into a guest
+    /// `System.OverflowException`.
+    let private addPlaceholderBits (behaviour : OverflowBehaviour) (a : int64) (b : int64) : int64 =
+        match behaviour with
+        | OverflowBehaviour.Wrap -> a + b
+        | OverflowBehaviour.Trap -> Checked.(+) a b
+
+    /// See <see cref="addPlaceholderBits"/>.
+    let private subPlaceholderBits (behaviour : OverflowBehaviour) (a : int64) (b : int64) : int64 =
+        match behaviour with
+        | OverflowBehaviour.Wrap -> a - b
+        | OverflowBehaviour.Trap -> Checked.(-) a b
 
     let private checkedAddInt32 (context : string) (a : int) (b : int) : int =
         let result = int64 a + int64 b
@@ -184,6 +210,7 @@ module ArithmeticOperation =
             verbatimInt64 byteDelta
 
     let private addInt32ManagedPtr
+        (behaviour : OverflowBehaviour)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (v : int32)
@@ -200,7 +227,7 @@ module ArithmeticOperation =
             // normalise back to `Null` so the placeholder invariant ("never
             // carries zero") holds and `Unsafe.IsNullRef` agrees with the CLR's
             // bit-pattern definition.
-            let newBits = bits + int64 v
+            let newBits = addPlaceholderBits behaviour bits (int64 v)
 
             if newBits = 0L then
                 Choice1Of2 ManagedPointerSource.Null
@@ -317,10 +344,10 @@ module ArithmeticOperation =
                 | _, _ -> failwith "refusing to add two managed pointers"
 
             member _.Int32ManagedPtr baseClassTypes state val1 ptr2 =
-                addInt32ManagedPtr baseClassTypes state val1 ptr2
+                addInt32ManagedPtr OverflowBehaviour.Wrap baseClassTypes state val1 ptr2
 
             member _.ManagedPtrInt32 baseClassTypes state ptr1 val2 =
-                addInt32ManagedPtr baseClassTypes state val2 ptr1
+                addInt32ManagedPtr OverflowBehaviour.Wrap baseClassTypes state val2 ptr1
 
             member _.Name = "add"
         }
@@ -347,21 +374,23 @@ module ArithmeticOperation =
                 | _, _ -> failwith "refusing to add two managed pointers"
 
             member _.Int32ManagedPtr baseClassTypes state val1 ptr2 =
-                addInt32ManagedPtr baseClassTypes state val1 ptr2
+                addInt32ManagedPtr OverflowBehaviour.Trap baseClassTypes state val1 ptr2
 
             member _.ManagedPtrInt32 baseClassTypes state ptr1 val2 =
-                addInt32ManagedPtr baseClassTypes state val2 ptr1
+                addInt32ManagedPtr OverflowBehaviour.Trap baseClassTypes state val2 ptr1
 
             member _.Name = "add.ovf"
         }
 
-    /// Pointer arithmetic is identical for `sub` and `sub.ovf`: ECMA-335 gives
-    /// both the same `& - int -> &` and `& - & -> native int` signatures, and
-    /// our pointer model is symbolic (offsets, not addresses), so there are no
-    /// machine-width bits to overflow. The int32 offset model's own limits are
-    /// enforced by `checkedAddInt32`, which fails loudly rather than throwing
+    /// Pointer subtraction is shared between `sub` and `sub.ovf`: ECMA-335
+    /// gives both the same `& - int -> &` and `& - & -> native int`
+    /// signatures. `behaviour` is only consulted for the bit-pattern
+    /// placeholder arms; every other arm is symbolic, and the int32 offset
+    /// model's own limits are enforced by `checkedAddInt32`, which fails
+    /// loudly (an interpreter limitation) rather than throwing
     /// OverflowException into the guest.
     let private subManagedPtrManagedPtr
+        (behaviour : OverflowBehaviour)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (ptr1 : ManagedPointerSource)
@@ -380,11 +409,12 @@ module ArithmeticOperation =
         // (Choice1Of2) for `placeholder - Null` or refuse the
         // `Null - placeholder` case.
         | ManagedPointerSource.NativeIntPlaceholder bits1, ManagedPointerSource.NativeIntPlaceholder bits2 ->
-            bits1 - bits2 |> verbatimInt64 |> Choice2Of2
+            subPlaceholderBits behaviour bits1 bits2 |> verbatimInt64 |> Choice2Of2
         | ManagedPointerSource.NativeIntPlaceholder bits1, ManagedPointerSource.Null ->
             bits1 |> verbatimInt64 |> Choice2Of2
         | ManagedPointerSource.Null, ManagedPointerSource.NativeIntPlaceholder bits2 ->
-            -bits2 |> verbatimInt64 |> Choice2Of2
+            // `0 - Int64.MinValue` overflows, so the checked form traps here.
+            subPlaceholderBits behaviour 0L bits2 |> verbatimInt64 |> Choice2Of2
         | ptr1, ManagedPointerSource.Null -> Choice1Of2 ptr1
         | ManagedPointerSource.Null, _ -> failwith "refusing to create negative pointer"
         | ManagedPointerSource.NativeIntPlaceholder _, _
@@ -596,6 +626,7 @@ module ArithmeticOperation =
         | _ -> failwith "refusing to subtract a pointer"
 
     let private subManagedPtrInt32
+        (behaviour : OverflowBehaviour)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (ptr1 : ManagedPointerSource)
@@ -605,7 +636,7 @@ module ArithmeticOperation =
         if val2 = System.Int32.MinValue then
             failwith "managed pointer subtraction by Int32.MinValue would overflow the interpreter's int32 offset model"
 
-        addInt32ManagedPtr baseClassTypes state (-val2) ptr1
+        addInt32ManagedPtr behaviour baseClassTypes state (-val2) ptr1
 
     let sub =
         { new IArithmeticOperation with
@@ -623,12 +654,12 @@ module ArithmeticOperation =
                     failwith "refusing to sub SyntheticCrossArrayOffsets"
 
             member _.ManagedPtrManagedPtr baseClassTypes state ptr1 ptr2 =
-                subManagedPtrManagedPtr baseClassTypes state ptr1 ptr2
+                subManagedPtrManagedPtr OverflowBehaviour.Wrap baseClassTypes state ptr1 ptr2
 
             member _.Int32ManagedPtr _ _ val1 ptr2 = subInt32ManagedPtr val1 ptr2
 
             member _.ManagedPtrInt32 baseClassTypes state ptr1 val2 =
-                subManagedPtrInt32 baseClassTypes state ptr1 val2
+                subManagedPtrInt32 OverflowBehaviour.Wrap baseClassTypes state ptr1 val2
 
             member _.Name = "sub"
         }
@@ -655,12 +686,12 @@ module ArithmeticOperation =
                     failwith "refusing to sub_ovf SyntheticCrossArrayOffsets"
 
             member _.ManagedPtrManagedPtr baseClassTypes state ptr1 ptr2 =
-                subManagedPtrManagedPtr baseClassTypes state ptr1 ptr2
+                subManagedPtrManagedPtr OverflowBehaviour.Trap baseClassTypes state ptr1 ptr2
 
             member _.Int32ManagedPtr _ _ val1 ptr2 = subInt32ManagedPtr val1 ptr2
 
             member _.ManagedPtrInt32 baseClassTypes state ptr1 val2 =
-                subManagedPtrInt32 baseClassTypes state ptr1 val2
+                subManagedPtrInt32 OverflowBehaviour.Trap baseClassTypes state ptr1 val2
 
             member _.Name = "sub.ovf"
         }

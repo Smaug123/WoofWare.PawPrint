@@ -588,12 +588,180 @@ module TestBinaryArithmetic =
         if trapped = 0 || computed = 0 then
             failwith $"generator missed a regime: trapped=%d{trapped}, computed=%d{computed}"
 
+    let private placeholderPointer (bits : int64) : EvalStackValue =
+        EvalStackValue.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits)
+
+    /// Bit patterns for the byrefs produced by `Unsafe.AsRef<T>((void*)bits)`.
+    /// Zero is excluded: the placeholder invariant is that it never carries
+    /// zero (that bit pattern is `Null`).
+    let private genPlaceholderBits : Gen<int64> =
+        Gen.frequency
+            [
+                2, ArbMap.defaults |> ArbMap.generate<int64>
+                3,
+                Gen.elements
+                    [
+                        System.Int64.MinValue
+                        System.Int64.MinValue + 1L
+                        System.Int64.MaxValue
+                        System.Int64.MaxValue - 1L
+                        -1L
+                        1L
+                        8L
+                    ]
+            ]
+        |> Gen.map (fun bits -> if bits = 0L then 1L else bits)
+
+    /// Excludes Int32.MinValue, which `sub`'s symbolic offset model refuses
+    /// outright (it cannot represent the negation) rather than computing.
+    let private genNegatableInt32Offset : Gen<int32> =
+        genOverflowProneInt32
+        |> Gen.map (fun v ->
+            if v = System.Int32.MinValue then
+                System.Int32.MinValue + 1
+            else
+                v
+        )
+
+    [<Test>]
+    let ``sub ovf on bit-pattern byrefs traps exactly when the difference leaves native int range`` () : unit =
+        // A `NativeIntPlaceholder`'s payload is a real native-int bit pattern,
+        // not a symbolic offset, so this is the one pointer shape where the
+        // checked form has machine-width bits to overflow.
+        let state = state ()
+        let mutable trapped = 0
+        let mutable computed = 0
+
+        let property (bits1 : int64, bits2 : int64) : unit =
+            let exact = bigint bits1 - bigint bits2
+
+            let inRange =
+                exact >= bigint System.Int64.MinValue && exact <= bigint System.Int64.MaxValue
+
+            let val1 = placeholderPointer bits1
+            let val2 = placeholderPointer bits2
+
+            // Unchecked `sub` wraps whatever happens; that is the behaviour
+            // `sub.ovf` must not share.
+            execute ArithmeticOperation.sub state val1 val2
+            |> shouldEqual (EvalStackValue.NativeInt (NativeIntSource.Verbatim (bits1 - bits2)))
+
+            match trySubOvf state val1 val2 with
+            | Some actual ->
+                computed <- computed + 1
+
+                if not inRange then
+                    failwith
+                        $"sub.ovf on placeholders %d{bits1} - %d{bits2} returned %O{actual}, but %O{exact} is outside native int"
+
+                actual
+                |> shouldEqual (EvalStackValue.NativeInt (NativeIntSource.Verbatim (int64 exact)))
+            | None ->
+                trapped <- trapped + 1
+
+                if inRange then
+                    failwith $"sub.ovf on placeholders %d{bits1} - %d{bits2} trapped, but %O{exact} fits in native int"
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen (Gen.zip genPlaceholderBits genPlaceholderBits)) property)
+
+        if trapped = 0 || computed = 0 then
+            failwith $"generator missed a regime: trapped=%d{trapped}, computed=%d{computed}"
+
+    [<Test>]
+    let ``sub ovf traps when negating the minimum bit-pattern byref`` () : unit =
+        let state = state ()
+        let nullPtr = EvalStackValue.ManagedPointer ManagedPointerSource.Null
+
+        // `Null - placeholder` is `0 - bits`, which overflows only at Int64.MinValue.
+        trySubOvf state nullPtr (placeholderPointer (System.Int64.MinValue + 1L))
+        |> shouldEqual (Some (EvalStackValue.NativeInt (NativeIntSource.Verbatim System.Int64.MaxValue)))
+
+        trySubOvf state nullPtr (placeholderPointer System.Int64.MinValue)
+        |> shouldEqual None
+
+        // Unchecked `sub` wraps instead.
+        execute ArithmeticOperation.sub state nullPtr (placeholderPointer System.Int64.MinValue)
+        |> shouldEqual (EvalStackValue.NativeInt (NativeIntSource.Verbatim System.Int64.MinValue))
+
+    [<Test>]
+    let ``checked pointer offsetting of a bit-pattern byref traps exactly on native int overflow`` () : unit =
+        let state = state ()
+        let mutable addTrapped = 0
+        let mutable addComputed = 0
+        let mutable subTrapped = 0
+        let mutable subComputed = 0
+
+        let expectedPointer (bits : bigint) : EvalStackValue =
+            if bits = bigint 0 then
+                EvalStackValue.ManagedPointer ManagedPointerSource.Null
+            else
+                placeholderPointer (int64 bits)
+
+        let check
+            (checkedOp : IArithmeticOperation)
+            (uncheckedOp : IArithmeticOperation)
+            (exact : bigint)
+            (val1 : EvalStackValue)
+            (val2 : EvalStackValue)
+            : bool
+            =
+            let inRange =
+                exact >= bigint System.Int64.MinValue && exact <= bigint System.Int64.MaxValue
+
+            // The unchecked form always produces a (wrapped) pointer.
+            execute uncheckedOp state val1 val2 |> ignore
+
+            match
+                (try
+                    execute checkedOp state val1 val2 |> Some
+                 with :? System.OverflowException ->
+                     None)
+            with
+            | Some actual ->
+                if not inRange then
+                    failwith
+                        $"%s{checkedOp.Name} of %O{val1} and %O{val2} returned %O{actual}, but %O{exact} is outside native int"
+
+                actual |> shouldEqual (expectedPointer exact)
+                false
+            | None ->
+                if inRange then
+                    failwith $"%s{checkedOp.Name} of %O{val1} and %O{val2} trapped, but %O{exact} fits in native int"
+
+                true
+
+        let property (bits : int64, offset : int32) : unit =
+            let ptr = placeholderPointer bits
+            let v = EvalStackValue.Int32 offset
+
+            if check ArithmeticOperation.addOvf ArithmeticOperation.add (bigint bits + bigint offset) ptr v then
+                addTrapped <- addTrapped + 1
+            else
+                addComputed <- addComputed + 1
+
+            if check ArithmeticOperation.subOvf ArithmeticOperation.sub (bigint bits - bigint offset) ptr v then
+                subTrapped <- subTrapped + 1
+            else
+                subComputed <- subComputed + 1
+
+        Check.One (
+            propertyConfig,
+            Prop.forAll (Arb.fromGen (Gen.zip genPlaceholderBits genNegatableInt32Offset)) property
+        )
+
+        if addTrapped = 0 || addComputed = 0 || subTrapped = 0 || subComputed = 0 then
+            failwith
+                $"generator missed a regime: addTrapped=%d{addTrapped}, addComputed=%d{addComputed}, subTrapped=%d{subTrapped}, subComputed=%d{subComputed}"
+
     [<Test>]
     let ``sub ovf shares sub's pointer semantics`` () : unit =
         // ECMA-335 III.3.68 gives sub.ovf the same `& - int -> &` and
-        // `& - & -> native int` signatures as sub, and our pointer model is
-        // symbolic, so there is nothing extra to trap on: the two ops must be
-        // indistinguishable on every pointer shape.
+        // `& - & -> native int` signatures as sub. Our pointers are symbolic
+        // (a root plus offsets), so away from the bit-pattern placeholders
+        // there is nothing to trap on and the two ops must be
+        // indistinguishable. The placeholder cases below stay far from the
+        // native-int boundary, so they agree here too; the trapping regime is
+        // covered by the properties above.
         let state, arr1, arr2 = stateWithTwoIntArrays [ 10 ; 20 ; 30 ; 40 ] [ 50 ; 60 ]
         let nullPtr = EvalStackValue.ManagedPointer ManagedPointerSource.Null
 
