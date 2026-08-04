@@ -258,17 +258,42 @@ public class StructLayoutTestsAdvanced
         if (ma.Values.Length != 8) return 25;
         if (ma.Values[7] != 8) return 26;
 
-        // Test AllocHGlobal / StructureToPtr / FreeHGlobal. The matching
-        // `Marshal.PtrToStructure` read-back lives in MarshalPtrToStructure.cs, which
-        // is still `unimplemented`: that overload allocates its result through
-        // `Activator.CreateInstance(Type, bool)` and so hits the unimplemented
-        // `RuntimeTypeHandle_GetActivationInfo` QCall. Byte-level verification of the
-        // write direction is covered by the MarshalStructureToPtr*.cs tests.
+        // Test AllocHGlobal / StructureToPtr / FreeHGlobal.
+        //
+        // The round trip back through `Marshal.PtrToStructure` lives in
+        // MarshalPtrToStructure.cs, which is still `unimplemented`: that overload
+        // allocates its result through `Activator.CreateInstance(Type, bool)` and so
+        // hits the unimplemented `RuntimeTypeHandle_GetActivationInfo` QCall.
+        //
+        // We still verify the bytes here rather than just calling StructureToPtr and
+        // freeing, because otherwise nothing in the enabled suite would catch a
+        // regression in the blittable memmove: all three byte-reading
+        // MarshalStructureToPtr*.cs tests are themselves in `unimplemented`, and
+        // MarshalStructureToPtrNoLayoutThrows.cs only asserts the ArgumentException
+        // path. Reading back through a `BlittableStruct*` is the natural check for a
+        // blittable struct. We read the fields through primitive-typed pointers at
+        // explicit offsets rather than through a `BlittableStruct*`: `ldfld` on a byref
+        // into a native memory block is not yet supported ("needs a byte-view byref
+        // shape"). `Marshal.ReadInt32` is likewise unavailable, being blocked on Conv_I4
+        // of a managed pointer — see the MarshalStructureToPtrIntPtrField.cs note.
+        //
+        // Offsets follow LayoutKind.Sequential on a 64-bit host: int X @ 0, 4 bytes of
+        // padding, double Y @ 8, long Z @ 16. MarshalStructureToPtrIntPtrField.cs sets
+        // the precedent for hardcoding these; the size assertion below turns any layout
+        // surprise into an explicit failure rather than a bogus field comparison.
         var blittable = new BlittableStruct { X = 100, Y = 200.5, Z = 300 };
-        IntPtr ptr = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(BlittableStruct)));
+        int blittableSize = Marshal.SizeOf(typeof(BlittableStruct));
+        if (IntPtr.Size != 8) return 27;
+        if (blittableSize != 24) return 28;
+        IntPtr ptr = Marshal.AllocHGlobal(blittableSize);
         try
         {
             Marshal.StructureToPtr(blittable, ptr, false);
+
+            byte* raw = (byte*)ptr;
+            if (*(int*)(raw + 0) != 100) return 29;
+            if (Math.Abs(*(double*)(raw + 8) - 200.5) > 0.00001) return 97;
+            if (*(long*)(raw + 16) != 300) return 98;
         }
         finally
         {
