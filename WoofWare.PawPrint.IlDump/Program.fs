@@ -1,7 +1,5 @@
 namespace WoofWare.PawPrint.IlDump
 
-open System
-open System.IO
 open System.Reflection.Metadata
 open System.Reflection.Metadata.Ecma335
 open Microsoft.Extensions.Logging
@@ -12,17 +10,6 @@ module Program =
     type private Mode =
         | Default
         | AttrsOnly
-
-    let private printMethod
-        (assembly : DumpedAssembly)
-        (qualifiedTypeName : string)
-        (method : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
-        : unit
-        =
-        for line in IlFormatting.formatMethodLines assembly qualifiedTypeName method do
-            printfn $"%s{line}"
-
-        printfn ""
 
     /// Emit attribute-only output for a single type: the type's own attribute
     /// lines (if any), followed by attribute lines for each filter-matching
@@ -49,10 +36,7 @@ module Program =
                 typeHeader
                 (MetadataToken.TypeDefinition typeInfo.TypeDefHandle)
 
-        let memberNameMatches (name : string) : bool =
-            match memberFilter with
-            | None -> true
-            | Some filter -> name.Contains (filter, StringComparison.OrdinalIgnoreCase)
+        let memberNameMatches : string -> bool = IlDumpRendering.matchesFilter memberFilter
 
         let methodGroups =
             typeInfo.Methods
@@ -135,11 +119,11 @@ module Program =
 
             1
         | dllPath :: rest ->
-            let typeFilter, memberFilter =
+            let filter =
                 match rest with
-                | [] -> None, None
-                | [ t ] -> Some t, None
-                | t :: m :: _ -> Some t, Some m
+                | [] -> IlDumpFilter.make None None
+                | [ t ] -> IlDumpFilter.make (Some t) None
+                | t :: m :: _ -> IlDumpFilter.make (Some t) (Some m)
 
             use loggerFactory =
                 LoggerFactory.Create (fun builder ->
@@ -151,24 +135,24 @@ module Program =
 
             match mode with
             | Mode.Default ->
+                let mutable anyEmitted = false
+
                 for kvp in assembly.TypeDefs do
                     let typeInfo = kvp.Value
-                    let qualifiedName = IlFormatting.qualifyTypeName assembly.TypeDefs typeInfo
 
-                    let typeMatches =
-                        match typeFilter with
-                        | None -> true
-                        | Some filter -> qualifiedName.Contains (filter, StringComparison.OrdinalIgnoreCase)
+                    if IlDumpRendering.typeMatches assembly filter typeInfo then
+                        let lines = IlDumpRendering.formatTypeLines assembly filter typeInfo
 
-                    if typeMatches then
-                        for method in typeInfo.Methods do
-                            let methodMatches =
-                                match memberFilter with
-                                | None -> true
-                                | Some filter -> method.Name.Contains (filter, StringComparison.OrdinalIgnoreCase)
+                        if not (List.isEmpty lines) then
+                            // Separate from the previous type only now that we know
+                            // there's something to emit.
+                            if anyEmitted then
+                                printfn ""
 
-                            if methodMatches then
-                                printMethod assembly qualifiedName method
+                            for line in lines do
+                                printfn $"%s{line}"
+
+                            anyEmitted <- true
 
             | Mode.AttrsOnly ->
                 let mutable anyEmitted = false
@@ -190,7 +174,7 @@ module Program =
                 // ModuleDefinition rows, not under any type. Emit them up front when the user
                 // hasn't narrowed the scope with a type filter; a type filter scopes the
                 // output to types and should suppress these.
-                if Option.isNone typeFilter then
+                if Option.isNone filter.Type then
                     printOwnerGroup
                         (AttributeFormatting.assemblyHeader assembly)
                         (MetadataToken.AssemblyDefinition EntityHandle.AssemblyDefinition)
@@ -206,15 +190,9 @@ module Program =
 
                 for kvp in assembly.TypeDefs do
                     let typeInfo = kvp.Value
-                    let qualifiedName = IlFormatting.qualifyTypeName assembly.TypeDefs typeInfo
 
-                    let typeMatches =
-                        match typeFilter with
-                        | None -> true
-                        | Some filter -> qualifiedName.Contains (filter, StringComparison.OrdinalIgnoreCase)
-
-                    if typeMatches then
-                        let emitted = printTypeAttrs assembly memberFilter (not anyEmitted) typeInfo
+                    if IlDumpRendering.typeMatches assembly filter typeInfo then
+                        let emitted = printTypeAttrs assembly filter.Member (not anyEmitted) typeInfo
 
                         if emitted then
                             anyEmitted <- true
