@@ -98,7 +98,13 @@ module TestFSharpPureCases =
         File.ReadAllBytes dllPath
 
     let testCases : string list =
-        [ "Placeholder" ; "CeqBranch" ; "TailCall" ; "AbstractDispatch" ]
+        [
+            "Placeholder"
+            "CeqBranch"
+            "TailCall"
+            "AbstractDispatch"
+            "ByrefDispatch"
+        ]
 
     // PawPrint cannot yet allocate string argv (Program.allocateArgs is unimplemented),
     // so all F# test cases that require argv dispatch are unimplemented for now.
@@ -114,7 +120,8 @@ module TestFSharpPureCases =
     // its `Combine` call (see issue #693: 40 + 2 = 42) rather than a boolean success/failure
     // code, so a wrong dispatch is directly observable as a wrong number rather than being
     // laundered through an if/else into 0-or-1.
-    let customExitCodes : Map<string, int> = [ "AbstractDispatch", 42 ] |> Map.ofList
+    let customExitCodes : Map<string, int> =
+        [ "AbstractDispatch", 42 ; "ByrefDispatch", 42 ] |> Map.ofList
 
     let private runTest (testCaseName : string) : unit =
         let image = loadImage ()
@@ -267,6 +274,43 @@ module TestFSharpPureCases =
 
         combine.Parameters.IsEmpty |> shouldEqual true
         MethodInfo.arity combine |> shouldEqual 1
+
+    /// Regression guard for issue #692, mirroring the `AbstractDispatch` guard above. #692's
+    /// real-world trigger (FSharp.Core's `MapEnumerator`1::DoMoveNext(byref<T>)`) is an
+    /// abstract method with a *byref* parameter; this asserts `ByrefDispatch.fs` reproduces
+    /// that same zero-Param-rows-but-nonzero-arity shape, and specifically that the one
+    /// parameter is a byref. Without this guard, a compiler change that started emitting a
+    /// Param row for the abstract declaration (or stopped modelling the parameter as a byref)
+    /// would leave `F# pure tests(ByrefDispatch)` silently passing while covering nothing.
+    [<Test>]
+    let ``ByrefDispatch's abstract Bump really does have zero Param rows and a byref parameter`` () : unit =
+        let image = loadImage ()
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+        use peImage = new MemoryStream (image)
+
+        let assy = Assembly.read loggerFactory (Some dllPath) peImage
+
+        let bump =
+            assy.TypeDefs.Values
+            |> Seq.collect (fun typeInfo -> typeInfo.Methods)
+            |> Seq.filter (fun methodInfo -> methodInfo.DeclaringType.Name = "Base" && methodInfo.Name = "Bump")
+            |> Seq.toList
+            |> function
+                | [ m ] -> m
+                | [] -> failwith "ByrefDispatch.Base::Bump not found in the published assembly"
+                | ms -> failwith $"expected exactly one ByrefDispatch.Base::Bump, found %d{List.length ms}"
+
+        (match bump.Body with
+         | MethodBody.Abstract -> ()
+         | other -> failwith $"expected ByrefDispatch.Base::Bump to be MethodBody.Abstract, got %O{other}")
+
+        bump.Parameters.IsEmpty |> shouldEqual true
+        MethodInfo.arity bump |> shouldEqual 1
+
+        (match bump.Signature.ParameterTypes.[0] with
+         | TypeDefn.Byref _ -> ()
+         | other -> failwith $"expected ByrefDispatch.Base::Bump's sole parameter to be a byref, got %O{other}")
 
     [<TestCaseSource(nameof unimplemented)>]
     let ``Unimplemented F# tests have correct real-runtime behaviour`` (testCaseName : string) =
