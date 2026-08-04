@@ -201,6 +201,8 @@ module IlMachineState =
     let internCastCacheSentinelTable =
         IlMachineRuntimeMetadata.internCastCacheSentinelTable
 
+    let setExceptionMessage = IlMachineRuntimeMetadata.setExceptionMessage
+
     let setExceptionStackTraceString =
         IlMachineRuntimeMetadata.setExceptionStackTraceString
 
