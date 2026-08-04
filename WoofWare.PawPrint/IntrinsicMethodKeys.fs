@@ -450,6 +450,36 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Exact "System.Int32"
                 ]
             pattern "System.Private.CoreLib" "System.Span`1" "ToArray" []
+            // IL body is `ldarg.0; ldfld _reference; ldarg.0; ldfld _length; conv.u; ldarg.1;
+            // call SpanHelpers::Fill<T>` — pure field reads plus the helper allowlisted below.
+            // https://github.com/dotnet/runtime/blob/HEAD/src/libraries/System.Private.CoreLib/src/System/Span.cs#L310
+            pattern "System.Private.CoreLib" "System.Span`1" "Fill" [ IntrinsicParameterPattern.Any ]
+            // `SpanHelpers.Fill<T>(ref T, nuint, T)` opens with a vectorised fast path, but
+            // PawPrint emulates a deterministic scalar CPU: `Vector.IsHardwareAccelerated` folds
+            // to false (see `vectorAccelerationAvailable`), which is the second of the four
+            // guards and jumps straight to `CannotVectorize`. The later guards — and every
+            // `Vector<byte>`/`Vector256`/`Vector512` construction — are therefore never
+            // evaluated. A reference-containing T leaves even earlier, at the
+            // `RuntimeHelpers.IsReferenceOrContainsReferences<T>` guard, which is implemented.
+            //
+            // `CannotVectorize` is an unrolled scalar loop of `Unsafe.Add(ref refData, i) = value`
+            // writes in blocks of 8/4/2/1 — only modelled boundaries, and no P/Invoke. That is
+            // what distinguishes this from the sibling `Span<T>.Clear`, which is implemented
+            // natively in `Intrinsics.fs` precisely because its IL bottoms out in
+            // `SpanHelpers.ClearWithoutReferences`' P/Invoke fallback.
+            //
+            // Should PawPrint ever report SIMD as accelerated, this IL would start walking into
+            // the vector path and fail loudly there rather than silently misbehaving.
+            // https://github.com/dotnet/runtime/blob/HEAD/src/libraries/System.Private.CoreLib/src/System/SpanHelpers.T.cs#L15
+            pattern
+                "System.Private.CoreLib"
+                "System.SpanHelpers"
+                "Fill"
+                [
+                    IntrinsicParameterPattern.Byref
+                    IntrinsicParameterPattern.Exact "System.UIntPtr"
+                    IntrinsicParameterPattern.Any
+                ]
             // Same IL body as ReadOnlySpan<T>.GetPinnableReference above.
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/Span.cs#L282
             pattern "System.Private.CoreLib" "System.Span`1" "GetPinnableReference" []
