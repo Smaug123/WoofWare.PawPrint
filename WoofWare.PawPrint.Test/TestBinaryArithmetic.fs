@@ -718,6 +718,110 @@ module TestBinaryArithmetic =
         if nullCases = 0 || placeholderCases = 0 then
             failwith $"generator missed a regime: null=%d{nullCases}, placeholder=%d{placeholderCases}"
 
+    /// Offsets outside the int32 range. A bit-pattern byref's offset is a
+    /// native int, so these are perfectly ordinary; only the symbolic offset
+    /// model is int32-bounded.
+    let private genOversizeInt64Offset : Gen<int64> =
+        Gen.frequency
+            [
+                2,
+                Gen.elements
+                    [
+                        1L <<< 40
+                        -(1L <<< 40)
+                        int64<int32> System.Int32.MaxValue + 1L
+                        int64<int32> System.Int32.MinValue - 1L
+                        1L <<< 62
+                    ]
+                1, Gen.choose (0, 1 <<< 20) |> Gen.map (fun n -> int64<int> n + 4294967296L)
+            ]
+
+    [<Test>]
+    let ``bit-pattern byrefs accept native int offsets outside the int32 range`` () : unit =
+        let state = state ()
+        let mutable nullCases = 0
+        let mutable placeholderCases = 0
+
+        let property (bits : int64, offset : int64) : unit =
+            let start =
+                if bits = 0L then
+                    nullCases <- nullCases + 1
+                    nullPointer
+                else
+                    placeholderCases <- placeholderCases + 1
+                    placeholderPointer bits
+
+            let asNativeInt = EvalStackValue.NativeInt (NativeIntSource.Verbatim offset)
+
+            let expect (expectedBits : int64) (actual : EvalStackValue) : unit =
+                actual
+                |> shouldEqual (EvalStackValue.ManagedPointer (ManagedPointerSource.ofBitPattern expectedBits))
+
+            execute ArithmeticOperation.add state start asNativeInt
+            |> expect (bits + offset)
+
+            execute ArithmeticOperation.sub state start asNativeInt
+            |> expect (bits - offset)
+
+            // `nativeint + &` is legal too, and must reach the same place.
+            execute ArithmeticOperation.add state asNativeInt start
+            |> expect (bits + offset)
+
+        let genBits = Gen.frequency [ 1, Gen.constant 0L ; 3, genPlaceholderBits ]
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen (Gen.zip genBits genOversizeInt64Offset)) property)
+
+        if nullCases = 0 || placeholderCases = 0 then
+            failwith $"generator missed a regime: null=%d{nullCases}, placeholder=%d{placeholderCases}"
+
+    [<Test>]
+    let ``subtracting an oversize native int from the null byref is representable`` () : unit =
+        let state = state ()
+
+        execute
+            ArithmeticOperation.sub
+            state
+            nullPointer
+            (EvalStackValue.NativeInt (NativeIntSource.Verbatim (1L <<< 40)))
+        |> shouldEqual (placeholderPointer -(1L <<< 40))
+
+    [<Test>]
+    let ``checked bit-pattern offsetting still traps on native int overflow with wide offsets`` () : unit =
+        let state = state ()
+
+        let bigOffset = EvalStackValue.NativeInt (NativeIntSource.Verbatim (1L <<< 62))
+
+        // In range: no trap.
+        execute ArithmeticOperation.addOvf state (placeholderPointer 8L) bigOffset
+        |> shouldEqual (placeholderPointer ((1L <<< 62) + 8L))
+
+        // Out of range: traps, and the unchecked form wraps instead.
+        Assert.Throws<System.OverflowException> (fun () ->
+            execute ArithmeticOperation.addOvf state (placeholderPointer System.Int64.MaxValue) bigOffset
+            |> ignore
+        )
+        |> ignore
+
+        execute ArithmeticOperation.add state (placeholderPointer System.Int64.MaxValue) bigOffset
+        |> shouldEqual (placeholderPointer (System.Int64.MaxValue + (1L <<< 62)))
+
+    [<Test>]
+    let ``symbolic byrefs still refuse offsets outside the int32 offset model`` () : unit =
+        // Guard against over-widening: an array byref's index genuinely is an
+        // int32, so an oversize offset must keep failing loudly rather than
+        // silently truncating.
+        let state, arr = stateWithIntArray [ 10 ; 20 ; 30 ]
+
+        Assert.Throws<System.Exception> (fun () ->
+            execute
+                ArithmeticOperation.add
+                state
+                (arrayPointer arr 0)
+                (EvalStackValue.NativeInt (NativeIntSource.Verbatim (1L <<< 40)))
+            |> ignore
+        )
+        |> ignore
+
     [<Test>]
     let ``sub ovf on bit-pattern byrefs traps exactly when the difference leaves native int range`` () : unit =
         // A `NativeIntPlaceholder`'s payload is a real native-int bit pattern,
