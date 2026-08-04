@@ -1401,6 +1401,50 @@ module IlMachineRuntimeMetadata =
                     | None -> state, None
                     | Some (state, underlying) -> state, builtInPrimitiveIdentity state underlying
 
+    /// Does PawPrint store values of `handle` in the flattened form that the eval stack expects for
+    /// a bare primitive?
+    ///
+    /// True for the built-in primitives themselves, and for enums over the fixed-width integers.
+    /// False for enums over `bool`, `char` or a native int: ECMA-335 II.14.3 permits those and the
+    /// CLR does load them (C# cannot declare one, but Reflection.Emit can), yet
+    /// `CliValueType.IsEnumStructural` deliberately answers false for them, so their storage stays
+    /// a wrapped `CliValueType`.
+    let private unboxMaterialisesFlattened
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (handle : ConcreteTypeHandle)
+        : IlMachineState * bool
+        =
+        let state, isEnum = isEnumValueType loggerFactory baseClassTypes state handle
+
+        if not isEnum then
+            // A built-in primitive is flattened by definition; nothing else reaches here, because
+            // the caller has already established a primitive element identity for `handle`.
+            state, true
+        else
+            match enumUnderlyingHandle loggerFactory baseClassTypes state handle with
+            | None -> state, false
+            | Some (state, underlying) ->
+                let state, underlyingId =
+                    primitiveElementIdentity loggerFactory baseClassTypes state underlying
+
+                match underlyingId with
+                | None -> state, false
+                | Some underlyingId ->
+                    [
+                        baseClassTypes.SByte
+                        baseClassTypes.Byte
+                        baseClassTypes.Int16
+                        baseClassTypes.UInt16
+                        baseClassTypes.Int32
+                        baseClassTypes.UInt32
+                        baseClassTypes.Int64
+                        baseClassTypes.UInt64
+                    ]
+                    |> List.exists (fun ty -> ty.Identity = underlyingId)
+                    |> fun flattenable -> state, flattenable
+
     /// CoreCLR `CastHelpers.Unbox_Helper`: `unbox` and the value-typed form of `unbox.any` accept a
     /// boxed operand when the two handles are identical, or when both types are in the primitive
     /// category and report the *same* primitive element type. That second clause is what lets a
@@ -1438,7 +1482,25 @@ module IlMachineRuntimeMetadata =
 
             match targetPrimitive with
             | None -> state, false
-            | Some targetPrimitive -> state, boxedPrimitive = targetPrimitive
+            | Some targetPrimitive ->
+                if boxedPrimitive <> targetPrimitive then
+                    state, false
+                else
+                    // About to license the relaxation. The unbox will materialise the value from
+                    // the *boxed* object's handle, so that side must be one PawPrint stores
+                    // flattened; otherwise the push would leave a wrapped `UserDefinedValueType`
+                    // where the next instruction expects a bare stack primitive, and misread it.
+                    // Fail loudly rather than answering `false`, which would raise
+                    // InvalidCastException where a real runtime succeeds — a quieter way of being
+                    // wrong. (The target side needs no such check: it never drives materialisation.)
+                    let state, flattened =
+                        unboxMaterialisesFlattened loggerFactory baseClassTypes state boxedType
+
+                    if flattened then
+                        state, true
+                    else
+                        failwith
+                            $"unbox of %O{boxedType} to %O{targetType}: CoreCLR permits this (both report the same primitive element type), but PawPrint does not store the boxed type in flattened form — see CliValueType.IsEnumStructural, which covers only enums over the fixed-width integers, not over bool/char/native int"
 
     /// Does this handle denote a reference type (as opposed to a value type)?
     ///
