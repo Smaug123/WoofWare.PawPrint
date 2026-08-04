@@ -1080,34 +1080,40 @@ module internal UnaryMetadataObjectOps =
             // `HeapValue` denotes the whole boxed value (see `CellAwareCopy`), so the aliasing
             // III.4.32 requires falls out: reads and writes through this pointer go to the box
             // itself, not to a copy.
+            //
+            // What it does *not* carry is a static type. Every consumer — `ldind`, `ldobj`,
+            // `ldfld`, `ldflda`, `stobj`, `stfld` — resolves the pointee from whatever storage it
+            // finds at the root, which is right exactly when the box holds the target type's own
+            // fields. The two shapes below break that, and no projection list fixes them: a
+            // trailing byte view satisfies `ldind`/`ldobj` (they take the typed byte-view read for
+            // such a pointer) but then hides the storage's real fields from `ldfld`, and omitting
+            // it does the reverse. Serving them properly needs a byref that carries a static type
+            // — a change to the pointer representation itself, not to this instruction — so refuse
+            // loudly here instead of handing back a pointer that is wrong for half its consumers.
+            //
+            // Nothing exercises either today: C# emits `unbox` only for a field read, so only ever
+            // for a genuine value type, and the single bare `unbox` in all of
+            // System.Private.CoreLib (`System.Index.Equals`, covered by UnboxFieldAccess.cs) is
+            // one of those.
             let barePrimitive, state =
                 barePrimitiveBoxShape baseClassTypes boxed.ConcreteType boxed.Contents state
 
-            // A bare `HeapValue` byref denotes the box's storage *as stored*, and an untyped read
-            // of it (which is what `ldind`/`ldobj` do — `executeLdind` routes to the typed
-            // byte-view read only for a trailing-byte-view pointer) yields that storage verbatim.
-            // That is already right for everything except one shape:
-            //   - a genuine value type reads back as itself;
-            //   - a primitive-like one (IntPtr, the `*HandleInternal` structs, an enum) is
-            //     flattened to its underlying value on push, by the eval-stack invariant in
-            //     `EvalStack.Push'`. That preserves pointer provenance, which a byte
-            //     reinterpretation would destroy — and it covers the enum/underlying relaxation
-            //     in `unboxPermitted` without any help from us;
-            //   - but `box` of a *bare* primitive stores it inside a synthetic single-field
-            //     struct, which is not primitive-like and so is not flattened. Only here does the
-            //     pointer need to carry its static type, so that reads and writes go through the
-            //     byte-view path and see the payload rather than the wrapper.
-            // None of this is reachable from C#, which emits `unbox` only for a field read and so
-            // only ever for a genuine value type; it is not covered end-to-end by the
-            // differential tests.
-            let projections =
-                match barePrimitive with
-                | None -> []
-                | Some _ -> [ ByrefProjection.ReinterpretAs targetConcreteType ]
+            match barePrimitive with
+            | Some _ ->
+                failwith
+                    $"TODO: Unbox of a boxed bare primitive (%O{boxed.ConcreteType}) is unimplemented; `box` stores it inside a synthetic single-field struct, so a byref to the box addresses that wrapper rather than the value, and `HeapValue` cannot express the distinction"
+            | None ->
+
+            if boxed.ConcreteType <> targetConcreteTypeHandle then
+                // `unboxPermitted` also accepts same-primitive-element-type pairs, so the box's
+                // type and the token's can differ: a boxed enum unboxed as its underlying integer,
+                // or as another enum over the same integer.
+                failwith
+                    $"TODO: Unbox under the enum/underlying relaxation (box holds %O{boxed.ConcreteType}, token says %O{targetConcreteTypeHandle}) is unimplemented; the byref would have to present the box's storage as the token's type while leaving the box's own runtime type intact"
 
             let ptr =
                 CliType.RuntimePointer (
-                    CliRuntimePointer.Managed (ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, projections))
+                    CliRuntimePointer.Managed (ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, []))
                 )
 
             state
