@@ -49,6 +49,7 @@
         <Compile Include="AccessCheck.fs" />
         <Compile Include="IlFormatting.fs" />
         <Compile Include="AttributeFormatting.fs" />
+        <Compile Include="IlDumpRendering.fs" />
         <Compile Include="TypeConcretisation.fs" />
         <EmbeddedResource Include="version.json" />
     </ItemGroup>

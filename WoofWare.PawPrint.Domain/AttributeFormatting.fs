@@ -409,9 +409,25 @@ module AttributeFormatting =
             paramTypes
             method.RawSignature.ReturnType
 
-    /// Comment-prefixed header for a FieldDef.
+    /// <summary>
+    /// Comment-prefixed header for a FieldDef. Static-ness is rendered in the
+    /// same position as <see cref="methodHeader"/> renders it. A trailing
+    /// <c>@ 0xNN</c> reports the field's offset for explicitly-laid-out types;
+    /// fields whose offset the runtime chooses carry no such suffix.
+    /// </summary>
     let fieldHeader (qualifiedTypeName : string) (field : FieldInfo<GenericParamFromMetadata, TypeDefn>) : string =
-        sprintf "// field %s::%s : %O" qualifiedTypeName field.Name field.Signature
+        let staticStr =
+            if field.Attributes.HasFlag System.Reflection.FieldAttributes.Static then
+                "static "
+            else
+                ""
+
+        let offsetStr =
+            match field.Offset with
+            | None -> ""
+            | Some offset -> sprintf " @ 0x%X" offset
+
+        sprintf "// field %s::%s%s : %O%s" qualifiedTypeName staticStr field.Name field.Signature offsetStr
 
     /// Comment-prefixed header for an EventDef.
     let eventHeader (qualifiedTypeName : string) (event : EventDefn) : string =
