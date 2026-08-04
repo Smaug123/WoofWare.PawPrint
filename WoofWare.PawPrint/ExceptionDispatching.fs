@@ -520,7 +520,7 @@ module ExceptionDispatching =
                 let typeFullName =
                     match AllConcreteTypes.lookup finishedInitialising state.ConcreteTypes with
                     | Some ct ->
-                        let assy = state._LoadedAssemblies.[ct.Identity.AssemblyFullName]
+                        let assy = state._LoadedAssemblies.ByDefinitionName ct.Identity.AssemblyFullName
                         Assembly.fullName assy ct.Identity
                     | None ->
                         failwith
@@ -927,7 +927,8 @@ module ExceptionDispatching =
             )
 
         let typeInfo =
-            state._LoadedAssemblies.[ct.Identity.AssemblyFullName].TypeDefs.[ct.Identity.TypeDefinition.Get]
+            (state._LoadedAssemblies.ByDefinitionName ct.Identity.AssemblyFullName)
+                .TypeDefs.[ct.Identity.TypeDefinition.Get]
 
         let hresult = hresultForExceptionType baseClassTypes typeInfo
 

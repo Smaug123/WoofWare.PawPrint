@@ -34,7 +34,7 @@ module TestMethodReturnType =
             let initialState =
                 IlMachineState.initial loggerFactory ImmutableArray.Empty assembly
 
-            let state = initialState.WithLoadedAssembly corelib.Name corelib
+            let state = initialState.WithLoadedAssembly corelib
 
             { state with
                 ConcreteTypes = Corelib.concretizeAll state._LoadedAssemblies baseClassTypes state.ConcreteTypes

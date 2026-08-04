@@ -93,7 +93,7 @@ public sealed class GenericFieldHost<T>
             let initialState =
                 IlMachineState.initial loggerFactory ImmutableArray.Empty assembly
 
-            initialState.WithLoadedAssembly corelib.Name corelib
+            initialState.WithLoadedAssembly corelib
 
         let state : IlMachineState =
             (state,

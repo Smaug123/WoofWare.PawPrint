@@ -166,7 +166,7 @@ module internal UnaryMetadataMemoryOps =
             AllConcreteTypes.lookup typeHandle state.ConcreteTypes |> Option.get
 
         let defn =
-            state._LoadedAssemblies.[targetType.Assembly.FullName].TypeDefs.[targetType.Definition.Get]
+            state._LoadedAssemblies.[targetType.Assembly].TypeDefs.[targetType.Definition.Get]
 
         let toPush, state =
             if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies defn then

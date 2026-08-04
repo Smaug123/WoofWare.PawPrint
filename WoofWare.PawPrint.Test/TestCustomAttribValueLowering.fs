@@ -22,8 +22,7 @@ module TestCustomAttribValueLowering =
 
     let private bct : BaseClassTypes<DumpedAssembly> = Corelib.getBaseTypes corelib
 
-    let private loaded : ImmutableDictionary<string, DumpedAssembly> =
-        ImmutableDictionary.CreateRange [ KeyValuePair (corelib.Name.FullName, corelib) ]
+    let private loaded : LoadedAssemblies = LoadedAssemblies.ofAssemblies [ corelib ]
 
     let private concreteTypes : AllConcreteTypes =
         Corelib.concretizeAll loaded bct AllConcreteTypes.Empty

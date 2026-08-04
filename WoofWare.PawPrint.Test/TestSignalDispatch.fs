@@ -36,10 +36,7 @@ module TestSignalDispatch =
         Corelib.getBaseTypes corelib
 
     let private concreteTypes : AllConcreteTypes =
-        Corelib.concretizeAll
-            (ImmutableDictionary<string, DumpedAssembly>.Empty.Add (corelib.Name.FullName, corelib))
-            baseClassTypes
-            AllConcreteTypes.Empty
+        Corelib.concretizeAll (LoadedAssemblies.ofAssemblies [ corelib ]) baseClassTypes AllConcreteTypes.Empty
 
     let private baseState () : IlMachineState =
         let _, loggerFactory = LoggerFactory.makeTest ()

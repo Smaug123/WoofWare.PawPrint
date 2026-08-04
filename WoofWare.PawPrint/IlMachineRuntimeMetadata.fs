@@ -352,7 +352,7 @@ module IlMachineRuntimeMetadata =
             match AllConcreteTypes.lookup concreteType state.ConcreteTypes with
             | None -> failwith $"ConcreteTypeHandle {concreteType} not found in AllConcreteTypes"
             | Some ct ->
-                let assy = state._LoadedAssemblies.[ct.Identity.AssemblyFullName]
+                let assy = state._LoadedAssemblies.ByDefinitionName ct.Identity.AssemblyFullName
                 let typeInfo = assy.TypeDefs.[ct.Identity.TypeDefinition.Get]
 
                 match typeInfo.BaseType with
@@ -491,7 +491,7 @@ module IlMachineRuntimeMetadata =
                 failwith $"collectAllInstanceFields: ConcreteTypeHandle %O{concreteType} not found in AllConcreteTypes"
             )
 
-        let assy = state._LoadedAssemblies.[ct.Identity.AssemblyFullName]
+        let assy = state._LoadedAssemblies.ByDefinitionName ct.Identity.AssemblyFullName
         let typeInfo = assy.TypeDefs.[ct.Identity.TypeDefinition.Get]
 
         // Get this type's own instance fields
@@ -1022,7 +1022,7 @@ module IlMachineRuntimeMetadata =
                 )
 
             let threadAssembly =
-                state._LoadedAssemblies.[threadConcreteType.Identity.AssemblyFullName]
+                state._LoadedAssemblies.ByDefinitionName threadConcreteType.Identity.AssemblyFullName
 
             let threadTypeInfo =
                 threadAssembly.TypeDefs.[threadConcreteType.Identity.TypeDefinition.Get]
@@ -1247,7 +1247,8 @@ module IlMachineRuntimeMetadata =
             match AllConcreteTypes.lookup concreteType state.ConcreteTypes with
             | None -> failwith $"ConcreteTypeHandle {concreteType} not found in AllConcreteTypes"
             | Some concreteType ->
-                let assembly = state._LoadedAssemblies.[concreteType.Identity.AssemblyFullName]
+                let assembly =
+                    state._LoadedAssemblies.ByDefinitionName concreteType.Identity.AssemblyFullName
 
                 Some (concreteType, assembly.TypeDefs.[concreteType.Identity.TypeDefinition.Get])
         | ConcreteTypeHandle.OneDimArrayZero _
@@ -1304,7 +1305,7 @@ module IlMachineRuntimeMetadata =
 
             match instanceFields with
             | [ valueField ] when valueField.Name = "value__" ->
-                let assy = state._LoadedAssemblies.[ct.Identity.AssemblyFullName]
+                let assy = state._LoadedAssemblies.ByDefinitionName ct.Identity.AssemblyFullName
 
                 let state, underlying =
                     IlMachineTypeResolution.concretizeType
@@ -1610,7 +1611,7 @@ module IlMachineRuntimeMetadata =
                 // This node has no metadata-declared interfaces. The caller decides whether to walk its base.
                 state, false
             | Some (ct, typeInfo) ->
-                let assy = state._LoadedAssemblies.[ct.Identity.AssemblyFullName]
+                let assy = state._LoadedAssemblies.ByDefinitionName ct.Identity.AssemblyFullName
 
                 ((state, false), typeInfo.ImplementedInterfaces)
                 ||> Seq.fold (fun (state, found) impl ->
@@ -1693,7 +1694,9 @@ module IlMachineRuntimeMetadata =
 
                 match sameDefnDifferentGenerics with
                 | Some targetCt ->
-                    let targetAssy = state._LoadedAssemblies.[targetCt.Identity.AssemblyFullName]
+                    let targetAssy =
+                        state._LoadedAssemblies.ByDefinitionName targetCt.Identity.AssemblyFullName
+
                     let targetTypeInfo = targetAssy.TypeDefs.[targetCt.Identity.TypeDefinition.Get]
 
                     let hasVariantGenericParams =
@@ -2164,7 +2167,9 @@ module IlMachineRuntimeMetadata =
             let targetIdentityWithVariance =
                 match AllConcreteTypes.lookup t state.ConcreteTypes with
                 | Some targetCt ->
-                    let targetAssy = state._LoadedAssemblies.[targetCt.Identity.AssemblyFullName]
+                    let targetAssy =
+                        state._LoadedAssemblies.ByDefinitionName targetCt.Identity.AssemblyFullName
+
                     let targetTypeInfo = targetAssy.TypeDefs.[targetCt.Identity.TypeDefinition.Get]
 
                     let hasVariantGenericParams =

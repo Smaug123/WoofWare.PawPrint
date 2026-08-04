@@ -22,8 +22,7 @@ module TestEvalStackPrimitiveLikeBoundary =
 
     let private bct : BaseClassTypes<DumpedAssembly> = Corelib.getBaseTypes corelib
 
-    let private loaded : ImmutableDictionary<string, DumpedAssembly> =
-        ImmutableDictionary.CreateRange [ KeyValuePair (corelib.Name.FullName, corelib) ]
+    let private loaded : LoadedAssemblies = LoadedAssemblies.ofAssemblies [ corelib ]
 
     let private allCt : AllConcreteTypes =
         let concreteTypes = Corelib.concretizeAll loaded bct AllConcreteTypes.Empty

@@ -233,7 +233,7 @@ module ExecutionConcretization =
         let declaringTypeDefn =
             if field.DeclaringType.Generics.IsEmpty then
                 // Non-generic type - determine the SignatureTypeKind
-                let assy = state._LoadedAssemblies.[field.DeclaringType.Assembly.FullName]
+                let assy = state._LoadedAssemblies.[field.DeclaringType.Assembly]
                 let typeDef = assy.TypeDefs.[field.DeclaringType.Definition.Get]
 
                 let signatureTypeKind =
@@ -242,7 +242,7 @@ module ExecutionConcretization =
                 TypeDefn.FromDefinition (field.DeclaringType.Identity, signatureTypeKind)
             else
                 // Generic type - the field's declaring type already has the generic arguments
-                let assy = state._LoadedAssemblies.[field.DeclaringType.Assembly.FullName]
+                let assy = state._LoadedAssemblies.[field.DeclaringType.Assembly]
                 let typeDef = assy.TypeDefs.[field.DeclaringType.Definition.Get]
 
                 let signatureTypeKind =
