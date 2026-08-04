@@ -221,6 +221,14 @@ module IlMachineState =
 
     let isReferenceTypeHandle = IlMachineRuntimeMetadata.isReferenceTypeHandle
 
+    let isEnumValueType = IlMachineRuntimeMetadata.isEnumValueType
+
+    let enumUnderlyingHandle = IlMachineRuntimeMetadata.enumUnderlyingHandle
+
+    let primitiveElementIdentity = IlMachineRuntimeMetadata.primitiveElementIdentity
+
+    let unboxPermitted = IlMachineRuntimeMetadata.unboxPermitted
+
     let requiredOwnInstanceFieldId = IlMachineRuntimeMetadata.requiredOwnInstanceFieldId
 
     let isConcreteTypeAssignableTo = IlMachineRuntimeMetadata.isConcreteTypeAssignableTo
