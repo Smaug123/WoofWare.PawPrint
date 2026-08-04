@@ -65,6 +65,34 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // The wall clock the guest observes through `DateTime.UtcNow`
+                // boots at the Unix epoch by default. That is a replay-contract
+                // value rather than an implementation detail, and the pure test
+                // cannot pin it: pure cases are cross-checked against the real
+                // runtime, which reports today's date.
+                FileName = "DateTimeUtcNowEpochDefault.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // Same guest observation, but with the host moving the boot
+                // instant to 2023-11-14T00:00:00Z. Covers the whole chain
+                // (`KernelConfig.WallClockEpochMs` -> `withWallClockEpochMs` ->
+                // `systemTimeAsTicks` -> `SystemNative_GetSystemTimeAsTicks`),
+                // where `TestSystemTimeAsTicks` covers the tick arithmetic
+                // itself.
+                FileName = "DateTimeUtcNowEpochConfigured.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        WallClockEpochMs = 1_699_920_000_000L
+                    }
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // Same guest, reached the other way: the count comes from the
                 // guest-visible `DOTNET_PROCESSOR_COUNT` knob rather than from
                 // `KernelConfig.ProcessorCount`, which stays at its default.
