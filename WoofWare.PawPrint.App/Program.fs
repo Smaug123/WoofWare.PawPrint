@@ -8,7 +8,6 @@ open Microsoft.Extensions.Logging
 open Microsoft.Extensions.Logging.Console
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint.Logging
-open WoofWare.PawPrint.ExternImplementations
 
 module AppProgram =
     let private usage =
@@ -131,7 +130,16 @@ module AppProgram =
         // the seeded `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1` default, while
         // unset keys still get the default. This is the production analogue of
         // tests passing an explicit env map to `Program.run`.
-        let hostEnvironment : Map<string, string> =
+        //
+        // Environment variables are the *only* thing the CLI takes from the host:
+        // the rest of `KernelConfig` keeps its defaults. In particular the guest's
+        // `Environment.ProcessorCount` stays at the deterministic default rather
+        // than reporting this machine's core count, so a run recorded here replays
+        // identically elsewhere. Env vars are a deliberate exception because the
+        // guest's whole reason to run under the CLI is to see the invoker's
+        // configuration — and unlike the core count they are visible in, and
+        // reproducible from, the recorded kernel state.
+        let kernelConfig : KernelConfig =
             let dict = System.Environment.GetEnvironmentVariables ()
 
             let mutable acc = Map.empty
@@ -140,7 +148,9 @@ module AppProgram =
                 let entry = entry :?> System.Collections.DictionaryEntry
                 acc <- Map.add (entry.Key :?> string) (entry.Value :?> string) acc
 
-            acc
+            { KernelConfig.Default with
+                Environment = acc
+            }
 
         let runNormal (dllPath : string) (pctSeed : uint64 option) (args : string list) : int =
             // Echo the active seed to stderr (so it doesn't pollute the
@@ -153,8 +163,6 @@ module AppProgram =
 
             let dotnetRuntimes =
                 DotnetRuntime.SelectForDll dllPath |> ImmutableArray.CreateRange
-
-            let impls = NativeImpls.PassThru ()
 
             use fileStream = new FileStream (dllPath, FileMode.Open, FileAccess.Read)
 
@@ -210,9 +218,7 @@ module AppProgram =
                     out.Flush ()
                     err.Flush ()
 
-            match
-                Program.run loggerFactory (Some dllPath) fileStream dotnetRuntimes impls hostEnvironment pctSeed args
-            with
+            match Program.run loggerFactory (Some dllPath) fileStream dotnetRuntimes kernelConfig pctSeed args with
             | RunOutcome.NormalExit (state, thread)
             | RunOutcome.ProcessExit (state, thread) ->
                 drainStandardStreams state
@@ -272,13 +278,11 @@ module AppProgram =
             let dotnetRuntimes =
                 DotnetRuntime.SelectForDll dllPath |> ImmutableArray.CreateRange
 
-            let impls = NativeImpls.PassThru ()
-
             match pctSeed with
             | Some seed -> eprintfn "PCT seed: 0x%016X" seed
             | None -> ()
 
-            DebuggerServer.run loggerFactory dllPath dotnetRuntimes impls hostEnvironment pctSeed args
+            DebuggerServer.run loggerFactory dllPath dotnetRuntimes kernelConfig pctSeed args
 
         match mode with
         | AppMode.RunGuest (dllPath, pctSeed, args) -> runNormal dllPath pctSeed args

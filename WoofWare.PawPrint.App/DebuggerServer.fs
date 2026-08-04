@@ -19,7 +19,6 @@ open Microsoft.Extensions.Hosting
 open Microsoft.Extensions.Logging
 open Microsoft.Extensions.Primitives
 open Microsoft.Net.Http.Headers
-open WoofWare.PawPrint.ExternImplementations
 
 [<RequireQualifiedAccess>]
 module DebuggerServer =
@@ -326,15 +325,14 @@ module DebuggerServer =
         (loggerFactory : ILoggerFactory)
         (dllPath : string)
         (dotnetRuntimeDirs : ImmutableArray<string>)
-        (impls : NativeImpls)
-        (env : Map<string, string>)
+        (kernelConfig : KernelConfig)
         (pctSeed : uint64 option)
         (argv : string list)
         : SessionState
         =
         use fileStream = new FileStream (dllPath, FileMode.Open, FileAccess.Read)
 
-        match Program.prepare loggerFactory (Some dllPath) fileStream dotnetRuntimeDirs impls env pctSeed argv with
+        match Program.prepare loggerFactory (Some dllPath) fileStream dotnetRuntimeDirs kernelConfig pctSeed argv with
         | Program.ProgramStartResult.Ready prepared -> SessionState.Running (prepared, 0L)
         | Program.ProgramStartResult.CompletedBeforeMain outcome -> SessionState.Finished (outcome, 0L)
 
@@ -393,13 +391,12 @@ module DebuggerServer =
     let private stepSession
         (loggerFactory : ILoggerFactory)
         (logger : ILogger)
-        (impls : NativeImpls)
         (session : SessionState)
         : SessionState * DebugEvent * bool
         =
         match session with
         | SessionState.Running (prepared, steps) ->
-            let outcome = Program.stepPrepared loggerFactory logger impls prepared
+            let outcome = Program.stepPrepared loggerFactory logger prepared
 
             match outcome with
             | Program.ProgramStepOutcome.InstructionStepped (prepared, _, _)
@@ -905,7 +902,6 @@ module DebuggerServer =
     let private runSteps
         (loggerFactory : ILoggerFactory)
         (logger : ILogger)
-        (impls : NativeImpls)
         (cancellationToken : System.Threading.CancellationToken)
         (recordLimit : int)
         (maxSteps : int)
@@ -921,7 +917,7 @@ module DebuggerServer =
         while not cancellationToken.IsCancellationRequested
               && keepGoing
               && stepsRun < maxSteps do
-            let nextSession, event, countedStep = stepSession loggerFactory logger impls session
+            let nextSession, event, countedStep = stepSession loggerFactory logger session
             session <- nextSession
             commitSession session
 
@@ -986,8 +982,7 @@ module DebuggerServer =
         (loggerFactory : ILoggerFactory)
         (dllPath : string)
         (dotnetRuntimeDirs : ImmutableArray<string>)
-        (impls : NativeImpls)
-        (env : Map<string, string>)
+        (kernelConfig : KernelConfig)
         (pctSeed : uint64 option)
         (argv : string list)
         (token : string)
@@ -997,7 +992,7 @@ module DebuggerServer =
         let logger = loggerFactory.CreateLogger "WoofWare.PawPrint.App.DebuggerServer"
 
         let mutable session =
-            prepareSession loggerFactory dllPath dotnetRuntimeDirs impls env pctSeed argv
+            prepareSession loggerFactory dllPath dotnetRuntimeDirs kernelConfig pctSeed argv
 
         let sessionLock = obj ()
         let stopStateLock = obj ()
@@ -1103,7 +1098,6 @@ module DebuggerServer =
                                                     runSteps
                                                         loggerFactory
                                                         logger
-                                                        impls
                                                         stopCts.Token
                                                         count
                                                         count
@@ -1149,7 +1143,6 @@ module DebuggerServer =
                                                     runSteps
                                                         loggerFactory
                                                         logger
-                                                        impls
                                                         stopCts.Token
                                                         20
                                                         maxSteps
@@ -1259,8 +1252,7 @@ module DebuggerServer =
                                                 loggerFactory
                                                 dllPath
                                                 dotnetRuntimeDirs
-                                                impls
-                                                env
+                                                kernelConfig
                                                 pctSeed
                                                 argv
 
@@ -1304,8 +1296,7 @@ module DebuggerServer =
         (loggerFactory : ILoggerFactory)
         (dllPath : string)
         (dotnetRuntimeDirs : ImmutableArray<string>)
-        (impls : NativeImpls)
-        (env : Map<string, string>)
+        (kernelConfig : KernelConfig)
         (pctSeed : uint64 option)
         (argv : string list)
         : int
@@ -1317,8 +1308,7 @@ module DebuggerServer =
                 loggerFactory
                 dllPath
                 dotnetRuntimeDirs
-                impls
-                env
+                kernelConfig
                 pctSeed
                 argv
                 token

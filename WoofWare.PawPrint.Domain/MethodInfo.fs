@@ -197,7 +197,7 @@ type MethodBody<'methodVars> =
 
     /// <summary>
     /// Marked <c>[MethodImpl(MethodImplOptions.InternalCall)]</c>. The implementation is
-    /// supplied by the runtime; PawPrint dispatches via NativeImpls.
+    /// supplied by the runtime; PawPrint dispatches via <c>NativeDispatch</c>.
     /// </summary>
     | InternalCall
 

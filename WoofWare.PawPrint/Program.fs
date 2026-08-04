@@ -315,7 +315,6 @@ module Program =
     let stepPrepared
         (loggerFactory : ILoggerFactory)
         (logger : ILogger)
-        impls
         (prepared : PreparedProgram)
         : ProgramStepOutcome
         =
@@ -469,9 +468,7 @@ module Program =
             // remaining thread is blocked, so progress is impossible.
             ProgramStepOutcome.Deadlocked (prepared, deadlockDescription prepared.State)
         | Some nextThread ->
-            match
-                AbstractMachine.executeOneStep loggerFactory impls prepared.BaseClassTypes prepared.State nextThread
-            with
+            match AbstractMachine.executeOneStep loggerFactory prepared.BaseClassTypes prepared.State nextThread with
             | ExecutionResult.Terminated (state, terminatingThread) ->
                 if terminatingThread = prepared.EntryThread then
                     ProgramStepOutcome.Completed (RunOutcome.NormalExit (state, prepared.EntryThread))
@@ -526,25 +523,18 @@ module Program =
                     whatWeDid
                 )
 
-    let rec pumpPrepared
-        (loggerFactory : ILoggerFactory)
-        (logger : ILogger)
-        impls
-        (prepared : PreparedProgram)
-        : RunOutcome
-        =
-        match stepPrepared loggerFactory logger impls prepared with
+    let rec pumpPrepared (loggerFactory : ILoggerFactory) (logger : ILogger) (prepared : PreparedProgram) : RunOutcome =
+        match stepPrepared loggerFactory logger prepared with
         | ProgramStepOutcome.Completed outcome -> outcome
         | ProgramStepOutcome.Deadlocked (_, stuck) ->
             failwith $"Deadlock: no runnable threads and entry thread has not terminated. Stuck: {stuck}"
         | ProgramStepOutcome.InstructionStepped (prepared, _, _)
-        | ProgramStepOutcome.WorkerTerminated (prepared, _) -> pumpPrepared loggerFactory logger impls prepared
+        | ProgramStepOutcome.WorkerTerminated (prepared, _) -> pumpPrepared loggerFactory logger prepared
 
     let internal pumpToReturn
         (loggerFactory : ILoggerFactory)
         (logger : ILogger)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        impls
         (entryThread : ThreadId)
         (state : IlMachineState)
         : RunOutcome
@@ -557,14 +547,18 @@ module Program =
                 LastRan = entryThread
             }
 
-        pumpPrepared loggerFactory logger impls prepared
+        pumpPrepared loggerFactory logger prepared
 
     /// Reads the guest assembly and performs the one-time setup needed before Main is ready to schedule.
     ///
-    /// `env` is overlaid on top of `EmulatedKernel.defaultEnvironment`, so callers that pass
-    /// `Map.empty` still get the seeded `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1` default.
-    /// Keys present in `env` win over the default — that's how the CLI lets the host process
-    /// override the seed if it really needs to.
+    /// `kernelConfig` carries the host's choices for the simulated process's kernel and is
+    /// applied here rather than by the caller afterwards, because this function pumps the entry
+    /// type's `.cctor` and CoreLib latches some of these values during static initialisation
+    /// (notably `Environment.ProcessorCount`). `KernelConfig.Default` is the no-preference
+    /// choice. Its `Environment` is overlaid on top of `EmulatedKernel.defaultEnvironment`, so
+    /// callers that supply no overlay still get the seeded
+    /// `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1` default, and keys the caller does set win over
+    /// it — that's how the CLI lets the host process override the seed if it really needs to.
     ///
     /// `pctSeed = Some s` selects the PCT scheduling policy seeded with `s`; `None` keeps the
     /// default round-robin policy. Applied before any cctor frame is pushed so the very first
@@ -575,8 +569,7 @@ module Program =
         (originalPath : string option)
         (fileStream : Stream)
         (dotnetRuntimeDirs : ImmutableArray<string>)
-        impls
-        (env : Map<string, string>)
+        (kernelConfig : KernelConfig)
         (pctSeed : uint64 option)
         (argv : string list)
         : ProgramStartResult
@@ -609,7 +602,7 @@ module Program =
 
         let state =
             IlMachineState.initial loggerFactory dotnetRuntimeDirs dumped
-            |> fun s -> s.MapKernel (EmulatedKernel.withEnvironment env)
+            |> fun s -> s.MapKernel (KernelConfig.applyTo kernelConfig)
             |> fun s ->
                 match pctSeed with
                 | None -> s
@@ -818,7 +811,7 @@ module Program =
         // We might be in the middle of class construction. Pump the static constructors to completion.
         // We haven't yet entered the main method!
 
-        match pumpToReturn loggerFactory logger baseClassTypes impls mainThread state with
+        match pumpToReturn loggerFactory logger baseClassTypes mainThread state with
         | RunOutcome.GuestUnhandledException _ as outcome ->
             // Either the entry thread's .cctor raised an unhandled exception, or a worker
             // spawned during cctor pumping did. In both cases the CLR would terminate the
@@ -911,14 +904,13 @@ module Program =
         (originalPath : string option)
         (fileStream : Stream)
         (dotnetRuntimeDirs : ImmutableArray<string>)
-        impls
-        (env : Map<string, string>)
+        (kernelConfig : KernelConfig)
         (pctSeed : uint64 option)
         (argv : string list)
         : RunOutcome
         =
         let logger = loggerFactory.CreateLogger "Program"
 
-        match prepare loggerFactory originalPath fileStream dotnetRuntimeDirs impls env pctSeed argv with
+        match prepare loggerFactory originalPath fileStream dotnetRuntimeDirs kernelConfig pctSeed argv with
         | ProgramStartResult.CompletedBeforeMain outcome -> outcome
-        | ProgramStartResult.Ready prepared -> pumpPrepared loggerFactory logger impls prepared
+        | ProgramStartResult.Ready prepared -> pumpPrepared loggerFactory logger prepared

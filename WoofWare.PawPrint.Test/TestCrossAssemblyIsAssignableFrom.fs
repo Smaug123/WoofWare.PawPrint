@@ -81,6 +81,5 @@ class Program
                 ]
             EntryAssemblyName = "IsAssignableFromCrossOpenGeneric.Entry"
             ExpectedReturnCode = 0
-            NativeImpls = MockEnv.make ()
         }
         |> CrossAssemblyHarness.runTest

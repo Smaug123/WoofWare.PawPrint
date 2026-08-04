@@ -6,7 +6,6 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
-open WoofWare.PawPrint.ExternImplementations
 
 /// End-to-end coverage for the `SystemNative_HandleNonCanceledPosixSignal`
 /// `DefaultDisposition.Terminate` branch: a guest that DllImports the
@@ -39,15 +38,7 @@ module TestSignalTermination =
         use peImage = new MemoryStream (image)
 
         try
-            Program.run
-                loggerFactory
-                (Some sourceFileName)
-                peImage
-                dotnetRuntimes
-                (NativeImpls.PassThru ())
-                Map.empty
-                None
-                []
+            Program.run loggerFactory (Some sourceFileName) peImage dotnetRuntimes KernelConfig.Default None []
         with _ ->
             for message in messages () do
                 System.Console.Error.WriteLine $"{message}"

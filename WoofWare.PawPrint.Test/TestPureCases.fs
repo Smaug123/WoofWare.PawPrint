@@ -7,7 +7,6 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
-open WoofWare.PawPrint.ExternImplementations
 open WoofWare.PawPrint.Test
 
 [<TestFixture>]
@@ -24,31 +23,6 @@ module TestPureCases =
             "MarshalStructureToPtrIntPtrField.cs" // Classifier+Memmove widening now lets `Marshal.StructureToPtr` reach the byte copy for `IntPtr`/`UIntPtr` fields, but the subsequent `Marshal.ReadInt32(ptr, ofs)` (Marshal.cs:332) does `(int)addr & 0x3` as an alignment check, hitting `Conv_I4` of a managed pointer to a native memory block. Needs alignment-aware `Conv_I4`/`Conv_U4` on managed pointers (or equivalent) to land.
         ]
         |> Set.ofList
-
-    let requiresMocks =
-        let empty = MockEnv.make ()
-
-        [
-            "ProcessorCount.cs",
-            { empty with
-                System_Environment = System_Environment.passThru
-            }
-            "EnvironmentCurrentManagedThreadId.cs",
-            { empty with
-                System_Environment = System_Environment.passThru
-            }
-            "EnvironmentCurrentManagedThreadIdThread.cs",
-            { empty with
-                System_Environment = System_Environment.passThru
-            }
-            "ResizeArray.cs",
-            { empty with
-                System_Environment = System_Environment.passThru
-            }
-        ]
-        |> Map.ofList
-
-    let unimplementedMockTests : Map<string, NativeImpls> = Map.empty
 
     let expectsUnhandledException = [ "UnhandledException.cs" ] |> Set.ofList
 
@@ -70,8 +44,6 @@ module TestPureCases =
         allPure
         |> Seq.filter (fun s ->
             (customExitCodes.ContainsKey s
-             || requiresMocks.ContainsKey s
-             || unimplementedMockTests.ContainsKey s
              || unimplemented.Contains s
              || expectsUnhandledException.Contains s)
             |> not
@@ -81,8 +53,7 @@ module TestPureCases =
     let runPawPrintSource
         (sourceName : string)
         (source : string)
-        (nativeImpls : NativeImpls)
-        (env : Map<string, string>)
+        (kernelConfig : KernelConfig)
         (assertResult : byte array -> RunOutcome -> unit)
         : unit
         =
@@ -100,7 +71,7 @@ module TestPureCases =
 
         try
             let pawPrintResult =
-                Program.run loggerFactory (Some sourceName) peImage dotnetRuntimes nativeImpls env None []
+                Program.run loggerFactory (Some sourceName) peImage dotnetRuntimes kernelConfig None []
 
             assertResult image pawPrintResult
         with _ ->
@@ -115,8 +86,7 @@ module TestPureCases =
         runPawPrintSource
             case.FileName
             source
-            case.NativeImpls
-            case.Environment
+            case.KernelConfig
             (fun image pawPrintResult ->
                 let realResult = RealRuntime.executeWithRealRuntime [||] image
 
@@ -205,8 +175,7 @@ class Program
         runPawPrintSource
             "RethrowStackTrace.cs"
             source
-            (MockEnv.make ())
-            Map.empty
+            KernelConfig.Default
             (fun _image pawPrintResult ->
                 match pawPrintResult with
                 | RunOutcome.GuestUnhandledException (_, _, exn) ->
@@ -217,7 +186,7 @@ class Program
             )
 
     [<Test>]
-    let ``Mock environment exposes invariant globalization switch`` () =
+    let ``Emulated environment exposes invariant globalization switch`` () =
         let source =
             """
 using System;
@@ -232,10 +201,9 @@ class Program
 """
 
         runPawPrintSource
-            "MockEnvironmentInvariantGlobalization.cs"
+            "EmulatedEnvironmentInvariantGlobalization.cs"
             source
-            (MockEnv.make ())
-            Map.empty
+            KernelConfig.Default
             (fun _image pawPrintResult ->
                 match pawPrintResult with
                 | RunOutcome.NormalExit (terminalState, terminatingThread) ->
@@ -254,7 +222,7 @@ class Program
             )
 
     [<Test>]
-    let ``Mock environment returns configured variables and null for missing variables`` () =
+    let ``Emulated environment returns configured variables and null for missing variables`` () =
         let source =
             """
 using System;
@@ -296,10 +264,11 @@ class Program
 """
 
         runPawPrintSource
-            "MockEnvironmentConfiguredVariables.cs"
+            "EmulatedEnvironmentConfiguredVariables.cs"
             source
-            (MockEnv.make ())
-            ([ "PAWPRINT_TEST_VARIABLE", "configured" ] |> Map.ofList)
+            { KernelConfig.Default with
+                Environment = [ "PAWPRINT_TEST_VARIABLE", "configured" ] |> Map.ofList
+            }
             (fun _image pawPrintResult ->
                 match pawPrintResult with
                 | RunOutcome.NormalExit (terminalState, terminatingThread) ->
@@ -354,10 +323,11 @@ class Program
 """
 
         runPawPrintSource
-            "MockEnvironmentCaseSensitiveLookup.cs"
+            "EmulatedEnvironmentCaseSensitiveLookup.cs"
             source
-            (MockEnv.make ())
-            ([ "PaWpRiNt_MiXeD_CaSe_KeY", "found" ] |> Map.ofList)
+            { KernelConfig.Default with
+                Environment = [ "PaWpRiNt_MiXeD_CaSe_KeY", "found" ] |> Map.ofList
+            }
             (fun _image pawPrintResult ->
                 match pawPrintResult with
                 | RunOutcome.NormalExit (terminalState, terminatingThread) ->
@@ -376,7 +346,7 @@ class Program
             )
 
     [<Test>]
-    let ``Mock environment preserves missing variable last PInvoke error`` () =
+    let ``Emulated environment preserves missing variable last PInvoke error`` () =
         let source =
             """
 using System;
@@ -401,10 +371,9 @@ class Program
 """
 
         runPawPrintSource
-            "MockEnvironmentMissingVariableLastPInvokeError.cs"
+            "EmulatedEnvironmentMissingVariableLastPInvokeError.cs"
             source
-            (MockEnv.make ())
-            Map.empty
+            KernelConfig.Default
             (fun _image pawPrintResult ->
                 match pawPrintResult with
                 | RunOutcome.NormalExit (terminalState, terminatingThread) ->
@@ -438,18 +407,10 @@ class Program
 }
 """
 
-        let nativeImpls =
-            let empty = MockEnv.make ()
-
-            { empty with
-                System_Environment = System_Environment.passThru
-            }
-
         runPawPrintSource
             "EnvironmentFailFast.cs"
             source
-            nativeImpls
-            Map.empty
+            KernelConfig.Default
             (fun _image pawPrintResult ->
                 match pawPrintResult with
                 | RunOutcome.FailFast (_, _, message) -> message |> shouldEqual (Some "boom")
@@ -466,8 +427,7 @@ class Program
         {
             FileName = fileName
             ExpectedReturnCode = 0
-            NativeImpls = MockEnv.make ()
-            Environment = Map.empty
+            KernelConfig = KernelConfig.Default
             ExpectsUnhandledException = false
             AssertTerminalState = None
         }
@@ -481,33 +441,18 @@ class Program
         {
             FileName = fileName
             ExpectedReturnCode = exitCode
-            NativeImpls = MockEnv.make ()
-            Environment = Map.empty
+            KernelConfig = KernelConfig.Default
             ExpectsUnhandledException = false
             AssertTerminalState = None
         }
         |> runTest
-
-    [<TestCaseSource(nameof requiresMocks)>]
-    let ``Tests which require mocks`` (KeyValue (fileName : string, mock : NativeImpls)) =
-        {
-            FileName = fileName
-            ExpectedReturnCode = 0
-            NativeImpls = mock
-            Environment = Map.empty
-            ExpectsUnhandledException = false
-            AssertTerminalState = None
-        }
-        |> runTest
-
 
     [<TestCaseSource(nameof expectsUnhandledException)>]
     let ``Tests which throw unhandled exceptions`` (fileName : string) =
         {
             FileName = fileName
             ExpectedReturnCode = 0 // not checked; both runtimes are expected to throw
-            NativeImpls = MockEnv.make ()
-            Environment = Map.empty
+            KernelConfig = KernelConfig.Default
             ExpectsUnhandledException = true
             AssertTerminalState = None
         }
@@ -532,33 +477,7 @@ class Program
         {
             FileName = fileName
             ExpectedReturnCode = 0
-            NativeImpls = MockEnv.make ()
-            Environment = Map.empty
-            ExpectsUnhandledException = false
-            AssertTerminalState = None
-        }
-        |> runTest
-
-    [<TestCaseSource(nameof unimplementedMockTests)>]
-    let ``Unimplemented mock tests have correct real-runtime behaviour``
-        (KeyValue (fileName : string, _mock : NativeImpls))
-        =
-        let source = Assembly.getEmbeddedResourceAsString fileName assy
-        let image = Roslyn.compile [ source ]
-
-        match RealRuntime.executeWithRealRuntime [||] image with
-        | RealRuntimeResult.NormalExit actualExitCode -> actualExitCode |> shouldEqual 0
-        | RealRuntimeResult.UnhandledException exn ->
-            failwith $"Real runtime threw unhandled %s{exn.GetType().Name} for %s{fileName}: %s{exn.Message}"
-
-    [<TestCaseSource(nameof unimplementedMockTests)>]
-    [<Explicit>]
-    let ``Can evaluate C# files, unimplemented mock tests`` (KeyValue (fileName : string, mock : NativeImpls)) =
-        {
-            FileName = fileName
-            ExpectedReturnCode = 0
-            NativeImpls = mock
-            Environment = Map.empty
+            KernelConfig = KernelConfig.Default
             ExpectsUnhandledException = false
             AssertTerminalState = None
         }

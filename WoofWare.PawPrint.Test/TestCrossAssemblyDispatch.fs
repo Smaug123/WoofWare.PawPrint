@@ -212,7 +212,6 @@ class Program
             Assemblies = assemblies
             EntryAssemblyName = "CrossAssemblyDispatch.Entry"
             ExpectedReturnCode = 0
-            NativeImpls = MockEnv.make ()
         }
         |> CrossAssemblyHarness.runTest
 
@@ -289,7 +288,6 @@ class Program
             Assemblies = assemblies
             EntryAssemblyName = "LdstrInterning.Entry"
             ExpectedReturnCode = 0
-            NativeImpls = MockEnv.make ()
         }
         |> CrossAssemblyHarness.runTest
 
@@ -367,6 +365,5 @@ class Program
             Assemblies = assemblies
             EntryAssemblyName = "LdstrInterningShared.Entry"
             ExpectedReturnCode = 0
-            NativeImpls = MockEnv.make ()
         }
         |> CrossAssemblyHarness.runTest

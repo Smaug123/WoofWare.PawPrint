@@ -64,7 +64,6 @@ class Program
                 ]
             EntryAssemblyName = "CrossAssemblyTypeInitialisation.DerivedNewobj"
             ExpectedReturnCode = 0
-            NativeImpls = MockEnv.make ()
         }
         |> CrossAssemblyHarness.runTest
 
@@ -105,7 +104,6 @@ class Program
                 ]
             EntryAssemblyName = "CrossAssemblyTypeInitialisation.DerivedReadsBase"
             ExpectedReturnCode = 0
-            NativeImpls = MockEnv.make ()
         }
         |> CrossAssemblyHarness.runTest
 
@@ -145,7 +143,6 @@ class Program
                 ]
             EntryAssemblyName = "CrossAssemblyTypeInitialisation.DerivedStaticOnly"
             ExpectedReturnCode = 0
-            NativeImpls = MockEnv.make ()
         }
         |> CrossAssemblyHarness.runTest
 
@@ -207,6 +204,5 @@ class Program
                 ]
             EntryAssemblyName = "CrossAssemblyTypeInitialisation.GenericDerivedNewobj"
             ExpectedReturnCode = 0
-            NativeImpls = MockEnv.make ()
         }
         |> CrossAssemblyHarness.runTest

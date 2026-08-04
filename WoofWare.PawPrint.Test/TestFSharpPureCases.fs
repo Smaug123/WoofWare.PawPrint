@@ -130,8 +130,7 @@ module TestFSharpPureCases =
                     (Some dllPath)
                     peImage
                     dotnetRuntimes
-                    (MockEnv.make ())
-                    Map.empty
+                    KernelConfig.Default
                     None
                     [ testCaseName ]
 

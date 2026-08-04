@@ -436,6 +436,26 @@ type EmulatedKernel =
         /// of this default at startup, and tests can pass their own overlay
         /// via `Program.run`.
         Environment : Map<string, string>
+        /// Number of logical processors the simulated process observes, as
+        /// reported by `Environment.ProcessorCount`. Deliberately a value in
+        /// kernel state rather than a host read: real CoreCLR answers this
+        /// from `GetSystemInfo` / `sched_getaffinity`, which would make a
+        /// replay depend on the machine that produced it. Guests size thread
+        /// pools, partition `Parallel.For` ranges, and stripe arrays off this
+        /// number, so letting the host leak in here would change guest
+        /// *control flow* between runs — the single worst kind of
+        /// nondeterminism for a runtime whose purpose is bit-for-bit replay.
+        ///
+        /// Defaults to 1 (see `EmulatedKernel.initial`); hosts choose a
+        /// different value via `KernelConfig.ProcessorCount`, which
+        /// `Program.prepare` applies before the entry type's `.cctor` is
+        /// pumped — CoreLib latches `Environment.ProcessorCount` into a static
+        /// on first read, so a later change would not be observed.
+        ///
+        /// Must be >= 1: the real property is documented as always positive
+        /// and BCL callers divide by it, so `NativeEnvironment` asserts the
+        /// invariant at the point of use rather than trusting construction.
+        ProcessorCount : int
         /// Pure data model of the simulated process's signal disposition,
         /// per-thread sigprocmasks, and pending-signal queue. Populated by
         /// future slices: nothing in the simulator dispatches signals yet,
@@ -467,6 +487,16 @@ module EmulatedKernel =
     /// observes, so treat it as part of PawPrint's replay contract.
     let cryptoRandomInitialState : uint64 = 0x243F6A8885A308D3UL
 
+    /// Logical-processor count a freshly-minted simulated process reports.
+    /// One, because that is the value every existing run already observed
+    /// (the test harness hard-coded it and the CLI read the host's count, so
+    /// only single-processor behaviour has ever been exercised end-to-end),
+    /// and because a fixed default is a prerequisite for replayability.
+    /// Hosts that want to exercise the guest's multi-processor code paths
+    /// raise it via `KernelConfig.ProcessorCount`.
+    [<Literal>]
+    let defaultProcessorCount : int = 1
+
     let initial : EmulatedKernel =
         {
             LastPInvokeError = 0
@@ -486,8 +516,116 @@ module EmulatedKernel =
             CryptoRandomState = cryptoRandomInitialState
             OutputLog = ImmutableArray<OutputLogEntry>.Empty
             Environment = defaultEnvironment
+            ProcessorCount = defaultProcessorCount
             Signals = SignalState.empty
         }
+
+    /// Set the logical-processor count the simulated process reports. Rejects
+    /// non-positive values at the boundary rather than letting them reach a
+    /// guest that will divide by them.
+    let withProcessorCount (count : int) (kernel : EmulatedKernel) : EmulatedKernel =
+        if count < 1 then
+            failwith $"ProcessorCount must be at least 1; got %d{count}"
+
+        { kernel with
+            ProcessorCount = count
+        }
+
+    /// Largest value CoreCLR will accept from the processor-count
+    /// configuration knob (`MAX_PROCESSOR_COUNT` in
+    /// coreclr/utilcode/util.cpp). Values above this fall back to detection.
+    [<Literal>]
+    let private maxConfiguredProcessorCount : int = 0xffff
+
+    /// `strtoul`-shaped base-10 parse of a CLRConfig integer value, returning
+    /// `None` where CoreCLR's `CLRConfig::GetConfigDWORD` would report failure
+    /// (and hence substitute the knob's declared default of 0).
+    ///
+    /// Matches `u16_strtoul(val, &endPtr, 10)` plus the
+    /// `errno != ERANGE && endPtr != val` success test in
+    /// coreclr/utilcode/clrconfig.cpp: leading whitespace is skipped, at least
+    /// one digit is required, and trailing garbage is ignored — so "4abc"
+    /// really does yield 4 on the real runtime, and we reproduce that rather
+    /// than being stricter than the thing we emulate.
+    ///
+    /// Deliberate divergence: a leading '-' is rejected here, whereas C
+    /// `strtoul` would wrap it into a huge unsigned value. Every such value is
+    /// then rejected by the caller's `<= 0xffff` window anyway, except for
+    /// contrived inputs chosen to wrap exactly back into it (e.g.
+    /// "-4294901761"). Reproducing that would mean modelling the platform's
+    /// `unsigned long` width, and no real configuration depends on it.
+    let private tryParseConfigBase10 (s : string) : int option =
+        // strtoul skips leading whitespace as determined by `isspace` in the C
+        // locale, which is exactly this six-character set. Deliberately NOT
+        // `Char.IsWhiteSpace`, which also accepts U+00A0 and friends: on Unix
+        // the value reaches `strtoul` as UTF-8 bytes, so a non-breaking space
+        // is the two bytes 0xC2 0xA0 and stops the parse dead rather than being
+        // skipped. Using the .NET predicate would make PawPrint accept
+        // configuration the real runtime rejects.
+        let isCLocaleSpace (c : char) : bool =
+            c = ' ' || c = '\t' || c = '\n' || c = '\011' || c = '\012' || c = '\r'
+
+        let mutable i = 0
+
+        while i < s.Length && isCLocaleSpace s.[i] do
+            i <- i + 1
+
+        if i < s.Length && s.[i] = '+' then
+            i <- i + 1
+        elif i < s.Length && s.[i] = '-' then
+            // See the divergence note above.
+            i <- s.Length + 1
+
+        let digitStart = i
+        let mutable acc = 0L
+
+        while i < s.Length && s.[i] >= '0' && s.[i] <= '9' do
+            // Saturate rather than overflow: anything this large is out of the
+            // caller's acceptance window regardless of its exact value.
+            acc <- min (acc * 10L + int64 (int s.[i] - int '0')) (int64 maxConfiguredProcessorCount + 1L)
+            i <- i + 1
+
+        if i > s.Length || i = digitStart then
+            None
+        else
+            Some (int acc)
+
+    /// Processor count the guest actually observes from
+    /// `Environment.ProcessorCount`.
+    ///
+    /// CoreCLR's `GetCurrentProcessCpuCount` (coreclr/utilcode/util.cpp) gives
+    /// the `PROCESSOR_COUNT` configuration knob precedence over CPU detection,
+    /// accepting it only when it lands in `(0, MAX_PROCESSOR_COUNT]`, and
+    /// otherwise falling back to affinity/quota detection. PawPrint reproduces
+    /// that shape with `ProcessorCount` standing in for the detection result.
+    ///
+    /// Reading the knob out of the *kernel's* environment table (rather than
+    /// the host process's) is what keeps this deterministic: the table is
+    /// recorded state that a replay reconstructs exactly, so honouring the
+    /// standard knob costs nothing in reproducibility. `CLRConfig` tries the
+    /// `DOTNET_` prefix first and falls back to the legacy `COMPlus_` prefix
+    /// only when the former is absent (coreclr/utilcode/clrconfig.cpp), and
+    /// both lookups are case-sensitive on the Unix hosts this project targets.
+    let effectiveProcessorCount (kernel : EmulatedKernel) : int =
+        // An empty value counts as absent, and so falls through to the legacy
+        // prefix: CLRConfig's fallback is gated on
+        // `WszGetEnvironmentVariable` returning length zero, which is what a
+        // variable set to the empty string reports. `DOTNET_PROCESSOR_COUNT=`
+        // with `COMPlus_PROCESSOR_COUNT=9` set therefore yields 9 upstream, not
+        // the detected count.
+        let lookup (name : string) : string option =
+            match Map.tryFind name kernel.Environment with
+            | Some "" -> None
+            | other -> other
+
+        let configured =
+            match lookup "DOTNET_PROCESSOR_COUNT" with
+            | Some v -> Some v
+            | None -> lookup "COMPlus_PROCESSOR_COUNT"
+
+        match configured |> Option.bind tryParseConfigBase10 with
+        | Some count when count > 0 && count <= maxConfiguredProcessorCount -> count
+        | _ -> kernel.ProcessorCount
 
     /// Overlay the supplied environment variables on top of the kernel's
     /// existing `Environment` map. Used by `Program.run` / the CLI to layer
@@ -507,3 +645,48 @@ module EmulatedKernel =
         { kernel with
             Environment = merged
         }
+
+/// Host-supplied configuration for the simulated process's kernel, applied by
+/// `Program.prepare` before any guest code runs.
+///
+/// This has to be a parameter of `prepare` rather than something a host applies
+/// to `PreparedProgram.State` afterwards: `prepare` pumps the entry type's
+/// `.cctor`, and several of these values are latched by CoreLib during static
+/// initialisation. `Environment.ProcessorCount` is the sharp case — CoreLib
+/// declares it as `public static int ProcessorCount { get; } = GetProcessorCount()`
+/// (Environment.cs), so the very first read freezes the value for the lifetime
+/// of the process and a post-`prepare` record-copy would silently have no
+/// effect on a guest that touched it during startup.
+///
+/// New kernel knobs belong here rather than as further positional parameters on
+/// `prepare`/`run`, so that adding one does not churn every call site.
+type KernelConfig =
+    {
+        /// Environment variables overlaid on top of
+        /// `EmulatedKernel.defaultEnvironment`. Keys the caller does not set
+        /// keep their seeded defaults, so the invariant-globalization switch
+        /// survives a caller who supplies an unrelated overlay.
+        Environment : Map<string, string>
+        /// Logical processor count the guest observes via
+        /// `Environment.ProcessorCount`. Must be at least 1.
+        ProcessorCount : int
+    }
+
+    /// Configuration a host gets if it expresses no preference: no environment
+    /// overlay, and the default single processor.
+    static member Default : KernelConfig =
+        {
+            Environment = Map.empty
+            ProcessorCount = EmulatedKernel.defaultProcessorCount
+        }
+
+[<RequireQualifiedAccess>]
+module KernelConfig =
+    /// Apply a host configuration to a freshly-minted kernel. Each field is
+    /// applied through its own `EmulatedKernel` setter, so the validation those
+    /// setters perform (e.g. rejecting a non-positive processor count) also
+    /// guards the configuration path.
+    let applyTo (config : KernelConfig) (kernel : EmulatedKernel) : EmulatedKernel =
+        kernel
+        |> EmulatedKernel.withEnvironment config.Environment
+        |> EmulatedKernel.withProcessorCount config.ProcessorCount
