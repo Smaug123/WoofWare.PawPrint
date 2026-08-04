@@ -126,6 +126,64 @@ module NativeRuntimeTypeFCall =
         | "System.Private.CoreLib",
           "System",
           "RuntimeTypeHandle",
+          "GetUtf8NameInternal",
+          [ ConcretePointer (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                               "System.Runtime.CompilerServices",
+                                                               "MethodTable",
+                                                               methodTableGenerics)) ],
+          MethodReturnType.Returns (ConcretePointer (ConcreteVoid state.ConcreteTypes)) when methodTableGenerics.IsEmpty ->
+            // CoreCLR's RuntimeTypeHandle::GetUtf8Name (runtimehandles.cpp:732) is an FCall
+            // that reads the type's UTF-8 name straight out of the metadata string heap:
+            // `GetNameOfTypeDef(pMT->GetCl(), &name, NULL)`. That is the TypeDef row's Name
+            // column, so it is the *short* name — no namespace, no declaring type for a
+            // nested type, and the arity mangling of a generic type is retained
+            // (`IList`1`). For a generic instantiation the MethodTable's `GetCl()` is the
+            // open definition's token, so `IList<int>` also answers `IList`1`.
+            //
+            // PawPrint materialises the name as a freshly-allocated null-terminated UTF-8
+            // byte[] and returns a byref to it; the managed wrapper wraps that in
+            // MdUtf8String, which strlens the pointer to discover the byte length. Mirrors
+            // the RuntimeMethodHandle / RuntimeFieldHandle GetUtf8NameInternal handlers.
+            let operation = "RuntimeTypeHandle.GetUtf8NameInternal"
+
+            if instruction.Arguments.Length <> 1 then
+                failwith $"%s{operation}: expected one native argument, got %d{instruction.Arguments.Length}"
+
+            let typeHandle =
+                NativeCall.methodTableOfEvalStackValue operation (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
+
+            // Only a type with a TypeDef row has a name to read. CoreCLR asserts exactly
+            // this (`_ASSERTE(!IsNilToken(tkTypeDef))`) and relies on the managed wrapper
+            // RuntimeTypeHandle.GetUtf8Name (RuntimeHandles.cs:667-673) having already
+            // thrown ArgumentException for TypeDescs and for arrays — whose MethodTables
+            // are synthesised and carry a nil token. Reaching here with one of those shapes
+            // means the wrapper's guard was bypassed, so fail rather than invent a name.
+            let name =
+                match typeHandle with
+                | ConcreteTypeHandle.Concrete _ ->
+                    match IlMachineState.tryGetConcreteTypeInfo state typeHandle with
+                    | Some (_, typeInfo) -> typeInfo.Name
+                    | None -> failwith $"%s{operation}: concrete type handle was not registered: %O{typeHandle}"
+                | ConcreteTypeHandle.OneDimArrayZero _
+                | ConcreteTypeHandle.Array _ ->
+                    failwith
+                        $"%s{operation}: array type %O{typeHandle} reached the FCall; arrays have no TypeDef row, and the managed wrapper throws ArgumentException for them before this point"
+                | ConcreteTypeHandle.Byref _
+                | ConcreteTypeHandle.Pointer _
+                | ConcreteTypeHandle.FunctionPointer _ ->
+                    failwith
+                        $"%s{operation}: TypeDesc handle %O{typeHandle} reached the FCall; the managed wrapper throws ArgumentException for `IsTypeDesc` before this point"
+
+            let namePtr, state =
+                NativeCall.allocateNullTerminatedUtf8 ctx.BaseClassTypes name state
+
+            let state =
+                IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer namePtr) ctx.Thread state
+
+            NativeHandlerResult.completed state |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
           "GetInterfaces",
           [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
           MethodReturnType.Returns (ConcreteTypeHandle.OneDimArrayZero (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
