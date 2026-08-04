@@ -8,4 +8,5 @@ let main (argv : string array) : int =
     | "TailCall" -> TailCall.main argv.[1..]
     | "AbstractDispatch" -> AbstractDispatch.main argv.[1..]
     | "ByrefDispatch" -> ByrefDispatch.main argv.[1..]
+    | "SprintfBasic" -> SprintfBasic.main argv.[1..]
     | name -> failwith $"Unknown test case: {name}"

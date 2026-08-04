@@ -12,6 +12,7 @@
     <Compile Include="TailCall.fs" />
     <Compile Include="AbstractDispatch.fs" />
     <Compile Include="ByrefDispatch.fs" />
+    <Compile Include="SprintfBasic.fs" />
     <Compile Include="Main.fs" />
   </ItemGroup>
 
