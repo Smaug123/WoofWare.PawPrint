@@ -215,34 +215,6 @@ module NativeRuntimeTypeFCall =
         | "System.Private.CoreLib",
           "System",
           "RuntimeTypeHandle",
-          "GetInterfaces",
-          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
-          MethodReturnType.Returns (ConcreteTypeHandle.OneDimArrayZero (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
-                                                                                                          "System",
-                                                                                                          "Type",
-                                                                                                          returnTypeGenerics))) when
-            runtimeTypeGenerics.IsEmpty && returnTypeGenerics.IsEmpty
-            ->
-            let operation = "RuntimeTypeHandle.GetInterfaces"
-            let state = IlMachineState.loadArgument ctx.Thread 0 state
-            let runtimeTypeRef, state = IlMachineState.popEvalStack ctx.Thread state
-
-            let typeHandleTarget =
-                NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
-
-            let state =
-                requireEmptyInterfaceMap ctx.LoggerFactory ctx.BaseClassTypes operation state typeHandleTarget
-
-            let arrayAddr, state =
-                allocateEmptyTypeArray ctx.LoggerFactory ctx.BaseClassTypes state
-
-            let state =
-                IlMachineState.pushToEvalStack (CliType.ObjectRef (Some arrayAddr)) ctx.Thread state
-
-            NativeHandlerResult.completed state |> Some
-        | "System.Private.CoreLib",
-          "System",
-          "RuntimeTypeHandle",
           "GetCorElementType",
           [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "RuntimeType", runtimeTypeGenerics) ],
           MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
