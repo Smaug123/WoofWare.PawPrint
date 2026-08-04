@@ -2296,7 +2296,7 @@ module Intrinsics =
                 // The stored shape and the receiver's concrete type must agree on rank. Both are
                 // written together by `allocateArray` / `allocateMultiDimArray`, so this cannot
                 // currently fire; it is here to catch representation drift rather than to handle a
-                // reachable case (AGENTS.md: have the machine enforce invariants).
+                // reachable case.
                 let declaredRank =
                     match arr.ConcreteType with
                     | ConcreteTypeHandle.OneDimArrayZero _ -> 1
