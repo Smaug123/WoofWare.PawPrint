@@ -230,7 +230,7 @@ type CliType =
     /// context is required so descriptors that depend on the field's nominal type can be validated.
     static member TryComputeMarshalSize
         (concreteTypes : AllConcreteTypes)
-        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (assemblies : LoadedAssemblies)
         (corelib : BaseClassTypes<DumpedAssembly>)
         (t : CliType)
         : Result<SizeofResult, MarshalSizeError>
@@ -1169,7 +1169,7 @@ and CliValueType =
     /// `[MarshalAs(ByValTStr)]` on string-typed fields, so we use this as the shape guard.
     static member private IsStringFieldType
         (concreteTypes : AllConcreteTypes)
-        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (assemblies : LoadedAssemblies)
         (corelib : BaseClassTypes<DumpedAssembly>)
         (handle : ConcreteTypeHandle)
         : bool
@@ -1184,7 +1184,7 @@ and CliValueType =
                     && concreteType.Generics.IsEmpty
                 then
                     let typeDef =
-                        assemblies.[concreteType.Assembly.FullName].TypeDefs.[concreteType.Definition.Get]
+                        assemblies.[concreteType.Assembly].TypeDefs.[concreteType.Definition.Get]
 
                     TypeInfo.NominallyEqual typeDef corelib.String
                 else
@@ -1205,7 +1205,7 @@ and CliValueType =
     /// of the OADate native form).
     static member IsHostKnownDateTime
         (concreteTypes : AllConcreteTypes)
-        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (assemblies : LoadedAssemblies)
         (corelib : BaseClassTypes<DumpedAssembly>)
         (vt : CliValueType)
         : bool
@@ -1220,7 +1220,7 @@ and CliValueType =
                     && concreteType.Generics.IsEmpty
                 then
                     let typeDef =
-                        assemblies.[concreteType.Assembly.FullName].TypeDefs.[concreteType.Definition.Get]
+                        assemblies.[concreteType.Assembly].TypeDefs.[concreteType.Definition.Get]
 
                     TypeInfo.NominallyEqual typeDef corelib.DateTime
                 else
@@ -1246,7 +1246,7 @@ and CliValueType =
     /// `wReserved+scale+sign`).
     static member IsHostKnownDecimal
         (concreteTypes : AllConcreteTypes)
-        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (assemblies : LoadedAssemblies)
         (corelib : BaseClassTypes<DumpedAssembly>)
         (vt : CliValueType)
         : bool
@@ -1261,7 +1261,7 @@ and CliValueType =
                     && concreteType.Generics.IsEmpty
                 then
                     let typeDef =
-                        assemblies.[concreteType.Assembly.FullName].TypeDefs.[concreteType.Definition.Get]
+                        assemblies.[concreteType.Assembly].TypeDefs.[concreteType.Definition.Get]
 
                     TypeInfo.NominallyEqual typeDef corelib.Decimal
                 else
@@ -1284,7 +1284,7 @@ and CliValueType =
     /// and callers must classify them through a different path.
     static member IsAutoLayoutHandle
         (concreteTypes : AllConcreteTypes)
-        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (assemblies : LoadedAssemblies)
         (handle : ConcreteTypeHandle)
         : bool
         =
@@ -1293,9 +1293,9 @@ and CliValueType =
             match AllConcreteTypes.lookup handle concreteTypes with
             | None -> false
             | Some concreteType ->
-                match assemblies.TryGetValue concreteType.Assembly.FullName with
-                | false, _ -> false
-                | true, assy ->
+                match assemblies.TryByDefinition concreteType.Assembly with
+                | None -> false
+                | Some assy ->
                     match assy.TypeDefs.TryGetValue concreteType.Definition.Get with
                     | false, _ -> false
                     | true, typeDef ->
@@ -1314,7 +1314,7 @@ and CliValueType =
     /// their dedicated shortcut.
     static member private IsAutoLayout
         (concreteTypes : AllConcreteTypes)
-        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (assemblies : LoadedAssemblies)
         (vt : CliValueType)
         : bool
         =
@@ -1328,7 +1328,7 @@ and CliValueType =
     /// descriptors against the declared field shape (CoreCLR rejects mismatches).
     static member TryFieldMarshalSize
         (concreteTypes : AllConcreteTypes)
-        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (assemblies : LoadedAssemblies)
         (corelib : BaseClassTypes<DumpedAssembly>)
         (charSet : CharSet)
         (descriptor : FieldMarshalDescriptor option)
@@ -1450,7 +1450,7 @@ and CliValueType =
     /// `ByValTStr` requires `System.String`) can be validated.
     static member TryComputeMarshalSize
         (concreteTypes : AllConcreteTypes)
-        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (assemblies : LoadedAssemblies)
         (corelib : BaseClassTypes<DumpedAssembly>)
         (vt : CliValueType)
         : Result<SizeofResult, MarshalSizeError>
@@ -1933,7 +1933,7 @@ module CliType =
 
     let rec zeroOf
         (concreteTypes : AllConcreteTypes)
-        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (assemblies : LoadedAssemblies)
         (corelib : BaseClassTypes<DumpedAssembly>)
         (handle : ConcreteTypeHandle)
         : CliType * AllConcreteTypes
@@ -1942,7 +1942,7 @@ module CliType =
 
     and zeroOfWithVisited
         (concreteTypes : AllConcreteTypes)
-        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (assemblies : LoadedAssemblies)
         (corelib : BaseClassTypes<DumpedAssembly>)
         (handle : ConcreteTypeHandle)
         (visited : Set<ConcreteTypeHandle>)
@@ -1978,7 +1978,7 @@ module CliType =
                 | None -> failwithf "ConcreteTypeHandle %A not found in AllConcreteTypes" handle
 
             // Get the type definition from the assembly
-            let assembly = assemblies.[concreteType.Assembly.FullName]
+            let assembly = assemblies.[concreteType.Assembly]
             let typeDef = assembly.TypeDefs.[concreteType.Definition.Get]
 
             // Check if it's a primitive type by comparing with corelib types FIRST
@@ -2062,7 +2062,7 @@ module CliType =
 
     and private determineZeroForCustomType
         (concreteTypes : AllConcreteTypes)
-        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (assemblies : LoadedAssemblies)
         (corelib : BaseClassTypes<DumpedAssembly>)
         (handle : ConcreteTypeHandle)
         (concreteType : ConcreteType<ConcreteTypeHandle>)
@@ -2117,7 +2117,7 @@ module CliType =
 
     and private concretizeFieldType
         (concreteTypes : AllConcreteTypes)
-        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
+        (assemblies : LoadedAssemblies)
         (corelib : BaseClassTypes<DumpedAssembly>)
         (declaringType : ConcreteType<ConcreteTypeHandle>)
         (fieldType : TypeDefn)
@@ -2135,22 +2135,7 @@ module CliType =
         // The field type might reference generic parameters of the declaring type
         let methodGenerics = ImmutableArray.Empty // Fields don't have method generics
 
-        let loadAssembly =
-            { new IAssemblyLoad with
-                member _.LoadAssembly loaded assyName ref =
-                    match loaded.TryGetValue assyName.FullName with
-                    | true, currentAssy ->
-                        let targetAssyRef = currentAssy.AssemblyReferences.[ref]
-
-                        match loaded.TryGetValue targetAssyRef.Name.FullName with
-                        | true, targetAssy -> loaded, targetAssy
-                        | false, _ ->
-                            failwithf
-                                "Assembly %s not loaded when trying to resolve reference"
-                                targetAssyRef.Name.FullName
-                    | false, _ ->
-                        failwithf "Current assembly %s not loaded when trying to resolve reference" assyName.FullName
-            }
+        let loadAssembly = IAssemblyLoad.alreadyLoadedOnly
 
         let handle, newCtx =
             TypeConcretization.concretizeType

@@ -17,9 +17,12 @@ type IlMachineState =
         ManagedHeap : ManagedHeap
         ThreadState : Map<ThreadId, ThreadState>
         InternedStrings : ImmutableDictionary<string, ManagedHeapAddress>
-        /// Keyed by FullName. (Sometimes an assembly has a PublicKey when we read it from the disk, but we
-        /// only have a reference to it by an AssemblyName without a PublicKey.)
-        _LoadedAssemblies : ImmutableDictionary<string, DumpedAssembly>
+        /// The assemblies we have loaded, keyed by their own AssemblyDefinition identity, plus the
+        /// record of which AssemblyReferences have been bound to which of them. An assembly's
+        /// reference identity routinely differs from its definition identity (the .NET Framework
+        /// compatibility facades reference implementation assemblies as `Version=0.0.0.0`), so the
+        /// two must not be conflated; see `LoadedAssemblies`.
+        _LoadedAssemblies : LoadedAssemblies
         /// Tracks initialization state of types across assemblies
         TypeInitTable : TypeInitTable
         /// For each concrete type, a map of field definition handle to static value.
@@ -137,17 +140,18 @@ type IlMachineState =
             TypeInitTable = typeInitTable
         }
 
-    member this.WithLoadedAssembly (name : AssemblyName) (value : DumpedAssembly) =
+    /// Register an assembly under its own definition identity. Idempotent: if an assembly with
+    /// that identity is already loaded, the existing instance is kept.
+    member this.WithLoadedAssembly (value : DumpedAssembly) =
         { this with
-            _LoadedAssemblies = this._LoadedAssemblies.Add (name.FullName, value)
+            _LoadedAssemblies = this._LoadedAssemblies.WithLoadedAssembly value
         }
 
     member this.LoadedAssembly' (fullName : string) : DumpedAssembly option =
-        match this._LoadedAssemblies.TryGetValue fullName with
-        | false, _ -> None
-        | true, v -> Some v
+        this._LoadedAssemblies.TryByDefinitionName fullName
 
-    member this.LoadedAssembly (name : AssemblyName) : DumpedAssembly option = this.LoadedAssembly' name.FullName
+    member this.LoadedAssembly (name : AssemblyName) : DumpedAssembly option =
+        this._LoadedAssemblies.TryByDefinition name
 
     member this.ActiveAssembly (thread : ThreadId) =
         let active = this.ThreadState.[thread].ActiveAssembly
@@ -155,7 +159,7 @@ type IlMachineState =
         match this.LoadedAssembly active with
         | Some v -> v
         | None ->
-            let available = this._LoadedAssemblies.Keys |> String.concat " ; "
+            let available = this._LoadedAssemblies.DefinitionNames |> String.concat " ; "
 
             failwith
                 $"Somehow we believe the active assembly is {active}, but only had the following available: {available}"

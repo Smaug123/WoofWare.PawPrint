@@ -641,11 +641,7 @@ module Program =
                         let handle, definedIn = assyRef.Handle
 
                         let state, _, _ =
-                            IlMachineState.loadAssembly
-                                loggerFactory
-                                state._LoadedAssemblies.[definedIn.FullName]
-                                handle
-                                state
+                            IlMachineState.loadAssembly loggerFactory state._LoadedAssemblies.[definedIn] handle state
 
                         go state
                     | TypeResolutionResult.Resolved (resolvedAssembly, _, resolvedType) ->
@@ -659,11 +655,11 @@ module Program =
             | BaseTypeInfo.TypeSpec _ -> failwith "Type specs not yet supported in base type traversal"
             | BaseTypeInfo.ForeignAssemblyType (assemblyName, typeDefHandle) ->
                 // Base type is in a foreign assembly
-                match state._LoadedAssemblies.TryGetValue assemblyName.FullName with
-                | true, foreignAssembly ->
+                match state._LoadedAssemblies.TryByDefinition assemblyName with
+                | Some foreignAssembly ->
                     let baseType = foreignAssembly.TypeDefs.[typeDefHandle]
                     continueWithGeneric state baseType foreignAssembly
-                | false, _ -> failwith $"Foreign assembly {assemblyName.FullName} not loaded"
+                | None -> failwith $"Foreign assembly {assemblyName.FullName} not loaded"
 
         let rec findCoreLibraryAssemblyFromGeneric
             (state : IlMachineState)

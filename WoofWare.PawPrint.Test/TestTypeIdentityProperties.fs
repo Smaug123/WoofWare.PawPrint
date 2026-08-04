@@ -17,7 +17,7 @@ module TestTypeIdentityProperties =
         {
             TargetAssembly : DumpedAssembly
             ConsumerAssembly : DumpedAssembly
-            LoadedAssemblies : ImmutableDictionary<string, DumpedAssembly>
+            LoadedAssemblies : LoadedAssemblies
             TargetRef : TypeRef
             TargetPath : TypePath
         }

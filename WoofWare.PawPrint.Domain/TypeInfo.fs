@@ -28,6 +28,19 @@ type BaseTypeInfo =
     | TypeDef of TypeDefinitionHandle
     | TypeRef of TypeReferenceHandle
     | TypeSpec of TypeSpecificationHandle
+    /// <summary>
+    /// A base type living in another assembly, already resolved to that assembly and a TypeDef
+    /// within it.
+    /// </summary>
+    /// <remarks>
+    /// <c>assemblyName</c> is the target's <em>definition</em> identity — the identity it declares
+    /// for itself — not the reference identity by which some other assembly names it. The two
+    /// routinely differ (the .NET Framework compatibility facades reference their implementation
+    /// assemblies as <c>Version=0.0.0.0</c>), and every consumer of this case looks the assembly up
+    /// by definition identity, so a reference identity here would not be found.
+    ///
+    /// Nothing currently constructs this case; whatever first does must honour that contract.
+    /// </remarks>
     | ForeignAssemblyType of assemblyName : AssemblyName * TypeDefinitionHandle
 
 type MethodImplParsed =

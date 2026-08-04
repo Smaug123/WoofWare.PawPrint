@@ -22,8 +22,8 @@ module TestUnaryConstIlOp =
     let private baseClassTypes : BaseClassTypes<DumpedAssembly> =
         Corelib.getBaseTypes corelib
 
-    let private loadedAssemblies : ImmutableDictionary<string, DumpedAssembly> =
-        ImmutableDictionary.CreateRange [ KeyValuePair (corelib.Name.FullName, corelib) ]
+    let private loadedAssemblies : LoadedAssemblies =
+        LoadedAssemblies.ofAssemblies [ corelib ]
 
     let private concreteTypes : AllConcreteTypes =
         Corelib.concretizeAll loadedAssemblies baseClassTypes AllConcreteTypes.Empty

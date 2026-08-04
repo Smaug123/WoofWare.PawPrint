@@ -23,8 +23,7 @@ module TestMethodTableProjection =
 
     let private bct : BaseClassTypes<DumpedAssembly> = Corelib.getBaseTypes corelib
 
-    let private loaded : ImmutableDictionary<string, DumpedAssembly> =
-        ImmutableDictionary.CreateRange [ KeyValuePair (corelib.Name.FullName, corelib) ]
+    let private loaded : LoadedAssemblies = LoadedAssemblies.ofAssemblies [ corelib ]
 
     let private concreteTypes : AllConcreteTypes =
         Corelib.concretizeAll loaded bct AllConcreteTypes.Empty
@@ -580,7 +579,7 @@ public unsafe struct PointerWrapper
         =
         let state =
             stateWithLogger loggerFactory
-            |> fun state -> state.WithLoadedAssembly reinterpretWriteAssembly.Name reinterpretWriteAssembly
+            |> fun state -> state.WithLoadedAssembly reinterpretWriteAssembly
 
         let int32Wrapper = reinterpretWriteType "Int32Wrapper"
         let fourBytes = reinterpretWriteType "FourBytes"
@@ -1087,9 +1086,7 @@ public unsafe struct PointerWrapper
         use _loggerFactoryResource = loggerFactory
 
         let state =
-            (stateWithLogger loggerFactory).WithLoadedAssembly
-                openGenericProjectionAssembly.Name
-                openGenericProjectionAssembly
+            (stateWithLogger loggerFactory).WithLoadedAssembly openGenericProjectionAssembly
 
         let target =
             openGenericProjectionType "OpenWithPlainValue`1"
@@ -1112,9 +1109,7 @@ public unsafe struct PointerWrapper
         use _loggerFactoryResource = loggerFactory
 
         let state =
-            (stateWithLogger loggerFactory).WithLoadedAssembly
-                openGenericProjectionAssembly.Name
-                openGenericProjectionAssembly
+            (stateWithLogger loggerFactory).WithLoadedAssembly openGenericProjectionAssembly
 
         let target =
             openGenericProjectionType "OpenWithGenericField`1"
@@ -1132,9 +1127,7 @@ public unsafe struct PointerWrapper
         use _loggerFactoryResource = loggerFactory
 
         let state =
-            (stateWithLogger loggerFactory).WithLoadedAssembly
-                openGenericProjectionAssembly.Name
-                openGenericProjectionAssembly
+            (stateWithLogger loggerFactory).WithLoadedAssembly openGenericProjectionAssembly
 
         let target =
             openGenericProjectionType "OpenDerivedFromBase`1"
@@ -1152,9 +1145,7 @@ public unsafe struct PointerWrapper
         use _loggerFactoryResource = loggerFactory
 
         let state =
-            (stateWithLogger loggerFactory).WithLoadedAssembly
-                openGenericProjectionAssembly.Name
-                openGenericProjectionAssembly
+            (stateWithLogger loggerFactory).WithLoadedAssembly openGenericProjectionAssembly
 
         let target =
             openGenericProjectionType "OpenStruct`1"
@@ -1177,9 +1168,7 @@ public unsafe struct PointerWrapper
         use _loggerFactoryResource = loggerFactory
 
         let state =
-            (stateWithLogger loggerFactory).WithLoadedAssembly
-                openGenericProjectionAssembly.Name
-                openGenericProjectionAssembly
+            (stateWithLogger loggerFactory).WithLoadedAssembly openGenericProjectionAssembly
 
         let target =
             openGenericProjectionType "IOpenInterface`1"

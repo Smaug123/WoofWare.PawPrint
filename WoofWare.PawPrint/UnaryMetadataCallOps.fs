@@ -577,8 +577,7 @@ module internal UnaryMetadataCallOps =
             match pendingConstrained with
             | None -> state, concretizedMethod, declaringTypeHandle
             | Some constrainedTypeHandle ->
-                let methodDeclAssy =
-                    state._LoadedAssemblies.[methodToCall.DeclaringType.Assembly.FullName]
+                let methodDeclAssy = state._LoadedAssemblies.[methodToCall.DeclaringType.Assembly]
 
                 let methodDeclType =
                     methodDeclAssy.TypeDefs.[methodToCall.DeclaringType.Definition.Get]
@@ -882,7 +881,7 @@ module internal UnaryMetadataCallOps =
 
                 let tConcrete = AllConcreteTypes.lookup tHandle state.ConcreteTypes |> Option.get
 
-                let tAssy = state._LoadedAssemblies.[tConcrete.Assembly.FullName]
+                let tAssy = state._LoadedAssemblies.[tConcrete.Assembly]
                 let tDefn = tAssy.TypeDefs.[tConcrete.Definition.Get]
 
                 let tIsValueType =

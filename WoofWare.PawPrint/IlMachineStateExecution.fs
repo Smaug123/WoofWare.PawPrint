@@ -500,7 +500,8 @@ module IlMachineStateExecution =
             : IlMachineState *
               WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> list
             =
-            let currentAssy = state._LoadedAssemblies.[currentTy.Identity.AssemblyFullName]
+            let currentAssy =
+                state._LoadedAssemblies.ByDefinitionName currentTy.Identity.AssemblyFullName
 
             ((state, []), currentTypeInfo.MethodImpls.Values)
             ||> Seq.fold (fun (state, acc) impl ->
@@ -715,7 +716,8 @@ module IlMachineStateExecution =
               ConcreteType<ConcreteTypeHandle> *
               TypeInfo<GenericParamFromMetadata, TypeDefn>
             =
-            let ownerAssy = state._LoadedAssemblies.[ownerTy.Identity.AssemblyFullName]
+            let ownerAssy =
+                state._LoadedAssemblies.ByDefinitionName ownerTy.Identity.AssemblyFullName
 
             let implAssy =
                 match state.LoadedAssembly impl.RelativeToAssembly with
@@ -1789,7 +1791,7 @@ module IlMachineStateExecution =
             ExceptionDispatching.allocateRuntimeException loggerFactory baseClassTypes exceptionTypeInfo state
 
         // 2. Find the parameterless .ctor on the exception type.
-        let assy = state._LoadedAssemblies.[exceptionTypeInfo.Assembly.FullName]
+        let assy = state._LoadedAssemblies.[exceptionTypeInfo.Assembly]
         let typeDef = assy.TypeDefs.[exceptionTypeInfo.Identity.TypeDefinition.Get]
 
         if not typeDef.Generics.IsEmpty then

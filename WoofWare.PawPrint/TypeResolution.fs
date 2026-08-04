@@ -13,23 +13,33 @@ module TypeResolution =
 
     type private Dummy = class end
 
-    /// Load an assembly referenced by another assembly. Returns the updated assemblies dictionary,
-    /// the loaded assembly, and its name. If the assembly is already loaded, returns the dictionary
-    /// unchanged.
+    /// <summary>
+    /// Bind an AssemblyReference to an assembly, loading it from the runtime dirs if this is the
+    /// first time we have needed it. Returns the updated load context, the assembly, and the
+    /// assembly's own *definition* identity — which is in general NOT the reference's identity,
+    /// so callers must not assume the returned name is what they asked for.
+    /// </summary>
+    /// <remarks>
+    /// Binding is by simple name: we look for <c>&lt;SimpleName&gt;.dll</c> in each runtime dir in
+    /// turn. Version, culture and public key token in the reference are therefore not honoured,
+    /// which is exactly why the reference's identity so often disagrees with the definition
+    /// identity of what it binds to (the .NET Framework compatibility facades reference
+    /// implementation assemblies as <c>Version=0.0.0.0</c>).
+    /// </remarks>
     let internal loadAssembly
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
         (referencedInAssembly : DumpedAssembly)
         (r : AssemblyReferenceHandle)
-        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
-        : ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly * AssemblyName
+        (assemblies : LoadedAssemblies)
+        : LoadedAssemblies * DumpedAssembly * AssemblyName
         =
         let assemblyRef = referencedInAssembly.AssemblyReferences.[r]
-        let assemblyName = assemblyRef.Name
 
-        match assemblies.TryGetValue assemblyName.FullName with
-        | true, v -> assemblies, v, assemblyName
-        | false, _ ->
+        match assemblies.TryResolveReference assemblyRef with
+        | Some v -> assemblies, v, v.Name
+        | None ->
+            let assemblyName = assemblyRef.Name
             let logger = loggerFactory.CreateLogger typeof<Dummy>.DeclaringType
 
             let assy =
@@ -48,8 +58,28 @@ module TypeResolution =
             match assy |> List.tryHead with
             | None -> failwith $"Could not find a readable DLL in any runtime dir with name %s{assemblyName.Name}.dll"
             | Some assy ->
-                let assemblies = assemblies.SetItem (assemblyName.FullName, assy)
-                assemblies, assy, assemblyName
+                // Record both the assembly (under its own definition identity) and the binding
+                // that got us here, so the next probe with this reference identity is a hit.
+                let assemblies, canonical = assemblies.WithBoundReference assemblyRef assy
+                assemblies, canonical, canonical.Name
+
+    /// <summary>
+    /// The interpreter's assembly loader: binds AssemblyReferences by simple name against
+    /// <paramref name="dotnetRuntimeDirs"/>, in order.
+    /// </summary>
+    /// <remarks>
+    /// This is the one loader. Tests must use it too rather than hand-rolling an
+    /// <c>IAssemblyLoad</c>: the bug this exists to prevent was invisible to the test suite for
+    /// precisely as long as the test fakes keyed their dictionaries differently from production.
+    /// </remarks>
+    let directoryLoader (loggerFactory : ILoggerFactory) (dotnetRuntimeDirs : string seq) : IAssemblyLoad =
+        { new IAssemblyLoad with
+            member _.LoadAssembly loaded referencedIn ref =
+                let assemblies, targetAssy, _name =
+                    loadAssembly loggerFactory dotnetRuntimeDirs loaded.[referencedIn] ref loaded
+
+                assemblies, targetAssy
+        }
 
     let rec internal resolveTopLevelTypeFromName
         (loggerFactory : ILoggerFactory)
@@ -58,8 +88,8 @@ module TypeResolution =
         (name : string)
         (genericArgs : ImmutableArray<TypeDefn>)
         (assy : DumpedAssembly)
-        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
-        : ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
+        (assemblies : LoadedAssemblies)
+        : LoadedAssemblies * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
         match Assembly.resolveTopLevelTypeFromName assy assemblies ns name genericArgs with
         | TypeResolutionResult.Resolved (assy, _, typeDef) -> assemblies, assy, typeDef
@@ -68,9 +98,12 @@ module TypeResolution =
                 loadAssembly
                     loggerFactory
                     dotnetRuntimeDirs
-                    assemblies.[snd(loadFirst.Handle).FullName]
+                    assemblies.[snd loadFirst.Handle]
                     (fst loadFirst.Handle)
                     assemblies
+
+            let assemblies =
+                LoadedAssemblies.assertReferenceBound $"top-level type %s{name}" loadFirst assemblies
 
             resolveTopLevelTypeFromName loggerFactory dotnetRuntimeDirs ns name genericArgs assy assemblies
 
@@ -80,8 +113,8 @@ module TypeResolution =
         (fromAssembly : DumpedAssembly)
         (ty : WoofWare.PawPrint.ExportedType)
         (genericArgs : ImmutableArray<TypeDefn>)
-        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
-        : ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
+        (assemblies : LoadedAssemblies)
+        : LoadedAssemblies * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
         match Assembly.resolveTypeFromExport fromAssembly assemblies genericArgs ty with
         | TypeResolutionResult.Resolved (assy, _, typeDef) -> assemblies, assy, typeDef
@@ -90,9 +123,12 @@ module TypeResolution =
                 loadAssembly
                     loggerFactory
                     dotnetRuntimeDirs
-                    assemblies.[snd(loadFirst.Handle).FullName]
+                    assemblies.[snd loadFirst.Handle]
                     (fst loadFirst.Handle)
                     assemblies
+
+            let assemblies =
+                LoadedAssemblies.assertReferenceBound $"exported type %s{ty.Name}" loadFirst assemblies
 
             resolveTypeFromExport loggerFactory dotnetRuntimeDirs fromAssembly ty genericArgs assemblies
 
@@ -102,8 +138,8 @@ module TypeResolution =
         (referencedInAssembly : DumpedAssembly)
         (target : TypeRef)
         (typeGenericArgs : ImmutableArray<TypeDefn>)
-        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
-        : ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
+        (assemblies : LoadedAssemblies)
+        : LoadedAssemblies * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
         match Assembly.resolveTypeRef assemblies referencedInAssembly typeGenericArgs target with
         | TypeResolutionResult.Resolved (assy, _, typeDef) -> assemblies, assy, typeDef
@@ -112,9 +148,12 @@ module TypeResolution =
                 loadAssembly
                     loggerFactory
                     dotnetRuntimeDirs
-                    assemblies.[snd(loadFirst.Handle).FullName]
+                    assemblies.[snd loadFirst.Handle]
                     (fst loadFirst.Handle)
                     assemblies
+
+            let assemblies =
+                LoadedAssemblies.assertReferenceBound $"type reference %s{target.Name}" loadFirst assemblies
 
             resolveTypeFromRef loggerFactory dotnetRuntimeDirs referencedInAssembly target typeGenericArgs assemblies
 
@@ -124,8 +163,8 @@ module TypeResolution =
         (ty : TypeReferenceHandle)
         (genericArgs : ImmutableArray<TypeDefn>)
         (assy : DumpedAssembly)
-        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
-        : ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
+        (assemblies : LoadedAssemblies)
+        : LoadedAssemblies * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
         let target = assy.TypeRefs.[ty]
         resolveTypeFromRef loggerFactory dotnetRuntimeDirs assy target genericArgs assemblies
@@ -144,8 +183,8 @@ module TypeResolution =
         (typeGenericArgs : ImmutableArray<TypeDefn>)
         (methodGenericArgs : ImmutableArray<TypeDefn>)
         (assy : DumpedAssembly)
-        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
-        : ImmutableDictionary<string, DumpedAssembly> * TypeDefn
+        (assemblies : LoadedAssemblies)
+        : LoadedAssemblies * TypeDefn
         =
         match ty with
         | TypeDefn.GenericTypeParameter idx ->
@@ -311,8 +350,8 @@ module TypeResolution =
         (typeGenericArgs : ImmutableArray<TypeDefn>)
         (methodGenericArgs : ImmutableArray<TypeDefn>)
         (assy : DumpedAssembly)
-        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
-        : ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
+        (assemblies : LoadedAssemblies)
+        : LoadedAssemblies * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
         match ty with
         | TypeDefn.GenericInstantiation (generic, args) ->
@@ -349,7 +388,7 @@ module TypeResolution =
                 assy
                 assemblies
         | TypeDefn.FromDefinition (identity, _typeKind) ->
-            let assy = assemblies.[identity.AssemblyFullName]
+            let assy = assemblies.ByDefinitionName identity.AssemblyFullName
 
             let defn =
                 assy.TypeDefs.[identity.TypeDefinition.Get]
@@ -433,8 +472,8 @@ module TypeResolution =
         (assy : DumpedAssembly)
         (typeGenericArgs : TypeDefn ImmutableArray)
         (methodGenericArgs : TypeDefn ImmutableArray)
-        (assemblies : ImmutableDictionary<string, DumpedAssembly>)
-        : ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
+        (assemblies : LoadedAssemblies)
+        : LoadedAssemblies * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
         let sign = assy.TypeSpecs.[ty].Signature
 

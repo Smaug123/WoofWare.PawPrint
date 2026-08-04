@@ -41,18 +41,7 @@ module IlMachineTypeResolution =
         assyName
 
     let internal loader (loggerFactory : ILoggerFactory) (state : IlMachineState) : IAssemblyLoad =
-        { new IAssemblyLoad with
-            member _.LoadAssembly loaded assyName ref =
-                let assemblies, targetAssy, _name =
-                    TypeResolution.loadAssembly
-                        loggerFactory
-                        state.DotnetRuntimeDirs
-                        loaded.[assyName.FullName]
-                        ref
-                        loaded
-
-                assemblies, targetAssy
-        }
+        TypeResolution.directoryLoader loggerFactory state.DotnetRuntimeDirs
 
     let concretizeType
         (loggerFactory : ILoggerFactory)
@@ -592,11 +581,8 @@ module IlMachineTypeResolution =
 
         // First concretize the type
         // Make sure the current assembly is included in the state for concretization
-        let state =
-            if state.LoadedAssembly assy.Name |> Option.isSome then
-                state
-            else
-                state.WithLoadedAssembly assy.Name assy
+        // (WithLoadedAssembly keeps the existing instance if we already hold this identity).
+        let state = state.WithLoadedAssembly assy
 
         let state, handle =
             concretizeType loggerFactory baseClassTypes state assy.Name typeGenerics methodGenerics ty

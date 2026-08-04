@@ -69,41 +69,12 @@ module TestZeroOfBaseAssemblies =
         let _, loggerFactory = LoggerFactory.makeTest ()
         Assembly.readFile loggerFactory path
 
-    /// An IAssemblyLoad that resolves references by searching a set of
-    /// directories on disk for a DLL matching the referenced assembly's
-    /// simple name (`Foo` → `Foo.dll`). All BCL/facade assemblies live next
-    /// to System.Private.CoreLib, so a single directory lookup suffices for
-    /// this test's needs.
-    type private OnDemandAssemblyLoad (searchDirs : string list) =
-        interface IAssemblyLoad with
-            member _.LoadAssembly
-                (loadedAssemblies : ImmutableDictionary<string, DumpedAssembly>)
-                (referencedIn : AssemblyName)
-                (handle : AssemblyReferenceHandle)
-                : ImmutableDictionary<string, DumpedAssembly> * DumpedAssembly
-                =
-                let referencedInAssembly =
-                    match loadedAssemblies.TryGetValue referencedIn.FullName with
-                    | false, _ -> failwithf $"Missing loaded assembly %s{referencedIn.FullName}"
-                    | true, assy -> assy
-
-                let assemblyRef = referencedInAssembly.AssemblyReferences.[handle]
-
-                match loadedAssemblies.TryGetValue assemblyRef.Name.FullName with
-                | true, assy -> loadedAssemblies, assy
-                | false, _ ->
-                    let path =
-                        searchDirs
-                        |> List.tryPick (fun dir ->
-                            let candidate = Path.Combine (dir, assemblyRef.Name.Name + ".dll")
-                            if File.Exists candidate then Some candidate else None
-                        )
-                        |> Option.defaultWith (fun () ->
-                            failwithf $"Test setup could not locate assembly %s{assemblyRef.Name.FullName} on disk"
-                        )
-
-                    let dumped = readAssembly path
-                    loadedAssemblies.SetItem (dumped.Name.FullName, dumped), dumped
+    /// The production loader, pointed at a set of directories on disk. Deliberately not a
+    /// hand-rolled fake: the ref-vs-def keying bug was invisible to this suite for exactly as
+    /// long as the test fake keyed its dictionary differently from production.
+    let private onDemandAssemblyLoad (searchDirs : string seq) : IAssemblyLoad =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        TypeResolution.directoryLoader loggerFactory searchDirs
 
     /// Look up FSharpValueOption`1 in the netstandard2.1 build of FSharp.Core.
     let private getValueOptionTypeDef (fsharpCore : DumpedAssembly) : TypeInfo<GenericParamFromMetadata, TypeDefn> =
@@ -128,16 +99,16 @@ module TestZeroOfBaseAssemblies =
         // Prime loadedAssemblies with corelib + FSharp.Core (netstandard2.1),
         // but NOT netstandard itself — that's the facade FSharp.Core's base
         // TypeRefs point at.
-        let loaded : ImmutableDictionary<string, DumpedAssembly> =
-            [ corelib ; fsharpCore ]
-            |> Seq.map (fun a -> System.Collections.Generic.KeyValuePair (a.Name.FullName, a))
-            |> ImmutableDictionary.CreateRange
+        let loaded : LoadedAssemblies =
+            LoadedAssemblies.ofAssemblies [ corelib ; fsharpCore ]
 
-        loaded.ContainsKey "netstandard, Version=2.1.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51"
+        loaded.ContainsDefinition (
+            AssemblyName "netstandard, Version=2.1.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51"
+        )
         |> shouldEqual false
 
         assertNetstandardAvailable ()
-        let loadAssembly = OnDemandAssemblyLoad [ runtimeDir ]
+        let loadAssembly = onDemandAssemblyLoad [ runtimeDir ]
 
         // Concretize FSharpValueOption<int>. Concretization itself does not walk
         // base types, so it should not trigger a netstandard load.
@@ -165,7 +136,7 @@ module TestZeroOfBaseAssemblies =
         let handle, concretizeCtx =
             TypeConcretization.concretizeType
                 concretizeCtx
-                (loadAssembly :> IAssemblyLoad)
+                loadAssembly
                 fsharpCore.Name
                 ImmutableArray.Empty
                 ImmutableArray.Empty
@@ -173,7 +144,7 @@ module TestZeroOfBaseAssemblies =
 
         // Sanity: concretization itself did not need netstandard.
         let netstandardLoadedAfterConcretize =
-            concretizeCtx.LoadedAssemblies.Keys
+            concretizeCtx.LoadedAssemblies.DefinitionNames
             |> Seq.exists (fun (n : string) -> n.StartsWith ("netstandard,", StringComparison.OrdinalIgnoreCase))
 
         netstandardLoadedAfterConcretize |> shouldEqual false
@@ -200,7 +171,7 @@ module TestZeroOfBaseAssemblies =
 
         let loadedAfterHelper, _ =
             Concretization.ensureBaseAssembliesLoadedForConcreteHandle
-                (loadAssembly :> IAssemblyLoad)
+                loadAssembly
                 baseTypes
                 visited
                 concretizeCtx.LoadedAssemblies
@@ -208,7 +179,7 @@ module TestZeroOfBaseAssemblies =
                 handle
 
         // netstandard is now loaded.
-        loadedAfterHelper.Keys
+        loadedAfterHelper.DefinitionNames
         |> Seq.exists (fun (n : string) -> n.StartsWith ("netstandard,", StringComparison.OrdinalIgnoreCase))
         |> shouldEqual true
 
@@ -222,13 +193,11 @@ module TestZeroOfBaseAssemblies =
         let fsharpCore = readAssembly fsharpCoreNetstandard21Path.Value
         let baseTypes = Corelib.getBaseTypes corelib
 
-        let loaded : ImmutableDictionary<string, DumpedAssembly> =
-            [ corelib ; fsharpCore ]
-            |> Seq.map (fun a -> System.Collections.Generic.KeyValuePair (a.Name.FullName, a))
-            |> ImmutableDictionary.CreateRange
+        let loaded : LoadedAssemblies =
+            LoadedAssemblies.ofAssemblies [ corelib ; fsharpCore ]
 
         assertNetstandardAvailable ()
-        let loadAssembly = OnDemandAssemblyLoad [ runtimeDir ]
+        let loadAssembly = onDemandAssemblyLoad [ runtimeDir ]
 
         let concretizeCtx : TypeConcretization.ConcretizationContext<DumpedAssembly> =
             {
@@ -248,7 +217,7 @@ module TestZeroOfBaseAssemblies =
         let handle, concretizeCtx =
             TypeConcretization.concretizeType
                 concretizeCtx
-                (loadAssembly :> IAssemblyLoad)
+                loadAssembly
                 fsharpCore.Name
                 ImmutableArray.Empty
                 ImmutableArray.Empty
@@ -262,7 +231,7 @@ module TestZeroOfBaseAssemblies =
         // idempotence guarantee.
         let firstRun, firstCtx =
             Concretization.ensureBaseAssembliesLoadedForConcreteHandle
-                (loadAssembly :> IAssemblyLoad)
+                loadAssembly
                 baseTypes
                 (System.Collections.Generic.HashSet ())
                 concretizeCtx.LoadedAssemblies
@@ -271,14 +240,15 @@ module TestZeroOfBaseAssemblies =
 
         let secondRun, _ =
             Concretization.ensureBaseAssembliesLoadedForConcreteHandle
-                (loadAssembly :> IAssemblyLoad)
+                loadAssembly
                 baseTypes
                 (System.Collections.Generic.HashSet ())
                 firstRun
                 firstCtx
                 handle
 
-        secondRun.Count |> shouldEqual firstRun.Count
+        (secondRun.DefinitionNames |> Seq.length)
+        |> shouldEqual (firstRun.DefinitionNames |> Seq.length)
 
     [<Test>]
     let ``helper recurses into instance fields of value types`` () : unit =
@@ -318,14 +288,12 @@ public struct Outer
             use stream = new MemoryStream (outerAssemblyBytes)
             AssemblyApi.read loggerFactory None stream
 
-        let loadAssembly = OnDemandAssemblyLoad [ runtimeDir ]
+        let loadAssembly = onDemandAssemblyLoad [ runtimeDir ]
 
         // Prime with corelib + FSharp.Core + the wrapper. Deliberately leave
         // netstandard out; the wrapper's own base chain doesn't need it.
-        let loaded : ImmutableDictionary<string, DumpedAssembly> =
-            [ corelib ; fsharpCore ; outerAssembly ]
-            |> Seq.map (fun a -> System.Collections.Generic.KeyValuePair (a.Name.FullName, a))
-            |> ImmutableDictionary.CreateRange
+        let loaded : LoadedAssemblies =
+            LoadedAssemblies.ofAssemblies [ corelib ; fsharpCore ; outerAssembly ]
 
         let outerTypeDef =
             outerAssembly.TryGetTopLevelTypeDef "" "Outer"
@@ -341,7 +309,7 @@ public struct Outer
         let outerHandle, concretizeCtx =
             TypeConcretization.concretizeType
                 concretizeCtx
-                (loadAssembly :> IAssemblyLoad)
+                loadAssembly
                 outerAssembly.Name
                 ImmutableArray.Empty
                 ImmutableArray.Empty
@@ -353,12 +321,12 @@ public struct Outer
         // still absent.
         let assembliesAfterOuterBaseChain =
             Concretization.ensureTypeDefinitionBaseAssembliesLoaded
-                (loadAssembly :> IAssemblyLoad)
+                loadAssembly
                 concretizeCtx.LoadedAssemblies
                 outerAssembly.Name
                 outerTypeDef.TypeDefHandle
 
-        assembliesAfterOuterBaseChain.Keys
+        assembliesAfterOuterBaseChain.DefinitionNames
         |> Seq.exists (fun (n : string) -> n.StartsWith ("netstandard,", StringComparison.OrdinalIgnoreCase))
         |> shouldEqual false
 
@@ -367,14 +335,14 @@ public struct Outer
         // finally load netstandard.
         let loadedAfterHelper, _ =
             Concretization.ensureBaseAssembliesLoadedForConcreteHandle
-                (loadAssembly :> IAssemblyLoad)
+                loadAssembly
                 baseTypes
                 (System.Collections.Generic.HashSet ())
                 assembliesAfterOuterBaseChain
                 concretizeCtx.ConcreteTypes
                 outerHandle
 
-        loadedAfterHelper.Keys
+        loadedAfterHelper.DefinitionNames
         |> Seq.exists (fun (n : string) -> n.StartsWith ("netstandard,", StringComparison.OrdinalIgnoreCase))
         |> shouldEqual true
 
@@ -422,12 +390,9 @@ public struct S<T>
             asm.TryGetTopLevelTypeDef "" "S`1"
             |> Option.defaultWith (fun () -> failwith "Failed to find compiled struct S<T>")
 
-        let loaded : ImmutableDictionary<string, DumpedAssembly> =
-            [ corelib ; asm ]
-            |> Seq.map (fun a -> System.Collections.Generic.KeyValuePair (a.Name.FullName, a))
-            |> ImmutableDictionary.CreateRange
+        let loaded : LoadedAssemblies = LoadedAssemblies.ofAssemblies [ corelib ; asm ]
 
-        let loadAssembly = OnDemandAssemblyLoad [ runtimeDir ]
+        let loadAssembly = onDemandAssemblyLoad [ runtimeDir ]
 
         let concretizeCtx : TypeConcretization.ConcretizationContext<DumpedAssembly> =
             {
@@ -445,7 +410,7 @@ public struct S<T>
         let handle, concretizeCtx =
             TypeConcretization.concretizeType
                 concretizeCtx
-                (loadAssembly :> IAssemblyLoad)
+                loadAssembly
                 asm.Name
                 ImmutableArray.Empty
                 ImmutableArray.Empty
@@ -453,7 +418,7 @@ public struct S<T>
 
         // The helper must terminate (i.e. not blow the stack or run forever).
         Concretization.ensureBaseAssembliesLoadedForConcreteHandle
-            (loadAssembly :> IAssemblyLoad)
+            loadAssembly
             baseTypes
             (System.Collections.Generic.HashSet ())
             concretizeCtx.LoadedAssemblies
@@ -487,12 +452,9 @@ public struct S<T>
             asm.TryGetTopLevelTypeDef "" "S`1"
             |> Option.defaultWith (fun () -> failwith "Failed to find compiled struct S<T>")
 
-        let loaded : ImmutableDictionary<string, DumpedAssembly> =
-            [ corelib ; asm ]
-            |> Seq.map (fun a -> System.Collections.Generic.KeyValuePair (a.Name.FullName, a))
-            |> ImmutableDictionary.CreateRange
+        let loaded : LoadedAssemblies = LoadedAssemblies.ofAssemblies [ corelib ; asm ]
 
-        let loadAssembly = OnDemandAssemblyLoad [ runtimeDir ]
+        let loadAssembly = onDemandAssemblyLoad [ runtimeDir ]
 
         let concretizeCtx : TypeConcretization.ConcretizationContext<DumpedAssembly> =
             {
@@ -510,7 +472,7 @@ public struct S<T>
         let handle, concretizeCtx =
             TypeConcretization.concretizeType
                 concretizeCtx
-                (loadAssembly :> IAssemblyLoad)
+                loadAssembly
                 asm.Name
                 ImmutableArray.Empty
                 ImmutableArray.Empty
@@ -518,7 +480,7 @@ public struct S<T>
 
         // Must terminate.
         Concretization.ensureBaseAssembliesLoadedForConcreteHandle
-            (loadAssembly :> IAssemblyLoad)
+            loadAssembly
             baseTypes
             (System.Collections.Generic.HashSet ())
             concretizeCtx.LoadedAssemblies
@@ -561,12 +523,10 @@ public static class C
             |> List.tryFind (fun m -> m.Name = "M")
             |> Option.defaultWith (fun () -> failwith "Failed to find method M<T>")
 
-        let loaded : ImmutableDictionary<string, DumpedAssembly> =
-            [ corelib ; fsharpCore ; asm ]
-            |> Seq.map (fun a -> System.Collections.Generic.KeyValuePair (a.Name.FullName, a))
-            |> ImmutableDictionary.CreateRange
+        let loaded : LoadedAssemblies =
+            LoadedAssemblies.ofAssemblies [ corelib ; fsharpCore ; asm ]
 
-        let loadAssembly = OnDemandAssemblyLoad [ runtimeDir ]
+        let loadAssembly = onDemandAssemblyLoad [ runtimeDir ]
 
         // Concretize FSharpValueOption<int> into the concreteTypes dictionary
         // (still with netstandard not yet loaded), so we can pass its handle as
@@ -590,21 +550,21 @@ public static class C
         let valueOptionHandle, concretizeCtx =
             TypeConcretization.concretizeType
                 concretizeCtx
-                (loadAssembly :> IAssemblyLoad)
+                loadAssembly
                 fsharpCore.Name
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 valueOptionInt
 
         // Sanity: concretization alone did not need netstandard.
-        concretizeCtx.LoadedAssemblies.Keys
+        concretizeCtx.LoadedAssemblies.DefinitionNames
         |> Seq.exists (fun (n : string) -> n.StartsWith ("netstandard,", StringComparison.OrdinalIgnoreCase))
         |> shouldEqual false
 
         let _, _, loadedAfter =
             Concretization.concretizeMethod
                 concretizeCtx.ConcreteTypes
-                (loadAssembly :> IAssemblyLoad)
+                loadAssembly
                 concretizeCtx.LoadedAssemblies
                 baseTypes
                 mMethod
@@ -614,6 +574,6 @@ public static class C
         // The sweep must have primed the method's generic argument, which
         // means walking FSharpValueOption<int>'s base chain, which means
         // netstandard is now loaded.
-        loadedAfter.Keys
+        loadedAfter.DefinitionNames
         |> Seq.exists (fun (n : string) -> n.StartsWith ("netstandard,", StringComparison.OrdinalIgnoreCase))
         |> shouldEqual true

@@ -475,7 +475,7 @@ module DebuggerServer =
         writeValueArray
             writer
             "loadedAssemblies"
-            state._LoadedAssemblies.Keys
+            state._LoadedAssemblies.DefinitionNames
             (fun writer assemblyName -> writer.WriteStringValue assemblyName)
 
         writeValueArray
@@ -688,7 +688,7 @@ module DebuggerServer =
             let frame = threadState.MethodState
 
             let assembly =
-                state._LoadedAssemblies.[frame.ExecutingMethod.DeclaringType.Assembly.FullName]
+                state._LoadedAssemblies.[frame.ExecutingMethod.DeclaringType.Assembly]
 
             let qualifiedTypeName = qualifiedTypeNameForMethod assembly frame.ExecutingMethod
 
