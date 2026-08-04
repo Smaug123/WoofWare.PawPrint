@@ -1331,7 +1331,7 @@ module IlMachineRuntimeMetadata =
     /// The identity is returned *exactly*: `Int32` and `UInt32` are different answers, as are
     /// `Char`/`UInt16`, `Boolean`/`Byte` and `IntPtr`/`Int64`. This is deliberately narrower than
     /// both ECMA-335's verification types and the array-element rule below, each of which collapses
-    /// signedness — see `unboxPermitted` for why that distinction is load-bearing.
+    /// signedness — see `unboxPermitted` for why we make that distinction.
     let primitiveElementIdentity
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -1520,8 +1520,7 @@ module IlMachineRuntimeMetadata =
                     //     unflattened target would abort on the following `stloc`/`stfld` instead.
                     // The identity case never reaches here, so this only ever rejects genuinely
                     // mixed pairs. Fail loudly rather than answering `false`, which would raise
-                    // InvalidCastException where a real runtime succeeds — a quieter way of being
-                    // wrong.
+                    // InvalidCastException where a real runtime would succeed.
                     let state, boxedFlattened =
                         unboxMaterialisesFlattened loggerFactory baseClassTypes state boxedType
 
