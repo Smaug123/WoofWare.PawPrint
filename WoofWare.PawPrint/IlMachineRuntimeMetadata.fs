@@ -821,6 +821,45 @@ module IlMachineRuntimeMetadata =
         |> List.map (renderExceptionStackFrame state)
         |> String.concat Environment.NewLine
 
+    /// Write `_message` on an already-allocated exception object.
+    ///
+    /// `ExceptionDispatching.allocateRuntimeException` only zero-initialises the object and does
+    /// not run any constructor, so runtime-synthesised exceptions otherwise carry a null `_message`
+    /// and `Exception.Message` falls back to the generic "Exception of type X was thrown" string.
+    /// Where the CLR would have passed a specific resource string to the constructor, call this so
+    /// a guest that catches the exception and reads `.Message` sees what it would really see.
+    let setExceptionMessage
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (exceptionAddr : ManagedHeapAddress)
+        (message : string)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        match
+            state.ManagedHeap.NonArrayObjects |> Map.tryFind exceptionAddr,
+            AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Exception.Identity
+        with
+        | Some heapObj, Some exceptionHandle ->
+            let messageAddr, state =
+                allocateManagedString loggerFactory baseClassTypes message state
+
+            let messageField =
+                FieldIdentity.requiredOwnInstanceField baseClassTypes.Exception "_message"
+                |> FieldIdentity.fieldId exceptionHandle
+
+            let heapObj =
+                heapObj
+                |> AllocatedNonArrayObject.SetFieldById messageField (CliType.ObjectRef (Some messageAddr))
+
+            { state with
+                ManagedHeap = ManagedHeap.set exceptionAddr heapObj state.ManagedHeap
+            }
+        // Mirrors `setExceptionStackTraceString`: skeletal states in low-level dispatch tests may
+        // lack either piece, and there is nothing to project into in that case.
+        | None, _
+        | _, None -> state
+
     /// Project PawPrint's structured exception trace into the managed `System.Exception`
     /// object so guest code observing `Exception.StackTrace` sees a non-null trace string.
     let setExceptionStackTraceString
