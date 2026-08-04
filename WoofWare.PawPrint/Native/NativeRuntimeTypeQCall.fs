@@ -1483,10 +1483,6 @@ module NativeRuntimeTypeQCall =
                 NativeCall.objectHandleOnStackTarget operation state "result" instruction.Arguments.[1]
 
             match typeHandleTarget with
-            | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.OneDimArrayZero _ as handle)
-            | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Array _ as handle) ->
-                failwith
-                    $"TODO: %s{operation} for array type %O{handle}; arrays expose runtime-provided interfaces (IList<T>, ICollection<T>, IEnumerable<T>, ...) that PawPrint does not yet synthesize"
             | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref _ as handle)
             | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Pointer _ as handle)
             | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.FunctionPointer _ as handle) ->
@@ -1498,7 +1494,27 @@ module NativeRuntimeTypeQCall =
             | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
                 failwith
                     $"%s{operation}: method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get} reached the QCall; the managed wrapper short-circuits IsTypeDesc to `[]` before this point"
+            // An array's MethodTable interface map is *inherited verbatim* from
+            // `System.Array` — CoreCLR copies it row for row in `CreateArrayMethodTable`
+            // ("Because of array method table persisting, we need to copy the map",
+            // `src/coreclr/vm/array.cpp:410-424`), so `GetNumInterfaces()` for `int[]` is
+            // `System.Array`'s six and this QCall returns exactly those.
+            //
+            // The five implicit generic interfaces of an SZ array (`IList<T>` and friends)
+            // are deliberately *not* added here. They are appended in managed code by
+            // `RuntimeTypeCache.PopulateInterfaces` (`RuntimeType.CoreCLR.cs:1043-1055`),
+            // which PawPrint runs from the guest's own corelib. Synthesising them here would
+            // double-count them — `PopulateInterfaces` appends unconditionally, with no
+            // dedup against what we return — and would make our `MethodTable` projection
+            // disagree with the map we hand back.
+            //
+            // So array handles simply fall through to the ordinary walk below: they
+            // contribute no interfaces of their own, and `resolveBaseConcreteType` already
+            // knows that an array's base type is `System.Array`, whose closure the walk then
+            // collects.
             | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _)
+            | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.OneDimArrayZero _)
+            | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Array _)
             | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
 
             // CoreCLR's MethodTable interface map enumerates ALL implemented interfaces:
@@ -1525,9 +1541,22 @@ module NativeRuntimeTypeQCall =
                 =
                 let state, seen, ordered =
                     match current with
-                    | RuntimeTypeHandleTarget.Closed currentHandle ->
+                    // Structural handles carry no interface rows of their own. For arrays
+                    // that is CoreCLR's own rule (the map is inherited from `System.Array`,
+                    // reached by the base-type walk below); byrefs, pointers and function
+                    // pointers are TypeDescs, which have no MethodTable and so no map at
+                    // all. Either way the walk continues to the parent rather than stopping.
+                    | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.OneDimArrayZero _)
+                    | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Array _)
+                    | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref _)
+                    | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Pointer _)
+                    | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.FunctionPointer _) -> state, seen, ordered
+                    | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as currentHandle) ->
                         match IlMachineState.tryGetConcreteTypeInfo state currentHandle with
-                        | None -> state, seen, ordered
+                        // A `Concrete` handle names a type with a TypeDef row, so its type
+                        // info must be registered; a miss is a bug in whoever produced the
+                        // handle, not a type that legitimately has no interfaces.
+                        | None -> failwith $"%s{operation}: concrete type handle was not registered: %O{currentHandle}"
                         | Some (currentCt, currentTypeInfo) ->
                             let currentAssy =
                                 state.LoadedAssembly' currentCt.Identity.AssemblyFullName
