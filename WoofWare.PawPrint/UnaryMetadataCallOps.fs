@@ -1184,9 +1184,11 @@ module internal UnaryMetadataCallOps =
         | Some methodToCall ->
 
         // Slots this call consumes: the callee's declared parameters, plus `this` when the
-        // callee is an instance method.
+        // callee is an instance method. Arity comes from the signature, not the Param table:
+        // see `MethodInfo.Parameters` for why `Parameters.Length` understates arity for
+        // methods whose parameters carry no metadata.
         let calleeSlots =
-            methodToCall.Parameters.Length + (if methodToCall.IsStatic then 0 else 1)
+            MethodInfo.arity methodToCall + (if methodToCall.IsStatic then 0 else 1)
 
         // Slots the call site pushed: its declared parameters, plus `this` when the
         // signature carries an *implicit* receiver. Under EXPLICITTHIS (ECMA-335 II.15.3)
@@ -1260,7 +1262,7 @@ module internal UnaryMetadataCallOps =
                 thread
                 threadState
                 None
-                false
+                ConstructedObjectDisposition.PushToCaller
                 false // wrapExceptionInTargetInvocation
                 state,
             WhatWeDid.Executed
