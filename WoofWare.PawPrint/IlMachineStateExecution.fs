@@ -430,6 +430,27 @@ module IlMachineStateExecution =
                         && meth.Handle <> methodToCall.Handle))
             then
                 None, state
+            elif
+                // A static method can never stand in for an instance slot, nor an instance
+                // method for a static one. Without this, a same-signature `static` shadow of an
+                // interface method is dispatched as though it were the implementation, and the
+                // missing `this` desynchronises the evaluation stack — the failure surfaces far
+                // away, as "method returned with more than one evaluation stack value".
+                meth.IsStatic <> methodToCall.IsStatic
+            then
+                None, state
+            elif
+                // Implicit implementation of an interface slot requires a *public* method
+                // (ECMA-335 II.12.2): a private same-signature method is an ordinary member that
+                // happens to collide, and leaves the slot to a default body or a base. Matching
+                // by the explicit `Namespace.IFoo.Method` name is exempt, because that *is* the
+                // explicit-implementation form and is private by construction.
+                allowImplicitInterfaceImplementation
+                && Some meth.Name <> interfaceExplicitNamedMethod
+                && meth.MethodAttributes &&& MethodAttributes.MemberAccessMask
+                   <> MethodAttributes.Public
+            then
+                None, state
             else
 
             let state, matches =

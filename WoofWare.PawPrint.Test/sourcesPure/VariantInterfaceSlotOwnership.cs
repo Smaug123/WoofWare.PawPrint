@@ -77,6 +77,27 @@ sealed class OwnAbstractDerived : OwnAbstractBase
     public override long Accept(object value) => 6;
 }
 
+// Implicit implementation of an interface slot requires a public instance method
+// (ECMA-335 II.12.2). A private or static same-signature method is an ordinary member that
+// happens to collide, so both slots below keep the default body.
+//
+// The static case is not merely a wrong answer if it slips through: dispatching a static method
+// where an instance one is expected leaves the receiver on the evaluation stack, and the damage
+// surfaces somewhere else entirely as "method returned with more than one evaluation stack
+// value".
+sealed class OwnPrivateShadow : IOwnDim<ArgumentException>, IOwnDim<object>
+{
+    private long Accept(object value) => 8;
+
+    // Keep the private method reachable so the compiler cannot discard it.
+    public long CallPrivate() => Accept(null);
+}
+
+sealed class OwnStaticShadow : IOwnDim<ArgumentException>, IOwnDim<object>
+{
+    public static long Accept(object value) => 9;
+}
+
 class Program
 {
     static long CallDim(IOwnDim<ArgumentException> sink, ArgumentException value) => sink.Accept(value);
@@ -100,6 +121,14 @@ class Program
         if (CallOwn(new OwnVirtualDerived(), e) != 5) return 6;
 
         if (CallOwn(new OwnAbstractDerived(), e) != 6) return 7;
+
+        // Neither a private nor a static same-signature method implements the slot.
+        OwnPrivateShadow priv = new OwnPrivateShadow();
+        if (CallDim(priv, e) != 100) return 8;
+        if (priv.CallPrivate() != 8) return 9;
+
+        if (CallDim(new OwnStaticShadow(), e) != 100) return 10;
+        if (OwnStaticShadow.Accept(null) != 9) return 11;
 
         return 0;
     }
