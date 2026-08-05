@@ -1139,8 +1139,22 @@ module internal UnaryMetadataCallOps =
         | NativeInt
         | ObjectRef
 
-    let private calliStackKind (t : TypeDefn) : CalliStackKind option =
+    /// Strip `modopt`/`modreq` wrappers. Custom modifiers carry calling-convention and
+    /// language-level information (`CallConvCdecl`, `InAttribute`, `IsVolatile`); none of it
+    /// changes the type's evaluation-stack shape, so anything classifying that shape must look
+    /// through them or it will misread `modopt(...) void` as value-returning and decline to
+    /// classify a modified primitive.
+    ///
+    /// Note the first field is the *unmodified* type despite being named `original`, and the
+    /// second is the modifier despite being named `afterMod`: see `GetModifiedType` in
+    /// `TypeDefn.typeProvider`, which constructs it as `Modified (unmodifiedType, modifier, _)`.
+    let rec private stripCustomModifiers (t : TypeDefn) : TypeDefn =
         match t with
+        | TypeDefn.Modified (unmodified, _modifier, _required) -> stripCustomModifiers unmodified
+        | t -> t
+
+    let private calliStackKind (t : TypeDefn) : CalliStackKind option =
+        match stripCustomModifiers t with
         | TypeDefn.PrimitiveType p ->
             match p with
             | PrimitiveType.Boolean
@@ -1209,10 +1223,13 @@ module internal UnaryMetadataCallOps =
 
                 (metadataReader.GetStandaloneSignature handle)
                     .DecodeMethodSignature (TypeDefn.typeProvider activeAssy.Name, ())
-                |> TypeMethodSignature.make (
-                    function
+                |> TypeMethodSignature.make (fun retType ->
+                    // Match on the unmodified type: `modopt(CallConvCdecl) void` decodes to a
+                    // `Modified` wrapper, and treating that as value-returning would reject a
+                    // genuinely void target in the return-shape check below.
+                    match stripCustomModifiers retType with
                     | TypeDefn.Void -> MethodReturnType.Void
-                    | retType -> MethodReturnType.Returns retType
+                    | _ -> MethodReturnType.Returns retType
                 )
             | k -> failwith $"calli: expected a StandaloneSignature metadata token describing the call site, got %O{k}"
 
