@@ -282,6 +282,44 @@ public class Program
         exn.Message |> shouldContainText "parameter"
         exn.Message |> shouldContainText "Program"
 
+    /// `float32` and `float64` are the same type (`F`) on the CLI evaluation stack, but a
+    /// `calli` marshals across a method boundary, where their ABI footprints differ. Reading a
+    /// `float32` return slot as `float64` yields garbage on CoreCLR rather than the target's
+    /// value, so this pun must be refused like the integer ones — otherwise PawPrint invokes
+    /// the target and silently returns the *plausible* answer where the real runtime returns
+    /// nonsense, which is worse than crashing.
+    ///
+    /// Measured on osx-arm64 with a bitmask probe over five puns (short/byte/uint/float
+    /// returns and a signedness-punned parameter): CoreCLR returned 23 and PawPrint 31,
+    /// differing on the float bit alone. That is why only `Single`/`Double` are separated and
+    /// the integer widths and signedness deliberately are not — conflating those matches the
+    /// real runtime, and splitting them would reject calls that work.
+    [<Test>]
+    let ``calli refuses a punned float width at the faulting instruction`` () =
+        let source =
+            """
+public class Program
+{
+    static float Id(float x) => x;
+
+    public static unsafe int Main(string[] args)
+    {
+        delegate*<float, float> p = &Id;
+        double r = ((delegate*<float, double>)p)(1.5f);
+        return r == 1.5 ? 42 : 7;
+    }
+}
+"""
+
+        let exn =
+            Assert.Throws (fun () ->
+                runPawPrintSource "CalliPunnedFloatWidth.cs" source KernelConfig.Default (fun _image _result -> ())
+            )
+
+        exn.Message |> shouldContainText "calli"
+        exn.Message |> shouldContainText "return"
+        exn.Message |> shouldContainText "Program"
+
     [<Test>]
     let ``Unhandled rethrow preserves original throw stack frame`` () =
         let source =

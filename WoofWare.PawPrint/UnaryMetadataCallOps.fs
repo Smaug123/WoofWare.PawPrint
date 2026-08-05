@@ -1109,11 +1109,22 @@ module internal UnaryMetadataCallOps =
         |> IlMachineState.advanceProgramCounter thread
         |> Tuple.withRight WhatWeDid.Executed
 
-    /// The evaluation-stack representation a type occupies (ECMA-335 III.1.1). Signedness and
-    /// sub-`int32` width do not survive the load onto the stack, so a `calli` call site and its
-    /// target may legitimately disagree about those and still describe the same call; what must
-    /// agree is the stack kind, because that is what `callMethod` pops and what the frame
-    /// return pushes.
+    /// How much two types must agree for PawPrint's callee-driven `calli` to reproduce what the
+    /// real runtime does. This starts from the CLI evaluation-stack representation (ECMA-335
+    /// III.1.1) — signedness and sub-`int32` width do not survive the load onto the stack, so a
+    /// call site and its target may disagree about those and still describe the same call — but
+    /// it is *not* simply that model, because a `calli` also crosses a method boundary where the
+    /// ABI footprint matters.
+    ///
+    /// Hence `Float32` and `Float64` are distinguished even though both are `F` on the stack:
+    /// reading a `float32` return slot as `float64` yields garbage on CoreCLR, not the target's
+    /// value, so permitting that pun would make PawPrint silently return the plausible answer
+    /// where the real runtime returns nonsense. The integer widths and signedness are
+    /// deliberately *not* split, because there the two runtimes do agree. Both halves of that
+    /// were measured rather than reasoned about: a bitmask probe over five puns
+    /// (`short`/`byte`/`uint`/`float` returns and a signedness-punned parameter) on osx-arm64
+    /// gave CoreCLR 23 and PawPrint 31 — differing on the float bit alone. Splitting the
+    /// integer cases would reject calls that work today.
     ///
     /// `None` from `calliStackKind` means "not classified" — a non-primitive type, or a generic
     /// parameter left unsubstituted in a raw signature. Those are not compared, so this
@@ -1123,7 +1134,8 @@ module internal UnaryMetadataCallOps =
     type private CalliStackKind =
         | Int32
         | Int64
-        | Float
+        | Float32
+        | Float64
         | NativeInt
         | ObjectRef
 
@@ -1141,8 +1153,9 @@ module internal UnaryMetadataCallOps =
             | PrimitiveType.UInt32 -> Some CalliStackKind.Int32
             | PrimitiveType.Int64
             | PrimitiveType.UInt64 -> Some CalliStackKind.Int64
-            | PrimitiveType.Single
-            | PrimitiveType.Double -> Some CalliStackKind.Float
+            // Separated, unlike the integer widths above: see the type's doc comment.
+            | PrimitiveType.Single -> Some CalliStackKind.Float32
+            | PrimitiveType.Double -> Some CalliStackKind.Float64
             | PrimitiveType.IntPtr
             | PrimitiveType.UIntPtr -> Some CalliStackKind.NativeInt
             | PrimitiveType.String
