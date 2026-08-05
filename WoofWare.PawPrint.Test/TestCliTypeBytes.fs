@@ -1733,3 +1733,27 @@ module TestCliTypeBytes =
         | None ->
             failwith "zeroing a struct holding -0.0 must report a change even when the struct has no byte rendering"
         | Some zeroed -> zeroed |> shouldEqual (CliType.ZeroLike vt)
+
+    [<Test>]
+    let ``Zeroing rejects ranges whose end would overflow`` () : unit =
+        // `offset + count` wraps negative for large inputs, so a guard phrased in terms of the
+        // computed end silently accepts an out-of-range request instead of rejecting it.
+        let value = CliType.Numeric (CliNumericType.Int32 0x11223344)
+
+        (fun () -> CliType.WithZeroedRangeIfChanged System.Int32.MaxValue 2 value |> ignore)
+        |> shouldFail<exn>
+
+        (fun () -> CliType.WithZeroedRangeIfChanged 2 System.Int32.MaxValue value |> ignore)
+        |> shouldFail<exn>
+
+        (fun () -> CliType.WithZeroedRangeIfChanged 0 5 value |> ignore)
+        |> shouldFail<exn>
+
+        (fun () -> CliType.WithZeroedRangeIfChanged -1 1 value |> ignore)
+        |> shouldFail<exn>
+
+        (fun () -> CliType.WithZeroedRangeIfChanged 0 -1 value |> ignore)
+        |> shouldFail<exn>
+
+        // The whole 4-byte range is still legal.
+        CliType.WithZeroedRangeIfChanged 0 4 value |> Option.isSome |> shouldEqual true
