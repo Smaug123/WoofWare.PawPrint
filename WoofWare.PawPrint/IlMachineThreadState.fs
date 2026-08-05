@@ -342,6 +342,7 @@ module IlMachineThreadState =
                 ConcreteTypes = AllConcreteTypes.Empty
                 Logger = logger
                 NextThreadId = 0
+                NextCpuRotation = 0
                 // CallStack = []
                 ManagedHeap = ManagedHeap.empty
                 ThreadState = Map.empty
@@ -370,10 +371,14 @@ module IlMachineThreadState =
     let addThread (newThreadState : MethodState) (state : IlMachineState) : IlMachineState * ThreadId =
         let thread = ThreadId state.NextThreadId
 
+        // Guest-visible, so it takes the next slot in the CPU rotation.
+        let cpu = EmulatedKernel.cpuForRotation state.NextCpuRotation state.Kernel
+
         let newState =
             { state with
                 NextThreadId = state.NextThreadId + 1
-                ThreadState = state.ThreadState |> Map.add thread (ThreadState.New newThreadState)
+                NextCpuRotation = state.NextCpuRotation + 1
+                ThreadState = state.ThreadState |> Map.add thread (ThreadState.New cpu newThreadState)
             }
 
         newState, thread
@@ -402,11 +407,18 @@ module IlMachineThreadState =
                 Status = ThreadStatus.NotStarted
                 IsBackground = false
                 Name = None
+                // Guest-visible, so it takes the next slot in the CPU rotation
+                // — here at construction time, before any `Start`, matching
+                // real .NET's eager `ManagedThreadId` assignment in the `Thread`
+                // constructor. A guest that constructs a thread and never starts
+                // it therefore still consumes a rotation slot.
+                Cpu = EmulatedKernel.cpuForRotation state.NextCpuRotation state.Kernel
             }
 
         let newState =
             { state with
                 NextThreadId = state.NextThreadId + 1
+                NextCpuRotation = state.NextCpuRotation + 1
                 ThreadState = state.ThreadState |> Map.add thread unstartedState
                 ManagedThreadObjects = state.ManagedThreadObjects |> Map.add thread threadAddr
             }
@@ -440,6 +452,13 @@ module IlMachineThreadState =
                 Status = ThreadStatus.Parked
                 IsBackground = false
                 Name = None
+                // Core 0 as a placeholder, and deliberately *not* drawn from
+                // `NextCpuRotation` (which this function must leave alone).
+                // This thread is PawPrint-internal: no guest can name it, so no
+                // guest can call `sched_getcpu` on it. Consuming a rotation slot
+                // here would let the interpreter's own thread bookkeeping shift
+                // which core every subsequently created guest thread lands on.
+                Cpu = CpuId 0
             }
 
         let newState =
@@ -525,6 +544,10 @@ module IlMachineThreadState =
                 Status = ThreadStatus.Parked
                 IsBackground = existing.IsBackground
                 Name = existing.Name
+                // Re-parking is a status transition, not a new thread: the
+                // dispatcher keeps the core it was placed on, exactly as it
+                // keeps its name and background flag.
+                Cpu = existing.Cpu
             }
 
         { state with
@@ -718,7 +741,6 @@ module IlMachineThreadState =
             {
                 Contents = fields
                 ConcreteType = ty
-                SyncBlock = SyncBlock.Empty
             }
 
         let alloc, heap = state.ManagedHeap |> ManagedHeap.allocateNonArray o

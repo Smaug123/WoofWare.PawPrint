@@ -152,6 +152,7 @@ module TestSchedulerPct =
             Status = status
             IsBackground = false
             Name = None
+            Cpu = CpuId 0
         }
 
     let private withThreads (threads : (ThreadId * ThreadStatus) list) (state : IlMachineState) : IlMachineState =
