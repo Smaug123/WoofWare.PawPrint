@@ -618,6 +618,26 @@ type ConstructionState =
     /// `returnStackFrame` fails loudly on a frame that returns still in this state.
     | ConstructingVariableSize
 
+/// What `returnStackFrame` should do with the object a constructor frame was constructing,
+/// once that constructor returns.
+[<RequireQualifiedAccess>]
+type ConstructedObjectDisposition =
+    /// The ordinary `newobj` convention: push the constructed object (or, for value types,
+    /// its now-complete contents) onto the caller's evaluation stack.
+    | PushToCaller
+    /// The runtime synthesised this exception and pushed its ctor frame itself (see
+    /// `IlMachineStateExecution.raiseRuntimeException`). Dispatch the constructed object as
+    /// a managed exception instead of pushing it.
+    ///
+    /// `message`, when present, overwrites `_message` *after* the ctor has run — it must be
+    /// applied post-ctor, because the parameterless ctor sets `_message` to the type's
+    /// default resource string and would otherwise clobber it. Use it where the CLR would
+    /// have called a message-taking ctor overload that PawPrint cannot yet invoke (e.g.
+    /// `IndexOutOfRangeException(SR.IndexOutOfRange_ArrayRankIndex)`); leave it `None` to
+    /// accept the parameterless ctor's default, which is what the CLR produces when it
+    /// throws the exception with no argument.
+    | DispatchAsException of message : string option
+
 type MethodReturnState =
     {
         /// Handle to the caller's frame
@@ -631,10 +651,10 @@ type MethodReturnState =
         /// so that handler lookup sees the call site inside the protected region, even when
         /// the advanced resume PC falls outside it.
         CallSiteIlOpIndex : int
-        /// When true, the constructed object (see `Constructing`) should be dispatched as a
-        /// managed exception on return instead of being pushed onto the caller's eval stack.
-        /// Used by raiseRuntimeException to run exception ctors via the dispatch loop.
-        DispatchAsExceptionOnReturn : bool
+        /// What to do with the constructed object (see `Constructing`) when this frame
+        /// returns. Anything other than `PushToCaller` is set by `raiseRuntimeException`,
+        /// which runs exception ctors via the dispatch loop.
+        ConstructedObjectDisposition : ConstructedObjectDisposition
         /// When true, an exception escaping this frame is wrapped in a fresh
         /// `System.Reflection.TargetInvocationException` whose `_innerException` points at the
         /// original exception object. Used by the `Activator.CreateInstance<T>()` intrinsic to
@@ -863,7 +883,7 @@ and MethodState =
 
             let expectsThis = not method.IsStatic && not isVariableSizeCtorFrame
 
-            let expected = method.Parameters.Length + (if expectsThis then 1 else 0)
+            let expected = MethodInfo.arity method + (if expectsThis then 1 else 0)
 
             if args.Length <> expected then
                 let shape =

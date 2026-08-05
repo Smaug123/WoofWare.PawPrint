@@ -159,7 +159,7 @@ module IntrinsicMethodKeys =
             // As with SequenceEqual, the non-bitwise-equatable fallback bottoms out in the generic
             // SpanHelpers.SequenceEqual<T>, which PawPrint does not yet implement; executing this
             // IL for such a T therefore fails loudly there rather than silently misbehaving.
-            // https://github.com/dotnet/runtime/blob/HEAD/src/libraries/System.Private.CoreLib/src/System/MemoryExtensions.cs#L3561
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/MemoryExtensions.cs#L3561
             pattern
                 "System.Private.CoreLib"
                 "System.MemoryExtensions"
@@ -176,7 +176,7 @@ module IntrinsicMethodKeys =
             // The same caveat applies: for a T where IsBitwiseEquatable is false, the IL falls
             // through to the generic SpanHelpers.SequenceEqual<T>, which PawPrint does not
             // implement, so such a T fails loudly there rather than silently misbehaving.
-            // https://github.com/dotnet/runtime/blob/HEAD/src/libraries/System.Private.CoreLib/src/System/MemoryExtensions.cs#L3601
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/MemoryExtensions.cs#L3601
             pattern
                 "System.Private.CoreLib"
                 "System.MemoryExtensions"
@@ -197,7 +197,7 @@ module IntrinsicMethodKeys =
             // They are therefore reachable only from assemblies built by an older compiler (or
             // another language), which PawPrint can be pointed at but the pure-source test
             // harness cannot produce; hence no end-to-end coverage for these two specifically.
-            // https://github.com/dotnet/runtime/blob/HEAD/src/libraries/System.Private.CoreLib/src/System/MemoryExtensions.cs#L3553
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/MemoryExtensions.cs#L3553-L3554
             pattern
                 "System.Private.CoreLib"
                 "System.MemoryExtensions"
@@ -206,7 +206,7 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Exact "System.Span`1"
                     IntrinsicParameterPattern.Exact "System.ReadOnlySpan`1"
                 ]
-            // https://github.com/dotnet/runtime/blob/HEAD/src/libraries/System.Private.CoreLib/src/System/MemoryExtensions.cs#L3593
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/MemoryExtensions.cs#L3593-L3594
             pattern
                 "System.Private.CoreLib"
                 "System.MemoryExtensions"
@@ -278,7 +278,8 @@ module IntrinsicMethodKeys =
             // to the Value getter which reads RuntimeType.m_handle, a field PawPrint already
             // populates with NativeIntSource.TypeHandlePtr. Executing the IL is safe and
             // round-trips through the existing TypeHandle representation.
-            // https://github.com/dotnet/runtime/blob/HEAD/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L43-L44
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L80-L81
+            // (the `Value` getter it delegates to is at L103.)
             pattern
                 "System.Private.CoreLib"
                 "System.RuntimeTypeHandle"
@@ -450,6 +451,37 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Exact "System.Int32"
                 ]
             pattern "System.Private.CoreLib" "System.Span`1" "ToArray" []
+            // IL body is `ldarg.0; ldfld _reference; ldarg.0; ldfld _length; conv.u; ldarg.1;
+            // call SpanHelpers::Fill<T>` — pure field reads plus the helper allowlisted below.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Span.cs#L310-L313
+            pattern "System.Private.CoreLib" "System.Span`1" "Fill" [ IntrinsicParameterPattern.Any ]
+            // `SpanHelpers.Fill<T>(ref T, nuint, T)` opens with a vectorised fast path, but
+            // PawPrint emulates a deterministic scalar CPU: `Vector.IsHardwareAccelerated` folds
+            // to false (see `vectorAccelerationAvailable`), which is the second of the four
+            // guards and jumps straight to `CannotVectorize`. The later guards — and every
+            // `Vector<byte>`/`Vector256`/`Vector512` construction — are therefore never
+            // evaluated. A reference-containing T leaves even earlier, at the
+            // `RuntimeHelpers.IsReferenceOrContainsReferences<T>` guard, which is implemented.
+            //
+            // `CannotVectorize` is an unrolled scalar loop of `Unsafe.Add(ref refData, i) = value`
+            // writes in blocks of 8/4/2/1 — only modelled boundaries, and no P/Invoke. That is
+            // what distinguishes this from the sibling `Span<T>.Clear`, which is implemented
+            // natively in `Intrinsics.fs` precisely because its IL bottoms out in
+            // `SpanHelpers.ClearWithoutReferences`' P/Invoke fallback.
+            //
+            // Should PawPrint ever report SIMD as accelerated, this IL would start walking into
+            // the vector path and fail loudly there rather than silently misbehaving.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/SpanHelpers.T.cs#L15-L189
+            // (guards at L23-L26; `CannotVectorize:` at L138.)
+            pattern
+                "System.Private.CoreLib"
+                "System.SpanHelpers"
+                "Fill"
+                [
+                    IntrinsicParameterPattern.Byref
+                    IntrinsicParameterPattern.Exact "System.UIntPtr"
+                    IntrinsicParameterPattern.Any
+                ]
             // Same IL body as ReadOnlySpan<T>.GetPinnableReference above.
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/Span.cs#L282
             pattern "System.Private.CoreLib" "System.Span`1" "GetPinnableReference" []

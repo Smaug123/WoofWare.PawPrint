@@ -997,7 +997,7 @@ module IlMachineStateExecution =
         (thread : ThreadId)
         (threadState : ThreadState)
         (callSiteIlOpIndexOverride : int option)
-        (dispatchAsExceptionOnReturn : bool)
+        (constructedObjectDisposition : ConstructedObjectDisposition)
         (wrapExceptionInTargetInvocation : bool)
         (state : IlMachineState)
         : IlMachineState
@@ -1024,7 +1024,7 @@ module IlMachineStateExecution =
                 let callingObj =
                     match
                         activeMethodState.EvaluationStack
-                        |> EvalStack.PeekNthFromTop methodToCall.Parameters.Length
+                        |> EvalStack.PeekNthFromTop (MethodInfo.arity methodToCall)
                     with
                     | None -> failwith "unexpectedly no `this` on the eval stack of instance method"
                     | Some this -> this
@@ -1133,7 +1133,8 @@ module IlMachineStateExecution =
         // implement the high-level intrinsic semantics directly: for a value type T, push `default(T)`
         // (skipping any explicit parameterless struct ctor for now — see TODO); for a reference type T,
         // allocate the object and run its parameterless ctor by recursing through `callMethod`.
-        // See https://github.com/dotnet/runtime/blob/HEAD/src/coreclr/System.Private.CoreLib/src/System/Activator.RuntimeType.cs#L138
+        // See https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Activator.RuntimeType.cs#L137-L160
+        // (`CreateInstanceOfT` and `CallDefaultStructConstructor` are RuntimeType.CoreCLR.cs#L4028 and #L4056.)
         //
         // Exception wrapping:
         //  - CoreCLR's `CreateInstanceOfT` wraps any exception thrown by the recursed ctor in a
@@ -1189,7 +1190,7 @@ module IlMachineStateExecution =
                     | Some typeDef ->
                         let hasExplicitParameterlessCtor =
                             typeDef.Methods
-                            |> List.exists (fun m -> m.Name = ".ctor" && not m.IsStatic && m.Parameters.IsEmpty)
+                            |> List.exists (fun m -> m.Name = ".ctor" && not m.IsStatic && MethodInfo.arity m = 0)
 
                         if hasExplicitParameterlessCtor then
                             failwith
@@ -1242,7 +1243,9 @@ module IlMachineStateExecution =
 
                 let ctor =
                     typeDef.Methods
-                    |> List.tryFind (fun m -> m.Name = ".ctor" && not m.IsStatic && m.Parameters.IsEmpty && isPublic m)
+                    |> List.tryFind (fun m ->
+                        m.Name = ".ctor" && not m.IsStatic && MethodInfo.arity m = 0 && isPublic m
+                    )
 
                 match ctor with
                 | None ->
@@ -1251,7 +1254,7 @@ module IlMachineStateExecution =
                     let hasNonPublicParameterless =
                         typeDef.Methods
                         |> List.exists (fun m ->
-                            m.Name = ".ctor" && not m.IsStatic && m.Parameters.IsEmpty && not (isPublic m)
+                            m.Name = ".ctor" && not m.IsStatic && MethodInfo.arity m = 0 && not (isPublic m)
                         )
 
                     let reason =
@@ -1362,7 +1365,7 @@ module IlMachineStateExecution =
                         thread
                         threadState
                         None
-                        false
+                        ConstructedObjectDisposition.PushToCaller
                         true // wrapExceptionInTargetInvocation: mirror CreateInstanceOfT
                         state
                     |> Some
@@ -1407,8 +1410,20 @@ module IlMachineStateExecution =
                 | None ->
 
                 match Intrinsics.call loggerFactory baseClassTypes wasConstructing methodToCall thread state with
-                | Some result -> Some result
-                | None ->
+                | IntrinsicResult.Completed result -> Some result
+                | IntrinsicResult.RaiseException (state, exnType, message) ->
+                    // The intrinsic described an exception rather than raising it, because it
+                    // cannot see `raiseRuntimeException` (compile order) and because raising it
+                    // here is what makes an *unhandled* one expressible: `raiseRuntimeException`
+                    // defers dispatch to the ctor's `Ret`, which can report
+                    // `ExecutionResult.UnhandledException`. The intrinsic has deliberately not
+                    // advanced the PC, so dispatch sees the faulting instruction's offset.
+                    // `WhatWeDid` is always `Executed` here — the ctor frame is now the active
+                    // frame, exactly as for an opcode-manufactured exception.
+                    raiseRuntimeExceptionWithMessage loggerFactory baseClassTypes exnType message thread state
+                    |> fst
+                    |> Some
+                | IntrinsicResult.Unrecognised ->
                     failwith
                         $"TODO: implement JIT intrinsic %s{Intrinsics.formatMethodKey intrinsicKey}, or add it to safeIntrinsics after reviewing its IL"
             else
@@ -1459,10 +1474,10 @@ module IlMachineStateExecution =
         // variable-size constructors, which CoreCLR calls with no `this` at all (see
         // `ConstructionState.ConstructingVariableSize`).
         let popDeclaredParametersOnly () =
-            let args = ImmutableArray.CreateBuilder methodToCall.Parameters.Length
+            let args = ImmutableArray.CreateBuilder (MethodInfo.arity methodToCall)
             let mutable currentState = activeMethodState
 
-            for i = methodToCall.Parameters.Length - 1 downto 0 do
+            for i = MethodInfo.arity methodToCall - 1 downto 0 do
                 let arg, newState = popAndCoerceArg argZeroObjects.[i] currentState
                 args.Add arg
                 currentState <- newState
@@ -1485,7 +1500,7 @@ module IlMachineStateExecution =
                 popDeclaredParametersOnly ()
             | ConstructionState.Constructing _ ->
                 // Instance method: handle `this` pointer
-                let argCount = methodToCall.Parameters.Length
+                let argCount = MethodInfo.arity methodToCall
                 let args = ImmutableArray.CreateBuilder (argCount + 1)
                 let mutable currentState = activeMethodState
                 let thisArgTarget = thisArgCoercionTarget methodToCall
@@ -1507,7 +1522,7 @@ module IlMachineStateExecution =
                 args.ToImmutable (), currentState
             | ConstructionState.NotConstructing ->
                 // Instance method: handle `this` pointer
-                let argCount = methodToCall.Parameters.Length
+                let argCount = MethodInfo.arity methodToCall
                 let args = ImmutableArray.CreateBuilder (argCount + 1)
                 let mutable currentState = activeMethodState
                 let thisArgTarget = thisArgCoercionTarget methodToCall
@@ -1548,7 +1563,7 @@ module IlMachineStateExecution =
                         WasInitialisingType = wasInitialising
                         Constructing = wasConstructing
                         CallSiteIlOpIndex = callSiteIlOpIndexOverride |> Option.defaultValue afterPop.IlOpIndex
-                        DispatchAsExceptionOnReturn = dispatchAsExceptionOnReturn
+                        ConstructedObjectDisposition = constructedObjectDisposition
                         WrapExceptionInTargetInvocation = wrapExceptionInTargetInvocation
                     }
 
@@ -1669,7 +1684,7 @@ module IlMachineStateExecution =
             // Find the class constructor (.cctor) if it exists
             let cctor =
                 typeDef.Methods
-                |> List.tryFind (fun method -> method.Name = ".cctor" && method.IsStatic && method.Parameters.IsEmpty)
+                |> List.tryFind (fun method -> method.Name = ".cctor" && method.IsStatic && MethodInfo.arity method = 0)
 
             match cctor with
             | Some cctorMethod ->
@@ -1758,7 +1773,7 @@ module IlMachineStateExecution =
                     currentThread
                     currentThreadState
                     None
-                    false
+                    ConstructedObjectDisposition.PushToCaller
                     false // wrapExceptionInTargetInvocation
                     state
                 |> FirstLoadThis
@@ -1827,10 +1842,20 @@ module IlMachineStateExecution =
     /// EEException::CreateThrowable path: allocate the object directly, call the default
     /// instance ctor, then overwrite HResult.
     /// See: https://github.com/dotnet/dotnet/blob/10060d128e3f470e77265f8490f5e4f72dae738e/src/runtime/src/coreclr/vm/clrex.cpp#L972-L1019
-    let raiseRuntimeException
+    ///
+    /// `message` overrides `_message` once the ctor has run, for the cases where the CLR
+    /// would have used a message-taking ctor overload. Most callers want `None` — the CLR
+    /// throws the great majority of these with no argument — and should use
+    /// `raiseRuntimeException` below, which is this function with `None` supplied.
+    ///
+    /// This is part of the `callMethod` recursion group only because it needs to call
+    /// `callMethod` to run the ctor, and `callMethod` needs to call it to service
+    /// `IntrinsicResult.RaiseException`.
+    and raiseRuntimeExceptionWithMessage
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (exceptionTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        (message : string option)
         (currentThread : ThreadId)
         (state : IlMachineState)
         : IlMachineState * WhatWeDid
@@ -1851,7 +1876,7 @@ module IlMachineStateExecution =
 
         let ctor =
             typeDef.Methods
-            |> List.tryFind (fun method -> method.Name = ".ctor" && not method.IsStatic && method.Parameters.IsEmpty)
+            |> List.tryFind (fun method -> method.Name = ".ctor" && not method.IsStatic && MethodInfo.arity method = 0)
             |> Option.defaultWith (fun () ->
                 failwith
                     $"raiseRuntimeException: no parameterless .ctor found on %s{exceptionTypeInfo.Namespace}.%s{exceptionTypeInfo.Name}"
@@ -1898,10 +1923,24 @@ module IlMachineStateExecution =
             currentThread
             threadState
             None
-            true // dispatchAsExceptionOnReturn
+            (ConstructedObjectDisposition.DispatchAsException message)
             false // wrapExceptionInTargetInvocation
             state,
         WhatWeDid.Executed
+
+    /// `raiseRuntimeExceptionWithMessage` with no message override, i.e. the exception is
+    /// constructed exactly as `new SomeException()` would construct it. This is the right
+    /// entry point wherever the CLR throws the exception with no argument, which is almost
+    /// everywhere the runtime manufactures one.
+    and raiseRuntimeException
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (exceptionTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        (currentThread : ThreadId)
+        (state : IlMachineState)
+        : IlMachineState * WhatWeDid
+        =
+        raiseRuntimeExceptionWithMessage loggerFactory baseClassTypes exceptionTypeInfo None currentThread state
 
     /// Result of the ECMA-335 III.4.x runtime array-store variance gate.
     [<RequireQualifiedAccess>]

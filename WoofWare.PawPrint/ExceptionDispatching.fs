@@ -836,6 +836,8 @@ module ExceptionDispatching =
             ExceptionHResults.lookup "System.ArgumentException"
         elif id = baseClassTypes.ArgumentNullException.Identity then
             ExceptionHResults.lookup "System.ArgumentNullException"
+        elif id = baseClassTypes.NotSupportedException.Identity then
+            ExceptionHResults.lookup "System.NotSupportedException"
         else
             ExceptionHResults.corEException
 

@@ -97,7 +97,14 @@ module TestFSharpPureCases =
         publishOnce.Force ()
         File.ReadAllBytes dllPath
 
-    let testCases : string list = [ "Placeholder" ; "CeqBranch" ; "TailCall" ]
+    let testCases : string list =
+        [
+            "Placeholder"
+            "CeqBranch"
+            "TailCall"
+            "AbstractDispatch"
+            "ByrefDispatch"
+        ]
 
     // PawPrint cannot yet allocate string argv (Program.allocateArgs is unimplemented),
     // so all F# test cases that require argv dispatch are unimplemented for now.
@@ -108,9 +115,20 @@ module TestFSharpPureCases =
     // mechanism. Add a case here only when the throw is the intended observable.
     let expectsUnhandledException : Set<string> = Set.empty
 
+    // F# test cases whose successful exit code is not 0 — same mechanism as
+    // `customExitCodes` in TestPureCases.fs. `AbstractDispatch` returns the sum computed by
+    // its `Combine` call (see issue #693: 40 + 2 = 42) rather than a boolean success/failure
+    // code, so a wrong dispatch is directly observable as a wrong number rather than being
+    // laundered through an if/else into 0-or-1.
+    let customExitCodes : Map<string, int> =
+        [ "AbstractDispatch", 42 ; "ByrefDispatch", 42 ] |> Map.ofList
+
     let private runTest (testCaseName : string) : unit =
         let image = loadImage ()
         let messages, loggerFactory = LoggerFactory.makeTest ()
+
+        let expectedExitCode =
+            customExitCodes |> Map.tryFind testCaseName |> Option.defaultValue 0
 
         let dotnetRuntimes =
             seq {
@@ -136,7 +154,7 @@ module TestFSharpPureCases =
 
             match realResult, pawPrintResult with
             | RealRuntimeResult.NormalExit exitCode, RunOutcome.NormalExit (terminalState, terminatingThread) ->
-                exitCode |> shouldEqual 0
+                exitCode |> shouldEqual expectedExitCode
 
                 let pawPrintExitCode =
                     match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
@@ -222,11 +240,86 @@ module TestFSharpPureCases =
         // reached from `TailCall.main`, so the end-to-end case really executes the prefix.
         tailPrefixed |> shouldEqual (Set.ofList [ "isEven" ; "isOdd" ; "applyTail" ])
 
+    /// The `AbstractDispatch` case only exercises issue #693 if FSC actually emits the
+    /// abstract `Combine` declaration with zero Param-table rows despite its signature
+    /// declaring one parameter. Without this guard, a compiler change that started emitting
+    /// a Param row for the abstract declaration would leave `F# pure tests(AbstractDispatch)`
+    /// silently passing while covering nothing — `Parameters.Length` would then agree with
+    /// the true arity, and the bug this test exists to catch could regress unnoticed.
+    /// If this fails, re-inspect the metadata (`dotnet run --project WoofWare.PawPrint.IlDump
+    /// -- <published dll> Base Combine`) and reshape AbstractDispatch.fs until the shape
+    /// comes back.
+    [<Test>]
+    let ``AbstractDispatch's abstract Combine really does have zero Param rows`` () : unit =
+        let image = loadImage ()
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+        use peImage = new MemoryStream (image)
+
+        let assy = Assembly.read loggerFactory (Some dllPath) peImage
+
+        let combine =
+            assy.TypeDefs.Values
+            |> Seq.collect (fun typeInfo -> typeInfo.Methods)
+            |> Seq.filter (fun methodInfo -> methodInfo.DeclaringType.Name = "Base" && methodInfo.Name = "Combine")
+            |> Seq.toList
+            |> function
+                | [ m ] -> m
+                | [] -> failwith "AbstractDispatch.Base::Combine not found in the published assembly"
+                | ms -> failwith $"expected exactly one AbstractDispatch.Base::Combine, found %d{List.length ms}"
+
+        (match combine.Body with
+         | MethodBody.Abstract -> ()
+         | other -> failwith $"expected AbstractDispatch.Base::Combine to be MethodBody.Abstract, got %O{other}")
+
+        combine.Parameters.IsEmpty |> shouldEqual true
+        MethodInfo.arity combine |> shouldEqual 1
+
+    /// Regression guard for issue #692, mirroring the `AbstractDispatch` guard above. #692's
+    /// real-world trigger (FSharp.Core's `MapEnumerator`1::DoMoveNext(byref<T>)`) is an
+    /// abstract method with a *byref* parameter; this asserts `ByrefDispatch.fs` reproduces
+    /// that same zero-Param-rows-but-nonzero-arity shape, and specifically that the one
+    /// parameter is a byref. Without this guard, a compiler change that started emitting a
+    /// Param row for the abstract declaration (or stopped modelling the parameter as a byref)
+    /// would leave `F# pure tests(ByrefDispatch)` silently passing while covering nothing.
+    [<Test>]
+    let ``ByrefDispatch's abstract Bump really does have zero Param rows and a byref parameter`` () : unit =
+        let image = loadImage ()
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+        use peImage = new MemoryStream (image)
+
+        let assy = Assembly.read loggerFactory (Some dllPath) peImage
+
+        let bump =
+            assy.TypeDefs.Values
+            |> Seq.collect (fun typeInfo -> typeInfo.Methods)
+            |> Seq.filter (fun methodInfo -> methodInfo.DeclaringType.Name = "Base" && methodInfo.Name = "Bump")
+            |> Seq.toList
+            |> function
+                | [ m ] -> m
+                | [] -> failwith "ByrefDispatch.Base::Bump not found in the published assembly"
+                | ms -> failwith $"expected exactly one ByrefDispatch.Base::Bump, found %d{List.length ms}"
+
+        (match bump.Body with
+         | MethodBody.Abstract -> ()
+         | other -> failwith $"expected ByrefDispatch.Base::Bump to be MethodBody.Abstract, got %O{other}")
+
+        bump.Parameters.IsEmpty |> shouldEqual true
+        MethodInfo.arity bump |> shouldEqual 1
+
+        (match bump.Signature.ParameterTypes.[0] with
+         | TypeDefn.Byref _ -> ()
+         | other -> failwith $"expected ByrefDispatch.Base::Bump's sole parameter to be a byref, got %O{other}")
+
     [<TestCaseSource(nameof unimplemented)>]
     let ``Unimplemented F# tests have correct real-runtime behaviour`` (testCaseName : string) =
         let image = loadImage ()
 
+        let expectedExitCode =
+            customExitCodes |> Map.tryFind testCaseName |> Option.defaultValue 0
+
         match RealRuntime.executeWithRealRuntime [| testCaseName |] image with
-        | RealRuntimeResult.NormalExit exitCode -> exitCode |> shouldEqual 0
+        | RealRuntimeResult.NormalExit exitCode -> exitCode |> shouldEqual expectedExitCode
         | RealRuntimeResult.UnhandledException exn ->
             failwith $"Real runtime threw unhandled %s{exn.GetType().Name} for %s{testCaseName}: %s{exn.Message}"

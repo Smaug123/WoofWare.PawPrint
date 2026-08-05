@@ -1139,11 +1139,19 @@ module NullaryIlOp =
             match IlMachineState.returnStackFrame loggerFactory corelib currentThread state with
             | ReturnFrameResult.NoFrameToReturn -> ExecutionResult.Terminated (state, currentThread)
             | ReturnFrameResult.NormalReturn state -> (state, WhatWeDid.Executed) |> ExecutionResult.stepped
-            | ReturnFrameResult.DispatchException (state, exnAddr, exnType) ->
+            | ReturnFrameResult.DispatchException (state, exnAddr, exnType, message) ->
                 // The ctor has run; now overwrite _HResult with the CLR's mapped value,
                 // matching EEException::CreateThrowable's SetHResult(GetHR()) post-ctor step.
                 let state =
                     ExceptionDispatching.overwriteHResultPostCtor corelib exnAddr exnType state
+
+                // The raiser asked for a specific message, i.e. the CLR would have used a
+                // message-taking ctor overload here. This has to happen after the ctor, which
+                // has just written the type's default resource string into `_message`.
+                let state =
+                    match message with
+                    | None -> state
+                    | Some message -> IlMachineState.setExceptionMessage loggerFactory corelib exnAddr message state
 
                 match
                     ExceptionDispatching.throwExceptionObject loggerFactory corelib state currentThread exnAddr exnType
@@ -2413,11 +2421,43 @@ module NullaryIlOp =
 
             let referenced =
                 match addr with
-                | EvalStackValue.ManagedPointer src -> IlMachineState.readManagedByref corelib state src
+                | EvalStackValue.ManagedPointer src
+                | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer src) ->
+                    // ECMA-335 III.3.44 allows `ldind.ref`'s address operand to
+                    // be `native int` as well as `&`: a byref widened by
+                    // `conv.i`/`conv.u` (e.g. real CoreLib's
+                    // `Task.FromResult<TResult>`, which reinterprets a cached
+                    // `Task<bool>`/`Task<int>` as `Task<TResult>` via
+                    // `ldloca.s; conv.u; ldind.ref`) is still logically the
+                    // same address, so it must dereference identically to the
+                    // `&`-typed spelling. `Stind_ref` immediately below
+                    // already treats both spellings identically for exactly
+                    // this reason; this mirrors it.
+                    //
+                    // Both spellings route through `readManagedByref` rather
+                    // than the byte-view `readManagedByrefBytesAs` that the
+                    // generic `ldind` uses for primitives. That split is
+                    // deliberate, not an oversight: `readManagedByref` already
+                    // contains the correct byte-view-vs-structural dispatch
+                    // for object references (including the `ReinterpretAs`
+                    // zero-offset elision that the Task<T> pattern above
+                    // exercises when a projection chain is present), and
+                    // object references are not byte-addressable in
+                    // PawPrint's value model (`CliType.OfBytesLike` has no
+                    // case for `CliType.ObjectRef`). Pointers that are purely
+                    // byte-addressable storage (stack-allocated or native
+                    // memory with no typed cell at the target offset) have no
+                    // way to hold a real object reference in this model
+                    // either, and `readManagedByref` already fails loudly and
+                    // specifically for that shape (e.g. "has no typed cell
+                    // here; needs a byte-view byref shape") rather than
+                    // routing through a byte reconstruction that would
+                    // silently do the wrong thing.
+                    IlMachineState.readManagedByref corelib state src
                 | EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr handle) ->
                     GcHandleRegistry.target handle state.GcHandles |> CliType.ObjectRef
                 | EvalStackValue.NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
-                | a -> failwith $"TODO: {a}"
+                | a -> failwith $"TODO: Ldind_ref on unsupported eval stack value {a}"
 
             let state =
                 match referenced with

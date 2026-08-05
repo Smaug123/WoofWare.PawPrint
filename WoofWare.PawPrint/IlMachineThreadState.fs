@@ -200,7 +200,9 @@ module IlMachineThreadState =
                 failwith
                     $"Synthetic stack frame %s{threadStateWithSyntheticFrame.MethodState.ExecutingMethod.Name} unexpectedly represented object construction"
             | ConstructionState.NotConstructing ->
-                if returnState.DispatchAsExceptionOnReturn then
+                match returnState.ConstructedObjectDisposition with
+                | ConstructedObjectDisposition.PushToCaller -> ()
+                | ConstructedObjectDisposition.DispatchAsException _ ->
                     failwith
                         $"Synthetic stack frame %s{threadStateWithSyntheticFrame.MethodState.ExecutingMethod.Name} unexpectedly requested exception dispatch on return"
 
@@ -273,13 +275,14 @@ module IlMachineThreadState =
             failwith
                 $"Variable-size constructor %s{returningMethodState.ExecutingMethod.Name} returned without supplying a constructed object; it must call IlMachineState.withSuppliedConstructedObject before returning"
         | ConstructionState.Constructing constructing ->
-            if returnState.DispatchAsExceptionOnReturn then
+            match returnState.ConstructedObjectDisposition with
+            | ConstructedObjectDisposition.DispatchAsException message ->
                 // This ctor was constructing a runtime-synthesised exception object.
                 // Don't push it onto the eval stack; signal to the caller that exception
                 // dispatch should occur.
                 let constructed = state.ManagedHeap.NonArrayObjects.[constructing]
-                ReturnFrameResult.DispatchException (state, constructing, constructed.ConcreteType)
-            else
+                ReturnFrameResult.DispatchException (state, constructing, constructed.ConcreteType, message)
+            | ConstructedObjectDisposition.PushToCaller ->
 
             // Assumption: a constructor can't also return a value.
             // If we were constructing a reference type, we push a reference to it.
