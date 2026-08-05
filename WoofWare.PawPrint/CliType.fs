@@ -416,10 +416,18 @@ type CliType =
         match CliType.ByteAddressability before, CliType.ByteAddressability after with
         | CliByteAddressability.ByteAddressable, CliByteAddressability.ByteAddressable ->
             CliType.ToBytes before <> CliType.ToBytes after
-        // No byte rendering on at least one side. Structural inequality can over-report — two
-        // values identical in memory may differ in field write-timestamp bookkeeping — but it
-        // never under-reports, and the caller's only use of a false "changed" is one redundant
-        // write of an identical value.
+        // No byte rendering on at least one side, so descend instead of comparing the whole
+        // thing: a struct can be unrenderable because of a *pointer* field while also holding a
+        // `-0.0` float, and comparing the aggregates structurally would hit exactly the IEEE
+        // trap this function exists to avoid. Each field is judged by the same rule, so
+        // byte-renderable subfields still get the byte comparison.
+        | _ ->
+
+        match before, after with
+        | CliType.ValueType b, CliType.ValueType a -> CliValueType.ZeroingChangedAnything b a
+        // Structural inequality can over-report here — two values identical in memory may
+        // differ in field write-timestamp bookkeeping — but it never under-reports, and the
+        // only cost of a false "changed" is one redundant write of an identical value.
         | _ -> before <> after
 
     static member WithZeroedRangeIfChanged (offset : int) (count : int) (value : CliType) : CliType option =
@@ -953,6 +961,34 @@ and CliValueType =
     /// and the next timestamp explicitly; changed writes use the existing value as the
     /// shape/provenance template and intentionally canonicalise overlapping-field replay order
     /// the same way `OfBytesLike` does.
+    /// Field-wise counterpart of `CliType.ZeroingChangedAnything`, for aggregates that have no
+    /// byte rendering of their own. Any structural difference other than in the field values
+    /// (different declared type, different storage form, different field set) counts as a
+    /// change; matching fields are compared by the same rule, so a `-0.0` buried inside an
+    /// otherwise unrenderable struct is still seen as differing from `0.0`.
+    static member internal ZeroingChangedAnything (before : CliValueType) (after : CliValueType) : bool =
+        if before._Declared <> after._Declared then
+            true
+        else
+
+        match before._Storage, after._Storage with
+        | CliValueTypeStorage.RawBytes b, CliValueTypeStorage.RawBytes a -> b <> a
+        | CliValueTypeStorage.Fields b, CliValueTypeStorage.Fields a ->
+            if b.Fields.Length <> a.Fields.Length || b.PreservedBytes <> a.PreservedBytes then
+                true
+            else
+                List.exists2
+                    (fun (x : CliConcreteField) (y : CliConcreteField) ->
+                        x.Offset <> y.Offset
+                        || x.Size <> y.Size
+                        || not (FieldId.exactlyEqual x.Id y.Id)
+                        || CliType.ZeroingChangedAnything x.Contents y.Contents
+                    )
+                    b.Fields
+                    a.Fields
+        | CliValueTypeStorage.RawBytes _, CliValueTypeStorage.Fields _
+        | CliValueTypeStorage.Fields _, CliValueTypeStorage.RawBytes _ -> true
+
     /// Zero the byte range `[offset, offset + count)`. See `CliType.WithZeroedRangeIfChanged`.
     ///
     /// Walks fields structurally rather than going through `ToBytes`, which is the whole point:
@@ -987,7 +1023,6 @@ and CliValueType =
                         _Storage = CliValueTypeStorage.RawBytes updated
                     }
         | CliValueTypeStorage.Fields storage ->
-            let mutable nextTimestamp = cvt.NextTimestamp
             let mutable changed = false
 
             let updatedFields =
@@ -1024,21 +1059,32 @@ and CliValueType =
                     | None -> field
                     | Some contents ->
                         changed <- true
-                        let timestamp = nextTimestamp
-                        nextTimestamp <- nextTimestamp + 1UL
 
+                        // `EditedAtTime` is deliberately left alone. `ToBytes` replays
+                        // overlapping fields in timestamp order, so promoting a field to
+                        // "newest" changes who wins on *every* byte it covers — including the
+                        // bytes outside the requested range, when the field only partially
+                        // overlaps that range. A nested 16-byte field aliased by a newer 8-byte
+                        // field over its upper half is enough to show it: zeroing the lower
+                        // half would otherwise let the nested field's stale upper half
+                        // overwrite the alias, changing memory this call was never asked to
+                        // touch.
+                        //
+                        // Keeping the original order is safe in both directions. Inside the
+                        // range every intersecting field has had its covered bytes zeroed, so
+                        // whichever wins writes zeros; outside it, the order is exactly what it
+                        // was, so the bytes are exactly what they were.
                         { field with
                             Contents = contents
-                            EditedAtTime = timestamp
                         }
                 )
 
             // The preserved image is a full-size copy of the whole byte image, not just the
             // unrepresented parts, so zeroing the covered range of it does more work than is
-            // strictly needed: `ToBytes` overlays the (freshly timestamped) fields back on top,
-            // making the field-covered bytes redundant. It is the sole source of truth for
-            // *padding* within the range, though, and real memory zeroing clears padding too —
-            // so leaving it alone would report stale padding for a cleared range.
+            // strictly needed: `ToBytes` overlays the fields back on top, making the
+            // field-covered bytes redundant. It is the sole source of truth for *padding*
+            // within the range, though, and real memory zeroing clears padding too — so
+            // leaving it alone would report stale padding for a cleared range.
             let updatedPreserved = Array.copy storage.PreservedBytes
 
             for i = offset to rangeEnd - 1 do
@@ -1057,7 +1103,6 @@ and CliValueType =
                                     Fields = updatedFields
                                     PreservedBytes = updatedPreserved
                                 }
-                        NextTimestamp = nextTimestamp
                     }
 
     static member WithBytesAtIfChanged (offset : int) (bytes : byte[]) (cvt : CliValueType) : CliValueType option =
