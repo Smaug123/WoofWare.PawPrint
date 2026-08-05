@@ -718,7 +718,6 @@ module IlMachineThreadState =
             {
                 Contents = fields
                 ConcreteType = ty
-                SyncBlock = SyncBlock.Empty
             }
 
         let alloc, heap = state.ManagedHeap |> ManagedHeap.allocateNonArray o

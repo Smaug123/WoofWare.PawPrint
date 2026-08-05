@@ -24,11 +24,63 @@ module NativeRuntimeMethodHandle =
     let isGenericMethodDefinition (methodGenericParamCount : int) (handleInstantiationCount : int) : bool =
         methodGenericParamCount > 0 && handleInstantiationCount = 0
 
-    let private resolveMethodInfoFromHandleArg
+    /// The instantiation CoreCLR's `MethodDesc::LoadMethodInstantiation` (method.cpp:793) reports
+    /// for a method, expressed over PawPrint's representation so it can be pinned independently of
+    /// the QCall plumbing. The two counts are exactly the ones `isGenericMethodDefinition` above
+    /// consumes, and the three arms line up with `MethodDesc::GetMethodInstantiation`
+    /// (method.hpp:3787):
+    ///  - a non-generic method is never `mcInstantiated`, so its instantiation is empty;
+    ///  - a *generic method definition* (the typical form: the method declares type parameters but
+    ///    this handle binds none) reports its own type variables, i.e. `[T]` for `void Foo&lt;T&gt;()`.
+    ///    This is not an empty list: `IMD_GetMethodInstantiation` (method.hpp:3531) returns the
+    ///    typical instantiation's `TypeVarTypeDesc`s;
+    ///  - an instantiated generic method reports the type arguments bound to the handle.
+    ///
+    /// <c>declaringType</c> is the *uninstantiated* metadata identity of the type that declares the
+    /// method, which is what <c>RuntimeTypeHandleTarget.MethodGenericParameter</c> carries (a
+    /// <c>ResolvedTypeIdentity</c> has no room for an instantiation). That is not a lossy shortcut:
+    /// CoreCLR canonicalises the same way, redirecting any non-typical generic method definition to
+    /// <c>LoadTypicalMethodDefinition()->GetMethodInstantiation()</c> (method.cpp:803-806), so a
+    /// method's type variables are reported against the typical declaring type however the handle
+    /// was reached.
+    let methodInstantiationTargets
+        (operation : string)
+        (declaringType : ResolvedTypeIdentity)
+        (methodDefinition : ComparableMethodDefinitionHandle)
+        (methodGenericParamCount : int)
+        (handleInstantiation : ConcreteTypeHandle list)
+        : RuntimeTypeHandleTarget list
+        =
+        if methodGenericParamCount < 0 then
+            failwith
+                $"%s{operation}: method %O{methodDefinition.Get} reported a negative generic-parameter count %d{methodGenericParamCount}"
+
+        match handleInstantiation with
+        | [] ->
+            if isGenericMethodDefinition methodGenericParamCount 0 then
+                List.init
+                    methodGenericParamCount
+                    (fun position ->
+                        RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, methodDefinition, position)
+                    )
+            else
+                []
+        | _ ->
+            // A bound handle must bind exactly as many arguments as the method declares. A
+            // mismatch means the registry and the metadata disagree about the same method, which
+            // would silently produce a wrong-length `RuntimeType[]`; refuse instead.
+            if List.length handleInstantiation <> methodGenericParamCount then
+                failwith
+                    $"%s{operation}: method %O{methodDefinition.Get} on %O{declaringType.TypeDefinition.Get} declares %d{methodGenericParamCount} generic parameters but its handle binds %d{List.length handleInstantiation} type arguments"
+
+            handleInstantiation |> List.map RuntimeTypeHandleTarget.Closed
+
+    /// Resolve a `RuntimeMethodHandleInternal` argument to the `MethodHandle` it denotes.
+    let private resolveMethodHandleFromArg
         (operation : string)
         (state : IlMachineState)
         (arg : CliType)
-        : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>
+        : MethodHandle
         =
         // CoreCLR's RuntimeMethodHandle FCalls dereference the MethodDesc* directly and
         // assert non-null; PawPrint's existing callers never yield a null handle, so we
@@ -37,12 +89,18 @@ module NativeRuntimeMethodHandle =
             NativeCall.methodHandleIdOfRuntimeMethodHandleInternal operation arg
             |> Option.defaultWith (fun () -> failwith $"%s{operation}: null RuntimeMethodHandleInternal")
 
-        let methodHandle =
-            MethodHandleRegistry.resolveMethodFromId methodHandleId state.MethodHandles
-            |> Option.defaultWith (fun () ->
-                failwith $"%s{operation}: registry id %d{methodHandleId} did not resolve to a known MethodHandle"
-            )
+        MethodHandleRegistry.resolveMethodFromId methodHandleId state.MethodHandles
+        |> Option.defaultWith (fun () ->
+            failwith $"%s{operation}: registry id %d{methodHandleId} did not resolve to a known MethodHandle"
+        )
 
+    /// The metadata `MethodInfo` the given handle's MethodDef token names.
+    let private methodInfoOfMethodHandle
+        (operation : string)
+        (state : IlMachineState)
+        (methodHandle : MethodHandle)
+        : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>
+        =
         let assemblyFullName = methodHandle.GetAssemblyFullName ()
 
         let assembly =
@@ -58,6 +116,15 @@ module NativeRuntimeMethodHandle =
             failwith $"%s{operation}: MethodDef %O{methodDefHandle} not found in assembly %s{assemblyFullName}"
 
         methodInfo
+
+    let private resolveMethodInfoFromHandleArg
+        (operation : string)
+        (state : IlMachineState)
+        (arg : CliType)
+        : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>
+        =
+        resolveMethodHandleFromArg operation state arg
+        |> methodInfoOfMethodHandle operation state
 
     /// Resolve a <c>QCallTypeHandle</c>-encoded type to its
     /// <c>(DumpedAssembly, TypeInfo)</c>, accepting the MethodTable-backed
@@ -320,6 +387,77 @@ module NativeRuntimeMethodHandle =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 ret)) ctx.Thread state
 
             NativeHandlerResult.completed state |> Some
+        | "RuntimeMethodHandle_GetMethodInstantiation",
+          "System.Private.CoreLib",
+          "System",
+          "RuntimeMethodHandle",
+          "GetMethodInstantiation",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System",
+                                              "RuntimeMethodHandleInternal",
+                                              handleGenerics)
+            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "ObjectHandleOnStack",
+                                              objectHandleGenerics)
+            ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "", "BOOL", boolGenerics) ],
+          MethodReturnType.Void when handleGenerics.IsEmpty && objectHandleGenerics.IsEmpty && boolGenerics.IsEmpty ->
+            // CoreCLR runtimehandles.cpp:1708:
+            //   Instantiation inst = pMethod->LoadMethodInstantiation();
+            //   retTypes.Set(CopyRuntimeTypeHandles(inst.GetRawArgs(), inst.GetNumArgs(),
+            //                                       fAsRuntimeTypeArray ? CLASS__CLASS : CLASS__TYPE));
+            // See `methodInstantiationTargets` above for the instantiation itself.
+            let operation = "RuntimeMethodHandle.GetMethodInstantiation"
+
+            if instruction.Arguments.Length <> 3 then
+                failwith $"%s{operation}: expected three native arguments, got %d{instruction.Arguments.Length}"
+
+            let methodHandle =
+                resolveMethodHandleFromArg operation state instruction.Arguments.[0]
+
+            let methodInfo = methodInfoOfMethodHandle operation state methodHandle
+
+            let retTypes =
+                NativeCall.objectHandleOnStackTarget operation state "retTypes" instruction.Arguments.[1]
+
+            // Interop.BOOL is an int32-backed enum. TRUE selects RuntimeType[] (CLASS__CLASS);
+            // FALSE selects Type[] (CLASS__TYPE).
+            let asRuntimeTypeArray =
+                match CliType.unwrapPrimitiveLikeDeep instruction.Arguments.[2] with
+                | CliType.Numeric (CliNumericType.Int32 i) -> i <> 0
+                | other -> failwith $"%s{operation}: expected Interop.BOOL as Int32, got %O{other}"
+
+            let targets =
+                methodInstantiationTargets
+                    operation
+                    methodInfo.DeclaringType.Identity
+                    (methodHandle.GetMethodDefinitionHandle ())
+                    methodInfo.Generics.Length
+                    (methodHandle.GetMethodGenerics ())
+
+            // An empty instantiation leaves `retTypes` unwritten, so the caller's local stays
+            // null. That is what CopyRuntimeTypeHandles does for 0 args (runtimehandles.cpp:573),
+            // and the managed wrappers are written for it: `GetMethodInstantiationPublic` launders
+            // the null through `?? Type.EmptyTypes` (RuntimeMethodInfo.CoreCLR.cs:461), while
+            // `GetMethodInstantiationInternal` propagates it via a null-forgiving `types!`
+            // (RuntimeHandles.cs:1217). The latter's nullable-oblivious signature is not a claim
+            // that the null never arrives: `RuntimeType.GetMethodBase` calls it whenever the
+            // handle is not a generic method *definition* -- which includes every non-generic
+            // method -- and deliberately tolerates the result being null, passing it on to
+            // `GetStubIfNeeded` under the comment "If methodInstantiation is not null,
+            // GetStubIfNeeded will rebind the generic method arguments"
+            // (RuntimeType.CoreCLR.cs:1905-1929). So writing a zero-length array here instead
+            // would be observably wrong, not merely redundant.
+            let state =
+                NativeRuntimeTypeHelpers.copyRuntimeTypeHandles
+                    ctx.LoggerFactory
+                    ctx.BaseClassTypes
+                    state
+                    asRuntimeTypeArray
+                    retTypes
+                    targets
+
+            NativeHandlerResult.completed state |> Some
         | _ -> None
 
     let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
@@ -405,18 +543,10 @@ module NativeRuntimeMethodHandle =
             // PawPrint's representation.
             let operation = "RuntimeMethodHandle.IsGenericMethodDefinition"
 
-            let methodInfo =
-                resolveMethodInfoFromHandleArg operation state instruction.Arguments.[0]
-
-            let methodHandleId =
-                NativeCall.methodHandleIdOfRuntimeMethodHandleInternal operation instruction.Arguments.[0]
-                |> Option.defaultWith (fun () -> failwith $"%s{operation}: null RuntimeMethodHandleInternal")
-
             let methodHandle =
-                MethodHandleRegistry.resolveMethodFromId methodHandleId state.MethodHandles
-                |> Option.defaultWith (fun () ->
-                    failwith $"%s{operation}: registry id %d{methodHandleId} did not resolve to a known MethodHandle"
-                )
+                resolveMethodHandleFromArg operation state instruction.Arguments.[0]
+
+            let methodInfo = methodInfoOfMethodHandle operation state methodHandle
 
             let result =
                 isGenericMethodDefinition methodInfo.Generics.Length (methodHandle.GetMethodGenerics ()).Length
