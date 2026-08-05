@@ -865,13 +865,51 @@ and CliValueType =
             failwith
                 $"%s{operation}: byte range [%d{start}, %d{endExclusive}) exceeds %i{length}-byte value type %O{declared}"
 
+    /// The materialised bytes of `[offset, offset + count)`.
+    ///
+    /// Only fields that overlap the requested range are serialised. A disjoint field cannot
+    /// affect these bytes by construction, and may have no byte rendering at all — `CliType.ToBytes`
+    /// refuses to express an object reference or a provenance-carrying native int — so rendering
+    /// the whole value first would make a perfectly answerable slice fail because of a field it
+    /// does not cover. Overlapping fields are replayed in the same `EditedAtTime` order `ToBytes`
+    /// uses, so the two agree byte for byte wherever `ToBytes` succeeds.
     static member BytesAt (offset : int) (count : int) (cvt : CliValueType) : byte[] =
-        let bytes = CliValueType.ToBytes cvt
-        CliValueType.CheckByteRange "CliValueType.BytesAt" offset count bytes.Length cvt._Declared
+        match cvt._Storage with
+        | CliValueTypeStorage.RawBytes bytes ->
+            CliValueType.CheckByteRange "CliValueType.BytesAt" offset count bytes.Length cvt._Declared
 
-        let result : byte[] = Array.zeroCreate count
-        Array.blit bytes offset result 0 count
-        result
+            let result : byte[] = Array.zeroCreate count
+            Array.blit bytes offset result 0 count
+            result
+        | CliValueTypeStorage.Fields storage ->
+            let expectedSize = CliValueType.SizeOf(cvt).Size
+
+            if storage.PreservedBytes.Length <> expectedSize then
+                failwith
+                    $"CliValueType.BytesAt: preserved byte image length %i{storage.PreservedBytes.Length} does not match value type size %i{expectedSize} for %O{cvt._Declared}"
+
+            CliValueType.CheckByteRange "CliValueType.BytesAt" offset count expectedSize cvt._Declared
+
+            let endExclusive = offset + count
+
+            let result : byte[] = Array.zeroCreate count
+            Array.blit storage.PreservedBytes offset result 0 count
+
+            storage.Fields
+            |> List.filter (fun f -> f.Offset < endExclusive && offset < f.Offset + f.Size)
+            |> List.sortBy _.EditedAtTime
+            |> List.iter (fun candidateField ->
+                let fieldBytes : byte[] = CliType.ToBytes candidateField.Contents
+
+                // A field may straddle either end of the slice; copy only the part inside it.
+                for i = max candidateField.Offset offset to (min
+                                                                (candidateField.Offset + candidateField.Size)
+                                                                endExclusive)
+                                                            - 1 do
+                    result.[i - offset] <- fieldBytes.[i - candidateField.Offset]
+            )
+
+            result
 
     /// Return a value with the requested byte range replaced, or `None` if the requested write
     /// would not change the materialised byte image. Returning `None` preserves field provenance

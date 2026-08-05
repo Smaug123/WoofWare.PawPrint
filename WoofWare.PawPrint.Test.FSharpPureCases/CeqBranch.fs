@@ -2,15 +2,20 @@ module CeqBranch
 
 #nowarn "42"
 
-let inline ceqInt32 (a : int32) (b : int32) : bool = (# "ceq" a b : bool #)
+let inline ceqInt32 (a : int32) (b : int32) : bool =
+    (# "ceq" a b : bool #)
 
-let inline ceqInt64 (a : int64) (b : int64) : bool = (# "ceq" a b : bool #)
+let inline ceqInt64 (a : int64) (b : int64) : bool =
+    (# "ceq" a b : bool #)
 
-let inline ceqNativeInt (a : nativeint) (b : nativeint) : bool = (# "ceq" a b : bool #)
+let inline ceqNativeInt (a : nativeint) (b : nativeint) : bool =
+    (# "ceq" a b : bool #)
 
-let inline ceqFloat64 (a : float) (b : float) : bool = (# "ceq" a b : bool #)
+let inline ceqFloat64 (a : float) (b : float) : bool =
+    (# "ceq" a b : bool #)
 
-let inline ceqObj (a : obj) (b : obj) : bool = (# "ceq" a b : bool #)
+let inline ceqObj (a : obj) (b : obj) : bool =
+    (# "ceq" a b : bool #)
 
 // Use mutable locals to prevent the F# compiler from constant-folding
 // literal comparisons in Release builds.

@@ -439,6 +439,62 @@ module TestEvalStackBoxedPrimitiveView =
             | other -> failwithf "expected the aliased pointer write's provenance to survive, got %A" other
 
     [<Test>]
+    let ``a disjoint reference field does not block reading an aliased prefix`` () : unit =
+        // A byte slice cannot be affected by a field that does not overlap it, so serialising the
+        // whole value to get at the slice is both wasteful and wrong: a disjoint reference field
+        // has no byte rendering at all, and would turn a perfectly answerable `ldind.i8` of the
+        // union prefix into a refusal.
+        let int32Handle = handleFor bct.Int32
+        let int64Handle = handleFor bct.Int64
+        let objectHandle = handleFor bct.Object
+
+        let field (name : string) (offset : int) (contents : CliType) (ty : ConcreteTypeHandle) : CliField =
+            {
+                CliField.Id = FieldId.named name
+                CliField.Name = name
+                Contents = contents
+                Offset = Some offset
+                Type = ty
+                MarshallingDescriptor = None
+            }
+
+        let declared = handleFor bct.TypedReference
+
+        let vt =
+            CliValueType.OfFields
+                bct
+                allCt
+                declared
+                (Layout.Custom (size = 16, packingSize = 0))
+                CharSet.Ansi
+                [
+                    // Declaration order is replay order among equal timestamps, so `whole` goes
+                    // first: the two halves declared after it hold the current bytes.
+                    field "whole" 0 (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))) int64Handle
+                    field "lo" 0 (CliType.Numeric (CliNumericType.Int32 0)) int32Handle
+                    field "hi" 4 (CliType.Numeric (CliNumericType.Int32 2)) int32Handle
+                    field
+                        "reference"
+                        8
+                        (CliType.ObjectRef (Some (ManagedHeapAddress.ManagedHeapAddress 9)))
+                        objectHandle
+                ]
+
+        // Write the *partial* alias last, so no single field owns the whole requested range and
+        // the read genuinely has to consult the byte image for [0, 8).
+        let written =
+            CliValueType.WithFieldSetById (FieldId.named "lo") (CliType.Numeric (CliNumericType.Int32 1)) vt
+
+        let ldindI8Slot = CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))
+
+        EvalStackValue.toCliTypeCoerced ldindI8Slot (EvalStackValue.UserDefinedValueType written)
+        |> function
+            | CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim v)) ->
+                // little-endian: lo = 1 in the low word, hi = 2 in the high word
+                v |> shouldEqual ((2L <<< 32) ||| 1L)
+            | other -> failwithf "expected the aliased prefix as an int64, got %A" other
+
+    [<Test>]
     let ``viewing a value type at a width no leading field covers fails loudly`` () : unit =
         // Two int32s do not make an int64 in this model: the storage is field cells, not bytes,
         // so there is no honest int64 to hand back. Refusing beats inventing one.
