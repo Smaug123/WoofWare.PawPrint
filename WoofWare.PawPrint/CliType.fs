@@ -433,9 +433,11 @@ type CliType =
     static member WithZeroedRangeIfChanged (offset : int) (count : int) (value : CliType) : CliType option =
         let size = CliType.SizeOf(value).Size
 
-        if offset < 0 || count < 0 || offset + count > size then
+        // Bounds-check without forming `offset + count`, which wraps for large inputs and would
+        // let an out-of-range request through as though it were valid.
+        if offset < 0 || count < 0 || offset > size || count > size - offset then
             failwith
-                $"CliType.WithZeroedRangeIfChanged: range [%d{offset}, %d{offset + count}) is outside the %d{size}-byte value %O{value}"
+                $"CliType.WithZeroedRangeIfChanged: range of %d{count} byte(s) at offset %d{offset} is outside the %d{size}-byte value %O{value}"
 
         if count = 0 then
             None
@@ -995,16 +997,19 @@ and CliValueType =
     /// `ToBytes` materialises *every* field, so it cannot render a struct that holds a live
     /// object reference, even when the requested range covers only plain fields.
     ///
-    /// Every field whose bytes intersect the range is updated, so no untouched field can
-    /// overlap the zeroed region; that is why the zeroed fields need no special replay ordering
-    /// relative to their neighbours. They still take fresh timestamps, keeping the invariant
-    /// that a modified field is newer than the ones it overlaps.
+    /// Field write timestamps are deliberately preserved, not refreshed. `ToBytes` replays
+    /// overlapping fields in timestamp order, and a field that only partially overlaps the
+    /// requested range extends outside it, so promoting it to "newest" would let its untouched
+    /// bytes win over a sibling and change memory outside the range. Keeping the original order
+    /// is safe both ways: inside the range every intersecting field has had its covered bytes
+    /// zeroed, so whichever wins writes zeros, and outside it nothing about the order changed.
     static member WithZeroedRangeIfChanged (offset : int) (count : int) (cvt : CliValueType) : CliValueType option =
         let size = CliValueType.SizeOf(cvt).Size
 
-        if offset < 0 || count < 0 || offset + count > size then
+        // See `CliType.WithZeroedRangeIfChanged`: phrased to avoid overflowing `offset + count`.
+        if offset < 0 || count < 0 || offset > size || count > size - offset then
             failwith
-                $"CliValueType.WithZeroedRangeIfChanged: range [%d{offset}, %d{offset + count}) is outside the %d{size}-byte value type %O{cvt._Declared}"
+                $"CliValueType.WithZeroedRangeIfChanged: range of %d{count} byte(s) at offset %d{offset} is outside the %d{size}-byte value type %O{cvt._Declared}"
 
         let rangeEnd = offset + count
 
