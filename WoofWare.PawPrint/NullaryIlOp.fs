@@ -132,6 +132,46 @@ module NullaryIlOp =
             let b, counters = PointerHashSynthesis.materialiseHashBits "Xor" i2 counters
             NativeIntSource.OpaqueHashBits (a ^^^ b), counters
 
+    /// Bitwise complement of a `NativeIntSource` in the native-int slot, for the
+    /// `not` IL instruction (ECMA-335 III.3.35). Mirrors `xorNativeIntSources`,
+    /// which is the same operation against an all-ones operand.
+    ///
+    /// `Verbatim` and the two bit-pattern pointer forms have exact, definitional
+    /// bit patterns — PawPrint models `Null` as the bit pattern 0 throughout, and
+    /// a `NativeIntPlaceholder` is by construction nothing but the raw bits that
+    /// produced it — so their complement is an honest `Verbatim`, which keeps
+    /// composing with the verbatim arms of `And` / `Or` / comparisons. (The
+    /// result is an integer, not a pointer, so the placeholder-to-`Null`
+    /// normalisation that applies when *constructing* byrefs is not needed
+    /// here.) Everything else routes
+    /// through `PointerHashSynthesis.materialiseHashBits` and is tagged
+    /// `OpaqueHashBits`, propagating the synthesised-bits contract: the result is
+    /// deterministic but MUST NOT be used as a real pointer. `materialiseHashBits`
+    /// fails loudly on any other `ManagedPointer` and on
+    /// `SyntheticCrossArrayOffset`, preserving byref / cross-storage provenance.
+    ///
+    /// Note that a handle-shaped source does not survive a double complement as
+    /// itself: `~~handle` comes back as `OpaqueHashBits`, so comparing that against
+    /// the original handle hits `equalsForCli`'s "synthesised hash bits vs handle
+    /// pointer" refusal (CEQ has no `PointerHashCounters` with which to materialise
+    /// the handle). That is a property of the hash-synthesis design rather than of
+    /// `not`: `xorNativeIntSources` loses handle provenance the same way, so
+    /// `(handle ^ 0) ^ 0 == handle` already fails identically. The failure is loud,
+    /// and the complemented bits themselves are correct and deterministic.
+    let private notNativeIntSource
+        (source : NativeIntSource)
+        (counters : PointerHashCounters)
+        : NativeIntSource * PointerHashCounters
+        =
+        match source with
+        | NativeIntSource.Verbatim i -> NativeIntSource.Verbatim ~~~i, counters
+        | NativeIntSource.ManagedPointer ManagedPointerSource.Null -> NativeIntSource.Verbatim ~~~0L, counters
+        | NativeIntSource.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits) ->
+            NativeIntSource.Verbatim ~~~bits, counters
+        | _ ->
+            let bits, counters = PointerHashSynthesis.materialiseHashBits "Not" source counters
+            NativeIntSource.OpaqueHashBits ~~~bits, counters
+
     let private locallocSizeBytes (value : EvalStackValue) : int =
         let size =
             match value with
@@ -2334,10 +2374,21 @@ module NullaryIlOp =
                     { state with
                         PointerHashCounters = counters
                     }
+                | EvalStackValue.NativeInt src ->
+                    // ECMA-335 III.3.35: `not` is defined on native ints. The BCL reaches
+                    // this through the unrolled loops that round a count down to a multiple
+                    // of a power of two, e.g. `numElements & ~(nuint)7` in SpanHelpers.Fill.
+                    let r, counters = notNativeIntSource src state.PointerHashCounters
+
+                    EvalStackValue.NativeInt r,
+                    { state with
+                        PointerHashCounters = counters
+                    }
                 | EvalStackValue.ManagedPointer _
                 | EvalStackValue.NullObjectRef
                 | EvalStackValue.ObjectRef _ -> failwith "refusing to negate a pointer"
-                | _ -> failwith "TODO"
+                | EvalStackValue.Float f -> failwith $"Not is not defined on floating-point values; got %f{f}"
+                | EvalStackValue.UserDefinedValueType vt -> failwith $"TODO: Not on a user-defined value type: %O{vt}"
 
             state
             |> IlMachineState.pushToEvalStack' result currentThread
