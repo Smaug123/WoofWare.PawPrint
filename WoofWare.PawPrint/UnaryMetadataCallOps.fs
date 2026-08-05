@@ -1408,17 +1408,25 @@ module internal UnaryMetadataCallOps =
             // returning. There is then no `calli` left to re-execute, so there is nothing to
             // restore — and looking the frame up unconditionally would turn a perfectly catchable
             // guest exception into a host crash ("Frame ... is not live").
-            let state =
+            // Restoring the pointer and reporting the suspension are the same fact, so they are
+            // decided together. The report matters beyond bookkeeping: `Scheduler.onStepOutcome`
+            // treats `Executed` as forward progress and wakes every thread parked
+            // `BlockedOnClassInit` on us, whereas `SuspendedForClassInit` leaves them parked
+            // precisely because our class init has *not* finished. Saying `Executed` here would
+            // wake a waiter mid-cctor: it would step, re-block, and the interleaving would differ
+            // from the scheduled one — a reproducibility bug, not just a wasted step.
+            let state, whatWeDid =
                 match IlMachineState.tryGetFrame thread callerFrameId state with
-                | None -> state
+                | None -> state, WhatWeDid.Executed
                 | Some callerFrame ->
                     if callerFrame.IlOpIndex = pcBeforeCall then
                         let restored = callerFrame |> MethodState.pushToEvalStack' fnPtrValue
-                        IlMachineState.setFrame thread callerFrameId restored state
-                    else
-                        state
 
-            state, WhatWeDid.Executed
+                        IlMachineState.setFrame thread callerFrameId restored state, WhatWeDid.SuspendedForClassInit
+                    else
+                        state, WhatWeDid.Executed
+
+            state, whatWeDid
         | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
         | ThrowingTypeInitializationException state -> state, WhatWeDid.ThrowingTypeInitializationException
         | Blocked (state, blockedBy) ->
