@@ -1031,12 +1031,23 @@ module IlMachineStateExecution =
 
         state, visited, (ifaceHandle, ifaceTy) :: parents
 
-    /// The receiver's interface map, in the order CoreCLR builds it
-    /// (`MethodTableBuilder::BuildInterfaceMap`): the interfaces the type itself declares, in
-    /// metadata order and each expanded through its own parents, and only then the base class's
-    /// map. The order matters because variant interface dispatch resolves to the *first*
-    /// variance-compatible entry (see `tryRetargetToVariantInterfaceMapEntry`), so this must not
-    /// be reordered or set-ified.
+    /// The receiver's interface map, in the order variance-compatible entries are *searched*:
+    /// the interfaces the type itself declares, in metadata order and each expanded through its
+    /// own parents, and only then the base class's map.
+    ///
+    /// Note that this is not the order of CoreCLR's interface-map array, which is built the
+    /// other way round — `MethodTableBuilder::ExpandApproxInheritedInterfaces` lays the parent's
+    /// entries down first and `ExpandApproxDeclaredInterfaces` appends the freshly-declared ones
+    /// (`methodtablebuilder.cpp`). The search order is what matters, and it inverts that:
+    /// `MethodTable::FindDefaultInterfaceImplementation` walks from the receiver up through
+    /// `GetParentMethodTable`, scanning at each level only `IterateInterfaceMapFrom
+    /// (dwParentInterfaces)` — i.e. only the entries that level newly declares, skipping the
+    /// inherited prefix. `sourcesPure/VariantInterfaceMapOrder.cs` pins the resulting order
+    /// against the real runtime.
+    ///
+    /// The order is load-bearing because variant interface dispatch resolves to the *first*
+    /// compatible entry (see `tryRetargetToVariantInterfaceMapEntry`), so this must not be
+    /// reordered or set-ified.
     let rec private collectInterfaceMap
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -1130,6 +1141,10 @@ module IlMachineStateExecution =
     /// the type declares it. `sourcesPure/VariantInterfaceMapOrder.cs` pins the observable rule
     /// against the real runtime, which is the authority here.
     ///
+    /// That first-wins rule is deliberately restricted to *instance* methods; see the
+    /// `methodToCall.IsStatic` guard below for why static interface members neither need nor may
+    /// use this path.
+    ///
     /// Returns `None` when no such entry exists, leaving the caller's answer unchanged.
     let private tryRetargetToVariantInterfaceMapEntry
         (loggerFactory : ILoggerFactory)
@@ -1145,12 +1160,28 @@ module IlMachineStateExecution =
         // A non-generic interface has nothing to vary, so it can never reach here.
         if methodToCall.DeclaringType.Generics.IsEmpty then
             state, None
+        elif
+            // Static interface members do not reach the retarget: a static virtual slot has no
+            // name-based matching to fall back on, so implementing one requires an explicit
+            // MethodImpl row, and the MethodImpl path in `tryResolveVirtualImplementationForSlot`
+            // is already variance-aware (`sourcesPure/StaticAbstractVariantInterfaceDispatch.cs`
+            // exercises exactly that route). Declining here rather than assuming it holds matters
+            // because the first-wins tie-break below would be *wrong* for a static member:
+            // CoreCLR guards its equivalent shortcut on `!pInterfaceMD->IsStatic()`, so a static
+            // one keeps scanning for a conflict and can throw AmbiguousResolutionException. If
+            // this ever does become reachable, returning `None` leaves the caller's existing loud
+            // failure in place instead of silently diverging.
+            methodToCall.IsStatic
+        then
+            state, None
         else
 
+        // The caller has already resolved this assembly on the path that led here, so a miss is
+        // a broken invariant rather than a reason to decline.
+        let declaringAssy = state.LoadedAssembly(methodToCall.DeclaringType.Assembly).Value
+
         let declaringTypeIsInterface =
-            match state.LoadedAssembly methodToCall.DeclaringType.Assembly with
-            | None -> false
-            | Some assy -> assy.TypeDefs.[methodToCall.DeclaringType.Definition.Get].IsInterface
+            declaringAssy.TypeDefs.[methodToCall.DeclaringType.Definition.Get].IsInterface
 
         if not declaringTypeIsInterface then
             state, None
@@ -1190,11 +1221,10 @@ module IlMachineStateExecution =
                 },
                 handle
 
-        // First variance-compatible entry wins; we deliberately do not fall through to a later
-        // entry if this one fails to resolve. A type that lists an interface must supply bodies
-        // for its slots, so a miss here means our own resolution is wrong, and surfacing that as
-        // the caller's existing loud failure beats silently running a different type argument's
-        // body.
+        // First compatible entry wins; we deliberately do not fall through to a later entry if
+        // this one fails to resolve. A type that lists an interface must supply bodies for its
+        // slots, so a miss means our own resolution is wrong, and surfacing that as the caller's
+        // existing loud failure beats silently running a different type argument's body.
         let state, chosen =
             ((state, None), candidates)
             ||> List.fold (fun (state, chosen) (candidateHandle, candidateTy) ->
