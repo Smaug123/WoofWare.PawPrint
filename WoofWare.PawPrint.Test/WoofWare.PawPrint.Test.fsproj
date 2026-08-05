@@ -85,6 +85,7 @@
     <Compile Include="TestSignalDispatch.fs" />
     <Compile Include="TestEffectiveProcessorCount.fs" />
     <Compile Include="TestSystemTimeAsTicks.fs" />
+    <Compile Include="TestMonotonicTimestamp.fs" />
     <Compile Include="TestSignalTermination.fs" />
     <Compile Include="TestWaitHandle.fs" />
     <Compile Include="TestSyncBlockMonitor.fs" />

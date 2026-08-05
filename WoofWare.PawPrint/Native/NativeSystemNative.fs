@@ -293,6 +293,32 @@ module NativeSystemNative =
                 ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
+        | Some "SystemNative_GetTimestamp",
+          [],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int64) ->
+            // PAL entry behind `Stopwatch.GetTimestamp` on Unix, which is
+            // `clock_gettime(CLOCK_MONOTONIC)` in real CoreCLR. The unit is
+            // nanoseconds, and that is not a choice made here: `Stopwatch`
+            // on Unix never asks the PAL for its frequency, because
+            // `Stopwatch.Unix.cs`'s `GetFrequency()` returns the literal
+            // 1_000_000_000. PawPrint derives the value from the same
+            // deterministic virtual clock that backs `Environment.TickCount64`
+            // and `DateTime.UtcNow`, so the guest's three time sources cannot
+            // disagree about how much time has passed.
+            //
+            // Reaching this matters beyond `Stopwatch` itself: the thread
+            // pool's hill-climbing step calls it unconditionally
+            // (`PortableThreadPool.AdjustMaxWorkersActive`), so without it a
+            // guest dies partway into its first few blocking pool waits.
+            //
+            // Read-only, like every other clock observer: the scheduler is
+            // the sole writer of `VirtualClockMs`.
+            state
+            |> IlMachineState.pushToEvalStack'
+                (EvalStackValue.Int64 (Int64Source.Verbatim (EmulatedKernel.monotonicTimestampNs state.Kernel)))
+                ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
         | Some "SystemNative_GetSystemTimeAsTicks",
           [],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int64) ->

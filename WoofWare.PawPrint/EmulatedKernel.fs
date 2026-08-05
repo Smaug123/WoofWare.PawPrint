@@ -435,11 +435,13 @@ type EmulatedKernel =
         /// `SystemNative_GetLowResolutionTimestamp` (the PAL backing
         /// `Environment.TickCount64` on Unix) and intended to be the single
         /// source of truth for every elapsed-time computation the guest
-        /// performs — `SystemNative_GetSystemTimeAsTicks` (the wall clock
-        /// behind `DateTime.UtcNow`) already derives from it via
-        /// `EmulatedKernel.systemTimeAsTicks`, and a future
-        /// `SystemNative_GetTimestamp` (nanoseconds) should too, rather than
-        /// maintaining a parallel clock.
+        /// performs. `SystemNative_GetSystemTimeAsTicks` (the wall clock
+        /// behind `DateTime.UtcNow`) derives from it via
+        /// `EmulatedKernel.systemTimeAsTicks`, and `SystemNative_GetTimestamp`
+        /// (the monotonic nanosecond source behind `Stopwatch.GetTimestamp`)
+        /// via `EmulatedKernel.monotonicTimestampNs`. Both are derivations
+        /// rather than parallel clocks, which is what makes the three
+        /// guest-visible time sources agree with each other by construction.
         ///
         /// The driver loop advances this by 1 ms each time it increments
         /// `StepCounter`, so the guest sees one wall-clock millisecond per
@@ -723,6 +725,44 @@ module EmulatedKernel =
     [<Literal>]
     let maxWallClockEpochMs : int64 = 253402300799999L
 
+    /// Nanoseconds per millisecond: the scale factor between
+    /// `EmulatedKernel.VirtualClockMs` and the monotonic timestamp
+    /// `SystemNative_GetTimestamp` hands the guest. Nanoseconds because
+    /// `Stopwatch.Frequency` on Unix is not queried from the PAL at all —
+    /// `Stopwatch.Unix.cs`'s `GetFrequency()` returns the literal
+    /// 1_000_000_000 — so the unit of the PAL entry is fixed by CoreLib
+    /// rather than negotiable here.
+    [<Literal>]
+    let nanosecondsPerMillisecond : int64 = 1_000_000L
+
+    /// Largest `EmulatedKernel.VirtualClockMs` from which a monotonic
+    /// nanosecond timestamp can be derived without overflowing int64:
+    /// `Int64.MaxValue / nanosecondsPerMillisecond`, about 292 years of
+    /// virtual time.
+    ///
+    /// Deliberately *tighter* than `maxWallClockEpochMs` (by a factor of
+    /// about 27), so there is a band of clock readings from which
+    /// `DateTime.UtcNow` and `Environment.TickCount64` are derivable but
+    /// `Stopwatch.GetTimestamp` is not. That asymmetry is real and is not
+    /// currently reconciled: neither driver write site bounds
+    /// `VirtualClockMs`, and no deadline computation caps it either, so
+    /// each clock-derived PAL entry enforces its own ceiling lazily, at the
+    /// moment the guest happens to read that particular clock. Bounding the
+    /// field centrally at the scheduler — its sole writer — would give one
+    /// coherent invariant and would fault at the wait that pushed time past
+    /// the horizon rather than at an arbitrary later read; that is worth
+    /// doing, and is deliberately not done here because it changes the
+    /// failure point of existing behaviour.
+    ///
+    /// The horizon is reachable by ordinary guest code, not merely in
+    /// principle: a `Thread.Sleep` deadline is `VirtualClockMs + timeout`
+    /// with no cap, and the driver's deadline jump moves the clock the whole
+    /// way, so `Thread.Sleep(Int32.MaxValue)` advances it about 2.1e9 ms per
+    /// call. Measured: eight such sleeps advance the clock by 17,179,869,451
+    /// ms, so roughly 4,300 of them cross this bound.
+    [<Literal>]
+    let maxMonotonicClockMs : int64 = 9_223_372_036_854L
+
     /// Unix platform identity a freshly-minted simulated process reports.
     /// Linux/x64 because that is the platform whose CoreLib actually routes
     /// `Environment.OSVersion` through `SystemNative_GetUnixRelease` (the
@@ -850,6 +890,51 @@ module EmulatedKernel =
                 $"simulated wall clock has reached %d{ms} ms since the Unix epoch, past the %d{maxWallClockEpochMs} ms that System.DateTime can represent; lower KernelConfig.WallClockEpochMs"
 
         ms * ticksPerMillisecond
+
+    /// Monotonic time the simulated process currently observes, in nanoseconds
+    /// since an arbitrary origin: exactly what `SystemNative_GetTimestamp`
+    /// returns, and hence what `Stopwatch.GetTimestamp` reports on Unix.
+    ///
+    /// Derived from `VirtualClockMs` rather than from a clock of its own, so
+    /// every elapsed-time computation the guest can perform is a view of one
+    /// underlying quantity. Three properties the real
+    /// `clock_gettime(CLOCK_MONOTONIC)` guarantees then hold structurally
+    /// rather than by separate enforcement: the result never runs backwards
+    /// (because `VirtualClockMs` never does), it agrees with
+    /// `Environment.TickCount64` about how much time has passed (they are the
+    /// same number in different units), and it is immune to the wall clock —
+    /// `WallClockEpochMs` does not appear in the derivation, so a host that
+    /// boots the guest at some other date cannot perturb it.
+    ///
+    /// The origin is the same zero as `VirtualClockMs`, not a synthetic
+    /// boot offset. Real `CLOCK_MONOTONIC` promises nothing about its origin,
+    /// so guest code that reads meaning into an absolute timestamp is broken
+    /// on the real runtime too.
+    ///
+    /// Resolution is one millisecond expressed in nanoseconds, so the low six
+    /// digits are always zero. That is coarse in absolute terms but not
+    /// observably so: the scheduler advances the clock a full millisecond per
+    /// retired IL instruction, so no two reads separated by any guest code at
+    /// all can land on the same value. What the guest cannot do is measure a
+    /// duration *finer* than one instruction, which is the same "very slow
+    /// computer" bargain `Environment.TickCount64` already makes.
+    ///
+    /// Pure, like every other clock observer here: reading never advances the
+    /// clock, so two threads reading on the same scheduler tick agree.
+    let monotonicTimestampNs (kernel : EmulatedKernel) : int64 =
+        // A kernel built by record-copy bypasses the driver entirely, and the
+        // driver does not bound this field in any case, so the invariant has
+        // to be re-asserted here. Establishing it also establishes that the
+        // multiplication below cannot overflow. Failing loudly rather than
+        // saturating: a saturated clock stops advancing, which breaks guest
+        // forward progress exactly as badly and does so silently, whereas a
+        // guest that observes a monotonic clock jumping backwards has had the
+        // one guarantee this primitive exists to provide taken away from it.
+        if kernel.VirtualClockMs < 0L || kernel.VirtualClockMs > maxMonotonicClockMs then
+            failwith
+                $"kernel VirtualClockMs is %d{kernel.VirtualClockMs}, which is outside the range [0, %d{maxMonotonicClockMs}] a monotonic nanosecond timestamp can be derived from without overflowing int64"
+
+        kernel.VirtualClockMs * nanosecondsPerMillisecond
 
     /// Largest value CoreCLR will accept from the processor-count
     /// configuration knob (`MAX_PROCESSOR_COUNT` in
