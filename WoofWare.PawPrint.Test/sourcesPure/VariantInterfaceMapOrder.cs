@@ -68,6 +68,24 @@ sealed class ChildSecond : ISink<object>, IChild<Exception>
     public long Accept(object value) => 12;
 }
 
+// --- A parent instantiation the base class already supplies keeps the base's position. ----
+//
+// `InheritedParent`'s base already supplies `ISink<object>`, so expanding the derived type's
+// `IChild<object>` must NOT re-emit `ISink<object>` among the derived entries: that entry
+// belongs at the base's position. `ISink<Exception>` is therefore the first ISink-identity entry
+// and the derived body wins. This is CoreCLR's `IterateInterfaceMapFrom(dwParentInterfaces)`,
+// which skips each level's inherited prefix; getting it wrong runs the base's body instead.
+
+class InheritedParentBase : ISink<object>
+{
+    public long Accept(object value) => 15;
+}
+
+sealed class InheritedParent : InheritedParentBase, IChild<object>, ISink<Exception>
+{
+    public long Accept(Exception value) => 16;
+}
+
 // --- An exact entry alongside a variance-compatible one: exact must win. ------------------
 
 sealed class ExactAndWider : ISink<object>, ISink<ArgumentException>
@@ -99,10 +117,14 @@ class Program
         if (CallIt(new ChildFirst(), e) != 9) return 5;
         if (CallIt(new ChildSecond(), e) != 12) return 6;
 
+        // A transitive parent the base class already supplies stays at the base's position, so
+        // the derived type's own ISink<Exception> is the first ISink entry.
+        if (CallIt(new InheritedParent(), e) != 16) return 7;
+
         // An exact instantiation is not subject to the tie-break at all: it is found by
         // ordinary dispatch, even though it is declared second and the first entry is also
         // variance-compatible.
-        if (CallIt(new ExactAndWider(), e) != 14) return 7;
+        if (CallIt(new ExactAndWider(), e) != 14) return 8;
 
         return 0;
     }

@@ -1067,6 +1067,43 @@ module IlMachineStateExecution =
         // rather than as a hang.
         let visited = visited.Add typeHandle
 
+        // The inherited prefix is computed *first*, even though it is emitted last, so that this
+        // level only contributes entries the base map does not already supply: `visited` carries
+        // the inherited set into the expansion below. That is what
+        // `IterateInterfaceMapFrom(dwParentInterfaces)` buys CoreCLR for free.
+        //
+        // It matters when a type declares a child interface whose parent instantiation its base
+        // already supplies — `class D : B, IChild<object>, I<Exception>` over `class B :
+        // I<object>`, where `IChild<T> : I<T>`. Expanding `IChild<object>` reaches `I<object>`,
+        // but that entry belongs at B's position, not D's, so `I<Exception>` is the first
+        // `I`-identity entry and D's own body is what a call through `I<ArgumentException>` must
+        // reach. Emitting the expanded `I<object>` at D's level instead would put B's body first.
+        //
+        // The `walkBaseTypes` gate is the same one the ordinary walks use: `false` means
+        // "exact-type dispatch" (the `constrained.` value-type probe), where only the type's own
+        // interface list is in scope. A value type's base chain is `ValueType`/`Enum`/`Object`,
+        // none of which contributes a generic interface, so the gate is about honesty rather than
+        // about any case we can currently reach.
+        let state, visited, baseEntries =
+            if not walkBaseTypes then
+                state, visited, []
+            else
+
+            match typeHandle with
+            | ConcreteTypeHandle.Byref _
+            | ConcreteTypeHandle.Pointer _
+            | ConcreteTypeHandle.FunctionPointer _ -> state, visited, []
+            | ConcreteTypeHandle.Concrete _
+            | ConcreteTypeHandle.OneDimArrayZero _
+            | ConcreteTypeHandle.Array _ ->
+
+            let state, baseType =
+                IlMachineState.resolveBaseConcreteType loggerFactory baseClassTypes state typeHandle
+
+            match baseType with
+            | None -> state, visited, []
+            | Some baseType -> collectInterfaceMap loggerFactory baseClassTypes walkBaseTypes state visited baseType
+
         let state, visited, ownEntries =
             match IlMachineState.tryGetConcreteTypeInfo state typeHandle with
             | None -> state, visited, []
@@ -1089,33 +1126,7 @@ module IlMachineStateExecution =
                     state, visited, acc @ expanded
                 )
 
-        // Gated on `walkBaseTypes` for the same reason the ordinary walks are: `false` means
-        // "exact-type dispatch" (the `constrained.` value-type probe), where only the type's own
-        // interface list is in scope. A value type's base chain is `ValueType`/`Enum`/`Object`,
-        // none of which contributes a generic interface, so this gate is about honesty rather
-        // than about any case we can currently reach.
-        if not walkBaseTypes then
-            state, visited, ownEntries
-        else
-
-        match typeHandle with
-        | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _
-        | ConcreteTypeHandle.FunctionPointer _ -> state, visited, ownEntries
-        | ConcreteTypeHandle.Concrete _
-        | ConcreteTypeHandle.OneDimArrayZero _
-        | ConcreteTypeHandle.Array _ ->
-
-        let state, baseType =
-            IlMachineState.resolveBaseConcreteType loggerFactory baseClassTypes state typeHandle
-
-        match baseType with
-        | None -> state, visited, ownEntries
-        | Some baseType ->
-            let state, visited, baseEntries =
-                collectInterfaceMap loggerFactory baseClassTypes walkBaseTypes state visited baseType
-
-            state, visited, ownEntries @ baseEntries
+        state, visited, ownEntries @ baseEntries
 
     /// ECMA-335 §I.8.7 lets a call site name a variance-compatible instantiation of an interface
     /// the receiver never declares: `ISink<in T>` implemented at `ISink<object>` is dispatched
@@ -1283,7 +1294,7 @@ module IlMachineStateExecution =
         : IlMachineState *
           WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> option
         =
-        let state, resolved =
+        let state, primary =
             tryResolveVirtualImplementationForSlot
                 loggerFactory
                 baseClassTypes
@@ -1294,13 +1305,34 @@ module IlMachineStateExecution =
                 walkBaseTypes
                 state
 
-        match resolved with
-        | Some _ -> state, resolved
-        | None ->
-            // Exactly CoreCLR's ordering: the exact interface-map entry is tried first, and only
-            // a miss falls through to the variance scan. Running the scan lazily also keeps this
-            // change unable to perturb anything that resolves today — the interface-map walk is
-            // never even performed on a call that succeeds.
+        // A resolved method whose declaring type is itself an interface came from a default
+        // interface body; anything else is a real implementation.
+        let isDefaultInterfaceBody
+            (state : IlMachineState)
+            (meth : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+            : bool
+            =
+            state
+                .LoadedAssembly(meth.DeclaringType.Assembly)
+                .Value.TypeDefs.[meth.DeclaringType.Definition.Get].IsInterface
+
+        match primary with
+        // A real implementation from the call site's own instantiation is final: it is the
+        // highest-precedence answer there is, so nothing further need be looked at. Almost every
+        // call takes this branch, which is what keeps the variance machinery below off the path
+        // of anything that resolves today.
+        | Some resolved when not (isDefaultInterfaceBody state resolved) -> state, Some resolved
+        | _ ->
+            // Either nothing resolved, or the exact instantiation only offered a default body.
+            // Both still lose to a real implementation reached through a variance-compatible
+            // entry — CoreCLR consults its dispatch map, which records class implementations, for
+            // *every* compatible entry before `FindDefaultInterfaceImplementation` runs at all —
+            // so the scan below runs in both cases. See
+            // `sourcesPure/VariantInterfaceDefaultBodyPrecedence.cs`.
+            //
+            // Reaching here with a default body in hand means the interface-closure walk has just
+            // succeeded on this receiver inside the DIM scan, so re-walking it costs a repeat of
+            // work known to be well-defined rather than opening a new failure surface.
             let state, retargets =
                 variantInterfaceMapRetargets
                     loggerFactory
@@ -1311,19 +1343,12 @@ module IlMachineStateExecution =
                     walkBaseTypes
                     state
 
-            // Resolve every compatible entry rather than only the first, because interface-map
-            // order is not the whole precedence rule: a *real* implementation beats a default
-            // interface body no matter which entry each came from. CoreCLR gets that ordering
-            // structurally — its dispatch map, which records class implementations, is consulted
-            // for every variance-compatible entry before `FindDefaultInterfaceImplementation`
-            // runs at all — whereas we resolve per entry, so we have to compare afterwards.
+            // Resolve every compatible entry rather than only the first: interface-map order is
+            // the tie-break between equally good entries, not the whole precedence rule.
             //
-            // A resolved method whose declaring type is itself an interface came from a default
-            // body; anything else is a real implementation.
-            //
-            // Note this resolves every entry even once a winner is known. Entries are few, this
-            // path only runs where dispatch would otherwise fail outright, and stopping early
-            // would mean the answer depended on evaluation order — the bug being fixed here.
+            // Note this resolves every entry even once a winner is known. Entries are few, and
+            // stopping early would make the answer depend on evaluation order — the bug being
+            // fixed here.
             let state, resolvedRetargets =
                 ((state, []), retargets)
                 ||> List.fold (fun (state, acc) retargeted ->
@@ -1346,22 +1371,21 @@ module IlMachineStateExecution =
                     | Some resolved -> state, acc @ [ retargeted, resolved ]
                 )
 
-            let isDefaultInterfaceBody
-                (meth : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
-                : bool
-                =
-                state
-                    .LoadedAssembly(meth.DeclaringType.Assembly)
-                    .Value.TypeDefs.[meth.DeclaringType.Definition.Get].IsInterface
-
+            // Precedence, highest first: a real implementation from any compatible entry; then
+            // the exact instantiation's own default body; then a compatible entry's default body.
+            // The last two are `FindDefaultInterfaceImplementation`'s own ordering, which tries
+            // the exact match before allowing variance.
             let chosen =
                 resolvedRetargets
-                |> List.tryFind (fun (_, resolved) -> not (isDefaultInterfaceBody resolved))
-                |> Option.orElseWith (fun () -> List.tryHead resolvedRetargets)
+                |> List.tryFind (fun (_, resolved) -> not (isDefaultInterfaceBody state resolved))
 
-            match chosen with
-            | None -> state, None
-            | Some (retargeted, resolved) ->
+            match chosen, primary with
+            | None, Some _ -> state, primary
+            | None, None ->
+                match List.tryHead resolvedRetargets with
+                | None -> state, None
+                | Some (_, resolved) -> state, Some resolved
+            | Some (retargeted, resolved), _ ->
                 let logger = loggerFactory.CreateLogger "CallMethod"
 
                 logger.LogDebug (

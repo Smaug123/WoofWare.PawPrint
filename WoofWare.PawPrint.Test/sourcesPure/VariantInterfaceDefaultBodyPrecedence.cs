@@ -41,6 +41,17 @@ sealed class DimOnly : IDim<object>, IDim<Exception>
 {
 }
 
+// The *exact* instantiation of the call site is present, but its slot also falls back to the
+// default body — `Accept(object)` does not implicitly implement `IDim<ArgumentException>`'s
+// `Accept(ArgumentException)`, which needs an exact signature match. A real implementation
+// reached through a variance-compatible entry still outranks it, so this is 400, not 100. This
+// is the case that stops `tryResolveVirtualImplementation` short-circuiting the moment ordinary
+// resolution returns anything at all: it has to keep looking unless what it found is real.
+sealed class ExactSlotIsDefault : IDim<object>, IDim<ArgumentException>
+{
+    public long Accept(object value) => 400;
+}
+
 class Program
 {
     static long CallIt(IDim<ArgumentException> sink, ArgumentException value) => sink.Accept(value);
@@ -52,6 +63,7 @@ class Program
         if (CallIt(new DimSink(), e) != 200) return 1;
         if (CallIt(new DimSinkReversed(), e) != 300) return 2;
         if (CallIt(new DimOnly(), e) != 100) return 3;
+        if (CallIt(new ExactSlotIsDefault(), e) != 400) return 4;
 
         return 0;
     }
