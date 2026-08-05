@@ -883,7 +883,7 @@ and MethodState =
 
             let expectsThis = not method.IsStatic && not isVariableSizeCtorFrame
 
-            let expected = method.Parameters.Length + (if expectsThis then 1 else 0)
+            let expected = MethodInfo.arity method + (if expectsThis then 1 else 0)
 
             if args.Length <> expected then
                 let shape =

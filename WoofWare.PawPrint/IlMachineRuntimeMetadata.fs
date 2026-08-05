@@ -1129,7 +1129,7 @@ module IlMachineRuntimeMetadata =
     /// `new TargetInvocationException(inner)` would have done in CoreCLR (whose base ctor sets
     /// `_message` to the SR.Arg_TargetInvocationException string). Returns the heap address, the
     /// ConcreteTypeHandle, and the updated state.
-    /// See https://github.com/dotnet/runtime/blob/HEAD/src/libraries/System.Private.CoreLib/src/System/Reflection/TargetInvocationException.cs
+    /// See https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Reflection/TargetInvocationException.cs#L13-L17
     let synthesizeTargetInvocationException
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
