@@ -2467,11 +2467,43 @@ module NullaryIlOp =
 
             let referenced =
                 match addr with
-                | EvalStackValue.ManagedPointer src -> IlMachineState.readManagedByref corelib state src
+                | EvalStackValue.ManagedPointer src
+                | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer src) ->
+                    // ECMA-335 III.3.44 allows `ldind.ref`'s address operand to
+                    // be `native int` as well as `&`: a byref widened by
+                    // `conv.i`/`conv.u` (e.g. real CoreLib's
+                    // `Task.FromResult<TResult>`, which reinterprets a cached
+                    // `Task<bool>`/`Task<int>` as `Task<TResult>` via
+                    // `ldloca.s; conv.u; ldind.ref`) is still logically the
+                    // same address, so it must dereference identically to the
+                    // `&`-typed spelling. `Stind_ref` immediately below
+                    // already treats both spellings identically for exactly
+                    // this reason; this mirrors it.
+                    //
+                    // Both spellings route through `readManagedByref` rather
+                    // than the byte-view `readManagedByrefBytesAs` that the
+                    // generic `ldind` uses for primitives. That split is
+                    // deliberate, not an oversight: `readManagedByref` already
+                    // contains the correct byte-view-vs-structural dispatch
+                    // for object references (including the `ReinterpretAs`
+                    // zero-offset elision that the Task<T> pattern above
+                    // exercises when a projection chain is present), and
+                    // object references are not byte-addressable in
+                    // PawPrint's value model (`CliType.OfBytesLike` has no
+                    // case for `CliType.ObjectRef`). Pointers that are purely
+                    // byte-addressable storage (stack-allocated or native
+                    // memory with no typed cell at the target offset) have no
+                    // way to hold a real object reference in this model
+                    // either, and `readManagedByref` already fails loudly and
+                    // specifically for that shape (e.g. "has no typed cell
+                    // here; needs a byte-view byref shape") rather than
+                    // routing through a byte reconstruction that would
+                    // silently do the wrong thing.
+                    IlMachineState.readManagedByref corelib state src
                 | EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr handle) ->
                     GcHandleRegistry.target handle state.GcHandles |> CliType.ObjectRef
                 | EvalStackValue.NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
-                | a -> failwith $"TODO: {a}"
+                | a -> failwith $"TODO: Ldind_ref on unsupported eval stack value {a}"
 
             let state =
                 match referenced with
