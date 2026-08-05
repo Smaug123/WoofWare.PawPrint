@@ -1357,14 +1357,25 @@ module NativeRuntimeTypeHelpers =
     /// `RuntimeType.MakeGenericType`. TODO: revisit if a different surface (e.g. a
     /// guest path that goes through verification rather than reflection) needs the
     /// other exception type.
-    let validateSpecialConstraints
+    /// Validate the special constraints (`struct` / `class` / `new()`) declared by a *generic
+    /// parameter list*, whoever owns it: a generic type's, via `validateSpecialConstraints` below,
+    /// or a generic method's, via `RuntimeMethodHandle_GetStubIfNeededSlow`. Both owners reach the
+    /// same CoreCLR check while binding, and both surface a violation as `ArgumentException`.
+    ///
+    /// `ownerDisplayName` appears only in the returned diagnostic; callers currently use the
+    /// `Some`/`None` as a predicate and raise a message-less guest exception.
+    ///
+    /// Base-type and interface requirements (the `Constraints` array) are still not validated --
+    /// same scope as when this was type-only.
+    let validateSpecialConstraintsOn
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        (ownerDisplayName : string)
+        (generics : GenericParamFromMetadata ImmutableArray)
         (genericArguments : ConcreteTypeHandle list)
         : string option
         =
-        if typeInfo.Generics.Length <> List.length genericArguments then
+        if generics.Length <> List.length genericArguments then
             // Arity mismatch: defer to downstream to surface a more specific error.
             None
         else
@@ -1375,7 +1386,7 @@ module NativeRuntimeTypeHelpers =
                     if paramMd.Constraint = Some GenericConstraint.NonNullableValue then
                         if not isValue || argumentIsNullable baseClassTypes state arg then
                             Some
-                                $"GenericArguments[%i{param.SequenceNumber}], '%s{param.Name}', on '%s{typeInfo.Namespace}.%s{typeInfo.Name}', violates the constraint of type 'System.ValueType'."
+                                $"GenericArguments[%i{param.SequenceNumber}], '%s{param.Name}', on '%s{ownerDisplayName}', violates the constraint of type 'System.ValueType'."
                         else
                             None
                     else
@@ -1384,7 +1395,7 @@ module NativeRuntimeTypeHelpers =
                 let referenceTypeViolation () =
                     if paramMd.Constraint = Some GenericConstraint.Reference && isValue then
                         Some
-                            $"GenericArguments[%i{param.SequenceNumber}], '%s{param.Name}', on '%s{typeInfo.Namespace}.%s{typeInfo.Name}', violates the constraint of type 'class'."
+                            $"GenericArguments[%i{param.SequenceNumber}], '%s{param.Name}', on '%s{ownerDisplayName}', violates the constraint of type 'class'."
                     else
                         None
 
@@ -1394,7 +1405,7 @@ module NativeRuntimeTypeHelpers =
                         && not (argumentSatisfiesNewConstraint baseClassTypes state arg)
                     then
                         Some
-                            $"GenericArguments[%i{param.SequenceNumber}], '%s{param.Name}', on '%s{typeInfo.Namespace}.%s{typeInfo.Name}', violates the constraint of type 'new()'."
+                            $"GenericArguments[%i{param.SequenceNumber}], '%s{param.Name}', on '%s{ownerDisplayName}', violates the constraint of type 'new()'."
                     else
                         None
 
@@ -1402,8 +1413,23 @@ module NativeRuntimeTypeHelpers =
                 |> Option.orElseWith referenceTypeViolation
                 |> Option.orElseWith newConstraintViolation
 
-            Seq.zip typeInfo.Generics genericArguments
+            Seq.zip generics genericArguments
             |> Seq.tryPick (fun ((param, paramMd), arg) -> violationFor param paramMd arg)
+
+    /// `validateSpecialConstraintsOn` for a generic *type*'s parameter list.
+    let validateSpecialConstraints
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        (genericArguments : ConcreteTypeHandle list)
+        : string option
+        =
+        validateSpecialConstraintsOn
+            baseClassTypes
+            state
+            $"%s{typeInfo.Namespace}.%s{typeInfo.Name}"
+            typeInfo.Generics
+            genericArguments
 
     let getOrAllocateRuntimeAssembly
         (loggerFactory : ILoggerFactory)
@@ -1759,3 +1785,55 @@ module NativeRuntimeTypeHelpers =
             |> fst
 
         IlMachineState.writeManagedByrefWithBase baseClassTypes state destination (CliType.ObjectRef (Some arrayAddr))
+
+    /// The inverse of <see cref="copyRuntimeTypeHandles"/>: read a managed <c>RuntimeType[]</c>
+    /// back *in* through an <c>ObjectHandleOnStack</c>, as CoreCLR does when a QCall receives an
+    /// instantiation from managed code (e.g. `RuntimeMethodHandle_GetStubIfNeededSlow`,
+    /// runtimehandles.cpp:1936-1953).
+    ///
+    /// Returns <c>None</c> for a null array reference, keeping that distinct from an
+    /// allocated-but-empty array. CoreCLR collapses the two here -- it guards on
+    /// <c>methodInstantiation.Get() != NULL</c> and an empty array yields <c>ntypars = 0</c> -- but
+    /// the distinction is the caller's to discard, not this helper's to hide.
+    ///
+    /// Each element is a <c>RuntimeType</c>, so the result is a <c>RuntimeTypeHandleTarget</c> per
+    /// element; narrowing to the closed types a particular caller can use is likewise the caller's
+    /// job.
+    let readRuntimeTypeHandleArray
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (argName : string)
+        (state : IlMachineState)
+        (source : ManagedPointerSource)
+        : RuntimeTypeHandleTarget list option
+        =
+        match IlMachineState.readManagedByref baseClassTypes state source with
+        | CliType.ObjectRef None -> None
+        | CliType.ObjectRef (Some arrayAddr) ->
+            let array =
+                match state.ManagedHeap.Arrays.TryGetValue arrayAddr with
+                | true, array -> array
+                | false, _ ->
+                    failwith
+                        $"%s{operation}: %s{argName} points at %O{arrayAddr}, which is not an array on the managed heap"
+
+            [
+                for index in 0 .. array.Length - 1 do
+                    match IlMachineState.getArrayValue arrayAddr index state with
+                    | CliType.ObjectRef None ->
+                        // CoreCLR throws ArgumentNullException("inst", "ArgumentNull_ArrayElement")
+                        // (runtimehandles.cpp:1948-1949). Unreachable from the public API, whose
+                        // managed wrappers null-check each element before building the array (e.g.
+                        // RuntimeMethodInfo.MakeGenericMethod, RuntimeMethodInfo.CoreCLR.cs:420-421),
+                        // so surface the condition rather than inventing a guest exception path.
+                        failwith
+                            $"TODO: %s{operation}: %s{argName}[%d{index}] is null; CoreCLR throws ArgumentNullException(\"inst\", \"ArgumentNull_ArrayElement\")"
+                    | element ->
+                        yield
+                            NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef
+                                operation
+                                state
+                                (EvalStackValue.ofCliType element)
+            ]
+            |> Some
+        | other -> failwith $"%s{operation}: expected %s{argName} to hold an array reference, got %O{other}"

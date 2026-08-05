@@ -1,6 +1,46 @@
 namespace WoofWare.PawPrint
 
+open System.Collections.Immutable
 open System.Reflection
+
+/// The properties of a MethodTable-backed declaring type that CoreCLR's
+/// `MethodDesc::FindOrCreateAssociatedMethodDescForReflection` (genmeth.cpp:1233) and its
+/// duplicated fast-path predicate in `RuntimeMethodHandle::GetStubIfNeededInternal`
+/// (runtimehandles.cpp:1901-1906) consult when deciding whether reflection needs an
+/// instantiating stub.
+type MethodTableStubFacts =
+    {
+        IsValueType : bool
+        /// CoreCLR's `TypeHandle::HasInstantiation()`: the type has generic parameters, whether or
+        /// not they are bound. True for both `Foo<int>` and the typical `Foo<>`.
+        HasInstantiation : bool
+        IsGenericTypeDefinition : bool
+        IsInterface : bool
+    }
+
+/// A declaring type as the `GetStubIfNeeded` decision sees it. CoreCLR splits on
+/// `TypeHandle::IsTypeDesc()` first, and a TypeDesc carries none of the MethodTable properties, so
+/// the split is modelled as a DU rather than a record with meaningless fields.
+[<RequireQualifiedAccess>]
+type StubDeclaringType =
+    /// A `TypeDesc`: byrefs and pointers (`ParamTypeDesc`), function pointers (`FnPtrTypeDesc`),
+    /// and generic variables (`TypeVarTypeDesc`). Note arrays are *not* TypeDescs -- modern
+    /// CoreCLR gives them MethodTables (typedesc.h:112 lists ParamTypeDesc as BYREF/PTR only).
+    | TypeDesc
+    | MethodTable of MethodTableStubFacts
+
+/// What `RuntimeMethodHandle_GetStubIfNeededSlow` should do, as a description rather than an
+/// action, so the decision can be pinned independently of the QCall plumbing.
+[<RequireQualifiedAccess>]
+type StubOutcome =
+    /// Hand back the caller's own handle. CoreCLR returns the same `MethodDesc*`.
+    | Original
+    /// Hand back a handle for the same MethodDef, rebound onto the QCall's declaring type and the
+    /// supplied method instantiation.
+    | Rebind
+    /// The supplied instantiation's length disagrees with the method's declared generic arity;
+    /// CoreCLR throws `ArgumentException` (genmeth.cpp:1261-1262).
+    | ArityMismatch
 
 [<RequireQualifiedAccess>]
 module NativeRuntimeMethodHandle =
@@ -74,6 +114,157 @@ module NativeRuntimeMethodHandle =
                     $"%s{operation}: method %O{methodDefinition.Get} on %O{declaringType.TypeDefinition.Get} declares %d{methodGenericParamCount} generic parameters but its handle binds %d{List.length handleInstantiation} type arguments"
 
             handleInstantiation |> List.map RuntimeTypeHandleTarget.Closed
+
+    /// CoreCLR's `RuntimeMethodHandle::GetStubIfNeededInternal` FCall predicate
+    /// (runtimehandles.cpp:1901-1906):
+    ///
+    ///     pMethod->HasMethodInstantiation()
+    ///     || (!instType.IsValueType()
+    ///         && (!instType.HasInstantiation() || instType.IsGenericTypeDefinition()))
+    ///
+    /// When true, the fast path hands back the original `MethodDesc*` and the slow QCall is never
+    /// reached. CoreCLR notes this logic is "duplicated from
+    /// FindOrCreateAssociatedMethodDescForReflection" (runtimehandles.cpp:1899-1900), which is what
+    /// makes the cross-check property in TestNativeRuntimeMethodHandle.fs meaningful: whenever this
+    /// says "original", `stubOutcome` must agree.
+    ///
+    /// A TypeDesc answers `false` to both `IsValueType()` and `HasInstantiation()`, so it satisfies
+    /// the second disjunct and returns the original -- consistent with `stubOutcome`'s TypeDesc arm.
+    let fastPathReturnsOriginal (methodHasInstantiation : bool) (declaringType : StubDeclaringType) : bool =
+        if methodHasInstantiation then
+            true
+        else
+            match declaringType with
+            | StubDeclaringType.TypeDesc -> true
+            | StubDeclaringType.MethodTable facts ->
+                not facts.IsValueType
+                && (not facts.HasInstantiation || facts.IsGenericTypeDefinition)
+
+    /// CoreCLR's `MethodDesc::FindOrCreateAssociatedMethodDescForReflection` (genmeth.cpp:1233),
+    /// as reached through `RuntimeMethodHandle_GetStubIfNeededSlow`.
+    ///
+    /// `methodGenericParamCount` is the method's declared generic arity
+    /// (`pMethod->GetNumGenericMethodArgs()`, and `HasMethodInstantiation()` is that being
+    /// non-zero); `methodInstantiationCount` is the length of the decoded `RuntimeType[]`, where
+    /// CoreCLR treats a null array and an empty one alike (runtimehandles.cpp:1936 guards on
+    /// non-null, and an empty array yields `ntypars = 0`).
+    ///
+    /// Only the instantiation's *length* bears on the decision, and taking it that way keeps
+    /// callers honest about ordering: CoreCLR returns for a TypeDesc declaring type before the
+    /// instantiation is inspected at all, so a caller must not do work that can fail on the
+    /// instantiation's *contents* until this has answered `Rebind`.
+    let stubOutcome
+        (declaringType : StubDeclaringType)
+        (methodIsStatic : bool)
+        (methodGenericParamCount : int)
+        (methodInstantiationCount : int)
+        : StubOutcome
+        =
+        if methodInstantiationCount < 0 then
+            failwith
+                $"RuntimeMethodHandle.GetStubIfNeededSlow: method instantiation count must be non-negative, got %d{methodInstantiationCount}"
+
+        match declaringType with
+        | StubDeclaringType.TypeDesc ->
+            // genmeth.cpp:1247-1249: "no stubs for TypeDesc". This runs *before* the instantiation
+            // is examined, so even a non-empty (or wrongly-sized) instantiation returns the
+            // original here rather than being validated.
+            StubOutcome.Original
+        | StubDeclaringType.MethodTable facts ->
+
+        if methodInstantiationCount > 0 then
+            // genmeth.cpp:1256-1270: BindGenericParameters() was called, so an instantiating stub
+            // is always wanted. CoreCLR asserts `pMethod->HasMethodInstantiation()` here; in a
+            // release build that assert is absent and the arity check below rejects the same
+            // condition, since a non-generic method has arity 0 and the instantiation is non-empty.
+            if methodInstantiationCount <> methodGenericParamCount then
+                StubOutcome.ArityMismatch
+            else
+                StubOutcome.Rebind
+        else
+            // genmeth.cpp:1272-1277. Needs an instantiating stub if the method is non-generic and
+            // it is a non-generic static method on a generic class, a non-generic method on a
+            // struct, or a non-generic method on a generic interface.
+            let needsStub =
+                methodGenericParamCount = 0
+                && (facts.IsValueType
+                    || (facts.HasInstantiation
+                        && not facts.IsGenericTypeDefinition
+                        && (facts.IsInterface || methodIsStatic)))
+
+            if needsStub then
+                StubOutcome.Rebind
+            else
+                StubOutcome.Original
+
+    /// Project a `RuntimeTypeHandleTarget` onto the facts `stubOutcome` consumes, i.e. classify it
+    /// the way CoreCLR's `TypeHandle` would.
+    let private stubDeclaringTypeOfTarget
+        (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (target : RuntimeTypeHandleTarget)
+        : StubDeclaringType
+        =
+        let factsOfTypeInfo
+            (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+            (hasInstantiation : bool)
+            (isGenericTypeDefinition : bool)
+            : StubDeclaringType
+            =
+            StubDeclaringType.MethodTable
+                {
+                    IsValueType = DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo
+                    HasInstantiation = hasInstantiation
+                    IsGenericTypeDefinition = isGenericTypeDefinition
+                    IsInterface = typeInfo.TypeAttributes.HasFlag TypeAttributes.Interface
+                }
+
+        let typeInfoOf (identity : ResolvedTypeIdentity) : TypeInfo<GenericParamFromMetadata, TypeDefn> =
+            let assembly =
+                state.LoadedAssembly identity.Assembly
+                |> Option.defaultWith (fun () ->
+                    failwith $"%s{operation}: assembly %s{identity.AssemblyFullName} is not loaded"
+                )
+
+            assembly.TypeDefs.[identity.TypeDefinition.Get]
+
+        match target with
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as handle) ->
+            let concreteType =
+                AllConcreteTypes.lookup handle state.ConcreteTypes
+                |> Option.defaultWith (fun () ->
+                    failwith $"%s{operation}: concrete type handle %O{handle} is not registered in ConcreteTypes"
+                )
+
+            // A `Closed` handle is fully bound, so it is never a generic type *definition*; it has
+            // an instantiation exactly when it was built with generic arguments.
+            factsOfTypeInfo (typeInfoOf concreteType.Identity) (not concreteType.Generics.IsEmpty) false
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.OneDimArrayZero _)
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Array _) ->
+            // Arrays carry MethodTables in modern CoreCLR (only byrefs/pointers, function pointers
+            // and generic variables are TypeDescs). An array is a reference type with no
+            // instantiation of its own, so no stub is ever needed for a method on one.
+            StubDeclaringType.MethodTable
+                {
+                    IsValueType = false
+                    HasInstantiation = false
+                    IsGenericTypeDefinition = false
+                    IsInterface = false
+                }
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref _)
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Pointer _)
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.FunctionPointer _) ->
+            // ParamTypeDesc (BYREF, PTR) and FnPtrTypeDesc.
+            StubDeclaringType.TypeDesc
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+            // `typeof(G<>)` is a MethodTable in CoreCLR -- the typical instantiation -- with
+            // HasInstantiation and IsGenericTypeDefinition both true.
+            factsOfTypeInfo (typeInfoOf identity) true true
+        | RuntimeTypeHandleTarget.GenericParameter _
+        | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
+            // TypeVarTypeDesc.
+            StubDeclaringType.TypeDesc
 
     /// Resolve a `RuntimeMethodHandleInternal` argument to the `MethodHandle` it denotes.
     let private resolveMethodHandleFromArg
@@ -458,6 +649,208 @@ module NativeRuntimeMethodHandle =
                     targets
 
             NativeHandlerResult.completed state |> Some
+        | "RuntimeMethodHandle_GetStubIfNeededSlow",
+          "System.Private.CoreLib",
+          "System",
+          "RuntimeMethodHandle",
+          "GetStubIfNeededSlow",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System",
+                                              "RuntimeMethodHandleInternal",
+                                              handleGenerics)
+            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "QCallTypeHandle",
+                                              qCallGenerics)
+            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "ObjectHandleOnStack",
+                                              objectHandleGenerics) ],
+          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                                      "System",
+                                                                      "RuntimeMethodHandleInternal",
+                                                                      retGenerics)) when
+            handleGenerics.IsEmpty
+            && qCallGenerics.IsEmpty
+            && objectHandleGenerics.IsEmpty
+            && retGenerics.IsEmpty
+            ->
+            // CoreCLR runtimehandles.cpp:1914. The slow half of `RuntimeMethodHandle.GetStubIfNeeded`:
+            // decode the optional `RuntimeType[]` instantiation and delegate to
+            // `MethodDesc::FindOrCreateAssociatedMethodDescForReflection` (genmeth.cpp:1233). See
+            // `stubOutcome` above for the decision itself.
+            //
+            // PawPrint's `MethodHandle` already records the declaring type and method instantiation
+            // a CoreCLR instantiating stub exists to supply -- there is no shared canonical code
+            // here -- so "create a stub" is just "register the handle denoting this method at this
+            // instantiation".
+            let operation = "RuntimeMethodHandle.GetStubIfNeededSlow"
+
+            if instruction.Arguments.Length <> 3 then
+                failwith $"%s{operation}: expected three native arguments, got %d{instruction.Arguments.Length}"
+
+            let methodHandleId =
+                NativeCall.methodHandleIdOfRuntimeMethodHandleInternal operation instruction.Arguments.[0]
+                |> Option.defaultWith (fun () -> failwith $"%s{operation}: null RuntimeMethodHandleInternal")
+
+            let methodHandle =
+                resolveMethodHandleFromArg operation state instruction.Arguments.[0]
+
+            let methodInfo = methodInfoOfMethodHandle operation state methodHandle
+
+            let declaringTarget =
+                NativeCall.qCallTypeHandleToRuntimeTypeHandleTarget
+                    operation
+                    state
+                    (instruction.Arguments.[1] |> EvalStackValue.ofCliType)
+
+            let instantiationSource =
+                NativeCall.objectHandleOnStackTarget operation state "methodInstantiation" instruction.Arguments.[2]
+
+            // CoreCLR treats a null array and an empty one alike here, so collapse them.
+            let instantiationTargets : RuntimeTypeHandleTarget list =
+                NativeRuntimeTypeHelpers.readRuntimeTypeHandleArray
+                    ctx.BaseClassTypes
+                    operation
+                    "methodInstantiation"
+                    state
+                    instantiationSource
+                |> Option.defaultValue []
+
+            let declaringFacts =
+                stubDeclaringTypeOfTarget operation ctx.BaseClassTypes state declaringTarget
+
+            match
+                stubOutcome
+                    declaringFacts
+                    methodInfo.IsStatic
+                    methodInfo.Generics.Length
+                    (List.length instantiationTargets)
+            with
+            | StubOutcome.ArityMismatch ->
+                // genmeth.cpp:1261-1262. `RuntimeType.SanityCheckGenericArguments` already screens
+                // this on the managed side, so reaching here means a BCL path we don't model got
+                // through; raise the same exception CoreCLR would rather than trusting the screen.
+                NativeHandlerResult.raiseException ctx.BaseClassTypes.ArgumentException state
+                |> Some
+            | StubOutcome.Original ->
+                let state =
+                    MethodHandleRegistry.internalHandleFromId ctx.BaseClassTypes state.ConcreteTypes methodHandleId
+                    |> CliType.ValueType
+                    |> fun handle -> IlMachineState.pushToEvalStack handle ctx.Thread state
+
+                NativeHandlerResult.completed state |> Some
+            | StubOutcome.Rebind ->
+
+            // Only now that a stub is actually wanted do we require the instantiation's *elements*
+            // to be closed. Narrowing earlier would reject inputs CoreCLR accepts: its TypeDesc arm
+            // returns before the instantiation is inspected at all, so a method whose declaring type
+            // is a byref/pointer/fnptr/type-variable ignores whatever was passed.
+            let methodInstantiation : ConcreteTypeHandle list =
+                instantiationTargets
+                |> List.mapi (fun index target ->
+                    match target with
+                    | RuntimeTypeHandleTarget.Closed handle -> handle
+                    | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+                    | RuntimeTypeHandleTarget.GenericParameter _
+                    | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
+                        // Reached by `MakeGenericMethod` with a type argument that still contains
+                        // generic parameters -- `M.MakeGenericMethod(typeof(G<>))` or
+                        // `M.MakeGenericMethod(someTypeParameter)`. Both are legal: real .NET
+                        // returns a MethodInfo with `ContainsGenericParameters = true` (verified
+                        // against the runtime), which you can inspect but not invoke.
+                        //
+                        // PawPrint cannot represent one yet: `MethodHandle.MethodGenerics` is a
+                        // `ConcreteTypeHandle list`, and `ConcreteTypeHandle` is closed by
+                        // construction (it indexes `AllConcreteTypes`, whose entries are identity
+                        // plus *closed* generic arguments). Widening it is a change to the core
+                        // registry representation that reaches concretization and every other
+                        // MethodHandle consumer, so it is deliberately not attempted here; see
+                        // `sourcesPure/MakeGenericMethodOpenArgument.cs`, which is parked in
+                        // TestPureCases.unimplemented against this gap.
+                        failwith
+                            $"TODO: %s{operation}: methodInstantiation[%d{index}] is %O{target}, which is not a closed type; this is MakeGenericMethod with an open type argument, and PawPrint's MethodHandle can only bind closed method generic arguments"
+                )
+
+            // Rebinding needs the declaring type's own generic arguments as the substitution
+            // context, which only a nominal closed type carries.
+            let declaringTypeGenerics : ImmutableArray<ConcreteTypeHandle> =
+                match declaringTarget with
+                | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as handle) ->
+                    AllConcreteTypes.lookup handle state.ConcreteTypes
+                    |> Option.defaultWith (fun () ->
+                        failwith $"%s{operation}: declaring type handle %O{handle} is not registered in ConcreteTypes"
+                    )
+                    |> fun concreteType -> concreteType.Generics
+                | other ->
+                    // `stubOutcome` only says `Rebind` for a MethodTable-backed declaring type, so
+                    // the reachable shapes here are arrays and open generic type definitions, both
+                    // via a non-empty instantiation. CoreCLR handles those perfectly normally --
+                    // `typeof(G<>).GetMethod("M").MakeGenericMethod(typeof(int))` is an ordinary
+                    // reflection idiom (genmeth.cpp:1256-1270) -- and PawPrint does not reach here
+                    // today only because such a lookup dies earlier, at the unrelated
+                    // `RuntimeTypeHandle.GetNumVirtuals` TODO for open generic type definitions
+                    // (NativeRuntimeTypeHelpers.fs). When that gap closes this becomes live and
+                    // needs real support, not just a comment: an open declaring type's "generic
+                    // arguments" are its own type variables, which `ConcreteTypeHandle` cannot
+                    // express (the same limitation as the open-argument case above).
+                    failwith
+                        $"TODO: %s{operation}: rebinding onto %O{other} is not supported; only a closed nominal declaring type carries the generic arguments needed as a substitution context"
+
+            // CoreCLR validates the method's generic constraints while binding
+            // (`FindOrCreateAssociatedMethodDesc` -> `SatisfiesClassConstraints`) and surfaces a
+            // violation to the caller of `MakeGenericMethod` as `ArgumentException`: the binder
+            // raises `VerificationException`, which `RuntimeMethodInfo.MakeGenericMethod` catches
+            // and rewrites via `ValidateGenericArguments`
+            // (RuntimeMethodInfo.CoreCLR.cs:446-450). The managed `SanityCheckGenericArguments`
+            // that runs *before* the QCall only screens nulls, non-RuntimeType arguments and arity,
+            // so without this check PawPrint would hand back a usable handle where real .NET
+            // throws. We raise `ArgumentException` directly, which the managed `catch
+            // (VerificationException)` does not intercept, so it propagates as the same exception
+            // type the caller would have seen.
+            //
+            // Same scope as the sibling `RuntimeTypeHandle_Instantiate` arm: special constraints
+            // (`struct` / `class` / `new()`) only; base-type and interface requirements are not yet
+            // validated for either owner.
+            let constraintViolation =
+                NativeRuntimeTypeHelpers.validateSpecialConstraintsOn
+                    ctx.BaseClassTypes
+                    state
+                    $"%s{methodInfo.DeclaringType.Namespace}.%s{methodInfo.DeclaringType.Name}.%s{methodInfo.Name}"
+                    methodInfo.Generics
+                    methodInstantiation
+
+            match constraintViolation with
+            | Some _message ->
+                NativeHandlerResult.raiseException ctx.BaseClassTypes.ArgumentException state
+                |> Some
+            | None ->
+
+            let state, concretizedMethod, _ =
+                ExecutionConcretization.concretizeMethodWithAllGenerics
+                    ctx.LoggerFactory
+                    ctx.BaseClassTypes
+                    declaringTypeGenerics
+                    methodInfo
+                    (ImmutableArray.CreateRange methodInstantiation)
+                    state
+
+            let handleValue, registry =
+                MethodHandleRegistry.getOrAllocateConcreteInternalHandle
+                    ctx.BaseClassTypes
+                    state.ConcreteTypes
+                    concretizedMethod
+                    state.MethodHandles
+
+            let state =
+                { state with
+                    MethodHandles = registry
+                }
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.ValueType handleValue) ctx.Thread state
+
+            NativeHandlerResult.completed state |> Some
         | _ -> None
 
     let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
@@ -574,11 +967,9 @@ module NativeRuntimeMethodHandle =
             // QCall RuntimeMethodHandle_GetStubIfNeededSlow, which materialises an
             // InstantiatedMethodDesc via FindOrCreateAssociatedMethodDescForReflection.
             //
-            // CoreCLR predicate (skipping the IsAsyncVariantMethod short-circuit since async
-            // variants aren't yet modelled in PawPrint):
-            //   pMethod->HasMethodInstantiation()
-            //   || (!instType.IsValueType()
-            //       && (!instType.HasInstantiation() || instType.IsGenericTypeDefinition()))
+            // The predicate lives in `fastPathReturnsOriginal` above, so that it and the slow path's
+            // `stubOutcome` -- which CoreCLR documents as duplicates of each other -- can be
+            // cross-checked against one another by property test.
             let operation = "RuntimeMethodHandle.GetStubIfNeededInternal"
 
             let methodInfo =
@@ -596,65 +987,11 @@ module NativeRuntimeMethodHandle =
             let target =
                 NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
 
+            let declaringType =
+                stubDeclaringTypeOfTarget operation ctx.BaseClassTypes state target
+
             let returnsOriginalHandle =
-                if hasMethodInstantiation then
-                    true
-                else
-                    match target with
-                    | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
-                        // An open generic type definition has HasInstantiation = true and
-                        // IsGenericTypeDefinition = true, so the inner disjunction is true; the
-                        // overall predicate reduces to !IsValueType. (Roslyn does emit value-typed
-                        // generic definitions, e.g. Nullable<>, so we cannot assume false here.)
-                        let assembly =
-                            state.LoadedAssembly identity.Assembly
-                            |> Option.defaultWith (fun () ->
-                                failwith
-                                    $"%s{operation}: assembly for open generic type definition is not loaded: %s{identity.AssemblyFullName}"
-                            )
-
-                        let typeInfo = assembly.TypeDefs.[identity.TypeDefinition.Get]
-
-                        not (DumpedAssembly.isValueType ctx.BaseClassTypes state._LoadedAssemblies typeInfo)
-                    | RuntimeTypeHandleTarget.Closed handle ->
-                        // A `Closed` handle is a fully-bound type. IsGenericTypeDefinition is
-                        // therefore false; HasInstantiation matches whether the concrete type has
-                        // generic arguments. Structural shapes (array/byref/pointer/fnptr) have no
-                        // nominal definition and are reference-shaped from this predicate's
-                        // perspective: !IsValueType && (!HasInstantiation || false) = true.
-                        match handle with
-                        | ConcreteTypeHandle.Concrete _ ->
-                            match AllConcreteTypes.lookup handle state.ConcreteTypes with
-                            | None ->
-                                failwith
-                                    $"%s{operation}: closed RuntimeTypeHandle %O{handle} not found in ConcreteTypes"
-                            | Some concreteType ->
-                                let assembly =
-                                    state.LoadedAssembly concreteType.Assembly
-                                    |> Option.defaultWith (fun () ->
-                                        failwith
-                                            $"%s{operation}: assembly %s{concreteType.Assembly.FullName} for closed RuntimeTypeHandle is not loaded"
-                                    )
-
-                                let typeInfo = assembly.TypeDefs.[concreteType.Definition.Get]
-
-                                let isValueType =
-                                    DumpedAssembly.isValueType ctx.BaseClassTypes state._LoadedAssemblies typeInfo
-
-                                let hasInstantiation = not concreteType.Generics.IsEmpty
-
-                                not isValueType && not hasInstantiation
-                        | ConcreteTypeHandle.Byref _
-                        | ConcreteTypeHandle.Pointer _
-                        | ConcreteTypeHandle.FunctionPointer _
-                        | ConcreteTypeHandle.OneDimArrayZero _
-                        | ConcreteTypeHandle.Array _ -> true
-                    | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
-                        failwith
-                            $"%s{operation}: TODO: not implemented for type-generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}; reflecting MethodInfo through a TypeVar declaring type is uncommon and would need IsValueType modelling against the parameter's struct constraint"
-                    | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
-                        failwith
-                            $"%s{operation}: TODO: not implemented for method-generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
+                fastPathReturnsOriginal hasMethodInstantiation declaringType
 
             let returnValue =
                 if returnsOriginalHandle then
