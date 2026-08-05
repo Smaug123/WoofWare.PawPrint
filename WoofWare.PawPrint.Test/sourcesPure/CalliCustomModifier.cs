@@ -5,12 +5,15 @@
 // Anything in `executeCalli` that classifies a signature — the void-vs-value return check and
 // the punned-signature guard — has to look through such wrappers, because custom modifiers
 // carry calling-convention and language-level information and say nothing about the
-// evaluation-stack shape. Classifying the wrapper instead of the type it wraps would reject
-// this call as a shape mismatch.
+// evaluation-stack shape.
 //
-// The `modopt(CallConv*) void` shape that would exercise the void branch of the same problem
-// needs an unmanaged calling convention, which this runtime cannot execute yet, so this test
-// covers the managed half only.
+// Be clear about what this does and does not pin. It does NOT fail if `stripCustomModifiers`
+// is deleted: the modified types here are byrefs, which are neither `Void` nor primitive, so
+// they are unclassified either way. The shapes that actually distinguish the two behaviours
+// are `modopt(CallConv*) void` and a modified primitive, and C# only emits those for unmanaged
+// function pointers, which this runtime cannot execute. So this is a regression test that a
+// modifier-bearing managed signature survives `calli` at all — worth having, since nothing
+// else covers it — and not a test of the classification fix that motivated it.
 
 public static unsafe class Program
 {

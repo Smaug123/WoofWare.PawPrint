@@ -10,11 +10,6 @@ module IlMachineThreadState =
     let getFrame (thread : ThreadId) (frameId : FrameId) (state : IlMachineState) : MethodState =
         ThreadState.getFrame frameId state.ThreadState.[thread]
 
-    /// See `ThreadState.tryGetFrame`: use this when the frame may have been unwound since the
-    /// `FrameId` was taken.
-    let tryGetFrame (thread : ThreadId) (frameId : FrameId) (state : IlMachineState) : MethodState option =
-        ThreadState.tryGetFrame frameId state.ThreadState.[thread]
-
     let setFrame
         (thread : ThreadId)
         (frameId : FrameId)

@@ -14,13 +14,18 @@ open WoofWare.PawPrint
 /// instruction re-executes. `executeCalli` restores its function pointer for that retry, and
 /// must also *report* the suspension — the two are the same fact and have to agree.
 ///
-/// The difference is not cosmetic. `Scheduler.onStepOutcome` treats `Executed` as forward
-/// progress and wakes every thread parked `BlockedOnClassInit` on this one, whereas
-/// `SuspendedForClassInit` deliberately leaves them parked because the class init has *not*
-/// finished. Reporting `Executed` here would wake a waiter while the cctor is still running:
-/// it would take a step, re-block, and the interleaving would differ from the one the
-/// scheduler intended. In a runtime whose purpose is reproducible thread schedules, a
-/// spurious wake is a correctness bug and not merely a wasted step.
+/// `Scheduler.onStepOutcome` treats `Executed` as forward progress and wakes every thread
+/// parked `BlockedOnClassInit` on this one, whereas `SuspendedForClassInit` leaves them parked
+/// because the class init has *not* finished. Reporting `Executed` here would wake a waiter
+/// while the cctor is still running; it would take a step and re-block.
+///
+/// That is a fidelity bug rather than a correctness one, and the distinction is worth keeping
+/// straight: the woken thread re-checks its blocker, so the result is unaffected and the
+/// schedule stays deterministic — `Scheduler.onStepOutcome`'s own doc calls the speculative
+/// wake "correct but wasteful". The reason to pin it is that the outcome is derived from the
+/// same value as the function-pointer restore, which *is* load-bearing, so a regression in one
+/// is a regression in the other. Note the sibling call ops still report `Executed`
+/// unconditionally in this situation.
 ///
 /// Asserted by stepping the guest and looking only at steps whose executing instruction is
 /// itself a `calli`, so an unrelated class init elsewhere in start-up cannot satisfy it.
@@ -51,10 +56,13 @@ module TestCalliSuspensionOutcome =
         | _ -> false
 
     /// Steps the guest to completion, returning the scheduler-visible outcome of exactly those
-    /// steps whose executing instruction was a `calli`. Restricting to `calli` steps matters:
-    /// class initialisation happens all over start-up, so a test that looked at every step could
-    /// be satisfied by something entirely unrelated to the instruction under test.
-    let private calliOutcomes (sourceName : string) (source : string) : WhatWeDid list =
+    /// steps whose executing instruction was a `calli`, together with the guest's exit code.
+    ///
+    /// Restricting to `calli` steps matters: class initialisation happens all over start-up, so a
+    /// test that looked at every step could be satisfied by something entirely unrelated to the
+    /// instruction under test. The exit code matters too — without it, a run that reported the
+    /// right outcomes while corrupting the guest's state would still pass.
+    let private calliOutcomes (sourceName : string) (source : string) : WhatWeDid list * int =
         let image = Roslyn.compile [ source ]
 
         let _messages, loggerFactory =
@@ -72,31 +80,40 @@ module TestCalliSuspensionOutcome =
         | Program.ProgramStartResult.CompletedBeforeMain outcome -> failwith $"guest completed before Main: %O{outcome}"
         | Program.ProgramStartResult.Ready prepared ->
 
-        let rec loop (prepared : Program.PreparedProgram) (acc : WhatWeDid list) : WhatWeDid list =
-            let about =
-                currentIlOp prepared.LastRan prepared.State
-                |> Option.orElseWith (fun () -> currentIlOp prepared.EntryThread prepared.State)
+        // `stepPrepared` reports which thread it ran, so attribute the outcome to *that* thread's
+        // pre-step instruction. Reading a fixed thread's instruction instead would mis-attribute
+        // as soon as the scheduler interleaves, which these single-threaded guests happen not to
+        // do — an accident not worth depending on.
+        let rec loop (prepared : Program.PreparedProgram) (acc : WhatWeDid list) : WhatWeDid list * int =
+            let stateBefore = prepared.State
 
             match Program.stepPrepared loggerFactory logger prepared with
-            | Program.ProgramStepOutcome.Completed _ -> List.rev acc
+            | Program.ProgramStepOutcome.Completed outcome ->
+                match outcome with
+                | RunOutcome.NormalExit (terminalState, terminatingThread)
+                | RunOutcome.ProcessExit (terminalState, terminatingThread) ->
+                    match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
+                    | EvalStackValue.Int32 (Int32Source.Verbatim exitCode) :: _ -> List.rev acc, exitCode
+                    | other -> failwith $"guest did not return an int exit code: %O{other}"
+                | other -> failwith $"guest did not exit normally: %O{other}"
             | Program.ProgramStepOutcome.Deadlocked (_, stuck) -> failwith $"guest deadlocked: %s{stuck}"
             | Program.ProgramStepOutcome.WorkerTerminated (p, _) -> loop p acc
-            | Program.ProgramStepOutcome.InstructionStepped (p, _ran, whatWeDid) ->
+            | Program.ProgramStepOutcome.InstructionStepped (p, ran, whatWeDid) ->
                 let acc =
-                    match about with
+                    match currentIlOp ran stateBefore with
                     | Some op when isCalli op -> whatWeDid :: acc
                     | _ -> acc
 
                 loop p acc
 
-        let observed = loop prepared []
+        let observed, exitCode = loop prepared []
 
         // Guard the guard: with no `calli` step observed, every assertion below would hold
         // vacuously and the test would pass while covering nothing.
         if List.isEmpty observed then
             failwith "no `calli` instruction was executed; this test no longer covers what it claims"
 
-        observed
+        observed, exitCode
 
     [<Test>]
     let ``calli reports SuspendedForClassInit when the callee suspends`` () =
@@ -124,7 +141,11 @@ public static unsafe class Program
 }
 """
 
-        let observed = calliOutcomes "CalliSuspensionOutcome.cs" source
+        let observed, exitCode = calliOutcomes "CalliSuspensionOutcome.cs" source
+
+        // The guest checks that the instance was created and that C's cctor really ran, so the
+        // outcomes below are being asserted about a run that actually did the right thing.
+        exitCode |> shouldEqual 0
 
         // The first execution finds C's cctor un-run, so it suspends; the retry then commits.
         observed |> shouldContain WhatWeDid.SuspendedForClassInit
@@ -158,6 +179,12 @@ public static unsafe class Program
 }
 """
 
-        let observed = calliOutcomes "CalliIntrinsicRaises.cs" source
+        let observed, exitCode = calliOutcomes "CalliIntrinsicRaises.cs" source
 
+        // The guest caught the NullReferenceException the intrinsic raised.
+        exitCode |> shouldEqual 0
+
+        // Assert what the name promises, not just the absence of the wrong answer: every `calli`
+        // step here must report `Executed`.
+        observed |> shouldEqual (observed |> List.map (fun _ -> WhatWeDid.Executed))
         observed |> shouldNotContain WhatWeDid.SuspendedForClassInit

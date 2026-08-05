@@ -1376,6 +1376,11 @@ module internal UnaryMetadataCallOps =
             // *active* frame is the class initialiser's, not ours.
             let callerFrameId = state.ThreadState.[thread].ActiveMethodState
 
+            // Depth before we touch anything, so the suspension path below can check that the only
+            // thing missing is the pointer we removed.
+            let depthBeforePop =
+                (IlMachineState.getFrame thread callerFrameId state).EvaluationStack.Values.Length
+
             // The pointer sits above the arguments, and arguments are popped from the top of the
             // stack, so it has to come off before we call in.
             let fnPtrValue, state = IlMachineState.popEvalStack thread state
@@ -1416,9 +1421,12 @@ module internal UnaryMetadataCallOps =
             //
             // The outcome is also what the scheduler sees: `Scheduler.onStepOutcome` treats
             // `Executed` as forward progress and wakes every thread parked `BlockedOnClassInit` on
-            // us, whereas `SuspendedForClassInit` leaves them parked precisely because our class
-            // init has not finished. Waking a waiter mid-cctor changes the interleaving, which in
-            // a runtime built for reproducible schedules is a correctness bug, not a wasted step.
+            // us, whereas `SuspendedForClassInit` leaves them parked because our class init has not
+            // finished. Reporting the truth here is the accurate thing to do, but note it is not
+            // load-bearing for correctness: a spuriously woken thread re-checks its blocker and
+            // re-blocks, which `Scheduler.onStepOutcome` itself describes as "correct but
+            // wasteful", and the schedule stays deterministic either way. The sibling call ops
+            // still report `Executed` unconditionally in this situation.
             match commitment with
             | IlMachineStateExecution.CallCommitment.Committed
             | IlMachineStateExecution.CallCommitment.Raised -> state, WhatWeDid.Executed
@@ -1426,6 +1434,20 @@ module internal UnaryMetadataCallOps =
                 // The frame is still live: a class-init suspension pushes a frame on top of ours,
                 // it does not unwind us (unlike `Raised`, which can).
                 let callerFrame = IlMachineState.getFrame thread callerFrameId state
+
+                // Restoring the pointer is only sound if the suspended callee consumed nothing
+                // else. That holds today because the one intrinsic that can suspend
+                // (`Activator.CreateInstance<T>()`) takes no arguments, so nothing has been popped
+                // but our pointer — an invariant of a different module, and one that a future
+                // argument-taking intrinsic learning to suspend would break silently, leaving the
+                // retry to re-pop arguments that are no longer there. Check it rather than trust
+                // it.
+                let depthNow = callerFrame.EvaluationStack.Values.Length
+
+                if depthNow <> depthBeforePop - 1 then
+                    failwith
+                        $"calli: callee suspended for class init having consumed %d{depthBeforePop - 1 - depthNow} evaluation-stack slot(s) beyond the function pointer; restoring the pointer would corrupt the frame for the retry"
+
                 let restored = callerFrame |> MethodState.pushToEvalStack' fnPtrValue
 
                 IlMachineState.setFrame thread callerFrameId restored state, WhatWeDid.SuspendedForClassInit
