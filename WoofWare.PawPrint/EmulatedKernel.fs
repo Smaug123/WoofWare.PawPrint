@@ -574,6 +574,36 @@ type EmulatedKernel =
         /// and BCL callers divide by it, so `NativeEnvironment` asserts the
         /// invariant at the point of use rather than trusting construction.
         ProcessorCount : int
+        /// Number reported by `Thread.OptimalMaxSpinWaitsPerSpinIteration` (an
+        /// `internal` property, reached only via `SpinWait.SpinOnce()` /
+        /// `LowLevelSpinWaiter` in ordinary guest code). Deliberately a value
+        /// in kernel state rather than a host read, for the same reason as
+        /// `ProcessorCount`: real CoreCLR computes it in
+        /// `YieldProcessorNormalization::PerformMeasurement`
+        /// (`yieldprocessornormalizedshared.cpp`) by literally timing how long
+        /// a `YieldProcessor()`/PAUSE instruction takes on the *host* CPU,
+        /// dividing elapsed hi-res ticks by the yield count. The initial pass
+        /// runs on a background finalizer-thread callback and takes
+        /// `NsPerYieldMeasurementCount` = 8 samples of `DetermineMeasureDurationUs()`
+        /// = 1 or 4 microseconds each, so 8–32 us of actual spinning; thereafter
+        /// `MeasurementPeriodMs` = 4000 is a floor on how often it may
+        /// re-measure (one sample per refresh), not time spent spinning. That
+        /// measurement is about as host-dependent as a number gets, so it must
+        /// be mocked.
+        ///
+        /// See `EmulatedKernel.defaultOptimalMaxSpinWaitsPerSpinIteration` for
+        /// the default and how it was chosen, and
+        /// `EmulatedKernel.maxOptimalMaxSpinWaitsPerSpinIteration` for the
+        /// ceiling this field is validated against.
+        ///
+        /// Unlike `ProcessorCount`, nothing in CoreLib latches this into a
+        /// cctor-time static: `SpinWait.SpinOnce`/`LowLevelSpinWaiter` re-read
+        /// `Thread.OptimalMaxSpinWaitsPerSpinIteration` on every call, so a
+        /// host may freely change it via record-copy mid-run if it ever needs
+        /// to (though `KernelConfig` remains the normal way to set it, for
+        /// the same "fixed for the whole recorded run" reason as the other
+        /// kernel knobs).
+        OptimalMaxSpinWaitsPerSpinIteration : int
         /// Unix-shaped platform identity the simulated process reports, as
         /// observed through `SystemNative_GetUnixRelease` (and hence
         /// `Environment.OSVersion` on a Unix CoreLib). Deliberately kernel
@@ -628,6 +658,52 @@ module EmulatedKernel =
     [<Literal>]
     let defaultProcessorCount : int = 1
 
+    /// Ceiling `Thread.OptimalMaxSpinWaitsPerSpinIteration` can legally report,
+    /// mirroring CoreCLR's own compile-time ceiling
+    /// `YieldProcessorNormalization::MaxOptimalMaxNormalizedYieldsPerSpinIteration`
+    /// (`yieldprocessornormalized.h`):
+    /// `TargetMaxNsPerSpinIteration * 3 / (TargetNsPerNormalizedYield * 2) + 1`
+    /// = `272 * 3 / (37 * 2) + 1` = `816 / 74 + 1` = `11 + 1` (integer
+    /// division) = `12`. CoreCLR asserts its measured value never exceeds
+    /// this; `withOptimalMaxSpinWaitsPerSpinIteration` enforces the same bound
+    /// on a host-supplied value so PawPrint can never hand a guest a number
+    /// the real property could not produce.
+    [<Literal>]
+    let maxOptimalMaxSpinWaitsPerSpinIteration : int = 12
+
+    /// Default for `Thread.OptimalMaxSpinWaitsPerSpinIteration` a freshly-
+    /// minted simulated process reports. Derived from the same formula
+    /// CoreCLR's real measurement feeds
+    /// (`yieldprocessornormalizedshared.cpp`,
+    /// `s_optimalMaxNormalizedYieldsPerSpinIteration = max(1, round(
+    /// TargetMaxNsPerSpinIteration / (yieldsPerNormalizedYield *
+    /// establishedNsPerYield)))`), evaluated at the one input CoreCLR itself
+    /// treats as the target rather than a measurement: assume the host's
+    /// per-yield cost lands exactly on `TargetNsPerNormalizedYield` (37ns),
+    /// the value CoreCLR's static `s_establishedNsPerYield` is seeded with
+    /// before any measurement ever runs. That gives
+    /// `yieldsPerNormalizedYield = max(1, round(37 / 37)) = 1`, and hence
+    /// `optimalMaxNormalizedYieldsPerSpinIteration = max(1, round(272 / (1 *
+    /// 37))) = round(7.35) = 7`. This is a "textbook" host, not an arbitrary
+    /// number: it is what the exact same formula CoreCLR uses would compute
+    /// for a CPU that matches the calibration's own design target precisely,
+    /// which is a more defensible fixed point than either extreme
+    /// (`1`, degenerate minimum spinning; `12`, the hard ceiling).
+    ///
+    /// There is in fact a stronger justification than that derivation:
+    /// CoreCLR ships exactly this number as its own literal
+    /// pre-measurement default. `src/coreclr/utilcode/yieldprocessornormalized.cpp`
+    /// initialises `s_optimalMaxNormalizedYieldsPerSpinIteration` to
+    /// `(unsigned int)(272.0 / 37.0 + 0.5)` = `7`, commented "Defaults are for
+    /// when normalization has not yet been done". So 7 is not merely what the
+    /// formula *would* yield for an idealised host -- it is the value a real
+    /// CoreCLR process genuinely reports for the entire window before its
+    /// background measurement completes. A simulated process that never
+    /// performs that measurement reporting the never-measured default is
+    /// about as faithful as this can be.
+    [<Literal>]
+    let defaultOptimalMaxSpinWaitsPerSpinIteration : int = 7
+
     /// 100ns ticks per millisecond. The `SystemNative_GetSystemTime*` family
     /// speaks in ticks while PawPrint's virtual clock speaks in milliseconds,
     /// so every wall-clock derivation goes through this factor. A consequence
@@ -676,6 +752,7 @@ module EmulatedKernel =
             OutputLog = ImmutableArray<OutputLogEntry>.Empty
             Environment = defaultEnvironment
             ProcessorCount = defaultProcessorCount
+            OptimalMaxSpinWaitsPerSpinIteration = defaultOptimalMaxSpinWaitsPerSpinIteration
             UnixPlatform = defaultUnixPlatform
             Signals = SignalState.empty
         }
@@ -701,6 +778,23 @@ module EmulatedKernel =
 
         { kernel with
             ProcessorCount = count
+        }
+
+    /// Set the value the simulated process reports from
+    /// `Thread.OptimalMaxSpinWaitsPerSpinIteration`. Rejects values outside
+    /// `[1, maxOptimalMaxSpinWaitsPerSpinIteration]` at the boundary: the
+    /// lower bound matches CoreCLR's own `max(1u, ...)` floor, and the upper
+    /// bound matches CoreCLR's own compile-time ceiling (see
+    /// `maxOptimalMaxSpinWaitsPerSpinIteration`) — a value outside that range
+    /// is not one the real property could ever produce, so accepting it here
+    /// would let a guest observe an impossible host.
+    let withOptimalMaxSpinWaitsPerSpinIteration (count : int) (kernel : EmulatedKernel) : EmulatedKernel =
+        if count < 1 || count > maxOptimalMaxSpinWaitsPerSpinIteration then
+            failwith
+                $"OptimalMaxSpinWaitsPerSpinIteration must be between 1 and %d{maxOptimalMaxSpinWaitsPerSpinIteration} inclusive (CoreCLR's own bounds for this value); got %d{count}"
+
+        { kernel with
+            OptimalMaxSpinWaitsPerSpinIteration = count
         }
 
     /// Set the wall-clock reading the simulated process boots at. Rejects
@@ -896,6 +990,16 @@ type KernelConfig =
         /// Logical processor count the guest observes via
         /// `Environment.ProcessorCount`. Must be at least 1.
         ProcessorCount : int
+        /// Value the guest observes via the internal
+        /// `Thread.OptimalMaxSpinWaitsPerSpinIteration`, consulted by
+        /// `SpinWait.SpinOnce()` / `LowLevelSpinWaiter` to size each spin
+        /// burst passed to `Thread.SpinWait`. Must lie in
+        /// `[1, EmulatedKernel.maxOptimalMaxSpinWaitsPerSpinIteration]`. See
+        /// `EmulatedKernel.OptimalMaxSpinWaitsPerSpinIteration` for why this
+        /// is simulated kernel state rather than a host CPU-timing read, and
+        /// `EmulatedKernel.defaultOptimalMaxSpinWaitsPerSpinIteration` for how
+        /// the default was derived.
+        OptimalMaxSpinWaitsPerSpinIteration : int
         /// Wall-clock reading, in milliseconds since the Unix epoch, that the
         /// simulated process boots at — the instant `DateTime.UtcNow` reports
         /// before the virtual clock has advanced. Must lie in
@@ -918,6 +1022,7 @@ type KernelConfig =
         {
             Environment = Map.empty
             ProcessorCount = EmulatedKernel.defaultProcessorCount
+            OptimalMaxSpinWaitsPerSpinIteration = EmulatedKernel.defaultOptimalMaxSpinWaitsPerSpinIteration
             WallClockEpochMs = 0L
             UnixPlatform = EmulatedKernel.defaultUnixPlatform
         }
@@ -932,5 +1037,6 @@ module KernelConfig =
         kernel
         |> EmulatedKernel.withEnvironment config.Environment
         |> EmulatedKernel.withProcessorCount config.ProcessorCount
+        |> EmulatedKernel.withOptimalMaxSpinWaitsPerSpinIteration config.OptimalMaxSpinWaitsPerSpinIteration
         |> EmulatedKernel.withWallClockEpochMs config.WallClockEpochMs
         |> EmulatedKernel.withUnixPlatform config.UnixPlatform

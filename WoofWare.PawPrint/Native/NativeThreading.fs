@@ -655,6 +655,114 @@ module NativeThreading =
                     Scheduler.blockOnSleep ctx.Thread (Some deadline) state
 
             NativeHandlerResult.completed state |> Some
+        | "ThreadNative_SpinWait",
+          "System.Private.CoreLib",
+          "System.Threading",
+          "Thread",
+          // Two distinct managed methods share this one QCall entry point:
+          // `SpinWaitInternal` (the `[SuppressGCTransition]` fast path used
+          // for `iterations < SpinWaitCoopThreshold`) and
+          // `LongSpinWaitInternal` (the ordinary GC-transitioning P/Invoke
+          // used above that threshold, reached via the `LongSpinWait`
+          // no-inline wrapper). Both declare
+          // `[LibraryImport(RuntimeHelpers.QCall, EntryPoint =
+          // "ThreadNative_SpinWait")]` in `Thread.CoreCLR.cs`, so which
+          // managed name we'd see here depends on which of the two the
+          // caller's iteration count selected. Match on the entry point and
+          // signature shape instead of the name, same approach as
+          // `ThreadNative_YieldThread` and `ThreadNative_InformThreadNameChange`.
+          _,
+          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Void ->
+            // .NET 10 QCall backing `Thread.SpinWait(int)`. CoreCLR's native
+            // side (`comsynchronizable.cpp`) is:
+            //   if (iterations <= 0) return;
+            //   YieldProcessorNormalized(iterations);
+            // `YieldProcessorNormalized` issues `iterations *
+            // yieldsPerNormalizedYield` PAUSE/YIELD instructions on the
+            // calling CPU and returns — it never calls `SwitchToThread`,
+            // `Sleep`, or anything else that could change which OS thread is
+            // running. It writes to no managed or native memory the guest
+            // can observe, throws nothing, and its only effect is consuming
+            // wall-clock time proportional to `iterations`.
+            //
+            // Elapsed time *is* observable to a PawPrint guest — that is what
+            // `EmulatedKernel.VirtualClockMs` is, and `Environment.TickCount64`
+            // and `DateTime.UtcNow` both read it. But the driver loop advances
+            // it as a function of scheduler ticks (one tick, one millisecond,
+            // per instruction retired), never as a function of what a given
+            // instruction physically costs. So this handler doing no work does
+            // not freeze the guest's clock: the `call` still retires, the clock
+            // still moves, and a guest delay loop such as
+            // `while (TickCount64 - start < N) Thread.SpinWait(k);` terminates —
+            // in fact almost immediately, since a millisecond per instruction is
+            // a generous rate to be billed at.
+            //
+            // What is deliberately not modelled is the *proportionality* to
+            // `iterations`: `SpinWait(1)` and `SpinWait(10_000_000)` each cost
+            // the handful of ticks their call sequence retires, where real
+            // hardware puts them ~7 orders of magnitude apart. Restoring that
+            // proportionality was considered and rejected twice over. Scaled
+            // consistently with the rest of the clock (a real spin iteration is
+            // some tens of instruction-times, and an instruction bills 1 ms
+            // here) `SpinWait(10_000_000)` would have to jump the clock by
+            // days of virtual time, firing every outstanding timeout in the
+            // process — strictly worse for guest fidelity than under-charging.
+            // And it would make a native handler a second writer of
+            // `VirtualClockMs`, which `EmulatedKernel` documents as
+            // scheduler-only; the property that two threads reading on the same
+            // tick observe the same value is stated there and relied on by the
+            // `SystemNative_GetLowResolutionTimestamp` and
+            // `SystemNative_GetSystemTimeAsTicks` handlers.
+            //
+            // The residual divergence is therefore that spinning is *dearer*
+            // here than on real hardware rather than free, so a guest running a
+            // spin-then-block primitive against a timeout exhausts its spin
+            // budget in very few iterations and falls back to the blocking path
+            // sooner than it would natively (measured: a 100 ms budget admits
+            // 2 `SpinWait.SpinOnce()` calls). That is the safe direction — the
+            // blocking path is the one with the real synchronisation in it —
+            // but it does mean PawPrint under-exercises guest spin paths.
+            //
+            // Note also that every CoreLib caller of `Thread.SpinWait`
+            // (`SpinWait.SpinOnceCore`, `LowLevelSpinWaiter.Wait`,
+            // `ReaderWriterLockSlim`, `PortableThreadPool.WorkerThread`) is
+            // guarded by `!Environment.IsSingleProcessor`, and
+            // `EmulatedKernel.defaultProcessorCount` is 1. So at the default
+            // kernel config no BCL path reaches here at all; this arm is
+            // exercised by direct `Thread.SpinWait` calls from guest code, and
+            // by those BCL paths only once a host raises
+            // `KernelConfig.ProcessorCount` above 1.
+            //
+            // `NativeHandlerResult.completed`, not `.yielded`. Contrast
+            // directly with the `ThreadNative_YieldThread` arm just above:
+            // that one *is* the guest asking the scheduler to consider
+            // running a different thread, so it reports `VoluntaryYield` to
+            // preserve that intent for the scheduler/fuzzer boundary.
+            // `Thread.SpinWait` is the opposite move by design — its doc
+            // comment recommends it specifically as the alternative to a
+            // real yield, for callers who expect the awaited condition to
+            // change very soon and would rather keep this thread hot than
+            // pay a context-switch. Reporting `VoluntaryYield` here would
+            // assert a yield intent the guest explicitly did not express,
+            // corrupting that signal for any future interleaving-aware
+            // consumer of `WhatWeDid`.
+            //
+            // We still validate the argument shape (and read the value) so a
+            // marshalling regression here fails loudly rather than silently
+            // matching a different overload; the value itself is otherwise
+            // unused, matching the real QCall's behaviour of accepting (and
+            // silently no-op-ing on) non-positive counts.
+            let operation = "ThreadNative_SpinWait"
+
+            if instruction.Arguments.Length <> 1 then
+                failwith $"%s{operation}: expected one native argument, got %d{instruction.Arguments.Length}"
+
+            match instruction.Arguments.[0] |> CliType.unwrapPrimitiveLikeDeep with
+            | CliType.Numeric (CliNumericType.Int32 _) -> ()
+            | other -> failwith $"%s{operation}: expected int32 iterations, got %O{other}"
+
+            NativeHandlerResult.completed state |> Some
         | _ -> None
 
     let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
@@ -912,6 +1020,36 @@ module NativeThreading =
             let state, result = executeJoinCore ctx state threadAddr timeout
 
             let state = IlMachineState.pushToEvalStack (CliType.ofBool result) ctx.Thread state
+
+            NativeHandlerResult.completed state |> Some
+        | "System.Private.CoreLib",
+          "System.Threading",
+          "Thread",
+          "get_OptimalMaxSpinWaitsPerSpinIteration",
+          [],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            // InternalCall backing the `internal static int
+            // Thread.OptimalMaxSpinWaitsPerSpinIteration { get; }` property
+            // (`[MethodImpl(MethodImplOptions.InternalCall)]` in
+            // `Thread.CoreCLR.cs`, `ThreadNative::GetOptimalMaxSpinWaitsPerSpinIteration`
+            // in `comsynchronizable.cpp`). Real CoreCLR answers this from a
+            // background measurement of the host CPU's `YieldProcessor()`
+            // latency (`YieldProcessorNormalization`) — see the extensive
+            // rationale on `EmulatedKernel.OptimalMaxSpinWaitsPerSpinIteration`.
+            let value = state.Kernel.OptimalMaxSpinWaitsPerSpinIteration
+
+            if value < 1 || value > EmulatedKernel.maxOptimalMaxSpinWaitsPerSpinIteration then
+                // A kernel built by record-copy can bypass
+                // `EmulatedKernel.withOptimalMaxSpinWaitsPerSpinIteration`;
+                // re-assert here so the guest never observes a value the real
+                // property could not have produced (mirrors the
+                // `Environment.GetProcessorCount` guard in
+                // `NativeEnvironment.fs`).
+                failwith
+                    $"Thread.get_OptimalMaxSpinWaitsPerSpinIteration: kernel OptimalMaxSpinWaitsPerSpinIteration is %d{value}, which is outside the legal range [1, %d{EmulatedKernel.maxOptimalMaxSpinWaitsPerSpinIteration}]"
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 value)) ctx.Thread state
 
             NativeHandlerResult.completed state |> Some
         | _ -> None
