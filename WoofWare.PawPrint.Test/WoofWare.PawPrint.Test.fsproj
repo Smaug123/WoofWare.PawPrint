@@ -68,6 +68,7 @@
     <Compile Include="TestNonCryptoRandom.fs" />
     <Compile Include="TestPrimitiveLikeStructRegistry.fs" />
     <Compile Include="TestEvalStackPrimitiveLikeBoundary.fs" />
+    <Compile Include="TestEvalStackBoxedPrimitiveView.fs" />
     <Compile Include="TestCliValueTypeCoerceFrom.fs" />
     <Compile Include="TestExceptionHResults.fs" />
     <Compile Include="TestFaultHandlers.fs" />

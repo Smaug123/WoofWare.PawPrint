@@ -1030,12 +1030,25 @@ and CliValueType =
         | CliValueTypeStorage.Fields storage -> storage.Fields |> List.filter (fun f -> f.Offset = offset)
 
     static member DereferenceFieldAt (offset : int) (size : int) (cvt : CliValueType) : CliType =
-        let targetField =
-            CliValueType.FieldsAt offset cvt |> List.tryFind (fun f -> f.Size = size)
+        let candidates = CliValueType.FieldsAt offset cvt
 
-        match targetField with
-        | None -> failwith "TODO: couldn't find the field"
+        match candidates |> List.tryFind (fun f -> f.Size = size) with
         | Some f -> f.Contents
+        | None ->
+            // Storage here is field cells, not bytes, so a request that no single field answers
+            // exactly (e.g. viewing `struct { int; int }` as an 8-byte value) has no honest
+            // answer to give: say so rather than splicing one together.
+            let describeCandidates =
+                match candidates with
+                | [] -> "no field starts at that offset"
+                | _ ->
+                    candidates
+                    |> List.map (fun f -> $"%s{f.Name} (%d{f.Size} bytes)")
+                    |> String.concat ", "
+                    |> sprintf "fields starting there: %s"
+
+            failwith
+                $"cannot view %O{cvt._Declared} as a %d{size}-byte value at offset %d{offset}: %s{describeCandidates}"
 
     static member SizeOf (vt : CliValueType) : SizeofResult =
         match vt._Storage with

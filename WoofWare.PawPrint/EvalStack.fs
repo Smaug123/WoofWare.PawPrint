@@ -594,6 +594,7 @@ module EvalStackValue =
                         // is the inverse of `conv.u` from `Int64Source.OpaqueHashBits`.
                         CliType.Numeric (CliNumericType.Int64 (Int64Source.OpaqueHashBits bits))
                 // CliType.Numeric (CliNumericType.TypeHandlePtr f)
+                | EvalStackValue.UserDefinedValueType vt -> viewValueTypeAsPrimitive target vt
                 | i -> failwith $"TODO: %O{i}"
             | CliNumericType.NativeInt _ ->
                 match popped with
@@ -651,26 +652,32 @@ module EvalStackValue =
             | CliNumericType.Int8 _ ->
                 match popped with
                 | EvalStackValue.Int32 i -> CliType.Numeric (CliNumericType.Int8 (i % 256 |> int8))
+                | EvalStackValue.UserDefinedValueType vt -> viewValueTypeAsPrimitive target vt
                 | i -> failwith $"TODO: %O{i}"
             | CliNumericType.Int16 _ ->
                 match popped with
                 | EvalStackValue.Int32 popped -> CliType.Numeric (CliNumericType.Int16 (popped % 65536 |> int16<int>))
+                | EvalStackValue.UserDefinedValueType vt -> viewValueTypeAsPrimitive target vt
                 | _ -> failwith $"TODO: {popped}"
             | CliNumericType.UInt8 _ ->
                 match popped with
                 | EvalStackValue.Int32 i -> CliType.Numeric (CliNumericType.UInt8 (i % 256 |> uint8))
+                | EvalStackValue.UserDefinedValueType vt -> viewValueTypeAsPrimitive target vt
                 | i -> failwith $"todo: {i} to uint8"
             | CliNumericType.UInt16 _ ->
                 match popped with
                 | EvalStackValue.Int32 popped -> CliType.Numeric (CliNumericType.UInt16 (uint16<int32> popped))
+                | EvalStackValue.UserDefinedValueType vt -> viewValueTypeAsPrimitive target vt
                 | i -> failwith $"todo: {i} to uint16"
             | CliNumericType.Float32 _ ->
                 match popped with
                 | EvalStackValue.Float f -> CliType.Numeric (CliNumericType.Float32 (float32<float> f))
+                | EvalStackValue.UserDefinedValueType vt -> viewValueTypeAsPrimitive target vt
                 | i -> failwith $"todo: {i} to float32"
             | CliNumericType.Float64 _ ->
                 match popped with
                 | EvalStackValue.Float f -> CliType.Numeric (CliNumericType.Float64 f)
+                | EvalStackValue.UserDefinedValueType vt -> viewValueTypeAsPrimitive target vt
                 | _ -> failwith $"todo: {popped} to float64"
         | CliType.ObjectRef _ ->
             match popped with
@@ -729,6 +736,7 @@ module EvalStackValue =
                 CliType.Bool (i % 256 |> byte)
             | EvalStackValue.ManagedPointer src ->
                 failwith $"unexpectedly tried to convert a managed pointer (%O{src}) into a bool"
+            | EvalStackValue.UserDefinedValueType vt -> viewValueTypeAsPrimitive target vt
             | i -> failwith $"TODO: %O{i}"
         | CliType.RuntimePointer _ ->
             match popped with
@@ -792,6 +800,7 @@ module EvalStackValue =
                 let high = byte<uint16> (truncated >>> 8)
                 let low = byte<uint16> (truncated &&& 0xFFus)
                 CliType.Char (high, low)
+            | EvalStackValue.UserDefinedValueType vt -> viewValueTypeAsPrimitive target vt
             | popped -> failwith $"Unexpectedly wanted a char from {popped}"
         | CliType.ValueType vt ->
             match popped with
@@ -820,6 +829,37 @@ module EvalStackValue =
                     [ newField ] |> CliValueType.OfFieldsLike vt vt.Layout |> CliType.ValueType
                 else
                     failwith $"TODO: {popped} into value type {target}"
+
+    /// A value type popped into a primitive slot.
+    ///
+    /// Opcodes that name a width (`ldind.<width>`, `ldelem.<width>`, ...) ask for a *view* of
+    /// storage at that width, and a byref to a boxed primitive addresses a value type: `box` of a
+    /// bare primitive stores it inside the boxed type's own single instance field
+    /// (`System.Int64::m_value`, `System.Boolean::m_value`, ...), so the `this` byref the runtime
+    /// synthesises for a virtual call on a boxed receiver points at that wrapper rather than at
+    /// the primitive inside it. Every primitive's instance methods open with
+    /// `ldarg.0; ldind.<width>`, so this is the shape `((object) 1L).ToString()` reaches.
+    ///
+    /// The field covering the leading `SizeOf target` bytes is exactly the projection the opcode
+    /// performs on real memory, and it is the same two-step `ldelem` documents: canonicalise the
+    /// stored form with `ofCliType`, then let the target's own arm narrow it. Nothing here needs
+    /// to know about widths or signedness, and a nested value type terminates the recursion
+    /// because the CLI forbids a struct from containing itself, so each step strips a level.
+    ///
+    /// Primitive-like wrappers (IntPtr, RuntimeTypeHandle, enums, ...) never arrive here:
+    /// `ofCliType` flattens them on push, and `EvalStack.Push'` enforces that invariant.
+    and private viewValueTypeAsPrimitive (target : CliType) (popped : CliValueType) : CliType =
+        let size = (CliType.SizeOf target).Size
+        let contents = CliValueType.DereferenceFieldAt 0 size popped
+
+        match contents with
+        | CliType.ValueType inner when inner.Declared = popped.Declared ->
+            // The termination argument above rests on the CLI's rule that a struct cannot
+            // contain itself, which no metadata we read is obliged to honour. Crash on the
+            // violation rather than spin forever unwrapping the same shape.
+            failwith
+                $"refusing to view %O{popped.Declared} as a %d{size}-byte value: its leading field is declared as the value type itself, so unwrapping would not terminate"
+        | _ -> toCliTypeCoerced target (ofCliType contents)
 
 type EvalStack =
     {
