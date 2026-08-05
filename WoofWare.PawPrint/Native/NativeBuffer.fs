@@ -74,7 +74,14 @@ module NativeBuffer =
                 if byteCount = 0 then
                     state
                 else
-                    CellAwareCopy.copy ctx.BaseClassTypes operation CellAwareCopyPolicy.Memmove state dest src byteCount
+                    CellAwareMemOps.copy
+                        ctx.BaseClassTypes
+                        operation
+                        CellAwareCopyPolicy.Memmove
+                        state
+                        dest
+                        src
+                        byteCount
 
             NativeHandlerResult.completed state |> Some
         | _ -> None
@@ -85,12 +92,12 @@ module NativeBuffer =
     /// This handler wires `BulkMoveWithWriteBarrierInternal` into native
     /// dispatch and implements CoreCLR's FCall short-circuits
     /// (`dst != src && byteCount != 0`, see comutilnative.cpp); the actual
-    /// move reuses the shared `CellAwareCopy.copy` helper. The BCL's primary
+    /// move reuses the shared `CellAwareMemOps.copy` helper. The BCL's primary
     /// callers (`Buffer.Memmove<T>` for `T` containing references,
     /// `Array.Copy` of reference-typed arrays, the reflection-cache growth
     /// path, etc.) hand in byrefs that land on non-byte-addressable cells
     /// (object references, value types containing object references);
-    /// `CellAwareCopy.copy` detects cell-aligned ranges via
+    /// `CellAwareMemOps.copy` detects cell-aligned ranges via
     /// `tryWholeCellMoveAt` and moves whole typed cells through
     /// `readManagedByref` / `writeManagedByrefWithBase` so the dest cell's
     /// CLI shape and the stored ObjectRef provenance are preserved.
@@ -132,13 +139,20 @@ module NativeBuffer =
             // `byteCount == 0` (see comutilnative.cpp). We honour both
             // explicitly: storage that contains object references is not
             // byte-addressable in PawPrint, so a self-copy of such storage
-            // must not fall through to `CellAwareCopy.copy` — the byte-walk
+            // must not fall through to `CellAwareMemOps.copy` — the byte-walk
             // fallback would reject it.
             let state =
                 if byteCount = 0 || dest = src then
                     state
                 else
-                    CellAwareCopy.copy ctx.BaseClassTypes operation CellAwareCopyPolicy.Memmove state dest src byteCount
+                    CellAwareMemOps.copy
+                        ctx.BaseClassTypes
+                        operation
+                        CellAwareCopyPolicy.Memmove
+                        state
+                        dest
+                        src
+                        byteCount
 
             NativeHandlerResult.completed state |> Some
         | _ -> None

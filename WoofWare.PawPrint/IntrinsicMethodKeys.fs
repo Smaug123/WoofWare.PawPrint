@@ -465,9 +465,12 @@ module IntrinsicMethodKeys =
             //
             // `CannotVectorize` is an unrolled scalar loop of `Unsafe.Add(ref refData, i) = value`
             // writes in blocks of 8/4/2/1 — only modelled boundaries, and no P/Invoke. That is
-            // what distinguishes this from the sibling `Span<T>.Clear`, which is implemented
-            // natively in `Intrinsics.fs` precisely because its IL bottoms out in
-            // `SpanHelpers.ClearWithoutReferences`' P/Invoke fallback.
+            // what distinguishes this from the sibling `Span<T>.Clear`, whose IL instead bottoms
+            // out in `SpanHelpers.ClearWithReferences` / `ClearWithoutReferences`. The latter is
+            // itself `[Intrinsic]` and is implemented in `Intrinsics.fs`, but the former is
+            // plain managed IL that writes a pointer-width zero through a reinterpreted byref
+            // onto object-reference cells — a shape the byref-write model does not yet support.
+            // `Span<T>.Clear` therefore stays natively implemented in `Intrinsics.fs`.
             //
             // Should PawPrint ever report SIMD as accelerated, this IL would start walking into
             // the vector path and fail loudly there rather than silently misbehaving.
@@ -504,7 +507,7 @@ module IntrinsicMethodKeys =
             // https://github.com/dotnet/runtime/blob/d258af50034c192bf7f0a18856bf83d2903d98ae/src/libraries/System.Private.CoreLib/src/System/Buffer.cs#L150
             anyParams "System.Private.CoreLib" "System.Buffer" "Memmove"
             // Note: `System.SpanHelpers.Memmove(ref byte, ref byte, nuint)` is intercepted
-            // explicitly in `Intrinsics.fs` and routed through `CellAwareCopy.copy`, so it is
+            // explicitly in `Intrinsics.fs` and routed through `CellAwareMemOps.copy`, so it is
             // deliberately omitted from the safe-intrinsic allowlist: the managed body's
             // `Unsafe.ReadUnaligned<Block16>` walk would lose non-`Verbatim` cell provenance.
             // https://github.com/dotnet/runtime/blob/1c3221b63340d7f81dfd829f3bcd822e582324f6/src/libraries/System.Private.CoreLib/src/System/Threading/Thread.cs#L799

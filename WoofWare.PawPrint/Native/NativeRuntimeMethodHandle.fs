@@ -4,6 +4,26 @@ open System.Reflection
 
 [<RequireQualifiedAccess>]
 module NativeRuntimeMethodHandle =
+    /// The predicate behind CoreCLR's `MethodDesc::IsGenericMethodDefinition`
+    /// (method.hpp:3804: `GetClassification() == mcInstantiated &&
+    /// AsInstantiatedMethodDesc()->IMD_IsGenericMethodDefinition()`), expressed over PawPrint's
+    /// representation so it can be pinned independently of the reflection machinery that
+    /// resolves a `RuntimeMethodHandleInternal` down to these two counts:
+    ///  - `methodGenericParamCount` is the method's own declared generic-parameter count
+    ///    (`MethodInfo.Generics.Length`, from metadata, independent of any instantiation) --
+    ///    non-zero exactly when this method declares type parameters, which is the
+    ///    method-vs-class distinction real CoreCLR draws via `mcInstantiated` classification
+    ///    (only method-level generics get an `InstantiatedMethodDesc`; a non-generic method on a
+    ///    generic type never does, however many class type parameters its declaring type has).
+    ///  - `handleInstantiationCount` is the number of concrete type arguments bound to *this*
+    ///    handle (`MethodHandle.MethodGenerics.Length`) -- zero means the handle denotes the
+    ///    open/typical form (what `makeOpenMethodHandle` and `getOrAllocateInternalHandle` in
+    ///    MethodHandleRegistry.fs call "the method definition"); non-zero means the handle has
+    ///    been instantiated with concrete type arguments (e.g. `Foo<int>`'s IMD kind is
+    ///    SharedMethodInstantiation/UnsharedMethodInstantiation, not GenericMethodDefinition).
+    let isGenericMethodDefinition (methodGenericParamCount : int) (handleInstantiationCount : int) : bool =
+        methodGenericParamCount > 0 && handleInstantiationCount = 0
+
     let private resolveMethodInfoFromHandleArg
         (operation : string)
         (state : IlMachineState)
@@ -369,6 +389,39 @@ module NativeRuntimeMethodHandle =
                     (CliType.Numeric (CliNumericType.Int32 (int32 methodInfo.MethodAttributes)))
                     ctx.Thread
                     state
+
+            NativeHandlerResult.completed state |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeMethodHandle",
+          "IsGenericMethodDefinition",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System",
+                                              "RuntimeMethodHandleInternal",
+                                              generics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) when generics.IsEmpty ->
+            // CoreCLR (runtimehandles.cpp:1730): FC_RETURN_BOOL(pMethod->IsGenericMethodDefinition()).
+            // See `isGenericMethodDefinition` above for the predicate and how it maps onto
+            // PawPrint's representation.
+            let operation = "RuntimeMethodHandle.IsGenericMethodDefinition"
+
+            let methodInfo =
+                resolveMethodInfoFromHandleArg operation state instruction.Arguments.[0]
+
+            let methodHandleId =
+                NativeCall.methodHandleIdOfRuntimeMethodHandleInternal operation instruction.Arguments.[0]
+                |> Option.defaultWith (fun () -> failwith $"%s{operation}: null RuntimeMethodHandleInternal")
+
+            let methodHandle =
+                MethodHandleRegistry.resolveMethodFromId methodHandleId state.MethodHandles
+                |> Option.defaultWith (fun () ->
+                    failwith $"%s{operation}: registry id %d{methodHandleId} did not resolve to a known MethodHandle"
+                )
+
+            let result =
+                isGenericMethodDefinition methodInfo.Generics.Length (methodHandle.GetMethodGenerics ()).Length
+
+            let state = IlMachineState.pushToEvalStack (CliType.ofBool result) ctx.Thread state
 
             NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib",
