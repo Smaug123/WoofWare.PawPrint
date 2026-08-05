@@ -9,25 +9,24 @@ namespace SpanBulkWritePrimitiveLikeTest
         Third = -3,
     }
 
-    // Records a pre-existing bug in the span bulk-write paths, found while adding
-    // Span<T>.Fill. Writing an element through a span byref stores the value in its
-    // eval-stack representation rather than the destination cell's storage form, so
-    // the write succeeds and nothing fails until an ordinary read of that element:
+    // Bulk writes through a span put an array cell back into its *declared* storage form
+    // (`CliType.Bool` for bool[], a primitive-like value type for nint[]/enum arrays), which
+    // is the form `newarr` zero-fills with. Both `Span<T>.Clear` (implemented natively in
+    // Intrinsics.fs) and `Span<T>.Fill` (which runs the BCL's IL) reach that state, so each
+    // case below is driven through Clear first and Fill second.
+    //
+    // This used to fail on the subsequent ordinary read, because the concrete-width
+    // `ldelem.*` arms matched strictly on `CliType.Numeric` and so rejected the declared
+    // form outright:
     //
     //     bool   -> expected one-byte integer in Ldelem.u1, got: Bool 0uy
     //     nint   -> expected native int in Ldelem.i
     //     enum   -> expected two-byte integer in Ldelem.i2, got: ValueType ... EnumLike
     //
-    // It is exactly the element types whose CliType is "primitive-like" but distinct
-    // from the raw storage form. `char`, `byte`, `int`, `long`, `double`, multi-field
-    // structs and reference types are all unaffected and are covered by the passing
-    // SpanFill.cs.
-    //
-    // This is not about executing the BCL's IL. `Span<T>.Clear` is implemented
-    // natively in Intrinsics.fs and corrupts these arrays identically, which is why
-    // each case below is driven through Clear first and Fill second: whichever way the
-    // store is reached, it needs to normalise to the destination representation.
-    // Plain stelem/ldelem round-trips are unaffected.
+    // The bug was never in the span write. A fresh `new bool[2]` read with no span anywhere
+    // in the program failed identically; `stelem.*` merely masked it by stamping the
+    // opcode's raw primitive over the cell, so only a read of a still-declared-form cell
+    // tripped it. ArrayPrimitiveLikeElementRead.cs covers that span-free half directly.
     class Program
     {
         static int Main(string[] args)

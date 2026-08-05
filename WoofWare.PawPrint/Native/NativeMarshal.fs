@@ -211,7 +211,7 @@ module NativeMarshal =
                 // `IntPtr`/`UIntPtr` here because the blittable arm returns a
                 // null stub, instructing CoreLib to call
                 // `SpanHelpers.Memmove(ref byte, ref byte, nuint)` — which
-                // PawPrint intercepts and routes through `CellAwareCopy.copy`,
+                // PawPrint intercepts and routes through `CellAwareMemOps.copy`,
                 // preserving whole-cell provenance when both endpoints anchor
                 // on cell-aware roots. The hazard that remains is value-level:
                 // a struct holding a non-`Verbatim` `IntPtr` marshalled to

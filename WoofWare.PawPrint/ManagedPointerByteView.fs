@@ -147,8 +147,9 @@ module ManagedPointerByteView =
     /// stack, which is what the Codex-flagged `ldelema ptr[int32]; conv.u`
     /// legal-IL shape needs, without forcing the byte-addressability promise
     /// we cannot keep. Subsequent pointer arithmetic on the structural-element
-    /// byref will still use element-stride semantics — extending byte-stride
-    /// support to pointer-element arrays is future work.
+    /// byref will still use element-stride semantics. A byref whose declared
+    /// pointee genuinely is `byte` does not need that surrogate at all and can
+    /// be anchored unconditionally — see `anchorByteStrideOverArrayData` below.
     let anchorByteViewIfPlainArrayByref
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -188,4 +189,41 @@ module ManagedPointerByteView =
             match tryCharConcreteType () with
             | Some charType -> addByteOffset baseClassTypes state charType 0 ptr
             | None -> ptr
+        | _ -> ptr
+
+    /// Anchor a byte-stride view on an array byref whose declared pointee really is `byte`,
+    /// i.e. a `ref byte` rather than a `ref T` — the shape
+    /// `MemoryMarshal.GetArrayDataReference(Array)` returns.
+    ///
+    /// Distinct from `anchorByteViewIfPlainArrayByref` above, which preserves the *element's*
+    /// CLI shape as the reinterpret target because its callers (`Conv_U`/`Conv_I`) are
+    /// transporting a `ref T` onto the native-int stack and want the cell-aligned typed
+    /// read/write short-circuits to keep matching on that shape. Here the byref is declared
+    /// over bytes, so `System.Byte` is the honest target and no shape surrogate is needed.
+    ///
+    /// Consequently this is total over element handles, including the pointer/byref/fnptr
+    /// elements the shape-preserving anchor declines: byte *stride* is well defined for those
+    /// (it comes from the cell's `CliType.sizeOf` via `arrayElementSize`, independent of the
+    /// reinterpret target), even though byte-granular *dereference* of such a cell is not
+    /// modelled and still fails loudly at the access. That distinction matters: the arithmetic
+    /// is perfectly well defined, so failing there would be rejecting legal IL.
+    ///
+    /// Non-array byrefs pass through unchanged; the only caller hands in an array-element
+    /// byref it has just constructed.
+    let anchorByteStrideOverArrayData
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (ptr : ManagedPointerSource)
+        : ManagedPointerSource
+        =
+        match ptr with
+        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement _, []) ->
+            let byteType =
+                AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Byte.Identity
+                |> Option.bind (fun handle -> AllConcreteTypes.lookup handle state.ConcreteTypes)
+                |> Option.defaultWith (fun () ->
+                    failwith "anchorByteStrideOverArrayData: System.Byte is not concretized"
+                )
+
+            addByteOffset baseClassTypes state byteType 0 ptr
         | _ -> ptr
