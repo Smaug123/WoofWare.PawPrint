@@ -416,7 +416,11 @@ type CliType =
         match CliType.ByteAddressability before, CliType.ByteAddressability after with
         | CliByteAddressability.ByteAddressable, CliByteAddressability.ByteAddressable ->
             CliType.ToBytes before <> CliType.ToBytes after
-        | _ -> before <> after && before <> after
+        // No byte rendering on at least one side. Structural inequality can over-report — two
+        // values identical in memory may differ in field write-timestamp bookkeeping — but it
+        // never under-reports, and the caller's only use of a false "changed" is one redundant
+        // write of an identical value.
+        | _ -> before <> after
 
     static member WithZeroedRangeIfChanged (offset : int) (count : int) (value : CliType) : CliType option =
         let size = CliType.SizeOf(value).Size
@@ -1029,9 +1033,12 @@ and CliValueType =
                         }
                 )
 
-            // Padding and other unrepresented bytes live in the preserved image, and real
-            // memory zeroing clears them too; `ToBytes` overlays fields on top of this, so
-            // leaving it alone would report stale padding for the cleared range.
+            // The preserved image is a full-size copy of the whole byte image, not just the
+            // unrepresented parts, so zeroing the covered range of it does more work than is
+            // strictly needed: `ToBytes` overlays the (freshly timestamped) fields back on top,
+            // making the field-covered bytes redundant. It is the sole source of truth for
+            // *padding* within the range, though, and real memory zeroing clears padding too —
+            // so leaving it alone would report stale padding for a cleared range.
             let updatedPreserved = Array.copy storage.PreservedBytes
 
             for i = offset to rangeEnd - 1 do

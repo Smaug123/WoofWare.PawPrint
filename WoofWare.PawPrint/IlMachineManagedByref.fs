@@ -1428,6 +1428,14 @@ module IlMachineManagedByref =
             // write: `WithZeroedRangeIfChanged` still refuses to half-clear a reference, and
             // for byte-renderable cells it agrees byte-for-byte with the path below (pinned by
             // the oracle property in TestCliTypeBytes).
+            //
+            // Deliberately only the array root. The sibling byte-write roots
+            // (`writeHeapValueBytes`, `writeStackMemoryBytesAt`, `writeNativeMemoryBytesAt`,
+            // `writeStringBytes`) are left alone, so a zero run through one of those over
+            // reference-bearing storage still fails exactly as loudly as before. `Array.Clear`
+            // is the only path that currently forces `ClearWithReferences`' IL to be
+            // interpreted; extending the others is work for whoever finds a caller that needs
+            // it.
             // Both arms must converge here rather than one of them falling through to the end
             // of the loop body: the cursor updates below have to run whichever path wrote.
             let updated =
