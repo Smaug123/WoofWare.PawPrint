@@ -435,10 +435,12 @@ type EmulatedKernel =
         /// `SystemNative_GetLowResolutionTimestamp` (the PAL backing
         /// `Environment.TickCount64` on Unix) and intended to be the single
         /// source of truth for every elapsed-time computation the guest
-        /// performs — `SystemNative_GetSystemTimeAsTicks` (the wall clock
-        /// behind `DateTime.UtcNow`) already derives from it via
-        /// `EmulatedKernel.systemTimeAsTicks`, and a future
-        /// `SystemNative_GetTimestamp` (nanoseconds) should too, rather than
+        /// performs. `SystemNative_GetSystemTimeAsTicks` (the wall clock
+        /// behind `DateTime.UtcNow`) derives from it via
+        /// `EmulatedKernel.systemTimeAsTicks`, and
+        /// `SystemNative_GetTimestamp` (the high-resolution clock behind
+        /// `Stopwatch`) derives from it via
+        /// `EmulatedKernel.monotonicTimestampNanos` — rather than either
         /// maintaining a parallel clock.
         ///
         /// The driver loop advances this by 1 ms each time it increments
@@ -850,6 +852,82 @@ module EmulatedKernel =
                 $"simulated wall clock has reached %d{ms} ms since the Unix epoch, past the %d{maxWallClockEpochMs} ms that System.DateTime can represent; lower KernelConfig.WallClockEpochMs"
 
         ms * ticksPerMillisecond
+
+    /// Nanoseconds per millisecond. `SystemNative_GetTimestamp` speaks in
+    /// nanoseconds while PawPrint's virtual clock speaks in milliseconds, so
+    /// the high-resolution timestamp derivation goes through this factor. A
+    /// consequence is that every timestamp the guest ever observes is a
+    /// multiple of 1,000,000: `Stopwatch` has millisecond granularity here,
+    /// where real `clock_gettime(CLOCK_MONOTONIC)` is far finer.
+    [<Literal>]
+    let nanosecondsPerMillisecond : int64 = 1_000_000L
+
+    /// Largest `VirtualClockMs` from which a nanosecond timestamp can be
+    /// derived without overflowing the `int64` the PAL entry point returns:
+    /// `Int64.MaxValue / nanosecondsPerMillisecond`, i.e. about 292 years of
+    /// simulated uptime.
+    ///
+    /// The horizon is reachable by ordinary guest code, not merely in
+    /// principle. A sleep deadline is `VirtualClockMs + timeout` with no cap,
+    /// and when no thread is Runnable the driver's deadline jump moves the
+    /// clock the whole way there, so each `Thread.Sleep(Int32.MaxValue)`
+    /// advances it by about 2.1e9 ms: eight of them advance it by
+    /// 17,179,869,451 ms, and roughly 4,300 cross this bound. So
+    /// `monotonicTimestampNanos` checks rather than assumes — silently wrapping
+    /// into a negative timestamp would hand the guest a monotonic clock that
+    /// had run backwards, which is the one guarantee the primitive exists to
+    /// provide.
+    ///
+    /// The bound is *tighter* than `maxWallClockEpochMs` by a factor of about
+    /// 27, so there is a band of clock readings from which `DateTime.UtcNow`
+    /// and `Environment.TickCount64` are derivable but `Stopwatch.GetTimestamp`
+    /// is not. Nothing bounds `VirtualClockMs` at its write sites, so each
+    /// clock-derived PAL entry enforces its own ceiling lazily, at the moment
+    /// the guest reads that particular clock — `systemTimeAsTicks` has the same
+    /// shape. Bounding the field centrally at the scheduler, its sole writer,
+    /// would collapse these into one invariant and fault at the wait that
+    /// pushed time past the horizon rather than at an arbitrary later read.
+    [<Literal>]
+    let maxMonotonicTimestampClockMs : int64 = 9223372036854L
+
+    /// Monotonic time since the simulated process booted, in nanoseconds:
+    /// exactly what `SystemNative_GetTimestamp` returns, and hence what
+    /// `Stopwatch.GetTimestamp()` reports on a Unix CoreLib.
+    ///
+    /// Real CoreCLR answers this from `minipal_hires_ticks()`
+    /// (`clock_gettime_nsec_np(CLOCK_UPTIME_RAW)` on macOS,
+    /// `clock_gettime(CLOCK_MONOTONIC)` on Linux). PawPrint derives it from
+    /// the same `VirtualClockMs` that already backs
+    /// `SystemNative_GetLowResolutionTimestamp` — which upstream is
+    /// `minipal_lowres_ticks()`, *the same clock* read in milliseconds. Making
+    /// both PawPrint entry points views of one field is therefore not merely
+    /// convenient: it reproduces a relationship the guest can observe, since
+    /// `Environment.TickCount64` and `Stopwatch` must not disagree about how
+    /// much time has passed.
+    ///
+    /// Unlike `systemTimeAsTicks` this is *not* offset by
+    /// `WallClockEpochMs`: the monotonic clock counts from boot, and CoreLib
+    /// only ever subtracts two readings of it, so an epoch offset would be
+    /// both unfaithful and unobservable.
+    ///
+    /// Pure, like every other clock observer: reading never advances the
+    /// clock, so two threads reading on the same scheduler tick observe the
+    /// same timestamp, and `Stopwatch` is only weakly monotonic here (repeated
+    /// reads within one tick are equal, so a zero-length measured interval is
+    /// normal). Real `CLOCK_MONOTONIC` makes no uniqueness guarantee either.
+    let monotonicTimestampNanos (kernel : EmulatedKernel) : int64 =
+        // The driver loop is the only production writer of `VirtualClockMs`
+        // and only ever advances it from zero, but a kernel built by
+        // record-copy (as tests do) can bypass that, so re-assert here rather
+        // than trusting construction.
+        if
+            kernel.VirtualClockMs < 0L
+            || kernel.VirtualClockMs > maxMonotonicTimestampClockMs
+        then
+            failwith
+                $"kernel VirtualClockMs is %d{kernel.VirtualClockMs}, which is outside the range [0, %d{maxMonotonicTimestampClockMs}] a nanosecond monotonic timestamp can be derived from without overflowing int64"
+
+        kernel.VirtualClockMs * nanosecondsPerMillisecond
 
     /// Largest value CoreCLR will accept from the processor-count
     /// configuration knob (`MAX_PROCESSOR_COUNT` in
