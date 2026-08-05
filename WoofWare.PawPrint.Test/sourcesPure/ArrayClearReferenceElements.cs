@@ -18,7 +18,10 @@ public class TestArrayClearReferenceElements
         public Box B;
     }
 
-    private static int SweepStrings()
+    // Deliberately fresh `Box` instances rather than constructed strings: `new string(char,
+    // int)` is a separate unimplemented InternalCall, and reaching it would make this file
+    // fail for a reason that has nothing to do with clearing reference elements.
+    private static int SweepReferences()
     {
         for (int len = 0; len <= 8; len++)
         {
@@ -26,11 +29,11 @@ public class TestArrayClearReferenceElements
             {
                 for (int length = 0; length <= len - index; length++)
                 {
-                    string[] a = new string[len];
-                    string[] seed = new string[len];
+                    Box[] a = new Box[len];
+                    Box[] seed = new Box[len];
                     for (int i = 0; i < len; i++)
                     {
-                        seed[i] = new string('x', i + 1);
+                        seed[i] = new Box { Value = i + 1 };
                         a[i] = seed[i];
                     }
 
@@ -101,7 +104,7 @@ public class TestArrayClearReferenceElements
     {
         int result;
 
-        result = SweepStrings();
+        result = SweepReferences();
         if (result != 0) return 1000000 + result;
 
         result = TestStructContainingReference();
