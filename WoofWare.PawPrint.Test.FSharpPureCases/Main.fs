@@ -6,4 +6,5 @@ let main (argv : string array) : int =
     | "Placeholder" -> Placeholder.main argv.[1..]
     | "CeqBranch" -> CeqBranch.main argv.[1..]
     | "TailCall" -> TailCall.main argv.[1..]
+    | "AbstractDispatch" -> AbstractDispatch.main argv.[1..]
     | name -> failwith $"Unknown test case: {name}"

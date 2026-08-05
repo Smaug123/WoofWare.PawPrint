@@ -131,9 +131,9 @@ module SignalDispatch =
         (mi : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         : unit
         =
-        if mi.Parameters.Length <> 2 then
+        if MethodInfo.arity mi <> 2 then
             failwith
-                $"SignalDispatch.trySpawnHandler: registered handler %s{mi.Name} on type %s{mi.DeclaringType.Name} declares %d{mi.Parameters.Length} parameters; expected exactly 2 ((int signo, PosixSignal signal) -> int)."
+                $"SignalDispatch.trySpawnHandler: registered handler %s{mi.Name} on type %s{mi.DeclaringType.Name} declares %d{MethodInfo.arity mi} parameters; expected exactly 2 ((int signo, PosixSignal signal) -> int)."
 
         match mi.Signature.ReturnType with
         | MethodReturnType.Void ->
@@ -215,7 +215,7 @@ module SignalDispatch =
         let args = buildArgs entry.Signal
 
         // `MethodState.Empty` enforces an arity check against
-        // `mi.Parameters.Length` (plus 1 if non-static). The handler is
+        // `MethodInfo.arity mi` (plus 1 if non-static). The handler is
         // expected to be the static `OnPosixSignal`; if a test installs an
         // instance stand-in, that's a configuration error in the test, not
         // something this seam should silently paper over.

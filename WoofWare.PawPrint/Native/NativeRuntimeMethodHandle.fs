@@ -224,7 +224,7 @@ module NativeRuntimeMethodHandle =
                     // not static, no parameters" predicate used elsewhere
                     // (IlMachineStateExecution.fs activator paths).
                     attrTypeInfo.Methods
-                    |> List.tryFind (fun m -> m.Name = ".ctor" && not m.IsStatic && m.Parameters.IsEmpty)
+                    |> List.tryFind (fun m -> m.Name = ".ctor" && not m.IsStatic && MethodInfo.arity m = 0)
 
             let attrCtorAttrs : MethodAttributes =
                 match attrCtorMethodOpt with
