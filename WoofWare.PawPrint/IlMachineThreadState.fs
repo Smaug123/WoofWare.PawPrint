@@ -730,6 +730,26 @@ module IlMachineThreadState =
 
         alloc, state
 
+    /// Overwrite one field of the non-array heap object at `addr` and write the updated object
+    /// back. `field` must already identify the type that *declares* the field, which is not
+    /// necessarily the object's own concrete type: a field inherited from a base class (e.g.
+    /// `System.Exception._HResult` on a derived exception) carries the base type's handle.
+    /// Callers naming a field declared on the object's own type should prefer
+    /// `IlMachineState.setOwnInstanceField`, which resolves the `FieldId` for them.
+    let setInstanceFieldById
+        (addr : ManagedHeapAddress)
+        (field : FieldId)
+        (value : CliType)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        let obj = ManagedHeap.get addr state.ManagedHeap
+        let obj = AllocatedNonArrayObject.SetFieldById field value obj
+
+        { state with
+            ManagedHeap = ManagedHeap.set addr obj state.ManagedHeap
+        }
+
     let popFromStackToLocalVariable
         (thread : ThreadId)
         (localVariableIndex : int)
