@@ -104,11 +104,28 @@ module TestFSharpPureCases =
             "TailCall"
             "AbstractDispatch"
             "ByrefDispatch"
+            "SprintfBasic"
         ]
 
     // PawPrint cannot yet allocate string argv (Program.allocateArgs is unimplemented),
     // so all F# test cases that require argv dispatch are unimplemented for now.
-    let unimplemented : Set<string> = Set.ofList []
+    let unimplemented : Set<string> =
+        Set.ofList
+            [
+                // The `RuntimeMethodHandle.IsGenericMethodDefinition` InternalCall this case was
+                // written to pin (issue #690) now works, and so does the `stelem` TypeReference
+                // token (issue #691) that `Printf`'s boxed-argument array reaches next. `sprintf`
+                // now gets as far as the `RuntimeMethodHandle_GetMethodInstantiation` QCall
+                // (`System.RuntimeMethodHandle::GetMethodInstantiation(RuntimeMethodHandleInternal,
+                // ObjectHandleOnStack, BOOL) -> void`), which is unimplemented: it has to
+                // materialise the method's type arguments as a managed `RuntimeType[]` and hand it
+                // back through an `ObjectHandleOnStack`, so it is a genuine piece of work rather
+                // than another scalar. Tracked as issue #718; the `isGenericMethodDefinition`
+                // predicate itself is pinned directly by `TestNativeRuntimeMethodHandle.fs` and by
+                // `sourcesPure/MethodIsGenericMethodDefinition.cs`, so #690's coverage does not
+                // depend on this case passing.
+                "SprintfBasic"
+            ]
 
     // F# test cases that legitimately throw under both runtimes. Without this set, a test
     // that crashes both runtimes would silently pass — see TestPureCases.fs for the same
