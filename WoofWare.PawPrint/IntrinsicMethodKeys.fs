@@ -231,6 +231,54 @@ module IntrinsicMethodKeys =
                 "System.String"
                 "Equals"
                 [ IntrinsicParameterPattern.Exact "System.String" ]
+            // `String.StartsWith(string, StringComparison)` and its `EndsWith` mirror. As with
+            // the `Equals` overload above, the `[Intrinsic]` marker is a pure codegen hint
+            // ("Unrolled and vectorized for half-constant input (Ordinal)"), so the managed body
+            // is the semantic definition — including the argument validation, which is not
+            // reproducible by a native reimplementation without duplicating CoreLib's exact
+            // ordering: `ArgumentNullException.ThrowIfNull(value)` first (so a null `value` beats
+            // an invalid `comparisonType`), then two short-circuits — reference equality and
+            // `value.Length == 0` — that each still run `CheckStringComparison` before returning
+            // true, and finally a switch whose default arm throws `ArgumentException`.
+            //
+            // Every arm of that switch bottoms out in a modelled boundary:
+            //  * Ordinal `StartsWith` reads both `_firstChar` fields (projected to the string
+            //    character side-table) and then calls
+            //    `SpanHelpers.SequenceEqual(ref byte, ref byte, nuint)` over
+            //    `GetRawStringDataAsUInt8()`; that helper is intercepted explicitly in
+            //    `Intrinsics.fs`.
+            //  * Ordinal `EndsWith` instead computes `this.AsSpan(offset).SequenceEqual(value)`,
+            //    i.e. `MemoryExtensions.AsSpan`, `String.op_Implicit` and
+            //    `MemoryExtensions.SequenceEqual` — all three allowlisted above.
+            //  * Both OrdinalIgnoreCase arms call `Ordinal.EqualsIgnoreCase(ref char, ref char,
+            //    int)`. Its four vector guards all test `VectorNNN.IsHardwareAccelerated`, which
+            //    PawPrint's scalar CPU profile folds to false (see `vectorAccelerationAvailable`),
+            //    so the first guard sends every input to `EqualsIgnoreCase_Scalar`: an unrolled
+            //    walk of `Unsafe.ReadUnaligned` / `Unsafe.AddByteOffset` over a byte cursor plus
+            //    `Utf16Utility` bit-twiddling, with no P/Invoke. Non-ASCII input leaves that fast
+            //    path for `Ordinal.CompareStringIgnoreCase`, whose casing tables PawPrint does not
+            //    implement, so such input fails loudly there rather than silently misbehaving —
+            //    as would ASCII input under a hypothetical SIMD-reporting profile.
+            //  * The four culture-sensitive arms delegate to `CompareInfo.IsPrefix`/`IsSuffix`,
+            //    an already-working boundary.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/String.Comparison.cs#L1086-L1135
+            pattern
+                "System.Private.CoreLib"
+                "System.String"
+                "StartsWith"
+                [
+                    IntrinsicParameterPattern.Exact "System.String"
+                    IntrinsicParameterPattern.Exact "System.StringComparison"
+                ]
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/String.Comparison.cs#L517-L557
+            pattern
+                "System.Private.CoreLib"
+                "System.String"
+                "EndsWith"
+                [
+                    IntrinsicParameterPattern.Exact "System.String"
+                    IntrinsicParameterPattern.Exact "System.StringComparison"
+                ]
             // `SZArrayHelper.GetEnumerator<T>` is where an SZ-array's implicit
             // `IEnumerable<T>::GetEnumerator` lands, so classifying against the resolved method
             // reaches it. It is the only `[Intrinsic]` member of `SZArrayHelper`, and the
