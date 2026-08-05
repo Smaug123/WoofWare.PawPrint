@@ -354,7 +354,7 @@ module NativeRuntimeTypeHelpers =
         baseClassTypes.ValueType.Methods
         |> List.filter (fun methodInfo ->
             methodInfo.Name = name
-            && methodInfo.Parameters.Length = parameterCount
+            && MethodInfo.arity methodInfo = parameterCount
             && not methodInfo.IsStatic
         )
         |> function
@@ -363,7 +363,7 @@ module NativeRuntimeTypeHelpers =
             | methods ->
                 let signatures =
                     methods
-                    |> List.map (fun methodInfo -> $"%s{methodInfo.Name}/%i{methodInfo.Parameters.Length}")
+                    |> List.map (fun methodInfo -> $"%s{methodInfo.Name}/%i{MethodInfo.arity methodInfo}")
                     |> String.concat ", "
 
                 failwith $"%s{operation}: ambiguous System.ValueType::%s{name} candidates: %s{signatures}"
@@ -1337,7 +1337,7 @@ module NativeRuntimeTypeHelpers =
                 |> List.exists (fun m ->
                     m.Name = ".ctor"
                     && not m.IsStatic
-                    && m.Parameters.IsEmpty
+                    && MethodInfo.arity m = 0
                     && (m.MethodAttributes &&& System.Reflection.MethodAttributes.MemberAccessMask) = System.Reflection.MethodAttributes.Public
                 )
 

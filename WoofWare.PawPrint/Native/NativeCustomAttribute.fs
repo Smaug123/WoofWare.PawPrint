@@ -407,9 +407,9 @@ module NativeCustomAttribute =
                         (methodHandle.GetMethodGenerics () |> ImmutableArray.CreateRange)
                         state
 
-                if concretizedCtor.Parameters.Length <> List.length fixedArgs then
+                if MethodInfo.arity concretizedCtor <> List.length fixedArgs then
                     failwith
-                        $"%s{operation}: ctor expects %d{concretizedCtor.Parameters.Length} fixed argument(s) but the blob produced %d{List.length fixedArgs}"
+                        $"%s{operation}: ctor expects %d{MethodInfo.arity concretizedCtor} fixed argument(s) but the blob produced %d{List.length fixedArgs}"
 
                 // Push the re-entry marker first so it survives the ctor call below: `callMethod`
                 // pops `this` plus the ctor args, leaving exactly one ObjectRef beneath the new
@@ -434,7 +434,7 @@ module NativeCustomAttribute =
 
                 // wasConstructing = None: we drive the ctor as a regular instance call, since
                 // the constructed instance is already on the eval stack as the re-entry marker.
-                // dispatchAsExceptionOnReturn = false / advanceProgramCounterOfCaller = false:
+                // ConstructedObjectDisposition.PushToCaller / advanceProgramCounterOfCaller = false:
                 // the native QCall frame has no IL to advance.
                 let state =
                     IlMachineStateExecution.callMethod
@@ -450,7 +450,7 @@ module NativeCustomAttribute =
                         ctx.Thread
                         threadState
                         None
-                        false
+                        ConstructedObjectDisposition.PushToCaller
                         false // wrapExceptionInTargetInvocation
                         state
 

@@ -26,7 +26,14 @@ module TestPureCases =
         ]
         |> Set.ofList
 
-    let expectsUnhandledException = [ "UnhandledException.cs" ] |> Set.ofList
+    let expectsUnhandledException =
+        [
+            "UnhandledException.cs"
+            "EnumHasFlagMismatchUnhandled.cs"
+            "EnumHasFlagNullFlagUnhandled.cs"
+            "ArrayGetLengthOutOfRangeUnhandled.cs"
+        ]
+        |> Set.ofList
 
     let customExitCodes = [ "ExceptionWithNoOpFinally.cs", 3 ] |> Map.ofList
 

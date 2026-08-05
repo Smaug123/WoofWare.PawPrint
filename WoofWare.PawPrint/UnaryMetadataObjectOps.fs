@@ -309,7 +309,7 @@ module internal UnaryMetadataObjectOps =
                 thread
                 threadState
                 None
-                false
+                ConstructedObjectDisposition.PushToCaller
                 false // wrapExceptionInTargetInvocation
                 state,
             WhatWeDid.Executed
@@ -365,7 +365,7 @@ module internal UnaryMetadataObjectOps =
             thread
             threadState
             None
-            false
+            ConstructedObjectDisposition.PushToCaller
             false // wrapExceptionInTargetInvocation
             state,
         WhatWeDid.Executed

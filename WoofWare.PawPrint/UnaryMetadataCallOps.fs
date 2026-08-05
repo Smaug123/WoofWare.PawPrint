@@ -650,7 +650,7 @@ module internal UnaryMetadataCallOps =
                 thread
                 threadState
                 None
-                false
+                ConstructedObjectDisposition.PushToCaller
                 false // wrapExceptionInTargetInvocation
                 state,
             WhatWeDid.Executed
@@ -838,7 +838,7 @@ module internal UnaryMetadataCallOps =
             | None -> state, concretizedMethod, true
             | Some tHandle ->
 
-            let nArgs = methodToCall.Parameters.Length
+            let nArgs = MethodInfo.arity methodToCall
 
             let state, argsBottomToTop =
                 let rec loop (state : IlMachineState) (acc : EvalStackValue list) (remaining : int) =
@@ -1011,7 +1011,7 @@ module internal UnaryMetadataCallOps =
             && (
                 match
                     state.ThreadState.[thread].MethodState.EvaluationStack
-                    |> EvalStack.PeekNthFromTop concretizedMethod.Parameters.Length
+                    |> EvalStack.PeekNthFromTop (MethodInfo.arity concretizedMethod)
                 with
                 | Some EvalStackValue.NullObjectRef -> true
                 | _ -> false
@@ -1040,7 +1040,7 @@ module internal UnaryMetadataCallOps =
             thread
             threadState
             None
-            false
+            ConstructedObjectDisposition.PushToCaller
             false // wrapExceptionInTargetInvocation
             state,
         WhatWeDid.Executed
