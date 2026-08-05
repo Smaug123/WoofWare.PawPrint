@@ -760,7 +760,7 @@ module DebuggerServer =
             writer.WriteString ("concreteType", string object.ConcreteType)
             writer.WriteString ("contents", string object.Contents)
             writeOptionalString writer "string" (ManagedHeap.getStringContents address state.ManagedHeap)
-            writer.WriteString ("syncBlock", string object.SyncBlock)
+            writer.WriteString ("syncBlock", string (ManagedHeap.getSyncBlock address state.ManagedHeap))
         | None ->
             match state.ManagedHeap.Arrays |> Map.tryFind address with
             | Some array ->
@@ -768,6 +768,9 @@ module DebuggerServer =
                 writer.WriteString ("concreteType", string array.ConcreteType)
                 writer.WriteNumber ("length", array.Length)
                 writeValueArray writer "elements" array.Elements writeCliType
+                // Arrays carry an object header exactly like any other heap object, so a
+                // `lock (array)` is visible here too.
+                writer.WriteString ("syncBlock", string (ManagedHeap.getSyncBlock address state.ManagedHeap))
             | None ->
                 writer.WriteString ("kind", "missing")
                 writer.WriteString ("error", $"heap address %d{heapAddressValue address} does not exist")
