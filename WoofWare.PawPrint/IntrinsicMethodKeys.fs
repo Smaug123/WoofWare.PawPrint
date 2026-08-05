@@ -452,7 +452,7 @@ module IntrinsicMethodKeys =
             pattern "System.Private.CoreLib" "System.Span`1" "ToArray" []
             // IL body is `ldarg.0; ldfld _reference; ldarg.0; ldfld _length; conv.u; ldarg.1;
             // call SpanHelpers::Fill<T>` — pure field reads plus the helper allowlisted below.
-            // https://github.com/dotnet/runtime/blob/HEAD/src/libraries/System.Private.CoreLib/src/System/Span.cs#L310
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Span.cs#L310-L313
             pattern "System.Private.CoreLib" "System.Span`1" "Fill" [ IntrinsicParameterPattern.Any ]
             // `SpanHelpers.Fill<T>(ref T, nuint, T)` opens with a vectorised fast path, but
             // PawPrint emulates a deterministic scalar CPU: `Vector.IsHardwareAccelerated` folds
@@ -470,7 +470,8 @@ module IntrinsicMethodKeys =
             //
             // Should PawPrint ever report SIMD as accelerated, this IL would start walking into
             // the vector path and fail loudly there rather than silently misbehaving.
-            // https://github.com/dotnet/runtime/blob/HEAD/src/libraries/System.Private.CoreLib/src/System/SpanHelpers.T.cs#L15
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/SpanHelpers.T.cs#L15-L189
+            // (guards at L23-L26; `CannotVectorize:` at L138.)
             pattern
                 "System.Private.CoreLib"
                 "System.SpanHelpers"
