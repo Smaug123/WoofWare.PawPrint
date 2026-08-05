@@ -1,19 +1,21 @@
 // Contravariant (`in`) interface dispatch onto an IMPLICIT interface implementation.
 //
-// `ContravariantExplicitMethodImpl.cs` already covers the explicit-MethodImpl form of this
-// (`void IContravariant<object>.Set(object value)`), which resolves correctly. This file is
-// the same shape with an ordinary public method satisfying the interface instead, and it
-// does NOT resolve: virtual dispatch fails to select `ObjectSink.Accept(object, ...)` for a
-// call site naming `ISink<string>::Accept(string, ...)`, and PawPrint reaches the abstract
-// interface method with no body:
+// `ContravariantExplicitMethodImpl.cs` covers the explicit-MethodImpl form of this
+// (`void IContravariant<object>.Set(object value)`). That form works because a MethodImpl row
+// identifies its virtual slot by declaration, so `findMatchingMethodImplBodies` can match the
+// slot under variance without consulting the signature at all. This file is the same shape
+// with an ordinary public method satisfying the interface instead, which has no such row: the
+// only thing tying `ObjectSink.Accept(object, ...)` to `ISink<string>::Accept(string, ...)` is
+// the signature, and those differ under `in`-variance. Dispatch used to miss entirely and the
+// interpreter reached the abstract interface method:
 //
 //   BUG: reached executeOneStep for abstract method ISink`1::Accept;
 //   virtual dispatch should have resolved to a concrete override
 //
-// This is a pre-existing gap, reproducible on main. The implicit-implementation match
-// presumably compares parameter types invariantly somewhere that the explicit-MethodImpl
-// path already handles via variance (compare the fix described in the header of
-// `ContravariantExplicitMethodImpl.cs`).
+// Fixed by `IlMachineStateExecution.tryRetargetToVariantInterfaceMapEntry`, which — when
+// ordinary resolution misses — retargets the call from the call site's instantiation to the
+// receiver's own variance-compatible interface-map entry (`ISink<object>`) and resolves against
+// that, exactly as CoreCLR does. No signature comparison is loosened.
 
 using System;
 
