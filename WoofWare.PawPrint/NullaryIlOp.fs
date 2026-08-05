@@ -1090,8 +1090,13 @@ module NullaryIlOp =
             ExecutionResult.stepped (state, WhatWeDid.Executed)
         | IlMachineStateExecution.ArrayStoreVarianceCheck.Allowed state ->
 
+        // Re-read the allocation from the post-check state rather than reusing the `arr` binding
+        // above: the variance check returns an updated state, and everything after it should be
+        // derived from that one. (An array's `ConcreteType` is fixed at allocation, so this is
+        // the same handle either way today; deriving it from the current state keeps that a
+        // property we rely on locally rather than one a reader has to go and confirm.)
         let elementHandle =
-            match arr.ConcreteType with
+            match state.ManagedHeap.Arrays.[arrAddr].ConcreteType with
             | ConcreteTypeHandle.OneDimArrayZero element -> element
             | other ->
                 failwith
