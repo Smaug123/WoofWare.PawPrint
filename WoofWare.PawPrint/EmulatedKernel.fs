@@ -588,25 +588,8 @@ type EmulatedKernel =
         /// = 1 or 4 microseconds each, so 8–32 us of actual spinning; thereafter
         /// `MeasurementPeriodMs` = 4000 is a floor on how often it may
         /// re-measure (one sample per refresh), not time spent spinning. That
-        /// measurement is about as host-dependent as a
-        /// number gets: it varies by CPU microarchitecture, by how loaded the
-        /// machine is at startup, and even by how much the measurement itself
-        /// got preempted. Reading it from the host would make `SpinWait`'s
-        /// spin/yield/sleep balance — and hence potentially the interleaving
-        /// a fuzz run explores — depend on the machine that produced a
-        /// recording. Two other shapes were considered and rejected: (a)
-        /// hardcoding a literal directly in the `NativeThreading` QCall/
-        /// InternalCall handlers, which would scatter "things PawPrint fakes
-        /// about the host" across two places instead of the one place
-        /// (`EmulatedKernel`) every other such value already lives, and would
-        /// give hosts no way to dial it for testing extreme spin/yield
-        /// balances the way `KernelConfig.ProcessorCount` already lets them
-        /// dial processor-count-sensitive code; (b) deriving it from
-        /// `ProcessorCount`, which was rejected because the two numbers model
-        /// unrelated physical facts (yield-instruction latency vs. logical
-        /// core count) — coupling them would make a host's processor-count
-        /// choice silently perturb spin-tuning as a side effect nobody asked
-        /// for.
+        /// measurement is about as host-dependent as a number gets, so it must
+        /// be mocked.
         ///
         /// See `EmulatedKernel.defaultOptimalMaxSpinWaitsPerSpinIteration` for
         /// the default and how it was chosen, and
