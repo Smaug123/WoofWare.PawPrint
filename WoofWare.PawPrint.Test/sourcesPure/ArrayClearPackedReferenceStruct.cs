@@ -28,6 +28,20 @@ public class TestArrayClearPackedReferenceStruct
 
     public static int Main(string[] argv)
     {
+        // The single-element case first, and deliberately: it is the dangerous one. With one
+        // element the truncated slot count still covers the reference exactly, so nothing
+        // straddles and nothing would object -- the trailing byte would just quietly survive.
+        // With two or more elements a later store lands across the next element's reference and
+        // is refused, which masks the underlying problem behind a different symptom.
+        Packed[] one = new Packed[1];
+        one[0].O = new Box { Value = 1 };
+        one[0].B = 7;
+
+        Array.Clear(one, 0, 1);
+
+        if (one[0].O != null) return 1;
+        if (one[0].B != 0) return 2;
+
         Packed[] a = new Packed[2];
         a[0].O = new Box { Value = 1 };
         a[0].B = 7;
@@ -36,8 +50,8 @@ public class TestArrayClearPackedReferenceStruct
 
         Array.Clear(a, 0, 2);
 
-        if (a[0].O != null || a[0].B != 0) return 1;
-        if (a[1].O != null || a[1].B != 0) return 2;
+        if (a[0].O != null || a[0].B != 0) return 3;
+        if (a[1].O != null || a[1].B != 0) return 4;
 
         return 0;
     }

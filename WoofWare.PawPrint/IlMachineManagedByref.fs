@@ -1448,6 +1448,16 @@ module IlMachineManagedByref =
             // of the loop body: the cursor updates below have to run whichever path wrote.
             let updated =
                 if cellBytes |> Array.forall (fun b -> b = 0uy) then
+                    // The slot count the BCL derives is `byteLength / sizeof(IntPtr)`, which
+                    // covers the element exactly only because CoreCLR rounds a GC-containing
+                    // value type up to pointer alignment. PawPrint's layout does not do that,
+                    // so for such a type the count truncates and the tail of the element gets
+                    // no store at all — `Array.Clear` would return having quietly left it set.
+                    // Refuse instead: a wrong answer here is worse than no answer.
+                    if CliType.ContainsObjectReferences existing && cellSize % NATIVE_INT_SIZE <> 0 then
+                        failwith
+                            $"TODO: array %O{arr} element %d{cell} contains object references but its %d{cellSize}-byte size is not a multiple of %d{NATIVE_INT_SIZE}; CoreCLR pointer-aligns such a value type (even under `Pack = 1`) and derives its clear length from that, so PawPrint's smaller element would be only partially cleared. Fix the layout in CliValueType.ComputeConcreteFields rather than the clear."
+
                     CliType.WithZeroedRangeIfChanged inCellOffset take existing
                 else
                     withByteAddressableCellBytesAtIfChanged
