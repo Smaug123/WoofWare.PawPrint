@@ -1355,19 +1355,17 @@ module internal UnaryMetadataCallOps =
 
         match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
         | NothingToDo state ->
-            // Identify our own frame before the call, so we can tell afterwards whether the call
-            // actually committed. See the restore below for why that matters.
+            // Our own frame, so the restore below can target it by id: on the suspension path the
+            // *active* frame is the class initialiser's, not ours.
             let callerFrameId = state.ThreadState.[thread].ActiveMethodState
 
-            let pcBeforeCall = (IlMachineState.getFrame thread callerFrameId state).IlOpIndex
-
-            // The pointer sits above the arguments, and `callMethod` pops arguments from the top
-            // of the stack, so it has to come off before we call in.
+            // The pointer sits above the arguments, and arguments are popped from the top of the
+            // stack, so it has to come off before we call in.
             let fnPtrValue, state = IlMachineState.popEvalStack thread state
             let threadState = state.ThreadState.[thread]
 
-            let state =
-                IlMachineStateExecution.callMethod
+            let state, commitment =
+                IlMachineStateExecution.callMethodWithCommitment
                     loggerFactory
                     baseClassTypes
                     None
@@ -1384,65 +1382,37 @@ module internal UnaryMetadataCallOps =
                     false // wrapExceptionInTargetInvocation
                     state
 
-            // `callMethod` does not always commit to the call. An intrinsic callee can discover
-            // that some type still needs initialising, push that cctor frame, and deliberately
-            // leave our program counter unadvanced so that this very `calli` re-executes once the
-            // cctor returns (`IlMachineStateExecution.tryHandleActivatorCreateInstance`, the
-            // `WhatWeDid.SuspendedForClassInit` branch). On that path it leaves the evaluation
-            // stack untouched, because the retry re-pops the arguments — but the function pointer
-            // is not its to preserve: we popped that out here, so we must put it back, or the
-            // retry finds it missing and fails with "expected a function pointer on top".
+            // The call does not always happen. When the callee needs a class initialiser run
+            // first, the initialiser becomes the active frame and our program counter is
+            // deliberately left unadvanced so this `calli` re-executes once it returns. The retry
+            // re-pops the arguments, which `callMethodWithCommitment` left in place — but not the
+            // function pointer, which we popped out here before calling in (it sits above the
+            // arguments, and arguments are popped from the top). So restoring it is our job, and
+            // omitting it makes the retry fail with "expected a function pointer on top".
             //
-            // Note the suspension can be triggered by something we cannot pre-initialise from
-            // here: for `Activator.CreateInstance<T>()` it is T, not the declaring type we ran
-            // `loadClass` on above.
+            // We ask which case occurred rather than inferring it. The tempting proxy — "our
+            // program counter did not move" — is wrong, because `Raised` leaves it unmoved too, on
+            // purpose, so exception dispatch sees the faulting instruction's offset. Treating that
+            // as a retry would strand the pointer on a frame whose arguments are already consumed
+            // and would tell the scheduler to hold threads behind a class initialisation that is
+            // not running.
             //
-            // Non-commitment is observable as "our frame did not advance": we pass
-            // `advanceProgramCounterOfCaller = true` and are not a class constructor, and on the
-            // committing path `callMethod` always advances the caller under those conditions
-            // (see its `oldFrame` binding). A committing call therefore cannot be mistaken for a
-            // suspended one.
-            // Our frame is not guaranteed to survive the call, either. When a class initialiser
-            // has already failed, `callMethod` dispatches the cached failure synchronously, and if
-            // the handler is in an outer frame that dispatch unwinds this frame away before
-            // returning. There is then no `calli` left to re-execute, so there is nothing to
-            // restore — and looking the frame up unconditionally would turn a perfectly catchable
-            // guest exception into a host crash ("Frame ... is not live").
-            // Restoring the pointer and reporting the suspension are the same fact, so they are
-            // decided together. The report matters beyond bookkeeping: `Scheduler.onStepOutcome`
-            // treats `Executed` as forward progress and wakes every thread parked
-            // `BlockedOnClassInit` on us, whereas `SuspendedForClassInit` leaves them parked
-            // precisely because our class init has *not* finished. Saying `Executed` here would
-            // wake a waiter mid-cctor: it would step, re-block, and the interleaving would differ
-            // from the scheduled one — a reproducibility bug, not just a wasted step.
-            //
-            // An unadvanced PC alone does *not* mean "retry expected": an intrinsic that raises
-            // also leaves it alone deliberately, so exception dispatch sees the faulting
-            // instruction's offset (`IlMachineStateExecution`, the `IntrinsicResult.RaiseException`
-            // arm, whose comment notes the outcome there "is always `Executed`"). Nothing will
-            // re-execute this `calli` in that case: restoring the pointer would leave a stray value
-            // on a frame whose arguments have already been consumed, and reporting a suspension
-            // would park threads behind a class initialisation that is not running.
-            //
-            // The two are told apart by what got pushed. A class-init suspension pushes the type's
-            // `.cctor`; the raising path pushes the exception's `.ctor`. Those names are distinct,
-            // so the frame now on top says which happened.
-            let pushedCctor =
-                let active = state.ThreadState.[thread].MethodState
-                active.ExecutingMethod.Name = ".cctor"
+            // The outcome is also what the scheduler sees: `Scheduler.onStepOutcome` treats
+            // `Executed` as forward progress and wakes every thread parked `BlockedOnClassInit` on
+            // us, whereas `SuspendedForClassInit` leaves them parked precisely because our class
+            // init has not finished. Waking a waiter mid-cctor changes the interleaving, which in
+            // a runtime built for reproducible schedules is a correctness bug, not a wasted step.
+            match commitment with
+            | IlMachineStateExecution.CallCommitment.Committed
+            | IlMachineStateExecution.CallCommitment.Raised -> state, WhatWeDid.Executed
+            | IlMachineStateExecution.CallCommitment.SuspendedForClassInit ->
+                // The frame is still live: a class-init suspension pushes a frame on top of ours,
+                // it does not unwind us (unlike `Raised`, which can).
+                let callerFrame = IlMachineState.getFrame thread callerFrameId state
+                let restored = callerFrame |> MethodState.pushToEvalStack' fnPtrValue
 
-            let state, whatWeDid =
-                match IlMachineState.tryGetFrame thread callerFrameId state with
-                | None -> state, WhatWeDid.Executed
-                | Some callerFrame ->
-                    if callerFrame.IlOpIndex = pcBeforeCall && pushedCctor then
-                        let restored = callerFrame |> MethodState.pushToEvalStack' fnPtrValue
+                IlMachineState.setFrame thread callerFrameId restored state, WhatWeDid.SuspendedForClassInit
 
-                        IlMachineState.setFrame thread callerFrameId restored state, WhatWeDid.SuspendedForClassInit
-                    else
-                        state, WhatWeDid.Executed
-
-            state, whatWeDid
         | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
         | ThrowingTypeInitializationException state -> state, WhatWeDid.ThrowingTypeInitializationException
         | Blocked (state, blockedBy) ->
