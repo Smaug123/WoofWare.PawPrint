@@ -516,7 +516,7 @@ module Intrinsics =
             // constrain; the no-op is correct for the same reason as the `volatile.`
             // IL prefix (NullaryIlOp.fs). Cannot live in safeIntrinsics because the
             // IL would loop forever.
-            // https://github.com/dotnet/runtime/blob/HEAD/src/libraries/System.Private.CoreLib/src/System/Threading/Interlocked.cs
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Threading/Interlocked.cs#L713-L714
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [], MethodReturnType.Void -> ()
             | _ -> failwith $"Interlocked.MemoryBarrier: unexpected signature %A{methodToCall.Signature}"
@@ -795,7 +795,7 @@ module Intrinsics =
             // every call site with an inline fast GC poll. PawPrint has no GC, so the
             // intrinsic is a pure no-op. This cannot live in safeIntrinsics because
             // executing the IL would loop forever.
-            // https://github.com/dotnet/runtime/blob/HEAD/src/libraries/System.Private.CoreLib/src/System/Threading/Thread.cs#L389-L392
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Threading/Thread.cs#L390-L391
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [], MethodReturnType.Void -> ()
             | _ -> failwith $"Thread.FastPollGC: unexpected signature %A{methodToCall.Signature}"
@@ -809,7 +809,7 @@ module Intrinsics =
             // single-stepping interpreter has no instruction reordering to fence against,
             // so the no-op is correct. Cannot live in safeIntrinsics because the IL would
             // loop forever.
-            // https://github.com/dotnet/runtime/blob/HEAD/src/libraries/System.Private.CoreLib/src/System/Threading/Volatile.cs#L236-L245
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Threading/Volatile.cs#L236-L245
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [], MethodReturnType.Void -> ()
             | _ -> failwith $"Volatile.%s{methodToCall.Name}: unexpected signature %A{methodToCall.Signature}"
@@ -1759,7 +1759,8 @@ module Intrinsics =
             // the call with raw byref + native-int addition. Both overloads (IntPtr and
             // UIntPtr) share the same semantics: advance the byref by `byteOffset` bytes,
             // preserving the static `T` view.
-            // https://github.com/dotnet/runtime/blob/HEAD/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L661
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L661
+            // (the UIntPtr overload is at L210 of the same file.)
             let t =
                 match Seq.toList methodToCall.Generics with
                 | [ t ] -> t
