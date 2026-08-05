@@ -117,3 +117,14 @@ module internal IntrinsicHelpers =
         operation : string ->
         state : IlMachineState ->
             IlMachineState
+
+    /// Execute the `SpanHelpers.ClearWithoutReferences(ref byte, nuint)` JIT intrinsic. Routes
+    /// through the shared cell-aware zeroing primitive, which preserves the CLI shape of each
+    /// destination cell rather than scattering zero bytes across storage that may not be
+    /// byte-addressable.
+    val executeSpanHelpersClearWithoutReferences :
+        baseClassTypes : BaseClassTypes<DumpedAssembly> ->
+        currentThread : ThreadId ->
+        operation : string ->
+        state : IlMachineState ->
+            IlMachineState

@@ -1271,7 +1271,7 @@ module Intrinsics =
             // byte/Block16 unrolled walk and P/Invokes into native memmove on overlap; both
             // paths flow through PawPrint's byte-walk model, which cannot serialise non-`Verbatim`
             // `NativeIntSource` provenance via `CliNumericType.ToBytes`. Routing the intrinsic
-            // through `CellAwareCopy.copy` with `Memmove` policy preserves whole-cell ranges
+            // through `CellAwareMemOps.copy` with `Memmove` policy preserves whole-cell ranges
             // (provenance, ObjectRef cells) when both endpoints anchor on cell-aware roots, and
             // falls back to the byte walk for genuinely byte-addressable storage.
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
@@ -1282,6 +1282,26 @@ module Intrinsics =
                 let operation = "SpanHelpers.Memmove"
 
                 executeSpanHelpersMemmove baseClassTypes currentThread operation state
+                |> IntrinsicResult.Completed
+            | _ -> IntrinsicResult.Unrecognised
+        | "System.Private.CoreLib", "SpanHelpers", "ClearWithoutReferences" ->
+            // `[Intrinsic] public static void ClearWithoutReferences(ref byte dest, nuint len)`
+            // (SpanHelpers.ByteMemOps.cs:246). This is the boundary `Array.Clear` reaches for
+            // every element type without GC pointers, and `NativeMemory.Clear` reaches for all
+            // of them. The managed body is the platform-tuned unrolled walk of
+            // `Unsafe.WriteUnaligned<Block16>`/`<long>` stores, and beyond
+            // `ZeroMemoryNativeThreshold` it P/Invokes into native memset (label `MZER05`) —
+            // so, exactly as for its `Memmove` sibling, the managed IL is not a route PawPrint
+            // can take. Routing the intrinsic through `CellAwareMemOps.clear` writes each
+            // destination cell's own zero, preserving cell shape for storage that is not
+            // byte-addressable, and falls back to the byte walk for genuinely flat storage.
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
+                ConcreteUIntPtr state.ConcreteTypes ],
+              MethodReturnType.Void ->
+                let operation = "SpanHelpers.ClearWithoutReferences"
+
+                executeSpanHelpersClearWithoutReferences baseClassTypes currentThread operation state
                 |> IntrinsicResult.Completed
             | _ -> IntrinsicResult.Unrecognised
         | "System.Private.CoreLib", "String", "op_Implicit" ->
@@ -2264,10 +2284,16 @@ module Intrinsics =
         | "System.Private.CoreLib", "Span`1", "Clear" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/Span.cs#L280
             // Span<T>.Clear is a JIT intrinsic; the BCL IL falls through to
-            // SpanHelpers.ClearWithReferences / ClearWithoutReferences, the latter of
-            // which has a P/Invoke fallback for long zeroings. Model the JIT semantics
-            // directly: write default(T) to each of `_length` elements starting at
-            // `_reference`, using the same byref-projection helpers as get_Item.
+            // SpanHelpers.ClearWithReferences (for a T containing references) or
+            // ClearWithoutReferences (otherwise). Only the latter is itself `[Intrinsic]`,
+            // and it is implemented below; `ClearWithReferences` is plain managed IL whose
+            // `Unsafe.Add(ref ip, n) = default` writes land as pointer-width zero stores
+            // through a reinterpreted byref onto object-reference cells, which the
+            // byref-write model does not yet support. So the reference half of this IL is
+            // still not walkable, and we keep modelling the JIT semantics directly: write
+            // default(T) to each of `_length` elements starting at `_reference`, using the
+            // same byref-projection helpers as get_Item. That is also the more direct
+            // model — it needs no byte-count derivation at all.
             let elementType : ConcreteTypeHandle =
                 methodToCall.DeclaringType.Generics |> Seq.exactlyOne
 
@@ -2335,15 +2361,44 @@ module Intrinsics =
             // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.cs#L153
             IntrinsicResult.Unrecognised
         | "System.Private.CoreLib", "MemoryMarshal", "GetArrayDataReference" ->
-            // https://github.com/dotnet/runtime/blob/d258af50034c192bf7f0a18856bf83d2903d98ae/src/coreclr/System.Private.CoreLib/src/System/Runtime/InteropServices/MemoryMarshal.CoreCLR.cs#L20
-            let generic = Seq.exactlyOne methodToCall.Generics
+            // Two `[Intrinsic]` overloads, distinguished by arity of `Generics`:
+            //
+            //   ref T    GetArrayDataReference<T>(T[] array)   MemoryMarshal.CoreCLR.cs#L20
+            //   ref byte GetArrayDataReference(Array array)    MemoryMarshal.CoreCLR.cs#L38
+            //
+            // Both denote element 0's storage; they differ only in the stride the returned
+            // byref carries for subsequent pointer arithmetic. The generic form yields a
+            // `ref T`, i.e. element stride, which is a plain `ArrayElement` byref. The
+            // non-generic form yields a `ref byte`, i.e. byte stride, which is the same byref
+            // under a byte-view anchor — the identical treatment `Conv_U`/`Conv_I` give an
+            // array byref at the byref-to-native-pointer transition, so it goes through the
+            // same helper rather than a second notion of "byte view over an array".
+            //
+            // The non-generic body is `ref Unsafe.AddByteOffset(ref Unsafe.As<RawData>(array).Data,
+            // pMT->BaseSize - 2 * sizeof(IntPtr))`: raw arithmetic over the object header layout,
+            // which PawPrint does not model as bytes. `Array.Clear(Array)` is its main caller.
+            let generic =
+                match methodToCall.Generics |> Seq.toList with
+                | [] -> None
+                | [ generic ] -> Some generic
+                | generics ->
+                    failwith
+                        $"bad generic arity for MemoryMarshal.GetArrayDataReference: %d{generics.Length} generic arguments"
 
-            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [ ConcreteGenericArray state.ConcreteTypes generic ], MethodReturnType.Returns (ConcreteByref t) when
-                t = generic
-                ->
-                ()
-            | _ -> failwith "bad signature MemoryMarshal.GetArrayDataReference"
+            match generic with
+            | Some generic ->
+                match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+                | [ ConcreteGenericArray state.ConcreteTypes generic ], MethodReturnType.Returns (ConcreteByref t) when
+                    t = generic
+                    ->
+                    ()
+                | _ -> failwith $"bad signature MemoryMarshal.GetArrayDataReference<T>: %A{methodToCall.Signature}"
+            | None ->
+                match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+                | [ ConcreteSystemArray state.ConcreteTypes ],
+                  MethodReturnType.Returns (ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)) ->
+                    ()
+                | _ -> failwith $"bad signature MemoryMarshal.GetArrayDataReference: %A{methodToCall.Signature}"
 
             let arr, state = IlMachineState.popEvalStack currentThread state
 
@@ -2357,7 +2412,11 @@ module Intrinsics =
                     failwith "array not found"
 
                 let toPush =
-                    ManagedPointerSource.Byref (ByrefRoot.ArrayElement (addr, 0), [])
+                    let element = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (addr, 0), [])
+
+                    match generic with
+                    | Some _ -> element
+                    | None -> ManagedPointerByteView.anchorByteViewIfPlainArrayByref baseClassTypes state element
                     |> EvalStackValue.ManagedPointer
 
                 state

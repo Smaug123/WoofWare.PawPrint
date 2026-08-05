@@ -1177,7 +1177,7 @@ module internal IntrinsicHelpers =
                 // runtime pointers, value-types containing those) and
                 // non-`Verbatim` numeric provenance (e.g. `TypeHandlePtr`-tagged
                 // `IntPtr`s) that the byte-walk fallback cannot serialise.
-                CellAwareCopy.copy
+                CellAwareMemOps.copy
                     baseClassTypes
                     operation
                     CellAwareCopyPolicy.CpblkForward
@@ -1240,7 +1240,7 @@ module internal IntrinsicHelpers =
                 // precedes dest in the same flat byte storage, matching the
                 // intent of CoreCLR's `Memmove` (which P/Invokes into native
                 // memmove on overlap; see SpanHelpers.ByteMemOps.cs:37).
-                CellAwareCopy.copy
+                CellAwareMemOps.copy
                     baseClassTypes
                     operation
                     CellAwareCopyPolicy.Memmove
@@ -1248,5 +1248,39 @@ module internal IntrinsicHelpers =
                     destPtr
                     sourcePtr
                     byteCount
+
+        state |> IlMachineState.advanceProgramCounter currentThread
+
+    let executeSpanHelpersClearWithoutReferences
+        (baseClassTypes : BaseClassTypes<_>)
+        (currentThread : ThreadId)
+        (operation : string)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        // `SpanHelpers.ClearWithoutReferences(ref byte dest, nuint len)` — stack
+        // order: destination (arg0) pushed first, byteCount (arg1) on top.
+        let byteCountArg, state = IlMachineState.popEvalStack currentThread state
+        let destArg, state = IlMachineState.popEvalStack currentThread state
+
+        let byteCount = byteCountOfStackValue operation byteCountArg
+
+        let state =
+            // CoreCLR returns immediately for `len == 0` (SpanHelpers.ByteMemOps.cs:248).
+            // Honouring that explicitly matters here rather than falling out of an empty
+            // loop: `Array.Clear` on a zero-length array hands us the byref to where
+            // element 0 *would* have been, which must never be dereferenced.
+            if byteCount = 0 then
+                state
+            else
+                // Accepts both strict managed byrefs and `NativeInt`-wrapped managed
+                // pointers, as `executeSpanHelpersMemmove` does; `NativeMemory.Clear`
+                // reaches this helper as `ref *(byte*)ptr` (NativeMemory.cs:51).
+                let destPtr = managedPointerOfPointerArgument operation destArg
+
+                match destPtr with
+                | ManagedPointerSource.Null ->
+                    failwith $"%s{operation}: refusing nonzero byte clear of null destination"
+                | _ -> CellAwareMemOps.clear baseClassTypes operation state destPtr byteCount
 
         state |> IlMachineState.advanceProgramCounter currentThread
