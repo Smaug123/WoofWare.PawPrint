@@ -66,7 +66,6 @@ type AllocatedNonArrayObject =
         // TODO: this is a slightly odd domain; the same type for value types as class types!
         Contents : CliValueType
         ConcreteType : ConcreteTypeHandle
-        SyncBlock : SyncBlock
     }
 
     static member DereferenceField (name : string) (f : AllocatedNonArrayObject) : CliType =
@@ -119,6 +118,21 @@ type ManagedHeap =
         /// `StringArrayData`. `_firstChar` and byref/trailing-data reads both walk
         /// from this offset.
         StringDataOffsets : ImmutableDictionary<ManagedHeapAddress, int>
+        /// Object headers, keyed by address. In CoreCLR every heap object carries an
+        /// `ObjHeader` immediately preceding its payload — arrays and strings included
+        /// (`src/coreclr/vm/object.h`); `Object::EnterObjMonitor` and friends are defined
+        /// once on the base `Object` and there is no array-shaped carve-out. The sync
+        /// block therefore belongs to the *address*, not to which of `NonArrayObjects` /
+        /// `Arrays` holds the payload, so it lives here rather than as a field of either
+        /// payload record. Keeping it out of the payload records also means a fresh
+        /// allocation can never inherit a stale header: `Array.Clone` reuses the source's
+        /// `AllocatedArray` record verbatim (see `IlMachineThreadState.cloneArray`), which
+        /// would otherwise copy the source's monitor ownership onto the clone.
+        ///
+        /// Invariant: the key set is exactly the union of the `NonArrayObjects` and
+        /// `Arrays` key sets. `allocateNonArray` / `allocateArray` are the only ways to
+        /// mint an address and both register an `Empty` entry here.
+        SyncBlocks : Map<ManagedHeapAddress, SyncBlock>
     }
 
 [<RequireQualifiedAccess>]
@@ -131,25 +145,26 @@ module ManagedHeap =
             StringArrayData = ImmutableArray.Empty
             StringContents = ImmutableDictionary.Empty
             StringDataOffsets = ImmutableDictionary.Empty
+            SyncBlocks = Map.empty
         }
 
+    /// The object header of the object at `addr`. Every live heap object has one,
+    /// whatever its payload kind; an address with no header is not a live allocation.
     let getSyncBlock (addr : ManagedHeapAddress) (heap : ManagedHeap) : SyncBlock =
-        match heap.NonArrayObjects.TryGetValue addr with
-        | false, _ -> failwith "TODO: getting sync block of array"
-        | true, v -> v.SyncBlock
+        match heap.SyncBlocks.TryGetValue addr with
+        | false, _ -> failwith $"getSyncBlock: %O{addr} is not a live managed heap allocation, so has no object header"
+        | true, v -> v
 
+    /// Overwrite the object header of the object at `addr`. Rejects addresses that were
+    /// never allocated rather than conjuring a header for them: a caller reaching here
+    /// with a dangling address has a bug we would otherwise hide.
     let setSyncBlock (addr : ManagedHeapAddress) (syncValue : SyncBlock) (heap : ManagedHeap) : ManagedHeap =
-        match heap.NonArrayObjects.TryGetValue addr with
-        | false, _ -> failwith "TODO: locked on an array object"
-        | true, v ->
-            let newV =
-                { v with
-                    SyncBlock = syncValue
-                }
+        if not (heap.SyncBlocks.ContainsKey addr) then
+            failwith $"setSyncBlock: %O{addr} is not a live managed heap allocation, so has no object header"
 
-            { heap with
-                NonArrayObjects = heap.NonArrayObjects |> Map.add addr newV
-            }
+        { heap with
+            SyncBlocks = heap.SyncBlocks |> Map.add addr syncValue
+        }
 
     let allocateArray (ty : AllocatedArray) (heap : ManagedHeap) : ManagedHeapAddress * ManagedHeap =
         let addr = heap.FirstAvailableAddress
@@ -158,6 +173,7 @@ module ManagedHeap =
             { heap with
                 FirstAvailableAddress = heap.FirstAvailableAddress + 1
                 Arrays = heap.Arrays |> Map.add (ManagedHeapAddress addr) ty
+                SyncBlocks = heap.SyncBlocks |> Map.add (ManagedHeapAddress addr) SyncBlock.Empty
             }
 
         ManagedHeapAddress addr, heap
@@ -207,6 +223,7 @@ module ManagedHeap =
             { heap with
                 FirstAvailableAddress = addr + 1
                 NonArrayObjects = heap.NonArrayObjects |> Map.add (ManagedHeapAddress addr) ty
+                SyncBlocks = heap.SyncBlocks |> Map.add (ManagedHeapAddress addr) SyncBlock.Empty
             }
 
         ManagedHeapAddress addr, heap
