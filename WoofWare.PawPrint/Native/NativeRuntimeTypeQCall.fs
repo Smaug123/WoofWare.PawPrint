@@ -282,7 +282,7 @@ module NativeRuntimeTypeQCall =
                 | CliType.Numeric (CliNumericType.Int32 i) -> i <> 0
                 | other -> failwith $"%s{operation}: expected Interop.BOOL as Int32, got %O{other}"
 
-            let genericArgumentTargets : ImmutableArray<RuntimeTypeHandleTarget> =
+            let genericArgumentTargets : RuntimeTypeHandleTarget list =
                 match typeHandleTarget with
                 | RuntimeTypeHandleTarget.Closed handle ->
                     match handle with
@@ -293,9 +293,7 @@ module NativeRuntimeTypeQCall =
                                 failwith $"%s{operation}: concrete type handle was not registered: %O{handle}"
                             )
 
-                        concreteType.Generics
-                        |> Seq.map RuntimeTypeHandleTarget.Closed
-                        |> ImmutableArray.CreateRange
+                        concreteType.Generics |> Seq.map RuntimeTypeHandleTarget.Closed |> List.ofSeq
                     | ConcreteTypeHandle.Byref _
                     | ConcreteTypeHandle.Pointer _
                     | ConcreteTypeHandle.FunctionPointer _
@@ -304,7 +302,7 @@ module NativeRuntimeTypeQCall =
                         // Real .NET strips array/byref/pointer wrappers via GetRootElementType
                         // before reaching this QCall, but be defensive: these wrappers carry
                         // no generic instantiation of their own.
-                        ImmutableArray.Empty
+                        []
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
                     // Real .NET returns Type[] { typeof(T), ... } where each T is a generic
                     // type parameter. We surface each parameter as a RuntimeType backed by a
@@ -322,58 +320,28 @@ module NativeRuntimeTypeQCall =
                         failwith
                             $"%s{operation}: open generic type definition %O{identity} declares no generic parameters"
 
-                    Seq.init
+                    List.init
                         typeInfo.Generics.Length
                         (fun position -> RuntimeTypeHandleTarget.GenericParameter (identity, position))
-                    |> ImmutableArray.CreateRange
                 | RuntimeTypeHandleTarget.GenericParameter _
                 | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
                     // GetInstantiation on a generic parameter T returns Type.EmptyTypes in CoreCLR,
                     // because a parameter has no instantiation of its own.
-                    ImmutableArray.Empty
+                    []
 
-            // Empty: leave the caller's local null. RuntimeType.GetGenericArguments handles
-            // null via `?? EmptyTypes`, matching native CopyRuntimeTypeHandles for 0 args.
-            if genericArgumentTargets.IsEmpty then
-                NativeHandlerResult.completed state |> Some
-            else
-                let elementTypeName = if asRuntimeTypeArray then "RuntimeType" else "Type"
+            // `copyRuntimeTypeHandles` leaves the caller's local null when the list is empty,
+            // matching native CopyRuntimeTypeHandles for 0 args; RuntimeType.GetGenericArguments
+            // handles that null via `?? EmptyTypes`.
+            let state =
+                copyRuntimeTypeHandles
+                    ctx.LoggerFactory
+                    ctx.BaseClassTypes
+                    state
+                    asRuntimeTypeArray
+                    retTypes
+                    genericArgumentTargets
 
-                let state, _, elementTypeHandle =
-                    concretizeNonGenericCorelibType ctx.LoggerFactory ctx.BaseClassTypes state "System" elementTypeName
-
-                let arrayAddr, state =
-                    IlMachineState.allocateArray
-                        (ConcreteTypeHandle.OneDimArrayZero elementTypeHandle)
-                        (fun () -> CliType.ObjectRef None)
-                        genericArgumentTargets.Length
-                        state
-
-                let state =
-                    ((state, 0), genericArgumentTargets)
-                    ||> Seq.fold (fun (state, index) target ->
-                        let runtimeTypeAddr, state =
-                            IlMachineState.getOrAllocateType ctx.LoggerFactory ctx.BaseClassTypes target state
-
-                        let state =
-                            IlMachineState.setArrayValue
-                                arrayAddr
-                                (CliType.ObjectRef (Some runtimeTypeAddr))
-                                index
-                                state
-
-                        state, index + 1
-                    )
-                    |> fst
-
-                let state =
-                    IlMachineState.writeManagedByrefWithBase
-                        ctx.BaseClassTypes
-                        state
-                        retTypes
-                        (CliType.ObjectRef (Some arrayAddr))
-
-                NativeHandlerResult.completed state |> Some
+            NativeHandlerResult.completed state |> Some
         | "RuntimeTypeHandle_GetConstraints",
           "System.Private.CoreLib",
           "System",
