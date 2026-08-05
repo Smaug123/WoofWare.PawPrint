@@ -684,11 +684,55 @@ module NativeThreading =
             // `Sleep`, or anything else that could change which OS thread is
             // running. It writes to no managed or native memory the guest
             // can observe, throws nothing, and its only effect is consuming
-            // wall-clock time proportional to `iterations`. Under a
-            // determinism contract that (deliberately) does not model
-            // wall-clock cost as an observable, that makes it a genuine
-            // no-op: the correct simulation of "burn some cycles for no
-            // functional reason" is to burn zero cycles and return.
+            // wall-clock time proportional to `iterations`.
+            //
+            // Elapsed time *is* observable to a PawPrint guest — that is what
+            // `EmulatedKernel.VirtualClockMs` is, and `Environment.TickCount64`
+            // and `DateTime.UtcNow` both read it. But the driver loop advances
+            // it as a function of scheduler ticks (one tick, one millisecond,
+            // per instruction retired), never as a function of what a given
+            // instruction physically costs. So this handler doing no work does
+            // not freeze the guest's clock: the `call` still retires, the clock
+            // still moves, and a guest delay loop such as
+            // `while (TickCount64 - start < N) Thread.SpinWait(k);` terminates —
+            // in fact almost immediately, since a millisecond per instruction is
+            // a generous rate to be billed at.
+            //
+            // What is deliberately not modelled is the *proportionality* to
+            // `iterations`: `SpinWait(1)` and `SpinWait(10_000_000)` each cost
+            // the handful of ticks their call sequence retires, where real
+            // hardware puts them ~7 orders of magnitude apart. Restoring that
+            // proportionality was considered and rejected twice over. Scaled
+            // consistently with the rest of the clock (a real spin iteration is
+            // some tens of instruction-times, and an instruction bills 1 ms
+            // here) `SpinWait(10_000_000)` would have to jump the clock by
+            // days of virtual time, firing every outstanding timeout in the
+            // process — strictly worse for guest fidelity than under-charging.
+            // And it would make a native handler a second writer of
+            // `VirtualClockMs`, which `EmulatedKernel` documents as
+            // scheduler-only; the property that two threads reading on the same
+            // tick observe the same value is stated there and relied on by the
+            // `SystemNative_GetLowResolutionTimestamp` and
+            // `SystemNative_GetSystemTimeAsTicks` handlers.
+            //
+            // The residual divergence is therefore that spinning is *dearer*
+            // here than on real hardware rather than free, so a guest running a
+            // spin-then-block primitive against a timeout exhausts its spin
+            // budget in very few iterations and falls back to the blocking path
+            // sooner than it would natively (measured: a 100 ms budget admits
+            // 2 `SpinWait.SpinOnce()` calls). That is the safe direction — the
+            // blocking path is the one with the real synchronisation in it —
+            // but it does mean PawPrint under-exercises guest spin paths.
+            //
+            // Note also that every CoreLib caller of `Thread.SpinWait`
+            // (`SpinWait.SpinOnceCore`, `LowLevelSpinWaiter.Wait`,
+            // `ReaderWriterLockSlim`, `PortableThreadPool.WorkerThread`) is
+            // guarded by `!Environment.IsSingleProcessor`, and
+            // `EmulatedKernel.defaultProcessorCount` is 1. So at the default
+            // kernel config no BCL path reaches here at all; this arm is
+            // exercised by direct `Thread.SpinWait` calls from guest code, and
+            // by those BCL paths only once a host raises
+            // `KernelConfig.ProcessorCount` above 1.
             //
             // `NativeHandlerResult.completed`, not `.yielded`. Contrast
             // directly with the `ThreadNative_YieldThread` arm just above:

@@ -581,10 +581,14 @@ type EmulatedKernel =
         /// `ProcessorCount`: real CoreCLR computes it in
         /// `YieldProcessorNormalization::PerformMeasurement`
         /// (`yieldprocessornormalizedshared.cpp`) by literally timing how long
-        /// a `YieldProcessor()`/PAUSE instruction takes on the *host* CPU —
-        /// spinning for ~4 seconds of wall-clock time on a background
-        /// finalizer-thread callback and dividing the elapsed hi-res ticks by
-        /// the yield count. That measurement is about as host-dependent as a
+        /// a `YieldProcessor()`/PAUSE instruction takes on the *host* CPU,
+        /// dividing elapsed hi-res ticks by the yield count. The initial pass
+        /// runs on a background finalizer-thread callback and takes
+        /// `NsPerYieldMeasurementCount` = 8 samples of `DetermineMeasureDurationUs()`
+        /// = 1 or 4 microseconds each, so 8–32 us of actual spinning; thereafter
+        /// `MeasurementPeriodMs` = 4000 is a floor on how often it may
+        /// re-measure (one sample per refresh), not time spent spinning. That
+        /// measurement is about as host-dependent as a
         /// number gets: it varies by CPU microarchitecture, by how loaded the
         /// machine is at startup, and even by how much the measurement itself
         /// got preempted. Reading it from the host would make `SpinWait`'s
