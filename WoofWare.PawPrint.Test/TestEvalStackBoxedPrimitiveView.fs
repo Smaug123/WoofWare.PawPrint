@@ -3,6 +3,7 @@ namespace WoofWare.PawPrint.Test
 open System.Runtime.InteropServices
 open FsCheck
 open FsCheck.FSharp
+open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
 
@@ -228,6 +229,83 @@ module TestEvalStackBoxedPrimitiveView =
         |> function
             | CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 11L)) -> ()
             | other -> failwithf "expected the leading field, got %A" other
+
+    /// A value type declared on `TypedReference`'s handle (chosen only because it is a
+    /// non-primitive-like corelib struct) carrying `contents` as its single leading field.
+    let private leadingField (contents : CliType) : CliValueType =
+        let declared = handleFor bct.TypedReference
+
+        {
+            CliField.Id = FieldId.named "leading"
+            CliField.Name = "leading"
+            Contents = contents
+            Offset = Some 0
+            Type = declared
+            MarshallingDescriptor = None
+        }
+        |> List.singleton
+        |> CliValueType.OfFields
+            bct
+            allCt
+            declared
+            (Layout.Custom (size = CliType.sizeOf contents, packingSize = 0))
+            CharSet.Ansi
+
+    [<Test>]
+    let ``viewing a value type at a different flavour of the same width reinterprets the bits`` () : unit =
+        // `ldind.r4` over storage whose leading four bytes are an int32 (an explicit-layout
+        // int/float union, say) is a bit-level reinterpretation, not a numeric conversion.
+        let bits = 0x40490FDB // 3.14159274f
+        let vt = leadingField (CliType.Numeric (CliNumericType.Int32 bits))
+
+        let ldindR4Slot = CliType.Numeric (CliNumericType.Float32 0.0f)
+
+        EvalStackValue.toCliTypeCoerced ldindR4Slot (EvalStackValue.UserDefinedValueType vt)
+        |> function
+            | CliType.Numeric (CliNumericType.Float32 f) -> System.BitConverter.SingleToInt32Bits f |> shouldEqual bits
+            | other -> failwithf "expected the int32 bits reinterpreted as a float32, got %A" other
+
+    [<Test>]
+    let ``viewing a native-int-backed leading field at int64 width lands in the int64 slot`` () : unit =
+        // `ldind.i8` over `struct { nint x; }`. A `nint` field is stored as the primitive-like
+        // `System.IntPtr` wrapper, so the view has to step through it *and* land in the slot the
+        // opcode named: handing back a `CliNumericType.NativeInt` would put the wrong stack
+        // category in an int64 slot.
+        let asIntPtr =
+            boxShapeOf bct.IntPtr (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 5L)))
+
+        let vt = leadingField (CliType.ValueType asIntPtr)
+
+        let ldindI8Slot = CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))
+
+        EvalStackValue.toCliTypeCoerced ldindI8Slot (EvalStackValue.UserDefinedValueType vt)
+        |> function
+            | CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 5L)) -> ()
+            | other -> failwithf "expected an int64-slot value, got %A" other
+
+    [<Test>]
+    let ``viewing a reference-typed leading field as an integer is refused`` () : unit =
+        // Reinterpreting a reference cell as an integer would have to forge a heap address into
+        // guest-visible bits, which this model refuses everywhere else too.
+        let vt =
+            leadingField (CliType.ObjectRef (Some (ManagedHeapAddress.ManagedHeapAddress 12)))
+
+        let ldindI8Slot = CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))
+
+        let thrown =
+            try
+                EvalStackValue.toCliTypeCoerced ldindI8Slot (EvalStackValue.UserDefinedValueType vt)
+                |> ignore
+
+                None
+            with e ->
+                Some e.Message
+
+        match thrown with
+        | None -> failwith "expected a refusal when reinterpreting an object reference as an integer"
+        | Some message ->
+            if not (message.Contains "refusing") then
+                failwithf "expected an explicit refusal, got: %s" message
 
     [<Test>]
     let ``viewing a value type whose leading bytes are aliased reads the latest write`` () : unit =

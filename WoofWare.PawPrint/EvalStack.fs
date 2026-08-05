@@ -840,26 +840,52 @@ module EvalStackValue =
     /// the primitive inside it. Every primitive's instance methods open with
     /// `ldarg.0; ldind.<width>`, so this is the shape `((object) 1L).ToString()` reaches.
     ///
-    /// The field covering the leading `SizeOf target` bytes is exactly the projection the opcode
-    /// performs on real memory, and it is the same two-step `ldelem` documents: canonicalise the
-    /// stored form with `ofCliType`, then let the target's own arm narrow it. Nothing here needs
-    /// to know about widths or signedness, and a nested value type terminates the recursion
-    /// because the CLI forbids a struct from containing itself, so each step strips a level.
+    /// The requested view is the field covering the leading `SizeOf target` bytes, and the
+    /// *target* governs the result's shape: these opcodes reinterpret memory, they do not convert
+    /// values, so an int32 cell read at `ldind.r4` yields the float those bits spell and a
+    /// native-int-backed cell read at `ldind.i8` lands in the int64 slot rather than staying a
+    /// native int. Storage whose flavour already matches the target is handed back as-is, because
+    /// only the cell carries the provenance the byte image cannot (managed pointers, handle-valued
+    /// native ints, widened native ints); everything else goes through the bytes, which refuse
+    /// rather than forge when the value has provenance to lose.
     ///
-    /// Primitive-like wrappers (IntPtr, RuntimeTypeHandle, enums, ...) never arrive here:
-    /// `ofCliType` flattens them on push, and `EvalStack.Push'` enforces that invariant.
+    /// Primitive-like wrappers (IntPtr, RuntimeTypeHandle, enums, ...) never arrive here as
+    /// `popped`: `ofCliType` flattens them on push, and `EvalStack.Push'` enforces that invariant.
+    /// They can still appear *inside* the storage — a `nint` field is stored as the `System.IntPtr`
+    /// wrapper — so nested value types are stepped through rather than flattened to bytes, keeping
+    /// the innermost cell's provenance available to the shape test.
     and private viewValueTypeAsPrimitive (target : CliType) (popped : CliValueType) : CliType =
-        let size = (CliType.SizeOf target).Size
-        let contents = CliValueType.DereferenceFieldAt 0 size popped
+        viewValueTypeAsPrimitiveWithVisited target popped Set.empty
 
-        match contents with
-        | CliType.ValueType inner when inner.Declared = popped.Declared ->
-            // The termination argument above rests on the CLI's rule that a struct cannot
-            // contain itself, which no metadata we read is obliged to honour. Crash on the
-            // violation rather than spin forever unwrapping the same shape.
+    /// `visited` carries the declared types already stepped through. The CLI forbids a value type
+    /// from containing itself, so a repeat means malformed metadata; crash on it rather than
+    /// unwrap forever. Mirrors `CliType.zeroOfWithVisited`, which guards the same shape of walk.
+    and private viewValueTypeAsPrimitiveWithVisited
+        (target : CliType)
+        (popped : CliValueType)
+        (visited : Set<ConcreteTypeHandle>)
+        : CliType
+        =
+        let size = (CliType.SizeOf target).Size
+
+        if Set.contains popped.Declared visited then
             failwith
-                $"refusing to view %O{popped.Declared} as a %d{size}-byte value: its leading field is declared as the value type itself, so unwrapping would not terminate"
-        | _ -> toCliTypeCoerced target (ofCliType contents)
+                $"refusing to view %O{popped.Declared} as a %d{size}-byte value: its storage nests through itself, so unwrapping would not terminate"
+        else
+
+        let visited = Set.add popped.Declared visited
+
+        match CliValueType.DereferenceFieldAt 0 size popped with
+        | CliType.ValueType inner -> viewValueTypeAsPrimitiveWithVisited target inner visited
+        | contents when CliType.ZeroLike contents = CliType.ZeroLike target ->
+            // Already the requested shape, so this cell *is* the view; returning it directly is
+            // what keeps provenance alive across the projection.
+            contents
+        | CliType.ObjectRef _
+        | CliType.RuntimePointer _ ->
+            failwith
+                $"refusing to view the leading %d{size} bytes of %O{popped.Declared} as %O{target}: the storage there is a reference, and reinterpreting it would forge address bits"
+        | contents -> CliType.OfBytesLike target (CliType.ToBytes contents)
 
 type EvalStack =
     {
