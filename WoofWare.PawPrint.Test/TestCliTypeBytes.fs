@@ -366,6 +366,22 @@ module TestCliTypeBytes =
                 cliField "Tail" (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))) None int64Handle
             ]
 
+    /// Explicit layout in which a reference field *overlaps* a sibling. Classification is per
+    /// field and purely interval-based, so a range covering the union must zero both members;
+    /// this pins that rather than leaving it to argument.
+    let private overlappingReferenceUnionValueType () : CliValueType =
+        CliValueType.OfFields
+            bct
+            allCt
+            declaredHandle
+            (Layout.Custom (size = 16, packingSize = 0))
+            CharSet.Ansi
+            [
+                cliField "Obj" (CliType.ObjectRef None) (Some 0) objectHandle
+                cliField "Alias" (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))) (Some 0) int64Handle
+                cliField "Tail" (CliType.Numeric (CliNumericType.Int32 0)) (Some 8) int32Handle
+            ]
+
     /// Explicit layout placing an object reference at a misaligned offset. Real CoreCLR rejects
     /// this at type load; PawPrint's `ComputeConcreteFields` takes `[FieldOffset(n)]` verbatim
     /// and does not, so the shape is representable here and any range rule has to cope with it
@@ -449,6 +465,7 @@ module TestCliTypeBytes =
                 Gen.constant (referenceFirstValueType () |> CliType.ValueType)
                 Gen.constant (nestedMixedValueType () |> CliType.ValueType)
                 Gen.constant (misalignedReferenceValueType () |> CliType.ValueType)
+                Gen.constant (overlappingReferenceUnionValueType () |> CliType.ValueType)
             ]
 
     [<Test>]
@@ -1570,3 +1587,39 @@ module TestCliTypeBytes =
         // And a positive zero really is unchanged, so the check hasn't just been made vacuous.
         CliType.WithZeroedRangeIfChanged 0 8 (CliType.Numeric (CliNumericType.Float64 0.0))
         |> shouldEqual None
+
+    [<Test>]
+    let ``Zeroing a union whose members overlap a reference clears every member`` () : unit =
+        // Explicit layout lets a reference share bytes with a sibling. Fields are classified one
+        // at a time against the range, independently of each other, so every member of the union
+        // must be zeroed when the range covers those bytes -- otherwise the "no untouched field
+        // can overlap the zeroed region" invariant that makes replay order irrelevant would not
+        // hold, and the stale member would win the `ToBytes` overlay.
+        //
+        // Asserted through the rendered bytes rather than by reading members back: projecting
+        // any member of a union that overlaps a live reference reconstructs it from the union's
+        // bytes, and a reference has no byte rendering. That is a pre-existing limit of the
+        // value model, unrelated to zeroing.
+        let heapRef = CliType.ObjectRef (Some (ManagedHeapAddress 13))
+
+        let populated =
+            overlappingReferenceUnionValueType ()
+            |> CliValueType.WithFieldSet "Obj" heapRef
+            |> CliValueType.WithFieldSet "Tail" (CliType.Numeric (CliNumericType.Int32 5))
+            |> CliType.ValueType
+
+        // Zeroing the union's own 8 bytes clears the reference AND its aliasing sibling, so the
+        // whole value renders again; the disjoint tail keeps its 5.
+        match CliType.WithZeroedRangeIfChanged 0 8 populated with
+        | None -> failwith "expected zeroing a populated union to change it"
+        | Some result ->
+            let bytes = CliType.ToBytes result
+            bytes.[0..7] |> Array.forall (fun b -> b = 0uy) |> shouldEqual true
+            bytes.[8] |> shouldEqual 5uy
+
+        // Zeroing the whole thing is the same as ZeroLike, tail included.
+        match CliType.WithZeroedRangeIfChanged 0 16 populated with
+        | None -> failwith "expected zeroing the whole union to change it"
+        | Some result ->
+            result |> shouldEqual (CliType.ZeroLike populated)
+            CliType.ToBytes result |> Array.forall (fun b -> b = 0uy) |> shouldEqual true
