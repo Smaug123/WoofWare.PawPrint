@@ -98,6 +98,21 @@ sealed class OwnStaticShadow : IOwnDim<ArgumentException>, IOwnDim<object>
     public static long Accept(object value) => 9;
 }
 
+// `protected` and `internal` are the other two sides of the same rule: the guard tests the whole
+// accessibility field, not just "is it private", so both must also leave the slot alone. (Not
+// sealed, because C# rejects a new protected member on a sealed type.)
+class OwnProtectedShadow : IOwnDim<ArgumentException>, IOwnDim<object>
+{
+    protected long Accept(object value) => 10;
+
+    public long CallProtected() => Accept(null);
+}
+
+sealed class OwnInternalShadow : IOwnDim<ArgumentException>, IOwnDim<object>
+{
+    internal long Accept(object value) => 11;
+}
+
 class Program
 {
     static long CallDim(IOwnDim<ArgumentException> sink, ArgumentException value) => sink.Accept(value);
@@ -129,6 +144,14 @@ class Program
 
         if (CallDim(new OwnStaticShadow(), e) != 100) return 10;
         if (OwnStaticShadow.Accept(null) != 9) return 11;
+
+        OwnProtectedShadow prot = new OwnProtectedShadow();
+        if (CallDim(prot, e) != 100) return 12;
+        if (prot.CallProtected() != 10) return 13;
+
+        OwnInternalShadow intl = new OwnInternalShadow();
+        if (CallDim(intl, e) != 100) return 14;
+        if (intl.Accept(null) != 11) return 15;
 
         return 0;
     }

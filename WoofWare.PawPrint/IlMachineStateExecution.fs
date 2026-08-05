@@ -1302,7 +1302,12 @@ module IlMachineStateExecution =
             let chosenTy = entry.Type
 
             match IlMachineState.tryGetConcreteTypeInfo state entry.Handle with
-            | None -> state, acc
+            | None ->
+                // Unreachable: every entry here came from `resolveImplementedInterface`, which
+                // already `failwith`s unless this same lookup succeeds. Loud rather than silent,
+                // so that an upstream change breaking that invariant shows up here.
+                failwith
+                    $"variant interface dispatch: interface-map entry %s{chosenTy.Namespace}.%s{chosenTy.Name} (%O{entry.Handle}) is no longer registered"
             | Some (_, chosenTypeInfo) ->
 
             // Both instantiations share a TypeDef, so they share a method list: the slot is
