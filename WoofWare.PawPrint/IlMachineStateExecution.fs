@@ -991,18 +991,30 @@ module IlMachineStateExecution =
             // TODO: throw guest System.Runtime.AmbiguousImplementationException here.
             |> failwithf "multiple most-specific default interface implementations matched this virtual slot: %s"
 
+    /// One entry of a receiver's interface map: the interface, and the type whose level of the
+    /// map contributed it. The owner is what a slot's implicit implementation may come from —
+    /// dispatch for `I<X>` declared by a base is answered by that base's methods, not by an
+    /// unrelated same-signature method a derived type happens to introduce.
+    type private InterfaceMapEntry =
+        {
+            Handle : ConcreteTypeHandle
+            Type : ConcreteType<ConcreteTypeHandle>
+            Owner : ConcreteTypeHandle
+        }
+
     /// One interface, followed by its transitive parents, depth-first. `visited` collapses
     /// diamonds at the *first* occurrence, which is what makes the resulting order load-bearing
-    /// rather than incidental — see `tryRetargetToVariantInterfaceMapEntry`.
+    /// rather than incidental — see `variantInterfaceMapRetargets`.
     let rec private expandInterfaceEntry
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (owner : ConcreteTypeHandle)
         (state : IlMachineState)
         (visited : Set<ConcreteTypeHandle>)
         (ifaceHandle : ConcreteTypeHandle)
         (ifaceTy : ConcreteType<ConcreteTypeHandle>)
         (ifaceTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
-        : IlMachineState * Set<ConcreteTypeHandle> * (ConcreteTypeHandle * ConcreteType<ConcreteTypeHandle>) list
+        : IlMachineState * Set<ConcreteTypeHandle> * InterfaceMapEntry list
         =
         if visited.Contains ifaceHandle then
             state, visited, []
@@ -1020,6 +1032,7 @@ module IlMachineStateExecution =
                     expandInterfaceEntry
                         loggerFactory
                         baseClassTypes
+                        owner
                         state
                         visited
                         parentHandle
@@ -1029,7 +1042,14 @@ module IlMachineStateExecution =
                 state, visited, acc @ expanded
             )
 
-        state, visited, (ifaceHandle, ifaceTy) :: parents
+        state,
+        visited,
+        {
+            Handle = ifaceHandle
+            Type = ifaceTy
+            Owner = owner
+        }
+        :: parents
 
     /// The receiver's interface map, in the order variance-compatible entries are *searched*:
     /// the interfaces the type itself declares, in metadata order and each expanded through its
@@ -1046,8 +1066,8 @@ module IlMachineStateExecution =
     /// against the real runtime.
     ///
     /// The order is load-bearing because variant interface dispatch resolves to the *first*
-    /// compatible entry (see `tryRetargetToVariantInterfaceMapEntry`), so this must not be
-    /// reordered or set-ified.
+    /// compatible entry (see `variantInterfaceMapRetargets`), so this must not be reordered or
+    /// set-ified.
     let rec private collectInterfaceMap
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -1055,7 +1075,7 @@ module IlMachineStateExecution =
         (state : IlMachineState)
         (visited : Set<ConcreteTypeHandle>)
         (typeHandle : ConcreteTypeHandle)
-        : IlMachineState * Set<ConcreteTypeHandle> * (ConcreteTypeHandle * ConcreteType<ConcreteTypeHandle>) list
+        : IlMachineState * Set<ConcreteTypeHandle> * InterfaceMapEntry list
         =
         if visited.Contains typeHandle then
             state, visited, []
@@ -1117,6 +1137,7 @@ module IlMachineStateExecution =
                         expandInterfaceEntry
                             loggerFactory
                             baseClassTypes
+                            typeHandle
                             state
                             visited
                             ifaceHandle
@@ -1160,6 +1181,13 @@ module IlMachineStateExecution =
     /// implementation from a later entry over a default body from an earlier one; see
     /// `sourcesPure/VariantInterfaceDefaultBodyPrecedence.cs`.
     ///
+    /// Each returned entry is paired with the type that owns it, which is where its slot's
+    /// implementation must be looked for. Resolving from the *receiver* instead would let an
+    /// unrelated same-signature method introduced by a derived type answer for a slot its base
+    /// declared — see `sourcesPure/VariantInterfaceSlotOwnership.cs`. That is as far as the
+    /// interface map alone can go; `sourcesPure/InterfaceSlotHiddenByDerivedMethod.cs` records
+    /// the cases that need a real slot-to-implementation dispatch map, which PawPrint lacks.
+    ///
     /// The rule is deliberately restricted to *instance* methods; see the `methodToCall.IsStatic`
     /// guard below for why static interface members neither need nor may use this path.
     ///
@@ -1172,7 +1200,8 @@ module IlMachineStateExecution =
         (dispatchTypeHandle : ConcreteTypeHandle)
         (walkBaseTypes : bool)
         (state : IlMachineState)
-        : IlMachineState * WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> list
+        : IlMachineState *
+          (WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> * ConcreteTypeHandle) list
         =
         // A non-generic interface has nothing to vary, so it can never reach here.
         if methodToCall.DeclaringType.Generics.IsEmpty then
@@ -1212,9 +1241,9 @@ module IlMachineStateExecution =
         // that has not been tried.
         let candidates =
             interfaceMap
-            |> List.filter (fun (_, ty) ->
-                ty.Identity = methodToCall.DeclaringType.Identity
-                && ty.Generics <> methodToCall.DeclaringType.Generics
+            |> List.filter (fun entry ->
+                entry.Type.Identity = methodToCall.DeclaringType.Identity
+                && entry.Type.Generics <> methodToCall.DeclaringType.Generics
             )
 
         if candidates.IsEmpty then
@@ -1240,19 +1269,18 @@ module IlMachineStateExecution =
 
         let state, compatible =
             ((state, []), candidates)
-            ||> List.fold (fun (state, acc) (candidateHandle, candidateTy) ->
+            ||> List.fold (fun (state, acc) entry ->
                 let state, isCompatible =
-                    isAssignableFrom loggerFactory baseClassTypes candidateHandle targetHandle state
+                    isAssignableFrom loggerFactory baseClassTypes entry.Handle targetHandle state
 
-                if isCompatible then
-                    state, acc @ [ candidateHandle, candidateTy ]
-                else
-                    state, acc
+                if isCompatible then state, acc @ [ entry ] else state, acc
             )
 
         ((state, []), compatible)
-        ||> List.fold (fun (state, acc) (chosenHandle, chosenTy) ->
-            match IlMachineState.tryGetConcreteTypeInfo state chosenHandle with
+        ||> List.fold (fun (state, acc) entry ->
+            let chosenTy = entry.Type
+
+            match IlMachineState.tryGetConcreteTypeInfo state entry.Handle with
             | None -> state, acc
             | Some (_, chosenTypeInfo) ->
 
@@ -1272,7 +1300,7 @@ module IlMachineStateExecution =
                         methodGenerics
                         state
 
-                state, acc @ [ retargeted ]
+                state, acc @ [ retargeted, entry.Owner ]
         )
 
     /// Identify the body a virtual or interface call lands on, given the receiver's runtime type.
@@ -1351,7 +1379,13 @@ module IlMachineStateExecution =
             // fixed here.
             let state, resolvedRetargets =
                 ((state, []), retargets)
-                ||> List.fold (fun (state, acc) retargeted ->
+                ||> List.fold (fun (state, acc) (retargeted, owner) ->
+                    // Resolution is scoped to the entry's owner, not to the receiver. The owner
+                    // is the type at whose level of the interface map the entry sits, so its own
+                    // methods and its bases' are exactly what may implement that slot. Walking
+                    // from the receiver instead would let a same-signature method introduced by a
+                    // more-derived type answer for a slot it never re-declared.
+                    //
                     // One retry per entry: a retargeted call target *is* an interface-map entry,
                     // so a second scan could not find a not-yet-tried instantiation even if it
                     // ran. These call the inner resolution, so there is no recursion at all.
@@ -1362,7 +1396,7 @@ module IlMachineStateExecution =
                             thread
                             methodGenerics
                             retargeted
-                            dispatchTypeHandle
+                            owner
                             walkBaseTypes
                             state
 
