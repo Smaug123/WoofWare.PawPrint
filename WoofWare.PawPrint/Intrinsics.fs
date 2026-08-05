@@ -2369,10 +2369,16 @@ module Intrinsics =
             // Both denote element 0's storage; they differ only in the stride the returned
             // byref carries for subsequent pointer arithmetic. The generic form yields a
             // `ref T`, i.e. element stride, which is a plain `ArrayElement` byref. The
-            // non-generic form yields a `ref byte`, i.e. byte stride, which is the same byref
-            // under a byte-view anchor — the identical treatment `Conv_U`/`Conv_I` give an
-            // array byref at the byref-to-native-pointer transition, so it goes through the
-            // same helper rather than a second notion of "byte view over an array".
+            // non-generic form yields a `ref byte`, so it gets an explicit byte-stride anchor.
+            //
+            // Deliberately *not* `anchorByteViewIfPlainArrayByref` (the `Conv_U`/`Conv_I`
+            // helper): that one preserves the element's own CLI shape as the reinterpret
+            // target, and silently returns its input unchanged for element handles it declines
+            // to anchor — pointer, byref and function-pointer elements. A caller transporting
+            // a `ref T` can live with that, but here the byref's declared pointee is `byte`,
+            // so an unanchored result would carry element stride under a `ref byte` static
+            // type and make legal arithmetic like `Unsafe.Add(ref pStart, 1)` fail on an
+            // `int*[]`. `anchorByteStrideOverArrayData` is total over element handles.
             //
             // The non-generic body is `ref Unsafe.AddByteOffset(ref Unsafe.As<RawData>(array).Data,
             // pMT->BaseSize - 2 * sizeof(IntPtr))`: raw arithmetic over the object header layout,
@@ -2416,7 +2422,7 @@ module Intrinsics =
 
                     match generic with
                     | Some _ -> element
-                    | None -> ManagedPointerByteView.anchorByteViewIfPlainArrayByref baseClassTypes state element
+                    | None -> ManagedPointerByteView.anchorByteStrideOverArrayData baseClassTypes state element
                     |> EvalStackValue.ManagedPointer
 
                 state
