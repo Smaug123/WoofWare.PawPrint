@@ -37,6 +37,7 @@ module TestSignalDispatcherThread =
             Status = status
             IsBackground = false
             Name = None
+            Cpu = CpuId 0
         }
 
     [<Test>]

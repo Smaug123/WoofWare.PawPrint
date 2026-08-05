@@ -257,6 +257,27 @@ type ThreadState =
         /// to guests because they read `_name`, not this field. `None` means
         /// the guest has either never set the name or has cleared it.
         Name : string option
+        /// The simulated logical processor this thread is pinned to: what
+        /// `sched_getcpu(3)` (`SystemNative_SchedGetCpu`, and hence
+        /// `Thread.GetCurrentProcessorId()`) reports while this thread runs.
+        ///
+        /// Assigned once, at thread creation, by
+        /// `EmulatedKernel.cpuForRotation`. PawPrint's scheduler runs one
+        /// thread at a time and never migrates a thread between cores, so
+        /// "pinned to" and "currently executing on" coincide and one field
+        /// answers both questions `sched_getcpu` could be asked. This is the
+        /// seat a future core-aware scheduler would rewrite to model migration.
+        ///
+        /// A total field rather than a `Map<ThreadId, CpuId>` in
+        /// `EmulatedKernel` (where the per-thread sigprocmask lives) precisely
+        /// because there is no truthful default for an absent key: "no signals
+        /// blocked" genuinely is the state of a fresh thread, whereas no
+        /// processor index is an identity element, so a missing entry could
+        /// only be answered with an arbitrary lie or with an `option` every
+        /// caller must handle despite it being structurally unreachable. As a
+        /// field, the compiler asks each future thread-creation site which core
+        /// it wants.
+        Cpu : CpuId
     }
 
     // --- Frame resolution primitives ---
@@ -326,7 +347,12 @@ type ThreadState =
 
     member this.LiveFrameCount : int = this.MethodStates.Count
 
-    static member New (methodState : MethodState) =
+    /// `cpu` is the simulated logical processor to pin the new thread to; it
+    /// is a parameter rather than a default so that callers must consult the
+    /// kernel's placement policy (`EmulatedKernel.cpuForRotation`), which
+    /// `ThreadState` cannot reach itself — `EmulatedKernel` is compiled after
+    /// this file.
+    static member New (cpu : CpuId) (methodState : MethodState) =
         {
             ActiveMethodState = FrameId 0
             MethodStates = Map.empty |> Map.add (FrameId 0) methodState
@@ -334,6 +360,7 @@ type ThreadState =
             Status = ThreadStatus.Runnable
             IsBackground = false
             Name = None
+            Cpu = cpu
         }
 
     static member peekEvalStack (state : ThreadState) : EvalStackValue option =

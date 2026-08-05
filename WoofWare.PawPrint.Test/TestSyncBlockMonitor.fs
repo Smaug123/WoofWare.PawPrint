@@ -47,6 +47,7 @@ module TestSyncBlockMonitor =
             Status = status
             IsBackground = false
             Name = None
+            Cpu = CpuId 0
         }
 
     let private withThreads (threads : ThreadId list) (state : IlMachineState) : IlMachineState =
@@ -247,7 +248,7 @@ module TestSyncBlockMonitor =
             |> List.fold
                 (fun (state : IlMachineState, acc : Map<ThreadId, ThreadState>) (tid : ThreadId) ->
                     let state, methodState = mintFrame state
-                    state, acc |> Map.add tid (ThreadState.New methodState)
+                    state, acc |> Map.add tid (ThreadState.New (CpuId 0) methodState)
                 )
                 (state, Map.empty)
 
