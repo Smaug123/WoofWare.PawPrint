@@ -387,6 +387,77 @@ type CliType =
                 Array.blit bytes offset result 0 count
                 result
 
+    /// Zero the byte range `[offset, offset + count)` of `value`, returning `None` if that would
+    /// leave it unchanged.
+    ///
+    /// Unlike `WithBytesAtIfChanged`, this works on storage that has no byte rendering at all:
+    /// it walks structure rather than materialising bytes, so a range covering a whole object
+    /// reference nulls it, and a range covering a plain field of a *reference-containing* struct
+    /// zeroes just that field. `Array.Clear` on a reference-containing element type needs
+    /// exactly this — `SpanHelpers.ClearWithReferences` reinterprets the element data as
+    /// `IntPtr` slots and stores zero into each, and for a struct like
+    /// `Dictionary<K,V>.Entry` the slots do not line up one-to-one with reference fields.
+    ///
+    /// A field only *partially* covered by the range is an error unless it can itself absorb a
+    /// partial zeroing — a nested value type recurses, and a byte-addressable primitive has its
+    /// own sub-range zeroed. Partially zeroing an object reference or a runtime pointer has no
+    /// meaning and fails loudly. That "reject on partial overlap" rule is what makes this safe
+    /// without assuming anything about alignment: PawPrint's explicit-layout path takes
+    /// `[FieldOffset(n)]` verbatim (see `ComputeConcreteFields`) and does not reject the
+    /// misaligned reference fields that real CoreCLR refuses at type load, so an
+    /// alignment-derived precondition would not actually hold.
+    /// Did zeroing actually change anything? Deliberately not `=`: structural equality on
+    /// floats follows IEEE, so it calls `-0.0` equal to `0.0` even though they differ in every
+    /// byte that matters. Zeroing a cell holding `-0.0` really does change memory, and
+    /// reporting "unchanged" would leave the sign bit set. Where a byte rendering exists it is
+    /// the ground truth; where it does not (references, provenance-carrying native ints) there
+    /// is no such subtlety and structural equality is exactly right.
+    static member internal ZeroingChangedAnything (before : CliType) (after : CliType) : bool =
+        match CliType.ByteAddressability before, CliType.ByteAddressability after with
+        | CliByteAddressability.ByteAddressable, CliByteAddressability.ByteAddressable ->
+            CliType.ToBytes before <> CliType.ToBytes after
+        | _ -> before <> after && before <> after
+
+    static member WithZeroedRangeIfChanged (offset : int) (count : int) (value : CliType) : CliType option =
+        let size = CliType.SizeOf(value).Size
+
+        if offset < 0 || count < 0 || offset + count > size then
+            failwith
+                $"CliType.WithZeroedRangeIfChanged: range [%d{offset}, %d{offset + count}) is outside the %d{size}-byte value %O{value}"
+
+        if count = 0 then
+            None
+        elif offset = 0 && count = size then
+            // Whole-value zeroing needs no structural walk and is defined for every shape.
+            let zeroed = CliType.ZeroLike value
+
+            if CliType.ZeroingChangedAnything value zeroed then
+                Some zeroed
+            else
+                None
+        else
+
+        match value with
+        | CliType.ValueType vt ->
+            CliValueType.WithZeroedRangeIfChanged offset count vt
+            |> Option.map CliType.ValueType
+        | CliType.ObjectRef _
+        | CliType.RuntimePointer _ ->
+            // A reference or pointer occupies its slot indivisibly: there is no such thing as
+            // half a reference, so a range that covers only part of one cannot be honoured.
+            // Callers reach this only through storage whose layout says the range straddles a
+            // reference, which is either a misaligned explicit layout or an interpreter bug —
+            // both worth failing loudly for rather than guessing.
+            failwith
+                $"CliType.WithZeroedRangeIfChanged: refusing to zero the partial range [%d{offset}, %d{offset + count}) of the %d{size}-byte %O{value}; a reference or pointer cannot be partially cleared"
+        | CliType.Bool _
+        | CliType.Char _
+        | CliType.Numeric _ ->
+            // A partial zeroing of a primitive is an ordinary byte write. This still refuses
+            // storage carrying non-`Verbatim` provenance, which is right: half-clearing a
+            // tagged native int would leave a corrupt pointer.
+            CliType.WithBytesAtIfChanged offset (Array.zeroCreate count) value
+
     /// Return a byte-addressable CLI value with the requested byte range replaced, or `None` if
     /// the materialised byte image would be unchanged. Value types delegate to
     /// `CliValueType.WithBytesAtIfChanged`, so represented padding and overlapping-field
@@ -878,6 +949,110 @@ and CliValueType =
     /// and the next timestamp explicitly; changed writes use the existing value as the
     /// shape/provenance template and intentionally canonicalise overlapping-field replay order
     /// the same way `OfBytesLike` does.
+    /// Zero the byte range `[offset, offset + count)`. See `CliType.WithZeroedRangeIfChanged`.
+    ///
+    /// Walks fields structurally rather than going through `ToBytes`, which is the whole point:
+    /// `ToBytes` materialises *every* field, so it cannot render a struct that holds a live
+    /// object reference, even when the requested range covers only plain fields.
+    ///
+    /// Every field whose bytes intersect the range is updated, so no untouched field can
+    /// overlap the zeroed region; that is why the zeroed fields need no special replay ordering
+    /// relative to their neighbours. They still take fresh timestamps, keeping the invariant
+    /// that a modified field is newer than the ones it overlaps.
+    static member WithZeroedRangeIfChanged (offset : int) (count : int) (cvt : CliValueType) : CliValueType option =
+        let size = CliValueType.SizeOf(cvt).Size
+
+        if offset < 0 || count < 0 || offset + count > size then
+            failwith
+                $"CliValueType.WithZeroedRangeIfChanged: range [%d{offset}, %d{offset + count}) is outside the %d{size}-byte value type %O{cvt._Declared}"
+
+        let rangeEnd = offset + count
+
+        match cvt._Storage with
+        | CliValueTypeStorage.RawBytes bytes ->
+            let updated = Array.copy bytes
+
+            for i = offset to rangeEnd - 1 do
+                updated.[i] <- 0uy
+
+            if updated = bytes then
+                None
+            else
+                Some
+                    { cvt with
+                        _Storage = CliValueTypeStorage.RawBytes updated
+                    }
+        | CliValueTypeStorage.Fields storage ->
+            let mutable nextTimestamp = cvt.NextTimestamp
+            let mutable changed = false
+
+            let updatedFields =
+                storage.Fields
+                |> List.map (fun field ->
+                    let fieldEnd = field.Offset + field.Size
+
+                    if fieldEnd <= offset || field.Offset >= rangeEnd then
+                        // Disjoint from the range.
+                        field
+                    else
+
+                    let updatedContents =
+                        if field.Offset >= offset && fieldEnd <= rangeEnd then
+                            // Fully covered: zero it whatever its shape, which is what makes a
+                            // reference field null without needing to identify it as one.
+                            let zeroed = CliType.ZeroLike field.Contents
+
+                            if CliType.ZeroingChangedAnything field.Contents zeroed then
+                                Some zeroed
+                            else
+                                None
+                        else
+                            // Straddles a range boundary. Re-express the overlap in the field's
+                            // own coordinates and let it decide whether it can absorb a partial
+                            // zeroing: a nested value type recurses, a primitive takes a byte
+                            // write, a reference fails loudly.
+                            let localOffset = max 0 (offset - field.Offset)
+                            let localEnd = min field.Size (rangeEnd - field.Offset)
+
+                            CliType.WithZeroedRangeIfChanged localOffset (localEnd - localOffset) field.Contents
+
+                    match updatedContents with
+                    | None -> field
+                    | Some contents ->
+                        changed <- true
+                        let timestamp = nextTimestamp
+                        nextTimestamp <- nextTimestamp + 1UL
+
+                        { field with
+                            Contents = contents
+                            EditedAtTime = timestamp
+                        }
+                )
+
+            // Padding and other unrepresented bytes live in the preserved image, and real
+            // memory zeroing clears them too; `ToBytes` overlays fields on top of this, so
+            // leaving it alone would report stale padding for the cleared range.
+            let updatedPreserved = Array.copy storage.PreservedBytes
+
+            for i = offset to rangeEnd - 1 do
+                updatedPreserved.[i] <- 0uy
+
+            let preservedChanged = updatedPreserved <> storage.PreservedBytes
+
+            if not changed && not preservedChanged then
+                None
+            else
+                Some
+                    { cvt with
+                        _Storage =
+                            CliValueTypeStorage.Fields
+                                {
+                                    Fields = updatedFields
+                                    PreservedBytes = updatedPreserved
+                                }
+                        NextTimestamp = nextTimestamp
+                    }
+
     static member WithBytesAtIfChanged (offset : int) (bytes : byte[]) (cvt : CliValueType) : CliValueType option =
         let existing = CliValueType.ToBytes cvt
 
