@@ -1433,8 +1433,18 @@ module TestCliTypeBytes =
 
             match CliType.WithZeroedRangeIfChanged 0 size value with
             | Some zeroed -> zeroed = CliType.ZeroLike value
-            // `None` means "already unchanged", which is only honest if it was already the zero.
-            | None -> value = CliType.ZeroLike value
+            | None ->
+                // `None` means "nothing observable changed". Structural equality against
+                // `ZeroLike` is too strong a reading of that: it also compares field
+                // write-timestamp bookkeeping, which only orders overlapping replays and is
+                // not observable. Where a byte rendering exists it is the honest check, and it
+                // still catches `-0.0`. The unrenderable case is pinned by the explicit
+                // `-0.0`-inside-an-unrenderable-struct test below, which this generator cannot
+                // introspect well enough to assert.
+                match CliType.ByteAddressability value with
+                | CliByteAddressability.ByteAddressable ->
+                    CliType.ToBytes value = CliType.ToBytes (CliType.ZeroLike value)
+                | CliByteAddressability.Rejected _ -> true
 
         Check.One (config, Prop.forAll (Arb.fromGen genByteAddressabilityCliType) property)
 
@@ -1623,3 +1633,103 @@ module TestCliTypeBytes =
         | Some result ->
             result |> shouldEqual (CliType.ZeroLike populated)
             CliType.ToBytes result |> Array.forall (fun b -> b = 0uy) |> shouldEqual true
+
+    [<Test>]
+    let ``Zeroing part of an overlapping field leaves bytes outside the range alone`` () : unit =
+        // `ToBytes` replays overlapping fields in `EditedAtTime` order. A field that only
+        // *partially* overlaps the requested range extends outside it, so promoting it to
+        // "newest" would change who wins on bytes the call was never asked to touch.
+        //
+        // Layout: a 16-byte nested struct at [0,16), aliased over its upper half by an 8-byte
+        // field at [8,16) that was written later. Zeroing [0,8) must not let the nested
+        // struct's stale upper half overwrite the alias.
+        let nested =
+            CliValueType.OfFields
+                bct
+                allCt
+                declaredHandle
+                Layout.Default
+                CharSet.Ansi
+                [
+                    cliField "Lo" (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))) None int64Handle
+                    cliField "Hi" (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))) None int64Handle
+                ]
+
+        let outer =
+            CliValueType.OfFields
+                bct
+                allCt
+                declaredHandle
+                (Layout.Custom (size = 16, packingSize = 0))
+                CharSet.Ansi
+                [
+                    cliField "Nested" (nested |> CliType.ValueType) (Some 0) nested.Declared
+                    cliField
+                        "Alias"
+                        (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L)))
+                        (Some 8)
+                        int64Handle
+                ]
+
+        let populated =
+            outer
+            |> CliValueType.WithFieldSet
+                "Nested"
+                (nested
+                 |> CliValueType.WithFieldSet
+                     "Lo"
+                     (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0x1111111111111111L)))
+                 |> CliValueType.WithFieldSet
+                     "Hi"
+                     (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0x2222222222222222L)))
+                 |> CliType.ValueType)
+            // Written last, so the alias owns [8,16) in the replay.
+            |> CliValueType.WithFieldSet
+                "Alias"
+                (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0x3333333333333333L)))
+            |> CliType.ValueType
+
+        let before = CliType.ToBytes populated
+        before.[8..15] |> shouldEqual (Array.create 8 0x33uy)
+
+        match CliType.WithZeroedRangeIfChanged 0 8 populated with
+        | None -> failwith "expected zeroing the low half to change the value"
+        | Some result ->
+            let after = CliType.ToBytes result
+            // Requested range cleared...
+            after.[0..7] |> Array.forall (fun b -> b = 0uy) |> shouldEqual true
+            // ...and everything outside it byte-for-byte as it was.
+            after.[8..15] |> shouldEqual before.[8..15]
+
+    [<Test>]
+    let ``Zeroing a negative zero inside an unrenderable struct is a change`` () : unit =
+        // The struct has no byte rendering of its own because of the pointer field, so the
+        // "compare rendered bytes" arm does not apply and the comparison has to descend. If it
+        // compared the aggregates structurally instead, IEEE equality would call the `-0.0`
+        // field already-zero and the whole-cell clear would report "unchanged", leaving the
+        // sign bit set.
+        let pointerField =
+            CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr (RuntimeTypeHandleTarget.Closed int32Handle))
+
+        let vt =
+            CliValueType.OfFields
+                bct
+                allCt
+                declaredHandle
+                Layout.Default
+                CharSet.Ansi
+                [
+                    cliField "P" pointerField None intPtrHandle
+                    cliField "D" (CliType.Numeric (CliNumericType.Float64 -0.0)) None doubleHandle
+                ]
+            |> CliType.ValueType
+
+        match CliType.ByteAddressability vt with
+        | CliByteAddressability.ByteAddressable ->
+            failwith "test premise broken: this struct is supposed to have no byte rendering"
+        | CliByteAddressability.Rejected _ -> ()
+
+        match CliType.WithZeroedRangeIfChanged 0 (CliType.SizeOf vt).Size vt with
+        | None ->
+            failwith "zeroing a struct holding -0.0 must report a change even when the struct has no byte rendering"
+        | Some zeroed -> zeroed |> shouldEqual (CliType.ZeroLike vt)
