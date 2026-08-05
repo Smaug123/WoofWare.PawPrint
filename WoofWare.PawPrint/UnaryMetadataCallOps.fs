@@ -1402,17 +1402,21 @@ module internal UnaryMetadataCallOps =
             // committing path `callMethod` always advances the caller under those conditions
             // (see its `oldFrame` binding). A committing call therefore cannot be mistaken for a
             // suspended one.
-            let pcAfterCall = (IlMachineState.getFrame thread callerFrameId state).IlOpIndex
-
+            // Our frame is not guaranteed to survive the call, either. When a class initialiser
+            // has already failed, `callMethod` dispatches the cached failure synchronously, and if
+            // the handler is in an outer frame that dispatch unwinds this frame away before
+            // returning. There is then no `calli` left to re-execute, so there is nothing to
+            // restore — and looking the frame up unconditionally would turn a perfectly catchable
+            // guest exception into a host crash ("Frame ... is not live").
             let state =
-                if pcAfterCall = pcBeforeCall then
-                    let restored =
-                        IlMachineState.getFrame thread callerFrameId state
-                        |> MethodState.pushToEvalStack' fnPtrValue
-
-                    IlMachineState.setFrame thread callerFrameId restored state
-                else
-                    state
+                match IlMachineState.tryGetFrame thread callerFrameId state with
+                | None -> state
+                | Some callerFrame ->
+                    if callerFrame.IlOpIndex = pcBeforeCall then
+                        let restored = callerFrame |> MethodState.pushToEvalStack' fnPtrValue
+                        IlMachineState.setFrame thread callerFrameId restored state
+                    else
+                        state
 
             state, WhatWeDid.Executed
         | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit

@@ -58,6 +58,7 @@ module IlMachineState =
     let peByteRangePointer = IlMachineTypeResolution.peByteRangePointer
 
     let getFrame = IlMachineThreadState.getFrame
+    let tryGetFrame = IlMachineThreadState.tryGetFrame
 
     let setFrame = IlMachineThreadState.setFrame
 
