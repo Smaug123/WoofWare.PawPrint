@@ -1109,6 +1109,54 @@ module internal UnaryMetadataCallOps =
         |> IlMachineState.advanceProgramCounter thread
         |> Tuple.withRight WhatWeDid.Executed
 
+    /// The evaluation-stack representation a type occupies (ECMA-335 III.1.1). Signedness and
+    /// sub-`int32` width do not survive the load onto the stack, so a `calli` call site and its
+    /// target may legitimately disagree about those and still describe the same call; what must
+    /// agree is the stack kind, because that is what `callMethod` pops and what the frame
+    /// return pushes.
+    ///
+    /// `None` from `calliStackKind` means "not classified" — a non-primitive type, or a generic
+    /// parameter left unsubstituted in a raw signature. Those are not compared, so this
+    /// classifier is a source of *refusals*, never of permission: agreeing here does not assert
+    /// the call is well-typed, only that it is not one of the mismatches we can detect cheaply.
+    [<RequireQualifiedAccess>]
+    type private CalliStackKind =
+        | Int32
+        | Int64
+        | Float
+        | NativeInt
+        | ObjectRef
+
+    let private calliStackKind (t : TypeDefn) : CalliStackKind option =
+        match t with
+        | TypeDefn.PrimitiveType p ->
+            match p with
+            | PrimitiveType.Boolean
+            | PrimitiveType.Char
+            | PrimitiveType.SByte
+            | PrimitiveType.Byte
+            | PrimitiveType.Int16
+            | PrimitiveType.UInt16
+            | PrimitiveType.Int32
+            | PrimitiveType.UInt32 -> Some CalliStackKind.Int32
+            | PrimitiveType.Int64
+            | PrimitiveType.UInt64 -> Some CalliStackKind.Int64
+            | PrimitiveType.Single
+            | PrimitiveType.Double -> Some CalliStackKind.Float
+            | PrimitiveType.IntPtr
+            | PrimitiveType.UIntPtr -> Some CalliStackKind.NativeInt
+            | PrimitiveType.String
+            | PrimitiveType.Object -> Some CalliStackKind.ObjectRef
+            // A TypedReference is not an ordinary stack value; don't pretend to classify it.
+            | PrimitiveType.TypedReference -> None
+        | _ -> None
+
+    /// Both kinds are known and they differ, i.e. this is a mismatch we can prove.
+    let private calliKindsConflict (a : TypeDefn) (b : TypeDefn) : bool =
+        match calliStackKind a, calliStackKind b with
+        | Some ka, Some kb -> ka <> kb
+        | _ -> false
+
     /// `calli` (ECMA-335 III.3.20). The function pointer sits on top of the eval stack,
     /// above the arguments; the metadata token is a StandaloneSignature describing the
     /// *call site*, not the callee.
@@ -1122,9 +1170,19 @@ module internal UnaryMetadataCallOps =
     /// check, a mismatch (whether from a bug in our own `ldftn`/function-pointer
     /// representation, or from genuinely divergent IL) would silently pop the wrong number
     /// of values and corrupt the frame — a failure that surfaces arbitrarily far from its
-    /// cause. We deliberately do not use the call-site signature's parameter *types* to
-    /// coerce arguments: `callMethod` already coerces from the callee signature, and a
-    /// second source of truth would be worse than none.
+    /// cause.
+    ///
+    /// Known divergence. ECMA-335 defines `calli`'s marshalling by the call-site signature,
+    /// so a guest may legally pun a function pointer to a signature whose *types* differ from
+    /// the target's (C# permits `(delegate*&lt;int, long&gt;)p` where `p` is
+    /// `delegate*&lt;int, int&gt;`, and CoreCLR runs it). Driving invocation from the callee
+    /// cannot reproduce that: the result would be pushed as the target's `Int32` and the
+    /// caller's `int64` store would then have no legal coercion. Doing it properly means
+    /// coercing arguments and the result to the call-site types, which requires carrying the
+    /// call-site signature onto the frame and applying it in `returnStackFrame`. Until then we
+    /// detect the mismatch here and fail at the faulting instruction, rather than letting the
+    /// call proceed and die later inside `toCliTypeCoerced` with a message that never mentions
+    /// `calli`. See docs/divergences.md.
     let executeCalli (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
@@ -1232,6 +1290,45 @@ module internal UnaryMetadataCallOps =
 
             failwith
                 $"calli: call-site signature returns %s{describe callSiteReturnsValue} but target %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}::%s{methodToCall.Name} returns %s{describe calleeReturnsValue}; refusing to execute a call that would leave the caller's eval stack the wrong depth"
+
+        // The two signatures agree on shape; now check they agree on *representation*, to the
+        // extent we can prove it. See the "Known divergence" note on this function: we invoke
+        // the target directly, so a call site that puns the types would be silently ignored
+        // here and would fail later in `toCliTypeCoerced` with no mention of `calli`.
+        //
+        // Compare against the target's *raw* signature, which is in the same `TypeDefn` form as
+        // the decoded call site (`Signature` is concretized to `ConcreteTypeHandle`s and so is
+        // not comparable). For a generic target the raw signature still holds type parameters;
+        // `calliStackKind` declines to classify those, so they are skipped rather than
+        // spuriously rejected.
+        let calleeRaw = methodToCall.RawSignature
+
+        // Positions only line up when both sides agree on who supplies `this`. When they do not
+        // (the EXPLICITTHIS / receiver-as-explicit-argument case described above) the lists are
+        // offset relative to each other and cannot be compared element-wise; the slot-count
+        // check above still guards frame integrity there.
+        let receiverConventionsAgree = callSiteHasImplicitThis = not methodToCall.IsStatic
+
+        if
+            receiverConventionsAgree
+            && callSiteSignature.ParameterTypes.Length = calleeRaw.ParameterTypes.Length
+        then
+            List.iteri2
+                (fun i (callSiteTy : TypeDefn) (calleeTy : TypeDefn) ->
+                    if calliKindsConflict callSiteTy calleeTy then
+                        failwith
+                            $"calli: call-site signature declares parameter %d{i} as %O{callSiteTy} but target %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}::%s{methodToCall.Name} declares it as %O{calleeTy}; these occupy different evaluation-stack representations, and PawPrint does not yet marshal calli arguments through the call-site signature"
+                )
+                callSiteSignature.ParameterTypes
+                calleeRaw.ParameterTypes
+
+        match callSiteSignature.ReturnType, calleeRaw.ReturnType with
+        | MethodReturnType.Returns callSiteRet, MethodReturnType.Returns calleeRet when
+            calliKindsConflict callSiteRet calleeRet
+            ->
+            failwith
+                $"calli: call-site signature declares a return type of %O{callSiteRet} but target %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}::%s{methodToCall.Name} returns %O{calleeRet}; these occupy different evaluation-stack representations, and PawPrint does not yet marshal the calli result through the call-site signature"
+        | _ -> ()
 
         let declaringTypeHandle =
             AllConcreteTypes.findExistingConcreteType

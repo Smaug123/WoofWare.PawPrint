@@ -211,6 +211,77 @@ public class Program
                         $"Expected the guest to catch a NullReferenceException from the null calli, got %O{outcome}"
             )
 
+    /// ECMA-335 III.3.20 defines `calli`'s marshalling by the call-site StandaloneSignature,
+    /// so a guest may legally pun a function pointer to a signature whose types differ from
+    /// the target's. PawPrint invokes the target directly, so it is the *target's* types that
+    /// drive argument coercion and the return push; until that is fixed (i.e. until arguments
+    /// and the result are coerced to the call-site types) such a call must be refused at the
+    /// faulting instruction rather than proceeding and failing far away inside
+    /// `toCliTypeCoerced` with a message that never mentions `calli`.
+    ///
+    /// These cannot be `sourcesPure` comparison tests: CoreCLR accepts both (verified
+    /// standalone on osx-arm64 — the return case prints 3, the argument case prints 7), so a
+    /// comparison test would assert PawPrint reproduces behaviour it deliberately does not.
+    /// See docs/divergences.md.
+    [<Test>]
+    let ``calli refuses a punned return type at the faulting instruction`` () =
+        let source =
+            """
+using System;
+
+public class Program
+{
+    static int Id(int x) => x;
+
+    public static unsafe int Main(string[] args)
+    {
+        delegate*<int, int> p = &Id;
+        // Same arity, same void-ness, wider return: passes the slot-count and void-ness
+        // checks, and would otherwise die in toCliTypeCoerced at the `stloc` of the long.
+        long r = ((delegate*<int, long>)p)(3);
+        return (int)r;
+    }
+}
+"""
+
+        let exn =
+            Assert.Throws (fun () ->
+                runPawPrintSource "CalliPunnedReturn.cs" source KernelConfig.Default (fun _image _result -> ())
+            )
+
+        exn.Message |> shouldContainText "calli"
+        exn.Message |> shouldContainText "return"
+        exn.Message |> shouldContainText "Program"
+
+    [<Test>]
+    let ``calli refuses a punned parameter type at the faulting instruction`` () =
+        let source =
+            """
+using System;
+
+public class Program
+{
+    static long Id(long x) => x;
+
+    public static unsafe int Main(string[] args)
+    {
+        delegate*<long, long> p = &Id;
+        // Arity and return type agree; only the parameter's stack representation differs.
+        long r = ((delegate*<int, long>)p)(7);
+        return (int)r;
+    }
+}
+"""
+
+        let exn =
+            Assert.Throws (fun () ->
+                runPawPrintSource "CalliPunnedParameter.cs" source KernelConfig.Default (fun _image _result -> ())
+            )
+
+        exn.Message |> shouldContainText "calli"
+        exn.Message |> shouldContainText "parameter"
+        exn.Message |> shouldContainText "Program"
+
     [<Test>]
     let ``Unhandled rethrow preserves original throw stack frame`` () =
         let source =

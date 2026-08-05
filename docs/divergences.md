@@ -100,3 +100,27 @@ catch (NullReferenceException) { /* PawPrint: reached. CoreCLR: process is alrea
 **Testing note**: This divergence is why the case cannot be a `sourcesPure` comparison test — running the real runtime in-process would take the test host down. It is covered by a PawPrint-only test, `calli through a null function pointer throws NullReferenceException` in `TestPureCases.fs`.
 
 **Where this lives in code**: `UnaryMetadataCallOps.executeCalli`.
+
+## `calli` through a punned function-pointer signature
+
+**CoreCLR**: Runs the call. ECMA-335 III.3.20 defines `calli`'s marshalling by the call-site StandaloneSignature, and C# lets a guest cast a function pointer to a different signature of the same arity, so `((delegate*<int, long>)p)(3)` — where `p` is a `delegate*<int, int>` — is accepted and returns `3`. The argument direction behaves likewise: calling a `long`-taking target through an `int`-declaring call site returns `7` for input `7`. (Both verified standalone on osx-arm64.) Note that CoreCLR is relying on the platform ABI here: whether a narrower return value arrives with its upper bits in a usable state is an ABI property, not something the CLI specifies.
+
+**PawPrint**: Refuses the call at the `calli` instruction, with an error naming the instruction, both types, and the fact that call-site marshalling is unimplemented.
+
+**Spec status**: Non-compliant, deliberately and detectably. The specified behaviour is to marshal arguments and the result through the call-site signature; PawPrint drives invocation from the target's own `MethodInfo` instead, so it has no way to produce the widened result.
+
+**Why we chose this**: Doing it properly means coercing arguments to the call-site parameter types on the way in and the result to the call-site return type on the way out, which requires carrying the call-site signature onto the frame and applying it in `returnStackFrame` — the return path shared by every call in the interpreter. That was out of scope for the change that introduced `calli`. The alternative to refusing was to let the call proceed, which is what the first implementation did: it died afterwards in `toCliTypeCoerced` with `TODO: Int32(3)`, at the `stloc` rather than at the `calli`, with nothing in the message connecting it to a function pointer. Failing at the faulting instruction with a message that says what is unimplemented is strictly more useful, and keeps the limitation visible rather than latent.
+
+**Scope of the check**: The comparison is on evaluation-stack representation (ECMA-335 III.1.1), not exact type, so signedness and sub-`int32` width may legitimately differ between the two signatures without being rejected. It is a source of refusals only: non-primitive types and unsubstituted generic parameters are not classified and so are not compared, and the parameter lists are only compared element-wise when both signatures agree on which of them supplies `this`. Agreement therefore does not assert the call is well-typed — only that it is not one of the mismatches that can be detected cheaply.
+
+**Observable example**:
+
+```csharp
+static int Id(int x) => x;
+delegate*<int, int> p = &Id;
+long r = ((delegate*<int, long>)p)(3);  // CoreCLR: r == 3. PawPrint: refused at the calli.
+```
+
+**Testing note**: Cannot be a `sourcesPure` comparison test, since CoreCLR succeeds and PawPrint deliberately does not. Covered by the PawPrint-only tests `calli refuses a punned return type at the faulting instruction` and `calli refuses a punned parameter type at the faulting instruction` in `TestPureCases.fs`.
+
+**Where this lives in code**: `UnaryMetadataCallOps.executeCalli`, and the `CalliStackKind` classifier above it.
