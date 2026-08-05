@@ -208,23 +208,23 @@ module NativeThreading =
         let threadPriorityNormal = 2
         let (ManagedHeapAddress addrInt) = threadAddr
 
-        let threadObj = ManagedHeap.get threadAddr state.ManagedHeap
-
-        let updatedObj =
-            threadObj
-            |> AllocatedNonArrayObject.SetFieldById
-                (objectOwnFieldId state threadObj "_managedThreadId")
+        let state =
+            state
+            |> IlMachineState.setOwnInstanceField
+                threadAddr
+                "_managedThreadId"
                 (CliType.Numeric (CliNumericType.Int32 managedThreadId))
-            |> AllocatedNonArrayObject.SetFieldById
-                (objectOwnFieldId state threadObj "_priority")
+            |> IlMachineState.setOwnInstanceField
+                threadAddr
+                "_priority"
                 (CliType.Numeric (CliNumericType.Int32 threadPriorityNormal))
-            |> AllocatedNonArrayObject.SetFieldById
-                (objectOwnFieldId state threadObj "_DONT_USE_InternalThread")
+            |> IlMachineState.setOwnInstanceField
+                threadAddr
+                "_DONT_USE_InternalThread"
                 (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim (int64 addrInt))))
 
         let state =
             { state with
-                ManagedHeap = ManagedHeap.set threadAddr updatedObj state.ManagedHeap
                 NextManagedThreadId = state.NextManagedThreadId + 1
             }
 

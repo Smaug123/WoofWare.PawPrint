@@ -9,6 +9,7 @@ module NativeDispatch =
     // active `EmulatedRuntime` (threaded through the machine config); nothing here forecloses that.
     let private net10NativeHandlers : (NativeCallContext -> NativeHandlerResult option) list =
         [
+            NativeGc.tryExecute
             NativeEnvironment.tryExecute
             NativeMonitor.tryExecute
             NativeMarshal.tryExecute
