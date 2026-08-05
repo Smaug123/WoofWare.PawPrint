@@ -1429,6 +1429,14 @@ module IlMachineManagedByref =
             // for byte-renderable cells it agrees byte-for-byte with the path below (pinned by
             // the oracle property in TestCliTypeBytes).
             //
+            // The slot count the BCL derives is `byteLength / sizeof(IntPtr)`, so it is only
+            // meaningful if the element size agrees with CoreCLR's. For a GC-containing value
+            // type CoreCLR forces pointer alignment even under `Pack = 1`, and PawPrint's
+            // layout does not, so such an element is smaller here and the slots stop lining up
+            // with the fields. That surfaces as a loud "cannot partially clear a reference"
+            // from the range walk rather than as a quietly missed field — see
+            // `ArrayClearPackedReferenceStruct.cs` in the unimplemented set.
+            //
             // Deliberately only the array root. The sibling byte-write roots
             // (`writeHeapValueBytes`, `writeStackMemoryBytesAt`, `writeNativeMemoryBytesAt`,
             // `writeStringBytes`) are left alone, so a zero run through one of those over
