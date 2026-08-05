@@ -1133,7 +1133,8 @@ module IlMachineStateExecution =
         // implement the high-level intrinsic semantics directly: for a value type T, push `default(T)`
         // (skipping any explicit parameterless struct ctor for now — see TODO); for a reference type T,
         // allocate the object and run its parameterless ctor by recursing through `callMethod`.
-        // See https://github.com/dotnet/runtime/blob/HEAD/src/coreclr/System.Private.CoreLib/src/System/Activator.RuntimeType.cs#L138
+        // See https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Activator.RuntimeType.cs#L137-L160
+        // (`CreateInstanceOfT` and `CallDefaultStructConstructor` are RuntimeType.CoreCLR.cs#L4028 and #L4056.)
         //
         // Exception wrapping:
         //  - CoreCLR's `CreateInstanceOfT` wraps any exception thrown by the recursed ctor in a
