@@ -982,10 +982,6 @@ module NullaryIlOp =
     /// projection `executeLdind` performs: `ofCliType` canonically widens the stored form
     /// (flattening `Bool`, `Char` and primitive-like wrappers to their underlying primitive),
     /// and `toCliTypeCoerced` narrows that to the requested template.
-    ///
-    /// Matching strictly on `CliType.Numeric` here instead — as these arms used to — rejects
-    /// every array whose cells are still in their declared form, which is any array not yet
-    /// written through a concrete-width `stelem.*`.
     let internal ldElem
         (targetCliType : CliType)
         (index : EvalStackValue)
@@ -1014,18 +1010,6 @@ module NullaryIlOp =
         | value -> failwith $"Endfilter requires an int32 result on the stack; got %O{value}"
 
     /// Store into an array element, coercing to the array's *declared* element type.
-    ///
-    /// The opcode only tells us the width the value was pushed at; the array's own type identity
-    /// determines the storage form of the cell, and that is the form `newarr` zero-filled it with
-    /// (`CliType.Bool` for `bool[]`, a primitive-like value type for `nint[]`/enum arrays, and so
-    /// on). Stamping the opcode's raw primitive over the cell instead would silently discard that
-    /// identity, leaving arrays in a shape that depends on whether they happen to have been
-    /// written through a concrete-width `stelem.*` yet. That divergence is what used to mask the
-    /// `ldelem.*` read defect, since a raw `Numeric` cell was the one shape those arms accepted.
-    ///
-    /// This matches how the token-carrying `executeStelem` and `executeMultiDimArraySet` already
-    /// pick their target; those resolve the element type from the metadata token, which the
-    /// concrete-width opcodes do not have.
     let internal stElem
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
