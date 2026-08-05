@@ -809,9 +809,9 @@ module NativeRuntimeMethodHandle =
             // (VerificationException)` does not intercept, so it propagates as the same exception
             // type the caller would have seen.
             //
-            // Same scope as the sibling `RuntimeTypeHandle_Instantiate` arm: special constraints
-            // (`struct` / `class` / `new()`) only; base-type and interface requirements are not yet
-            // validated for either owner.
+            // Special constraints (`struct` / `class` / `new()`) only; base-type and interface
+            // requirements are not validated for either owner of a generic parameter list, here
+            // or in the sibling `RuntimeTypeHandle_Instantiate` arm. See issue #752.
             let constraintViolation =
                 NativeRuntimeTypeHelpers.validateSpecialConstraintsOn
                     ctx.BaseClassTypes

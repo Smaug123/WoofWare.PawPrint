@@ -1231,9 +1231,9 @@ module NativeRuntimeTypeHelpers =
 
     /// Open-generic type-definition behind a `RuntimeTypeHandleTarget`, used by the
     /// constraint validator to look up the type definition's `Generics` (which carry
-    /// the constraint metadata read by Stage B1). Closed concrete handles are
-    /// canonicalised to their open generic identity, mirroring the canonicalisation
-    /// in `instantiateGenericRuntimeTypeTarget`.
+    /// the constraint metadata). Closed concrete handles are canonicalised to their
+    /// open generic identity, mirroring the canonicalisation in
+    /// `instantiateGenericRuntimeTypeTarget`.
     let openGenericTypeInfoForValidation
         (state : IlMachineState)
         (target : RuntimeTypeHandleTarget)
@@ -1341,32 +1341,26 @@ module NativeRuntimeTypeHelpers =
                     && (m.MethodAttributes &&& System.Reflection.MethodAttributes.MemberAccessMask) = System.Reflection.MethodAttributes.Public
                 )
 
-    /// Validate the special-constraint flags
-    /// (`NotNullableValueTypeConstraint` / `ReferenceTypeConstraint` /
-    /// `DefaultConstructorConstraint`) declared on `typeInfo.Generics` against the
-    /// supplied closed `genericArguments`. Returns `Some message` describing the
-    /// first violation (suitable for an `ArgumentException` message), or `None` if
-    /// all flag-style constraints are satisfied.
+    /// Validate the flag-style special constraints (`NotNullableValueTypeConstraint` /
+    /// `ReferenceTypeConstraint` / `DefaultConstructorConstraint`, i.e. `where T : struct` /
+    /// `class` / `new()`) declared by a *generic parameter list*, whoever owns it: a generic
+    /// type's, via `validateSpecialConstraints` below, or a generic method's, via
+    /// `RuntimeMethodHandle_GetStubIfNeededSlow`. Both owners reach the same CoreCLR check
+    /// while binding.
     ///
-    /// This does NOT validate base-type / interface (`Constraints`) requirements —
-    /// those land in Stage B3.
-    ///
-    /// CoreCLR throws either `ArgumentException` or `VerificationException`
-    /// depending on the call path; we always raise `ArgumentException`, matching
-    /// the most commonly observed user-facing exception from
-    /// `RuntimeType.MakeGenericType`. TODO: revisit if a different surface (e.g. a
-    /// guest path that goes through verification rather than reflection) needs the
-    /// other exception type.
-    /// Validate the special constraints (`struct` / `class` / `new()`) declared by a *generic
-    /// parameter list*, whoever owns it: a generic type's, via `validateSpecialConstraints` below,
-    /// or a generic method's, via `RuntimeMethodHandle_GetStubIfNeededSlow`. Both owners reach the
-    /// same CoreCLR check while binding, and both surface a violation as `ArgumentException`.
-    ///
-    /// `ownerDisplayName` appears only in the returned diagnostic; callers currently use the
+    /// Returns `Some message` describing the first violation (suitable for an
+    /// `ArgumentException` message), or `None` if every flag-style constraint is satisfied.
+    /// `ownerDisplayName` appears only in that diagnostic; callers currently use the
     /// `Some`/`None` as a predicate and raise a message-less guest exception.
     ///
-    /// Base-type and interface requirements (the `Constraints` array) are still not validated --
-    /// same scope as when this was type-only.
+    /// Base-type and interface requirements (the `Constraints` array) are not validated; see
+    /// issue #752.
+    ///
+    /// CoreCLR throws either `ArgumentException` or `VerificationException` depending on the
+    /// call path; we always raise `ArgumentException`, matching the most commonly observed
+    /// user-facing exception from `RuntimeType.MakeGenericType`. TODO: revisit if a different
+    /// surface (e.g. a guest path that goes through verification rather than reflection) needs
+    /// the other exception type.
     let validateSpecialConstraintsOn
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
