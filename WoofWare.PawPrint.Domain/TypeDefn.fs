@@ -209,7 +209,10 @@ type TypeDefn =
     | Pointer of TypeDefn
     | Byref of TypeDefn
     | OneDimensionalArrayLowerBoundZero of elements : TypeDefn
-    | Modified of original : TypeDefn * afterMod : TypeDefn * modificationRequired : bool
+    /// A type carrying a custom modifier (ECMA-335 `modreq`/`modopt`). The payload is a record
+    /// rather than a tuple because the two `TypeDefn`s are trivially confusable and reading the
+    /// wrong one is silent: see the field docs on <see cref="T:ModifiedTypeDefn"/>.
+    | Modified of ModifiedTypeDefn
     | FromReference of TypeRef * SignatureTypeKind
     | FromDefinition of ResolvedTypeIdentity * SignatureTypeKind
     | GenericInstantiation of generic : TypeDefn * args : ImmutableArray<TypeDefn>
@@ -241,7 +244,10 @@ type TypeDefn =
         | TypeDefn.Pointer typeDefn -> $"ptr[%s{string<TypeDefn> typeDefn}]"
         | TypeDefn.Byref typeDefn -> $"byref[%s{string<TypeDefn> typeDefn}]"
         | TypeDefn.OneDimensionalArrayLowerBoundZero elements -> $"arr[%s{string<TypeDefn> elements}]"
-        | TypeDefn.Modified (_, afterMod, _) -> $"modified[%s{string<TypeDefn> afterMod}]"
+        | TypeDefn.Modified m ->
+            let req = if m.IsRequired then "modreq" else "modopt"
+
+            $"modified[%s{string<TypeDefn> m.Unmodified} ; %s{req}=%s{string<TypeDefn> m.Modifier}]"
         | TypeDefn.FromReference (typeRef, _) -> $"ref[%s{typeRef.Namespace}.%s{typeRef.Name}]"
         | TypeDefn.FromDefinition (identity, _) ->
             let name = identity.AssemblyFullName.Split ',' |> Array.head
@@ -261,6 +267,23 @@ type TypeDefn =
         | TypeDefn.GenericMethodParameter index -> $"<method param %i{index}>"
         | TypeDefn.Void -> "void"
 
+/// The payload of <see cref="T:TypeDefn.Modified"/>: a type with an ECMA-335 custom modifier
+/// (`modreq`/`modopt`) attached.
+and ModifiedTypeDefn =
+    {
+        /// The type the modifier is attached to — i.e. what the signature would have said with the
+        /// modifier deleted. Runtime type identity and storage shape follow this, so this is almost
+        /// always the field you want when looking *through* a modifier.
+        Unmodified : TypeDefn
+        /// The modifier itself: `System.Runtime.InteropServices.InAttribute`,
+        /// `System.Runtime.CompilerServices.IsVolatile`, `System.Runtime.CompilerServices.CallConvCdecl`,
+        /// and friends. This is an annotation on the signature, not the type being described.
+        Modifier : TypeDefn
+        /// `true` for `modreq` (a consumer that doesn't understand the modifier must reject the
+        /// signature); `false` for `modopt` (it may ignore it).
+        IsRequired : bool
+    }
+
 [<RequireQualifiedAccess>]
 module TypeDefn =
     let isManaged (typeDefn : TypeDefn) : bool =
@@ -271,7 +294,8 @@ module TypeDefn =
         | TypeDefn.Pointer typeDefn -> failwith "todo"
         | TypeDefn.Byref typeDefn -> failwith "todo"
         | TypeDefn.OneDimensionalArrayLowerBoundZero elements -> failwith "todo"
-        | TypeDefn.Modified (original, afterMod, modificationRequired) -> failwith "todo"
+        | TypeDefn.Modified _ ->
+            failwith "todo: TypeDefn.isManaged of a type carrying a custom modifier (modreq/modopt)"
         | TypeDefn.FromReference _ -> true
         | TypeDefn.FromDefinition (_, signatureTypeKind) ->
             match signatureTypeKind with
@@ -374,8 +398,15 @@ module TypeDefn =
             member this.GetGenericMethodParameter (genericContext, index) = TypeDefn.GenericMethodParameter index
             member this.GetGenericTypeParameter (genericContext, index) = TypeDefn.GenericTypeParameter index
 
+            // Note the BCL's parameter order here: `ISignatureTypeProvider.GetModifiedType` takes the
+            // *modifier* first and the type it is attached to second.
             member this.GetModifiedType (modifier, unmodifiedType, isRequired) =
-                TypeDefn.Modified (unmodifiedType, modifier, isRequired)
+                TypeDefn.Modified
+                    {
+                        Unmodified = unmodifiedType
+                        Modifier = modifier
+                        IsRequired = isRequired
+                    }
 
             member this.GetPinnedType elementType = TypeDefn.Pinned elementType
             member this.GetTypeFromSpecification (reader, genericContext, handle, rawTypeKind) = failwith "todo"

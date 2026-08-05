@@ -397,8 +397,7 @@ module NativeRuntimeTypeQCall =
                     | TypeDefn.Pointer element
                     | TypeDefn.Byref element
                     | TypeDefn.OneDimensionalArrayLowerBoundZero element -> embedsTypeParameter element
-                    | TypeDefn.Modified (original, modifier, _) ->
-                        embedsTypeParameter original || embedsTypeParameter modifier
+                    | TypeDefn.Modified m -> embedsTypeParameter m.Unmodified || embedsTypeParameter m.Modifier
                     | TypeDefn.GenericInstantiation (generic, args) ->
                         embedsTypeParameter generic || (args |> Seq.exists embedsTypeParameter)
                     | TypeDefn.FunctionPointer signature ->

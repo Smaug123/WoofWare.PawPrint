@@ -382,8 +382,8 @@ module internal MethodTableProjection =
         | TypeDefn.Byref _
         | TypeDefn.FunctionPointer _
         | TypeDefn.Void -> false, state
-        | TypeDefn.Pinned inner
-        | TypeDefn.Modified (inner, _, _) -> contains inner
+        | TypeDefn.Pinned inner -> contains inner
+        | TypeDefn.Modified m -> contains m.Unmodified
         | TypeDefn.Array _
         | TypeDefn.OneDimensionalArrayLowerBoundZero _ -> true, state
         | TypeDefn.GenericTypeParameter index ->
@@ -596,8 +596,7 @@ module internal MethodTableProjection =
         | TypeDefn.FunctionPointer _
         | TypeDefn.Array _
         | TypeDefn.OneDimensionalArrayLowerBoundZero _ -> true, state
-        | TypeDefn.Pinned inner
-        | TypeDefn.Modified (inner, _, _) ->
+        | TypeDefn.Pinned inner ->
             typeDefnInstanceFieldsMayContainGcPointers
                 loggerFactory
                 baseClassTypes
@@ -606,6 +605,15 @@ module internal MethodTableProjection =
                 typeGenericArgs
                 visited
                 inner
+        | TypeDefn.Modified m ->
+            typeDefnInstanceFieldsMayContainGcPointers
+                loggerFactory
+                baseClassTypes
+                state
+                currentAssembly
+                typeGenericArgs
+                visited
+                m.Unmodified
         | TypeDefn.GenericTypeParameter _
         | TypeDefn.GenericMethodParameter _
         | TypeDefn.Void ->
