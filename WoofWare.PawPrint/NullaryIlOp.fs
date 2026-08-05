@@ -972,16 +972,47 @@ module NullaryIlOp =
 
         IlMachineState.getArrayValue arrAddr index state
 
+    /// Read an array element and project it to the width and signedness that the concrete-width
+    /// `ldelem.*` opcode is asking for.
+    ///
+    /// Array cells hold the element type's *declared* `CliType` — `CliType.Bool` for `bool[]`,
+    /// `CliType.Char` for `char[]`, a primitive-like value type for `nint[]`/`nuint[]`/enum
+    /// arrays — which is the same representation locals, fields and statics use. The opcode is
+    /// asking for a *view* of that cell at a given width, so this is the identical two-step
+    /// projection `executeLdind` performs: `ofCliType` canonically widens the stored form
+    /// (flattening `Bool`, `Char` and primitive-like wrappers to their underlying primitive),
+    /// and `toCliTypeCoerced` narrows that to the requested template.
+    let internal ldElem
+        (targetCliType : CliType)
+        (index : EvalStackValue)
+        (arr : EvalStackValue)
+        (currentThread : ThreadId)
+        (state : IlMachineState)
+        : ExecutionResult
+        =
+        let value = getArrayElt index arr currentThread state
+
+        let coerced =
+            value
+            |> EvalStackValue.ofCliType
+            |> EvalStackValue.toCliTypeCoerced targetCliType
+
+        state
+        |> IlMachineState.pushToEvalStack coerced currentThread
+        |> IlMachineState.advanceProgramCounter currentThread
+        |> Tuple.withRight WhatWeDid.Executed
+        |> ExecutionResult.stepped
+
     let internal endfilterAccepts (filterResult : EvalStackValue) : bool =
         match filterResult with
         | EvalStackValue.Int32 0 -> false
         | EvalStackValue.Int32 _ -> true
         | value -> failwith $"Endfilter requires an int32 result on the stack; got %O{value}"
 
+    /// Store into an array element, coercing to the array's *declared* element type.
     let internal stElem
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (targetCliTypeZero : CliType)
         (value : EvalStackValue)
         (index : EvalStackValue)
         (arr : EvalStackValue)
@@ -1042,6 +1073,21 @@ module NullaryIlOp =
         | IlMachineStateExecution.ArrayStoreVarianceCheck.Raised state ->
             ExecutionResult.stepped (state, WhatWeDid.Executed)
         | IlMachineStateExecution.ArrayStoreVarianceCheck.Allowed state ->
+
+        // Re-read the allocation from the post-check state rather than reusing the `arr` binding
+        // above: the variance check returns an updated state, and everything after it should be
+        // derived from that one. (An array's `ConcreteType` is fixed at allocation, so this is
+        // the same handle either way today; deriving it from the current state keeps that a
+        // property we rely on locally rather than one a reader has to go and confirm.)
+        let elementHandle =
+            match state.ManagedHeap.Arrays.[arrAddr].ConcreteType with
+            | ConcreteTypeHandle.OneDimArrayZero element -> element
+            | other ->
+                failwith
+                    $"stelem reached an array whose concrete type is not a single-dimension zero-based array (multi-dimensional stores go through Array::Set): %O{other}"
+
+        let targetCliTypeZero, state =
+            IlMachineState.cliTypeZeroOfHandle state baseClassTypes elementHandle
 
         let state =
             state
@@ -2503,172 +2549,60 @@ module NullaryIlOp =
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
 
-            let value = getArrayElt index arr currentThread state
-
-            match value with
-            | CliType.Numeric (CliNumericType.NativeInt _) -> ()
-            | _ -> failwith "expected native int in Ldelem.i"
-
-            let state =
+            ldElem
+                (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
+                index
+                arr
+                currentThread
                 state
-                |> IlMachineState.pushToEvalStack value currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
-
-            ExecutionResult.stepped (state, WhatWeDid.Executed)
         | Ldelem_i1 ->
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
 
-            let value = getArrayElt index arr currentThread state
-
-            let value =
-                match value with
-                | CliType.Numeric (CliNumericType.Int8 i) -> int i
-                | CliType.Numeric (CliNumericType.UInt8 i) -> int (sbyte i)
-                | _ -> failwith $"expected one-byte integer in Ldelem.i1, got: %O{value}"
-
-            let state =
-                state
-                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 value) currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
-
-            ExecutionResult.stepped (state, WhatWeDid.Executed)
+            ldElem (CliType.Numeric (CliNumericType.Int8 0y)) index arr currentThread state
         | Ldelem_u1 ->
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
 
-            let value = getArrayElt index arr currentThread state
-
-            let value =
-                match value with
-                | CliType.Numeric (CliNumericType.UInt8 i) -> int i
-                | CliType.Numeric (CliNumericType.Int8 i) -> int (byte (int i &&& 0xFF))
-                | _ -> failwith $"expected one-byte integer in Ldelem.u1, got: %O{value}"
-
-            let state =
-                state
-                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 value) currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
-
-            ExecutionResult.stepped (state, WhatWeDid.Executed)
+            ldElem (CliType.Numeric (CliNumericType.UInt8 0uy)) index arr currentThread state
         | Ldelem_i2 ->
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
 
-            let value = getArrayElt index arr currentThread state
-
-            let value =
-                match value with
-                | CliType.Numeric (CliNumericType.Int16 i) -> int i
-                | CliType.Numeric (CliNumericType.UInt16 i) -> int (int16 i)
-                | _ -> failwith $"expected two-byte integer in Ldelem.i2, got: %O{value}"
-
-            let state =
-                state
-                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 value) currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
-
-            ExecutionResult.stepped (state, WhatWeDid.Executed)
+            ldElem (CliType.Numeric (CliNumericType.Int16 0s)) index arr currentThread state
         | Ldelem_u2 ->
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
 
-            let value = getArrayElt index arr currentThread state
-
-            let value =
-                match value with
-                | CliType.Numeric (CliNumericType.UInt16 i) -> int i
-                | CliType.Numeric (CliNumericType.Int16 i) -> int (uint16 i)
-                | CliType.Char (high, low) -> (int high <<< 8) ||| int low
-                | _ -> failwith $"expected two-byte integer in Ldelem.u2, got: %O{value}"
-
-            let state =
-                state
-                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 value) currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
-
-            ExecutionResult.stepped (state, WhatWeDid.Executed)
+            ldElem (CliType.Numeric (CliNumericType.UInt16 0us)) index arr currentThread state
         | Ldelem_i4 ->
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
 
-            let value = getArrayElt index arr currentThread state
-
-            match value with
-            | CliType.Numeric (CliNumericType.Int32 _) -> ()
-            | _ -> failwith "expected int32 in Ldelem.i4"
-
-            let state =
-                state
-                |> IlMachineState.pushToEvalStack value currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
-
-            ExecutionResult.stepped (state, WhatWeDid.Executed)
+            ldElem (CliType.Numeric (CliNumericType.Int32 0)) index arr currentThread state
         | Ldelem_u4 ->
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
 
-            let value = getArrayElt index arr currentThread state
-
-            match value with
-            | CliType.Numeric (CliNumericType.Int32 _) -> ()
-            | _ -> failwith $"expected four-byte integer in Ldelem.u4, got: %O{value}"
-
-            let state =
-                state
-                |> IlMachineState.pushToEvalStack value currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
-
-            ExecutionResult.stepped (state, WhatWeDid.Executed)
+            // unsigned int32 is not a distinct CliType; the spec stores it on the stack as if
+            // signed, with two's complement wraparound. Matches `getTargetLdindCliType`'s LdindU4.
+            ldElem (CliType.Numeric (CliNumericType.Int32 0)) index arr currentThread state
         | Ldelem_i8 ->
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
 
-            let value = getArrayElt index arr currentThread state
-
-            match value with
-            | CliType.Numeric (CliNumericType.Int64 _) -> ()
-            | _ -> failwith "expected int64 in Ldelem.i8"
-
-            let state =
-                state
-                |> IlMachineState.pushToEvalStack value currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
-
-            ExecutionResult.stepped (state, WhatWeDid.Executed)
+            ldElem (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))) index arr currentThread state
         | Ldelem_u8 -> failwith "TODO: Ldelem_u8 unimplemented"
         | Ldelem_r4 ->
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
 
-            let value = getArrayElt index arr currentThread state
-
-            match value with
-            | CliType.Numeric (CliNumericType.Float32 _) -> ()
-            | _ -> failwith $"expected float32 in Ldelem.r4, got: %O{value}"
-
-            let state =
-                state
-                |> IlMachineState.pushToEvalStack value currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
-
-            ExecutionResult.stepped (state, WhatWeDid.Executed)
+            ldElem (CliType.Numeric (CliNumericType.Float32 0.0f)) index arr currentThread state
         | Ldelem_r8 ->
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
 
-            let value = getArrayElt index arr currentThread state
-
-            match value with
-            | CliType.Numeric (CliNumericType.Float64 _) -> ()
-            | _ -> failwith $"expected float64 in Ldelem.r8, got: %O{value}"
-
-            let state =
-                state
-                |> IlMachineState.pushToEvalStack value currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
-
-            ExecutionResult.stepped (state, WhatWeDid.Executed)
+            ldElem (CliType.Numeric (CliNumericType.Float64 0.0)) index arr currentThread state
         | Ldelem_ref ->
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
@@ -2691,84 +2625,53 @@ module NullaryIlOp =
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
 
-            stElem
-                loggerFactory
-                corelib
-                (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
-                value
-                index
-                arr
-                currentThread
-                state
+            stElem loggerFactory corelib value index arr currentThread state
         | Stelem_i1 ->
             let value, state = IlMachineState.popEvalStack currentThread state
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
 
-            stElem loggerFactory corelib (CliType.Numeric (CliNumericType.Int8 0y)) value index arr currentThread state
+            stElem loggerFactory corelib value index arr currentThread state
         | Stelem_u1 -> failwith "TODO: Stelem_u1 unimplemented"
         | Stelem_i2 ->
             let value, state = IlMachineState.popEvalStack currentThread state
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
 
-            stElem loggerFactory corelib (CliType.Numeric (CliNumericType.Int16 0s)) value index arr currentThread state
+            stElem loggerFactory corelib value index arr currentThread state
         | Stelem_u2 -> failwith "TODO: Stelem_u2 unimplemented"
         | Stelem_i4 ->
             let value, state = IlMachineState.popEvalStack currentThread state
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
 
-            stElem loggerFactory corelib (CliType.Numeric (CliNumericType.Int32 0)) value index arr currentThread state
+            stElem loggerFactory corelib value index arr currentThread state
         | Stelem_u4 -> failwith "TODO: Stelem_u4 unimplemented"
         | Stelem_i8 ->
             let value, state = IlMachineState.popEvalStack currentThread state
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
 
-            stElem
-                loggerFactory
-                corelib
-                (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L)))
-                value
-                index
-                arr
-                currentThread
-                state
+            stElem loggerFactory corelib value index arr currentThread state
         | Stelem_u8 -> failwith "TODO: Stelem_u8 unimplemented"
         | Stelem_r4 ->
             let value, state = IlMachineState.popEvalStack currentThread state
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
 
-            stElem
-                loggerFactory
-                corelib
-                (CliType.Numeric (CliNumericType.Float32 0.0f))
-                value
-                index
-                arr
-                currentThread
-                state
+            stElem loggerFactory corelib value index arr currentThread state
         | Stelem_r8 ->
             let value, state = IlMachineState.popEvalStack currentThread state
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
 
-            stElem
-                loggerFactory
-                corelib
-                (CliType.Numeric (CliNumericType.Float64 0.0))
-                value
-                index
-                arr
-                currentThread
-                state
+            stElem loggerFactory corelib value index arr currentThread state
         | Stelem_ref ->
             let value, state = IlMachineState.popEvalStack currentThread state
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
-            stElem loggerFactory corelib (CliType.ObjectRef None) value index arr currentThread state
+
+            stElem loggerFactory corelib value index arr currentThread state
         | Cpblk -> failwith "TODO: Cpblk unimplemented"
         | Initblk -> failwith "TODO: Initblk unimplemented"
         | Conv_ovf_u1 ->
