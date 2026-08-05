@@ -1415,11 +1415,27 @@ module internal UnaryMetadataCallOps =
             // precisely because our class init has *not* finished. Saying `Executed` here would
             // wake a waiter mid-cctor: it would step, re-block, and the interleaving would differ
             // from the scheduled one — a reproducibility bug, not just a wasted step.
+            //
+            // An unadvanced PC alone does *not* mean "retry expected": an intrinsic that raises
+            // also leaves it alone deliberately, so exception dispatch sees the faulting
+            // instruction's offset (`IlMachineStateExecution`, the `IntrinsicResult.RaiseException`
+            // arm, whose comment notes the outcome there "is always `Executed`"). Nothing will
+            // re-execute this `calli` in that case: restoring the pointer would leave a stray value
+            // on a frame whose arguments have already been consumed, and reporting a suspension
+            // would park threads behind a class initialisation that is not running.
+            //
+            // The two are told apart by what got pushed. A class-init suspension pushes the type's
+            // `.cctor`; the raising path pushes the exception's `.ctor`. Those names are distinct,
+            // so the frame now on top says which happened.
+            let pushedCctor =
+                let active = state.ThreadState.[thread].MethodState
+                active.ExecutingMethod.Name = ".cctor"
+
             let state, whatWeDid =
                 match IlMachineState.tryGetFrame thread callerFrameId state with
                 | None -> state, WhatWeDid.Executed
                 | Some callerFrame ->
-                    if callerFrame.IlOpIndex = pcBeforeCall then
+                    if callerFrame.IlOpIndex = pcBeforeCall && pushedCctor then
                         let restored = callerFrame |> MethodState.pushToEvalStack' fnPtrValue
 
                         IlMachineState.setFrame thread callerFrameId restored state, WhatWeDid.SuspendedForClassInit
