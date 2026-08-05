@@ -1141,12 +1141,19 @@ module IlMachineStateExecution =
     /// the type declares it. `sourcesPure/VariantInterfaceMapOrder.cs` pins the observable rule
     /// against the real runtime, which is the authority here.
     ///
-    /// That first-wins rule is deliberately restricted to *instance* methods; see the
-    /// `methodToCall.IsStatic` guard below for why static interface members neither need nor may
-    /// use this path.
+    /// "First wins" is a tie-break among entries that are *equally good*, and it does not
+    /// override the CLR's precedence between a real implementation and a default interface body:
+    /// CoreCLR only reaches `FindDefaultInterfaceImplementation` after its dispatch map — which
+    /// records class implementations — has missed for every variance-compatible entry. So this
+    /// returns *all* compatible entries in order and leaves the caller to prefer a real
+    /// implementation from a later entry over a default body from an earlier one; see
+    /// `sourcesPure/VariantInterfaceDefaultBodyPrecedence.cs`.
     ///
-    /// Returns `None` when no such entry exists, leaving the caller's answer unchanged.
-    let private tryRetargetToVariantInterfaceMapEntry
+    /// The rule is deliberately restricted to *instance* methods; see the `methodToCall.IsStatic`
+    /// guard below for why static interface members neither need nor may use this path.
+    ///
+    /// Returns `[]` when no such entry exists, leaving the caller's answer unchanged.
+    let private variantInterfaceMapRetargets
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
@@ -1154,12 +1161,11 @@ module IlMachineStateExecution =
         (dispatchTypeHandle : ConcreteTypeHandle)
         (walkBaseTypes : bool)
         (state : IlMachineState)
-        : IlMachineState *
-          WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> option
+        : IlMachineState * WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> list
         =
         // A non-generic interface has nothing to vary, so it can never reach here.
         if methodToCall.DeclaringType.Generics.IsEmpty then
-            state, None
+            state, []
         elif
             // Static interface members do not reach the retarget: a static virtual slot has no
             // name-based matching to fall back on, so implementing one requires an explicit
@@ -1169,11 +1175,11 @@ module IlMachineStateExecution =
             // because the first-wins tie-break below would be *wrong* for a static member:
             // CoreCLR guards its equivalent shortcut on `!pInterfaceMD->IsStatic()`, so a static
             // one keeps scanning for a conflict and can throw AmbiguousResolutionException. If
-            // this ever does become reachable, returning `None` leaves the caller's existing loud
-            // failure in place instead of silently diverging.
+            // this ever does become reachable, returning nothing leaves the caller's existing
+            // loud failure in place instead of silently diverging.
             methodToCall.IsStatic
         then
-            state, None
+            state, []
         else
 
         // The caller has already resolved this assembly on the path that led here, so a miss is
@@ -1184,7 +1190,7 @@ module IlMachineStateExecution =
             declaringAssy.TypeDefs.[methodToCall.DeclaringType.Definition.Get].IsInterface
 
         if not declaringTypeIsInterface then
-            state, None
+            state, []
         else
 
         let state, _, interfaceMap =
@@ -1201,7 +1207,7 @@ module IlMachineStateExecution =
             )
 
         if candidates.IsEmpty then
-            state, None
+            state, []
         else
 
         let state, targetHandle =
@@ -1221,30 +1227,22 @@ module IlMachineStateExecution =
                 },
                 handle
 
-        // First compatible entry wins; we deliberately do not fall through to a later entry if
-        // this one fails to resolve. A type that lists an interface must supply bodies for its
-        // slots, so a miss means our own resolution is wrong, and surfacing that as the caller's
-        // existing loud failure beats silently running a different type argument's body.
-        let state, chosen =
-            ((state, None), candidates)
-            ||> List.fold (fun (state, chosen) (candidateHandle, candidateTy) ->
-                match chosen with
-                | Some _ -> state, chosen
-                | None ->
-                    let state, isCompatible =
-                        isAssignableFrom loggerFactory baseClassTypes candidateHandle targetHandle state
+        let state, compatible =
+            ((state, []), candidates)
+            ||> List.fold (fun (state, acc) (candidateHandle, candidateTy) ->
+                let state, isCompatible =
+                    isAssignableFrom loggerFactory baseClassTypes candidateHandle targetHandle state
 
-                    if isCompatible then
-                        state, Some (candidateHandle, candidateTy)
-                    else
-                        state, None
+                if isCompatible then
+                    state, acc @ [ candidateHandle, candidateTy ]
+                else
+                    state, acc
             )
 
-        match chosen with
-        | None -> state, None
-        | Some (chosenHandle, chosenTy) ->
+        ((state, []), compatible)
+        ||> List.fold (fun (state, acc) (chosenHandle, chosenTy) ->
             match IlMachineState.tryGetConcreteTypeInfo state chosenHandle with
-            | None -> state, None
+            | None -> state, acc
             | Some (_, chosenTypeInfo) ->
 
             // Both instantiations share a TypeDef, so they share a method list: the slot is
@@ -1263,7 +1261,8 @@ module IlMachineStateExecution =
                         methodGenerics
                         state
 
-                state, Some retargeted
+                state, acc @ [ retargeted ]
+        )
 
     /// Identify the body a virtual or interface call lands on, given the receiver's runtime type.
     ///
@@ -1302,8 +1301,8 @@ module IlMachineStateExecution =
             // a miss falls through to the variance scan. Running the scan lazily also keeps this
             // change unable to perturb anything that resolves today — the interface-map walk is
             // never even performed on a call that succeeds.
-            let state, retargeted =
-                tryRetargetToVariantInterfaceMapEntry
+            let state, retargets =
+                variantInterfaceMapRetargets
                     loggerFactory
                     baseClassTypes
                     methodGenerics
@@ -1312,9 +1311,57 @@ module IlMachineStateExecution =
                     walkBaseTypes
                     state
 
-            match retargeted with
+            // Resolve every compatible entry rather than only the first, because interface-map
+            // order is not the whole precedence rule: a *real* implementation beats a default
+            // interface body no matter which entry each came from. CoreCLR gets that ordering
+            // structurally — its dispatch map, which records class implementations, is consulted
+            // for every variance-compatible entry before `FindDefaultInterfaceImplementation`
+            // runs at all — whereas we resolve per entry, so we have to compare afterwards.
+            //
+            // A resolved method whose declaring type is itself an interface came from a default
+            // body; anything else is a real implementation.
+            //
+            // Note this resolves every entry even once a winner is known. Entries are few, this
+            // path only runs where dispatch would otherwise fail outright, and stopping early
+            // would mean the answer depended on evaluation order — the bug being fixed here.
+            let state, resolvedRetargets =
+                ((state, []), retargets)
+                ||> List.fold (fun (state, acc) retargeted ->
+                    // One retry per entry: a retargeted call target *is* an interface-map entry,
+                    // so a second scan could not find a not-yet-tried instantiation even if it
+                    // ran. These call the inner resolution, so there is no recursion at all.
+                    let state, resolved =
+                        tryResolveVirtualImplementationForSlot
+                            loggerFactory
+                            baseClassTypes
+                            thread
+                            methodGenerics
+                            retargeted
+                            dispatchTypeHandle
+                            walkBaseTypes
+                            state
+
+                    match resolved with
+                    | None -> state, acc
+                    | Some resolved -> state, acc @ [ retargeted, resolved ]
+                )
+
+            let isDefaultInterfaceBody
+                (meth : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+                : bool
+                =
+                state
+                    .LoadedAssembly(meth.DeclaringType.Assembly)
+                    .Value.TypeDefs.[meth.DeclaringType.Definition.Get].IsInterface
+
+            let chosen =
+                resolvedRetargets
+                |> List.tryFind (fun (_, resolved) -> not (isDefaultInterfaceBody resolved))
+                |> Option.orElseWith (fun () -> List.tryHead resolvedRetargets)
+
+            match chosen with
             | None -> state, None
-            | Some retargeted ->
+            | Some (retargeted, resolved) ->
                 let logger = loggerFactory.CreateLogger "CallMethod"
 
                 logger.LogDebug (
@@ -1324,18 +1371,7 @@ module IlMachineStateExecution =
                     retargeted.DeclaringType.Generics
                 )
 
-                // One retry only: the retargeted call target *is* an interface-map entry, so a
-                // second scan could not find a not-yet-tried instantiation even if it ran. This
-                // calls the inner resolution rather than itself, so there is no recursion at all.
-                tryResolveVirtualImplementationForSlot
-                    loggerFactory
-                    baseClassTypes
-                    thread
-                    methodGenerics
-                    retargeted
-                    dispatchTypeHandle
-                    walkBaseTypes
-                    state
+                state, Some resolved
 
     let rec callMethod
         (loggerFactory : ILoggerFactory)
