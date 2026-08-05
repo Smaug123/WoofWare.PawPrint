@@ -1401,20 +1401,46 @@ module IlMachineManagedByref =
 
             let existing = state.ManagedHeap.Arrays.[arr].Elements.[cell]
 
-            let existingSize =
-                byteAddressableCellSize $"array %O{arr} element %d{cell}" existing
-
-            let canTake = existingSize - inCellOffset
+            // Deriving how much of this cell the write covers doesn't require the cell to be
+            // byte-renderable, for the same reason the stride above doesn't; the byte-view
+            // path below validates before it actually renders anything.
+            let cellSize = CliType.sizeOf existing
+            let canTake = cellSize - inCellOffset
             let take = min canTake (bytes.Length - filled)
+
+            // `filled` only advances by `take`, so a non-positive `take` would spin this loop
+            // forever rather than failing. That needs a zero-sized cell (PawPrint gives
+            // fieldless default-layout structs `sizeOf = 0`) or an in-cell offset past the end
+            // of the cell, both of which are interpreter-bug shapes.
+            if take <= 0 then
+                failwith
+                    $"byte-view write to array %O{arr} element %d{cell} made no progress: cell size %d{cellSize}, in-cell offset %d{inCellOffset}, %d{bytes.Length - filled} byte(s) still to write"
+
             let cellBytes = bytes.[filled .. filled + take - 1]
 
-            match
-                withByteAddressableCellBytesAtIfChanged
-                    $"array %O{arr} element %d{cell}"
-                    inCellOffset
-                    cellBytes
-                    existing
-            with
+            // A run of zero bytes is the one byte-level write that is meaningful against
+            // storage with no byte rendering: zero bits in a reference slot are the null
+            // reference, and in a provenance-carrying native int they are the numeric zero.
+            // `Array.Clear` on a reference-containing element type arrives here, via
+            // `SpanHelpers.ClearWithReferences` reinterpreting the element data as `IntPtr`
+            // slots and storing zero into each. Routing zero runs through the structural
+            // zeroing keeps that working without weakening the byte-view model for any other
+            // write: `WithZeroedRangeIfChanged` still refuses to half-clear a reference, and
+            // for byte-renderable cells it agrees byte-for-byte with the path below (pinned by
+            // the oracle property in TestCliTypeBytes).
+            // Both arms must converge here rather than one of them falling through to the end
+            // of the loop body: the cursor updates below have to run whichever path wrote.
+            let updated =
+                if cellBytes |> Array.forall (fun b -> b = 0uy) then
+                    CliType.WithZeroedRangeIfChanged inCellOffset take existing
+                else
+                    withByteAddressableCellBytesAtIfChanged
+                        $"array %O{arr} element %d{cell}"
+                        inCellOffset
+                        cellBytes
+                        existing
+
+            match updated with
             | None -> ()
             | Some newCell -> state <- IlMachineThreadState.setArrayValue arr newCell cell state
 
