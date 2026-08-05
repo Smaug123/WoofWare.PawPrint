@@ -310,6 +310,47 @@ type CliType =
             failwith
                 $"TODO: CliType.OfBytesLike: non-primitive template %O{template} (bytes reconstruction for non-primitive storage not yet modelled)"
 
+    /// The all-zero value of the same CLI shape as `template`: same primitive flavour, same
+    /// declared struct type and field list, same storage form. Total, unlike `OfBytesLike`,
+    /// which has no byte rendering for object references or runtime pointers.
+    ///
+    /// This is derived from the *cell*, not from the cell's declared type via
+    /// `CliType.zeroOf`. Both agree whenever the cell is a faithful instance of its declared
+    /// type, but only this formulation guarantees shape preservation by construction, and
+    /// shape preservation is the invariant that matters at the call site: a bulk zeroing
+    /// writes whole cells back through the typed write paths, which overwrite wholesale and
+    /// would silently rewrite a cell's CLI shape on a mismatch (see
+    /// `CellAwareMemOps.cellsHaveCompatibleShape` for the same concern on the copy path).
+    ///
+    /// The zero of a reference cell is the null reference and the zero of a pointer cell is
+    /// the null pointer, which is what zero *bits* mean in those slots; consumers that must
+    /// not encounter such cells are responsible for rejecting them, rather than relying on
+    /// this function to be partial.
+    static member ZeroLike (template : CliType) : CliType =
+        match template with
+        | CliType.Bool _ -> CliType.Bool 0uy
+        | CliType.Char _ -> CliType.Char (0uy, 0uy)
+        | CliType.ObjectRef _ -> CliType.ObjectRef None
+        | CliType.RuntimePointer _ -> CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null)
+        | CliType.ValueType vt -> CliValueType.ZeroLike vt |> CliType.ValueType
+        | CliType.Numeric numeric ->
+            let zeroed =
+                match numeric with
+                | CliNumericType.Int8 _ -> CliNumericType.Int8 0y
+                | CliNumericType.UInt8 _ -> CliNumericType.UInt8 0uy
+                | CliNumericType.Int16 _ -> CliNumericType.Int16 0s
+                | CliNumericType.UInt16 _ -> CliNumericType.UInt16 0us
+                | CliNumericType.Int32 _ -> CliNumericType.Int32 0
+                | CliNumericType.Int64 _ -> CliNumericType.Int64 (Int64Source.Verbatim 0L)
+                | CliNumericType.Float32 _ -> CliNumericType.Float32 0.0f
+                | CliNumericType.Float64 _ -> CliNumericType.Float64 0.0
+                | CliNumericType.NativeFloat _ -> CliNumericType.NativeFloat 0.0
+                // Provenance is deliberately dropped: the result is the numeric zero, and a
+                // zeroed slot no longer points at whatever the old source described.
+                | CliNumericType.NativeInt _ -> CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)
+
+            CliType.Numeric zeroed
+
     static member private CheckByteRange
         (operation : string)
         (offset : int)
@@ -1729,6 +1770,42 @@ and CliValueType =
         | CliValueTypeStorage.Fields targetStorage, CliValueTypeStorage.RawBytes sourceBytes ->
             failwith
                 $"CliValueType.CoerceFrom: cannot coerce raw-backed source %O{source._Declared} (%i{sourceBytes.Length} bytes) into field-backed target %O{target._Declared} (%i{targetStorage.Fields.Length} fields)"
+
+    /// The all-zero value of the same shape as `template`. See `CliType.ZeroLike`.
+    ///
+    /// Structural rather than byte-driven, so it is total over field shapes that have no byte
+    /// rendering (a struct holding an unmanaged pointer, e.g. `struct S { int N; int* P; }`,
+    /// is a legitimate element type for a bulk zeroing: raw pointers are not GC-tracked, so
+    /// such an array reports `ContainsGCPointers = false`).
+    ///
+    /// Field write timestamps are replayed in declaration order, as `OfBytesLike` does: a
+    /// zeroed struct has no meaningful overlapping-field write history to preserve, and every
+    /// order produces the same all-zero result anyway.
+    static member ZeroLike (template : CliValueType) : CliValueType =
+        match template._Storage with
+        | CliValueTypeStorage.RawBytes bytes ->
+            { template with
+                _Storage = CliValueTypeStorage.RawBytes (Array.zeroCreate bytes.Length)
+            }
+        | CliValueTypeStorage.Fields storage ->
+            let fields =
+                storage.Fields
+                |> List.mapi (fun index field ->
+                    { field with
+                        Contents = CliType.ZeroLike field.Contents
+                        EditedAtTime = uint64 index
+                    }
+                )
+
+            { template with
+                _Storage =
+                    CliValueTypeStorage.Fields
+                        {
+                            Fields = fields
+                            PreservedBytes = Array.zeroCreate (CliValueType.SizeOf template).Size
+                        }
+                NextTimestamp = max 1UL (uint64 fields.Length)
+            }
 
     /// Reconstruct a value type from preserved bytes using `template` for field layout and field
     /// shapes. Preserved bytes do not encode original overlapping-field write history, so the

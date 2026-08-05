@@ -1,6 +1,6 @@
 namespace WoofWare.PawPrint
 
-/// Direction policy for the byte-range copy driven by `CellAwareCopy.copy`.
+/// Direction policy for the byte-range copy driven by `CellAwareMemOps.copy`.
 ///
 /// `Memmove` mirrors `Buffer.Memmove` semantics: when src and dest alias the
 /// same flat byte storage with src strictly before dest, the loop walks
@@ -13,8 +13,18 @@ type internal CellAwareCopyPolicy =
     | Memmove
     | CpblkForward
 
+/// Bulk byte-range operations over PawPrint's typed-cell storage model.
+///
+/// PawPrint stores values as typed `CliType` cells rather than as a flat byte
+/// array, so the BCL's byte-oriented bulk primitives (`Buffer.Memmove`,
+/// `SpanHelpers.Memmove`, `SpanHelpers.ClearWithoutReferences`, `cpblk`, ...)
+/// cannot simply be replayed byte by byte: cells that are not byte-addressable
+/// (object references, runtime pointers, non-`Verbatim` `NativeIntSource`
+/// provenance) have no byte rendering to walk. Every operation here therefore
+/// prefers whole-cell typed steps when the endpoints anchor cell-aware roots,
+/// and falls back to the byte walk for genuinely flat storage.
 [<RequireQualifiedAccess>]
-module internal CellAwareCopy =
+module internal CellAwareMemOps =
     let private byteTemplate : CliType = CliType.Numeric (CliNumericType.UInt8 0uy)
 
     let private byteType
@@ -434,6 +444,85 @@ module internal CellAwareCopy =
 
                     Some (newState, cellSize)
         | _ -> None
+
+    /// Attempt to zero a single whole cell, starting at byte offset `i` in the
+    /// buffer. Returns `Some (newState, cellSize)` when the cell-aware path
+    /// applied and the caller must advance `i` by `cellSize` bytes; `None` when
+    /// it did not, and the caller must fall back to a single byte step.
+    ///
+    /// The single-endpoint analogue of `tryWholeCellMoveAt`, with the same
+    /// preconditions minus everything that is about relating two endpoints: the
+    /// byref must anchor a cell-aware root, strip to a typed residual at
+    /// intra-cell offset 0, and its cell must fit in the bytes remaining. No
+    /// shape-compatibility check is needed because `CliType.ZeroLike` derives
+    /// the written value from the destination cell itself, so the cell's CLI
+    /// shape is preserved by construction.
+    ///
+    /// As on the copy path, this is not merely an optimisation: a cell that is
+    /// not byte-addressable (a runtime pointer, or a `NativeInt` carrying
+    /// non-`Verbatim` provenance) has no byte rendering, so the byte-walk
+    /// fallback's read-modify-write would fail loudly on it.
+    let private tryWholeCellZeroAt
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (dest : ManagedPointerSource)
+        (bytesRemaining : int)
+        : (IlMachineState * int) option
+        =
+        if not (byrefAnchorsCellAwareRoot dest) then
+            None
+        else
+
+        match inCellOffsetAndStripByteView dest with
+        | Some (destPlain, 0) ->
+            let cell = IlMachineState.readManagedByref baseClassTypes state destPlain
+            let cellSize = CliType.sizeOf cell
+
+            // `cellSize <= 0` is rejected for the same reason as on the copy
+            // path: a zero-sized cell would advance the caller's cursor by
+            // zero and spin forever.
+            if cellSize <= 0 || cellSize > bytesRemaining then
+                None
+            else
+                let newState =
+                    IlMachineState.writeManagedByrefWithBase baseClassTypes state destPlain (CliType.ZeroLike cell)
+
+                Some (newState, cellSize)
+        | Some _
+        | None -> None
+
+    /// Zero `byteCount` bytes starting at `dest`, preferring whole-cell typed
+    /// writes through `tryWholeCellZeroAt` and falling back to byte-by-byte
+    /// stepping otherwise.
+    ///
+    /// Always walks forwards. Unlike `copy` there is no source to alias
+    /// against, so no direction policy is required: every byte in the range
+    /// ends up zero regardless of the order in which it is written.
+    let clear
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (state : IlMachineState)
+        (dest : ManagedPointerSource)
+        (byteCount : int)
+        : IlMachineState
+        =
+        let byteConcreteType = byteType operation baseClassTypes state
+        let mutable state = state
+        let mutable i = 0
+
+        while i < byteCount do
+            let destAtI =
+                ManagedPointerByteView.addByteOffset baseClassTypes state byteConcreteType i dest
+
+            match tryWholeCellZeroAt baseClassTypes state destAtI (byteCount - i) with
+            | Some (newState, cellSize) ->
+                state <- newState
+                i <- i + cellSize
+            | None ->
+                state <- writeByte baseClassTypes state destAtI 0uy
+                i <- i + 1
+
+        state
 
     /// Copy `byteCount` bytes from `src` to `dest`, preferring whole-cell
     /// typed moves through `tryWholeCellMoveAt` and falling back to

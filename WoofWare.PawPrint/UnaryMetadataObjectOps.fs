@@ -1077,7 +1077,7 @@ module internal UnaryMetadataObjectOps =
                 thread
                 state
         | UnboxTypeTest.Accepted (addr, boxed) ->
-            // `HeapValue` denotes the whole boxed value (see `CellAwareCopy`), so the aliasing
+            // `HeapValue` denotes the whole boxed value (see `CellAwareMemOps`), so the aliasing
             // III.4.32 requires falls out: reads and writes through this pointer go to the box
             // itself, not to a copy.
             //

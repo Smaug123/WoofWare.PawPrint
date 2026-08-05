@@ -1168,3 +1168,133 @@ module TestCliTypeBytes =
         CliType.TryFindMarshalSizeDifference (fieldBackedBoolValueType ())
         |> Option.isSome
         |> shouldEqual true
+
+    /// Structural shape equality: same CLI storage form, ignoring the values held. This is the
+    /// invariant `CliType.ZeroLike` exists to guarantee — its result is written back into the
+    /// cell it was derived from, through typed write paths that overwrite wholesale.
+    let rec private sameShape (a : CliType) (b : CliType) : bool =
+        match a, b with
+        | CliType.Bool _, CliType.Bool _
+        | CliType.Char _, CliType.Char _
+        | CliType.ObjectRef _, CliType.ObjectRef _
+        | CliType.RuntimePointer _, CliType.RuntimePointer _ -> true
+        | CliType.Numeric a, CliType.Numeric b ->
+            match a, b with
+            | CliNumericType.Int8 _, CliNumericType.Int8 _
+            | CliNumericType.UInt8 _, CliNumericType.UInt8 _
+            | CliNumericType.Int16 _, CliNumericType.Int16 _
+            | CliNumericType.UInt16 _, CliNumericType.UInt16 _
+            | CliNumericType.Int32 _, CliNumericType.Int32 _
+            | CliNumericType.Int64 _, CliNumericType.Int64 _
+            | CliNumericType.NativeInt _, CliNumericType.NativeInt _
+            | CliNumericType.NativeFloat _, CliNumericType.NativeFloat _
+            | CliNumericType.Float32 _, CliNumericType.Float32 _
+            | CliNumericType.Float64 _, CliNumericType.Float64 _ -> true
+            | _ -> false
+        // The declared handle is the canonical identifier for a struct's layout, so equality
+        // means same fields at same offsets -- the same criterion the production copy path
+        // (`CellAwareMemOps.cellsHaveCompatibleShape`) uses to decide a whole-cell write is
+        // shape-preserving.
+        | CliType.ValueType a, CliType.ValueType b ->
+            a.Declared = b.Declared && a.PrimitiveLikeKind = b.PrimitiveLikeKind
+        | _ -> false
+
+    [<Test>]
+    let ``ZeroLike preserves CLI shape and size`` () : unit =
+        let property (template : CliType) : bool =
+            let zero = CliType.ZeroLike template
+
+            CliType.SizeOf zero = CliType.SizeOf template && sameShape zero template
+
+        Check.One (config, Prop.forAll (Arb.fromGen genByteAddressabilityCliType) property)
+
+    [<Test>]
+    let ``ZeroLike is idempotent`` () : unit =
+        let property (template : CliType) : bool =
+            let zero = CliType.ZeroLike template
+            CliType.ZeroLike zero = zero
+
+        Check.One (config, Prop.forAll (Arb.fromGen genByteAddressabilityCliType) property)
+
+    [<Test>]
+    let ``ZeroLike renders as all-zero bytes whenever it is byte-addressable`` () : unit =
+        // Not every zero is byte-renderable: the zero of a reference cell is the null
+        // reference and the zero of a pointer cell is the null pointer, neither of which
+        // `ToBytes` models. Where a byte rendering does exist, it must be all zeros --
+        // otherwise a byte-level consumer would disagree with the typed one about what
+        // "cleared" means.
+        let property (template : CliType) : bool =
+            let zero = CliType.ZeroLike template
+
+            match CliType.ByteAddressability zero with
+            | CliByteAddressability.Rejected _ -> true
+            | CliByteAddressability.ByteAddressable -> CliType.ToBytes zero |> Array.forall (fun b -> b = 0uy)
+
+        Check.One (config, Prop.forAll (Arb.fromGen genByteAddressabilityCliType) property)
+
+    [<Test>]
+    let ``ZeroLike agrees with OfBytesLike over zero bytes wherever that is defined`` () : unit =
+        // The oracle property. `OfBytesLike template (all zeros)` is the same value by
+        // construction wherever it is defined at all; `ZeroLike` exists because it is *not*
+        // defined for object references, runtime pointers, or any struct transitively
+        // containing one -- shapes that do reach a bulk clear (raw pointers are not
+        // GC-tracked, so `struct S { int N; int* P; }[]` reports no GC pointers and clears
+        // through the byte-count path).
+        let property (template : CliType) : bool =
+            let zeroBytes : byte[] = Array.zeroCreate (CliType.SizeOf template).Size
+
+            let viaBytes =
+                try
+                    Some (CliType.OfBytesLike template zeroBytes)
+                with _ ->
+                    None
+
+            match viaBytes with
+            | None -> true
+            | Some viaBytes -> viaBytes = CliType.ZeroLike template
+
+        Check.One (config, Prop.forAll (Arb.fromGen genByteAddressabilityCliType) property)
+
+    [<Test>]
+    let ``ZeroLike is total over shapes that have no byte rendering`` () : unit =
+        // These are exactly the shapes `OfBytesLike` cannot reconstruct, and the reason
+        // `ZeroLike` is structural rather than byte-driven. A struct holding an unmanaged
+        // pointer is not hypothetical: raw pointers are not GC-tracked, so `S[]` for
+        // `struct S { int N; int* P; }` reports `ContainsGCPointers = false` and `Array.Clear`
+        // sends it down the byte-count path that ends in a bulk zeroing.
+        let cases : CliType list =
+            [
+                CliType.ObjectRef None
+                CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr (RuntimeTypeHandleTarget.Closed int32Handle))
+                runtimePointerValueType () |> CliType.ValueType
+                objectReferenceValueType () |> CliType.ValueType
+                objectAndRuntimePointerValueType () |> CliType.ValueType
+                nestedObjectReferenceValueType () |> CliType.ValueType
+            ]
+
+        for case in cases do
+            // Sanity: each of these really is beyond `OfBytesLike`, so the property test's
+            // oracle arm is vacuous for them and this test is carrying the weight.
+            let zeroBytes : byte[] = Array.zeroCreate (CliType.SizeOf case).Size
+
+            let viaBytesFailed =
+                try
+                    CliType.OfBytesLike case zeroBytes |> ignore
+                    false
+                with _ ->
+                    true
+
+            if not viaBytesFailed then
+                failwith $"expected OfBytesLike to have no byte rendering for %O{case}"
+
+            let zero = CliType.ZeroLike case
+            CliType.SizeOf zero |> shouldEqual (CliType.SizeOf case)
+            sameShape zero case |> shouldEqual true
+
+        CliType.ZeroLike (CliType.ObjectRef (Some (ManagedHeapAddress 7)))
+        |> shouldEqual (CliType.ObjectRef None)
+
+        CliType.ZeroLike (
+            CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr (RuntimeTypeHandleTarget.Closed int32Handle))
+        )
+        |> shouldEqual (CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null))
