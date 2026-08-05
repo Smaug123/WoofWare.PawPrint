@@ -386,6 +386,59 @@ module TestEvalStackBoxedPrimitiveView =
             | other -> failwithf "expected the latest write through the aliased range, got %A" other
 
     [<Test>]
+    let ``an aliased pointer field that won the last write keeps its provenance`` () : unit =
+        // Alias resolution must not cost provenance when the winning write *is* a whole-range
+        // field: `CliType.ToBytes` refuses to express a pointer as bytes, so routing this through
+        // the byte image would turn a perfectly good `ldind.i` into a refusal.
+        let int64Handle = handleFor bct.Int64
+
+        let src =
+            ManagedPointerSource.Byref (ByrefRoot.HeapValue (ManagedHeapAddress.ManagedHeapAddress 44), [])
+
+        let asLong : CliField =
+            {
+                CliField.Id = FieldId.named "asLong"
+                CliField.Name = "asLong"
+                Contents = CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 7L))
+                Offset = Some 0
+                Type = int64Handle
+                MarshallingDescriptor = None
+            }
+
+        let asPointer : CliField =
+            { asLong with
+                Id = FieldId.named "asPointer"
+                Name = "asPointer"
+                Contents = CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null)
+            }
+
+        let declared = handleFor bct.TypedReference
+
+        let union =
+            CliValueType.OfFields
+                bct
+                allCt
+                declared
+                (Layout.Custom (size = 8, packingSize = 0))
+                CharSet.Ansi
+                [ asLong ; asPointer ]
+
+        let written =
+            CliValueType.WithFieldSetById
+                (FieldId.named "asPointer")
+                (CliType.RuntimePointer (CliRuntimePointer.Managed src))
+                union
+
+        let ldindISlot =
+            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
+
+        EvalStackValue.toCliTypeCoerced ldindISlot (EvalStackValue.UserDefinedValueType written)
+        |> function
+            | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer actual)) ->
+                actual |> shouldEqual src
+            | other -> failwithf "expected the aliased pointer write's provenance to survive, got %A" other
+
+    [<Test>]
     let ``viewing a value type at a width no leading field covers fails loudly`` () : unit =
         // Two int32s do not make an int64 in this model: the storage is field cells, not bytes,
         // so there is no honest int64 to hand back. Refusing beats inventing one.

@@ -1036,21 +1036,29 @@ and CliValueType =
         | Some targetField ->
             // Explicit layout can alias the requested range with other fields, and
             // `WithFieldSetById` deliberately leaves those siblings' `Contents` stale, recording
-            // which write won in `EditedAtTime`. So a field cell is only authoritative for its
-            // range when nothing else overlaps it; otherwise defer to the replayed byte image,
-            // exactly as `DereferenceFieldById` does. The unaliased case is kept as a direct read
-            // so that provenance the bytes cannot carry (managed-pointer and handle-valued native
-            // ints, widened native ints) survives the projection.
+            // which write won in `EditedAtTime`. Picking a cell by (offset, size) alone would
+            // therefore hand back a value the storage no longer holds.
+            //
+            // `ToBytes` decides that contest by replaying overlapping fields in `EditedAtTime`
+            // order, so the *last* field in that same order owns every byte it covers. When that
+            // winner spans the requested range exactly, its cell is authoritative and can be
+            // returned directly — which is what keeps provenance the byte image cannot express
+            // (runtime pointers, handle-valued native ints, widened native ints) alive across the
+            // read. Only a winner that partially covers the range genuinely needs the byte image.
             let targetEnd = targetField.Offset + targetField.Size
 
-            let overlapping =
+            let winner =
                 CliValueType.FieldStorage "CliValueType.DereferenceFieldAt" cvt
                 |> List.filter (fun f -> f.Offset < targetEnd && targetField.Offset < f.Offset + f.Size)
+                // Stable, and keyed exactly as `ToBytes` replays: later writes win, and among
+                // equal timestamps (e.g. a value type nobody has written to yet) the
+                // last-declared field is the one whose bytes land on top.
+                |> List.sortBy _.EditedAtTime
+                |> List.tryLast
 
-            match overlapping with
-            | []
-            | [ _ ] -> targetField.Contents
-            | _ :: _ :: _ ->
+            match winner with
+            | Some winner when winner.Offset = targetField.Offset && winner.Size = targetField.Size -> winner.Contents
+            | _ ->
                 let fieldBytes = CliValueType.BytesAt targetField.Offset targetField.Size cvt
                 CliType.OfBytesLike targetField.Contents fieldBytes
         | None ->
