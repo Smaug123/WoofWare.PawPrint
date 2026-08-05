@@ -1355,27 +1355,66 @@ module internal UnaryMetadataCallOps =
 
         match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
         | NothingToDo state ->
-            // Only now is it safe to consume the function pointer.
-            let _, state = IlMachineState.popEvalStack thread state
+            // Identify our own frame before the call, so we can tell afterwards whether the call
+            // actually committed. See the restore below for why that matters.
+            let callerFrameId = state.ThreadState.[thread].ActiveMethodState
+
+            let pcBeforeCall = (IlMachineState.getFrame thread callerFrameId state).IlOpIndex
+
+            // The pointer sits above the arguments, and `callMethod` pops arguments from the top
+            // of the stack, so it has to come off before we call in.
+            let fnPtrValue, state = IlMachineState.popEvalStack thread state
             let threadState = state.ThreadState.[thread]
 
-            IlMachineStateExecution.callMethod
-                loggerFactory
-                baseClassTypes
-                None
-                ConstructionState.NotConstructing
-                false
-                false
-                true
-                methodToCall.Generics
-                methodToCall
-                thread
-                threadState
-                None
-                ConstructedObjectDisposition.PushToCaller
-                false // wrapExceptionInTargetInvocation
-                state,
-            WhatWeDid.Executed
+            let state =
+                IlMachineStateExecution.callMethod
+                    loggerFactory
+                    baseClassTypes
+                    None
+                    ConstructionState.NotConstructing
+                    false
+                    false
+                    true
+                    methodToCall.Generics
+                    methodToCall
+                    thread
+                    threadState
+                    None
+                    ConstructedObjectDisposition.PushToCaller
+                    false // wrapExceptionInTargetInvocation
+                    state
+
+            // `callMethod` does not always commit to the call. An intrinsic callee can discover
+            // that some type still needs initialising, push that cctor frame, and deliberately
+            // leave our program counter unadvanced so that this very `calli` re-executes once the
+            // cctor returns (`IlMachineStateExecution.tryHandleActivatorCreateInstance`, the
+            // `WhatWeDid.SuspendedForClassInit` branch). On that path it leaves the evaluation
+            // stack untouched, because the retry re-pops the arguments — but the function pointer
+            // is not its to preserve: we popped that out here, so we must put it back, or the
+            // retry finds it missing and fails with "expected a function pointer on top".
+            //
+            // Note the suspension can be triggered by something we cannot pre-initialise from
+            // here: for `Activator.CreateInstance<T>()` it is T, not the declaring type we ran
+            // `loadClass` on above.
+            //
+            // Non-commitment is observable as "our frame did not advance": we pass
+            // `advanceProgramCounterOfCaller = true` and are not a class constructor, and on the
+            // committing path `callMethod` always advances the caller under those conditions
+            // (see its `oldFrame` binding). A committing call therefore cannot be mistaken for a
+            // suspended one.
+            let pcAfterCall = (IlMachineState.getFrame thread callerFrameId state).IlOpIndex
+
+            let state =
+                if pcAfterCall = pcBeforeCall then
+                    let restored =
+                        IlMachineState.getFrame thread callerFrameId state
+                        |> MethodState.pushToEvalStack' fnPtrValue
+
+                    IlMachineState.setFrame thread callerFrameId restored state
+                else
+                    state
+
+            state, WhatWeDid.Executed
         | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
         | ThrowingTypeInitializationException state -> state, WhatWeDid.ThrowingTypeInitializationException
         | Blocked (state, blockedBy) ->
