@@ -1035,15 +1035,7 @@ module NativeThreading =
             // in `comsynchronizable.cpp`). Real CoreCLR answers this from a
             // background measurement of the host CPU's `YieldProcessor()`
             // latency (`YieldProcessorNormalization`) — see the extensive
-            // rationale on `EmulatedKernel.OptimalMaxSpinWaitsPerSpinIteration`
-            // for why that measurement must not run against the host here,
-            // and where the simulated value comes from instead. This handler
-            // is a pure read of that kernel state; it performs no scheduling
-            // action and cannot fail, so `NativeHandlerResult.completed` is
-            // the only sensible outcome (compare `ThreadNative_SpinWait`
-            // just above, in the QCall table, which is the other half of
-            // this feature and reasons about `completed` vs `yielded` at
-            // length).
+            // rationale on `EmulatedKernel.OptimalMaxSpinWaitsPerSpinIteration`.
             let value = state.Kernel.OptimalMaxSpinWaitsPerSpinIteration
 
             if value < 1 || value > EmulatedKernel.maxOptimalMaxSpinWaitsPerSpinIteration then
