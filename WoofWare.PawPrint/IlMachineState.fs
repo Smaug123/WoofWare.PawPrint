@@ -233,6 +233,23 @@ module IlMachineState =
 
     let requiredOwnInstanceFieldId = IlMachineRuntimeMetadata.requiredOwnInstanceFieldId
 
+    let setInstanceFieldById = IlMachineThreadState.setInstanceFieldById
+
+    /// Overwrite the field named `fieldName` on the non-array heap object at `addr`, resolving
+    /// the field against the object's *own* concrete type. Fails loudly if that type does not
+    /// itself declare `fieldName`; an inherited field must be resolved against its declaring
+    /// type and written with `setInstanceFieldById`.
+    let setOwnInstanceField
+        (addr : ManagedHeapAddress)
+        (fieldName : string)
+        (value : CliType)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        let obj = ManagedHeap.get addr state.ManagedHeap
+        let field = requiredOwnInstanceFieldId state obj.ConcreteType fieldName
+        setInstanceFieldById addr field value state
+
     let isConcreteTypeAssignableTo = IlMachineRuntimeMetadata.isConcreteTypeAssignableTo
 
     let isRuntimeTypeHandleTargetAssignableTo =

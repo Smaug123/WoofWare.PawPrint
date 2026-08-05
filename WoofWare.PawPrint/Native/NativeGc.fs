@@ -4,30 +4,6 @@ open System.Collections.Immutable
 
 [<RequireQualifiedAccess>]
 module NativeGc =
-    let private objectOwnFieldId
-        (state : IlMachineState)
-        (obj : AllocatedNonArrayObject)
-        (fieldName : string)
-        : FieldId
-        =
-        IlMachineState.requiredOwnInstanceFieldId state obj.ConcreteType fieldName
-
-    /// Overwrite one field of the heap object at `addr` and write the updated object back.
-    let private setField
-        (state : IlMachineState)
-        (addr : ManagedHeapAddress)
-        (fieldName : string)
-        (value : CliType)
-        : IlMachineState
-        =
-        let obj = ManagedHeap.get addr state.ManagedHeap
-        let field = objectOwnFieldId state obj fieldName
-        let obj = AllocatedNonArrayObject.SetFieldById field value obj
-
-        { state with
-            ManagedHeap = ManagedHeap.set addr obj state.ManagedHeap
-        }
-
     /// Zero out a field whose declared type is itself a value type (`GCGenerationInfo`,
     /// `TimeSpan`) rather than a primitive: looks up the field's declared signature so the
     /// zero value gets the field's own concrete shape (recursing into that struct's fields),
@@ -60,7 +36,7 @@ module NativeGc =
                 ImmutableArray.Empty
                 state
 
-        setField state addr fieldName zero
+        IlMachineState.setOwnInstanceField addr fieldName zero state
 
     let private zeroInt64 : CliType =
         CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))
@@ -187,7 +163,9 @@ module NativeGc =
                     "_compacted", zeroByte
                     "_concurrent", zeroByte
                 ]
-                |> List.fold (fun state (fieldName, value) -> setField state dataAddr fieldName value) state
+                |> List.fold
+                    (fun state (fieldName, value) -> IlMachineState.setOwnInstanceField dataAddr fieldName value state)
+                    state
 
             let state =
                 [

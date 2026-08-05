@@ -896,18 +896,11 @@ module ExceptionDispatching =
         // the Ret handler's DispatchException path in NullaryIlOp.fs.
         let hresult = hresultForExceptionType baseClassTypes exceptionTypeInfo
 
-        let heapObj = ManagedHeap.get addr state.ManagedHeap
-
         let hresultField =
             FieldIdentity.requiredNonGenericInstanceFieldId state.ConcreteTypes baseClassTypes.Exception "_HResult"
 
-        let heapObj =
-            AllocatedNonArrayObject.SetFieldById hresultField (CliType.Numeric (CliNumericType.Int32 hresult)) heapObj
-
         let state =
-            { state with
-                ManagedHeap = ManagedHeap.set addr heapObj state.ManagedHeap
-            }
+            IlMachineState.setInstanceFieldById addr hresultField (CliType.Numeric (CliNumericType.Int32 hresult)) state
 
         addr, exnHandle, state
 
@@ -934,14 +927,7 @@ module ExceptionDispatching =
 
         let hresult = hresultForExceptionType baseClassTypes typeInfo
 
-        let heapObj = ManagedHeap.get exnAddr state.ManagedHeap
-
         let hresultField =
             FieldIdentity.requiredNonGenericInstanceFieldId state.ConcreteTypes baseClassTypes.Exception "_HResult"
 
-        let heapObj =
-            AllocatedNonArrayObject.SetFieldById hresultField (CliType.Numeric (CliNumericType.Int32 hresult)) heapObj
-
-        { state with
-            ManagedHeap = ManagedHeap.set exnAddr heapObj state.ManagedHeap
-        }
+        IlMachineState.setInstanceFieldById exnAddr hresultField (CliType.Numeric (CliNumericType.Int32 hresult)) state
