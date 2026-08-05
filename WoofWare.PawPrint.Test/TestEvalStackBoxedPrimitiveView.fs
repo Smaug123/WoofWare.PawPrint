@@ -230,6 +230,50 @@ module TestEvalStackBoxedPrimitiveView =
             | other -> failwithf "expected the leading field, got %A" other
 
     [<Test>]
+    let ``viewing a value type whose leading bytes are aliased reads the latest write`` () : unit =
+        // Explicit layout can put two same-size fields at offset 0. `WithFieldSetById`
+        // deliberately leaves the *other* alias's `Contents` stale and records which write won in
+        // `EditedAtTime`, so picking a field cell by (offset, size) alone can hand back a value
+        // that the byte image no longer holds. The projection has to consult the byte image
+        // whenever the requested range is aliased.
+        let int64Handle = handleFor bct.Int64
+
+        let field (name : string) (value : int64) : CliField =
+            {
+                CliField.Id = FieldId.named name
+                CliField.Name = name
+                Contents = CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim value))
+                Offset = Some 0
+                Type = int64Handle
+                MarshallingDescriptor = None
+            }
+
+        let declared = handleFor bct.TypedReference
+
+        let union =
+            CliValueType.OfFields
+                bct
+                allCt
+                declared
+                (Layout.Custom (size = 8, packingSize = 0))
+                CharSet.Ansi
+                [ field "first" 11L ; field "second" 11L ]
+
+        // Write through the alias that is *not* first in declaration order.
+        let written =
+            CliValueType.WithFieldSetById
+                (FieldId.named "second")
+                (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 22L)))
+                union
+
+        let ldindI8Slot = CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))
+
+        EvalStackValue.toCliTypeCoerced ldindI8Slot (EvalStackValue.UserDefinedValueType written)
+        |> function
+            | CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 22L)) -> ()
+            | other -> failwithf "expected the latest write through the aliased range, got %A" other
+
+    [<Test>]
     let ``viewing a value type at a width no leading field covers fails loudly`` () : unit =
         // Two int32s do not make an int64 in this model: the storage is field cells, not bytes,
         // so there is no honest int64 to hand back. Refusing beats inventing one.

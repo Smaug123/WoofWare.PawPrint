@@ -1033,7 +1033,26 @@ and CliValueType =
         let candidates = CliValueType.FieldsAt offset cvt
 
         match candidates |> List.tryFind (fun f -> f.Size = size) with
-        | Some f -> f.Contents
+        | Some targetField ->
+            // Explicit layout can alias the requested range with other fields, and
+            // `WithFieldSetById` deliberately leaves those siblings' `Contents` stale, recording
+            // which write won in `EditedAtTime`. So a field cell is only authoritative for its
+            // range when nothing else overlaps it; otherwise defer to the replayed byte image,
+            // exactly as `DereferenceFieldById` does. The unaliased case is kept as a direct read
+            // so that provenance the bytes cannot carry (managed-pointer and handle-valued native
+            // ints, widened native ints) survives the projection.
+            let targetEnd = targetField.Offset + targetField.Size
+
+            let overlapping =
+                CliValueType.FieldStorage "CliValueType.DereferenceFieldAt" cvt
+                |> List.filter (fun f -> f.Offset < targetEnd && targetField.Offset < f.Offset + f.Size)
+
+            match overlapping with
+            | []
+            | [ _ ] -> targetField.Contents
+            | _ :: _ :: _ ->
+                let fieldBytes = CliValueType.BytesAt targetField.Offset targetField.Size cvt
+                CliType.OfBytesLike targetField.Contents fieldBytes
         | None ->
             // Storage here is field cells, not bytes, so a request that no single field answers
             // exactly (e.g. viewing `struct { int; int }` as an 8-byte value) has no honest
