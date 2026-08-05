@@ -840,7 +840,7 @@ module IlMachineRuntimeMetadata =
             state.ManagedHeap.NonArrayObjects |> Map.tryFind exceptionAddr,
             AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Exception.Identity
         with
-        | Some heapObj, Some exceptionHandle ->
+        | Some _, Some exceptionHandle ->
             let messageAddr, state =
                 allocateManagedString loggerFactory baseClassTypes message state
 
@@ -848,13 +848,11 @@ module IlMachineRuntimeMetadata =
                 FieldIdentity.requiredOwnInstanceField baseClassTypes.Exception "_message"
                 |> FieldIdentity.fieldId exceptionHandle
 
-            let heapObj =
-                heapObj
-                |> AllocatedNonArrayObject.SetFieldById messageField (CliType.ObjectRef (Some messageAddr))
-
-            { state with
-                ManagedHeap = ManagedHeap.set exceptionAddr heapObj state.ManagedHeap
-            }
+            IlMachineThreadState.setInstanceFieldById
+                exceptionAddr
+                messageField
+                (CliType.ObjectRef (Some messageAddr))
+                state
         // Mirrors `setExceptionStackTraceString`: skeletal states in low-level dispatch tests may
         // lack either piece, and there is nothing to project into in that case.
         | None, _
@@ -881,7 +879,7 @@ module IlMachineRuntimeMetadata =
                     state.ConcreteTypes
                     baseClassTypes.Exception.Identity
             with
-            | Some heapObj, Some exceptionHandle ->
+            | Some _, Some exceptionHandle ->
                 let trace = renderExceptionStackTrace state stackTrace
 
                 let traceAddr, state =
@@ -891,13 +889,11 @@ module IlMachineRuntimeMetadata =
                     FieldIdentity.requiredOwnInstanceField baseClassTypes.Exception "_stackTraceString"
                     |> FieldIdentity.fieldId exceptionHandle
 
-                let heapObj =
-                    heapObj
-                    |> AllocatedNonArrayObject.SetFieldById stackTraceStringField (CliType.ObjectRef (Some traceAddr))
-
-                { state with
-                    ManagedHeap = ManagedHeap.set exceptionAddr heapObj state.ManagedHeap
-                }
+                IlMachineThreadState.setInstanceFieldById
+                    exceptionAddr
+                    stackTraceStringField
+                    (CliType.ObjectRef (Some traceAddr))
+                    state
             | None, _
             | _, None -> state
 
