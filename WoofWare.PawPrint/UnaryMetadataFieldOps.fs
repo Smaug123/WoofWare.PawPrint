@@ -101,6 +101,8 @@ module internal UnaryMetadataFieldOps =
 
         let fieldId = FieldId.metadata declaringTypeHandle field.Handle field.Name
 
+        // TODO(#737): `field.Signature` is scoped to the field's *declaring* assembly, which for a
+        // `MemberReference` token need not be `activeAssy`. See `executeLdsflda` for the argument.
         let state, zero, concreteTypeHandle =
             IlMachineState.cliTypeZeroOf
                 loggerFactory
@@ -225,6 +227,8 @@ module internal UnaryMetadataFieldOps =
 
         let popped, state = IlMachineState.popEvalStack thread state
 
+        // TODO(#737): `field.Signature` is scoped to the field's *declaring* assembly, which for a
+        // `MemberReference` token need not be `activeAssy`. See `executeLdsflda` for the argument.
         let state, zero, concreteTypeHandle =
             IlMachineState.cliTypeZeroOf
                 loggerFactory
@@ -549,6 +553,8 @@ module internal UnaryMetadataFieldOps =
                     newVal
                     state
             | None ->
+                // TODO(#737): `field.Signature` is scoped to the field's *declaring* assembly, which
+                // for a `MemberReference` token need not be `activeAssy`. See `executeLdsflda`.
                 let state, newVal, concreteTypeHandle =
                     IlMachineState.cliTypeZeroOf
                         loggerFactory
@@ -596,15 +602,41 @@ module internal UnaryMetadataFieldOps =
 
         // TODO: check whether we should throw FieldAccessException
 
-        let field =
+        let state, field =
             match metadataToken with
             | MetadataToken.FieldDefinition fieldHandle ->
                 match activeAssy.Fields.TryGetValue fieldHandle with
                 | false, _ -> failwith "TODO: Ldsflda - throw MissingFieldException"
                 | true, field ->
-                    field
-                    |> FieldInfo.mapTypeGenerics (fun _ -> failwith "generics not allowed on FieldDefinition")
+                    let field =
+                        field
+                        |> FieldInfo.mapTypeGenerics (fun _ -> failwith "generics not allowed on FieldDefinition")
+
+                    state, field
+            | MetadataToken.MemberReference mr ->
+                let state, _, field, _ =
+                    IlMachineState.resolveMember
+                        loggerFactory
+                        baseClassTypes
+                        thread
+                        activeAssy
+                        ImmutableArray.Empty
+                        mr
+                        state
+
+                match field with
+                | Choice1Of2 _method -> failwith "member reference was unexpectedly a method"
+                | Choice2Of2 field -> state, field
             | t -> failwith $"Unexpectedly asked to load a non-field: {t}"
+
+        // Everything below treats the field as a static slot: `getStatic`/`setStatic` key off
+        // `(declaringTypeHandle, fieldHandle)` with no instance, and we hand back a
+        // `ByrefRoot.StaticField`. An instance field here would be silently misfiled into the
+        // statics map rather than rejected, so assert the precondition instead of assuming it.
+        // (`ldfld`/`stfld` carry the mirror-image guard.)
+        if not (field.Attributes.HasFlag FieldAttributes.Static) then
+            failwith
+                $"ldsflda cannot take the address of instance field %O{field.DeclaringType.Assembly.Name}.%s{field.DeclaringType.Namespace}.%s{field.DeclaringType.Name}::%s{field.Name}; use ldflda. This indicates invalid IL or a misresolved field token."
 
         let state, declaringTypeHandle, typeGenerics =
             ExecutionConcretization.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
@@ -615,8 +647,23 @@ module internal UnaryMetadataFieldOps =
         | Blocked (state, blockedBy) -> state, WhatWeDid.BlockedOnClassInit blockedBy
         | NothingToDo state ->
 
+        // `field` was decoded from its *declaring* assembly's metadata, so that is the assembly
+        // which scopes everything we go on to read off it. `field.Signature` is a `TypeDefn` whose
+        // `FromReference` case carries a `TypeRef`, and that `TypeRef`'s `ResolutionScope` is a
+        // handle into the declaring assembly's tables — for the `Assembly` case, a row index into
+        // its `AssemblyRef` table, which denotes something else entirely in ours. Likewise
+        // `field.RelativeVirtualAddress`/`field.Handle` index the declaring assembly's PE image and
+        // metadata. For a `FieldDefinition` token this is just `activeAssy`; for a `MemberReference`
+        // it need not be, and using `activeAssy` there silently misresolves.
+        let declaringAssy =
+            state.LoadedAssembly field.DeclaringType.Assembly
+            |> Option.defaultWith (fun () ->
+                failwith
+                    $"ldsflda: declaring assembly %s{field.DeclaringType.Assembly.FullName} of field %s{field.DeclaringType.Namespace}.%s{field.DeclaringType.Name}::%s{field.Name} was not loaded. Resolving the field token is expected to have loaded it."
+            )
+
         match
-            IlMachineState.peByteRangeForFieldRva loggerFactory baseClassTypes activeAssy field typeGenerics state
+            IlMachineState.peByteRangeForFieldRva loggerFactory baseClassTypes declaringAssy field typeGenerics state
         with
         | state, Some peByteRange ->
             let state, ptr =
@@ -654,7 +701,7 @@ module internal UnaryMetadataFieldOps =
                         IlMachineState.cliTypeZeroOf
                             loggerFactory
                             baseClassTypes
-                            activeAssy
+                            declaringAssy
                             field.Signature
                             typeGenerics
                             ImmutableArray.Empty // field can't have its own generics
