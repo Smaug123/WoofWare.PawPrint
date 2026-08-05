@@ -1025,6 +1025,57 @@ module EmulatedKernel =
         | Some count when count > 0 && count <= maxConfiguredProcessorCount -> count
         | _ -> kernel.ProcessorCount
 
+    /// Placement policy: which simulated logical processor the `rotation`-th
+    /// guest-visible thread is pinned to. The only producer of `CpuId` for
+    /// threads a guest can observe, so "every `CpuId` a guest can read names a
+    /// processor it also counts" is established here once rather than
+    /// re-checked at every read. (`IlMachineState.allocateParkedThread` also
+    /// mints a `CpuId`, but a fixed core 0 for PawPrint-internal threads no
+    /// guest can name; see there.)
+    ///
+    /// Round-robin over `effectiveProcessorCount`. That is a *placement*
+    /// decision, not a measurement: PawPrint's scheduler runs one thread at a
+    /// time and never migrates a thread between cores, so the core a thread is
+    /// pinned to is also the core it is running on whenever it is running, and
+    /// one value answers both questions `sched_getcpu` could be asked.
+    ///
+    /// Spreading threads over the available cores (rather than reporting a
+    /// constant 0) is what makes a host-configured `ProcessorCount` mean
+    /// something to the guest: CoreLib shards `ArrayPool<T>.Shared` partitions,
+    /// `TimerQueue.Instances`, and `PoolingAsyncValueTaskMethodBuilder`'s cache
+    /// by this value, so a constant would leave every one of those multi-shard
+    /// paths permanently unexercised. With the default `ProcessorCount` of 1 it
+    /// collapses to a constant 0 anyway, so existing runs are bit-for-bit
+    /// unchanged.
+    ///
+    /// `rotation` deliberately is *not* the thread's `ThreadId`. `ThreadId`s
+    /// are also consumed by PawPrint-internal auxiliary threads that never run
+    /// guest IL (`IlMachineState.allocateParkedThread`, currently the signal
+    /// dispatcher), so keying off them would let an interpreter-internal
+    /// allocation shift which core every subsequently created *guest* thread
+    /// lands on — an interpreter detail leaking into guest-observable state.
+    /// The caller therefore threads a separate cursor
+    /// (`IlMachineState.NextCpuRotation`) that only guest-visible thread
+    /// creation advances.
+    let cpuForRotation (rotation : int) (kernel : EmulatedKernel) : CpuId =
+        if rotation < 0 then
+            failwith
+                $"CPU rotation cursor must be non-negative (it counts guest-visible threads created so far); got %d{rotation}"
+
+        let count = effectiveProcessorCount kernel
+
+        // `withProcessorCount` rejects non-positive counts and
+        // `effectiveProcessorCount` only ever returns a positive configured
+        // value or `kernel.ProcessorCount`, but a kernel built by record-copy
+        // can bypass the setter. Assert at the point of use rather than
+        // dividing by zero, mirroring what `NativeEnvironment` does before
+        // handing the count to the guest.
+        if count < 1 then
+            failwith
+                $"effective ProcessorCount is %d{count}, but must be at least 1 for a simulated thread to be placed on a processor"
+
+        CpuId (rotation % count)
+
     /// Overlay the supplied environment variables on top of the kernel's
     /// existing `Environment` map. Used by `Program.run` / the CLI to layer
     /// host or test-supplied env vars on top of `defaultEnvironment` without

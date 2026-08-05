@@ -197,7 +197,7 @@ module TestSwitchIlOp =
 
         let state =
             { state with
-                ThreadState = Map.empty |> Map.add thread (ThreadState.New methodState)
+                ThreadState = Map.empty |> Map.add thread (ThreadState.New (CpuId 0) methodState)
             }
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 index) thread
 

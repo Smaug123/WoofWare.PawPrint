@@ -293,6 +293,61 @@ module NativeSystemNative =
                 ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
+        | Some "SystemNative_SchedGetCpu",
+          [],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            // `int32_t SystemNative_SchedGetCpu(void)` lives in
+            // pal_threading.c, not pal_process.c. It is `sched_getcpu()` under
+            // `#if HAVE_SCHED_GETCPU` and a hard `-1` otherwise -- Linux has
+            // it, macOS does not. It surfaces
+            // as the internal `Thread.GetCurrentProcessorNumber()`
+            // (Thread.Unix.cs), which feeds the public
+            // `Thread.GetCurrentProcessorId()` via `ProcessorIdCache`, and
+            // thence `SharedArrayPool`'s partition selection,
+            // `TimerQueue.Instances`, and
+            // `PoolingAsyncValueTaskMethodBuilder`'s per-core cache. Every
+            // one of those uses it purely as a shard index modulo a count
+            // sized off `Environment.ProcessorCount`.
+            //
+            // PawPrint answers from simulated-process state rather than the
+            // host, like every other value the guest could branch on: a host
+            // read here would make the guest's shard choice — and so its
+            // allocation pattern and its timer bucketing — depend on which
+            // core the *interpreter* happened to be running on.
+            //
+            // We report a real per-thread placement rather than a constant.
+            // The value is fixed at thread creation by
+            // `EmulatedKernel.cpuForRotation` and stored in
+            // `ThreadState.Cpu`; see there for why round-robin, and why
+            // "pinned to" and "currently running on" coincide under a
+            // scheduler that never migrates threads. Returning the stored
+            // value verbatim (rather than re-deriving it here) is deliberate:
+            // `effectiveProcessorCount` reads the kernel's env table live, so
+            // two derivations at different moments could in principle
+            // disagree. Nothing can make them disagree today — PawPrint
+            // implements no `setenv`, and `KernelConfig` is applied before the
+            // entry thread exists — but deriving once and storing means a
+            // future PR that adds environment mutation cannot silently turn a
+            // guest's shard index into an out-of-range one.
+            //
+            // Returning `-1` — claiming the platform lacks `sched_getcpu`, as
+            // it genuinely does on macOS — was the alternative. It is a
+            // legitimate answer that CoreLib handles (it falls back to
+            // `Environment.CurrentManagedThreadId` as a shard proxy), and it
+            // has the side effect of short-circuiting `ProcessorNumberSpeedCheck`.
+            // We do not take it: PawPrint reports a Linux platform identity
+            // through `SystemNative_GetUnixRelease`, and on Linux the call
+            // works.
+            let cpu =
+                match Map.tryFind ctx.Thread state.ThreadState with
+                | Some threadState -> threadState.Cpu
+                | None ->
+                    failwith
+                        $"SystemNative_SchedGetCpu: thread %O{ctx.Thread} is executing but has no ThreadState (every running thread is created through IlMachineState, which assigns a CpuId)"
+
+            let (CpuId.CpuId cpu) = cpu
+
+            pushInt32 cpu ctx |> Some
         | Some "SystemNative_GetTimestamp",
           [],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int64) ->
