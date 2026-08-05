@@ -77,6 +77,22 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // The monotonic clock the guest observes through `Stopwatch`
+                // boots at zero and moves in whole milliseconds, and is the same
+                // clock `Environment.TickCount64` reads. Those are
+                // replay-contract facts the pure `StopwatchElapsed.cs` cannot
+                // pin: it is cross-checked against the real runtime, whose
+                // CLOCK_MONOTONIC counts from an unspecified origin at
+                // nanosecond resolution. `TestMonotonicTimestamp` covers the
+                // scaling arithmetic itself; this covers the chain from
+                // `SystemNative_GetTimestamp` out to guest-visible `Stopwatch`.
+                FileName = "StopwatchTimestampGranularity.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // Same guest observation, but with the host moving the boot
                 // instant to 2023-11-14T00:00:00Z. Covers the whole chain
                 // (`KernelConfig.WallClockEpochMs` -> `withWallClockEpochMs` ->

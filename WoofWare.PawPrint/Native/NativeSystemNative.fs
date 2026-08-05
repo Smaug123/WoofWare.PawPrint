@@ -293,6 +293,44 @@ module NativeSystemNative =
                 ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
+        | Some "SystemNative_GetTimestamp",
+          [],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int64) ->
+            // `int64_t SystemNative_GetTimestamp(void)` (pal_time.c) is a
+            // one-line forward to `minipal_hires_ticks()`
+            // (src/native/minipal/time.c): `clock_gettime_nsec_np(CLOCK_UPTIME_RAW)`
+            // on macOS, `clock_gettime(CLOCK_MONOTONIC)` scaled to nanoseconds
+            // on Linux.
+            //
+            // This is the PAL entry behind `Stopwatch.GetTimestamp()` on Unix,
+            // and hence behind every `Stopwatch` instance, `Stopwatch.Elapsed`,
+            // and `Stopwatch.GetElapsedTime`. It matters beyond explicit guest
+            // timing: the thread pool's hill-climbing step times its own
+            // sampling window with it (`PortableThreadPool.AdjustMaxWorkersActive`,
+            // PortableThreadPool.cs:379), and `ProcessorIdCache`'s static
+            // initialiser uses it to decide whether caching `sched_getcpu` is
+            // worthwhile. The paired `minipal_hires_tick_frequency()` is the
+            // constant 1e9, which is what `Stopwatch.GetFrequency()` hard-codes
+            // on Unix (Stopwatch.Unix.cs) — so the units here are pinned by
+            // CoreLib rather than chosen.
+            //
+            // The reading derives from the same `VirtualClockMs` that backs
+            // `SystemNative_GetLowResolutionTimestamp` above, because upstream
+            // *that* entry point is `minipal_lowres_ticks()`, which reads the
+            // very same monotonic clock in milliseconds. One field for both
+            // reproduces a relationship the guest can observe:
+            // `Environment.TickCount64` and `Stopwatch` cannot disagree about
+            // elapsed time. The scaling and its overflow guard live in
+            // `EmulatedKernel.monotonicTimestampNanos`.
+            //
+            // Read-only, like every other clock observer: the scheduler is the
+            // sole writer of `VirtualClockMs`.
+            state
+            |> IlMachineState.pushToEvalStack'
+                (EvalStackValue.Int64 (Int64Source.Verbatim (EmulatedKernel.monotonicTimestampNanos state.Kernel)))
+                ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
         | Some "SystemNative_GetSystemTimeAsTicks",
           [],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int64) ->
