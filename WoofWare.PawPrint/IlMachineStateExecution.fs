@@ -1380,16 +1380,27 @@ module IlMachineStateExecution =
             let state, resolvedRetargets =
                 ((state, []), retargets)
                 ||> List.fold (fun (state, acc) (retargeted, owner) ->
-                    // Resolution is scoped to the entry's owner, not to the receiver. The owner
-                    // is the type at whose level of the interface map the entry sits, so its own
-                    // methods and its bases' are exactly what may implement that slot. Walking
-                    // from the receiver instead would let a same-signature method introduced by a
-                    // more-derived type answer for a slot it never re-declared.
+                    // Two questions, and they have different answers.
+                    //
+                    // *Which method implements this slot* is settled at the entry's owner — the
+                    // type at whose level of the interface map the entry sits. Only its own
+                    // methods and its bases' are eligible; walking from the receiver would let a
+                    // same-signature method introduced by a more-derived type answer for a slot
+                    // it never re-declared.
+                    //
+                    // *Which body that method lands on* is then ordinary virtual dispatch from
+                    // the receiver's runtime type, because an implementing method may be
+                    // `virtual` (or `abstract`) and overridden further down. Re-resolving the
+                    // owner's method against the receiver is exactly that, and it is safe to
+                    // reuse here: the method is declared on a class, so `methodMatches` applies
+                    // its `newslot`/non-virtual guard and accepts an `override` while rejecting
+                    // an unrelated `new` method. A non-virtual implementation matches nothing and
+                    // falls back to itself.
                     //
                     // One retry per entry: a retargeted call target *is* an interface-map entry,
                     // so a second scan could not find a not-yet-tried instantiation even if it
                     // ran. These call the inner resolution, so there is no recursion at all.
-                    let state, resolved =
+                    let state, atOwner =
                         tryResolveVirtualImplementationForSlot
                             loggerFactory
                             baseClassTypes
@@ -1400,9 +1411,29 @@ module IlMachineStateExecution =
                             walkBaseTypes
                             state
 
-                    match resolved with
+                    match atOwner with
                     | None -> state, acc
-                    | Some resolved -> state, acc @ [ retargeted, resolved ]
+                    | Some atOwner ->
+
+                    // A default interface body has no class slot to override, and re-resolving
+                    // one would re-enter the implicit-interface matching that owner-scoping just
+                    // ruled out.
+                    if owner = dispatchTypeHandle || isDefaultInterfaceBody state atOwner then
+                        state, acc @ [ retargeted, atOwner ]
+                    else
+
+                    let state, overridden =
+                        tryResolveVirtualImplementationForSlot
+                            loggerFactory
+                            baseClassTypes
+                            thread
+                            methodGenerics
+                            atOwner
+                            dispatchTypeHandle
+                            walkBaseTypes
+                            state
+
+                    state, acc @ [ retargeted, Option.defaultValue atOwner overridden ]
                 )
 
             // Precedence, highest first: a real implementation from any compatible entry; then

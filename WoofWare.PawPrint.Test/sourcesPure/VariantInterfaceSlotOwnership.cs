@@ -1,16 +1,20 @@
-// An interface-map entry's slot may only be implemented by the type that owns the entry, or by
-// that type's bases — never by a method a more-derived type happens to introduce with a matching
-// signature.
+// Variant dispatch onto an interface-map entry a *base class* contributed asks two questions
+// with different answers, and `tryResolveVirtualImplementation` has to keep them apart.
 //
-// This matters as soon as variant dispatch retargets onto an entry the *base* class contributed:
-// `tryResolveVirtualImplementation` resolves each retargeted entry with the entry's owner as the
-// dispatch type, not the receiver. Resolving from the receiver instead would walk the derived
-// type first and let its methods answer for a slot they have nothing to do with — PawPrint's
-// class walk matches implicit interface implementations by name and signature, so it cannot tell
-// the difference on its own.
+// Which method implements the slot is settled at the entry's owner: only the owner's own methods
+// and its bases' are eligible, never a method a more-derived type happens to introduce with a
+// matching signature. (PawPrint's class walk matches implicit interface implementations by name
+// and signature, so it cannot tell the difference on its own — hence resolving with the owner as
+// the dispatch type rather than the receiver.)
+//
+// Which body that method lands on is then ordinary virtual dispatch from the receiver: an
+// implementing method may be `virtual` or `abstract` and overridden further down. Answering the
+// first question alone would run the base's body — or, for an `abstract` implementation, reach a
+// method with no body at all.
 //
 // The complementary cases that PawPrint still gets wrong — where a derived type *does* need to
-// take over an inherited slot — are in `InterfaceSlotHiddenByDerivedMethod.cs`.
+// take over an inherited slot without overriding it — are in
+// `InterfaceSlotHiddenByDerivedMethod.cs`.
 
 using System;
 
@@ -44,6 +48,35 @@ sealed class OwnHideDerived : OwnHideBase
     public new long Accept(object value) => 2;
 }
 
+// The base implements the interface with a `virtual` method and the derived type `override`s it.
+// Unlike the `new` case above, the override *is* the slot's body.
+class OwnVirtualBase : IOwn<object>
+{
+    public virtual long Accept(object value) => 3;
+}
+
+class OwnVirtualMiddle : OwnVirtualBase
+{
+    public override long Accept(object value) => 4;
+}
+
+sealed class OwnVirtualDerived : OwnVirtualMiddle
+{
+    public override long Accept(object value) => 5;
+}
+
+// The implementing method is `abstract`, so resolving at the owner alone reaches a method with no
+// body — the interpreter's abstract-method guard, not a wrong answer, if the override is missed.
+abstract class OwnAbstractBase : IOwn<object>
+{
+    public abstract long Accept(object value);
+}
+
+sealed class OwnAbstractDerived : OwnAbstractBase
+{
+    public override long Accept(object value) => 6;
+}
+
 class Program
 {
     static long CallDim(IOwnDim<ArgumentException> sink, ArgumentException value) => sink.Accept(value);
@@ -60,6 +93,13 @@ class Program
 
         // The hidden method is of course still reachable by a direct call.
         if (hidden.Accept(e) != 2) return 3;
+
+        // An override is followed, through as many levels as there are.
+        if (CallOwn(new OwnVirtualBase(), e) != 3) return 4;
+        if (CallOwn(new OwnVirtualMiddle(), e) != 4) return 5;
+        if (CallOwn(new OwnVirtualDerived(), e) != 5) return 6;
+
+        if (CallOwn(new OwnAbstractDerived(), e) != 6) return 7;
 
         return 0;
     }
