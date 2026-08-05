@@ -365,10 +365,10 @@ module Scheduler =
         // RAII-style release is the guest's responsibility, and a loud failure is far
         // easier to diagnose than a silent deadlock.
         let orphanedSyncBlocks =
-            state.ManagedHeap.NonArrayObjects
+            state.ManagedHeap.SyncBlocks
             |> Map.toSeq
-            |> Seq.choose (fun (addr, obj) ->
-                match obj.SyncBlock.Lock with
+            |> Seq.choose (fun (addr, syncBlock) ->
+                match syncBlock.Lock with
                 | SyncBlockLock.Held locked when locked.LockingThread = terminated -> Some (addr, locked)
                 | _ -> None
             )
