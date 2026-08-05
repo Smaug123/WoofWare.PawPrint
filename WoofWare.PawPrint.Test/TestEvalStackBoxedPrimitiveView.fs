@@ -284,6 +284,40 @@ module TestEvalStackBoxedPrimitiveView =
             | other -> failwithf "expected an int64-slot value, got %A" other
 
     [<Test>]
+    let ``the int32 width reinterprets like every other width`` () : unit =
+        // `ldind.i4` over a leading float32 cell. The int32 arm predates the shared projector and
+        // used to have its own hand-rolled unwrap that accepted only an int32 cell.
+        let f = 3.14159274f
+        let vt = leadingField (CliType.Numeric (CliNumericType.Float32 f))
+
+        let ldindI4Slot = CliType.Numeric (CliNumericType.Int32 0)
+
+        EvalStackValue.toCliTypeCoerced ldindI4Slot (EvalStackValue.UserDefinedValueType vt)
+        |> function
+            | CliType.Numeric (CliNumericType.Int32 i) -> i |> shouldEqual (System.BitConverter.SingleToInt32Bits f)
+            | other -> failwithf "expected the float32 bits reinterpreted as an int32, got %A" other
+
+    [<Test>]
+    let ``the native-int width keeps pointer provenance instead of reinterpreting`` () : unit =
+        // The native-int slot is the one that *carries* pointer provenance, so its arm converts
+        // pointer-shaped cells into the matching `NativeIntSource` rather than deferring to the
+        // shared byte-level projector — which would have to refuse, since `CliType.ToBytes`
+        // declines to express a pointer as bytes. This pins that difference as deliberate.
+        let src =
+            ManagedPointerSource.Byref (ByrefRoot.HeapValue (ManagedHeapAddress.ManagedHeapAddress 31), [])
+
+        let vt = leadingField (CliType.RuntimePointer (CliRuntimePointer.Managed src))
+
+        let ldindISlot =
+            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
+
+        EvalStackValue.toCliTypeCoerced ldindISlot (EvalStackValue.UserDefinedValueType vt)
+        |> function
+            | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer actual)) ->
+                actual |> shouldEqual src
+            | other -> failwithf "expected the managed pointer's provenance to survive, got %A" other
+
+    [<Test>]
     let ``viewing a reference-typed leading field as an integer is refused`` () : unit =
         // Reinterpreting a reference cell as an integer would have to forge a heap address into
         // guest-visible bits, which this model refuses everywhere else too.

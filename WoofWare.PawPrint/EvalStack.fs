@@ -550,13 +550,7 @@ module EvalStackValue =
             | CliNumericType.Int32 _ ->
                 match popped with
                 | EvalStackValue.Int32 i -> CliType.Numeric (CliNumericType.Int32 i)
-                | EvalStackValue.UserDefinedValueType popped ->
-                    let popped = CliValueType.DereferenceFieldAt 0 4 popped
-                    // TODO: when we have a general mechanism to coerce CliTypes to each other,
-                    // do that
-                    match popped with
-                    | CliType.Numeric (CliNumericType.Int32 i) -> CliType.Numeric (CliNumericType.Int32 i)
-                    | _ -> failwith "TODO"
+                | EvalStackValue.UserDefinedValueType vt -> viewValueTypeAsPrimitive target vt
                 | i -> failwith $"TODO: %O{i}"
             | CliNumericType.Int64 _ ->
                 match popped with
@@ -603,9 +597,14 @@ module EvalStackValue =
                     CliNumericType.NativeInt (NativeIntSource.ManagedPointer ptrSrc)
                     |> CliType.Numeric
                 | EvalStackValue.UserDefinedValueType vt ->
+                    // Deliberately *not* `viewValueTypeAsPrimitive`, unlike every other primitive
+                    // width. The native-int slot is the one that carries pointer provenance, so
+                    // the conversions below are lossless where a byte-level reinterpretation could
+                    // not be: `CliType.ToBytes` refuses to express a pointer, a handle or a
+                    // widened native int as bytes, and rightly so. Routing this arm through the
+                    // shared projector would turn those reads into refusals.
                     let popped = CliValueType.DereferenceFieldAt 0 NATIVE_INT_SIZE vt
-                    // TODO: when we have a general mechanism to coerce CliTypes to each other,
-                    // do that
+
                     match popped with
                     | CliType.Numeric (CliNumericType.NativeInt i) -> CliType.Numeric (CliNumericType.NativeInt i)
                     | CliType.Numeric (CliNumericType.Int64 i) ->
