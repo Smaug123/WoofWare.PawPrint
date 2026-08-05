@@ -56,9 +56,7 @@ module internal UnaryMetadataFieldOps =
     /// `field.Signature` (whose `FromReference` case carries a `TypeRef` whose `ResolutionScope`
     /// indexes the declaring assembly's `AssemblyRef` table), `field.Handle`, and
     /// `field.RelativeVirtualAddress`. For a `FieldDefinition` token the two assemblies coincide;
-    /// for a `MemberReference` they need not, and every op that reached for `ctx.ActiveAssembly`
-    /// instead was silently misresolving cross-assembly fields (#723, #737). Handing callers the
-    /// pair means the correct assembly is the one nearest to hand.
+    /// for a `MemberReference` they need not.
     ///
     /// `opName` and `verb` appear in diagnostics only, the latter in the phrase "Unexpectedly asked
     /// to <verb> a non-field".
@@ -128,7 +126,7 @@ module internal UnaryMetadataFieldOps =
     ///   ("We are using ldfld/a on a static field. We allow it, but need to get side-effect from
     ///   obj."), evaluating the receiver for its side effects and discarding it. PawPrint simply has
     ///   not implemented that form: none of these ops has a path to static storage. So we reject it
-    ///   as unimplemented rather than pretending the guest's IL is malformed.
+    ///   as unimplemented.
     let private checkFieldStaticness
         (opName : string)
         (verb : string)
