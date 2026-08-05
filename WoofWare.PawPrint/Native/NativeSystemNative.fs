@@ -231,50 +231,8 @@ module NativeSystemNative =
             // executing this guest's instructions" as a quantity, and there
             // is no simulated contention for a virtual CPU that would make
             // "utilization" mean anything for a guest's own workload either.
-            // Two structurally different designs were considered for what to
-            // report instead:
-            //
-            //  1. A constant zero, with no new `EmulatedKernel` state. Zero
-            //     is not a lie of omission the way an invented nonzero
-            //     reading would be -- it is a value the real function
-            //     legitimately returns (freshly-started process, or a
-            //     genuinely idle one), and it is a first-class *supported*
-            //     operating mode of the one heuristic that meaningfully
-            //     consumes it: GateThread's own doc comment for
-            //     `DOTNET_ThreadPool_CpuUtilizationIntervalMs` says setting
-            //     it to 0 makes "components behave as though CPU utilization
-            //     is low". A synthetic nonzero number, by contrast, would
-            //     have no ground truth behind it -- there is no simulated
-            //     workload it could be measuring -- so it would be a more
-            //     dishonest answer than zero, not a more realistic one.
-            //  2. A settable `EmulatedKernel`/`KernelConfig` scalar, on the
-            //     model of `ProcessorCount` and `UnixPlatform`: fixed for the
-            //     process's lifetime, host-overridable, so a future test
-            //     could script "the guest observes nonzero CPU load" (e.g.
-            //     to exercise hill-climbing thread-count decisions).
-            //
-            // (2) was rejected for now: `ProcessorCount`/`UnixPlatform` earn
-            // their configurability because they are *identity* facts with a
-            // family of present or future readers (multiple `SystemNative_*`
-            // entry points agreeing on one coherent platform), and because
-            // guest-observable behaviour can depend on them (division,
-            // capacity planning). CPU utilization has exactly one consumer
-            // -- this entry point -- and its only effect on real .NET is
-            // tuning internal thread-pool heuristics that PawPrint (a slow,
-            // single-purpose interpreter that promises determinism, not
-            // throughput) makes no performance claims about. A knob with no
-            // producer of meaningful values and no present consumer is
-            // speculative generality; add it if and when a concrete test
-            // needs to drive that heuristic.
-            //
-            // So: always return 0, and always zero-fill the caller's struct
-            // (real native code unconditionally overwrites `*previous` with
-            // the fresh sample on every call, so this does too, rather than
-            // leaving stale/garbage caller data behind). The pointer is
-            // untyped (`void*`) at this boundary, so the zero-fill is done as
-            // raw bytes -- the same shape `drawRandomBytesInto` above uses --
-            // rather than resolving `ProcessCpuInformation`'s own
-            // `ConcreteTypeHandle` just to describe three all-zero `ulong`s.
+            // We just return a constant 0; this function is only used to tune the thread pool's performance, for
+            // AppDomain.MonitoringTotalProcessorTime, for certain tracing, and System.Environment.ProcessCpuUsage.
             let ptr =
                 NativeCall.managedPointerOfPointerArgument
                     "SystemNative_GetCpuUtilization"
