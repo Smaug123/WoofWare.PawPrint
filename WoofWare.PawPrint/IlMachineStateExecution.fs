@@ -218,7 +218,52 @@ module IlMachineStateExecution =
 
         Some (state, meth)
 
-    let tryResolveVirtualImplementation
+    /// Resolve one entry of `ownerTy`'s `ImplementedInterfaces` list to the concrete interface
+    /// it names, registering that instantiation in the ConcreteTypes registry if it is not
+    /// already there.
+    let private resolveImplementedInterface
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (ownerTy : ConcreteType<ConcreteTypeHandle>)
+        (impl : WoofWare.PawPrint.InterfaceImplementation)
+        (state : IlMachineState)
+        : IlMachineState *
+          ConcreteTypeHandle *
+          ConcreteType<ConcreteTypeHandle> *
+          TypeInfo<GenericParamFromMetadata, TypeDefn>
+        =
+        let ownerAssy =
+            state._LoadedAssemblies.ByDefinitionName ownerTy.Identity.AssemblyFullName
+
+        let implAssy =
+            match state.LoadedAssembly impl.RelativeToAssembly with
+            | Some assy -> assy
+            | None -> ownerAssy
+
+        let state, implTypeDefn, implResolvedAssy =
+            IlMachineState.resolveTypeMetadataToken
+                loggerFactory
+                baseClassTypes
+                state
+                implAssy
+                ownerTy.Generics
+                impl.InterfaceHandle
+
+        let state, implHandle =
+            IlMachineState.concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                implResolvedAssy.Name
+                ownerTy.Generics
+                ImmutableArray.Empty
+                implTypeDefn
+
+        match IlMachineState.tryGetConcreteTypeInfo state implHandle with
+        | Some (implTy, typeInfo) -> state, implHandle, implTy, typeInfo
+        | None -> failwith $"Interface implementation handle %O{implHandle} was not registered or has no TypeDef row"
+
+    let private tryResolveVirtualImplementationForSlot
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (thread : ThreadId)
@@ -707,46 +752,8 @@ module IlMachineStateExecution =
 
         logger.LogDebug "No concrete implementation found; scanning interfaces"
 
-        let resolveImplementedInterface
-            (ownerTy : ConcreteType<ConcreteTypeHandle>)
-            (impl : WoofWare.PawPrint.InterfaceImplementation)
-            (state : IlMachineState)
-            : IlMachineState *
-              ConcreteTypeHandle *
-              ConcreteType<ConcreteTypeHandle> *
-              TypeInfo<GenericParamFromMetadata, TypeDefn>
-            =
-            let ownerAssy =
-                state._LoadedAssemblies.ByDefinitionName ownerTy.Identity.AssemblyFullName
-
-            let implAssy =
-                match state.LoadedAssembly impl.RelativeToAssembly with
-                | Some assy -> assy
-                | None -> ownerAssy
-
-            let state, implTypeDefn, implResolvedAssy =
-                IlMachineState.resolveTypeMetadataToken
-                    loggerFactory
-                    baseClassTypes
-                    state
-                    implAssy
-                    ownerTy.Generics
-                    impl.InterfaceHandle
-
-            let state, implHandle =
-                IlMachineState.concretizeType
-                    loggerFactory
-                    baseClassTypes
-                    state
-                    implResolvedAssy.Name
-                    ownerTy.Generics
-                    ImmutableArray.Empty
-                    implTypeDefn
-
-            match IlMachineState.tryGetConcreteTypeInfo state implHandle with
-            | Some (implTy, typeInfo) -> state, implHandle, implTy, typeInfo
-            | None ->
-                failwith $"Interface implementation handle %O{implHandle} was not registered or has no TypeDef row"
+        let resolveImplementedInterface =
+            resolveImplementedInterface loggerFactory baseClassTypes
 
         let hasCallableBody
             (meth : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
@@ -983,6 +990,322 @@ module IlMachineStateExecution =
             |> String.concat ", "
             // TODO: throw guest System.Runtime.AmbiguousImplementationException here.
             |> failwithf "multiple most-specific default interface implementations matched this virtual slot: %s"
+
+    /// One interface, followed by its transitive parents, depth-first. `visited` collapses
+    /// diamonds at the *first* occurrence, which is what makes the resulting order load-bearing
+    /// rather than incidental — see `tryRetargetToVariantInterfaceMapEntry`.
+    let rec private expandInterfaceEntry
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (visited : Set<ConcreteTypeHandle>)
+        (ifaceHandle : ConcreteTypeHandle)
+        (ifaceTy : ConcreteType<ConcreteTypeHandle>)
+        (ifaceTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        : IlMachineState * Set<ConcreteTypeHandle> * (ConcreteTypeHandle * ConcreteType<ConcreteTypeHandle>) list
+        =
+        if visited.Contains ifaceHandle then
+            state, visited, []
+        else
+
+        let visited = visited.Add ifaceHandle
+
+        let state, visited, parents =
+            ((state, visited, []), ifaceTypeInfo.ImplementedInterfaces)
+            ||> Seq.fold (fun (state, visited, acc) impl ->
+                let state, parentHandle, parentTy, parentTypeInfo =
+                    resolveImplementedInterface loggerFactory baseClassTypes ifaceTy impl state
+
+                let state, visited, expanded =
+                    expandInterfaceEntry
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        visited
+                        parentHandle
+                        parentTy
+                        parentTypeInfo
+
+                state, visited, acc @ expanded
+            )
+
+        state, visited, (ifaceHandle, ifaceTy) :: parents
+
+    /// The receiver's interface map, in the order CoreCLR builds it
+    /// (`MethodTableBuilder::BuildInterfaceMap`): the interfaces the type itself declares, in
+    /// metadata order and each expanded through its own parents, and only then the base class's
+    /// map. The order matters because variant interface dispatch resolves to the *first*
+    /// variance-compatible entry (see `tryRetargetToVariantInterfaceMapEntry`), so this must not
+    /// be reordered or set-ified.
+    let rec private collectInterfaceMap
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (walkBaseTypes : bool)
+        (state : IlMachineState)
+        (visited : Set<ConcreteTypeHandle>)
+        (typeHandle : ConcreteTypeHandle)
+        : IlMachineState * Set<ConcreteTypeHandle> * (ConcreteTypeHandle * ConcreteType<ConcreteTypeHandle>) list
+        =
+        if visited.Contains typeHandle then
+            state, visited, []
+        else
+
+        // Class handles and interface handles share one `visited` set: a handle is one or the
+        // other, never both, so they cannot shadow each other. Valid metadata has no cycle in a
+        // base-type chain, but guarding here means malformed metadata fails as a missing entry
+        // rather than as a hang.
+        let visited = visited.Add typeHandle
+
+        let state, visited, ownEntries =
+            match IlMachineState.tryGetConcreteTypeInfo state typeHandle with
+            | None -> state, visited, []
+            | Some (ty, typeInfo) ->
+                ((state, visited, []), typeInfo.ImplementedInterfaces)
+                ||> Seq.fold (fun (state, visited, acc) impl ->
+                    let state, ifaceHandle, ifaceTy, ifaceTypeInfo =
+                        resolveImplementedInterface loggerFactory baseClassTypes ty impl state
+
+                    let state, visited, expanded =
+                        expandInterfaceEntry
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            visited
+                            ifaceHandle
+                            ifaceTy
+                            ifaceTypeInfo
+
+                    state, visited, acc @ expanded
+                )
+
+        // Gated on `walkBaseTypes` for the same reason the ordinary walks are: `false` means
+        // "exact-type dispatch" (the `constrained.` value-type probe), where only the type's own
+        // interface list is in scope. A value type's base chain is `ValueType`/`Enum`/`Object`,
+        // none of which contributes a generic interface, so this gate is about honesty rather
+        // than about any case we can currently reach.
+        if not walkBaseTypes then
+            state, visited, ownEntries
+        else
+
+        match typeHandle with
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ -> state, visited, ownEntries
+        | ConcreteTypeHandle.Concrete _
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _ ->
+
+        let state, baseType =
+            IlMachineState.resolveBaseConcreteType loggerFactory baseClassTypes state typeHandle
+
+        match baseType with
+        | None -> state, visited, ownEntries
+        | Some baseType ->
+            let state, visited, baseEntries =
+                collectInterfaceMap loggerFactory baseClassTypes walkBaseTypes state visited baseType
+
+            state, visited, ownEntries @ baseEntries
+
+    /// ECMA-335 §I.8.7 lets a call site name a variance-compatible instantiation of an interface
+    /// the receiver never declares: `ISink<in T>` implemented at `ISink<object>` is dispatched
+    /// through `ISink<string>`. The receiver's *own* entry is what supplies the body, so that is
+    /// what dispatch must resolve against — not the call site's view.
+    ///
+    /// So the fix is to retarget the dispatch, not to loosen any comparison: an implicit
+    /// implementation `ObjectSink.Accept(object, ...)` matches `ISink<object>::Accept` exactly,
+    /// and only fails against `ISink<string>::Accept` because the call site substituted a
+    /// different `T`. (The explicit-MethodImpl form of the same shape already works, because a
+    /// MethodImpl row identifies its slot by declaration rather than by signature; an implicit
+    /// implementation has no such row.)
+    ///
+    /// When several entries are variance-compatible the *first* in interface-map order wins,
+    /// with no ambiguity exception — swapping the declaration order swaps which body runs.
+    /// CoreCLR resolves ordinary instance calls through a dispatch map built at type load, so
+    /// there is no single line of it to cite for that rule, but its two adjacent variance passes
+    /// both spell out the same one: `MethodTable::FindDefaultInterfaceImplementation` takes the
+    /// first candidate and "[doesn't] look for a conflict for instance methods" once
+    /// `allowVariance` is set, and `TryResolveVirtualStaticMethodOnThisType`'s second pass
+    /// iterates the interface map in order, skipping "the exact matches as they were handled
+    /// above", requiring `HasSameTypeDefAs`, and re-resolving on `pItfInMap` — the interface as
+    /// the type declares it. `sourcesPure/VariantInterfaceMapOrder.cs` pins the observable rule
+    /// against the real runtime, which is the authority here.
+    ///
+    /// Returns `None` when no such entry exists, leaving the caller's answer unchanged.
+    let private tryRetargetToVariantInterfaceMapEntry
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (dispatchTypeHandle : ConcreteTypeHandle)
+        (walkBaseTypes : bool)
+        (state : IlMachineState)
+        : IlMachineState *
+          WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> option
+        =
+        // A non-generic interface has nothing to vary, so it can never reach here.
+        if methodToCall.DeclaringType.Generics.IsEmpty then
+            state, None
+        else
+
+        let declaringTypeIsInterface =
+            match state.LoadedAssembly methodToCall.DeclaringType.Assembly with
+            | None -> false
+            | Some assy -> assy.TypeDefs.[methodToCall.DeclaringType.Definition.Get].IsInterface
+
+        if not declaringTypeIsInterface then
+            state, None
+        else
+
+        let state, _, interfaceMap =
+            collectInterfaceMap loggerFactory baseClassTypes walkBaseTypes state Set.empty dispatchTypeHandle
+
+        // Entries at the *same* instantiation are exactly what the caller already searched, so
+        // excluding them keeps this a strict fallback: it can only ever try an instantiation
+        // that has not been tried.
+        let candidates =
+            interfaceMap
+            |> List.filter (fun (_, ty) ->
+                ty.Identity = methodToCall.DeclaringType.Identity
+                && ty.Generics <> methodToCall.DeclaringType.Generics
+            )
+
+        if candidates.IsEmpty then
+            state, None
+        else
+
+        let state, targetHandle =
+            match
+                AllConcreteTypes.findExistingConcreteType
+                    state.ConcreteTypes
+                    methodToCall.DeclaringType.Identity
+                    methodToCall.DeclaringType.Generics
+            with
+            | Some handle -> state, handle
+            | None ->
+                let handle, newConcreteTypes =
+                    AllConcreteTypes.add methodToCall.DeclaringType state.ConcreteTypes
+
+                { state with
+                    ConcreteTypes = newConcreteTypes
+                },
+                handle
+
+        // First variance-compatible entry wins; we deliberately do not fall through to a later
+        // entry if this one fails to resolve. A type that lists an interface must supply bodies
+        // for its slots, so a miss here means our own resolution is wrong, and surfacing that as
+        // the caller's existing loud failure beats silently running a different type argument's
+        // body.
+        let state, chosen =
+            ((state, None), candidates)
+            ||> List.fold (fun (state, chosen) (candidateHandle, candidateTy) ->
+                match chosen with
+                | Some _ -> state, chosen
+                | None ->
+                    let state, isCompatible =
+                        isAssignableFrom loggerFactory baseClassTypes candidateHandle targetHandle state
+
+                    if isCompatible then
+                        state, Some (candidateHandle, candidateTy)
+                    else
+                        state, None
+            )
+
+        match chosen with
+        | None -> state, None
+        | Some (chosenHandle, chosenTy) ->
+            match IlMachineState.tryGetConcreteTypeInfo state chosenHandle with
+            | None -> state, None
+            | Some (_, chosenTypeInfo) ->
+
+            // Both instantiations share a TypeDef, so they share a method list: the slot is
+            // identified by its MethodDef handle, exactly as the variance MethodImpl path does.
+            match chosenTypeInfo.Methods |> List.tryFind (fun m -> m.Handle = methodToCall.Handle) with
+            | None ->
+                failwith
+                    $"variant interface dispatch: %s{chosenTy.Namespace}.%s{chosenTy.Name} has no method with handle matching %s{methodToCall.Name}, though it shares a TypeDef with the call target"
+            | Some slot ->
+                let state, retargeted, _ =
+                    ExecutionConcretization.concretizeMethodWithAllGenerics
+                        loggerFactory
+                        baseClassTypes
+                        chosenTy.Generics
+                        slot
+                        methodGenerics
+                        state
+
+                state, Some retargeted
+
+    /// Identify the body a virtual or interface call lands on, given the receiver's runtime type.
+    ///
+    /// `walkBaseTypes` false means "exact-type dispatch": the `constrained.` value-type probe,
+    /// which asks whether `T` itself supplies the method rather than inheriting it.
+    ///
+    /// Returns `None` when no override exists, which for a `callvirt` means the call site's own
+    /// method is the answer.
+    let tryResolveVirtualImplementation
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (thread : ThreadId)
+        (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (dispatchTypeHandle : ConcreteTypeHandle)
+        (walkBaseTypes : bool)
+        (state : IlMachineState)
+        : IlMachineState *
+          WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> option
+        =
+        let state, resolved =
+            tryResolveVirtualImplementationForSlot
+                loggerFactory
+                baseClassTypes
+                thread
+                methodGenerics
+                methodToCall
+                dispatchTypeHandle
+                walkBaseTypes
+                state
+
+        match resolved with
+        | Some _ -> state, resolved
+        | None ->
+            // Exactly CoreCLR's ordering: the exact interface-map entry is tried first, and only
+            // a miss falls through to the variance scan. Running the scan lazily also keeps this
+            // change unable to perturb anything that resolves today — the interface-map walk is
+            // never even performed on a call that succeeds.
+            let state, retargeted =
+                tryRetargetToVariantInterfaceMapEntry
+                    loggerFactory
+                    baseClassTypes
+                    methodGenerics
+                    methodToCall
+                    dispatchTypeHandle
+                    walkBaseTypes
+                    state
+
+            match retargeted with
+            | None -> state, None
+            | Some retargeted ->
+                let logger = loggerFactory.CreateLogger "CallMethod"
+
+                logger.LogDebug (
+                    "Retargeting variant interface call {DeclaringTypeName}::{MethodName} to the receiver's own instantiation {Generics}",
+                    methodToCall.DeclaringType.Name,
+                    methodToCall.Name,
+                    retargeted.DeclaringType.Generics
+                )
+
+                // One retry only: the retargeted call target *is* an interface-map entry, so a
+                // second scan could not find a not-yet-tried instantiation even if it ran. This
+                // calls the inner resolution rather than itself, so there is no recursion at all.
+                tryResolveVirtualImplementationForSlot
+                    loggerFactory
+                    baseClassTypes
+                    thread
+                    methodGenerics
+                    retargeted
+                    dispatchTypeHandle
+                    walkBaseTypes
+                    state
 
     let rec callMethod
         (loggerFactory : ILoggerFactory)
