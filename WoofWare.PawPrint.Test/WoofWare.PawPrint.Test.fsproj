@@ -45,6 +45,7 @@
     <Compile Include="TestCrossAssemblyCastclass.fs" />
     <Compile Include="TestCrossAssemblyDispatch.fs" />
     <Compile Include="TestCrossAssemblyIsAssignableFrom.fs" />
+    <Compile Include="TestCrossAssemblyLdsflda.fs" />
     <Compile Include="TestNativeMethodDetection.fs" />
     <Compile Include="TestUnsafeAccessorRead.fs" />
     <Compile Include="TestNativeKernel32.fs" />

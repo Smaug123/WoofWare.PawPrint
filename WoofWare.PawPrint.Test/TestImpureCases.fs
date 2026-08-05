@@ -211,6 +211,19 @@ module TestImpureCases =
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
+            {
+                // PawPrint reports every GCMemoryInfo field as zero, for every GCKind,
+                // because the interpreter never collects. That is emphatically not a
+                // property of the real runtime, so it cannot be asserted in a
+                // sourcesPure case (which is diffed against the real runtime's exit
+                // code); it belongs here, where the expected code is PawPrint's alone.
+                // sourcesPure/GCGetMemoryInfo.cs carries the cross-runtime half.
+                FileName = "GCMemoryInfoAllZero.cs"
+                ExpectedReturnCode = 42
+                KernelConfig = KernelConfig.Default
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
         ]
 
     let runTest (case : EndToEndTestCase) : unit =

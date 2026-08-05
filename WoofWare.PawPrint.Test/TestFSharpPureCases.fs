@@ -113,17 +113,20 @@ module TestFSharpPureCases =
         Set.ofList
             [
                 // The `RuntimeMethodHandle.IsGenericMethodDefinition` InternalCall this case was
-                // written to pin (issue #690) now works, and so does the `stelem` TypeReference
-                // token (issue #691) that `Printf`'s boxed-argument array reaches next. `sprintf`
-                // now gets as far as the `RuntimeMethodHandle_GetMethodInstantiation` QCall
-                // (`System.RuntimeMethodHandle::GetMethodInstantiation(RuntimeMethodHandleInternal,
-                // ObjectHandleOnStack, BOOL) -> void`), which is unimplemented: it has to
-                // materialise the method's type arguments as a managed `RuntimeType[]` and hand it
-                // back through an `ObjectHandleOnStack`, so it is a genuine piece of work rather
-                // than another scalar. Tracked as issue #718; the `isGenericMethodDefinition`
-                // predicate itself is pinned directly by `TestNativeRuntimeMethodHandle.fs` and by
-                // `sourcesPure/MethodIsGenericMethodDefinition.cs`, so #690's coverage does not
-                // depend on this case passing.
+                // written to pin (issue #690) now works, and so do the `stelem` TypeReference
+                // token (issue #691) that `Printf`'s boxed-argument array reaches next and the
+                // `RuntimeMethodHandle_GetMethodInstantiation` QCall (issue #718). `sprintf` now
+                // gets as far as the `RuntimeMethodHandle_GetStubIfNeededSlow` QCall
+                // (`System.RuntimeMethodHandle::GetStubIfNeededSlow(RuntimeMethodHandleInternal,
+                // QCallTypeHandle, ObjectHandleOnStack) -> RuntimeMethodHandleInternal`), which is
+                // unimplemented: it is the slow path of `GetStubIfNeeded`, reached when reflection
+                // binds a generic method's type arguments (`MakeGenericMethod`), and it has to
+                // materialise an instantiated method handle rather than return an existing one.
+                // The `GetMethodInstantiation` behaviour #718 added is pinned directly by
+                // `TestNativeRuntimeMethodHandle.fs` and by
+                // `sourcesPure/MethodGetGenericArguments.cs`, and the `isGenericMethodDefinition`
+                // predicate by `sourcesPure/MethodIsGenericMethodDefinition.cs`, so neither #690's
+                // nor #718's coverage depends on this case passing.
                 "SprintfBasic"
             ]
 

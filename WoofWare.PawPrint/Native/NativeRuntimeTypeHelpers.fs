@@ -1705,3 +1705,57 @@ module NativeRuntimeTypeHelpers =
 
             let parameter, _ = methodInfo.Generics.[position]
             parameter.Name
+
+    /// PawPrint's rendering of CoreCLR's `CopyRuntimeTypeHandles` (runtimehandles.cpp:561), the
+    /// single helper behind every QCall that hands a type list back through an
+    /// `ObjectHandleOnStack`: `RuntimeTypeHandle_GetInstantiation`,
+    /// `RuntimeTypeHandle_GetConstraints`, and `RuntimeMethodHandle_GetMethodInstantiation`.
+    ///
+    /// `asRuntimeTypeArray` is the upstream `BinderClassID` choice: `CLASS__CLASS`
+    /// (`RuntimeType[]`) when true, `CLASS__TYPE` (`Type[]`) when false. Every element is the same
+    /// `RuntimeType` object either way; only the array's element type differs, and the BCL casts
+    /// the result to whichever it asked for.
+    ///
+    /// When `targets` is empty, CoreCLR returns NULL rather than a zero-length array
+    /// (runtimehandles.cpp:573), so we leave `destination` untouched: every managed caller
+    /// initialises its local to `null` before the QCall, and either tolerates that null or
+    /// launders it through `?? Type.EmptyTypes`.
+    let copyRuntimeTypeHandles
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (asRuntimeTypeArray : bool)
+        (destination : ManagedPointerSource)
+        (targets : RuntimeTypeHandleTarget list)
+        : IlMachineState
+        =
+        match targets with
+        | [] -> state
+        | _ ->
+
+        let elementTypeName = if asRuntimeTypeArray then "RuntimeType" else "Type"
+
+        let state, _, elementTypeHandle =
+            concretizeNonGenericCorelibType loggerFactory baseClassTypes state "System" elementTypeName
+
+        let arrayAddr, state =
+            IlMachineState.allocateArray
+                (ConcreteTypeHandle.OneDimArrayZero elementTypeHandle)
+                (fun () -> CliType.ObjectRef None)
+                (List.length targets)
+                state
+
+        let state =
+            ((state, 0), targets)
+            ||> List.fold (fun (state, index) target ->
+                let runtimeTypeAddr, state =
+                    IlMachineState.getOrAllocateType loggerFactory baseClassTypes target state
+
+                let state =
+                    IlMachineState.setArrayValue arrayAddr (CliType.ObjectRef (Some runtimeTypeAddr)) index state
+
+                state, index + 1
+            )
+            |> fst
+
+        IlMachineState.writeManagedByrefWithBase baseClassTypes state destination (CliType.ObjectRef (Some arrayAddr))

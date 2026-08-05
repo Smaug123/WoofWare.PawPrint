@@ -90,11 +90,11 @@
     <Compile Include="SyncBlockMonitor.fs" />
     <Compile Include="ExternImplementations\System.Threading.Monitor.fs" />
     <Compile Include="Native\NativeCall.fs" />
+    <Compile Include="Native\NativeGc.fs" />
     <Compile Include="Native\NativeEnvironment.fs" />
     <Compile Include="Native\NativeMonitor.fs" />
     <Compile Include="Native\NativeMetadataImport.fs" />
     <Compile Include="Native\NativeRuntimeFieldHandle.fs" />
-    <Compile Include="Native\NativeRuntimeMethodHandle.fs" />
     <Compile Include="Native\NativeRuntimeHelpers.fs" />
     <Compile Include="Native\NativeMarshal.fs" />
     <Compile Include="Native\NativeGcHandle.fs" />
@@ -102,6 +102,10 @@
     <Compile Include="Native\NativeBuffer.fs" />
     <Compile Include="Native\NativeException.fs" />
     <Compile Include="Native\NativeRuntimeTypeHelpers.fs" />
+    <!-- After NativeRuntimeTypeHelpers.fs: the RuntimeMethodHandle QCalls share that module's
+         `copyRuntimeTypeHandles` (CoreCLR's runtimehandles.cpp helper of the same name) with the
+         RuntimeTypeHandle QCalls. -->
+    <Compile Include="Native\NativeRuntimeMethodHandle.fs" />
     <Compile Include="Native\NativeSignature.fs" />
     <Compile Include="Native\NativeRuntimeTypeQCall.fs" />
     <Compile Include="Native\NativeRuntimeTypeFCall.fs" />
