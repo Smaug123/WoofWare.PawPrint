@@ -136,7 +136,7 @@ module TestFaultHandlers =
                 WasInitialisingType = None
                 Constructing = ConstructionState.NotConstructing
                 CallSiteIlOpIndex = threadState.MethodState.IlOpIndex
-                DispatchAsExceptionOnReturn = false
+                ConstructedObjectDisposition = ConstructedObjectDisposition.PushToCaller
                 WrapExceptionInTargetInvocation = false
             }
 

@@ -1139,11 +1139,19 @@ module NullaryIlOp =
             match IlMachineState.returnStackFrame loggerFactory corelib currentThread state with
             | ReturnFrameResult.NoFrameToReturn -> ExecutionResult.Terminated (state, currentThread)
             | ReturnFrameResult.NormalReturn state -> (state, WhatWeDid.Executed) |> ExecutionResult.stepped
-            | ReturnFrameResult.DispatchException (state, exnAddr, exnType) ->
+            | ReturnFrameResult.DispatchException (state, exnAddr, exnType, message) ->
                 // The ctor has run; now overwrite _HResult with the CLR's mapped value,
                 // matching EEException::CreateThrowable's SetHResult(GetHR()) post-ctor step.
                 let state =
                     ExceptionDispatching.overwriteHResultPostCtor corelib exnAddr exnType state
+
+                // The raiser asked for a specific message, i.e. the CLR would have used a
+                // message-taking ctor overload here. This has to happen after the ctor, which
+                // has just written the type's default resource string into `_message`.
+                let state =
+                    match message with
+                    | None -> state
+                    | Some message -> IlMachineState.setExceptionMessage loggerFactory corelib exnAddr message state
 
                 match
                     ExceptionDispatching.throwExceptionObject loggerFactory corelib state currentThread exnAddr exnType

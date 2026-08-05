@@ -150,6 +150,87 @@ public class TestUnsafeBitCast
         return 0;
     }
 
+    // Test 9: mismatched sizes throw NotSupportedException.
+    //
+    // `Unsafe.BitCast` guards with `if (sizeof(TFrom) != sizeof(TTo) || !typeof(TFrom).IsValueType
+    // || !typeof(TTo).IsValueType) ThrowHelper.ThrowNotSupportedException();`, and the JIT
+    // deliberately declines to expand in exactly those cases ("Fallback to the software
+    // implementation to throw when sizes don't match"), so the managed body runs and throws.
+    // `ThrowNotSupportedException` uses the parameterless ctor, so the message is the default.
+    public static int Test9()
+    {
+        try
+        {
+            long widened = Unsafe.BitCast<int, long>(5);
+            return 1;
+        }
+        catch (NotSupportedException)
+        {
+        }
+
+        try
+        {
+            byte narrowed = Unsafe.BitCast<int, byte>(0x12345678);
+            return 2;
+        }
+        catch (NotSupportedException)
+        {
+        }
+
+        // Struct sizes are compared too, not just primitive ones.
+        try
+        {
+            FourBytes fb = Unsafe.BitCast<EightBytes, FourBytes>(default);
+            return 3;
+        }
+        catch (NotSupportedException)
+        {
+        }
+
+        // The guard is a single `if` with three clauses, so a *reference* type is rejected
+        // too, even though both sides are pointer-sized and the sizes therefore agree:
+        //
+        //   if (sizeof(TFrom) != sizeof(TTo) || !typeof(TFrom).IsValueType || !typeof(TTo).IsValueType)
+        //
+        // The JIT declines to expand for reference types for exactly this reason ("Fallback to
+        // the software implementation to throw for reference types").
+        try
+        {
+            object o = Unsafe.BitCast<string, object>("x");
+            return 4;
+        }
+        catch (NotSupportedException)
+        {
+        }
+
+        // ...in either position.
+        try
+        {
+            string s = Unsafe.BitCast<object, string>(new object());
+            return 5;
+        }
+        catch (NotSupportedException)
+        {
+        }
+
+        // `ThrowHelper.ThrowNotSupportedException` uses the parameterless ctor, so HResult is
+        // COR_E_NOTSUPPORTED rather than the generic COR_E_EXCEPTION.
+        try
+        {
+            long widened = Unsafe.BitCast<int, long>(5);
+            return 6;
+        }
+        catch (NotSupportedException e)
+        {
+            if (e.HResult != unchecked((int) 0x80131515))
+            {
+                return 7;
+            }
+        }
+
+        return 0;
+    }
+
     public static int Main(string[] argv)
     {
         var result = Test1();
@@ -175,6 +256,9 @@ public class TestUnsafeBitCast
 
         result = Test8();
         if (result != 0) return result;
+
+        result = Test9();
+        if (result != 0) return 90 + result;
 
         return 0;
     }
