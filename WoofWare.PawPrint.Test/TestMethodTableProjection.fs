@@ -3330,6 +3330,7 @@ public unsafe struct PointerWrapper
         // so replacing it genuinely is shape-preserving.
         let wrapper = runtimePointerValueType state
 
+
         let ptr, state =
             IlMachineState.allocateStackMemory thread MemoryBlockInitialization.ZeroInitialized 8 state
 
@@ -3348,6 +3349,49 @@ public unsafe struct PointerWrapper
             NullaryIlOp.execute loggerFactory bct state thread NullaryIlOp.Stind_I |> ignore
         )
         |> ignore
+
+    [<Test>]
+    let ``Stind_I of a tagged value over a struct-wrapper cell is rejected on both byref shapes`` () : unit =
+        // The shape rule is a property of whole-cell replacement, not of the
+        // byref shape that reaches it: a store that would restamp a structured
+        // non-byte-addressable cell as a bare numeric one is unrepresentable
+        // whichever spelling the guest used to address it. Both the bare root
+        // and the projected byte view must refuse — the bare root reached this
+        // via a range-only safety test until the shape condition was added.
+        let assertRejected (projected : bool) : unit =
+            let _, loggerFactory = LoggerFactory.makeTest ()
+
+            let state, thread =
+                stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Stind_I)
+
+            let wrapper = runtimePointerValueType state
+
+            let ptr, state =
+                IlMachineState.allocateStackMemory thread MemoryBlockInitialization.ZeroInitialized 8 state
+
+            let state = IlMachineState.writeManagedByref state ptr (CliType.ValueType wrapper)
+
+            let destPtr =
+                if projected then
+                    ptr
+                    |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs (concreteTypeFor bct.Byte))
+                else
+                    ptr
+
+            let state =
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer destPtr) thread
+                |> IlMachineState.pushToEvalStack'
+                    (EvalStackValue.NativeInt (NativeIntSource.FieldHandlePtr 888L))
+                    thread
+
+            Assert.Throws<System.Exception> (fun () ->
+                NullaryIlOp.execute loggerFactory bct state thread NullaryIlOp.Stind_I |> ignore
+            )
+            |> ignore
+
+        assertRejected false
+        assertRejected true
 
     [<Test>]
     let ``Stind_I through projected native-memory byte view preserves provenance`` () : unit =

@@ -1552,29 +1552,46 @@ module IlMachineManagedByref =
                 ManagedHeap = ManagedHeap.set addr updated state.ManagedHeap
             }
 
+    /// Whether a whole-cell store of `newValue` may replace the existing
+    /// `cell`, given that the two occupy exactly the same byte range.
+    ///
+    /// A byte-addressable cell may always be replaced: byte scatter is
+    /// available as an equivalent rendering, so whole-cell replacement is just
+    /// the cheaper spelling of it, and restamping the payload's primitive shape
+    /// over a differently-shaped same-width template is deliberate (the tag is
+    /// part of the value being stored).
+    ///
+    /// A cell that is *not* byte-addressable carries structure with no byte
+    /// rendering at all — a tagged pointer, an object reference, a value type
+    /// containing either. Replacing it with a differently-shaped cell would
+    /// destroy information nothing can reconstruct: a user struct wrapping a
+    /// tagged pointer exactly covers an `IntPtr`-width store, but restamping it
+    /// as a bare numeric cell leaves a later `ldobj` of the wrapper type unable
+    /// to read what was written. Such a store has no representable outcome, so
+    /// it must decline here and fail loud downstream rather than silently
+    /// change shape.
+    let private wholeCellReplacementPreservesShape (cell : CliType) (newValue : CliType) : bool =
+        match CliType.ByteAddressability cell with
+        | CliByteAddressability.ByteAddressable -> true
+        | CliByteAddressability.Rejected _ -> haveSameCliShape cell newValue
+
     /// True when `covering` — the result of a `tryFindCellCovering` at the
     /// destination offset — is a single existing cell that `newValue` replaces
-    /// exactly: same start, same size, same CLI shape, and a shape that cannot
-    /// be rendered as bytes.
+    /// exactly (same start, same size, shape-preserving per
+    /// `wholeCellReplacementPreservesShape`) and which cannot be rendered as
+    /// bytes.
     ///
     /// Such a cell has no byte pattern to scatter over, so byte scatter fails
-    /// loud; but a same-shape exact-width whole-cell replacement is
-    /// well-defined, because the write covers precisely the bytes the old cell
-    /// occupied and leaves a cell that every reader still interprets the same
-    /// way. This is what lets `stack[i] = handle` be followed by
-    /// `stack[i] = IntPtr.Zero`: the second store is byte-addressable and would
-    /// otherwise take the scatter path into a cell that cannot accept it.
+    /// loud; but an exact-width whole-cell replacement is well-defined, because
+    /// the write covers precisely the bytes the old cell occupied. This is what
+    /// lets `stack[i] = handle` be followed by `stack[i] = IntPtr.Zero`: the
+    /// second store is byte-addressable and would otherwise take the scatter
+    /// path into a cell that cannot accept it.
     ///
-    /// Every condition is load-bearing, not defensive:
-    ///
-    ///  - A narrower store (`stind.i1` into a tagged pointer cell) has no
-    ///    representable outcome at all — whole-cell replacement would fabricate
-    ///    the bytes it does not write — and must remain a loud failure.
-    ///  - Differing shapes must decline too. A value type wrapping a tagged
-    ///    pointer is non-byte-addressable and exactly covers the destination,
-    ///    but replacing it with a bare numeric cell would leave a later `ldobj`
-    ///    of the wrapper type unable to read what was written. Declining here
-    ///    keeps that a loud failure rather than a silent shape change.
+    /// The width condition is load-bearing, not defensive: a narrower store
+    /// (`stind.i1` into a tagged pointer cell) has no representable outcome at
+    /// all — whole-cell replacement would fabricate the bytes it does not write
+    /// — and must remain a loud failure.
     let private replacesWholeNonByteAddressableCell
         (covering : (int * CliType) option)
         (byteOffset : int)
@@ -1586,22 +1603,31 @@ module IlMachineManagedByref =
         | Some (cellOffset, cell) ->
             cellOffset = byteOffset
             && CliType.sizeOf cell = CliType.sizeOf newValue
-            && haveSameCliShape cell newValue
+            && wholeCellReplacementPreservesShape cell newValue
             && (
                 match CliType.ByteAddressability cell with
                 | CliByteAddressability.Rejected _ -> true
                 | CliByteAddressability.ByteAddressable -> false
             )
 
+    /// Whether a typed whole-cell store of `newValue` at `byteOffset` is
+    /// observably equivalent to scattering its bytes there: it must replace at
+    /// most one existing cell, exactly and shape-preservingly, and no other
+    /// cell may intersect the destination range.
     let private stackMemoryByteTypedWriteSafe
         (pool : StackMemoryPool)
         (block : StackMemoryBlockId)
         (byteOffset : int)
-        (destSize : int)
+        (newValue : CliType)
         : bool
         =
+        let destSize = CliType.sizeOf newValue
+
         match StackMemoryPool.tryFindCellCovering block byteOffset pool with
-        | Some (cellOffset, cell) -> cellOffset = byteOffset && CliType.sizeOf cell = destSize
+        | Some (cellOffset, cell) ->
+            cellOffset = byteOffset
+            && CliType.sizeOf cell = destSize
+            && wholeCellReplacementPreservesShape cell newValue
         | None ->
             let mutable safe = true
             let mutable i = byteOffset + 1
@@ -1614,15 +1640,21 @@ module IlMachineManagedByref =
 
             safe
 
+    /// Native-heap mirror of `stackMemoryByteTypedWriteSafe`; same contract.
     let private nativeMemoryByteTypedWriteSafe
         (pool : NativeMemoryPool)
         (block : NativeMemoryBlockId)
         (byteOffset : int)
-        (destSize : int)
+        (newValue : CliType)
         : bool
         =
+        let destSize = CliType.sizeOf newValue
+
         match NativeMemoryPool.tryFindCellCovering block byteOffset pool with
-        | Some (cellOffset, cell) -> cellOffset = byteOffset && CliType.sizeOf cell = destSize
+        | Some (cellOffset, cell) ->
+            cellOffset = byteOffset
+            && CliType.sizeOf cell = destSize
+            && wholeCellReplacementPreservesShape cell newValue
         | None ->
             let mutable safe = true
             let mutable i = byteOffset + 1
@@ -1804,9 +1836,7 @@ module IlMachineManagedByref =
         match stackMemoryByteTarget with
         | ValueSome (thread, frame, block, byteOffset) ->
             let pool = IlMachineThreadState.getStackMemoryPool thread frame state
-            let destSize = CliType.sizeOf newValue
-
-            let typedWriteSafe = stackMemoryByteTypedWriteSafe pool block byteOffset destSize
+            let typedWriteSafe = stackMemoryByteTypedWriteSafe pool block byteOffset newValue
 
             if typedWriteSafe then
                 writeRootValue state (ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset)) newValue
@@ -1852,9 +1882,7 @@ module IlMachineManagedByref =
         match nativeMemoryByteTarget with
         | ValueSome (block, byteOffset) ->
             let pool = state.Kernel.NativeMemoryPool
-            let destSize = CliType.sizeOf newValue
-
-            let typedWriteSafe = nativeMemoryByteTypedWriteSafe pool block byteOffset destSize
+            let typedWriteSafe = nativeMemoryByteTypedWriteSafe pool block byteOffset newValue
 
             if typedWriteSafe then
                 writeRootValue state (ByrefRoot.NativeMemoryByte (block, byteOffset)) newValue
@@ -2595,14 +2623,12 @@ module IlMachineManagedByref =
         | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, rootByteOffset), projs) ->
             match byteAddressabilityRejection newValue with
             | Some rejection when isNumericProvenanceRejection rejection ->
-                let destSize = CliType.sizeOf newValue
-
                 let typedWriteSafe =
                     match tryFlatBlockByteOffset baseClassTypes state rootByteOffset projs with
                     | ValueNone -> false
                     | ValueSome byteOffset ->
                         let pool = IlMachineThreadState.getStackMemoryPool thread frame state
-                        stackMemoryByteTypedWriteSafe pool block byteOffset destSize
+                        stackMemoryByteTypedWriteSafe pool block byteOffset newValue
 
                 if typedWriteSafe then
                     writeManagedByrefBytesOrTypedCell baseClassTypes state src newValue
@@ -2613,13 +2639,11 @@ module IlMachineManagedByref =
         | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, rootByteOffset), projs) ->
             match byteAddressabilityRejection newValue with
             | Some rejection when isNumericProvenanceRejection rejection ->
-                let destSize = CliType.sizeOf newValue
-
                 let typedWriteSafe =
                     match tryFlatBlockByteOffset baseClassTypes state rootByteOffset projs with
                     | ValueNone -> false
                     | ValueSome byteOffset ->
-                        nativeMemoryByteTypedWriteSafe state.Kernel.NativeMemoryPool block byteOffset destSize
+                        nativeMemoryByteTypedWriteSafe state.Kernel.NativeMemoryPool block byteOffset newValue
 
                 if typedWriteSafe then
                     writeManagedByrefBytesOrTypedCell baseClassTypes state src newValue
