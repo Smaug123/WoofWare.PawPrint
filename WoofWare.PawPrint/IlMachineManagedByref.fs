@@ -1552,6 +1552,47 @@ module IlMachineManagedByref =
                 ManagedHeap = ManagedHeap.set addr updated state.ManagedHeap
             }
 
+    /// True when `covering` — the result of a `tryFindCellCovering` at the
+    /// destination offset — is a single existing cell that `newValue` replaces
+    /// exactly: same start, same size, same CLI shape, and a shape that cannot
+    /// be rendered as bytes.
+    ///
+    /// Such a cell has no byte pattern to scatter over, so byte scatter fails
+    /// loud; but a same-shape exact-width whole-cell replacement is
+    /// well-defined, because the write covers precisely the bytes the old cell
+    /// occupied and leaves a cell that every reader still interprets the same
+    /// way. This is what lets `stack[i] = handle` be followed by
+    /// `stack[i] = IntPtr.Zero`: the second store is byte-addressable and would
+    /// otherwise take the scatter path into a cell that cannot accept it.
+    ///
+    /// Every condition is load-bearing, not defensive:
+    ///
+    ///  - A narrower store (`stind.i1` into a tagged pointer cell) has no
+    ///    representable outcome at all — whole-cell replacement would fabricate
+    ///    the bytes it does not write — and must remain a loud failure.
+    ///  - Differing shapes must decline too. A value type wrapping a tagged
+    ///    pointer is non-byte-addressable and exactly covers the destination,
+    ///    but replacing it with a bare numeric cell would leave a later `ldobj`
+    ///    of the wrapper type unable to read what was written. Declining here
+    ///    keeps that a loud failure rather than a silent shape change.
+    let private replacesWholeNonByteAddressableCell
+        (covering : (int * CliType) option)
+        (byteOffset : int)
+        (newValue : CliType)
+        : bool
+        =
+        match covering with
+        | None -> false
+        | Some (cellOffset, cell) ->
+            cellOffset = byteOffset
+            && CliType.sizeOf cell = CliType.sizeOf newValue
+            && haveSameCliShape cell newValue
+            && (
+                match CliType.ByteAddressability cell with
+                | CliByteAddressability.Rejected _ -> true
+                | CliByteAddressability.ByteAddressable -> false
+            )
+
     let private stackMemoryByteTypedWriteSafe
         (pool : StackMemoryPool)
         (block : StackMemoryBlockId)
@@ -1724,22 +1765,40 @@ module IlMachineManagedByref =
             | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset), []) ->
                 ValueSome (thread, frame, block, byteOffset)
             | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, rootByteOffset), projs) ->
-                match CliType.ByteAddressability newValue with
-                | CliByteAddressability.ByteAddressable ->
-                    // Byte-addressable byte-view writes follow the existing byte-scatter
-                    // path below to preserve the `Bytes` overlay representation.
-                    ValueNone
-                | CliByteAddressability.Rejected _ ->
-                    // Iterative peel mirrors the read side: a chained
-                    // byte-view (e.g. `[ReinterpretAs S, Field f, ReinterpretAs
-                    // T]`) reduces to a single byte offset over the
-                    // StackMemoryByte root, so the typed-cell fast path can
-                    // preserve the provenance of `newValue` rather than
-                    // hitting byte scatter (which would reject the
-                    // non-byte-addressable payload).
-                    match peelTrailingByteView baseClassTypes state projs with
-                    | ValueSome ([], byteOffset) -> ValueSome (thread, frame, block, rootByteOffset + byteOffset)
-                    | _ -> ValueNone
+                // Iterative peel mirrors the read side: a chained
+                // byte-view (e.g. `[ReinterpretAs S, Field f, ReinterpretAs
+                // T]`) reduces to a single byte offset over the
+                // StackMemoryByte root, so the typed-cell fast path can
+                // preserve the provenance of `newValue` rather than
+                // hitting byte scatter (which would reject the
+                // non-byte-addressable payload).
+                match peelTrailingByteView baseClassTypes state projs with
+                | ValueSome ([], viewByteOffset) ->
+                    let byteOffset = rootByteOffset + viewByteOffset
+
+                    match CliType.ByteAddressability newValue with
+                    | CliByteAddressability.Rejected _ -> ValueSome (thread, frame, block, byteOffset)
+                    | CliByteAddressability.ByteAddressable ->
+                        // Byte-addressable byte-view writes normally follow the
+                        // byte-scatter path below, to preserve the `Bytes`
+                        // overlay representation that gives `stind.i1` its
+                        // partial-cell semantics. The exception is a
+                        // destination that byte scatter cannot represent at
+                        // all: an exact-width cell carrying provenance, which
+                        // this write wholly replaces.
+                        let pool = IlMachineThreadState.getStackMemoryPool thread frame state
+
+                        if
+                            replacesWholeNonByteAddressableCell
+                                (StackMemoryPool.tryFindCellCovering block byteOffset pool)
+                                byteOffset
+                                newValue
+                        then
+                            ValueSome (thread, frame, block, byteOffset)
+                        else
+                            ValueNone
+                | ValueSome _
+                | ValueNone -> ValueNone
             | _ -> ValueNone
 
         match stackMemoryByteTarget with
@@ -1767,12 +1826,27 @@ module IlMachineManagedByref =
             | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, byteOffset), []) ->
                 ValueSome (block, byteOffset)
             | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, rootByteOffset), projs) ->
-                match CliType.ByteAddressability newValue with
-                | CliByteAddressability.ByteAddressable -> ValueNone
-                | CliByteAddressability.Rejected _ ->
-                    match peelTrailingByteView baseClassTypes state projs with
-                    | ValueSome ([], byteOffset) -> ValueSome (block, rootByteOffset + byteOffset)
-                    | _ -> ValueNone
+                match peelTrailingByteView baseClassTypes state projs with
+                | ValueSome ([], viewByteOffset) ->
+                    let byteOffset = rootByteOffset + viewByteOffset
+
+                    match CliType.ByteAddressability newValue with
+                    | CliByteAddressability.Rejected _ -> ValueSome (block, byteOffset)
+                    | CliByteAddressability.ByteAddressable ->
+                        // Exactly the StackMemoryByte reasoning above: byte
+                        // scatter is the norm, except into an exact-width
+                        // provenance-bearing cell it cannot represent.
+                        if
+                            replacesWholeNonByteAddressableCell
+                                (NativeMemoryPool.tryFindCellCovering block byteOffset state.Kernel.NativeMemoryPool)
+                                byteOffset
+                                newValue
+                        then
+                            ValueSome (block, byteOffset)
+                        else
+                            ValueNone
+                | ValueSome _
+                | ValueNone -> ValueNone
             | _ -> ValueNone
 
         match nativeMemoryByteTarget with

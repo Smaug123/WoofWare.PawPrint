@@ -106,6 +106,35 @@ namespace HelloWorldApp
                     NativeMemory.Free (native);
                 }
 
+                // Overwriting a handle slot with an ordinary value. The store
+                // itself is byte-addressable, but its destination is a cell
+                // that carries provenance and therefore has no bytes to
+                // scatter over; the only representable outcome is exact-width
+                // whole-cell replacement. `Span<T>.Clear()` and plain
+                // reassignment both take this path, so it is a routine
+                // sequence rather than an exotic one.
+                stack[0] = IntPtr.Zero;
+
+                if (stack[0] != IntPtr.Zero)
+                {
+                    return 8;
+                }
+
+                if (stack[1] != handle || stack[2] != handle)
+                {
+                    return 9;
+                }
+
+                stack.Clear ();
+
+                for (int i = 0; i < stack.Length; i++)
+                {
+                    if (stack[i] != IntPtr.Zero)
+                    {
+                        return 10;
+                    }
+                }
+
                 return 0;
             }
         }
