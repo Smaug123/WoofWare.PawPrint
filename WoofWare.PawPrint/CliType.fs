@@ -136,6 +136,20 @@ module private ByteAddressabilityClassifier =
         | CliNumericType.Int64 source -> int64Source source
         | CliNumericType.NativeInt source -> nativeIntSource source
 
+/// How CoreCLR's auto layout treats a single field. `MethodTableBuilder` splits fields into
+/// "primitive" ones, bucketed by power-of-two size class, and value-class ones, placed after
+/// every bucket (methodtablebuilder.cpp:4445 draws the split; :8433 and :8500 place the two
+/// groups). The split follows the field's *normalised* metadata element type, so an enum counts
+/// as its underlying integer and `IntPtr`/`UIntPtr` count as `ELEMENT_TYPE_I`; every other value
+/// type is a value class, including single-field BCL wrappers such as `RuntimeTypeHandle`.
+[<RequireQualifiedAccess>]
+type private AutoLayoutFieldClass =
+    /// Occupies one slot of the `1 <<< log2Size` size class. Object references share the
+    /// pointer-sized class with other pointer-sized primitives but are placed at its front.
+    | Primitive of log2Size : int * isObjectReference : bool
+    /// Placed after every size-class bucket, in declaration order.
+    | ValueClass
+
 /// This is the kind of type that can be stored in arguments, local variables, statics, array elements, fields.
 type CliType =
     /// III.1.1.1
@@ -671,6 +685,145 @@ and CliValueType =
             else
                 None
 
+    /// Classify a field for `ComputeAutoLayoutFields`. See `AutoLayoutFieldClass` for the rule
+    /// and for why enums and `IntPtr` land on the primitive side of it.
+    static member private ClassifyForAutoLayout (contents : CliType) : AutoLayoutFieldClass =
+        let asPrimitive (isObjectReference : bool) : AutoLayoutFieldClass =
+            let size = (CliType.SizeOf contents).Size
+
+            let log2Size =
+                match size with
+                | 1 -> 0
+                | 2 -> 1
+                | 4 -> 2
+                | 8 -> 3
+                | other ->
+                    failwith
+                        $"CliValueType.ClassifyForAutoLayout: %O{contents} is a primitive field of %d{other} bytes, but CoreCLR's auto layout only buckets sizes 1, 2, 4 and 8 (MAX_LOG2_PRIMITIVE_FIELD_SIZE = %d{LOG2_NATIVE_INT_SIZE})"
+
+            AutoLayoutFieldClass.Primitive (log2Size, isObjectReference)
+
+        match contents with
+        | CliType.ObjectRef _ -> asPrimitive true
+        | CliType.Bool _
+        | CliType.Char _
+        | CliType.Numeric _
+        | CliType.RuntimePointer _ -> asPrimitive false
+        | CliType.ValueType vt ->
+            match vt.PrimitiveLikeKind with
+            // These two are exactly the value types whose element type CoreCLR normalises to a
+            // primitive: an enum to its underlying integer, `IntPtr`/`UIntPtr` to `ELEMENT_TYPE_I`.
+            // The remaining primitive-like kinds are ordinary single-field structs to the type
+            // loader, so they are value classes here despite flattening on the eval stack.
+            | Some PrimitiveLikeKind.EnumLike
+            | Some PrimitiveLikeKind.FlattenToNativeInt -> asPrimitive false
+            | Some PrimitiveLikeKind.FlattenToObjectRef
+            | Some PrimitiveLikeKind.FlattenToRuntimePointer
+            | Some PrimitiveLikeKind.FlattenToManagedPointer
+            | None -> AutoLayoutFieldClass.ValueClass
+
+    /// Port of CoreCLR's `MethodTableBuilder::HandleAutoLayout` (methodtablebuilder.cpp:8266),
+    /// restricted to the value-type case: no parent instance fields, no 32-bit-only offset bias,
+    /// and no inline-array extension.
+    ///
+    /// CoreCLR routes *every* value type containing GC references through auto layout, whatever
+    /// `LayoutKind` the metadata declares (`PlaceInstanceFields`, methodtablebuilder.cpp:8212),
+    /// which is why this takes no `Layout`: auto layout ignores both `Pack` and an explicit
+    /// `Size`. Bucketing is not cosmetic — a declared-order walk cannot fit `{byte; object; byte}`
+    /// into the 16 bytes CoreCLR gives it, because it has no way to make the two bytes adjacent,
+    /// and the resulting size is visible to `sizeof` and to array element stride.
+    static member private ComputeAutoLayoutFields (fields : CliField list) : CliConcreteField list =
+        let classified =
+            fields
+            |> List.map (fun field -> field, CliValueType.ClassifyForAutoLayout field.Contents)
+
+        // Object references share the pointer-sized class with other pointer-sized primitives,
+        // so they are counted into it here and split back out below.
+        let slotsInClass = Array.zeroCreate<int> (LOG2_NATIVE_INT_SIZE + 1)
+        let mutable objectReferenceCount = 0
+
+        for _, cls in classified do
+            match cls with
+            | AutoLayoutFieldClass.Primitive (log2Size, isObjectReference) ->
+                slotsInClass.[log2Size] <- slotsInClass.[log2Size] + 1
+
+                if isObjectReference then
+                    objectReferenceCount <- objectReferenceCount + 1
+            | AutoLayoutFieldClass.ValueClass -> ()
+
+        // Each size class gets one contiguous region, largest class first.
+        let nextInClass = Array.zeroCreate<int> (LOG2_NATIVE_INT_SIZE + 1)
+        let mutable regionEnd = 0
+
+        for log2Size in LOG2_NATIVE_INT_SIZE .. -1 .. 0 do
+            if slotsInClass.[log2Size] > 0 then
+                let slotSize = 1 <<< log2Size
+                let start = roundUpToAlignment slotSize regionEnd
+                nextInClass.[log2Size] <- start
+                regionEnd <- start + (slotsInClass.[log2Size] * slotSize)
+
+        // Object references take the front of the pointer-sized region; any non-GC pointer-sized
+        // primitives follow them.
+        let mutable nextObjectReference = nextInClass.[LOG2_NATIVE_INT_SIZE]
+
+        nextInClass.[LOG2_NATIVE_INT_SIZE] <-
+            nextInClass.[LOG2_NATIVE_INT_SIZE] + (objectReferenceCount * NATIVE_INT_SIZE)
+
+        // Value-class fields follow every bucket, in declaration order.
+        let mutable nextValueClass = regionEnd
+
+        classified
+        |> List.map (fun (field, cls) ->
+            let size = CliType.SizeOf field.Contents
+
+            let offset =
+                match cls with
+                | AutoLayoutFieldClass.Primitive (_, true) ->
+                    let offset = nextObjectReference
+                    nextObjectReference <- offset + NATIVE_INT_SIZE
+                    offset
+                | AutoLayoutFieldClass.Primitive (log2Size, false) ->
+                    let offset = nextInClass.[log2Size]
+                    nextInClass.[log2Size] <- offset + (1 <<< log2Size)
+                    offset
+                | AutoLayoutFieldClass.ValueClass ->
+                    // A value class that itself contains GC references is placed at pointer
+                    // alignment rather than at its own, possibly wider, alignment
+                    // (methodtablebuilder.cpp:8523). That is what keeps a struct holding both a
+                    // reference and an `Int128` on an 8-byte rather than 16-byte boundary inside
+                    // its enclosing type.
+                    //
+                    // The two arms cannot currently disagree: `SizeOfFieldStorage` reports
+                    // pointer alignment for every GC-containing value type, and no PawPrint value
+                    // type yet demands more than pointer alignment — `Int128`'s 16-byte
+                    // requirement is nominal on the type rather than derived from its two
+                    // `ulong`s, and is a separate gap (parked as `StructLayoutInt128Alignment.cs`).
+                    // Stated explicitly all the same, so that landing that gap does not silently
+                    // start over-aligning by inheriting the wider field's alignment here.
+                    let alignment =
+                        if CliType.ContainsObjectReferences field.Contents then
+                            NATIVE_INT_SIZE
+                        else
+                            size.Alignment
+
+                    let offset = roundUpToAlignment alignment nextValueClass
+                    nextValueClass <- offset + size.Size
+                    offset
+
+            {
+                Id = field.Id
+                Name = field.Name
+                Contents = field.Contents
+                Offset = offset
+                Size = size.Size
+                Alignment = size.Alignment
+                ConfiguredOffset = field.Offset
+                EditedAtTime = 0UL
+                Type = field.Type
+                MarshallingDescriptor = field.MarshallingDescriptor
+            }
+        )
+
     static member private ComputeConcreteFields (layout : Layout) (fields : CliField list) : CliConcreteField list =
         // Minimum size only matters for `sizeof` computation
         let _minimumSize, packingSize =
@@ -684,6 +837,15 @@ and CliValueType =
 
         match seqFields, nonSeqFields with
         | [], [] -> []
+        | _ :: _, [] when
+            seqFields
+            |> List.exists (fun field -> CliType.ContainsObjectReferences field.Contents)
+            ->
+            // A value type containing GC references is laid out by CoreCLR's auto layout even
+            // when the metadata declares `LayoutKind.Sequential`, so declared field order and
+            // any `Pack`/`Size` request are both discarded here. Explicit layout is *not*
+            // switched over, so it falls through to the branch below.
+            CliValueType.ComputeAutoLayoutFields seqFields
         | _ :: _, [] ->
             // Sequential layout: compute offsets respecting alignment
             let _, concreteFields =
@@ -747,32 +909,58 @@ and CliValueType =
                 size, if packing = 0 then DEFAULT_STRUCT_ALIGNMENT else packing
             | Layout.Default -> 0, DEFAULT_STRUCT_ALIGNMENT
 
+        // An empty field list cannot contain references, so this is decided before the GC cases.
         if fields.IsEmpty then
             {
                 Size = minimumSize
                 Alignment = 1
             }
         else
-            let finalOffset, alignment =
-                fields
-                |> List.fold
-                    (fun (maxEnd, maxAlign) field ->
-                        let fieldEnd = field.Offset + field.Size
-                        let alignmentCap = min field.Alignment packingSize
-                        max maxEnd fieldEnd, max maxAlign alignmentCap
-                    )
-                    (0, 0)
 
-            let error = finalOffset % alignment
+        let containsObjectReferences =
+            fields
+            |> List.exists (fun field -> CliType.ContainsObjectReferences field.Contents)
 
-            let size =
-                if error = 0 then
-                    finalOffset
-                else
-                    finalOffset + (alignment - error)
+        let isExplicitLayout =
+            fields |> List.exists (fun field -> field.ConfiguredOffset.IsSome)
 
+        let finalOffset =
+            fields
+            |> List.fold (fun maxEnd field -> max maxEnd (field.Offset + field.Size)) 0
+
+        if containsObjectReferences && not isExplicitLayout then
+            // CoreCLR's auto-layout finalisation for a value class (methodtablebuilder.cpp:8568)
+            // takes `minAlign = containsGCPointers ? TARGET_POINTER_SIZE : largestAlignmentRequirement`
+            // once the type is larger than a pointer, and a type holding a reference always is.
+            // So both the size rounding and the alignment this type presents to an enclosing type
+            // are the pointer size — notably *not* the widest field's alignment, which is what
+            // keeps a struct holding both a reference and an `Int128` from demanding 16-byte
+            // alignment of whatever contains it. `Pack` and `Size` are discarded, as in
+            // `ComputeAutoLayoutFields`.
             {
-                Size = max size minimumSize
+                Size = roundUpToAlignment NATIVE_INT_SIZE finalOffset
+                Alignment = NATIVE_INT_SIZE
+            }
+        else
+
+        let alignment =
+            fields
+            |> List.fold (fun maxAlign field -> max maxAlign (min field.Alignment packingSize)) 0
+
+        // Explicit layout is not switched to auto layout, so an explicit `Size` still applies as a
+        // floor. A GC-containing type nevertheless ends on a pointer boundary, so the floor is
+        // applied first and the pointer rounding second: `[Explicit, Size = 9] { object }` is 16
+        // bytes, while the same `Size = 9` over a `long` field is 9.
+        let withFloor = max (roundUpToAlignment alignment finalOffset) minimumSize
+
+        if containsObjectReferences then
+            {
+                Size = roundUpToAlignment NATIVE_INT_SIZE withFloor
+                Alignment = max alignment NATIVE_INT_SIZE
+            }
+        else
+            {
+                Size = withFloor
                 Alignment = alignment
             }
 

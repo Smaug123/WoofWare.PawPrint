@@ -1419,14 +1419,14 @@ module IlMachineManagedByref =
             let updated =
                 if cellBytes |> Array.forall (fun b -> b = 0uy) then
                     // The slot count the BCL derives is `byteLength / sizeof(IntPtr)`, which
-                    // covers the element exactly only because CoreCLR rounds a GC-containing
-                    // value type up to pointer alignment. PawPrint's layout does not do that,
-                    // so for such a type the count truncates and the tail of the element gets
-                    // no store at all — `Array.Clear` would return having quietly left it set.
-                    // Refuse rather than giving a wrong answer.
+                    // covers the element exactly only because a GC-containing value type ends on
+                    // a pointer boundary. `CliValueType.SizeOfFieldStorage` guarantees that, so
+                    // this should be unreachable; if it ever fires, the element's size is the
+                    // bug and the clear would otherwise truncate, leaving the tail of the
+                    // element quietly set. Refuse rather than giving a wrong answer.
                     if CliType.ContainsObjectReferences existing && cellSize % NATIVE_INT_SIZE <> 0 then
                         failwith
-                            $"TODO: array %O{arr} element %d{cell} contains object references but its %d{cellSize}-byte size is not a multiple of %d{NATIVE_INT_SIZE}; CoreCLR pointer-aligns such a value type (even under `Pack = 1`) and derives its clear length from that, so PawPrint's smaller element would be only partially cleared. Fix the layout in CliValueType.ComputeConcreteFields rather than the clear."
+                            $"array %O{arr} element %d{cell} contains object references but its %d{cellSize}-byte size is not a multiple of %d{NATIVE_INT_SIZE}; such a value type must be sized to a pointer multiple by CliValueType.SizeOfFieldStorage, so its layout is wrong rather than this clear."
 
                     CliType.WithZeroedRangeIfChanged inCellOffset take existing
                 else
