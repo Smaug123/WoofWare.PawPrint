@@ -153,9 +153,6 @@ module TestTaggedPointerBits =
                 }
         }
 
-    type private Arbitraries =
-        static member Scenario () : Arbitrary<Scenario> = Arb.fromGen genScenario
-
     /// FsCheck reports a raised exception as the counterexample's failure, which
     /// keeps the scenario visible without needing labelled properties.
     let private holds (message : string) (condition : bool) : bool =
@@ -164,8 +161,7 @@ module TestTaggedPointerBits =
 
         true
 
-    let private config : Config =
-        Config.QuickThrowOnFailure.WithMaxTest(2000).WithArbitrary [ typeof<Arbitraries> ]
+    let private config : Config = Config.QuickThrowOnFailure.WithMaxTest 2000
 
     [<Test>]
     let ``classification matches the per-bit oracle`` () : unit =
