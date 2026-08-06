@@ -68,6 +68,16 @@ public class OuterMetadataField
     }
 }
 
+public class ReferencesOtherAssemblyMembers
+{
+    // `string.Empty` is a static field on a corelib type, so the reference is a MemberRef row
+    // carrying a FIELD signature blob rather than a METHOD one.
+    public static string FieldMemberRef() => string.Empty;
+
+    // A call to a corelib instance method is a MemberRef row with a METHOD signature blob.
+    public static string MethodMemberRef(int x) => x.ToString();
+}
+
 public class TypesWithMembers
 {
     public int InstanceMethod(int x, string y) => x + y.Length;
@@ -1062,3 +1072,184 @@ public class TypesWithMembers
         // Sanity check: the [Obsolete("deprecated")] blob must contain the literal "deprecated".
         let blobAsString = System.Text.Encoding.UTF8.GetString bytes
         blobAsString.Contains "deprecated" |> shouldEqual true
+
+    let private memberRefToken (handle : MemberReferenceHandle) : int32 =
+        let handle : EntityHandle = MemberReferenceHandle.op_Implicit handle
+        MetadataTokens.GetToken handle
+
+    let private invokeGetMemberRefProps
+        (fixture : MetadataImportFixture)
+        (memberTokenRef : int32)
+        (state : IlMachineState)
+        : EvalStackValue * (int32 * byte array) * IlMachineState
+        =
+        let state, metadataImportType, getMemberRefPropsMethod =
+            metadataImportMethod fixture state "GetMemberRefProps" 3
+
+        let signatureOut, state = allocateConstArrayOut fixture state
+
+        let state =
+            invokeMetadataImportNative
+                fixture
+                metadataImportType
+                getMemberRefPropsMethod
+                [
+                    metadataImportHandle fixture
+                    CliType.Numeric (CliNumericType.Int32 memberTokenRef)
+                    CliType.RuntimePointer (CliRuntimePointer.Managed signatureOut)
+                ]
+                state
+
+        let returnValue, state = IlMachineState.popEvalStack (ThreadId 0) state
+        returnValue, readConstArrayOut fixture state signatureOut, state
+
+    /// The MemberRef row referring to <paramref name="memberName"/>; there must be exactly one.
+    let private singleMemberRefNamed
+        (assembly : DumpedAssembly)
+        (memberName : string)
+        : MemberReferenceHandle * MemberReference<MetadataToken>
+        =
+        assembly.Members
+        |> Seq.filter (fun kvp -> kvp.Value.PrettyName = memberName)
+        |> Seq.map (fun kvp -> kvp.Key, kvp.Value)
+        |> Seq.toList
+        |> function
+            | [ result ] -> result
+            | [] -> failwith $"no MemberRef named %s{memberName}"
+            | many -> failwith $"expected exactly one MemberRef named %s{memberName}, got %d{many.Length}"
+
+    /// ECMA-335 II.23.2 compressed unsigned integer; returns the value and the offset just past it.
+    let private readCompressedUInt (bytes : byte array) (offset : int) : uint32 * int =
+        let b0 = bytes.[offset]
+
+        if b0 &&& 0x80uy = 0uy then
+            uint32 b0, offset + 1
+        elif b0 &&& 0xC0uy = 0x80uy then
+            ((uint32 b0 &&& 0x3Fu) <<< 8) ||| uint32 bytes.[offset + 1], offset + 2
+        else
+            ((uint32 b0 &&& 0x1Fu) <<< 24)
+            ||| (uint32 bytes.[offset + 1] <<< 16)
+            ||| (uint32 bytes.[offset + 2] <<< 8)
+            ||| uint32 bytes.[offset + 3],
+            offset + 4
+
+    [<Test>]
+    let ``MetadataImport GetMemberRefProps returns the signature of a corelib attribute ctor`` () : unit =
+        let fixture = makeFixture ()
+
+        let _, expected =
+            singleCustomAttributeForType fixture.Assembly fixture.ParameterlessAttrType
+
+        // [System.Obsolete] is declared in corelib, so the test assembly refers to its ctor
+        // through a MemberRef rather than a MethodDef. This is exactly the split that makes
+        // CoreLib's MetadataImport.GetMethodSignature dispatch here instead of to
+        // GetSigOfMethodDef (which the sibling MetadataImportGetSigOfMethodDef.cs covers).
+        let ctorToken = MetadataToken.toInt expected.Constructor
+
+        match MetadataToken.ofInt ctorToken with
+        | MetadataToken.MemberReference _ -> ()
+        | other -> failwith $"expected [Obsolete] ctor to be a MemberRef, got %O{other}"
+
+        let returnValue, (length, bytes), _ =
+            invokeGetMemberRefProps fixture ctorToken fixture.State
+
+        returnValue |> shouldEqual (EvalStackValue.Int32 0)
+        // HASTHIS | DEFAULT (0x20), zero parameters, ELEMENT_TYPE_VOID (0x01) return.
+        bytes |> shouldEqual [| 0x20uy ; 0x00uy ; 0x01uy |]
+        length |> shouldEqual bytes.Length
+
+    [<Test>]
+    let ``MetadataImport GetMemberRefProps returns the signature of a ctor with parameters`` () : unit =
+        let fixture = makeFixture ()
+
+        let _, expected =
+            singleCustomAttributeForType fixture.Assembly fixture.ArgumentAttrType
+
+        let ctorToken = MetadataToken.toInt expected.Constructor
+
+        let returnValue, (length, bytes), _ =
+            invokeGetMemberRefProps fixture ctorToken fixture.State
+
+        returnValue |> shouldEqual (EvalStackValue.Int32 0)
+        // HASTHIS | DEFAULT (0x20), one parameter, ELEMENT_TYPE_VOID (0x01) return,
+        // ELEMENT_TYPE_STRING (0x0e) parameter.
+        bytes |> shouldEqual [| 0x20uy ; 0x01uy ; 0x01uy ; 0x0Euy |]
+        length |> shouldEqual bytes.Length
+
+    [<Test>]
+    let ``MetadataImport GetMemberRefProps returns a FIELD signature for a field MemberRef`` () : unit =
+        let fixture = makeFixture ()
+
+        // `string.Empty` — a static field on a corelib type, so its MemberRef carries a FIELD
+        // signature. CoreCLR's callers rely on the leading calling-convention byte to tell
+        // field references apart from method references (RuntimeModule.ResolveMethod rejects
+        // MdSigCallingConvention.Field), so the distinction has to survive this call.
+        let handle, memberRef = singleMemberRefNamed fixture.Assembly "Empty"
+
+        match memberRef.Signature with
+        | MemberSignature.Field _ -> ()
+        | MemberSignature.Method _ -> failwith "expected String.Empty MemberRef to have a field signature"
+
+        let returnValue, (length, bytes), _ =
+            invokeGetMemberRefProps fixture (memberRefToken handle) fixture.State
+
+        returnValue |> shouldEqual (EvalStackValue.Int32 0)
+        // FIELD (0x06), ELEMENT_TYPE_STRING (0x0e).
+        bytes |> shouldEqual [| 0x06uy ; 0x0Euy |]
+        length |> shouldEqual bytes.Length
+
+    [<Test>]
+    let ``MetadataImport GetMemberRefProps blob decodes to the eagerly-parsed signature`` () : unit =
+        let fixture = makeFixture ()
+
+        let members =
+            fixture.Assembly.Members
+            |> Seq.map (fun kvp -> kvp.Key, kvp.Value)
+            |> Seq.toList
+
+        members |> List.isEmpty |> shouldEqual false
+
+        let mutable state = fixture.State
+
+        for handle, memberRef in members do
+            let returnValue, (length, bytes), nextState =
+                invokeGetMemberRefProps fixture (memberRefToken handle) state
+
+            state <- nextState
+
+            returnValue |> shouldEqual (EvalStackValue.Int32 0)
+            length |> shouldEqual bytes.Length
+            bytes.Length > 0 |> shouldEqual true
+
+            // The blob we hand back must agree with the signature PawPrint decoded independently
+            // (via MemberReference.make) when the assembly was read.
+            let header = SignatureHeader bytes.[0]
+
+            match memberRef.Signature with
+            | MemberSignature.Field _ -> header.Kind |> shouldEqual SignatureKind.Field
+            | MemberSignature.Method methodSig ->
+                header.Kind |> shouldEqual SignatureKind.Method
+                bytes.[0] |> shouldEqual methodSig.Header.Get.RawValue
+
+                let offset =
+                    if header.IsGeneric then
+                        let genericParameterCount, offset = readCompressedUInt bytes 1
+                        int genericParameterCount |> shouldEqual methodSig.GenericParameterCount
+                        offset
+                    else
+                        1
+
+                let parameterCount, _ = readCompressedUInt bytes offset
+                int parameterCount |> shouldEqual methodSig.ParameterTypes.Length
+
+    [<Test>]
+    let ``MetadataImport GetMemberRefProps rejects a non-MemberRef token`` () : unit =
+        let fixture = makeFixture ()
+
+        let ex =
+            Assert.Throws (fun () ->
+                invokeGetMemberRefProps fixture (typeDefToken fixture.TargetType.TypeDefHandle) fixture.State
+                |> ignore
+            )
+
+        ex.Message |> shouldContainText "expected MemberRef token"
