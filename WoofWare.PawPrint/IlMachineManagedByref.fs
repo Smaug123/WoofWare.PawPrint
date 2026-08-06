@@ -2447,6 +2447,39 @@ module IlMachineManagedByref =
 
                 writeManagedByrefWithBase baseClassTypes state src newValue
 
+    /// Flatten a `stind` destination over a byte-addressable block root
+    /// (`StackMemoryByte` / `NativeMemoryByte`) to a single byte offset
+    /// relative to the block's origin.
+    ///
+    /// A bare root is already flat. A projected root collapses through
+    /// `peelTrailingByteView`: the canonical shapes are `[ReinterpretAs T]`
+    /// and `[ReinterpretAs T; ByteOffset n]`, which is what a `Span<T>`
+    /// element indexer or `GetPinnableReference` over stackalloc/native
+    /// memory produces, plus the chained forms with interior `Field` steps.
+    /// This is deliberately the same reduction
+    /// `writeManagedByrefBytesOrTypedCell` performs one layer down, so that
+    /// the caller's typed-write-safety test is asked about exactly the byte
+    /// range the eventual write will touch.
+    ///
+    /// `ValueNone` means the chain does not reduce to a single offset (no
+    /// `ReinterpretAs` anchor, or a residual structural prefix left over).
+    /// The caller must then fail loud rather than guess: a provenance-bearing
+    /// payload has no byte pattern, so there is no safe fallback.
+    let private tryFlatBlockByteOffset
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (rootByteOffset : int)
+        (projs : ByrefProjection list)
+        : int voption
+        =
+        match projs with
+        | [] -> ValueSome rootByteOffset
+        | _ ->
+            match peelTrailingByteView (Some baseClassTypes) state projs with
+            | ValueSome ([], viewByteOffset) -> ValueSome (rootByteOffset + viewByteOffset)
+            | ValueSome _
+            | ValueNone -> ValueNone
+
     /// Store the payload of a primitive `stind.*` instruction.
     ///
     /// Byte-addressable values take the byte-scatter path, so `stind.i1` over
@@ -2458,8 +2491,14 @@ module IlMachineManagedByref =
     /// width proves that byte scatter and whole-cell replacement have the same
     /// address range. This intentionally records the payload's primitive shape
     /// when it differs from the previous same-width primitive template: the
-    /// tag is part of the value being stored. Bare `StackMemoryByte` byrefs use
-    /// the same whole-cell test as `writeManagedByrefBytesOrTypedCell`. Same-width
+    /// tag is part of the value being stored. `StackMemoryByte` and
+    /// `NativeMemoryByte` byrefs use the same whole-cell test as
+    /// `writeManagedByrefBytesOrTypedCell`, asked about the flattened
+    /// destination offset (`tryFlatBlockByteOffset`) so that a byte-view
+    /// projection chain — the shape a `Span<T>` element indexer over
+    /// stackalloc/native memory produces — is serviced identically to a bare
+    /// root rather than rejected one layer above the code that can honour it.
+    /// Same-width
     /// byte-renderable stores restamp the cell when the primitive shape differs,
     /// even if the bytes are identical; byte-identical differently-sized stores
     /// preserve the existing cell because restamping would discard bytes outside
@@ -2479,41 +2518,40 @@ module IlMachineManagedByref =
         | ManagedPointerSource.NativeIntPlaceholder bits ->
             failwith
                 $"writeIndirectPrimitiveStore: cannot write through fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
-        | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset), []) ->
+        | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, rootByteOffset), projs) ->
             match byteAddressabilityRejection newValue with
             | Some rejection when isNumericProvenanceRejection rejection ->
-                let pool = IlMachineThreadState.getStackMemoryPool thread frame state
                 let destSize = CliType.sizeOf newValue
 
-                if stackMemoryByteTypedWriteSafe pool block byteOffset destSize then
+                let typedWriteSafe =
+                    match tryFlatBlockByteOffset baseClassTypes state rootByteOffset projs with
+                    | ValueNone -> false
+                    | ValueSome byteOffset ->
+                        let pool = IlMachineThreadState.getStackMemoryPool thread frame state
+                        stackMemoryByteTypedWriteSafe pool block byteOffset destSize
+
+                if typedWriteSafe then
                     writeManagedByrefBytesOrTypedCell baseClassTypes state src newValue
                 else
                     failwith
                         $"TODO: primitive indirect store of %O{newValue} through byte-view byref %O{src} cannot preserve new value's %s{rejection.Description}"
             | _ -> writeManagedByrefBytesOrTypedCell baseClassTypes state src newValue
-        | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte _, _) ->
+        | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, rootByteOffset), projs) ->
             match byteAddressabilityRejection newValue with
             | Some rejection when isNumericProvenanceRejection rejection ->
-                failwith
-                    $"TODO: primitive indirect store of %O{newValue} through byte-view byref %O{src} cannot preserve new value's %s{rejection.Description}"
-            | _ -> writeManagedByrefBytesOrTypedCell baseClassTypes state src newValue
-        | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, byteOffset), []) ->
-            match byteAddressabilityRejection newValue with
-            | Some rejection when isNumericProvenanceRejection rejection ->
-                let pool = state.Kernel.NativeMemoryPool
                 let destSize = CliType.sizeOf newValue
 
-                if nativeMemoryByteTypedWriteSafe pool block byteOffset destSize then
+                let typedWriteSafe =
+                    match tryFlatBlockByteOffset baseClassTypes state rootByteOffset projs with
+                    | ValueNone -> false
+                    | ValueSome byteOffset ->
+                        nativeMemoryByteTypedWriteSafe state.Kernel.NativeMemoryPool block byteOffset destSize
+
+                if typedWriteSafe then
                     writeManagedByrefBytesOrTypedCell baseClassTypes state src newValue
                 else
                     failwith
                         $"TODO: primitive indirect store of %O{newValue} through byte-view byref %O{src} cannot preserve new value's %s{rejection.Description}"
-            | _ -> writeManagedByrefBytesOrTypedCell baseClassTypes state src newValue
-        | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte _, _) ->
-            match byteAddressabilityRejection newValue with
-            | Some rejection when isNumericProvenanceRejection rejection ->
-                failwith
-                    $"TODO: primitive indirect store of %O{newValue} through byte-view byref %O{src} cannot preserve new value's %s{rejection.Description}"
             | _ -> writeManagedByrefBytesOrTypedCell baseClassTypes state src newValue
         | ManagedPointerSource.Null -> failwith "TODO: throw NullReferenceException"
         | ManagedPointerSource.Byref _ ->
