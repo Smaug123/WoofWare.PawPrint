@@ -550,13 +550,7 @@ module EvalStackValue =
             | CliNumericType.Int32 _ ->
                 match popped with
                 | EvalStackValue.Int32 i -> CliType.Numeric (CliNumericType.Int32 i)
-                | EvalStackValue.UserDefinedValueType popped ->
-                    let popped = CliValueType.DereferenceFieldAt 0 4 popped
-                    // TODO: when we have a general mechanism to coerce CliTypes to each other,
-                    // do that
-                    match popped with
-                    | CliType.Numeric (CliNumericType.Int32 i) -> CliType.Numeric (CliNumericType.Int32 i)
-                    | _ -> failwith "TODO"
+                | EvalStackValue.UserDefinedValueType vt -> viewValueTypeAsPrimitive target vt
                 | i -> failwith $"TODO: %O{i}"
             | CliNumericType.Int64 _ ->
                 match popped with
@@ -594,6 +588,7 @@ module EvalStackValue =
                         // is the inverse of `conv.u` from `Int64Source.OpaqueHashBits`.
                         CliType.Numeric (CliNumericType.Int64 (Int64Source.OpaqueHashBits bits))
                 // CliType.Numeric (CliNumericType.TypeHandlePtr f)
+                | EvalStackValue.UserDefinedValueType vt -> viewValueTypeAsPrimitive target vt
                 | i -> failwith $"TODO: %O{i}"
             | CliNumericType.NativeInt _ ->
                 match popped with
@@ -602,9 +597,14 @@ module EvalStackValue =
                     CliNumericType.NativeInt (NativeIntSource.ManagedPointer ptrSrc)
                     |> CliType.Numeric
                 | EvalStackValue.UserDefinedValueType vt ->
+                    // Deliberately *not* `viewValueTypeAsPrimitive`, unlike every other primitive
+                    // width. The native-int slot is the one that carries pointer provenance, so
+                    // the conversions below are lossless where a byte-level reinterpretation could
+                    // not be: `CliType.ToBytes` refuses to express a pointer, a handle or a
+                    // widened native int as bytes, and rightly so. Routing this arm through the
+                    // shared projector would turn those reads into refusals.
                     let popped = CliValueType.DereferenceFieldAt 0 NATIVE_INT_SIZE vt
-                    // TODO: when we have a general mechanism to coerce CliTypes to each other,
-                    // do that
+
                     match popped with
                     | CliType.Numeric (CliNumericType.NativeInt i) -> CliType.Numeric (CliNumericType.NativeInt i)
                     | CliType.Numeric (CliNumericType.Int64 i) ->
@@ -651,26 +651,32 @@ module EvalStackValue =
             | CliNumericType.Int8 _ ->
                 match popped with
                 | EvalStackValue.Int32 i -> CliType.Numeric (CliNumericType.Int8 (i % 256 |> int8))
+                | EvalStackValue.UserDefinedValueType vt -> viewValueTypeAsPrimitive target vt
                 | i -> failwith $"TODO: %O{i}"
             | CliNumericType.Int16 _ ->
                 match popped with
                 | EvalStackValue.Int32 popped -> CliType.Numeric (CliNumericType.Int16 (popped % 65536 |> int16<int>))
+                | EvalStackValue.UserDefinedValueType vt -> viewValueTypeAsPrimitive target vt
                 | _ -> failwith $"TODO: {popped}"
             | CliNumericType.UInt8 _ ->
                 match popped with
                 | EvalStackValue.Int32 i -> CliType.Numeric (CliNumericType.UInt8 (i % 256 |> uint8))
+                | EvalStackValue.UserDefinedValueType vt -> viewValueTypeAsPrimitive target vt
                 | i -> failwith $"todo: {i} to uint8"
             | CliNumericType.UInt16 _ ->
                 match popped with
                 | EvalStackValue.Int32 popped -> CliType.Numeric (CliNumericType.UInt16 (uint16<int32> popped))
+                | EvalStackValue.UserDefinedValueType vt -> viewValueTypeAsPrimitive target vt
                 | i -> failwith $"todo: {i} to uint16"
             | CliNumericType.Float32 _ ->
                 match popped with
                 | EvalStackValue.Float f -> CliType.Numeric (CliNumericType.Float32 (float32<float> f))
+                | EvalStackValue.UserDefinedValueType vt -> viewValueTypeAsPrimitive target vt
                 | i -> failwith $"todo: {i} to float32"
             | CliNumericType.Float64 _ ->
                 match popped with
                 | EvalStackValue.Float f -> CliType.Numeric (CliNumericType.Float64 f)
+                | EvalStackValue.UserDefinedValueType vt -> viewValueTypeAsPrimitive target vt
                 | _ -> failwith $"todo: {popped} to float64"
         | CliType.ObjectRef _ ->
             match popped with
@@ -729,6 +735,7 @@ module EvalStackValue =
                 CliType.Bool (i % 256 |> byte)
             | EvalStackValue.ManagedPointer src ->
                 failwith $"unexpectedly tried to convert a managed pointer (%O{src}) into a bool"
+            | EvalStackValue.UserDefinedValueType vt -> viewValueTypeAsPrimitive target vt
             | i -> failwith $"TODO: %O{i}"
         | CliType.RuntimePointer _ ->
             match popped with
@@ -792,6 +799,7 @@ module EvalStackValue =
                 let high = byte<uint16> (truncated >>> 8)
                 let low = byte<uint16> (truncated &&& 0xFFus)
                 CliType.Char (high, low)
+            | EvalStackValue.UserDefinedValueType vt -> viewValueTypeAsPrimitive target vt
             | popped -> failwith $"Unexpectedly wanted a char from {popped}"
         | CliType.ValueType vt ->
             match popped with
@@ -820,6 +828,63 @@ module EvalStackValue =
                     [ newField ] |> CliValueType.OfFieldsLike vt vt.Layout |> CliType.ValueType
                 else
                     failwith $"TODO: {popped} into value type {target}"
+
+    /// A value type popped into a primitive slot.
+    ///
+    /// Opcodes that name a width (`ldind.<width>`, `ldelem.<width>`, ...) ask for a *view* of
+    /// storage at that width, and a byref to a boxed primitive addresses a value type: `box` of a
+    /// bare primitive stores it inside the boxed type's own single instance field
+    /// (`System.Int64::m_value`, `System.Boolean::m_value`, ...), so the `this` byref the runtime
+    /// synthesises for a virtual call on a boxed receiver points at that wrapper rather than at
+    /// the primitive inside it. Every primitive's instance methods open with
+    /// `ldarg.0; ldind.<width>`, so this is the shape `((object) 1L).ToString()` reaches.
+    ///
+    /// The requested view is the field covering the leading `SizeOf target` bytes, and the
+    /// *target* governs the result's shape: these opcodes reinterpret memory, they do not convert
+    /// values, so an int32 cell read at `ldind.r4` yields the float those bits spell and a
+    /// native-int-backed cell read at `ldind.i8` lands in the int64 slot rather than staying a
+    /// native int. Storage whose flavour already matches the target is handed back as-is, because
+    /// only the cell carries the provenance the byte image cannot (managed pointers, handle-valued
+    /// native ints, widened native ints); everything else goes through the bytes, which refuse
+    /// rather than forge when the value has provenance to lose.
+    ///
+    /// Primitive-like wrappers (IntPtr, RuntimeTypeHandle, enums, ...) never arrive here as
+    /// `popped`: `ofCliType` flattens them on push, and `EvalStack.Push'` enforces that invariant.
+    /// They can still appear *inside* the storage — a `nint` field is stored as the `System.IntPtr`
+    /// wrapper — so nested value types are stepped through rather than flattened to bytes, keeping
+    /// the innermost cell's provenance available to the shape test.
+    and private viewValueTypeAsPrimitive (target : CliType) (popped : CliValueType) : CliType =
+        viewValueTypeAsPrimitiveWithVisited target popped Set.empty
+
+    /// `visited` carries the declared types already stepped through. The CLI forbids a value type
+    /// from containing itself, so a repeat means malformed metadata; crash on it rather than
+    /// unwrap forever. Mirrors `CliType.zeroOfWithVisited`, which guards the same shape of walk.
+    and private viewValueTypeAsPrimitiveWithVisited
+        (target : CliType)
+        (popped : CliValueType)
+        (visited : Set<ConcreteTypeHandle>)
+        : CliType
+        =
+        let size = (CliType.SizeOf target).Size
+
+        if Set.contains popped.Declared visited then
+            failwith
+                $"refusing to view %O{popped.Declared} as a %d{size}-byte value: its storage nests through itself, so unwrapping would not terminate"
+        else
+
+        let visited = Set.add popped.Declared visited
+
+        match CliValueType.DereferenceFieldAt 0 size popped with
+        | CliType.ValueType inner -> viewValueTypeAsPrimitiveWithVisited target inner visited
+        | contents when CliType.ZeroLike contents = CliType.ZeroLike target ->
+            // Already the requested shape, so this cell *is* the view; returning it directly is
+            // what keeps provenance alive across the projection.
+            contents
+        | CliType.ObjectRef _
+        | CliType.RuntimePointer _ ->
+            failwith
+                $"refusing to view the leading %d{size} bytes of %O{popped.Declared} as %O{target}: the storage there is a reference, and reinterpreting it would forge address bits"
+        | contents -> CliType.OfBytesLike target (CliType.ToBytes contents)
 
 type EvalStack =
     {

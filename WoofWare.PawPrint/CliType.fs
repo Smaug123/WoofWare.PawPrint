@@ -947,13 +947,51 @@ and CliValueType =
             failwith
                 $"%s{operation}: byte range [%d{start}, %d{endExclusive}) exceeds %i{length}-byte value type %O{declared}"
 
+    /// The materialised bytes of `[offset, offset + count)`.
+    ///
+    /// Only fields that overlap the requested range are serialised. A disjoint field cannot
+    /// affect these bytes by construction, and may have no byte rendering at all — `CliType.ToBytes`
+    /// refuses to express an object reference or a provenance-carrying native int — so rendering
+    /// the whole value first would make a perfectly answerable slice fail because of a field it
+    /// does not cover. Overlapping fields are replayed in the same `EditedAtTime` order `ToBytes`
+    /// uses, so the two agree byte for byte wherever `ToBytes` succeeds.
     static member BytesAt (offset : int) (count : int) (cvt : CliValueType) : byte[] =
-        let bytes = CliValueType.ToBytes cvt
-        CliValueType.CheckByteRange "CliValueType.BytesAt" offset count bytes.Length cvt._Declared
+        match cvt._Storage with
+        | CliValueTypeStorage.RawBytes bytes ->
+            CliValueType.CheckByteRange "CliValueType.BytesAt" offset count bytes.Length cvt._Declared
 
-        let result : byte[] = Array.zeroCreate count
-        Array.blit bytes offset result 0 count
-        result
+            let result : byte[] = Array.zeroCreate count
+            Array.blit bytes offset result 0 count
+            result
+        | CliValueTypeStorage.Fields storage ->
+            let expectedSize = CliValueType.SizeOf(cvt).Size
+
+            if storage.PreservedBytes.Length <> expectedSize then
+                failwith
+                    $"CliValueType.BytesAt: preserved byte image length %i{storage.PreservedBytes.Length} does not match value type size %i{expectedSize} for %O{cvt._Declared}"
+
+            CliValueType.CheckByteRange "CliValueType.BytesAt" offset count expectedSize cvt._Declared
+
+            let endExclusive = offset + count
+
+            let result : byte[] = Array.zeroCreate count
+            Array.blit storage.PreservedBytes offset result 0 count
+
+            storage.Fields
+            |> List.filter (fun f -> f.Offset < endExclusive && offset < f.Offset + f.Size)
+            |> List.sortBy _.EditedAtTime
+            |> List.iter (fun candidateField ->
+                let fieldBytes : byte[] = CliType.ToBytes candidateField.Contents
+
+                // A field may straddle either end of the slice; copy only the part inside it.
+                for i = max candidateField.Offset offset to (min
+                                                                (candidateField.Offset + candidateField.Size)
+                                                                endExclusive)
+                                                            - 1 do
+                    result.[i - offset] <- fieldBytes.[i - candidateField.Offset]
+            )
+
+            result
 
     /// Return a value with the requested byte range replaced, or `None` if the requested write
     /// would not change the materialised byte image. Returning `None` preserves field provenance
@@ -1259,12 +1297,52 @@ and CliValueType =
         | CliValueTypeStorage.Fields storage -> storage.Fields |> List.filter (fun f -> f.Offset = offset)
 
     static member DereferenceFieldAt (offset : int) (size : int) (cvt : CliValueType) : CliType =
-        let targetField =
-            CliValueType.FieldsAt offset cvt |> List.tryFind (fun f -> f.Size = size)
+        let candidates = CliValueType.FieldsAt offset cvt
 
-        match targetField with
-        | None -> failwith "TODO: couldn't find the field"
-        | Some f -> f.Contents
+        match candidates |> List.tryFind (fun f -> f.Size = size) with
+        | Some targetField ->
+            // Explicit layout can alias the requested range with other fields, and
+            // `WithFieldSetById` deliberately leaves those siblings' `Contents` stale, recording
+            // which write won in `EditedAtTime`. Picking a cell by (offset, size) alone would
+            // therefore hand back a value the storage no longer holds.
+            //
+            // `ToBytes` decides that contest by replaying overlapping fields in `EditedAtTime`
+            // order, so the *last* field in that same order owns every byte it covers. When that
+            // winner spans the requested range exactly, its cell is authoritative and can be
+            // returned directly — which is what keeps provenance the byte image cannot express
+            // (runtime pointers, handle-valued native ints, widened native ints) alive across the
+            // read. Only a winner that partially covers the range genuinely needs the byte image.
+            let targetEnd = targetField.Offset + targetField.Size
+
+            let winner =
+                CliValueType.FieldStorage "CliValueType.DereferenceFieldAt" cvt
+                |> List.filter (fun f -> f.Offset < targetEnd && targetField.Offset < f.Offset + f.Size)
+                // Stable, and keyed exactly as `ToBytes` replays: later writes win, and among
+                // equal timestamps (e.g. a value type nobody has written to yet) the
+                // last-declared field is the one whose bytes land on top.
+                |> List.sortBy _.EditedAtTime
+                |> List.tryLast
+
+            match winner with
+            | Some winner when winner.Offset = targetField.Offset && winner.Size = targetField.Size -> winner.Contents
+            | _ ->
+                let fieldBytes = CliValueType.BytesAt targetField.Offset targetField.Size cvt
+                CliType.OfBytesLike targetField.Contents fieldBytes
+        | None ->
+            // Storage here is field cells, not bytes, so a request that no single field answers
+            // exactly (e.g. viewing `struct { int; int }` as an 8-byte value) has no honest
+            // answer to give: say so rather than splicing one together.
+            let describeCandidates =
+                match candidates with
+                | [] -> "no field starts at that offset"
+                | _ ->
+                    candidates
+                    |> List.map (fun f -> $"%s{f.Name} (%d{f.Size} bytes)")
+                    |> String.concat ", "
+                    |> sprintf "fields starting there: %s"
+
+            failwith
+                $"cannot view %O{cvt._Declared} as a %d{size}-byte value at offset %d{offset}: %s{describeCandidates}"
 
     static member SizeOf (vt : CliValueType) : SizeofResult =
         match vt._Storage with
