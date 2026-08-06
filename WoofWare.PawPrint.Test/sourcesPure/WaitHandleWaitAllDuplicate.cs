@@ -62,6 +62,18 @@ namespace HelloWorldApp
 
                 sem.Release();
 
+                // The zero-timeout path takes a different branch through the
+                // handler and must reject identically: the PAL's duplicate
+                // scan runs before it ever consults the timeout.
+                try
+                {
+                    WaitHandle.WaitAll(new WaitHandle[] { sem, sem }, 0);
+                    return 9;
+                }
+                catch (DuplicateWaitObjectException)
+                {
+                }
+
                 // A three-element array whose duplicate is not adjacent still
                 // has to be caught.
                 try

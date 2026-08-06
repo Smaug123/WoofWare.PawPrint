@@ -1078,32 +1078,58 @@ module WaitHandle =
         | TimedOut of IlMachineState
         | Failed of IlMachineState
 
-    /// Resolve every named handle, in order.
+    /// A multi-wait argument array that has passed validation: every handle
+    /// resolved, and (for a wait-all) proven duplicate-free.
     ///
-    /// Ordering against the duplicate check is load-bearing: the PAL resolves
-    /// the whole array (`ReferenceMultipleObjectsByHandleArray`) *before* it
-    /// scans for duplicates, so an array naming the same stale handle twice is
-    /// an invalid-handle error, not a duplicate one. Doing it the other way
-    /// round would let a use-after-free be reported as
-    /// `DuplicateWaitObjectException` — a wrong diagnosis of a real bug, and
-    /// exactly the kind of masking `lookup`'s loud failure exists to prevent.
-    let private resolveAll
+    /// This exists so the resolve-then-check ordering is structural rather than
+    /// a convention. The two orderings are not interchangeable — the PAL
+    /// resolves the whole array (`ReferenceMultipleObjectsByHandleArray`,
+    /// wait.cpp:404) *before* its duplicate scan (wait.cpp:469), so an array
+    /// naming the same *stale* handle twice is an invalid-handle error, not a
+    /// duplicate one. Checking duplicates first would report a use-after-free
+    /// as `DuplicateWaitObjectException`: a confident wrong diagnosis of a real
+    /// bug, and exactly the masking that `lookup`'s loud failure exists to
+    /// prevent. That inversion was a live bug once already.
+    ///
+    /// Since `validateMultiWait` is the only way to obtain one and
+    /// `tryAcquireMultiple` demands one, no caller can reach the acquisition
+    /// path having skipped or reordered either check.
+    type private ValidatedWait =
+        {
+            /// Each named handle with its state, in the caller's order and
+            /// including any repeats: a wait-any's reported index is a
+            /// position in *this* list.
+            Resolved : (WaitHandleId * WaitHandleState) list
+            WaitAll : bool
+        }
+
+    /// Resolve every named handle, then reject a wait-all naming the same
+    /// object twice (`wait.cpp`'s brute-force duplicate scan, which sets
+    /// `ERROR_INVALID_PARAMETER`). Duplicates are legal for a wait-any.
+    ///
+    /// `None` is the duplicate rejection. A stale handle does not return `None`
+    /// — it fails loud inside `lookup`, which is the whole point of doing this
+    /// in one function rather than two.
+    let private validateMultiWait
         (handles : WaitHandleId list)
+        (waitAll : bool)
         (state : IlMachineState)
-        : (WaitHandleId * WaitHandleState) list
+        : ValidatedWait option
         =
-        handles |> List.map (fun handle -> handle, lookup handle state)
+        let resolved = handles |> List.map (fun handle -> handle, lookup handle state)
 
-    /// The PAL rejects a wait-all naming the same object twice
-    /// (`wait.cpp`'s brute-force duplicate scan sets `ERROR_INVALID_PARAMETER`
-    /// and returns `WAIT_FAILED`). Duplicates are legal for a wait-any.
-    let private hasIllegalDuplicates (handles : WaitHandleId list) (waitAll : bool) : bool =
-        waitAll && List.length (List.distinct handles) <> List.length handles
+        if waitAll && List.length (List.distinct handles) <> List.length handles then
+            None
+        else
+            Some
+                {
+                    Resolved = resolved
+                    WaitAll = waitAll
+                }
 
-    /// Shared front half of both multi-wait entry points: validate, then try
-    /// to satisfy the wait without blocking. Returns the outcome plus, when it
-    /// could not be satisfied, `None` so the caller decides between parking
-    /// and timing out.
+    /// Try to satisfy a validated wait without blocking. `None` means it could
+    /// not be satisfied, leaving the caller to choose between parking and
+    /// timing out.
     ///
     /// Wait-any scans in index order and stops at the first acquirable handle,
     /// so the reported index is the smallest signalled one. Wait-all requires
@@ -1112,14 +1138,14 @@ module WaitHandle =
     /// leaves every handle untouched.
     let private tryAcquireMultiple
         (thread : ThreadId)
-        (handles : WaitHandleId list)
-        (waitAll : bool)
+        (validated : ValidatedWait)
         (state : IlMachineState)
         : (int * bool * IlMachineState) option
         =
-        let resolved = resolveAll handles state
+        let resolved = validated.Resolved
+        let handles = resolved |> List.map fst
 
-        if waitAll then
+        if validated.WaitAll then
             if resolved |> List.forall (fun (_, handle) -> isAcquirable thread handle) then
                 let state, abandoned =
                     handles
@@ -1154,15 +1180,11 @@ module WaitHandle =
         (state : IlMachineState)
         : MultiTryWaitOutcome
         =
-        // Resolve first: a stale handle is an invalid-handle bug even when it
-        // also happens to be duplicated. See `resolveAll`.
-        resolveAll handles state |> ignore
+        match validateMultiWait handles waitAll state with
+        | None -> MultiTryWaitOutcome.Failed state
+        | Some validated ->
 
-        if hasIllegalDuplicates handles waitAll then
-            MultiTryWaitOutcome.Failed state
-        else
-
-        match tryAcquireMultiple thread handles waitAll state with
+        match tryAcquireMultiple thread validated state with
         | Some (index, abandoned, state) -> MultiTryWaitOutcome.Acquired (index, abandoned, state)
         | None -> MultiTryWaitOutcome.TimedOut state
 
@@ -1190,15 +1212,11 @@ module WaitHandle =
         (state : IlMachineState)
         : MultiWaitOutcome
         =
-        // Resolve first: a stale handle is an invalid-handle bug even when it
-        // also happens to be duplicated. See `resolveAll`.
-        resolveAll handles state |> ignore
+        match validateMultiWait handles waitAll state with
+        | None -> MultiWaitOutcome.Failed state
+        | Some validated ->
 
-        if hasIllegalDuplicates handles waitAll then
-            MultiWaitOutcome.Failed state
-        else
-
-        match tryAcquireMultiple thread handles waitAll state with
+        match tryAcquireMultiple thread validated state with
         | Some (index, abandoned, state) -> MultiWaitOutcome.Acquired (index, abandoned, state)
         | None ->
             let state =

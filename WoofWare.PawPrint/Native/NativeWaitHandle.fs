@@ -50,9 +50,14 @@ module NativeWaitHandle =
 
     /// `ERROR_INVALID_PARAMETER = 87`. The Win32 error the PAL sets when a
     /// wait-all names the same handle twice (`wait.cpp`'s duplicate scan).
+    ///
     /// The QCall converts it into a `DuplicateWaitObjectException` rather than
-    /// returning, but the error is still set, so a guest that reads
-    /// `Marshal.GetLastPInvokeError` after catching sees what Win32 would.
+    /// returning, so the LibraryImport stub's last-error copy never runs and
+    /// `Marshal.GetLastPInvokeError` is *not* updated — unlike the
+    /// return-a-BOOL entry points above. We still set the kernel slot, because
+    /// the PAL genuinely sets it before returning `WAIT_FAILED` and
+    /// `Marshal.GetLastSystemError` reads that slot directly, so a guest can
+    /// observe it after catching.
     let private errorInvalidParameter : int = 87
 
     /// The Win32 wait return codes live on `WaitHandle` rather than here:
