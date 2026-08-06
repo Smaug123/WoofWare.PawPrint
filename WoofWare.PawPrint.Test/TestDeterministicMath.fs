@@ -262,6 +262,7 @@ module TestDeterministicMath =
     /// rather than values so that the signs of zero, and the distinction between the two
     /// NaN payloads, are actually asserted.
     let private specialCases : (float * float * uint64) list =
+        let ofBits (bits : uint64) : float = BitConverter.UInt64BitsToDouble bits
         let positiveNaN = 0x7FF8000000000000UL
         // `Double.NaN` in .NET is the *negative* quiet NaN.
         let negativeNaN = 0xFFF8000000000000UL
@@ -287,6 +288,21 @@ module TestDeterministicMath =
             nan, 2.0, negativeNaN
             2.0, nan, negativeNaN
             -1.0, nan, negativeNaN
+            // A quiet NaN's payload survives unchanged.
+            ofBits 0x7FF8000000000123UL, 2.0, 0x7FF8000000000123UL
+            2.0, ofBits 0x7FF8000000000123UL, 0x7FF8000000000123UL
+            ofBits 0xFFF8000000000123UL, 2.0, 0xFFF8000000000123UL
+            // A *signaling* NaN must come back quieted -- IEEE 754 requires an operation
+            // handed one to raise invalid-operation and deliver a quiet NaN -- but with its
+            // sign and payload otherwise intact. Simply returning the operand unchanged is
+            // observably wrong, and is what this arm originally did.
+            ofBits 0x7FF0000000000123UL, 2.0, 0x7FF8000000000123UL
+            2.0, ofBits 0x7FF0000000000123UL, 0x7FF8000000000123UL
+            ofBits 0xFFF0000000000123UL, 2.0, 0xFFF8000000000123UL
+            ofBits 0x7FF0000000000001UL, 2.0, 0x7FF8000000000001UL
+            // ...and the two overrides still beat a signaling NaN.
+            ofBits 0x7FF0000000000123UL, 0.0, one
+            1.0, ofBits 0x7FF0000000000123UL, one
             // A negative base with a non-integer exponent is a domain error.
             -2.0, 0.5, positiveNaN
             -2.0, 1.5, positiveNaN

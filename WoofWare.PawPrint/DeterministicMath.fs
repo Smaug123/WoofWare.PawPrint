@@ -256,6 +256,16 @@ module DeterministicMath =
     /// recommendation, and the one Arm produces.
     let private quietNaN : float = BitConverter.UInt64BitsToDouble 0x7FF8000000000000UL
 
+    /// A NaN operand may not simply be handed back: IEEE 754 requires an operation given a
+    /// *signaling* NaN to raise the invalid-operation exception and deliver a quiet one, so
+    /// the result must have the quiet bit set with the sign and payload otherwise preserved.
+    /// The platform libm CoreCLR calls does exactly this, and unlike the choice of payload
+    /// for a freshly generated NaN it does not vary between platforms, so matching it costs
+    /// nothing in determinism. Setting the quiet bit cannot turn a NaN into an infinity: the
+    /// remaining payload bits are what made it a NaN, and they are untouched.
+    let private quieted (x : float) : float =
+        BitConverter.UInt64BitsToDouble (BitConverter.DoubleToUInt64Bits x ||| 0x0008000000000000UL)
+
     /// The largest integer exponent handled by exact integer exponentiation. Chosen so
     /// that the intermediate `BigInteger` stays under about 54 000 bits.
     let private maxExactPower = 1024
@@ -297,9 +307,9 @@ module DeterministicMath =
             // Including y = NaN.
             1.0
         elif Double.IsNaN x then
-            x
+            quieted x
         elif Double.IsNaN y then
-            y
+            quieted y
         else
 
         let yKind = classifyInteger y
