@@ -11,8 +11,28 @@ namespace WoofWare.PawPrint
 /// every Kernel32 LibraryImport therefore routes to the runtime as a
 /// QCall whose entry point uses the Win32 wide-string name. PawPrint
 /// reproduces the observable semantics through `WaitHandleState`
-/// (registry value, kind-tagged) and one `ThreadStatus` case
-/// (`BlockedOnWaitHandle`).
+/// (registry value, kind-tagged) and two `ThreadStatus` cases
+/// (`BlockedOnWaitHandle`, `BlockedOnWaitHandles`).
+///
+/// Multi-handle waits (`WaitHandle.WaitAny` / `WaitAll`, through the
+/// `WaitHandle_WaitMultipleIgnoringSyncContext` QCall) share the same
+/// registry and queues. Three things distinguish them:
+///
+///  - A waiter is queued on *every* handle it names, so the wake path is a
+///    walk (`tryGrantOne`) rather than a pop: the head-most *satisfiable*
+///    entry wins, and a wait-all entry that is unacquirable on one of its
+///    other handles is skipped and left queued. That mirrors the PAL's
+///    waiting-thread walk, and weakens the per-kind queue invariants — see
+///    the notes on `SemaphoreState` / `MutexState` / `EventState`.
+///  - Signalling is expressed as "make the resource available, then drain
+///    the queue" rather than as a bespoke handoff per kind, so `Count`,
+///    ownership and `Signaled` are the only things the three release paths
+///    differ in. Direct handoff survives because nothing runs between the
+///    two steps.
+///  - The value the guest sees is materialised at wake time, not park time:
+///    a wait-any returns `WAIT_OBJECT_0 + index`, which is unknowable until
+///    some handle satisfies it. `grantTo` rewrites the optimistic slot, the
+///    same mechanism the timeout path already used.
 ///
 /// Three kinds are supported today: semaphore (`Count`-based), mutex
 /// (ownership-based, re-entrant on owner, abandoned-flag-aware), and
@@ -276,6 +296,285 @@ module WaitHandle =
             )
 
         id, state
+
+    /// `WAIT_OBJECT_0 = 0`. The Win32 return code for a successful wait — the
+    /// wait acquired its target object. Matches `WaitHandle.WaitSuccess` in
+    /// the BCL. A multi-handle wait-any returns this *plus* the index of the
+    /// handle that satisfied it.
+    let waitObjectZero : int = 0
+
+    /// `WAIT_ABANDONED_0 = 0x80`. The wait acquired its target mutex, but the
+    /// previous owner terminated without calling `ReleaseMutex`. The BCL
+    /// translates this into `AbandonedMutexException`; a multi-handle wait-any
+    /// adds the satisfying handle's index, and `WaitHandle.WaitMultiple` uses
+    /// the `[WaitAbandoned, WaitAbandoned + count)` range to recover it.
+    let waitAbandoned : int = 0x80
+
+    /// `WAIT_TIMEOUT = 0x102`. The wait did not acquire its target before the
+    /// timeout expired. `WaitHandle.WaitOne(int)` compares the return against
+    /// `WaitHandle.WaitTimeout = 0x102` to decide what to hand the guest.
+    let waitTimeout : int = 0x102
+
+    /// `WAIT_FAILED = -1` (Win32 `0xFFFFFFFF`). The PAL returns this, with
+    /// `ERROR_INVALID_PARAMETER`, for a wait-all naming the same handle twice.
+    let waitFailed : int = -1
+
+    /// The wait queue of a handle, independent of its kind. All three kinds
+    /// carry the same `ThreadId list` with the same FIFO discipline, so the
+    /// wake walk can be written once rather than three times.
+    let private waitQueueOf (handle : WaitHandleState) : ThreadId list =
+        match handle with
+        | WaitHandleState.Semaphore s -> s.WaitQueue
+        | WaitHandleState.Mutex m -> m.WaitQueue
+        | WaitHandleState.Event e -> e.WaitQueue
+
+    let private withWaitQueue (queue : ThreadId list) (handle : WaitHandleState) : WaitHandleState =
+        match handle with
+        | WaitHandleState.Semaphore s ->
+            WaitHandleState.Semaphore
+                { s with
+                    WaitQueue = queue
+                }
+        | WaitHandleState.Mutex m ->
+            WaitHandleState.Mutex
+                { m with
+                    WaitQueue = queue
+                }
+        | WaitHandleState.Event e ->
+            WaitHandleState.Event
+                { e with
+                    WaitQueue = queue
+                }
+
+    /// Whether `thread` could take `handle` right now without blocking. This
+    /// is the PAL's `CanThreadWaitWithoutBlocking`, and is the single
+    /// definition consulted by every fast path, by the wake walk's
+    /// satisfiability test, and by the wait-all "is the rest of the wait
+    /// satisfied" check. Keeping one definition is what stops those three from
+    /// drifting apart.
+    ///
+    /// `thread` matters only for mutexes, which are re-entrant on their owner.
+    let private isAcquirable (thread : ThreadId) (handle : WaitHandleState) : bool =
+        match handle with
+        | WaitHandleState.Semaphore semaphore -> semaphore.Count > 0
+        | WaitHandleState.Mutex mutex ->
+            match mutex.Ownership with
+            | MutexOwnership.Free _ -> true
+            | MutexOwnership.Held (owner, _) -> owner = thread
+        | WaitHandleState.Event event -> event.Signaled
+
+    /// Consume `handle` on behalf of `thread`, returning the updated handle
+    /// and whether the acquisition observed an abandoned mutex (which the
+    /// caller reports as `WAIT_ABANDONED`, clearing the sticky flag).
+    ///
+    /// Precondition: `isAcquirable thread handle`. Violating it is an
+    /// interpreter bug, not a guest one, so it fails loud rather than
+    /// returning an outcome.
+    let private acquireFor (thread : ThreadId) (handle : WaitHandleState) : WaitHandleState * bool =
+        match handle with
+        | WaitHandleState.Semaphore semaphore ->
+            if semaphore.Count <= 0 then
+                failwith
+                    $"WaitHandle.acquireFor: semaphore count is %d{semaphore.Count}; caller must check isAcquirable first."
+
+            WaitHandleState.Semaphore
+                { semaphore with
+                    Count = semaphore.Count - 1
+                },
+            false
+        | WaitHandleState.Mutex mutex ->
+            match mutex.Ownership with
+            | MutexOwnership.Free wasAbandoned ->
+                WaitHandleState.Mutex
+                    { mutex with
+                        Ownership = MutexOwnership.Held (thread, 1)
+                    },
+                wasAbandoned
+            | MutexOwnership.Held (owner, recursionCount) when owner = thread ->
+                WaitHandleState.Mutex
+                    { mutex with
+                        Ownership = MutexOwnership.Held (owner, recursionCount + 1)
+                    },
+                false
+            | MutexOwnership.Held (owner, _) ->
+                failwith
+                    $"WaitHandle.acquireFor: mutex is held by thread %O{owner}, not %O{thread}; caller must check isAcquirable first."
+        | WaitHandleState.Event event ->
+            if not event.Signaled then
+                failwith "WaitHandle.acquireFor: event is not signalled; caller must check isAcquirable first."
+
+            match event.Mode with
+            | EventResetMode.Auto ->
+                WaitHandleState.Event
+                    { event with
+                        Signaled = false
+                    },
+                false
+            // A Manual event stays signalled: every concurrent waiter passes
+            // through until an explicit `ResetEvent`.
+            | EventResetMode.Manual -> WaitHandleState.Event event, false
+
+    /// What a queued thread is waiting for, recovered from its status. A
+    /// thread sitting in a handle's `WaitQueue` under any other status is a
+    /// structural invariant violation rather than a guest bug.
+    [<RequireQualifiedAccess>]
+    type private WaitRegistration =
+        | Single of WaitHandleId
+        | Multiple of handles : WaitHandleId list * waitAll : bool
+
+    let private registrationOf (thread : ThreadId) (id : WaitHandleId) (state : IlMachineState) : WaitRegistration =
+        match state.ThreadState.[thread].Status with
+        | ThreadStatus.BlockedOnWaitHandle (handle, _) -> WaitRegistration.Single handle
+        | ThreadStatus.BlockedOnWaitHandles (handles, waitAll, _) -> WaitRegistration.Multiple (handles, waitAll)
+        | other ->
+            failwith
+                $"WaitHandle: thread %O{thread} sits in wait handle %O{id}'s WaitQueue but its status is %O{other}; a queued thread must be blocked on a wait handle."
+
+    /// Every handle a registration names, without repeats. A wait-any array
+    /// may name the same handle twice (legal on Win32); the thread is enqueued
+    /// once per distinct handle, and the reported index comes from the
+    /// registration's list rather than from queue membership.
+    let private registeredHandles (id : WaitHandleId) (registration : WaitRegistration) : WaitHandleId list =
+        match registration with
+        | WaitRegistration.Single handle -> [ handle ]
+        | WaitRegistration.Multiple (handles, _) ->
+            ignore id
+            List.distinct handles
+
+    /// The handles a grant must actually consume. A wait-all consumes all of
+    /// them atomically; a wait-any consumes only the one that satisfied it.
+    let private handlesToConsume (id : WaitHandleId) (registration : WaitRegistration) : WaitHandleId list =
+        match registration with
+        | WaitRegistration.Single handle -> [ handle ]
+        | WaitRegistration.Multiple (handles, true) -> List.distinct handles
+        | WaitRegistration.Multiple (_, false) -> [ id ]
+
+    /// Whether granting `id` to `thread` would satisfy its whole wait.
+    ///
+    /// Single-handle and wait-any registrations are satisfied by definition
+    /// once `id` itself is acquirable. A wait-all additionally requires every
+    /// *other* named handle to be acquirable at this instant — the PAL's
+    /// `IsRestOfWaitAllSatisfied`.
+    let private waitIsSatisfied
+        (thread : ThreadId)
+        (id : WaitHandleId)
+        (registration : WaitRegistration)
+        (state : IlMachineState)
+        : bool
+        =
+        match registration with
+        | WaitRegistration.Single _
+        | WaitRegistration.Multiple (_, false) -> true
+        | WaitRegistration.Multiple (handles, true) ->
+            handles
+            |> List.forall (fun handle -> handle = id || isAcquirable thread (lookup handle state))
+
+    /// Rewrite the top of `thread`'s eval stack — the optimistic
+    /// `WAIT_OBJECT_0` its park-time push installed — to `value`.
+    ///
+    /// Pop-then-push rather than peek-and-mutate because the eval stack
+    /// surface only exposes those primitives; the net stack depth is
+    /// unchanged, just the top value. Shared by the multi-wait signal wake and
+    /// by every timeout fire.
+    let private rewriteWaitResult (thread : ThreadId) (value : int) (state : IlMachineState) : IlMachineState =
+        let _, state = IlMachineState.popEvalStack thread state
+        IlMachineState.pushToEvalStack' (EvalStackValue.Int32 value) thread state
+
+    /// Hand `id` (and, for a wait-all, every other handle it names) to
+    /// `thread`, dequeue it from every handle it was registered on, publish
+    /// the value the guest will see, and flip it back to `Runnable`.
+    ///
+    /// Precondition: `waitIsSatisfied` held for this thread against the
+    /// current state.
+    let private grantTo (thread : ThreadId) (id : WaitHandleId) (state : IlMachineState) : IlMachineState =
+        let registration = registrationOf thread id state
+
+        let state, abandoned =
+            handlesToConsume id registration
+            |> List.fold
+                (fun (state, abandoned) handle ->
+                    let acquired, wasAbandoned = acquireFor thread (lookup handle state)
+                    writeHandle handle acquired state, abandoned || wasAbandoned
+                )
+                (state, false)
+
+        let state =
+            registeredHandles id registration
+            |> List.fold
+                (fun state handle ->
+                    let current = lookup handle state
+
+                    let dequeued = waitQueueOf current |> List.filter (fun queued -> queued <> thread)
+
+                    writeHandle handle (withWaitQueue dequeued current) state
+                )
+                state
+
+        // A single-handle waiter's `WAIT_OBJECT_0` was already pushed at park
+        // time and is still correct, so its slot is left untouched (this is
+        // what keeps single-handle wake behaviour byte-identical). A
+        // multi-handle waiter's result is only known now: wait-any reports the
+        // index of the handle that satisfied it, wait-all reports none because
+        // the OS cannot say which of them was abandoned.
+        let state =
+            match registration with
+            | WaitRegistration.Single _ -> state
+            | WaitRegistration.Multiple (handles, waitAll) ->
+                let baseCode = if abandoned then waitAbandoned else waitObjectZero
+
+                let result =
+                    if waitAll then
+                        baseCode
+                    else
+                        match List.tryFindIndex (fun handle -> handle = id) handles with
+                        | Some index -> baseCode + index
+                        | None ->
+                            failwith
+                                $"WaitHandle.grantTo: thread %O{thread} was granted handle %O{id}, which its registration %A{handles} does not name."
+
+                rewriteWaitResult thread result state
+
+        Scheduler.setThreadStatus thread ThreadStatus.Runnable state
+
+    /// Hand `id` to the head-most waiter its current state can satisfy, if
+    /// any. Returns `None` — leaving the state untouched — when no queued
+    /// waiter can be satisfied.
+    ///
+    /// Walk-and-skip, not pop-the-head: a wait-all waiter that is not
+    /// currently satisfiable is passed over and a later waiter may be granted
+    /// instead, which is what the PAL's waiting-thread walk does
+    /// (`synchcontrollers.cpp` consults `IsRestOfWaitAllSatisfied` and
+    /// `continue`s past a node it cannot satisfy, leaving it registered).
+    /// Insertion-side ordering still carries the fairness discipline — `waitOne`
+    /// appends to the tail for FIFO, `waitOnePrioritized` prepends for LIFO —
+    /// and this walk preserves it among satisfiable entries.
+    ///
+    /// `id` not being acquirable at all short-circuits the walk: no waiter can
+    /// be satisfied by a handle that has nothing to give.
+    let private tryGrantOne (id : WaitHandleId) (state : IlMachineState) : IlMachineState option =
+        let handle = lookup id state
+
+        let candidate =
+            waitQueueOf handle
+            |> List.tryFind (fun thread ->
+                isAcquirable thread handle
+                && waitIsSatisfied thread id (registrationOf thread id state) state
+            )
+
+        candidate |> Option.map (fun thread -> grantTo thread id state)
+
+    /// Repeatedly grant `id` until no queued waiter can be satisfied.
+    ///
+    /// Every grant consumes something from `id` (a semaphore unit, the mutex's
+    /// ownership, an auto-event's signal) or dequeues a waiter from a manual
+    /// event, so the loop always makes progress and terminates.
+    let private drainGrants (id : WaitHandleId) (state : IlMachineState) : IlMachineState =
+        let rec loop (state : IlMachineState) : IlMachineState =
+            match tryGrantOne id state with
+            | None -> state
+            | Some state -> loop state
+
+        loop state
 
     /// Internal: kind-private semaphore waitOne. Used by the kind
     /// dispatcher in `waitOne` and the property tests that exercise the
@@ -626,34 +925,31 @@ module WaitHandle =
             let attemptedTotal = int64 previousCount + int64 releaseCount
             Error (ReleaseFailure.WouldExceedMaximum (attemptedTotal, semaphore.Maximum)), state
         else
-            // Direct-handoff: each wake consumes one of the new units.
-            // The wake step always pops from the head of `WaitQueue`;
-            // ordering discipline lives at insertion time (`waitOne`
-            // appends to the tail for FIFO; `waitOnePrioritized`
-            // prepends to the head for LIFO over prioritized waiters,
-            // matching `PAL_WaitForSingleObjectPrioritized`). The
-            // LowLevelLifoSemaphore fairness contract that
-            // PortableThreadPool depends on is delivered through that
-            // insertion-side asymmetry, not by changing this wake step.
-            let toWake = min releaseCount (List.length semaphore.WaitQueue)
-            let wakers, remainingQueue = List.splitAt toWake semaphore.WaitQueue
-            // Now safe: the guard above ensures `previousCount +
+            // Publish the new units, then hand them out. Expressing the
+            // release this way — make the resource available, then drain the
+            // queue — rather than as "pop N heads and skip Count entirely"
+            // keeps direct handoff intact (a granted unit never lingers in
+            // `Count` where a fresh waiter could steal it, because nothing
+            // else runs between the two steps) while giving multi-handle
+            // waiters a single place to be considered.
+            //
+            // Ordering discipline still lives at insertion time (`waitOne`
+            // appends to the tail for FIFO; `waitOnePrioritized` prepends to
+            // the head for LIFO over prioritized waiters, matching
+            // `PAL_WaitForSingleObjectPrioritized`). The
+            // LowLevelLifoSemaphore fairness contract that PortableThreadPool
+            // depends on is delivered through that insertion-side asymmetry,
+            // which `tryGrantOne`'s head-to-tail walk preserves.
+            //
+            // The add is safe: the guard above ensures `previousCount +
             // releaseCount ≤ Maximum`, so the int32 add cannot overflow.
-            let newCount = previousCount + releaseCount - toWake
-
             let semaphore =
                 { semaphore with
-                    Count = newCount
-                    WaitQueue = remainingQueue
+                    Count = previousCount + releaseCount
                 }
 
             let state =
-                state
-                |> writeHandle id (WaitHandleState.Semaphore semaphore)
-                |> (fun s ->
-                    wakers
-                    |> List.fold (fun acc tid -> Scheduler.setThreadStatus tid ThreadStatus.Runnable acc) s
-                )
+                state |> writeHandle id (WaitHandleState.Semaphore semaphore) |> drainGrants id
 
             Ok previousCount, state
 
@@ -690,40 +986,37 @@ module WaitHandle =
 
             Ok (), writeHandle id (WaitHandleState.Mutex mutex) state
         | MutexOwnership.Held (_, _) ->
-            // Outermost release: either mark free, or direct-handoff to
-            // the FIFO head of the wait queue.
-            match mutex.WaitQueue with
-            | [] ->
-                let mutex =
-                    { mutex with
-                        Ownership = MutexOwnership.Free false
-                    }
+            // Outermost release: mark free, then hand ownership to the
+            // head-most satisfiable waiter. Absent multi-handle waiters this
+            // is exactly the previous direct-handoff behaviour — the mutex is
+            // only observably `Free` with a non-empty queue when every queued
+            // entry is a wait-all waiter blocked on some other handle, which
+            // is the case that has no waiter to hand ownership to.
+            let mutex =
+                { mutex with
+                    Ownership = MutexOwnership.Free false
+                }
 
-                Ok (), writeHandle id (WaitHandleState.Mutex mutex) state
-            | head :: rest ->
-                let mutex =
-                    { mutex with
-                        Ownership = MutexOwnership.Held (head, 1)
-                        WaitQueue = rest
-                    }
+            let state = state |> writeHandle id (WaitHandleState.Mutex mutex) |> drainGrants id
 
-                let state =
-                    state
-                    |> writeHandle id (WaitHandleState.Mutex mutex)
-                    |> Scheduler.setThreadStatus head ThreadStatus.Runnable
+            Ok (), state
 
-                Ok (), state
-
-    /// Signal an event. Behaviour depends on `Mode`:
+    /// Signal an event, then hand the signal out. Both modes set `Signaled =
+    /// true` first and then drain the wait queue; the modes differ only in
+    /// what acquiring costs, which `acquireFor` already encodes:
     ///
-    ///  - `Manual`: wake every parked waiter and set `Signaled = true`,
-    ///    so further waiters that arrive before a `ResetEvent` pass
-    ///    through immediately. The invariant `Signaled ⇒ WaitQueue = []`
-    ///    is preserved because we clear the queue as we wake.
-    ///  - `Auto`: if any waiter is parked, hand the signal directly to
-    ///    the FIFO head — wake exactly that thread and leave `Signaled =
-    ///    false`. If no waiter is parked, set `Signaled = true`; the next
-    ///    `WaitOne` will consume the signal as part of acquiring.
+    ///  - `Manual`: acquiring does not consume the signal, so the drain wakes
+    ///    every satisfiable waiter and the event stays signalled — further
+    ///    waiters arriving before a `ResetEvent` pass straight through.
+    ///  - `Auto`: acquiring consumes the signal, so the drain grants at most
+    ///    one waiter and leaves `Signaled = false`. With no satisfiable waiter
+    ///    the signal stays latched for the next `WaitOne`.
+    ///
+    /// Absent multi-handle waiters this is exactly the previous
+    /// wake-all/direct-handoff behaviour. With them, a wait-all waiter blocked
+    /// on some other handle is skipped and stays queued, so `Signaled = true`
+    /// may now coexist with a non-empty queue — see the invariant note on
+    /// `EventState`.
     ///
     /// Idempotent on already-signalled events. Never fails — the Win32
     /// `SetEvent` only returns FALSE on an invalid handle, which is
@@ -732,43 +1025,12 @@ module WaitHandle =
         let handle = lookup id state
         let event = expectEvent "WaitHandle.setEvent" id handle
 
-        match event.Mode with
-        | EventResetMode.Manual ->
-            // Wake every parked waiter, clear the queue, mark signalled.
-            let waiters = event.WaitQueue
+        let event =
+            { event with
+                Signaled = true
+            }
 
-            let event =
-                { event with
-                    Signaled = true
-                    WaitQueue = []
-                }
-
-            let state = writeHandle id (WaitHandleState.Event event) state
-
-            waiters
-            |> List.fold (fun acc tid -> Scheduler.setThreadStatus tid ThreadStatus.Runnable acc) state
-        | EventResetMode.Auto ->
-            match event.WaitQueue with
-            | [] ->
-                // No waiter: latch the signal.
-                let event =
-                    { event with
-                        Signaled = true
-                    }
-
-                state |> writeHandle id (WaitHandleState.Event event)
-            | head :: rest ->
-                // Direct-handoff: wake the FIFO head only; Signaled stays
-                // false (the signal was consumed by the wakeup).
-                let event =
-                    { event with
-                        Signaled = false
-                        WaitQueue = rest
-                    }
-
-                state
-                |> writeHandle id (WaitHandleState.Event event)
-                |> Scheduler.setThreadStatus head ThreadStatus.Runnable
+        state |> writeHandle id (WaitHandleState.Event event) |> drainGrants id
 
     /// Clear the signalled flag. By invariant `WaitQueue` is empty if
     /// `Signaled` was true, so there is nothing to do beyond flipping the
@@ -784,6 +1046,189 @@ module WaitHandle =
             }
 
         state |> writeHandle id (WaitHandleState.Event event)
+
+    /// Outcome of a multi-handle wait.
+    ///
+    /// `Acquired` carries the index (within the *caller's* handle array, so
+    /// duplicates resolve to the first occurrence — Win32's "smallest index of
+    /// all signalled objects") of the handle that satisfied a wait-any, and
+    /// whether the acquisition observed an abandoned mutex. For a wait-all the
+    /// index is meaningless and the caller must ignore it: the PAL returns a
+    /// bare `WAIT_OBJECT_0` / `WAIT_ABANDONED_0` because the OS cannot say
+    /// which of the mutexes was abandoned.
+    ///
+    /// `Blocked` means the thread was parked at every named handle's queue.
+    /// `Failed` is the wait-all-with-duplicate-handles case, which the PAL
+    /// rejects with `ERROR_INVALID_PARAMETER`; it is reachable from ordinary
+    /// guest code (`WaitHandle.WaitAll(new[]{ e, e })` compiles and the BCL
+    /// does not dedupe), so it is an outcome rather than a loud failure.
+    [<RequireQualifiedAccess>]
+    type MultiWaitOutcome =
+        | Acquired of index : int * abandoned : bool * IlMachineState
+        | Blocked of IlMachineState
+        | Failed of IlMachineState
+
+    /// Outcome of a non-blocking multi-handle probe (the zero-timeout path).
+    /// `TimedOut` leaves the state untouched: no enqueue, no status flip.
+    [<RequireQualifiedAccess>]
+    type MultiTryWaitOutcome =
+        | Acquired of index : int * abandoned : bool * IlMachineState
+        | TimedOut of IlMachineState
+        | Failed of IlMachineState
+
+    /// The PAL rejects a wait-all naming the same object twice
+    /// (`wait.cpp`'s brute-force duplicate scan sets `ERROR_INVALID_PARAMETER`
+    /// and returns `WAIT_FAILED`). Duplicates are legal for a wait-any.
+    let private hasIllegalDuplicates (handles : WaitHandleId list) (waitAll : bool) : bool =
+        waitAll && List.length (List.distinct handles) <> List.length handles
+
+    /// Shared front half of both multi-wait entry points: validate, then try
+    /// to satisfy the wait without blocking. Returns the outcome plus, when it
+    /// could not be satisfied, `None` so the caller decides between parking
+    /// and timing out.
+    ///
+    /// Wait-any scans in index order and stops at the first acquirable handle,
+    /// so the reported index is the smallest signalled one. Wait-all requires
+    /// every handle to be acquirable *before* consuming any of them, which is
+    /// what makes the acquisition atomic: a partially-satisfiable wait-all
+    /// leaves every handle untouched.
+    let private tryAcquireMultiple
+        (thread : ThreadId)
+        (handles : WaitHandleId list)
+        (waitAll : bool)
+        (state : IlMachineState)
+        : (int * bool * IlMachineState) option
+        =
+        // Touch every handle so a stale or never-created one fails loud here
+        // rather than at some later, more confusing point.
+        let resolved = handles |> List.map (fun handle -> handle, lookup handle state)
+
+        if waitAll then
+            if resolved |> List.forall (fun (_, handle) -> isAcquirable thread handle) then
+                let state, abandoned =
+                    handles
+                    |> List.distinct
+                    |> List.fold
+                        (fun (state, abandoned) handle ->
+                            let acquired, wasAbandoned = acquireFor thread (lookup handle state)
+                            writeHandle handle acquired state, abandoned || wasAbandoned
+                        )
+                        (state, false)
+
+                Some (0, abandoned, state)
+            else
+                None
+        else
+            match resolved |> List.tryFindIndex (fun (_, handle) -> isAcquirable thread handle) with
+            | None -> None
+            | Some index ->
+                let handleId = fst resolved.[index]
+                let acquired, abandoned = acquireFor thread (lookup handleId state)
+                Some (index, abandoned, writeHandle handleId acquired state)
+
+    /// Non-blocking multi-handle probe, modelling the zero-timeout
+    /// `WaitAny(…, 0)` / `WaitAll(…, 0)` path. The caller is never enqueued:
+    /// leaving the thread `Runnable` is the entire observable difference from
+    /// `waitMultiple`, and silently parking would deadlock guests that use a
+    /// zero timeout as a poll.
+    let tryWaitMultiple
+        (thread : ThreadId)
+        (handles : WaitHandleId list)
+        (waitAll : bool)
+        (state : IlMachineState)
+        : MultiTryWaitOutcome
+        =
+        if hasIllegalDuplicates handles waitAll then
+            MultiTryWaitOutcome.Failed state
+        else
+
+        match tryAcquireMultiple thread handles waitAll state with
+        | Some (index, abandoned, state) -> MultiTryWaitOutcome.Acquired (index, abandoned, state)
+        | None -> MultiTryWaitOutcome.TimedOut state
+
+    /// Blocking multi-handle wait. On the fast path the wait is satisfied
+    /// inline and the thread stays `Runnable`; otherwise it is appended to the
+    /// tail of every *distinct* named handle's queue and its status becomes
+    /// `BlockedOnWaitHandles`.
+    ///
+    /// The thread is enqueued once per distinct handle even when a wait-any
+    /// names one twice: queue membership only decides *whether* it can be
+    /// woken, while the index it reports comes from the registration's list.
+    /// Enqueuing twice would let one signal wake it and leave a stale entry
+    /// behind.
+    ///
+    /// `deadlineMs` is the absolute virtual-clock millisecond at which a
+    /// finite timeout expires, or `None` for `INFINITE`. As on the
+    /// single-handle path the IL call site advances in every case, and the
+    /// slow path pushes an optimistic `WAIT_OBJECT_0` that the eventual wake
+    /// (`grantTo`) or timeout (`fireMultipleTimeout`) rewrites.
+    let waitMultiple
+        (thread : ThreadId)
+        (handles : WaitHandleId list)
+        (waitAll : bool)
+        (deadlineMs : int64 option)
+        (state : IlMachineState)
+        : MultiWaitOutcome
+        =
+        if hasIllegalDuplicates handles waitAll then
+            MultiWaitOutcome.Failed state
+        else
+
+        match tryAcquireMultiple thread handles waitAll state with
+        | Some (index, abandoned, state) -> MultiWaitOutcome.Acquired (index, abandoned, state)
+        | None ->
+            let state =
+                handles
+                |> List.distinct
+                |> List.fold
+                    (fun state handleId ->
+                        let handle = lookup handleId state
+
+                        writeHandle handleId (withWaitQueue (waitQueueOf handle @ [ thread ]) handle) state
+                    )
+                    state
+
+            state
+            |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnWaitHandles (handles, waitAll, deadlineMs))
+            |> MultiWaitOutcome.Blocked
+
+    /// Wake `thread` because its finite-timeout multi-handle wait has expired
+    /// against the virtual clock. Dequeues it from *every* handle it was
+    /// registered on — the whole registration expires together, not just the
+    /// queue that happened to notice — rewrites the park-time
+    /// `WAIT_OBJECT_0` slot to `WAIT_TIMEOUT`, and flips the thread back to
+    /// `Runnable`.
+    ///
+    /// The driver only calls this for threads it observed in
+    /// `BlockedOnWaitHandles (_, _, Some _)`, so a thread missing from one of
+    /// its own queues indicates a scheduler-side bug and fails loud.
+    let fireMultipleTimeout (thread : ThreadId) (state : IlMachineState) : IlMachineState =
+        let handles =
+            match state.ThreadState.[thread].Status with
+            | ThreadStatus.BlockedOnWaitHandles (handles, _, _) -> List.distinct handles
+            | other ->
+                failwith
+                    $"WaitHandle.fireMultipleTimeout: thread %O{thread} has status %O{other}, not BlockedOnWaitHandles; the driver fires this only for multi-handle waiters."
+
+        let state =
+            handles
+            |> List.fold
+                (fun state handleId ->
+                    let handle = lookup handleId state
+                    let queue = waitQueueOf handle
+                    let dequeued = queue |> List.filter (fun queued -> queued <> thread)
+
+                    if List.length dequeued = List.length queue then
+                        failwith
+                            $"WaitHandle.fireMultipleTimeout: thread %O{thread} is not in wait handle %O{handleId}'s wait queue; the scheduler observed a deadline on a thread the handle does not know about."
+
+                    writeHandle handleId (withWaitQueue dequeued handle) state
+                )
+                state
+
+        state
+        |> rewriteWaitResult thread waitTimeout
+        |> Scheduler.setThreadStatus thread ThreadStatus.Runnable
 
     /// Tear down a wait handle. The Win32 contract is that `CloseHandle`
     /// runs after the handle is fully quiescent — no thread is currently
@@ -811,13 +1256,13 @@ module WaitHandle =
             | [] -> ()
             | waiters ->
                 failwith
-                    $"WaitHandle %O{id}: refusing to Close a semaphore with %d{List.length waiters} thread(s) parked in BlockedOnWaitHandle (%A{waiters}); the guest must Release before Disposing."
+                    $"WaitHandle %O{id}: refusing to Close a semaphore with %d{List.length waiters} thread(s) parked in its wait queue (%A{waiters}); the guest must Release before Disposing."
         | WaitHandleState.Mutex mutex ->
             match mutex.WaitQueue with
             | [] -> ()
             | waiters ->
                 failwith
-                    $"WaitHandle %O{id}: refusing to Close a mutex with %d{List.length waiters} thread(s) parked in BlockedOnWaitHandle (%A{waiters}); the guest must Release before Disposing."
+                    $"WaitHandle %O{id}: refusing to Close a mutex with %d{List.length waiters} thread(s) parked in its wait queue (%A{waiters}); the guest must Release before Disposing."
 
             match mutex.Ownership with
             | MutexOwnership.Free _ -> ()
@@ -829,7 +1274,7 @@ module WaitHandle =
             | [] -> ()
             | waiters ->
                 failwith
-                    $"WaitHandle %O{id}: refusing to Close an event with %d{List.length waiters} thread(s) parked in BlockedOnWaitHandle (%A{waiters}); the guest must Set/Reset and let waiters drain before Disposing."
+                    $"WaitHandle %O{id}: refusing to Close an event with %d{List.length waiters} thread(s) parked in its wait queue (%A{waiters}); the guest must Set/Reset and let waiters drain before Disposing."
 
         state.MapKernel (fun kernel ->
             { kernel with
@@ -910,15 +1355,11 @@ module WaitHandle =
                         })
                     state
 
-        // Rewrite the park-time `WAIT_OBJECT_0 = 0` slot to `WAIT_TIMEOUT
-        // = 0x102`. The slow-path waitOne / waitOnePrioritized pushed
-        // `WAIT_OBJECT_0` because the slow path could not know in advance
-        // whether the wake would be a signal (keep the value) or a
-        // timeout (rewrite); choosing the optimistic value at park time
-        // makes signal-wake free.
-        let _, state = IlMachineState.popEvalStack thread state
-
-        let state =
-            IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0x102) thread state
-
-        Scheduler.setThreadStatus thread ThreadStatus.Runnable state
+        // Rewrite the park-time `WAIT_OBJECT_0` slot to `WAIT_TIMEOUT`. The
+        // slow-path waitOne / waitOnePrioritized pushed `WAIT_OBJECT_0`
+        // because the slow path could not know in advance whether the wake
+        // would be a signal (keep the value) or a timeout (rewrite); choosing
+        // the optimistic value at park time makes signal-wake free.
+        state
+        |> rewriteWaitResult thread waitTimeout
+        |> Scheduler.setThreadStatus thread ThreadStatus.Runnable

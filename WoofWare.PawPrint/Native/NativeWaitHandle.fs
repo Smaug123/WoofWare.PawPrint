@@ -45,24 +45,20 @@ module NativeWaitHandle =
     /// that reads `Marshal.GetLastPInvokeError` after the throw.
     let private errorNotOwner : int = 288
 
-    /// `WAIT_OBJECT_0 = 0`. The Win32 return code for a successful wait
-    /// — the wait acquired its target object. Matches
-    /// `WaitHandle.WaitSuccess` in the BCL.
-    let private waitObjectZero : int = 0
+    /// `ERROR_INVALID_PARAMETER = 87`. The Win32 error the PAL sets when a
+    /// wait-all names the same handle twice (`wait.cpp`'s duplicate scan).
+    /// The QCall returns `WAIT_FAILED` alongside it.
+    let private errorInvalidParameter : int = 87
 
-    /// `WAIT_ABANDONED = 0x80 = 128`. The Win32 return code for a wait
-    /// that acquired its target mutex, but the previous owner had
-    /// terminated without calling `ReleaseMutex`. The BCL's
-    /// `Mutex.WaitOneNoCheck` translates this into
-    /// `AbandonedMutexException`.
-    let private waitAbandoned : int = 0x80
-
-    /// `WAIT_TIMEOUT = 0x102 = 258`. The Win32 return code for a wait
-    /// that did not acquire its target before the timeout expired.
-    /// `WaitHandle.WaitOne(int)` checks the return against
-    /// `WaitHandle.WaitTimeout = 0x102` to decide whether to return
-    /// `true` / `false` to the guest.
-    let private waitTimeout : int = 0x102
+    /// The Win32 wait return codes live on `WaitHandle` rather than here:
+    /// they are part of the wait-handle contract that the state machine
+    /// itself has to speak (a multi-wait's return value is materialised at
+    /// wake time, inside the state machine), so a second copy here would be
+    /// two definitions of one thing.
+    let private waitObjectZero : int = WaitHandle.waitObjectZero
+    let private waitAbandoned : int = WaitHandle.waitAbandoned
+    let private waitTimeout : int = WaitHandle.waitTimeout
+    let private waitFailed : int = WaitHandle.waitFailed
 
     /// Mutate the kernel's `LastSystemError` slot. The
     /// LibraryImport-generated stub for a `SetLastError = true` import
@@ -362,6 +358,99 @@ module NativeWaitHandle =
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ptr)) -> Some ptr
         | other -> failwith $"%s{operation}: expected %s{argName} to be a managed int pointer or null, got %O{other}"
 
+    /// The integer a satisfied multi-handle wait reports to the guest.
+    ///
+    /// A wait-any adds the index of the handle that satisfied it, so
+    /// `WaitHandle.WaitAny` can return it and `WaitMultiple` can recover which
+    /// handle was abandoned from the `[WaitAbandoned, WaitAbandoned + count)`
+    /// range. A wait-all adds nothing: the OS reports only *that* a mutex was
+    /// abandoned, not which, and the BCL throws a bare
+    /// `AbandonedMutexException` for it.
+    let private multiWaitResult (waitAll : bool) (index : int) (abandoned : bool) : int =
+        let baseCode =
+            if abandoned then
+                WaitHandle.waitAbandoned
+            else
+                WaitHandle.waitObjectZero
+
+        if waitAll then baseCode else baseCode + index
+
+    /// `MAXIMUM_WAIT_OBJECTS`. The PAL rejects a multi-wait naming more than
+    /// this many handles with `ERROR_INVALID_PARAMETER`; the BCL's
+    /// `WaitHandle.MaxWaitHandles` check throws `NotSupportedException`
+    /// first, so reaching the runtime over the limit means the wrapper was
+    /// bypassed.
+    let private maximumWaitObjects : int = 64
+
+    /// The `System.IntPtr` concrete type, needed to step a byte view along
+    /// the guest's handle array in pointer-sized strides.
+    let private requiredIntPtrConcreteType
+        (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        : ConcreteType<ConcreteTypeHandle>
+        =
+        let handle =
+            AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.IntPtr.Identity
+            |> Option.defaultWith (fun () -> failwith $"%s{operation}: System.IntPtr is not concretized")
+
+        AllConcreteTypes.lookup handle state.ConcreteTypes
+        |> Option.defaultWith (fun () -> failwith $"%s{operation}: concrete System.IntPtr handle %O{handle} not found")
+
+    /// Read `count` handles from the guest's `IntPtr*`.
+    ///
+    /// The array is a `stackalloc IntPtr[n]` that `WaitHandle
+    /// .ObtainSafeWaitHandles` filled with `DangerousGetHandle()` results,
+    /// flattened to a pointer by the LibraryImport stub's
+    /// `GetPinnableReference` + `conv.u`. Each element is therefore a
+    /// `WaitHandlePtr`-tagged native int, which has no bit pattern: the read
+    /// has to come back as a whole typed cell or the identity is lost.
+    /// `readManagedByrefBytesAs` with an `IntPtr` template does exactly that
+    /// — its cell-aligned fast path (`readStackMemoryBytesAs`) returns a
+    /// non-byte-addressable cell as-is when a same-shaped cell starts at the
+    /// offset — which is why this steps a byte view rather than reinterpreting
+    /// the buffer.
+    let private readWaitHandleArray
+        (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (ptr : ManagedPointerSource)
+        (count : int)
+        : WaitHandleId list
+        =
+        let intPtrConcreteType = requiredIntPtrConcreteType operation baseClassTypes state
+        let stride = 8
+
+        [ 0 .. count - 1 ]
+        |> List.map (fun index ->
+            let elementPtr =
+                ManagedPointerByteView.addByteOffset baseClassTypes state intPtrConcreteType (index * stride) ptr
+
+            let element =
+                IlMachineState.readManagedByrefBytesAs
+                    baseClassTypes
+                    state
+                    elementPtr
+                    (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
+
+            waitHandleOfArgument $"%s{operation} (handle #%d{index})" element
+        )
+
+    /// Decode the `IntPtr*` handle-array argument. The BCL never passes null
+    /// here (an empty array throws `ArgumentException` in `WaitMultiple`
+    /// before the QCall), so a null pointer means the wrapper was bypassed.
+    let private handleArrayPointer (operation : string) (arg : CliType) : ManagedPointerSource =
+        match CliType.unwrapPrimitiveLikeDeep arg with
+        | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null)
+        | CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L)
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)) ->
+            failwith
+                $"%s{operation}: handle array pointer was null; WaitHandle.WaitMultiple rejects an empty array before the QCall, so reaching here means the wrapper was bypassed."
+        | CliType.RuntimePointer (CliRuntimePointer.Managed ptr) -> ptr
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ptr)) -> ptr
+        | other -> failwith $"%s{operation}: expected a managed IntPtr* handle array, got %O{other}"
+
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
@@ -526,6 +615,83 @@ module NativeWaitHandle =
                     (WaitHandle.waitOnePrioritized ctx.Thread id)
                     (WaitHandle.tryWaitOneSemaphore id)
                     state
+
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 ret) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
+
+        | "WaitHandle_WaitMultipleIgnoringSyncContext",
+          "System.Private.CoreLib",
+          "WaitHandle",
+          [ ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr)
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            // `WaitHandle.CoreCLR.cs` declares this as
+            // `(ReadOnlySpan<IntPtr>, int numHandles, bool waitAll, int
+            // millisecondsTimeout)`; the LibraryImport stub pins the span and
+            // passes its first element's address, so the QCall signature is
+            // `(IntPtr*, int32, int32 BOOL, int32)`.
+            let operation = "WaitHandle_WaitMultipleIgnoringSyncContext"
+            let arrayPtr = handleArrayPointer operation instruction.Arguments.[0]
+            let numHandles = NativeCall.int32Argument operation instruction.Arguments.[1]
+
+            // `WaitHandle.WaitMultiple` rejects an empty array
+            // (`ArgumentException`) and one over `MaxWaitHandles`
+            // (`NotSupportedException`) before the QCall, so both bounds
+            // being violated here means the wrapper was bypassed. The PAL
+            // would answer `ERROR_INVALID_PARAMETER`; failing loud is more
+            // useful, because no correct guest can produce it.
+            if numHandles < 1 then
+                failwith
+                    $"%s{operation}: numHandles = %d{numHandles} is not strictly positive; WaitHandle.WaitMultiple throws ArgumentException for an empty array before the QCall."
+
+            if numHandles > maximumWaitObjects then
+                failwith
+                    $"%s{operation}: numHandles = %d{numHandles} exceeds MAXIMUM_WAIT_OBJECTS = %d{maximumWaitObjects}; WaitHandle.WaitMultiple throws NotSupportedException before the QCall."
+
+            let waitAll = boolOfBoolArgument operation "waitAll" instruction.Arguments.[2]
+            let timeout = NativeCall.int32Argument operation instruction.Arguments.[3]
+
+            let handles =
+                readWaitHandleArray operation ctx.BaseClassTypes state arrayPtr numHandles
+
+            // The PAL forces `fWAll = false` when there is a single handle
+            // ("makes no difference when nCount is 1"). We do not need to
+            // mirror that: with one handle both modes acquire it and report
+            // `WAIT_OBJECT_0 + 0`, which is the same value.
+            let state, ret =
+                if timeout = System.Threading.Timeout.Infinite then
+                    match WaitHandle.waitMultiple ctx.Thread handles waitAll None state with
+                    | WaitHandle.MultiWaitOutcome.Acquired (index, abandoned, state) ->
+                        state, multiWaitResult waitAll index abandoned
+                    // The park-time push is the optimistic `WAIT_OBJECT_0`;
+                    // the wake rewrites it once the satisfying handle (and
+                    // hence the index) is known.
+                    | WaitHandle.MultiWaitOutcome.Blocked state -> state, waitObjectZero
+                    | WaitHandle.MultiWaitOutcome.Failed state ->
+                        withLastSystemError errorInvalidParameter state, waitFailed
+                elif timeout = 0 then
+                    match WaitHandle.tryWaitMultiple ctx.Thread handles waitAll state with
+                    | WaitHandle.MultiTryWaitOutcome.Acquired (index, abandoned, state) ->
+                        state, multiWaitResult waitAll index abandoned
+                    | WaitHandle.MultiTryWaitOutcome.TimedOut state -> state, waitTimeout
+                    | WaitHandle.MultiTryWaitOutcome.Failed state ->
+                        withLastSystemError errorInvalidParameter state, waitFailed
+                elif timeout < 0 then
+                    failwith
+                        $"%s{operation}: negative timeout %d{timeout} ms is not Infinite (-1); WaitHandle.WaitMultiple validates this argument before the QCall, so reaching here means the wrapper was bypassed."
+                else
+                    let deadlineMs = state.Kernel.VirtualClockMs + int64 timeout
+
+                    match WaitHandle.waitMultiple ctx.Thread handles waitAll (Some deadlineMs) state with
+                    | WaitHandle.MultiWaitOutcome.Acquired (index, abandoned, state) ->
+                        state, multiWaitResult waitAll index abandoned
+                    | WaitHandle.MultiWaitOutcome.Blocked state -> state, waitObjectZero
+                    | WaitHandle.MultiWaitOutcome.Failed state ->
+                        withLastSystemError errorInvalidParameter state, waitFailed
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 ret) ctx.Thread

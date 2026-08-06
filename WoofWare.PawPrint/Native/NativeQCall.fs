@@ -113,6 +113,8 @@ module NativeQCall =
             "ReleaseSemaphore", NativeWaitHandle.tryExecuteQCall "ReleaseSemaphore"
             "CloseHandle", NativeWaitHandle.tryExecuteQCall "CloseHandle"
             "WaitHandle_WaitOneCore", NativeWaitHandle.tryExecuteQCall "WaitHandle_WaitOneCore"
+            "WaitHandle_WaitMultipleIgnoringSyncContext",
+            NativeWaitHandle.tryExecuteQCall "WaitHandle_WaitMultipleIgnoringSyncContext"
             // `LowLevelLifoSemaphore.Unix.cs` independently imports the
             // prioritized 2-arg waiter; routes to the same deterministic
             // state machine as `WaitOneCore`.
