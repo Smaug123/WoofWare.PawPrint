@@ -136,13 +136,19 @@ module NativeCall =
         | EvalStackValue.ObjectRef addr -> Some addr
         | other -> failwith $"%s{operation}: expected object reference, got %O{other}"
 
+    /// The GC handle entry points take the raw handle, not a tagged view of one:
+    /// `GCHandle` strips its pinned marker via `GetHandleValue` and `WeakReference`
+    /// strips its tag bits before calling `InternalSet`, so a tagged handle
+    /// arriving here means the guest skipped a mask and we must not guess.
     let gcHandleAddressOfEvalStackValue (operation : string) (arg : EvalStackValue) : GcHandleAddress =
         match arg with
-        | EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr handle) -> handle
+        | EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr (handle, 0L)) -> handle
+        | EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr (handle, tag)) ->
+            failwith $"%s{operation}: expected an untagged GC handle, got %O{handle} carrying tag bits 0x%x{tag}"
         | other -> failwith $"%s{operation}: expected GC handle pointer, got %O{other}"
 
     let pushGcHandleAddress (handle : GcHandleAddress) (thread : ThreadId) (state : IlMachineState) : IlMachineState =
-        IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr handle)) thread state
+        IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.gcHandlePtr handle)) thread state
 
     let pushObjectTarget
         (target : ManagedHeapAddress option)

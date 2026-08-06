@@ -751,3 +751,144 @@ module TestNullaryIlOp =
             faultingFrame.IlOpIndex |> shouldEqual 0
             faultingFrame.EvaluationStack.Values |> shouldEqual []
         | other -> failwith $"Expected Conv_ovf_i overflow to step, got %O{other}"
+
+    // --- Bitwise operations on tagged GC handles ---
+    //
+    // PawPrint models a GC handle as an opaque registry index with no numeric
+    // address, but CoreLib stores tag bits in the handle's low bits and strips
+    // them off again on every read. These pin the arithmetic that makes that
+    // possible without inventing an address; see `TestTaggedPointerBits` for the
+    // decision procedure itself, and
+    // docs/plans/2026-08-06-tagged-gc-handles.md for the CoreLib IL each case
+    // corresponds to.
+
+    let private gcHandleUnderTest : GcHandleAddress = GcHandleAddress.GcHandleAddress 7
+
+    let private taggedHandle (tag : int64) : EvalStackValue =
+        EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr (gcHandleUnderTest, tag))
+
+    let private stateWithBinaryNullary
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (op : NullaryIlOp)
+        (first : EvalStackValue)
+        (second : EvalStackValue)
+        : IlMachineState * ThreadId
+        =
+        let state, thread = stateWithNullary loggerFactory op first
+        IlMachineState.pushToEvalStack' second thread state, thread
+
+    let private runBinary (op : NullaryIlOp) (first : EvalStackValue) (second : EvalStackValue) : EvalStackValue =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let state, thread = stateWithBinaryNullary loggerFactory op first second
+
+        match NullaryIlOp.execute loggerFactory baseClassTypes state thread op with
+        | ExecutionResult.Stepped (state, whatWeDid, _) ->
+            whatWeDid |> shouldEqual WhatWeDid.Executed
+
+            match state.ThreadState.[thread].MethodState.EvaluationStack.Values with
+            | [ actual ] -> actual
+            | other -> failwith $"Expected %O{op} to leave one stack value, got %O{other}"
+        | other -> failwith $"Expected %O{op} to step, got %O{other}"
+
+    /// `conv.i` of an `ldc.i4` constant, which is how CoreLib materialises its
+    /// tag masks: the operand reaches `and`/`or` as a native int, not an int32.
+    let private nativeConst (value : int64) : EvalStackValue =
+        EvalStackValue.NativeInt (NativeIntSource.Verbatim value)
+
+    [<Test>]
+    let ``Or tags a GC handle, and And reads the tag back`` () : unit =
+        // `WeakReference.Create`: `h | TracksResurrectionBit`.
+        runBinary NullaryIlOp.Or (taggedHandle 0L) (nativeConst 1L)
+        |> shouldEqual (taggedHandle 1L)
+
+        // `WeakReference.IsTrackResurrection`: `_taggedHandle & 1`.
+        runBinary NullaryIlOp.And (taggedHandle 1L) (nativeConst 1L)
+        |> shouldEqual (nativeConst 1L)
+
+        runBinary NullaryIlOp.And (taggedHandle 0L) (nativeConst 1L)
+        |> shouldEqual (nativeConst 0L)
+
+    [<Test>]
+    let ``And strips tag bits and leaves a usable handle`` () : unit =
+        // `WeakReference.get_Target`: `_taggedHandle & ~TracksResurrectionBit`.
+        // The ComAware bit (2) must survive that mask, and be cleared by
+        // `get_WeakHandle`'s wider `& ~HandleTagBits`.
+        runBinary NullaryIlOp.And (taggedHandle 1L) (nativeConst ~~~1L)
+        |> shouldEqual (taggedHandle 0L)
+
+        runBinary NullaryIlOp.And (taggedHandle 3L) (nativeConst ~~~1L)
+        |> shouldEqual (taggedHandle 2L)
+
+        runBinary NullaryIlOp.And (taggedHandle 3L) (nativeConst ~~~3L)
+        |> shouldEqual (taggedHandle 0L)
+
+    [<Test>]
+    let ``an int32 operand is sign-extended before it reaches the tag region`` () : unit =
+        // An `int32` mask on the stack alongside a native int: `-2` must not be
+        // read as `0x00000000FFFFFFFE`, which would clear the handle's high bits.
+        runBinary NullaryIlOp.And (taggedHandle 3L) (EvalStackValue.Int32 -2)
+        |> shouldEqual (taggedHandle 2L)
+
+        runBinary NullaryIlOp.And (EvalStackValue.Int32 -2) (taggedHandle 3L)
+        |> shouldEqual (taggedHandle 2L)
+
+        runBinary NullaryIlOp.Or (EvalStackValue.Int32 1) (taggedHandle 0L)
+        |> shouldEqual (taggedHandle 1L)
+
+    [<Test>]
+    let ``Xor flips tag bits rather than losing the handle to hash synthesis`` () : unit =
+        runBinary NullaryIlOp.Xor (taggedHandle 1L) (nativeConst 3L)
+        |> shouldEqual (taggedHandle 2L)
+
+        runBinary NullaryIlOp.Xor (nativeConst 3L) (taggedHandle 1L)
+        |> shouldEqual (taggedHandle 2L)
+
+    [<Test>]
+    let ``an operand reaching outside the tag region is refused loudly`` () : unit =
+        // These ask about bits of the handle's address, which PawPrint does not
+        // model. Answering would mean inventing them.
+        let shouldRefuse (op : NullaryIlOp) (operand : EvalStackValue) : unit =
+            let exn =
+                Assert.Throws (fun () -> runBinary op (taggedHandle 1L) operand |> ignore<EvalStackValue>)
+
+            exn.Message |> shouldContainText "which PawPrint does not model"
+
+        shouldRefuse NullaryIlOp.And (nativeConst 4L)
+        shouldRefuse NullaryIlOp.And (EvalStackValue.Int32 4)
+        shouldRefuse NullaryIlOp.Or (nativeConst 8L)
+        shouldRefuse NullaryIlOp.Or (EvalStackValue.Int32 8)
+        shouldRefuse NullaryIlOp.Xor (nativeConst 4L)
+
+    [<Test>]
+    let ``dereferencing a tagged GC handle is refused loudly`` () : unit =
+        // Release CoreLib's `GCHandle.InternalGet` is `*(object*)handle`, and
+        // managed code always masks the tag off first. A tagged dereference would
+        // be a misaligned read in reality.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let state, thread =
+            stateWithNullary loggerFactory NullaryIlOp.Ldind_ref (taggedHandle 1L)
+
+        let exn =
+            Assert.Throws (fun () ->
+                NullaryIlOp.execute loggerFactory baseClassTypes state thread NullaryIlOp.Ldind_ref
+                |> ignore<ExecutionResult>
+            )
+
+        exn.Message |> shouldContainText "refusing to dereference GC handle"
+
+    [<Test>]
+    let ``a GC handle InternalCall refuses a tagged handle`` () : unit =
+        let exn =
+            Assert.Throws (fun () ->
+                NativeCall.gcHandleAddressOfEvalStackValue "test" (taggedHandle 1L)
+                |> ignore<GcHandleAddress>
+            )
+
+        exn.Message |> shouldContainText "expected an untagged GC handle"
+
+        NativeCall.gcHandleAddressOfEvalStackValue "test" (taggedHandle 0L)
+        |> shouldEqual gcHandleUnderTest
