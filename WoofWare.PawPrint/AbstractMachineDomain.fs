@@ -7,6 +7,32 @@ type ThreadId =
         match this with
         | ThreadId.ThreadId i -> $"%i{i}"
 
+/// Index of one of the simulated process's logical processors, as reported to
+/// the guest by `sched_getcpu(3)` (`SystemNative_SchedGetCpu`, and hence
+/// `Thread.GetCurrentProcessorId()`).
+///
+/// Always in `[0, EmulatedKernel.effectiveProcessorCount)`: `sched_getcpu`
+/// names a processor the guest also counts through
+/// `Environment.ProcessorCount`, and BCL callers use the value to index
+/// per-CPU shards sized off that count. The invariant is established by
+/// construction rather than re-checked at each read. There are exactly two
+/// producers: `EmulatedKernel.cpuForRotation`, which places every
+/// guest-visible thread and is in range because it is a remainder modulo a
+/// count that is at least 1; and `IlMachineState.allocateParkedThread`, which
+/// hard-codes core 0 for PawPrint-internal auxiliary threads no guest can
+/// name — trivially in range for the same reason.
+///
+/// A distinct type from `ThreadId` and friends because the two are trivially
+/// confusable at the `sched_getcpu` boundary (both are small ints naming a
+/// scheduling entity) and swapping them would produce a plausible-looking wrong
+/// answer rather than a crash.
+type CpuId =
+    | CpuId of int
+
+    override this.ToString () =
+        match this with
+        | CpuId.CpuId i -> $"<cpu #%i{i}>"
+
 /// Currently this is just an opaque handle; it can't be treated as a pointer.
 type ManagedHeapAddress =
     | ManagedHeapAddress of int

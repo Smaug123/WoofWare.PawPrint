@@ -77,6 +77,26 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // PawPrint places guest threads round-robin over the simulated
+                // cores, so with four of them the entry thread and its workers
+                // observe distinct `Thread.GetCurrentProcessorId()` values. The
+                // pure `ThreadGetCurrentProcessorId.cs` cannot pin any of this:
+                // it is cross-checked against the real runtime, where the value
+                // comes from the host's `sched_getcpu` (or, on macOS, from a
+                // managed-thread-id fallback that is not bounded by the core
+                // count at all). 4 rather than 1 so that a regression to
+                // "always core 0" is a failure rather than a coincidence.
+                // `TestCpuPlacement` covers the placement policy itself.
+                FileName = "SchedGetCpuPlacement.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        ProcessorCount = 4
+                    }
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // The monotonic clock the guest observes through `Stopwatch`
                 // boots at zero and moves in whole milliseconds, and is the same
                 // clock `Environment.TickCount64` reads. Those are
