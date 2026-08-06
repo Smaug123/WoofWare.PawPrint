@@ -80,6 +80,7 @@ module internal ExceptionHResults =
             "System.ArgumentException", int 0x80070057u // COR_E_ARGUMENT
             "System.ArgumentNullException", 0x80004003 // E_POINTER (ArgumentNullException maps to E_POINTER in the CLR)
             "System.NotSupportedException", int 0x80131515u // COR_E_NOTSUPPORTED
+            "System.DuplicateWaitObjectException", int 0x80131529u // COR_E_DUPLICATEWAITOBJECT
             "System.Reflection.TargetInvocationException", int 0x80131604u // COR_E_TARGETINVOCATION
         ]
 

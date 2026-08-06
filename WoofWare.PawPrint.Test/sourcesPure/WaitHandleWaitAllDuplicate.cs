@@ -33,8 +33,15 @@ namespace HelloWorldApp
                     WaitHandle.WaitAll(new WaitHandle[] { signalled, signalled });
                     return 1;
                 }
-                catch (DuplicateWaitObjectException)
+                catch (DuplicateWaitObjectException e)
                 {
+                    // The runtime overwrites the constructor's HResult with the
+                    // one EEException::GetHR maps for the type, so this pins
+                    // the mapping as well as the throw.
+                    if (e.HResult != unchecked((int) 0x80131529))
+                    {
+                        return 8;
+                    }
                 }
 
                 try
