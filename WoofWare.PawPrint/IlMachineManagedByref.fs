@@ -1573,25 +1573,32 @@ module IlMachineManagedByref =
     /// Whether a whole-cell store of `newValue` may replace the existing
     /// `cell`, given that the two occupy exactly the same byte range.
     ///
-    /// A byte-addressable cell may always be replaced: byte scatter is
-    /// available as an equivalent rendering, so whole-cell replacement is just
-    /// the cheaper spelling of it, and restamping the payload's primitive shape
-    /// over a differently-shaped same-width template is deliberate (the tag is
-    /// part of the value being stored).
+    /// When both sides render as bytes, the replacement is *equivalent to* a
+    /// byte scatter that the caller could have performed instead, so it is
+    /// always allowed. Restamping the payload's primitive shape over a
+    /// differently-shaped same-width template is deliberate here: the tag is
+    /// part of the value being stored, and any later reader that wanted the old
+    /// interpretation can still recover it from the bytes.
     ///
-    /// A cell that is *not* byte-addressable carries structure with no byte
-    /// rendering at all — a tagged pointer, an object reference, a value type
-    /// containing either. Replacing it with a differently-shaped cell would
-    /// destroy information nothing can reconstruct: a user struct wrapping a
-    /// tagged pointer exactly covers an `IntPtr`-width store, but restamping it
-    /// as a bare numeric cell leaves a later `ldobj` of the wrapper type unable
-    /// to read what was written. Such a store has no representable outcome, so
-    /// it must decline here and fail loud downstream rather than silently
-    /// change shape.
+    /// When either side has no byte rendering — a tagged pointer, an object
+    /// reference, a value type containing either — byte scatter is not
+    /// available, so whole-cell replacement is the *only* spelling of the
+    /// store. It is still fine over a primitive-shaped cell: the guest is
+    /// discarding a scalar and a same-width scalar takes its place, which is
+    /// exactly the documented restamp. It is not fine over a `ValueType` cell
+    /// unless the shape survives, because a struct cell's identity *is* its
+    /// layout: a wrapper struct exactly covers an `IntPtr`-width store, but
+    /// restamping it as a bare numeric cell leaves a later `ldobj` of the
+    /// wrapper type unable to read what was written. Nothing can reconstruct
+    /// that, so such a store must decline here and fail loud downstream rather
+    /// than silently corrupt the slot.
     let private wholeCellReplacementPreservesShape (cell : CliType) (newValue : CliType) : bool =
-        match CliType.ByteAddressability cell with
-        | CliByteAddressability.ByteAddressable -> true
-        | CliByteAddressability.Rejected _ -> cellShapeMatches cell newValue
+        match CliType.ByteAddressability cell, CliType.ByteAddressability newValue with
+        | CliByteAddressability.ByteAddressable, CliByteAddressability.ByteAddressable -> true
+        | _ ->
+            match cell with
+            | CliType.ValueType _ -> cellShapeMatches cell newValue
+            | _ -> true
 
     /// True when `covering` — the result of a `tryFindCellCovering` at the
     /// destination offset — is a single existing cell that `newValue` replaces

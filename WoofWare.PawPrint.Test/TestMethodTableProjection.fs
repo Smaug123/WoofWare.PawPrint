@@ -3351,6 +3351,97 @@ public unsafe struct PointerWrapper
         |> ignore
 
     [<Test>]
+    let ``Stind_I8 of a differently-shaped primitive over a tagged cell is accepted`` () : unit =
+        // `*p = handle; *(long*)p = 0L;` — the destination is a tagged cell, so
+        // byte scatter cannot render over it, but a primitive cell has no
+        // composite layout to lose: a same-width scalar simply takes its place.
+        // This is the documented restamp, and it must not be caught by the
+        // guard that protects struct cells.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread =
+            stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Stind_I8)
+
+        let ptr, state =
+            IlMachineState.allocateStackMemory thread MemoryBlockInitialization.ZeroInitialized 8 state
+
+        let state =
+            IlMachineState.writeManagedByref
+                state
+                ptr
+                (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr 1234L)))
+
+        let projectedPtr =
+            ptr
+            |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs (concreteTypeFor bct.Byte))
+
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer projectedPtr) thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int64 (Int64Source.Verbatim 0L)) thread
+
+        let stateAfter =
+            match NullaryIlOp.execute loggerFactory bct state thread NullaryIlOp.Stind_I8 with
+            | ExecutionResult.Stepped (state, WhatWeDid.Executed, _) -> state
+            | other -> failwith $"Expected Stind_I8 to step, got %O{other}"
+
+        IlMachineState.readManagedByref bct stateAfter ptr
+        |> shouldEqual (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L)))
+
+    [<Test>]
+    let ``Stind_I of a tagged value over a byte-addressable struct cell is rejected`` () : unit =
+        // The mirror of the tagged-struct case: here the *cell* renders as
+        // bytes but the incoming value does not, so byte scatter is still
+        // unavailable and whole-cell replacement is the only spelling left. It
+        // would discard the struct's layout, leaving a later `ldobj` of the
+        // wrapper unable to read the slot — so it must fail loud. Which side
+        // lacks a byte rendering does not change the answer.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread =
+            stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Stind_I)
+
+        let intPtrHandle = handleFor bct.IntPtr
+
+        let plainWrapper =
+            [
+                {
+                    Id = FieldId.named "Plain"
+                    Name = "Plain"
+                    Contents = CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 7L))
+                    Offset = Some 0
+                    Type = intPtrHandle
+                    MarshallingDescriptor = None
+                }
+            ]
+            |> CliValueType.OfFields
+                bct
+                state.ConcreteTypes
+                (handleFor bct.TypedReference)
+                (Layout.Custom (size = 8, packingSize = 0))
+                CharSet.Ansi
+
+        let ptr, state =
+            IlMachineState.allocateStackMemory thread MemoryBlockInitialization.ZeroInitialized 8 state
+
+        let state =
+            IlMachineState.writeManagedByref state ptr (CliType.ValueType plainWrapper)
+
+        let projectedPtr =
+            ptr
+            |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs (concreteTypeFor bct.Byte))
+
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer projectedPtr) thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.FieldHandlePtr 99L)) thread
+
+        Assert.Throws<System.Exception> (fun () ->
+            NullaryIlOp.execute loggerFactory bct state thread NullaryIlOp.Stind_I |> ignore
+        )
+        |> ignore
+
+    [<Test>]
     let ``Stobj of the same struct type over a tagged struct-wrapper cell is accepted on both byref shapes`` () : unit =
         // The shape rule rejects a *change* of shape, not repetition. Storing
         // another instance of the same declared struct preserves everything a
