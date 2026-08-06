@@ -22,20 +22,14 @@ module TestRaces =
     let private dotnetRuntimes : ImmutableArray<string> =
         DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
 
-    /// Run `image` through PawPrint with the given scheduler seed and return
-    /// the guest's exit code. Fails the test loudly on any non-normal exit:
-    /// FailFast / signal / unhandled exception under a race test would
-    /// indicate either a corrupted interpreter state or a guest assumption
-    /// the test was not designed to handle, and silently folding them into
-    /// the observed set would muddle the legality claim.
-    let private runPawPrint (sourceName : string) (image : byte[]) (seed : uint64 option) : int =
-        let _messages, loggerFactory =
-            LoggerFactory.makeTestWithProperties [ "source_file", sourceName ]
-
-        use _loggerFactoryResource = loggerFactory
-        use peImage = new MemoryStream (image)
-
-        match Program.run loggerFactory (Some sourceName) peImage dotnetRuntimes KernelConfig.Default seed [] with
+    /// Extract the guest's exit code from a completed run. Fails the test
+    /// loudly on any non-normal exit: FailFast / signal / unhandled exception
+    /// under a race test would indicate either a corrupted interpreter state
+    /// or a guest assumption the test was not designed to handle, and
+    /// silently folding them into the observed set would muddle the legality
+    /// claim.
+    let private exitCodeOfOutcome (sourceName : string) (seed : uint64 option) (outcome : RunOutcome) : int =
+        match outcome with
         | RunOutcome.NormalExit (terminalState, terminatingThread)
         | RunOutcome.ProcessExit (terminalState, terminatingThread) ->
             match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
@@ -50,6 +44,18 @@ module TestRaces =
             failwith $"%s{sourceName} (seed=%A{seed}) was terminated by POSIX signal %O{signal}"
         | RunOutcome.GuestUnhandledException (_, _, exn) ->
             failwith $"%s{sourceName} (seed=%A{seed}) threw unhandled exception: %O{exn.ExceptionObject}"
+
+    /// Run `image` through PawPrint with the given scheduler seed and return
+    /// the guest's exit code.
+    let private runPawPrint (sourceName : string) (image : byte[]) (seed : uint64 option) : int =
+        let _messages, loggerFactory =
+            LoggerFactory.makeTestWithProperties [ "source_file", sourceName ]
+
+        use _loggerFactoryResource = loggerFactory
+        use peImage = new MemoryStream (image)
+
+        Program.run loggerFactory (Some sourceName) peImage dotnetRuntimes KernelConfig.Default seed []
+        |> exitCodeOfOutcome sourceName seed
 
     /// Run `image` through the real .NET runtime once. Fails the test on
     /// unhandled exception. The host's threading and memory ordering pin
@@ -117,3 +123,91 @@ module TestRaces =
 
             failwith
                 $"ReadWriteRace.cs PCT sweep over %d{List.length pctSeedSweep} seeds observed %A{Set.toList observed}; expected %A{Set.toList readWriteRaceLegalOutcomes}. Missing: %A{Set.toList missing}; Unexpected: %A{Set.toList extra}."
+
+    /// Step `image` instruction by instruction under the given scheduler seed,
+    /// returning the guest's exit code and how many steps reported
+    /// `WhatWeDid.BlockedOnClassInit` — i.e. how many times a thread found a
+    /// type's initialiser already in progress on a *different* thread.
+    ///
+    /// Drives `Program.stepPrepared` rather than `Program.run` purely for that
+    /// count: the outcome of each step is otherwise invisible from the terminal
+    /// state, and a contention test that cannot see whether it contended is not
+    /// a test.
+    let private runCountingClassInitBlocks (sourceName : string) (image : byte[]) (seed : uint64 option) : int * int =
+        let _messages, loggerFactory =
+            LoggerFactory.makeTestWithProperties [ "source_file", sourceName ]
+
+        use _loggerFactoryResource = loggerFactory
+        use peImage = new MemoryStream (image)
+        let logger = loggerFactory.CreateLogger "TestRaces"
+
+        match Program.prepare loggerFactory (Some sourceName) peImage dotnetRuntimes KernelConfig.Default seed [] with
+        | Program.ProgramStartResult.CompletedBeforeMain outcome ->
+            failwith
+                $"%s{sourceName} (seed=%A{seed}) completed before Main ran (%A{outcome}); the race is between two threads inside Main"
+        | Program.ProgramStartResult.Ready prepared ->
+            let rec loop (prepared : Program.PreparedProgram) (blocked : int) : int * int =
+                match Program.stepPrepared loggerFactory logger prepared with
+                | Program.ProgramStepOutcome.Completed outcome -> exitCodeOfOutcome sourceName seed outcome, blocked
+                | Program.ProgramStepOutcome.Deadlocked (_, stuck) ->
+                    failwith $"%s{sourceName} (seed=%A{seed}) deadlocked with threads stuck: %s{stuck}"
+                | Program.ProgramStepOutcome.InstructionStepped (p, _, whatWeDid) ->
+                    match whatWeDid with
+                    | WhatWeDid.BlockedOnClassInit _ -> loop p (blocked + 1)
+                    | _ -> loop p blocked
+                | Program.ProgramStepOutcome.WorkerTerminated (p, _) -> loop p blocked
+
+            loop prepared 0
+
+    /// ECMA-335 II.10.5.3.2 leaves no latitude here, unlike ReadWriteRace: a
+    /// thread that finds a type initialiser running on another thread blocks
+    /// until it completes, so both threads necessarily observe the fully
+    /// initialised static. The one legal exit code is 0; 1 or 2 would mean a
+    /// thread read `SlowCctor.Value` while the `.cctor` was still counting.
+    let private newobjCctorRaceLegalOutcomes : Set<int> = Set.ofList [ 0 ]
+
+    [<Test>]
+    let ``NewobjCctorRace under the real runtime produces a legal outcome`` () : unit =
+        let image = compileImage "NewobjCctorRace.cs"
+        let exitCode = runRealRuntime "NewobjCctorRace.cs" image
+        newobjCctorRaceLegalOutcomes |> Set.contains exitCode |> shouldEqual true
+
+    [<Test>]
+    let ``NewobjCctorRace under PCT covers every legal outcome`` () : unit =
+        // Unlike the ReadWriteRace sweep this is a single-element set, so the
+        // equality is really "no seed ever sees a partially-initialised type".
+        // The sweep is what makes that a claim about the blocking *and* the
+        // resumption: a thread parked on the initialiser has to be woken and
+        // has to re-execute its `newobj` correctly, under every interleaving
+        // PCT reaches, not merely under the default round-robin.
+        let image = compileImage "NewobjCctorRace.cs"
+
+        let observed =
+            pctSeedSweep
+            |> List.map (fun seed -> runPawPrint "NewobjCctorRace.cs" image (Some seed))
+            |> Set.ofList
+
+        if observed <> newobjCctorRaceLegalOutcomes then
+            let missing = Set.difference newobjCctorRaceLegalOutcomes observed
+            let extra = Set.difference observed newobjCctorRaceLegalOutcomes
+
+            failwith
+                $"NewobjCctorRace.cs PCT sweep over %d{List.length pctSeedSweep} seeds observed %A{Set.toList observed}; expected %A{Set.toList newobjCctorRaceLegalOutcomes}. Missing: %A{Set.toList missing}; Unexpected: %A{Set.toList extra}."
+
+    [<Test>]
+    let ``NewobjCctorRace really does contend on the type initialiser`` () : unit =
+        // Guards the tests above against silently ceasing to test anything.
+        // Every assertion they make is also satisfied by a schedule in which
+        // the two `newobj`s never overlap — the losing thread would simply
+        // find the type already initialised and sail through. If a future
+        // scheduler change, or a change to the cctor's cost, stops the threads
+        // overlapping, this fails and says so, rather than leaving a
+        // contention test that contends with nothing.
+        let image = compileImage "NewobjCctorRace.cs"
+        let exitCode, blocked = runCountingClassInitBlocks "NewobjCctorRace.cs" image None
+
+        exitCode |> shouldEqual 0
+
+        if blocked = 0 then
+            failwith
+                "NewobjCctorRace.cs ran to completion under the default schedule without either thread ever blocking on the other's type initialiser, so it no longer exercises the contended `newobj` path. Lengthen SlowCctor's initialiser, or pick a seed that interleaves the two `newobj`s."

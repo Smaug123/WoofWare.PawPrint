@@ -262,7 +262,16 @@ module internal UnaryMetadataObjectOps =
             IlMachineStateExecution.ensureTypeInitialised loggerFactory baseClassTypes thread declaringTypeHandle state
 
         match init with
-        | WhatWeDid.BlockedOnClassInit state -> failwith "TODO: another thread is running the initialiser"
+        // Park this thread on the other thread's in-progress cctor, exactly as `call`/`callvirt`
+        // (UnaryMetadataCallOps) and the static-field ops (UnaryMetadataFieldOps) already do.
+        // Nothing has been popped yet — the constructor's arguments are consumed later, inside
+        // `callMethod` — and the program counter has not been advanced, so when the scheduler
+        // wakes us we simply re-execute this `newobj` from the top. `ensureTypeInitialised`
+        // returns the state unmodified on this path, and the work done above it (assembly
+        // loading, member resolution, concretization) is idempotent cache population, so the
+        // retry observes no partial effect of this attempt. Unlike the call ops there is no
+        // `constrained.` prefix to reinstate, because `newobj` cannot carry one.
+        | WhatWeDid.BlockedOnClassInit blockedBy -> state, WhatWeDid.BlockedOnClassInit blockedBy
         | WhatWeDid.SuspendedForClassInit -> state, WhatWeDid.SuspendedForClassInit
         | WhatWeDid.SuspendedForManagedCall ->
             failwith "logic error: ensureTypeInitialised cannot suspend for an arbitrary managed call"
