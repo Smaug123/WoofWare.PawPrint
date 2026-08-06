@@ -455,3 +455,299 @@ module TestNullaryIlOp =
             methodState.IlOpIndex
             |> shouldEqual (IlOp.NumberOfBytes (IlOp.Nullary NullaryIlOp.Tail))
         | other -> failwith $"Expected Tail to step, got %O{other}"
+
+    /// A `conv.ovf.i` source operand, together with enough structure to say what the
+    /// answer must be. Numeric sources are checked against the host's own `conv.ovf.i`
+    /// (`Checked.nativeint`, which the host emits as that exact opcode); tagged sources
+    /// have no numeric oracle, and the property is instead that the tag survives.
+    [<RequireQualifiedAccess>]
+    type private ConvOvfICase =
+        | Int32Value of int32
+        | Int64Value of int64
+        | NativeIntVerbatim of int64
+        | FloatValue of float
+        | Int64CrossArrayOffset of SyntheticCrossArrayOffset
+        | NativeIntCrossArrayOffset of SyntheticCrossArrayOffset
+        | Int64OpaqueHashBits of int64
+        | NativeIntOpaqueHashBits of int64
+        /// `conv.i8` / `conv.u8` of a pointer-shaped native int, narrowed back again.
+        | WidenedPointer of signed : bool
+        | ManagedPointerNull
+        | NativeIntManagedPointerNull
+        | NullObjectRef
+
+    /// The host runs `conv.ovf.i` for us: F#'s `Checked.nativeint` compiles to that
+    /// opcode, and the host is the same 64-bit width PawPrint models, so it is a true
+    /// oracle for the numeric source shapes rather than a restatement of our code.
+    let private hostConvOvfIFromInt64 (value : int64) : Result<int64, unit> =
+        try
+            Checked.nativeint value |> int64 |> Ok
+        with :? OverflowException ->
+            Error ()
+
+    let private hostConvOvfIFromFloat (value : float) : Result<int64, unit> =
+        try
+            Checked.nativeint value |> int64 |> Ok
+        with :? OverflowException ->
+            Error ()
+
+    /// The pointer shape used for the `WidenedNativeInt` round-trip. It is deliberately
+    /// one the *bare* native-int path refuses: `conv.i8` of a method handle followed by
+    /// `conv.ovf.i` must invert to the original handle (the widening is bit-preserving
+    /// on 64 bits), whereas a method handle arriving directly at `conv.ovf.i` has no
+    /// observed call site and so fails loudly. `Conv_ovf_u` draws the line in the same
+    /// place.
+    let private widenedPointerSource : NativeIntSource =
+        NativeIntSource.MethodHandlePtr 7L
+
+    let private convOvfICaseInput (case : ConvOvfICase) : EvalStackValue =
+        match case with
+        | ConvOvfICase.Int32Value value -> EvalStackValue.Int32 value
+        | ConvOvfICase.Int64Value value -> EvalStackValue.Int64 (Int64Source.Verbatim value)
+        | ConvOvfICase.NativeIntVerbatim value -> EvalStackValue.NativeInt (NativeIntSource.Verbatim value)
+        | ConvOvfICase.FloatValue value -> EvalStackValue.Float value
+        | ConvOvfICase.Int64CrossArrayOffset offset ->
+            EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset offset)
+        | ConvOvfICase.NativeIntCrossArrayOffset offset ->
+            EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset offset)
+        | ConvOvfICase.Int64OpaqueHashBits bits -> EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits)
+        | ConvOvfICase.NativeIntOpaqueHashBits bits -> EvalStackValue.NativeInt (NativeIntSource.OpaqueHashBits bits)
+        | ConvOvfICase.WidenedPointer signed ->
+            EvalStackValue.Int64 (Int64Source.widenedNativeInt widenedPointerSource signed)
+        | ConvOvfICase.ManagedPointerNull -> EvalStackValue.ManagedPointer ManagedPointerSource.Null
+        | ConvOvfICase.NativeIntManagedPointerNull ->
+            EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)
+        | ConvOvfICase.NullObjectRef -> EvalStackValue.NullObjectRef
+
+    let private convOvfIExpected (case : ConvOvfICase) : Result<NativeIntSource, unit> =
+        let ofVerbatim (r : Result<int64, unit>) : Result<NativeIntSource, unit> =
+            r |> Result.map NativeIntSource.Verbatim
+
+        match case with
+        | ConvOvfICase.Int32Value value -> hostConvOvfIFromInt64 (int64 value) |> ofVerbatim
+        | ConvOvfICase.Int64Value value -> hostConvOvfIFromInt64 value |> ofVerbatim
+        | ConvOvfICase.NativeIntVerbatim value -> hostConvOvfIFromInt64 value |> ofVerbatim
+        | ConvOvfICase.FloatValue value -> hostConvOvfIFromFloat value |> ofVerbatim
+        | ConvOvfICase.Int64CrossArrayOffset offset -> NativeIntSource.SyntheticCrossArrayOffset offset |> Ok
+        | ConvOvfICase.NativeIntCrossArrayOffset offset -> NativeIntSource.SyntheticCrossArrayOffset offset |> Ok
+        | ConvOvfICase.Int64OpaqueHashBits bits -> NativeIntSource.OpaqueHashBits bits |> Ok
+        | ConvOvfICase.NativeIntOpaqueHashBits bits -> NativeIntSource.OpaqueHashBits bits |> Ok
+        | ConvOvfICase.WidenedPointer _ -> Ok widenedPointerSource
+        | ConvOvfICase.ManagedPointerNull -> NativeIntSource.ManagedPointer ManagedPointerSource.Null |> Ok
+        | ConvOvfICase.NativeIntManagedPointerNull -> NativeIntSource.ManagedPointer ManagedPointerSource.Null |> Ok
+        | ConvOvfICase.NullObjectRef -> NativeIntSource.ManagedPointer ManagedPointerSource.Null |> Ok
+
+    /// Doubles chosen to sit on and around every boundary `conv.ovf.i` cares about:
+    /// `2^63` (the smallest double above Int64.MaxValue), `-2^63` (exactly
+    /// Int64.MinValue, and in range), the neighbouring representable doubles either
+    /// side of both, and the truncate-toward-zero cases near 0.
+    let private convOvfIFloatEdges : float list =
+        [
+            0.0
+            -0.0
+            0.5
+            -0.5
+            0.9999999999999999
+            -0.9999999999999999
+            1.0
+            -1.0
+            100.5
+            -100.5
+            Double.Epsilon
+            -Double.Epsilon
+            // 2^63 - 1024: the largest double <= Int64.MaxValue, and in range.
+            9223372036854774784.0
+            // 2^63: the smallest double > Int64.MaxValue; overflows.
+            9223372036854775808.0
+            // -2^63: exactly Int64.MinValue; in range.
+            -9223372036854775808.0
+            // -2^63 - 2048: the largest-magnitude double below Int64.MinValue that is
+            // still the next one down; overflows.
+            -9223372036854777856.0
+            Double.MaxValue
+            -Double.MaxValue
+            Double.PositiveInfinity
+            Double.NegativeInfinity
+            Double.NaN
+        ]
+
+    let private genConvOvfIFloat : Gen<float> =
+        let finite =
+            gen {
+                let! numerator = Gen.choose (-1_000_000_000, 1_000_000_000)
+                let! denominator = Gen.choose (1, 1_000)
+
+                return float numerator / float denominator
+            }
+
+        // Scaled around the 2^63 boundary, so draws land just inside and just outside
+        // the representable range rather than always deep within it.
+        let nearBoundary =
+            gen {
+                let! scale = Gen.choose (-2_000, 2_000)
+                return 9223372036854775808.0 * (1.0 + float scale / 1000.0)
+            }
+
+        // Strictly outside `[-2^63, 2^63)` in both directions: always overflows.
+        let outOfRange =
+            gen {
+                let! magnitude = Gen.choose (1, 1_000)
+                let! negative = ArbMap.defaults |> ArbMap.generate<bool>
+                let value = 9223372036854775808.0 * (1.0 + float magnitude / 1000.0)
+                return if negative then -value else value
+            }
+
+        let fromInt64Bits = ArbMap.defaults |> ArbMap.generate<int64> |> Gen.map float
+
+        Gen.frequency
+            [
+                3, finite
+                4, nearBoundary
+                5, outOfRange
+                2, fromInt64Bits
+                3, Gen.elements convOvfIFloatEdges
+            ]
+
+    let private genConvOvfICase : Gen<ConvOvfICase> =
+        let genInt32 =
+            Gen.frequency
+                [
+                    8, ArbMap.defaults |> ArbMap.generate<int32>
+                    2, Gen.elements [ Int32.MinValue ; Int32.MaxValue ; -1 ; 0 ; 1 ]
+                ]
+
+        let genInt64 =
+            Gen.frequency
+                [
+                    8, ArbMap.defaults |> ArbMap.generate<int64>
+                    2, Gen.elements [ Int64.MinValue ; Int64.MaxValue ; -1L ; 0L ; 1L ]
+                ]
+
+        Gen.frequency
+            [
+                3, genInt32 |> Gen.map ConvOvfICase.Int32Value
+                3, genInt64 |> Gen.map ConvOvfICase.Int64Value
+                3, genInt64 |> Gen.map ConvOvfICase.NativeIntVerbatim
+                // Floats are weighted heavily: on a 64-bit interpreter they are the only
+                // source shape that can overflow at all.
+                10, genConvOvfIFloat |> Gen.map ConvOvfICase.FloatValue
+                1, genSyntheticCrossArrayOffset |> Gen.map ConvOvfICase.Int64CrossArrayOffset
+                1, genSyntheticCrossArrayOffset |> Gen.map ConvOvfICase.NativeIntCrossArrayOffset
+                1, genInt64 |> Gen.map ConvOvfICase.Int64OpaqueHashBits
+                1, genInt64 |> Gen.map ConvOvfICase.NativeIntOpaqueHashBits
+                1, ArbMap.defaults |> ArbMap.generate<bool> |> Gen.map ConvOvfICase.WidenedPointer
+                1, Gen.constant ConvOvfICase.ManagedPointerNull
+                1, Gen.constant ConvOvfICase.NativeIntManagedPointerNull
+                1, Gen.constant ConvOvfICase.NullObjectRef
+            ]
+
+    let private convOvfIEdgeCases : ConvOvfICase list =
+        [
+            for value in [ Int32.MinValue ; Int32.MaxValue ; -1 ; 0 ; 1 ] do
+                ConvOvfICase.Int32Value value
+            for value in [ Int64.MinValue ; Int64.MaxValue ; -1L ; 0L ; 1L ] do
+                ConvOvfICase.Int64Value value
+                ConvOvfICase.NativeIntVerbatim value
+                ConvOvfICase.Int64OpaqueHashBits value
+                ConvOvfICase.NativeIntOpaqueHashBits value
+            for value in convOvfIFloatEdges do
+                ConvOvfICase.FloatValue value
+            ConvOvfICase.WidenedPointer true
+            ConvOvfICase.WidenedPointer false
+            ConvOvfICase.ManagedPointerNull
+            ConvOvfICase.NativeIntManagedPointerNull
+            ConvOvfICase.NullObjectRef
+            ConvOvfICase.Int64CrossArrayOffset (
+                SyntheticCrossArrayOffset.make syntheticStorageIdentities.[0] 0L syntheticStorageIdentities.[1] 0L
+            )
+            ConvOvfICase.NativeIntCrossArrayOffset (
+                SyntheticCrossArrayOffset.make syntheticStorageIdentities.[2] -1L syntheticStorageIdentities.[3] 1L
+            )
+        ]
+
+    let private checkConvOvfICase (case : ConvOvfICase) : unit =
+        NullaryIlOp.convOvfI (convOvfICaseInput case)
+        |> shouldEqual (convOvfIExpected case)
+
+    [<Test>]
+    let ``Conv_ovf_i agrees with the host's checked conversion and preserves provenance`` () : unit =
+        let mutable overflows = 0
+        let mutable successes = 0
+
+        let property (case : ConvOvfICase) : unit =
+            match convOvfIExpected case with
+            | Ok _ -> successes <- successes + 1
+            | Error () -> overflows <- overflows + 1
+
+            checkConvOvfICase case
+
+        for case in convOvfIEdgeCases do
+            property case
+
+        Check.One (config, Prop.forAll (Arb.fromGen genConvOvfICase) property)
+
+        // Guard against a generator that silently stops exercising one side: on a
+        // 64-bit interpreter only floats can overflow `conv.ovf.i`, so an unbalanced
+        // float generator would turn this into a success-path-only test. The generator
+        // is tuned to produce roughly 80 overflows in 500 draws, so 30 is a wide
+        // margin rather than a threshold the run can drift across.
+        if overflows < 30 || successes < 30 then
+            failwith $"Conv_ovf_i generator was unbalanced: %d{overflows} overflows, %d{successes} successes"
+
+    [<Test>]
+    let ``Conv_ovf_i pushes a native int and advances past its own encoding`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let input = EvalStackValue.Int64 (Int64Source.Verbatim -5L)
+        let state, thread = stateWithNullary loggerFactory NullaryIlOp.Conv_ovf_i input
+
+        match NullaryIlOp.execute loggerFactory baseClassTypes state thread NullaryIlOp.Conv_ovf_i with
+        | ExecutionResult.Stepped (state, whatWeDid, _) ->
+            whatWeDid |> shouldEqual WhatWeDid.Executed
+
+            let methodState = state.ThreadState.[thread].MethodState
+
+            methodState.EvaluationStack.Values
+            |> shouldEqual [ EvalStackValue.NativeInt (NativeIntSource.Verbatim -5L) ]
+
+            methodState.IlOpIndex
+            |> shouldEqual (IlOp.NumberOfBytes (IlOp.Nullary NullaryIlOp.Conv_ovf_i))
+        | other -> failwith $"Expected Conv_ovf_i to step, got %O{other}"
+
+    [<Test>]
+    let ``Conv_ovf_i raises OverflowException without advancing the faulting PC`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        // 2^63 is the smallest double greater than Int64.MaxValue.
+        let input = EvalStackValue.Float 9223372036854775808.0
+        let state, thread = stateWithNullary loggerFactory NullaryIlOp.Conv_ovf_i input
+
+        match NullaryIlOp.execute loggerFactory baseClassTypes state thread NullaryIlOp.Conv_ovf_i with
+        | ExecutionResult.Stepped (state, whatWeDid, _) ->
+            whatWeDid |> shouldEqual WhatWeDid.Executed
+
+            let threadState = state.ThreadState.[thread]
+
+            // The runtime has pushed a frame running `OverflowException..ctor`.
+            let ctor = threadState.MethodState.ExecutingMethod
+            ctor.Name |> shouldEqual ".ctor"
+
+            let declaring = ctor.DeclaringType
+            declaring.Namespace |> shouldEqual "System"
+            declaring.Name |> shouldEqual "OverflowException"
+
+            // Exception dispatch needs the faulting instruction's offset, so the frame
+            // that executed `conv.ovf.i` must still be sitting on it. It is no longer
+            // the active frame, so find it by frame id.
+            let faultingFrame =
+                threadState.MethodStates
+                |> Map.toSeq
+                |> Seq.filter (fun (frameId, _) -> frameId <> threadState.ActiveMethodState)
+                |> Seq.exactlyOne
+                |> snd
+
+            faultingFrame.IlOpIndex |> shouldEqual 0
+            faultingFrame.EvaluationStack.Values |> shouldEqual []
+        | other -> failwith $"Expected Conv_ovf_i overflow to step, got %O{other}"
