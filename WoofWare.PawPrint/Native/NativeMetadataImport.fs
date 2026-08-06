@@ -689,6 +689,57 @@ module NativeMetadataImport =
         | "System.Private.CoreLib",
           "System.Reflection",
           "MetadataImport",
+          "GetMemberRefProps",
+          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcreteByref (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                             "System.Reflection",
+                                                             "ConstArray",
+                                                             constArrayGenerics)) ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
+            constArrayGenerics.IsEmpty
+            ->
+            let operation = "MetadataImport.GetMemberRefProps"
+            let assemblyFullName = metadataImportHandleOfArg operation instruction.Arguments.[0]
+            let assembly = metadataImportAssembly operation state assemblyFullName
+
+            let mdToken =
+                match CliType.unwrapPrimitiveLikeDeep instruction.Arguments.[1] with
+                | CliType.Numeric (CliNumericType.Int32 mdToken) -> mdToken
+                | other -> failwith $"%s{operation}: expected Int32 memberTokenRef argument, got %O{other}"
+
+            let signatureOut =
+                NativeCall.managedPointerOfPointerArgument operation "signature out pointer" instruction.Arguments.[2]
+
+            let memberRefHandle =
+                match MetadataToken.ofInt mdToken with
+                | MetadataToken.MemberReference h -> h
+                | token -> failwith $"%s{operation}: expected MemberRef token, got %O{token} from 0x%08x{mdToken}"
+
+            if not (assembly.Members.ContainsKey memberRefHandle) then
+                failwith $"%s{operation}: MemberRef token 0x%08x{mdToken} was not present in %s{assemblyFullName}"
+
+            // CoreCLR's FCall forwards to `IMDInternalImport::GetNameAndSigOfMemberRef` and discards
+            // the name, so the contract is "raw signature blob bytes for the supplied MemberRef
+            // token". PawPrint decodes MemberRef signatures eagerly into `MemberSignature`; the
+            // unparsed blob is recovered on demand from the metadata reader, as for GetSigOfMethodDef.
+            let mr = metadataReaderOf assembly
+            let memberRef = mr.GetMemberReference memberRefHandle
+            let blob = ImmutableArray.Create<byte> (mr.GetBlobBytes memberRef.Signature)
+
+            let constArrayValue, state =
+                buildConstArray ctx.LoggerFactory ctx.BaseClassTypes operation blob state
+
+            let state =
+                IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state signatureOut constArrayValue
+
+            let state =
+                IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread state
+
+            NativeHandlerResult.completed state |> Some
+        | "System.Private.CoreLib",
+          "System.Reflection",
+          "MetadataImport",
           "GetParentToken",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
             ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32

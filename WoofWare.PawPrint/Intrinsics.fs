@@ -540,6 +540,108 @@ module Intrinsics =
                 executeInt64 methodToCall.Name state |> IntrinsicResult.Completed
             | _ -> IntrinsicResult.Unrecognised
 
+        | "System.Private.CoreLib", "Interlocked", ("And" | "Or") ->
+            // Both return the *original* value at the location, not the combined one.
+            // The read-modify-write happens inside one intrinsic dispatch, so the
+            // scheduler cannot interleave another guest thread between the read and
+            // the write; that is what makes these atomic, and it is why we implement
+            // them here rather than letting the shipped CAS-loop IL be interpreted.
+            // Only the Int32 and Int64 overloads are [Intrinsic]; the UInt32/UInt64
+            // ones are `Unsafe.As`-to-signed forwarders whose IL runs normally and
+            // bottoms out in these two shapes, so they deliberately get no arm.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Threading/Interlocked.cs#L583-L710
+            let isOr = methodToCall.Name = "Or"
+
+            let executeInt32 (operation : string) (state : IlMachineState) : IntrinsicResult =
+                let valueArg, state = IlMachineState.popEvalStack currentThread state
+                let byrefArg, state = IlMachineState.popEvalStack currentThread state
+
+                let value =
+                    EvalStackValue.convToInt32 valueArg
+                    |> Option.defaultWith (fun () -> failwith $"%s{operation}: expected int32 value, got %O{valueArg}")
+
+                match popManagedByrefArgument operation byrefArg with
+                | ManagedPointerSource.Null ->
+                    // `<exception cref="NullReferenceException">The address of location1 is a
+                    // null pointer.</exception>`. The managed body opens with a plain load of
+                    // `location1`, so the fault comes from that dereference and the runtime
+                    // raises the parameterless NullReferenceException.
+                    IntrinsicResult.RaiseException (state, baseClassTypes.NullReferenceException, None)
+                | byrefSrc ->
+                    let currentValue = IlMachineState.readManagedByref baseClassTypes state byrefSrc
+
+                    let current =
+                        match EvalStackValue.ofCliType currentValue with
+                        | EvalStackValue.Int32 i -> i
+                        | other -> failwith $"%s{operation}: expected int32 in target location, got %O{other}"
+
+                    let updated = if isOr then current ||| value else current &&& value
+
+                    let state =
+                        IlMachineState.writeManagedByrefWithBase
+                            baseClassTypes
+                            state
+                            byrefSrc
+                            (EvalStackValue.toCliTypeCoerced currentValue (EvalStackValue.Int32 updated))
+
+                    state
+                    |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 current) currentThread
+                    |> IlMachineState.advanceProgramCounter currentThread
+                    |> IntrinsicResult.Completed
+
+            let executeInt64 (operation : string) (state : IlMachineState) : IntrinsicResult =
+                let valueArg, state = IlMachineState.popEvalStack currentThread state
+                let byrefArg, state = IlMachineState.popEvalStack currentThread state
+
+                let value =
+                    EvalStackValue.convToInt64 valueArg
+                    |> Option.defaultWith (fun () -> failwith $"%s{operation}: expected int64 value, got %O{valueArg}")
+
+                match popManagedByrefArgument operation byrefArg with
+                | ManagedPointerSource.Null ->
+                    // See the Int32 helper above for why this is a parameterless NRE.
+                    IntrinsicResult.RaiseException (state, baseClassTypes.NullReferenceException, None)
+                | byrefSrc ->
+                    let currentValue = IlMachineState.readManagedByref baseClassTypes state byrefSrc
+
+                    let current =
+                        match EvalStackValue.ofCliType currentValue with
+                        | EvalStackValue.Int64 i -> i
+                        | other -> failwith $"%s{operation}: expected int64 in target location, got %O{other}"
+
+                    // Defer to the same provenance-aware bit ops the `and`/`or` IL opcodes use
+                    // (NullaryIlOp.fs), so that masking a pointer-derived int64 synthesises hash
+                    // bits rather than failing.
+                    let combine = if isOr then Int64Source.bitOr else Int64Source.bitAnd
+
+                    let updated, counters = combine operation current value state.PointerHashCounters
+
+                    let state =
+                        { state with
+                            PointerHashCounters = counters
+                        }
+
+                    let state =
+                        IlMachineState.writeManagedByrefWithBase
+                            baseClassTypes
+                            state
+                            byrefSrc
+                            (EvalStackValue.toCliTypeCoerced currentValue (EvalStackValue.Int64 updated))
+
+                    state
+                    |> IlMachineState.pushToEvalStack' (EvalStackValue.Int64 current) currentThread
+                    |> IlMachineState.advanceProgramCounter currentThread
+                    |> IntrinsicResult.Completed
+
+            let operation = $"Interlocked.%s{methodToCall.Name}"
+
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteByref (ConcreteInt32 state.ConcreteTypes) ; ConcreteInt32 state.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) -> executeInt32 operation state
+            | [ ConcreteByref (ConcreteInt64 state.ConcreteTypes) ; ConcreteInt64 state.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteInt64 state.ConcreteTypes) -> executeInt64 operation state
+            | _ -> IntrinsicResult.Unrecognised
+
         | "System.Private.CoreLib", "Interlocked", "MemoryBarrier" ->
             // [Intrinsic] public static void MemoryBarrier() => MemoryBarrier();
             // Same shape as Volatile.{Read,Write}Barrier (below): the managed body is

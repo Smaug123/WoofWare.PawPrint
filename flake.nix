@@ -46,6 +46,55 @@
           "eng"
         ];
       };
+      # The target framework moniker the runtime pack lays its managed assemblies out under.
+      # Tracks the major version in expectedRuntimeVersion; the install phase below fails loudly
+      # if the pack's layout ever stops matching, rather than silently producing an empty dir.
+      linuxFrameworkTfm = "net10.0";
+      # The managed framework assemblies from the linux-x64 runtime pack, at the same servicing
+      # version we emulate, exposed to the devshell as $DOTNET_LINUX_FRAMEWORK_DIR.
+      #
+      # Why this exists: PawPrint interprets whichever CoreLib it is pointed at, and CoreLib is
+      # `#if`-split per target — e.g. `Lock.ThreadId.InitializeForCurrentThread` calls
+      # `GetUInt64OSThreadId` under TARGET_OSX and `TryGetUInt32OSThreadId` elsewhere. Every
+      # entry point otherwise resolves the *host's* shared framework, so a macOS dev box can
+      # only ever exercise the macOS BCL while production and CI run the Linux one. Pointing the
+      # interpreter's runtime-dir list at this pack closes that gap.
+      #
+      # Only the managed assemblies are kept: PawPrint never loads native code (that is the
+      # point of the project), so the pack's `native/` tree is closure for nothing.
+      #
+      # The version tracks expectedRuntimeVersion, so `hash` must be bumped in the same commit.
+      dotnet-linux-framework = pkgs.stdenvNoCC.mkDerivation {
+        pname = "dotnet-linux-x64-framework";
+        version = expectedRuntimeVersion;
+        src = pkgs.fetchurl {
+          url = "https://api.nuget.org/v3-flatcontainer/microsoft.netcore.app.runtime.linux-x64/${expectedRuntimeVersion}/microsoft.netcore.app.runtime.linux-x64.${expectedRuntimeVersion}.nupkg";
+          hash = "sha256-0IUm9tRbSam4/WKnyawtfKs/q1pHOxxJ4AUOAPJSYvo=";
+        };
+        nativeBuildInputs = [pkgs.unzip];
+        # A .nupkg is a zip, but the default unpackPhase dispatches on file extension and does
+        # not recognise it.
+        unpackPhase = ''
+          runHook preUnpack
+          unzip -qq "$src" -d pack
+          runHook postUnpack
+        '';
+        installPhase = ''
+          runHook preInstall
+          libDir="pack/runtimes/linux-x64/lib/${linuxFrameworkTfm}"
+          if [ ! -f "$libDir/System.Private.CoreLib.dll" ]; then
+            echo "Runtime pack layout changed: expected $libDir/System.Private.CoreLib.dll." >&2
+            echo "Check linuxFrameworkTfm against the pack contents." >&2
+            exit 1
+          fi
+          mkdir -p "$out"
+          cp "$libDir"/*.dll "$out/"
+          runHook postInstall
+        '';
+        # Managed assemblies: nothing to strip, patchelf, or rewrite. Fixup on 170-odd DLLs is
+        # pure cost, and on macOS the darwin fixup hooks would inspect them pointlessly.
+        dontFixup = true;
+      };
       dotnetTool = dllOverride: toolName: toolVersion: hash:
         pkgs.stdenvNoCC.mkDerivation rec {
           name = toolName;
@@ -110,6 +159,10 @@
         # Pinned read-only dotnet/runtime source for checking upstream behaviour; see the
         # sync-dotnet-runtime command. Replaces the old ad-hoc ../dotnet-runtime sibling checkout.
         DOTNET_RUNTIME_SRC = dotnet-runtime-src;
+        # Managed linux-x64 framework assemblies, so tests can point the interpreter at the
+        # CoreLib flavour production runs instead of the host's. See dotnet-linux-framework.
+        # Tests that need it skip when it is unset, so a non-Nix checkout still works.
+        DOTNET_LINUX_FRAMEWORK_DIR = dotnet-linux-framework;
         # Force polling-based file watcher to avoid hangs in
         # FileSystemWatcher.StartRaisingEvents on macOS (FSEvents/CoreFoundation
         # path can deadlock under load when ASP.NET hosts created in tests

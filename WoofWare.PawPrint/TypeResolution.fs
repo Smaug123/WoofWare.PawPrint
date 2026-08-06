@@ -42,9 +42,14 @@ module TypeResolution =
             let assemblyName = assemblyRef.Name
             let logger = loggerFactory.CreateLogger typeof<Dummy>.DeclaringType
 
+            // `tryPick`, not `choose |> tryHead`: the first hit is the binding, so every
+            // later dir must go unread. Reading them anyway is not merely wasted parsing
+            // (though it is that too, and a runtime dir list often holds a whole second
+            // framework) — it lets a directory we were never going to bind against fail
+            // the load, because anything but FileNotFoundException escapes.
             let assy =
                 dotnetRuntimeDirs
-                |> Seq.choose (fun dir ->
+                |> Seq.tryPick (fun dir ->
                     let file = Path.Combine (dir, assemblyName.Name + ".dll")
 
                     try
@@ -53,9 +58,8 @@ module TypeResolution =
                     with :? FileNotFoundException ->
                         None
                 )
-                |> Seq.toList
 
-            match assy |> List.tryHead with
+            match assy with
             | None -> failwith $"Could not find a readable DLL in any runtime dir with name %s{assemblyName.Name}.dll"
             | Some assy ->
                 // Record both the assembly (under its own definition identity) and the binding
