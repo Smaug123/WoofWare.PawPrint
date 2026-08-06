@@ -3,6 +3,8 @@ namespace WoofWare.PawPrint.Test
 open System.Collections.Generic
 open System.Collections.Immutable
 open System.IO
+open FsCheck
+open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
@@ -357,3 +359,172 @@ module TestManagedHeap =
             )
 
         exn.Message |> shouldContainText "negative length"
+
+    // ---------------------------------------------------------------------
+    // Sync blocks (object headers).
+    //
+    // In CoreCLR every heap object carries an `ObjHeader` immediately before
+    // its payload, arrays and strings included (`src/coreclr/vm/object.h`);
+    // there is no array-shaped carve-out. So the sync block belongs to the
+    // *address*, not to the kind of payload stored there, and every live
+    // address must have exactly one.
+    // ---------------------------------------------------------------------
+
+    let private stubArray (length : int) : AllocatedArray =
+        {
+            ConcreteType = ConcreteTypeHandle.OneDimArrayZero (ConcreteTypeHandle.Concrete 1)
+            Length = length
+            Lengths = ImmutableArray.Create length
+            Elements =
+                Seq.replicate length (CliType.Numeric (CliNumericType.Int32 0))
+                |> ImmutableArray.CreateRange
+        }
+
+    /// A placeholder non-array object whose payload is never inspected by the
+    /// sync-block machinery. Constructed as `Unchecked.defaultof<_>` because
+    /// minting a real `CliValueType` needs `BaseClassTypes` plumbing that is
+    /// irrelevant here; if the sync-block code ever starts reading the payload,
+    /// these tests fail loudly with an NRE instead of silently passing.
+    let private stubNonArray : AllocatedNonArrayObject =
+        {
+            Contents = Unchecked.defaultof<CliValueType>
+            ConcreteType = ConcreteTypeHandle.Concrete 0
+        }
+
+    [<Test>]
+    let ``a freshly allocated array has an empty sync block`` () : unit =
+        let addr, heap = ManagedHeap.allocateArray (stubArray 3) ManagedHeap.empty
+
+        ManagedHeap.getSyncBlock addr heap |> shouldEqual SyncBlock.Empty
+
+    [<Test>]
+    let ``setSyncBlock then getSyncBlock round-trips on an array`` () : unit =
+        let addr, heap = ManagedHeap.allocateArray (stubArray 3) ManagedHeap.empty
+
+        let held : SyncBlock =
+            {
+                Lock =
+                    SyncBlockLock.Held
+                        {
+                            LockingThread = ThreadId 7
+                            ReentrancyCount = 2
+                            AcquireQueue = [ ThreadId 9, None ]
+                        }
+                WaitQueue = [ ThreadId 11, 1 ]
+            }
+
+        let heap = ManagedHeap.setSyncBlock addr held heap
+
+        ManagedHeap.getSyncBlock addr heap |> shouldEqual held
+
+    [<Test>]
+    let ``locking one array does not lock another`` () : unit =
+        let addr1, heap = ManagedHeap.allocateArray (stubArray 1) ManagedHeap.empty
+        let addr2, heap = ManagedHeap.allocateArray (stubArray 1) heap
+        let objAddr, heap = ManagedHeap.allocateNonArray stubNonArray heap
+
+        let held : SyncBlock =
+            {
+                Lock =
+                    SyncBlockLock.Held
+                        {
+                            LockingThread = ThreadId 1
+                            ReentrancyCount = 1
+                            AcquireQueue = []
+                        }
+                WaitQueue = []
+            }
+
+        let heap = ManagedHeap.setSyncBlock addr1 held heap
+
+        ManagedHeap.getSyncBlock addr1 heap |> shouldEqual held
+        ManagedHeap.getSyncBlock addr2 heap |> shouldEqual SyncBlock.Empty
+        ManagedHeap.getSyncBlock objAddr heap |> shouldEqual SyncBlock.Empty
+
+    [<Test>]
+    let ``getSyncBlock fails loudly for an address that was never allocated`` () : unit =
+        let exn =
+            Assert.Throws<System.Exception> (fun () ->
+                ManagedHeap.getSyncBlock (ManagedHeapAddress 42) ManagedHeap.empty |> ignore
+            )
+
+        exn.Message |> shouldContainText "not a live managed heap allocation"
+
+    [<Test>]
+    let ``setSyncBlock fails loudly for an address that was never allocated`` () : unit =
+        let exn =
+            Assert.Throws<System.Exception> (fun () ->
+                ManagedHeap.setSyncBlock (ManagedHeapAddress 42) SyncBlock.Empty ManagedHeap.empty
+                |> ignore
+            )
+
+        exn.Message |> shouldContainText "not a live managed heap allocation"
+
+    [<Test>]
+    let ``cloneArray gives the copy a fresh sync block, not the source's lock state`` () : unit =
+        // `Array.Clone` copies the elements, never the object header: the clone is a
+        // brand-new object and cannot inherit the source's monitor ownership or its
+        // queues. Getting this wrong would let `lock (source)` leak onto the clone.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let state = state loggerFactory
+
+        let elementHandle = ConcreteTypeHandle.Concrete 1
+        let arrayHandle = ConcreteTypeHandle.OneDimArrayZero elementHandle
+        let zero = CliType.Numeric (CliNumericType.Int32 0)
+
+        let source, state =
+            IlMachineState.allocateArray arrayHandle (fun () -> zero) 2 state
+
+        let held : SyncBlock =
+            {
+                Lock =
+                    SyncBlockLock.Held
+                        {
+                            LockingThread = ThreadId 3
+                            ReentrancyCount = 4
+                            AcquireQueue = [ ThreadId 5, None ]
+                        }
+                WaitQueue = [ ThreadId 6, 2 ]
+            }
+
+        let state = IlMachineState.setSyncBlock source held state
+
+        let clone, state = IlMachineState.cloneArray source state
+
+        clone |> shouldNotEqual source
+        IlMachineState.getSyncBlock source state |> shouldEqual held
+        IlMachineState.getSyncBlock clone state |> shouldEqual SyncBlock.Empty
+
+    [<Test>]
+    let ``every live heap address has exactly one sync block`` () : unit =
+        // The invariant that makes `getSyncBlock` total over live addresses: allocation
+        // is the only way to mint an address, and every allocation path must register a
+        // sync block for it. Anything that adds a new allocation kind without doing so
+        // breaks this property rather than silently reintroducing "arrays can't be
+        // locked".
+        let property (ops : bool list) : bool =
+            let heap =
+                ops
+                |> List.fold
+                    (fun heap isArray ->
+                        if isArray then
+                            ManagedHeap.allocateArray (stubArray 1) heap |> snd
+                        else
+                            ManagedHeap.allocateNonArray stubNonArray heap |> snd
+                    )
+                    ManagedHeap.empty
+
+            let live =
+                Set.union (heap.NonArrayObjects |> Map.keys |> Set.ofSeq) (heap.Arrays |> Map.keys |> Set.ofSeq)
+
+            let withSyncBlocks = heap.SyncBlocks |> Map.keys |> Set.ofSeq
+
+            live = withSyncBlocks
+            && live.Count = ops.Length
+            && live
+               |> Set.forall (fun addr -> ManagedHeap.getSyncBlock addr heap = SyncBlock.Empty)
+
+        Check.One (
+            Config.QuickThrowOnFailure.WithMaxTest 200,
+            Prop.forAll (ArbMap.defaults |> ArbMap.arbitrary) property
+        )

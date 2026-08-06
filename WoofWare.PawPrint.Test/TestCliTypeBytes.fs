@@ -52,6 +52,9 @@ module TestCliTypeBytes =
     let private intPtrHandle : ConcreteTypeHandle =
         AllConcreteTypes.getRequiredNonGenericHandle allCt bct.IntPtr
 
+    let private doubleHandle : ConcreteTypeHandle =
+        AllConcreteTypes.getRequiredNonGenericHandle allCt bct.Double
+
     let private cliField
         (name : string)
         (contents : CliType)
@@ -316,6 +319,82 @@ module TestCliTypeBytes =
                     intPtrHandle
             ]
 
+    /// `struct { int N; Box B; }` under sequential layout: `N` at [0,4), 4 bytes of padding,
+    /// `B` at [8,16). This is the shape of `Dictionary<K,V>.Entry`, and the reason a
+    /// pointer-slot walk over such an array has slots that contain no reference at all.
+    let private mixedReferenceValueType () : CliValueType =
+        CliValueType.OfFields
+            bct
+            allCt
+            declaredHandle
+            Layout.Default
+            CharSet.Ansi
+            [
+                cliField "N" (CliType.Numeric (CliNumericType.Int32 0)) None int32Handle
+                cliField "B" (CliType.ObjectRef None) None objectHandle
+            ]
+
+    /// The same mix with the reference *first*: `B` at [0,8), `N` at [8,12). Distinct from
+    /// `mixedReferenceValueType` because it puts the reference in the low slot, so a walk that
+    /// writes the high slot first leaves a live reference in place while the low slot is
+    /// processed.
+    let private referenceFirstValueType () : CliValueType =
+        CliValueType.OfFields
+            bct
+            allCt
+            declaredHandle
+            Layout.Default
+            CharSet.Ansi
+            [
+                cliField "B" (CliType.ObjectRef None) None objectHandle
+                cliField "N" (CliType.Numeric (CliNumericType.Int32 0)) None int32Handle
+            ]
+
+    /// A struct whose reference is buried inside a nested struct, so a range covering the
+    /// nested field has to recurse rather than treat it as an opaque cell.
+    let private nestedMixedValueType () : CliValueType =
+        let inner = mixedReferenceValueType ()
+
+        CliValueType.OfFields
+            bct
+            allCt
+            declaredHandle
+            Layout.Default
+            CharSet.Ansi
+            [
+                cliField "Inner" (inner |> CliType.ValueType) None inner.Declared
+                cliField "Tail" (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))) None int64Handle
+            ]
+
+    /// Explicit layout in which a reference field *overlaps* a sibling. Classification is per
+    /// field and purely interval-based, so a range covering the union must zero both members;
+    /// this pins that rather than leaving it to argument.
+    let private overlappingReferenceUnionValueType () : CliValueType =
+        CliValueType.OfFields
+            bct
+            allCt
+            declaredHandle
+            (Layout.Custom (size = 16, packingSize = 0))
+            CharSet.Ansi
+            [
+                cliField "Obj" (CliType.ObjectRef None) (Some 0) objectHandle
+                cliField "Alias" (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))) (Some 0) int64Handle
+                cliField "Tail" (CliType.Numeric (CliNumericType.Int32 0)) (Some 8) int32Handle
+            ]
+
+    /// Explicit layout placing an object reference at a misaligned offset. Real CoreCLR rejects
+    /// this at type load; PawPrint's `ComputeConcreteFields` takes `[FieldOffset(n)]` verbatim
+    /// and does not, so the shape is representable here and any range rule has to cope with it
+    /// rather than assume pointer alignment.
+    let private misalignedReferenceValueType () : CliValueType =
+        CliValueType.OfFields
+            bct
+            allCt
+            declaredHandle
+            (Layout.Custom (size = 16, packingSize = 0))
+            CharSet.Ansi
+            [ cliField "Obj" (CliType.ObjectRef None) (Some 3) objectHandle ]
+
     let private syntheticCrossStorageNativeIntSource () : NativeIntSource =
         NativeIntSource.syntheticCrossStorageByteOffset
             (ByteStorageIdentity.StackMemory (ThreadId 0, FrameId 0, StackMemoryBlockId 0))
@@ -382,6 +461,11 @@ module TestCliTypeBytes =
                 Gen.constant (nestedTaggedNativeIntValueType () |> CliType.ValueType)
                 Gen.constant (nestedObjectReferenceValueType () |> CliType.ValueType)
                 Gen.constant (objectAndRuntimePointerValueType () |> CliType.ValueType)
+                Gen.constant (mixedReferenceValueType () |> CliType.ValueType)
+                Gen.constant (referenceFirstValueType () |> CliType.ValueType)
+                Gen.constant (nestedMixedValueType () |> CliType.ValueType)
+                Gen.constant (misalignedReferenceValueType () |> CliType.ValueType)
+                Gen.constant (overlappingReferenceUnionValueType () |> CliType.ValueType)
             ]
 
     [<Test>]
@@ -1298,3 +1382,378 @@ module TestCliTypeBytes =
             CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr (RuntimeTypeHandleTarget.Closed int32Handle))
         )
         |> shouldEqual (CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null))
+
+    // ---- CliType.WithZeroedRangeIfChanged ----
+    //
+    // The operation `Array.Clear` needs for reference-containing element types: zero a byte
+    // range of a cell that may have no byte rendering at all.
+
+    /// Ranges within a value, biased towards the whole-value range and towards
+    /// pointer-slot-sized/aligned windows, which are the ones `SpanHelpers.ClearWithReferences`
+    /// actually produces.
+    let private genRangeWithin (size : int) : Gen<int * int> =
+        let slots =
+            [ 0..8 .. max 0 (size - 8) ]
+            |> List.map (fun o -> o, 8)
+            |> List.filter (fun (o, c) -> o + c <= size)
+
+        Gen.oneof
+            [
+                Gen.constant (0, size)
+                (if List.isEmpty slots then
+                     Gen.constant (0, size)
+                 else
+                     Gen.elements slots)
+                gen {
+                    let! offset = Gen.choose (0, size)
+                    let! count = Gen.choose (0, size - offset)
+                    return offset, count
+                }
+            ]
+
+    let private genValueAndRange : Gen<CliType * int * int> =
+        gen {
+            let! value = genByteAddressabilityCliType
+            let! offset, count = genRangeWithin (CliType.SizeOf value).Size
+            return value, offset, count
+        }
+
+    /// `WithZeroedRangeIfChanged` is partial by design (it refuses to half-zero a reference), so
+    /// properties are stated over the calls that succeed.
+    let private tryZero (offset : int) (count : int) (value : CliType) : CliType option option =
+        try
+            Some (CliType.WithZeroedRangeIfChanged offset count value)
+        with _ ->
+            None
+
+    [<Test>]
+    let ``Zeroing the whole range agrees with ZeroLike`` () : unit =
+        let property (value : CliType) : bool =
+            let size = (CliType.SizeOf value).Size
+
+            match CliType.WithZeroedRangeIfChanged 0 size value with
+            | Some zeroed -> zeroed = CliType.ZeroLike value
+            | None ->
+                // `None` means "nothing observable changed". Structural equality against
+                // `ZeroLike` is too strong a reading of that: it also compares field
+                // write-timestamp bookkeeping, which only orders overlapping replays and is
+                // not observable. Where a byte rendering exists it is the honest check, and it
+                // still catches `-0.0`. The unrenderable case is pinned by the explicit
+                // `-0.0`-inside-an-unrenderable-struct test below, which this generator cannot
+                // introspect well enough to assert.
+                match CliType.ByteAddressability value with
+                | CliByteAddressability.ByteAddressable ->
+                    CliType.ToBytes value = CliType.ToBytes (CliType.ZeroLike value)
+                | CliByteAddressability.Rejected _ -> true
+
+        Check.One (config, Prop.forAll (Arb.fromGen genByteAddressabilityCliType) property)
+
+    [<Test>]
+    let ``Zeroing a range preserves CLI shape and size`` () : unit =
+        let property (value : CliType, offset : int, count : int) : bool =
+            match tryZero offset count value with
+            | None
+            | Some None -> true
+            | Some (Some zeroed) -> CliType.SizeOf zeroed = CliType.SizeOf value && sameShape zeroed value
+
+        Check.One (config, Prop.forAll (Arb.fromGen genValueAndRange) property)
+
+    [<Test>]
+    let ``Zeroing a range is idempotent`` () : unit =
+        let property (value : CliType, offset : int, count : int) : bool =
+            match tryZero offset count value with
+            | None
+            | Some None -> true
+            | Some (Some zeroed) ->
+                // A second identical zeroing must be a no-op, i.e. report "unchanged".
+                match tryZero offset count zeroed with
+                | Some None -> true
+                | _ -> false
+
+        Check.One (config, Prop.forAll (Arb.fromGen genValueAndRange) property)
+
+    [<Test>]
+    let ``Zeroing a range agrees with a byte-level oracle where bytes are defined`` () : unit =
+        // For values that DO have a byte rendering, the existing (independently property-tested)
+        // byte-write path is the oracle: zeroing a range must be writing that many zero bytes.
+        let property (value : CliType, offset : int, count : int) : bool =
+            match CliType.ByteAddressability value with
+            | CliByteAddressability.Rejected _ -> true
+            | CliByteAddressability.ByteAddressable ->
+                let viaBytes = CliType.WithBytesAtIfChanged offset (Array.zeroCreate count) value
+
+                match tryZero offset count value with
+                | None -> false // must not fail on byte-addressable storage
+                | Some result ->
+                    match result, viaBytes with
+                    | None, None -> true
+                    | Some a, Some b -> CliType.ToBytes a = CliType.ToBytes b
+                    // One reported "changed" and the other didn't: only consistent if the
+                    // rendered bytes agree anyway.
+                    | Some a, None -> CliType.ToBytes a = CliType.ToBytes value
+                    | None, Some b -> CliType.ToBytes b = CliType.ToBytes value
+
+        Check.One (config, Prop.forAll (Arb.fromGen genValueAndRange) property)
+
+    [<Test>]
+    let ``Zeroing a pointer slot of a reference-containing struct`` () : unit =
+        // The concrete shapes that motivated the operation, at the exact ranges
+        // ClearWithReferences produces for them.
+        let heapRef = CliType.ObjectRef (Some (ManagedHeapAddress 11))
+
+        let field (name : string) (value : CliType) : CliType =
+            match value with
+            | CliType.ValueType vt -> CliValueType.DereferenceFieldById (FieldId.named name) vt
+            | other -> failwith $"expected a value type, got %O{other}"
+
+        // struct { int N; Box B; } -- slot [0,8) is the int plus padding, slot [8,16) is the ref.
+        let mixed =
+            mixedReferenceValueType ()
+            |> CliValueType.WithFieldSet "N" (CliType.Numeric (CliNumericType.Int32 7))
+            |> CliValueType.WithFieldSet "B" heapRef
+            |> CliType.ValueType
+
+        match CliType.WithZeroedRangeIfChanged 0 8 mixed with
+        | None -> failwith "expected the low slot of a populated mixed struct to change"
+        | Some result ->
+            // The int is cleared; the reference in the *other* slot is untouched.
+            field "N" result |> shouldEqual (CliType.Numeric (CliNumericType.Int32 0))
+            field "B" result |> shouldEqual heapRef
+
+        match CliType.WithZeroedRangeIfChanged 8 8 mixed with
+        | None -> failwith "expected the high slot of a populated mixed struct to change"
+        | Some result ->
+            field "N" result |> shouldEqual (CliType.Numeric (CliNumericType.Int32 7))
+            field "B" result |> shouldEqual (CliType.ObjectRef None)
+
+        // Reference-first: the reference is in the LOW slot.
+        let refFirst =
+            referenceFirstValueType ()
+            |> CliValueType.WithFieldSet "B" heapRef
+            |> CliValueType.WithFieldSet "N" (CliType.Numeric (CliNumericType.Int32 9))
+            |> CliType.ValueType
+
+        match CliType.WithZeroedRangeIfChanged 0 8 refFirst with
+        | None -> failwith "expected the low slot of a populated reference-first struct to change"
+        | Some result ->
+            field "B" result |> shouldEqual (CliType.ObjectRef None)
+            field "N" result |> shouldEqual (CliType.Numeric (CliNumericType.Int32 9))
+
+    [<Test>]
+    let ``Zeroing refuses to half-clear a reference`` () : unit =
+        let heapRef = CliType.ObjectRef (Some (ManagedHeapAddress 11))
+
+        // A bare reference cell, half covered.
+        (fun () -> CliType.WithZeroedRangeIfChanged 0 4 heapRef |> ignore)
+        |> shouldFail<exn>
+
+        // A misaligned explicit-layout reference field, straddled by a pointer slot. This is the
+        // shape PawPrint accepts but CoreCLR rejects at type load, so it must fail loudly rather
+        // than silently drop or keep the reference.
+        let misaligned =
+            misalignedReferenceValueType ()
+            |> CliValueType.WithFieldSet "Obj" heapRef
+            |> CliType.ValueType
+
+        (fun () -> CliType.WithZeroedRangeIfChanged 0 8 misaligned |> ignore)
+        |> shouldFail<exn>
+
+        // Zeroing a range that misses it entirely is still fine.
+        CliType.WithZeroedRangeIfChanged 11 5 misaligned |> ignore
+
+    [<Test>]
+    let ``Zeroing a negative zero is a change`` () : unit =
+        // Regression: structural equality on floats is IEEE, so `-0.0 = 0.0` is true. Deciding
+        // "did zeroing change anything?" with `=` therefore reports a cell holding `-0.0` as
+        // already-zero and leaves the sign bit set, even though every byte that matters
+        // differs. Caught originally by the signed-zero property in TestMethodTableProjection,
+        // which writes `+0.0` over `-0.0` through the array byte-write path this operation now
+        // serves; pinned here too, at the operation itself.
+        let negativeZero = CliType.Numeric (CliNumericType.Float64 -0.0)
+
+        match CliType.WithZeroedRangeIfChanged 0 8 negativeZero with
+        | None -> failwith "zeroing -0.0 must report a change: its sign bit is set"
+        | Some zeroed ->
+            CliType.ToBytes zeroed
+            |> shouldEqual (CliType.ToBytes (CliType.Numeric (CliNumericType.Float64 0.0)))
+
+        // Same story one level down, for a float field inside a struct.
+        let structWithNegativeZero =
+            CliValueType.OfFields
+                bct
+                allCt
+                declaredHandle
+                Layout.Default
+                CharSet.Ansi
+                [ cliField "D" negativeZero None doubleHandle ]
+            |> CliType.ValueType
+
+        match
+            CliType.WithZeroedRangeIfChanged 0 (CliType.SizeOf structWithNegativeZero).Size structWithNegativeZero
+        with
+        | None -> failwith "zeroing a struct holding -0.0 must report a change"
+        | Some zeroed -> CliType.ToBytes zeroed |> Array.forall (fun b -> b = 0uy) |> shouldEqual true
+
+        // And a positive zero really is unchanged, so the check hasn't just been made vacuous.
+        CliType.WithZeroedRangeIfChanged 0 8 (CliType.Numeric (CliNumericType.Float64 0.0))
+        |> shouldEqual None
+
+    [<Test>]
+    let ``Zeroing a union whose members overlap a reference clears every member`` () : unit =
+        // Explicit layout lets a reference share bytes with a sibling. Fields are classified one
+        // at a time against the range, independently of each other, so every member of the union
+        // must be zeroed when the range covers those bytes -- otherwise the "no untouched field
+        // can overlap the zeroed region" invariant that makes replay order irrelevant would not
+        // hold, and the stale member would win the `ToBytes` overlay.
+        //
+        // Asserted through the rendered bytes rather than by reading members back: projecting
+        // any member of a union that overlaps a live reference reconstructs it from the union's
+        // bytes, and a reference has no byte rendering. That is a pre-existing limit of the
+        // value model, unrelated to zeroing.
+        let heapRef = CliType.ObjectRef (Some (ManagedHeapAddress 13))
+
+        let populated =
+            overlappingReferenceUnionValueType ()
+            |> CliValueType.WithFieldSet "Obj" heapRef
+            |> CliValueType.WithFieldSet "Tail" (CliType.Numeric (CliNumericType.Int32 5))
+            |> CliType.ValueType
+
+        // Zeroing the union's own 8 bytes clears the reference AND its aliasing sibling, so the
+        // whole value renders again; the disjoint tail keeps its 5.
+        match CliType.WithZeroedRangeIfChanged 0 8 populated with
+        | None -> failwith "expected zeroing a populated union to change it"
+        | Some result ->
+            let bytes = CliType.ToBytes result
+            bytes.[0..7] |> Array.forall (fun b -> b = 0uy) |> shouldEqual true
+            bytes.[8] |> shouldEqual 5uy
+
+        // Zeroing the whole thing is the same as ZeroLike, tail included.
+        match CliType.WithZeroedRangeIfChanged 0 16 populated with
+        | None -> failwith "expected zeroing the whole union to change it"
+        | Some result ->
+            result |> shouldEqual (CliType.ZeroLike populated)
+            CliType.ToBytes result |> Array.forall (fun b -> b = 0uy) |> shouldEqual true
+
+    [<Test>]
+    let ``Zeroing part of an overlapping field leaves bytes outside the range alone`` () : unit =
+        // `ToBytes` replays overlapping fields in `EditedAtTime` order. A field that only
+        // *partially* overlaps the requested range extends outside it, so promoting it to
+        // "newest" would change who wins on bytes the call was never asked to touch.
+        //
+        // Layout: a 16-byte nested struct at [0,16), aliased over its upper half by an 8-byte
+        // field at [8,16) that was written later. Zeroing [0,8) must not let the nested
+        // struct's stale upper half overwrite the alias.
+        let nested =
+            CliValueType.OfFields
+                bct
+                allCt
+                declaredHandle
+                Layout.Default
+                CharSet.Ansi
+                [
+                    cliField "Lo" (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))) None int64Handle
+                    cliField "Hi" (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))) None int64Handle
+                ]
+
+        let outer =
+            CliValueType.OfFields
+                bct
+                allCt
+                declaredHandle
+                (Layout.Custom (size = 16, packingSize = 0))
+                CharSet.Ansi
+                [
+                    cliField "Nested" (nested |> CliType.ValueType) (Some 0) nested.Declared
+                    cliField
+                        "Alias"
+                        (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L)))
+                        (Some 8)
+                        int64Handle
+                ]
+
+        let populated =
+            outer
+            |> CliValueType.WithFieldSet
+                "Nested"
+                (nested
+                 |> CliValueType.WithFieldSet
+                     "Lo"
+                     (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0x1111111111111111L)))
+                 |> CliValueType.WithFieldSet
+                     "Hi"
+                     (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0x2222222222222222L)))
+                 |> CliType.ValueType)
+            // Written last, so the alias owns [8,16) in the replay.
+            |> CliValueType.WithFieldSet
+                "Alias"
+                (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0x3333333333333333L)))
+            |> CliType.ValueType
+
+        let before = CliType.ToBytes populated
+        before.[8..15] |> shouldEqual (Array.create 8 0x33uy)
+
+        match CliType.WithZeroedRangeIfChanged 0 8 populated with
+        | None -> failwith "expected zeroing the low half to change the value"
+        | Some result ->
+            let after = CliType.ToBytes result
+            // Requested range cleared...
+            after.[0..7] |> Array.forall (fun b -> b = 0uy) |> shouldEqual true
+            // ...and everything outside it byte-for-byte as it was.
+            after.[8..15] |> shouldEqual before.[8..15]
+
+    [<Test>]
+    let ``Zeroing a negative zero inside an unrenderable struct is a change`` () : unit =
+        // The struct has no byte rendering of its own because of the pointer field, so the
+        // "compare rendered bytes" arm does not apply and the comparison has to descend. If it
+        // compared the aggregates structurally instead, IEEE equality would call the `-0.0`
+        // field already-zero and the whole-cell clear would report "unchanged", leaving the
+        // sign bit set.
+        let pointerField =
+            CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr (RuntimeTypeHandleTarget.Closed int32Handle))
+
+        let vt =
+            CliValueType.OfFields
+                bct
+                allCt
+                declaredHandle
+                Layout.Default
+                CharSet.Ansi
+                [
+                    cliField "P" pointerField None intPtrHandle
+                    cliField "D" (CliType.Numeric (CliNumericType.Float64 -0.0)) None doubleHandle
+                ]
+            |> CliType.ValueType
+
+        match CliType.ByteAddressability vt with
+        | CliByteAddressability.ByteAddressable ->
+            failwith "test premise broken: this struct is supposed to have no byte rendering"
+        | CliByteAddressability.Rejected _ -> ()
+
+        match CliType.WithZeroedRangeIfChanged 0 (CliType.SizeOf vt).Size vt with
+        | None ->
+            failwith "zeroing a struct holding -0.0 must report a change even when the struct has no byte rendering"
+        | Some zeroed -> zeroed |> shouldEqual (CliType.ZeroLike vt)
+
+    [<Test>]
+    let ``Zeroing rejects ranges whose end would overflow`` () : unit =
+        // `offset + count` wraps negative for large inputs, so a guard phrased in terms of the
+        // computed end silently accepts an out-of-range request instead of rejecting it.
+        let value = CliType.Numeric (CliNumericType.Int32 0x11223344)
+
+        (fun () -> CliType.WithZeroedRangeIfChanged System.Int32.MaxValue 2 value |> ignore)
+        |> shouldFail<exn>
+
+        (fun () -> CliType.WithZeroedRangeIfChanged 2 System.Int32.MaxValue value |> ignore)
+        |> shouldFail<exn>
+
+        (fun () -> CliType.WithZeroedRangeIfChanged 0 5 value |> ignore)
+        |> shouldFail<exn>
+
+        (fun () -> CliType.WithZeroedRangeIfChanged -1 1 value |> ignore)
+        |> shouldFail<exn>
+
+        (fun () -> CliType.WithZeroedRangeIfChanged 0 -1 value |> ignore)
+        |> shouldFail<exn>
+
+        // The whole 4-byte range is still legal.
+        CliType.WithZeroedRangeIfChanged 0 4 value |> Option.isSome |> shouldEqual true

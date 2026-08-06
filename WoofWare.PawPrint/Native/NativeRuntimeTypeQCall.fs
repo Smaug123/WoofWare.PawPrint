@@ -211,11 +211,10 @@ module NativeRuntimeTypeQCall =
                         readTypeHandleInstantiationElement ctx.BaseClassTypes operation state instantiationPointer index
                 ]
 
-            // Stage B2: validate the special-constraint flags
-            // (NotNullableValueTypeConstraint / ReferenceTypeConstraint /
-            // DefaultConstructorConstraint) before instantiating. Base-type and
-            // interface (`Constraints` array) requirements are not yet validated;
-            // those will land in Stage B3.
+            // Validate the special-constraint flags (NotNullableValueTypeConstraint /
+            // ReferenceTypeConstraint / DefaultConstructorConstraint) before
+            // instantiating. Base-type and interface (`Constraints` array)
+            // requirements are not validated; see issue #752.
             let constraintViolation =
                 openGenericTypeInfoForValidation state typeHandleTarget
                 |> Option.bind (fun typeInfo ->
@@ -397,8 +396,7 @@ module NativeRuntimeTypeQCall =
                     | TypeDefn.Pointer element
                     | TypeDefn.Byref element
                     | TypeDefn.OneDimensionalArrayLowerBoundZero element -> embedsTypeParameter element
-                    | TypeDefn.Modified (original, modifier, _) ->
-                        embedsTypeParameter original || embedsTypeParameter modifier
+                    | TypeDefn.Modified m -> embedsTypeParameter m.Unmodified || embedsTypeParameter m.Modifier
                     | TypeDefn.GenericInstantiation (generic, args) ->
                         embedsTypeParameter generic || (args |> Seq.exists embedsTypeParameter)
                     | TypeDefn.FunctionPointer signature ->

@@ -1332,7 +1332,9 @@ module DumpedAssembly =
         let rec go (currentAssembly : DumpedAssembly) (ty : TypeDefn) =
             match ty with
             | TypeDefn.GenericInstantiation (generic, _) -> go currentAssembly generic
-            | TypeDefn.Modified (_, afterMod, _) -> go currentAssembly afterMod
+            // A custom modifier annotates the signature; the type definition being named is the
+            // unmodified one. Stepping into `Modifier` would resolve `InAttribute`/`IsVolatile`/etc.
+            | TypeDefn.Modified m -> go currentAssembly m.Unmodified
             | TypeDefn.FromDefinition (identity, _) ->
                 let resolvedAssembly = loadedAssemblies.ByDefinitionName identity.AssemblyFullName
                 let resolvedType = resolvedAssembly.TypeDefs.[identity.TypeDefinition.Get]

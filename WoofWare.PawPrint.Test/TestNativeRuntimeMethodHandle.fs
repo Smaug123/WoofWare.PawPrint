@@ -207,3 +207,136 @@ module TestNativeRuntimeMethodHandle =
     let ``a negative declared generic-parameter count is rejected`` () : unit =
         (fun () -> targetsFor -1 [] |> ignore<RuntimeTypeHandleTarget list>)
         |> shouldFail<exn>
+
+    // ---------------------------------------------------------------------------------------
+    // `fastPathReturnsOriginal` / `stubOutcome`: the decision behind
+    // `RuntimeMethodHandle_GetStubIfNeededSlow`, i.e. CoreCLR's
+    // `MethodDesc::FindOrCreateAssociatedMethodDescForReflection`.
+    //
+    // `sourcesPure/MethodOnClosedGenericType.cs` covers the reachable end-to-end shapes; these
+    // tests pin the outcome table itself, including the cases the BCL never routes here.
+    // ---------------------------------------------------------------------------------------
+
+    let private methodTable
+        (isValueType : bool)
+        (hasInstantiation : bool)
+        (isGenericTypeDefinition : bool)
+        (isInterface : bool)
+        : StubDeclaringType
+        =
+        StubDeclaringType.MethodTable
+            {
+                IsValueType = isValueType
+                HasInstantiation = hasInstantiation
+                IsGenericTypeDefinition = isGenericTypeDefinition
+                IsInterface = isInterface
+            }
+
+    /// Every MethodTable fact combination, plus the TypeDesc case.
+    let private allDeclaringTypes : StubDeclaringType list =
+        StubDeclaringType.TypeDesc
+        :: [
+            for isValueType in [ true ; false ] do
+                for hasInstantiation in [ true ; false ] do
+                    for isGenericTypeDefinition in [ true ; false ] do
+                        for isInterface in [ true ; false ] ->
+                            methodTable isValueType hasInstantiation isGenericTypeDefinition isInterface
+        ]
+
+    /// The load-bearing property. CoreCLR documents the fast-path FCall predicate as "duplicated
+    /// from FindOrCreateAssociatedMethodDescForReflection" (runtimehandles.cpp:1899-1900). The two
+    /// are written independently here, so a typo in either breaks this: whenever the fast path
+    /// short-circuits to the original MethodDesc, the slow path -- which the BCL would then never
+    /// call -- must agree that no rebinding is needed. Exhaustive over the fact space.
+    [<Test>]
+    let ``the slow path agrees with the fast path wherever the fast path short-circuits`` () : unit =
+        for declaringType in allDeclaringTypes do
+            for methodGenericParamCount in 0..3 do
+                for methodIsStatic in [ true ; false ] do
+                    // The fast path is only consulted for a null instantiation
+                    // (RuntimeHandles.cs:1258).
+                    let methodHasInstantiation = methodGenericParamCount > 0
+
+                    if NativeRuntimeMethodHandle.fastPathReturnsOriginal methodHasInstantiation declaringType then
+                        NativeRuntimeMethodHandle.stubOutcome declaringType methodIsStatic methodGenericParamCount 0
+                        |> shouldEqual StubOutcome.Original
+
+    [<Test>]
+    let ``a TypeDesc declaring type never gets a stub, whatever the instantiation`` () : unit =
+        // genmeth.cpp:1247-1249 returns before even looking at the instantiation.
+        NativeRuntimeMethodHandle.stubOutcome StubDeclaringType.TypeDesc false 0 0
+        |> shouldEqual StubOutcome.Original
+
+        NativeRuntimeMethodHandle.stubOutcome StubDeclaringType.TypeDesc true 1 1
+        |> shouldEqual StubOutcome.Original
+
+        // Even an arity that would otherwise be rejected. This is load-bearing for the QCall arm's
+        // ordering: because the answer here is `Original`, the arm must not have already tried to
+        // narrow the instantiation's elements to closed types, since CoreCLR never inspects them
+        // on this path.
+        NativeRuntimeMethodHandle.stubOutcome StubDeclaringType.TypeDesc false 2 1
+        |> shouldEqual StubOutcome.Original
+
+    [<Test>]
+    let ``the empty-instantiation outcomes match CoreCLR's predicate`` () : unit =
+        // genmeth.cpp:1272-1277: a stub is needed iff the method is non-generic AND the declaring
+        // type is a value type, or is a bound generic on which the method is static or which is an
+        // interface.
+        let check (declaringType : StubDeclaringType) (isStatic : bool) (genericCount : int) (expected : StubOutcome) =
+            NativeRuntimeMethodHandle.stubOutcome declaringType isStatic genericCount 0
+            |> shouldEqual expected
+
+        // Instance method on a closed generic class: no stub (this is the measured
+        // `Container<int>.Instance` case).
+        check (methodTable false true false false) false 0 StubOutcome.Original
+        // Static method on a closed generic class: stub.
+        check (methodTable false true false false) true 0 StubOutcome.Rebind
+        // Instance method on a generic struct: stub (value types always need one).
+        check (methodTable true true false false) false 0 StubOutcome.Rebind
+        // Instance method on a *non*-generic struct: stub.
+        check (methodTable true false false false) false 0 StubOutcome.Rebind
+        // Method on a closed generic interface: stub.
+        check (methodTable false true false true) false 0 StubOutcome.Rebind
+        // Open generic type definition: no stub, however static/interface-y.
+        check (methodTable false true true true) true 0 StubOutcome.Original
+        // Plain non-generic reference type: no stub.
+        check (methodTable false false false false) false 0 StubOutcome.Original
+        // A *generic* method with an unbound handle never gets one, because CoreCLR's second
+        // branch requires !pMethod->HasMethodInstantiation().
+        check (methodTable true true false true) true 1 StubOutcome.Original
+
+    [<Test>]
+    let ``property: a well-formed instantiation always rebinds, on any MethodTable`` () : unit =
+        let property (declaredCount : int) : bool =
+            let declaredCount = 1 + abs (declaredCount % 8)
+
+            allDeclaringTypes
+            |> List.filter (fun d -> d <> StubDeclaringType.TypeDesc)
+            |> List.forall (fun declaringType ->
+                [ true ; false ]
+                |> List.forall (fun isStatic ->
+                    NativeRuntimeMethodHandle.stubOutcome declaringType isStatic declaredCount declaredCount = StubOutcome.Rebind
+                )
+            )
+
+        Check.One (propertyConfig, property)
+
+    [<Test>]
+    let ``property: an instantiation whose arity disagrees with the method is rejected`` () : unit =
+        let property (declaredCount : int, boundCount : int) : bool =
+            let declaredCount = abs (declaredCount % 8)
+            let boundCount = 1 + abs (boundCount % 8)
+
+            if boundCount = declaredCount then
+                true
+            else
+                // Includes the non-generic-method case (declaredCount = 0), where CoreCLR's
+                // `_ASSERTE(pMethod->HasMethodInstantiation())` fires in debug and the arity check
+                // catches it in release.
+                allDeclaringTypes
+                |> List.filter (fun d -> d <> StubDeclaringType.TypeDesc)
+                |> List.forall (fun declaringType ->
+                    NativeRuntimeMethodHandle.stubOutcome declaringType false declaredCount boundCount = StubOutcome.ArityMismatch
+                )
+
+        Check.One (propertyConfig, property)

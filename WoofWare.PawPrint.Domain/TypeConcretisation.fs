@@ -738,10 +738,10 @@ module TypeConcretization =
             // type's own concretization handle is the right representation.
             concretizeType ctx loadAssembly assembly typeGenerics methodGenerics elementType
 
-        | TypeDefn.Modified (unmodifiedType, _modifierType, _modificationRequired) ->
+        | TypeDefn.Modified m ->
             // Custom modifiers are metadata annotations on the signature. Runtime type
             // identity and storage shape follow the unmodified type.
-            concretizeType ctx loadAssembly assembly typeGenerics methodGenerics unmodifiedType
+            concretizeType ctx loadAssembly assembly typeGenerics methodGenerics m.Unmodified
 
         | TypeDefn.Void ->
             // Method return signatures represent `void` separately from runtime types.
@@ -941,7 +941,9 @@ module Concretization =
         match ty with
         | TypeDefn.GenericInstantiation (generic, _) ->
             ensureTypeDefnResolved loadAssembly assemblies sourceAssembly generic
-        | TypeDefn.Modified (_, afterMod, _) -> ensureTypeDefnResolved loadAssembly assemblies sourceAssembly afterMod
+        // A custom modifier annotates the signature; the type definition being named is the
+        // unmodified one. Stepping into `Modifier` would resolve `InAttribute`/`IsVolatile`/etc.
+        | TypeDefn.Modified m -> ensureTypeDefnResolved loadAssembly assemblies sourceAssembly m.Unmodified
         | TypeDefn.FromDefinition (identity, _) ->
             let resolvedAssembly = assemblies.ByDefinitionName identity.AssemblyFullName
             assemblies, resolvedAssembly, identity.TypeDefinition.Get

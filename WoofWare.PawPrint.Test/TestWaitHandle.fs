@@ -40,6 +40,7 @@ module TestWaitHandle =
             Status = status
             IsBackground = false
             Name = None
+            Cpu = CpuId 0
         }
 
     let private withThreads (threads : ThreadId list) (state : IlMachineState) : IlMachineState =

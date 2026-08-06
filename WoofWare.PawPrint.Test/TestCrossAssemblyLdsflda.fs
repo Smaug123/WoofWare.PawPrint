@@ -91,6 +91,19 @@ public static class GenericHolder<T>
 """
             ]
 
+    /// `PayloadLib` must sit on different `AssemblyRef` rows in `HolderLib` (which scopes the field
+    /// signature) and in the entry assembly (which executes the token); otherwise resolving the
+    /// signature against the wrong assembly would accidentally still succeed and these tests would
+    /// prove nothing. Checked rather than assumed — see `AssemblyRefRowDivergence`.
+    let private payloadRowsMustDiverge (entryAssembly : string) : AssemblyRefRowDivergence list =
+        [
+            {
+                DeclaringAssembly = "CrossAssemblyLdsflda.HolderLib"
+                ExecutingAssembly = entryAssembly
+                ForeignAssembly = "CrossAssemblyLdsflda.PayloadLib"
+            }
+        ]
+
     [<Test>]
     let ``ldsflda of a foreign static field whose type is itself foreign`` () : unit =
         {
@@ -131,7 +144,7 @@ class Program
             EntryAssemblyName = "CrossAssemblyLdsflda.ForeignFieldType"
             ExpectedReturnCode = 0
         }
-        |> CrossAssemblyHarness.runTest
+        |> CrossAssemblyHarness.runTestRequiring (payloadRowsMustDiverge "CrossAssemblyLdsflda.ForeignFieldType")
 
     [<Test>]
     let ``ldsflda of a primitive foreign static field`` () : unit =
@@ -213,4 +226,4 @@ class Program
             EntryAssemblyName = "CrossAssemblyLdsflda.ForeignGenericStatic"
             ExpectedReturnCode = 0
         }
-        |> CrossAssemblyHarness.runTest
+        |> CrossAssemblyHarness.runTestRequiring (payloadRowsMustDiverge "CrossAssemblyLdsflda.ForeignGenericStatic")

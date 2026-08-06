@@ -341,7 +341,7 @@ module IlMachineTypeResolution =
         | TypeDefn.Pointer element
         | TypeDefn.Byref element
         | TypeDefn.OneDimensionalArrayLowerBoundZero element -> contains element
-        | TypeDefn.Modified (original, modifier, _) -> contains original || contains modifier
+        | TypeDefn.Modified m -> contains m.Unmodified || contains m.Modifier
         | TypeDefn.GenericInstantiation (generic, args) -> contains generic || (args |> Seq.exists contains)
         | TypeDefn.FunctionPointer signature ->
             let returnContains =

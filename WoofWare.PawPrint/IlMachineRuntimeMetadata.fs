@@ -348,8 +348,9 @@ module IlMachineRuntimeMetadata =
         | TypeDefn.Pointer element
         | TypeDefn.Byref element
         | TypeDefn.OneDimensionalArrayLowerBoundZero element -> containsAnyGenericParameter element
-        | TypeDefn.Modified (original, modifier, _) ->
-            containsAnyGenericParameter original || containsAnyGenericParameter modifier
+        | TypeDefn.Modified m ->
+            containsAnyGenericParameter m.Unmodified
+            || containsAnyGenericParameter m.Modifier
         | TypeDefn.GenericInstantiation (generic, args) ->
             containsAnyGenericParameter generic
             || (args |> Seq.exists containsAnyGenericParameter)
@@ -722,9 +723,10 @@ module IlMachineRuntimeMetadata =
             let dims = if rank <= 1 then "*" else System.String (',', rank - 1)
             recurse inner + "[" + dims + "]"
         | TypeDefn.Pinned inner -> recurse inner
-        // Modified types: render the underlying (post-modifier) type so optional/required
-        // custom modifiers (e.g. `modreq IsExternalInit`) don't leak into the printed name.
-        | TypeDefn.Modified (_, afterMod, _) -> recurse afterMod
+        // Modified types: render the type the modifier is attached to, so optional/required
+        // custom modifiers (e.g. the `modreq InAttribute` C# emits on an `in` parameter of a
+        // virtual method) don't leak into the printed name.
+        | TypeDefn.Modified m -> recurse m.Unmodified
         // CLR `Type.Name` on `List<int>` is `"List`1"`; the instantiation is dropped.
         | TypeDefn.GenericInstantiation (generic, _args) -> recurse generic
         | TypeDefn.GenericTypeParameter index ->
@@ -1956,8 +1958,13 @@ module IlMachineRuntimeMetadata =
         | TypeDefn.Pointer element -> TypeDefn.Pointer (substituteTypeDefn subs element)
         | TypeDefn.Byref element -> TypeDefn.Byref (substituteTypeDefn subs element)
         | TypeDefn.Pinned element -> TypeDefn.Pinned (substituteTypeDefn subs element)
-        | TypeDefn.Modified (original, modifier, required) ->
-            TypeDefn.Modified (substituteTypeDefn subs original, substituteTypeDefn subs modifier, required)
+        | TypeDefn.Modified m ->
+            TypeDefn.Modified
+                {
+                    Unmodified = substituteTypeDefn subs m.Unmodified
+                    Modifier = substituteTypeDefn subs m.Modifier
+                    IsRequired = m.IsRequired
+                }
         | TypeDefn.FunctionPointer _
         | TypeDefn.PrimitiveType _
         | TypeDefn.FromReference _
@@ -2086,10 +2093,20 @@ module IlMachineRuntimeMetadata =
         | TypeDefn.Pinned element ->
             let state, element' = canonicalizeTypeDefn loggerFactory state sourceAssy element
             state, TypeDefn.Pinned element'
-        | TypeDefn.Modified (original, modifier, required) ->
-            let state, original' = canonicalizeTypeDefn loggerFactory state sourceAssy original
-            let state, modifier' = canonicalizeTypeDefn loggerFactory state sourceAssy modifier
-            state, TypeDefn.Modified (original', modifier', required)
+        | TypeDefn.Modified m ->
+            let state, unmodified' =
+                canonicalizeTypeDefn loggerFactory state sourceAssy m.Unmodified
+
+            let state, modifier' =
+                canonicalizeTypeDefn loggerFactory state sourceAssy m.Modifier
+
+            state,
+            TypeDefn.Modified
+                {
+                    Unmodified = unmodified'
+                    Modifier = modifier'
+                    IsRequired = m.IsRequired
+                }
         | TypeDefn.FunctionPointer _ ->
             // FunctionPointer carries a TypeMethodSignature with parameter and return TypeDefns;
             // canonicalising those requires walking the signature shape. None of the current

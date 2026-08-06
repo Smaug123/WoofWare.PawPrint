@@ -47,6 +47,7 @@ module TestSyncBlockMonitor =
             Status = status
             IsBackground = false
             Name = None
+            Cpu = CpuId 0
         }
 
     let private withThreads (threads : ThreadId list) (state : IlMachineState) : IlMachineState =
@@ -76,10 +77,31 @@ module TestSyncBlockMonitor =
             {
                 Contents = Unchecked.defaultof<CliValueType>
                 ConcreteType = ConcreteTypeHandle.Concrete 0
-                SyncBlock = SyncBlock.Empty
             }
 
         let addr, heap = state.ManagedHeap |> ManagedHeap.allocateNonArray stub
+
+        let state =
+            { state with
+                ManagedHeap = heap
+            }
+
+        addr, state
+
+    /// The array counterpart of `allocateHeapObject`. Arrays carry an object header
+    /// just like any other heap object, so every `SyncBlockMonitor` transition must
+    /// behave identically whichever kind of address it is handed; the tests below
+    /// exercise both.
+    let private allocateHeapArray (state : IlMachineState) : ManagedHeapAddress * IlMachineState =
+        let stub : AllocatedArray =
+            {
+                ConcreteType = ConcreteTypeHandle.OneDimArrayZero (ConcreteTypeHandle.Concrete 0)
+                Length = 0
+                Lengths = ImmutableArray.Create 0
+                Elements = ImmutableArray.Empty
+            }
+
+        let addr, heap = state.ManagedHeap |> ManagedHeap.allocateArray stub
 
         let state =
             { state with
@@ -226,7 +248,7 @@ module TestSyncBlockMonitor =
             |> List.fold
                 (fun (state : IlMachineState, acc : Map<ThreadId, ThreadState>) (tid : ThreadId) ->
                     let state, methodState = mintFrame state
-                    state, acc |> Map.add tid (ThreadState.New methodState)
+                    state, acc |> Map.add tid (ThreadState.New (CpuId 0) methodState)
                 )
                 (state, Map.empty)
 
@@ -600,6 +622,81 @@ module TestSyncBlockMonitor =
         exn.Message |> shouldContainText "WaitQueue"
 
     // -------------------------------------------------------------------
+    // Allocation kind is irrelevant to monitors
+    //
+    // An array is a heap object with an object header like any other (CoreCLR:
+    // `ArrayBase` derives from `Object`, and `EnterObjMonitor`/`Wait`/`Pulse`
+    // are defined once on `Object`). So the whole transition system must be
+    // blind to whether an address names an array or a non-array object. Rather
+    // than duplicating every case above, run the same scripts against both
+    // allocation kinds and assert the observable outcomes coincide.
+    // -------------------------------------------------------------------
+
+    /// Every transition `SyncBlockMonitor` exposes that does not need real method
+    /// frames, expressed as a script we can replay against any allocation kind.
+    let private allTransitionScripts : (string * (ManagedHeapAddress -> IlMachineState -> IlMachineState)) list =
+        [
+            "wait", fun addr state -> state |> forceHeld t0 3 addr |> SyncBlockMonitor.wait t0 addr None
+
+            "wait then pulse",
+            fun addr state ->
+                state
+                |> parkInWaitAtDepth t0 5 addr
+                |> forceHeld t1 1 addr
+                |> SyncBlockMonitor.pulse t1 addr
+
+            "wait twice then pulseAll",
+            fun addr state ->
+                state
+                |> parkInWaitAtDepth t0 2 addr
+                |> parkInWaitAtDepth t1 4 addr
+                |> forceHeld t2 1 addr
+                |> SyncBlockMonitor.pulseAll t2 addr
+
+            "wait then spuriousWake",
+            fun addr state -> state |> parkInWaitAtDepth t0 6 addr |> SyncBlockMonitor.spuriousWake addr t0
+
+            "wait then applySpuriousWakeups AlwaysAll",
+            fun addr state ->
+                state
+                |> parkInWaitAtDepth t0 1 addr
+                |> parkInWaitAtDepth t1 2 addr
+                |> SyncBlockMonitor.applySpuriousWakeups SyncBlockSpuriousWakeupStrategy.AlwaysAll 0L
+        ]
+
+    [<Test>]
+    let ``monitor transitions are identical for array and non-array targets`` () : unit =
+        let run
+            (script : ManagedHeapAddress -> IlMachineState -> IlMachineState)
+            (allocate : IlMachineState -> ManagedHeapAddress * IlMachineState)
+            =
+            let state = baseState () |> withThreads [ t0 ; t1 ; t2 ]
+            let addr, state = allocate state
+            let state = script addr state
+            syncBlockOf addr state, (state.ThreadState |> Map.map (fun _ ts -> ts.Status))
+
+        for name, script in allTransitionScripts do
+            // Both allocators hand out address 1 from a fresh heap, so the statuses —
+            // which embed the address — are directly comparable.
+            let objBlock, objStatuses = run script allocateHeapObject
+            let arrBlock, arrStatuses = run script allocateHeapArray
+
+            if arrBlock <> objBlock then
+                failwith
+                    $"script %s{name}: array target produced SyncBlock %A{arrBlock} but non-array target produced %A{objBlock}"
+
+            if arrStatuses <> objStatuses then
+                failwith
+                    $"script %s{name}: array target produced thread statuses %A{arrStatuses} but non-array target produced %A{objStatuses}"
+
+    [<Test>]
+    let ``a freshly allocated array is an unlocked monitor target`` () : unit =
+        let state = baseState ()
+        let addr, state = allocateHeapArray state
+
+        syncBlockOf addr state |> shouldEqual SyncBlock.Empty
+
+    // -------------------------------------------------------------------
     // applySpuriousWakeups — strategy interpretation
     // -------------------------------------------------------------------
 
@@ -608,7 +705,7 @@ module TestSyncBlockMonitor =
     /// is not equality-comparable (it embeds MethodStates with structural
     /// non-equality), so we compare what we care about explicitly.
     let private wakeupVisibleState (state : IlMachineState) =
-        let blocks = state.ManagedHeap.NonArrayObjects |> Map.map (fun _ v -> v.SyncBlock)
+        let blocks = state.ManagedHeap.SyncBlocks
 
         let statuses = state.ThreadState |> Map.map (fun _ ts -> ts.Status)
         blocks, statuses
