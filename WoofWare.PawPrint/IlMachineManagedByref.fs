@@ -1401,20 +1401,42 @@ module IlMachineManagedByref =
 
             let existing = state.ManagedHeap.Arrays.[arr].Elements.[cell]
 
-            let existingSize =
-                byteAddressableCellSize $"array %O{arr} element %d{cell}" existing
-
-            let canTake = existingSize - inCellOffset
+            // Deriving how much of this cell the write covers doesn't require the cell to be
+            // byte-renderable, for the same reason the stride above doesn't; the byte-view
+            // path below validates before it actually renders anything.
+            let cellSize = CliType.sizeOf existing
+            let canTake = cellSize - inCellOffset
             let take = min canTake (bytes.Length - filled)
+
+            if take <= 0 then
+                failwith
+                    $"byte-view write to array %O{arr} element %d{cell} made no progress: cell size %d{cellSize}, in-cell offset %d{inCellOffset}, %d{bytes.Length - filled} byte(s) still to write"
+
             let cellBytes = bytes.[filled .. filled + take - 1]
 
-            match
-                withByteAddressableCellBytesAtIfChanged
-                    $"array %O{arr} element %d{cell}"
-                    inCellOffset
-                    cellBytes
-                    existing
-            with
+            // A run of zero bytes is the one byte-level write that is meaningful against
+            // storage with no byte rendering.
+            let updated =
+                if cellBytes |> Array.forall (fun b -> b = 0uy) then
+                    // The slot count the BCL derives is `byteLength / sizeof(IntPtr)`, which
+                    // covers the element exactly only because CoreCLR rounds a GC-containing
+                    // value type up to pointer alignment. PawPrint's layout does not do that,
+                    // so for such a type the count truncates and the tail of the element gets
+                    // no store at all — `Array.Clear` would return having quietly left it set.
+                    // Refuse rather than giving a wrong answer.
+                    if CliType.ContainsObjectReferences existing && cellSize % NATIVE_INT_SIZE <> 0 then
+                        failwith
+                            $"TODO: array %O{arr} element %d{cell} contains object references but its %d{cellSize}-byte size is not a multiple of %d{NATIVE_INT_SIZE}; CoreCLR pointer-aligns such a value type (even under `Pack = 1`) and derives its clear length from that, so PawPrint's smaller element would be only partially cleared. Fix the layout in CliValueType.ComputeConcreteFields rather than the clear."
+
+                    CliType.WithZeroedRangeIfChanged inCellOffset take existing
+                else
+                    withByteAddressableCellBytesAtIfChanged
+                        $"array %O{arr} element %d{cell}"
+                        inCellOffset
+                        cellBytes
+                        existing
+
+            match updated with
             | None -> ()
             | Some newCell -> state <- IlMachineThreadState.setArrayValue arr newCell cell state
 

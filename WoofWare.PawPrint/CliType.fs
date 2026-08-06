@@ -387,6 +387,88 @@ type CliType =
                 Array.blit bytes offset result 0 count
                 result
 
+    /// Did zeroing actually change anything? Deliberately not `=`: structural equality on
+    /// floats follows IEEE, so it calls `-0.0` equal to `0.0` even though they differ in every
+    /// byte that matters. Zeroing a cell holding `-0.0` really does change memory, and
+    /// reporting "unchanged" would leave the sign bit set. Where a byte rendering exists it is
+    /// the ground truth; where it does not (references, provenance-carrying native ints) there
+    /// is no such subtlety and structural equality is exactly right.
+    static member internal ZeroingChangedAnything (before : CliType) (after : CliType) : bool =
+        match CliType.ByteAddressability before, CliType.ByteAddressability after with
+        | CliByteAddressability.ByteAddressable, CliByteAddressability.ByteAddressable ->
+            CliType.ToBytes before <> CliType.ToBytes after
+        | _ ->
+
+        // No byte rendering on at least one side, so descend instead of comparing the whole
+        // thing: a struct can be unrenderable because of a *pointer* field while also holding a
+        // `-0.0` float, and comparing the aggregates structurally would hit exactly the IEEE
+        // trap this function exists to avoid. Each field is judged by the same rule, so
+        // byte-renderable subfields still get the byte comparison.
+
+        match before, after with
+        | CliType.ValueType b, CliType.ValueType a -> CliValueType.ZeroingChangedAnything b a
+        // Structural inequality can over-report here — two values identical in memory may
+        // differ in field write-timestamp bookkeeping — but it never under-reports, and the
+        // only cost of a false "changed" is one redundant write of an identical value.
+        | _ -> before <> after
+
+    /// Zero the byte range `[offset, offset + count)` of `value`, returning `None` if that would
+    /// leave it unchanged.
+    ///
+    /// Unlike `WithBytesAtIfChanged`, this works on storage that has no byte rendering at all:
+    /// it walks structure rather than materialising bytes, so a range covering a whole object
+    /// reference nulls it, and a range covering a plain field of a *reference-containing* struct
+    /// zeroes just that field.
+    ///
+    /// A field only *partially* covered by the range is an error unless it can itself absorb a
+    /// partial zeroing — a nested value type recurses, and a byte-addressable primitive has its
+    /// own sub-range zeroed. Partially zeroing an object reference or a runtime pointer has no
+    /// meaning and fails loudly
+    static member WithZeroedRangeIfChanged (offset : int) (count : int) (value : CliType) : CliType option =
+        // `SpanHelpers.ClearWithReferences` uses this, reinterpreting the
+        // element data as `IntPtr` slots and storing zero into each, and for a struct like
+        // `Dictionary<K,V>.Entry` the slots do not line up one-to-one with reference fields.
+        let size = CliType.SizeOf(value).Size
+
+        // Bounds-check without forming `offset + count`, which wraps for large inputs and would
+        // let an out-of-range request through as though it were valid.
+        if offset < 0 || count < 0 || offset > size || count > size - offset then
+            failwith
+                $"CliType.WithZeroedRangeIfChanged: range of %d{count} byte(s) at offset %d{offset} is outside the %d{size}-byte value %O{value}"
+
+        if count = 0 then
+            None
+        elif offset = 0 && count = size then
+            // Whole-value zeroing needs no structural walk and is defined for every shape.
+            let zeroed = CliType.ZeroLike value
+
+            if CliType.ZeroingChangedAnything value zeroed then
+                Some zeroed
+            else
+                None
+        else
+
+        match value with
+        | CliType.ValueType vt ->
+            CliValueType.WithZeroedRangeIfChanged offset count vt
+            |> Option.map CliType.ValueType
+        | CliType.ObjectRef _
+        | CliType.RuntimePointer _ ->
+            // A reference or pointer occupies its slot indivisibly: there is no such thing as
+            // half a reference, so a range that covers only part of one cannot be honoured.
+            // Callers reach this only through storage whose layout says the range straddles a
+            // reference, which is either a misaligned explicit layout or an interpreter bug —
+            // both worth failing loudly for rather than guessing.
+            failwith
+                $"CliType.WithZeroedRangeIfChanged: refusing to zero the partial range [%d{offset}, %d{offset + count}) of the %d{size}-byte %O{value}; a reference or pointer cannot be partially cleared"
+        | CliType.Bool _
+        | CliType.Char _
+        | CliType.Numeric _ ->
+            // A partial zeroing of a primitive is an ordinary byte write. This still refuses
+            // storage carrying non-`Verbatim` provenance, which is right: half-clearing a
+            // tagged native int would leave a corrupt pointer.
+            CliType.WithBytesAtIfChanged offset (Array.zeroCreate count) value
+
     /// Return a byte-addressable CLI value with the requested byte range replaced, or `None` if
     /// the materialised byte image would be unchanged. Value types delegate to
     /// `CliValueType.WithBytesAtIfChanged`, so represented padding and overlapping-field
@@ -878,6 +960,153 @@ and CliValueType =
     /// and the next timestamp explicitly; changed writes use the existing value as the
     /// shape/provenance template and intentionally canonicalise overlapping-field replay order
     /// the same way `OfBytesLike` does.
+    /// Field-wise counterpart of `CliType.ZeroingChangedAnything`, for aggregates that have no
+    /// byte rendering of their own. Any structural difference other than in the field values
+    /// (different declared type, different storage form, different field set) counts as a
+    /// change; matching fields are compared by the same rule, so a `-0.0` buried inside an
+    /// otherwise unrenderable struct is still seen as differing from `0.0`.
+    static member internal ZeroingChangedAnything (before : CliValueType) (after : CliValueType) : bool =
+        if before._Declared <> after._Declared then
+            true
+        else
+
+        match before._Storage, after._Storage with
+        | CliValueTypeStorage.RawBytes b, CliValueTypeStorage.RawBytes a -> b <> a
+        | CliValueTypeStorage.Fields b, CliValueTypeStorage.Fields a ->
+            if b.Fields.Length <> a.Fields.Length || b.PreservedBytes <> a.PreservedBytes then
+                true
+            else
+                List.exists2
+                    (fun (x : CliConcreteField) (y : CliConcreteField) ->
+                        x.Offset <> y.Offset
+                        || x.Size <> y.Size
+                        || not (FieldId.exactlyEqual x.Id y.Id)
+                        || CliType.ZeroingChangedAnything x.Contents y.Contents
+                    )
+                    b.Fields
+                    a.Fields
+        | CliValueTypeStorage.RawBytes _, CliValueTypeStorage.Fields _
+        | CliValueTypeStorage.Fields _, CliValueTypeStorage.RawBytes _ -> true
+
+    /// Zero the byte range `[offset, offset + count)`. See `CliType.WithZeroedRangeIfChanged`.
+    ///
+    /// Walks fields structurally rather than going through `ToBytes`, which is the whole point:
+    /// `ToBytes` materialises *every* field, so it cannot render a struct that holds a live
+    /// object reference, even when the requested range covers only plain fields.
+    ///
+    /// Field write timestamps are deliberately preserved, not refreshed. `ToBytes` replays
+    /// overlapping fields in timestamp order, and a field that only partially overlaps the
+    /// requested range extends outside it, so promoting it to "newest" would let its untouched
+    /// bytes win over a sibling and change memory outside the range. Keeping the original order
+    /// is safe both ways: inside the range every intersecting field has had its covered bytes
+    /// zeroed, so whichever wins writes zeros, and outside it nothing about the order changed.
+    static member WithZeroedRangeIfChanged (offset : int) (count : int) (cvt : CliValueType) : CliValueType option =
+        let size = CliValueType.SizeOf(cvt).Size
+
+        // See `CliType.WithZeroedRangeIfChanged`: phrased to avoid overflowing `offset + count`.
+        if offset < 0 || count < 0 || offset > size || count > size - offset then
+            failwith
+                $"CliValueType.WithZeroedRangeIfChanged: range of %d{count} byte(s) at offset %d{offset} is outside the %d{size}-byte value type %O{cvt._Declared}"
+
+        let rangeEnd = offset + count
+
+        match cvt._Storage with
+        | CliValueTypeStorage.RawBytes bytes ->
+            let updated = Array.copy bytes
+
+            for i = offset to rangeEnd - 1 do
+                updated.[i] <- 0uy
+
+            if updated = bytes then
+                None
+            else
+                Some
+                    { cvt with
+                        _Storage = CliValueTypeStorage.RawBytes updated
+                    }
+        | CliValueTypeStorage.Fields storage ->
+            let mutable changed = false
+
+            let updatedFields =
+                storage.Fields
+                |> List.map (fun field ->
+                    let fieldEnd = field.Offset + field.Size
+
+                    if fieldEnd <= offset || field.Offset >= rangeEnd then
+                        // Disjoint from the range.
+                        field
+                    else
+
+                    let updatedContents =
+                        if field.Offset >= offset && fieldEnd <= rangeEnd then
+                            // Fully covered: zero it whatever its shape, which is what makes a
+                            // reference field null without needing to identify it as one.
+                            let zeroed = CliType.ZeroLike field.Contents
+
+                            if CliType.ZeroingChangedAnything field.Contents zeroed then
+                                Some zeroed
+                            else
+                                None
+                        else
+                            // Straddles a range boundary. Re-express the overlap in the field's
+                            // own coordinates and let it decide whether it can absorb a partial
+                            // zeroing: a nested value type recurses, a primitive takes a byte
+                            // write, a reference fails loudly.
+                            let localOffset = max 0 (offset - field.Offset)
+                            let localEnd = min field.Size (rangeEnd - field.Offset)
+
+                            CliType.WithZeroedRangeIfChanged localOffset (localEnd - localOffset) field.Contents
+
+                    match updatedContents with
+                    | None -> field
+                    | Some contents ->
+                        changed <- true
+
+                        // `EditedAtTime` is deliberately left alone. `ToBytes` replays
+                        // overlapping fields in timestamp order, so promoting a field to
+                        // "newest" changes who wins on *every* byte it covers — including the
+                        // bytes outside the requested range, when the field only partially
+                        // overlaps that range. A nested 16-byte field aliased by a newer 8-byte
+                        // field over its upper half is enough to show it: zeroing the lower
+                        // half would otherwise let the nested field's stale upper half
+                        // overwrite the alias, changing memory this call was never asked to
+                        // touch.
+                        //
+                        // Keeping the original order is safe in both directions. Inside the
+                        // range every intersecting field has had its covered bytes zeroed, so
+                        // whichever wins writes zeros; outside it, the order is exactly what it
+                        // was, so the bytes are exactly what they were.
+                        { field with
+                            Contents = contents
+                        }
+                )
+
+            // The preserved image is a full-size copy of the whole byte image, not just the
+            // unrepresented parts, so zeroing the covered range of it does more work than is
+            // strictly needed: `ToBytes` overlays the fields back on top, making the
+            // field-covered bytes redundant. It is the sole source of truth for *padding*
+            // within the range, though, and real memory zeroing clears padding too — so
+            // leaving it alone would report stale padding for a cleared range.
+            let updatedPreserved = Array.copy storage.PreservedBytes
+
+            for i = offset to rangeEnd - 1 do
+                updatedPreserved.[i] <- 0uy
+
+            let preservedChanged = updatedPreserved <> storage.PreservedBytes
+
+            if not changed && not preservedChanged then
+                None
+            else
+                Some
+                    { cvt with
+                        _Storage =
+                            CliValueTypeStorage.Fields
+                                {
+                                    Fields = updatedFields
+                                    PreservedBytes = updatedPreserved
+                                }
+                    }
+
     static member WithBytesAtIfChanged (offset : int) (bytes : byte[]) (cvt : CliValueType) : CliValueType option =
         let existing = CliValueType.ToBytes cvt
 
