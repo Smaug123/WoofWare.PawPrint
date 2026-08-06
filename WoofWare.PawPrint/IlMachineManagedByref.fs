@@ -1015,6 +1015,34 @@ module IlMachineManagedByref =
 
             ValueSome (structuralPrefix, totalOffset)
 
+    /// `true` iff a value of CliType `storage` can be read or written as if it
+    /// were a value of CliType `fieldTemplate`, without any bytewise
+    /// reinterpret step. Phase A allows only the object-reference identity,
+    /// since `ObjectRef` storage is non-byte-addressable and so the bytewise
+    /// path is forced to fail anyway; for every other shape the bytewise path
+    /// is correct and produces useful diagnostics on mismatch. Future phases
+    /// may widen this predicate to cover, for example, same-family same-width
+    /// primitives, but doing so requires a write-side coercion step that
+    /// rebuilds the storage shape, which Phase A intentionally omits.
+    let private isLayoutCompatibleForElision (storage : CliType) (fieldTemplate : CliType) : bool =
+        match storage, fieldTemplate with
+        | CliType.ObjectRef _, CliType.ObjectRef _ -> true
+        | _ -> false
+
+    /// The no-trailing-`Field` sibling of `classifyTransparentWrapper`: the byref reinterprets
+    /// transparent single-field storage directly as the field's *own* type, so there is no field
+    /// projection to navigate. `[InlineArray(N)] struct { T _item; }` produces exactly this —
+    /// indexing element 0 is `Unsafe.As<TBuffer, T>(ref buffer)`.
+    ///
+    /// Returns the storage-side `FieldId` to read or write through. `CliType.TrySingleWholeValueField`
+    /// supplies the structural half (exactly one field, at offset 0, spanning the whole value, so
+    /// nothing else in the storage could be disturbed); `isLayoutCompatibleForElision` supplies the
+    /// compatibility half, which is the same gate the `Field`-projected classifier applies.
+    let private tryElideTransparentWrapperTo (storage : CliType) (targetTemplate : CliType) : FieldId option =
+        match CliType.TrySingleWholeValueField storage with
+        | Some (id, contents) when isLayoutCompatibleForElision contents targetTemplate -> Some id
+        | _ -> None
+
     let readManagedByrefBytesAs
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -1169,6 +1197,20 @@ module IlMachineManagedByref =
 
                             match cell, targetTemplate with
                             | CliType.ObjectRef _, CliType.ObjectRef _ -> Some cell
+                            | CliType.ValueType _, CliType.ObjectRef _ ->
+                                // The storage is a value type but the target is a bare
+                                // reference: `Unsafe.As<TBuffer, T>(ref buffer)` where
+                                // `TBuffer` is a transparent single-field wrapper of a `T`
+                                // reference, as `[InlineArray(N)]` over a reference element
+                                // generates. The wrapper has no representation beyond its
+                                // field, so the byref addresses precisely that field's cell
+                                // and we can hand it back. Storage that merely *contains* a
+                                // reference at offset 0 is rejected by
+                                // `TrySingleWholeValueField` and still routes bytewise, where
+                                // it fails loudly rather than silently dropping the rest of
+                                // the struct.
+                                tryElideTransparentWrapperTo cell targetTemplate
+                                |> Option.map (fun id -> CliType.getFieldById id cell)
                             | _ -> None
                         | _ -> None
 
@@ -1205,20 +1247,6 @@ module IlMachineManagedByref =
         | ElideAsField of FieldId
         | ElideAsStorageInnerField of FieldId
         | NotTransparent
-
-    /// `true` iff a value of CliType `storage` can be read or written as if it
-    /// were a value of CliType `fieldTemplate`, without any bytewise
-    /// reinterpret step. Phase A allows only the object-reference identity,
-    /// since `ObjectRef` storage is non-byte-addressable and so the bytewise
-    /// path is forced to fail anyway; for every other shape the bytewise path
-    /// is correct and produces useful diagnostics on mismatch. Future phases
-    /// may widen this predicate to cover, for example, same-family same-width
-    /// primitives, but doing so requires a write-side coercion step that
-    /// rebuilds the storage shape, which Phase A intentionally omits.
-    let private isLayoutCompatibleForElision (storage : CliType) (fieldTemplate : CliType) : bool =
-        match storage, fieldTemplate with
-        | CliType.ObjectRef _, CliType.ObjectRef _ -> true
-        | _ -> false
 
     /// Classifier shared by the read- and write-side `ReinterpretAs+Field`
     /// dispatchers. See `TransparentWrapperOutcome` for the cases.
@@ -1259,17 +1287,9 @@ module IlMachineManagedByref =
                     // (the `Unsafe.As<TaskAwaiter<T>, TaskAwaiter>` motif).
                     // The same size/single-offset-0-field gates apply
                     // symmetrically on the storage side.
-                    match storageValue with
-                    | CliType.ValueType storageVt ->
-                        match CliValueType.TryFieldsAt 0 storageVt with
-                        | [ sf ] when
-                            sf.Size = CliType.sizeOf sf.Contents
-                            && CliType.sizeOf storageValue = sf.Size
-                            && isLayoutCompatibleForElision sf.Contents f.Contents
-                            ->
-                            TransparentWrapperOutcome.ElideAsStorageInnerField sf.Id
-                        | _ -> TransparentWrapperOutcome.NotTransparent
-                    | _ -> TransparentWrapperOutcome.NotTransparent
+                    match tryElideTransparentWrapperTo storageValue f.Contents with
+                    | Some innerId -> TransparentWrapperOutcome.ElideAsStorageInnerField innerId
+                    | None -> TransparentWrapperOutcome.NotTransparent
             | _ -> TransparentWrapperOutcome.NotTransparent
         | _ -> TransparentWrapperOutcome.NotTransparent
 
@@ -2274,6 +2294,33 @@ module IlMachineManagedByref =
                         failwith
                             $"%s{operation}: assigning non-object value %s{describeCliStorage state other} to object-reference inner field %O{innerId} of nested single-instance-field wrapper"
                 | TransparentWrapperOutcome.NotTransparent -> ValueNone
+            | [], 0 ->
+                // No trailing `Field`: the byref reinterprets the storage directly as some
+                // other type. When the storage is a transparent single-field wrapper and the
+                // target is that field's own reference type, the write lands squarely on the
+                // field — the `[InlineArray(N)]`-over-a-reference-element write, mirroring the
+                // read-side elision in `readManagedByref`.
+                //
+                // This is *not* the array-element zero-fill that `writeArrayBytes` handles via
+                // `CliType.WithZeroedRangeIfChanged`: the value written here is an arbitrary
+                // reference rather than a zero, so there is nothing to decompose — the field is
+                // simply replaced.
+                let targetTemplate = zeroForConcreteType baseClassTypes state reinterpretTy
+
+                match tryElideTransparentWrapperTo storageValue targetTemplate with
+                | Some innerId ->
+                    match newValue with
+                    | CliType.ObjectRef _ ->
+                        let updated = CliType.withFieldSetById innerId newValue storageValue
+
+                        if updated = storageValue then
+                            ValueSome None
+                        else
+                            ValueSome (Some updated)
+                    | other ->
+                        failwith
+                            $"%s{operation}: assigning non-object value %s{describeCliStorage state other} to object-reference field %O{innerId} of transparent single-instance-field wrapper storage"
+                | None -> ValueNone
             | _ -> ValueNone
 
         match transparentWrapperFastPath () with
@@ -2390,7 +2437,7 @@ module IlMachineManagedByref =
             // helpers reject the cross-constructor write (`ValueType`
             // storage, `ObjectRef` payload) and the byte-scatter fallback
             // hits `CliType.ToBytes` on the ObjectRef — which refuses.
-            // Re-route only the Phase B case to the structural writer,
+            // Re-route only these transparent-wrapper cases to the structural writer,
             // whose `transparentWrapperFastPath` handles it via the
             // classifier's `ElideAsStorageInnerField` outcome. Phase A and
             // NotTransparent stay on the existing precise-write path: for
@@ -2404,7 +2451,18 @@ module IlMachineManagedByref =
             // never trigger it; `readRootValue` would also throw for them
             // when no typed cell covers the root offset, so we must not
             // probe those roots here.
-            let isPhaseBNestedWrapperWrite () : bool =
+            //
+            // The same argument applies unchanged to the no-`Field` shape
+            // `[ReinterpretAs T]` over transparent single-field storage — the
+            // `[InlineArray(N)]`-over-a-reference-element write. There the
+            // storage is a `ValueType` wrapper and the payload an `ObjectRef`,
+            // so the precise-write helpers reject the cross-constructor write
+            // and the byte-scatter fallback again reaches `CliType.ToBytes` on
+            // a live reference. Without this the fix would cover only locals,
+            // whose roots fall to `useStructuralWriter` anyway, and a wrapper
+            // reached by `ldflda` on a class field or `ldelema` on an array
+            // element would still fail.
+            let isTransparentWrapperStructuralWrite () : bool =
                 match baseClassTypes, root, projs with
                 | Some bct,
                   (ByrefRoot.HeapValue _ | ByrefRoot.HeapObjectField _ | ByrefRoot.ArrayElement _),
@@ -2415,6 +2473,13 @@ module IlMachineManagedByref =
                     | TransparentWrapperOutcome.ElideAsStorageInnerField _ -> true
                     | TransparentWrapperOutcome.ElideAsField _
                     | TransparentWrapperOutcome.NotTransparent -> false
+                | Some bct,
+                  (ByrefRoot.HeapValue _ | ByrefRoot.HeapObjectField _ | ByrefRoot.ArrayElement _),
+                  [ ByrefProjection.ReinterpretAs reinterpretTy ] ->
+                    let storageValue = readRootValue state root
+                    let targetTemplate = zeroForConcreteType bct state reinterpretTy
+
+                    tryElideTransparentWrapperTo storageValue targetTemplate |> Option.isSome
                 | _ -> false
 
             match peeled, valueIsByteRenderable with
@@ -2426,7 +2491,7 @@ module IlMachineManagedByref =
                 // metadata) work here because the core never consults BCT
                 // unless a `Field` appears in the byte-view suffix.
                 writeManagedByrefBytesOrTypedCellCore baseClassTypes state src newValue
-            | ValueSome ([], _), false when isPhaseBNestedWrapperWrite () -> useStructuralWriter ()
+            | ValueSome ([], _), false when isTransparentWrapperStructuralWrite () -> useStructuralWriter ()
             | ValueSome ([], _), false ->
                 // Non-byte-renderable empty-prefix peel: the bytes-or-typed-cell
                 // writer can precise-write for the byte-addressable storage
