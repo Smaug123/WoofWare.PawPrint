@@ -616,7 +616,12 @@ namespace {scenario.Namespace}
         let unmodified = TypeDefn.Byref (TypeDefn.GenericTypeParameter 0)
 
         let modified =
-            TypeDefn.Modified (unmodified, asClassTypeDefn compiled.Assembly compiled.Plain, modificationRequired)
+            TypeDefn.Modified
+                {
+                    Unmodified = unmodified
+                    Modifier = asClassTypeDefn compiled.Assembly compiled.Plain
+                    IsRequired = modificationRequired
+                }
 
         let actual, _ =
             TypeConcretization.concretizeType
@@ -1056,7 +1061,22 @@ namespace {scenario.Namespace}
                             (asClassTypeDefn compiled.Assembly compiled.FirstArgument)
 
                     let typeGenerics = ImmutableArray.Create genericArgumentHandle
-                    let modifier = asClassTypeDefn compiled.Assembly compiled.Plain
+
+                    // Vary what sits in the `Modifier` slot as well as the `Unmodified` slot: the
+                    // property is that concretization is *independent* of the modifier, so a fixed
+                    // modifier would leave the two slots distinguishable only by luck.
+                    // ECMA-335 II.23.2.7 requires a modifier to be a TypeDefOrRefOrSpecEncoded
+                    // token, so these are all class-shaped rather than byref/pointer/array.
+                    let modifiers : TypeDefn list =
+                        [
+                            asClassTypeDefn compiled.Assembly compiled.Plain
+                            asClassTypeDefn compiled.Assembly compiled.FirstArgument
+                            asClassTypeDefn compiled.Assembly compiled.SecondArgument
+                            TypeDefn.GenericInstantiation (
+                                asClassTypeDefn compiled.Assembly compiled.RightBox,
+                                ImmutableArray.Create (asClassTypeDefn compiled.Assembly compiled.Inner)
+                            )
+                        ]
 
                     for shape in allModifiedConcretizationShapes do
                         let unmodified = modifiedConcretizationShapeType compiled shape
@@ -1070,18 +1090,25 @@ namespace {scenario.Namespace}
                                 ImmutableArray.Empty
                                 unmodified
 
-                        for modificationRequired in [ true ; false ] do
-                            let modified = TypeDefn.Modified (unmodified, modifier, modificationRequired)
+                        for modifier in modifiers do
+                            for modificationRequired in [ true ; false ] do
+                                let modified =
+                                    TypeDefn.Modified
+                                        {
+                                            Unmodified = unmodified
+                                            Modifier = modifier
+                                            IsRequired = modificationRequired
+                                        }
 
-                            let actual, _ =
-                                TypeConcretization.concretizeType
-                                    ctx
-                                    (NoAssemblyLoad ())
-                                    compiled.Assembly.Name
-                                    typeGenerics
-                                    ImmutableArray.Empty
-                                    modified
+                                let actual, _ =
+                                    TypeConcretization.concretizeType
+                                        ctx
+                                        (NoAssemblyLoad ())
+                                        compiled.Assembly.Name
+                                        typeGenerics
+                                        ImmutableArray.Empty
+                                        modified
 
-                            actual |> shouldEqual expected
+                                actual |> shouldEqual expected
                 )
         )

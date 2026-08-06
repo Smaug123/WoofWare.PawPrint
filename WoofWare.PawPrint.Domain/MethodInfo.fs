@@ -1160,7 +1160,7 @@ module MethodInfo =
         | TypeDefn.Pointer typeDefn -> failwith "todo"
         | TypeDefn.Byref typeDefn -> failwith "todo"
         | TypeDefn.OneDimensionalArrayLowerBoundZero elements -> failwith "todo"
-        | TypeDefn.Modified (original, afterMod, modificationRequired) -> failwith "todo"
+        | TypeDefn.Modified _ -> failwith "todo: resolveBaseType of a type carrying a custom modifier (modreq/modopt)"
         | TypeDefn.FromReference (typeRef, signatureTypeKind) -> failwith "todo"
         | TypeDefn.FromDefinition (_identity, signatureTypeKind) -> failwith "todo"
         | TypeDefn.GenericInstantiation (generic, args) -> failwith "todo"

@@ -240,7 +240,7 @@ module MethodHandleRegistry =
         | TypeDefn.FromReference (_, System.Reflection.Metadata.SignatureTypeKind.Class)
         | TypeDefn.FromDefinition (_, System.Reflection.Metadata.SignatureTypeKind.Class) -> true
         | TypeDefn.GenericInstantiation (generic, _) -> isReferenceShaped generic
-        | TypeDefn.Modified (original, _, _) -> isReferenceShaped original
+        | TypeDefn.Modified m -> isReferenceShaped m.Unmodified
         | TypeDefn.PrimitiveType _
         | TypeDefn.Pinned _
         | TypeDefn.Pointer _

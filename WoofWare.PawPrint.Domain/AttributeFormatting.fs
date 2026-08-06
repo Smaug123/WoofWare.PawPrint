@@ -204,8 +204,13 @@ module AttributeFormatting =
         | TypeDefn.Pinned t -> TypeDefn.Pinned (substituteTypeArgs typeArgs t)
         | TypeDefn.Pointer t -> TypeDefn.Pointer (substituteTypeArgs typeArgs t)
         | TypeDefn.Byref t -> TypeDefn.Byref (substituteTypeArgs typeArgs t)
-        | TypeDefn.Modified (orig, after, req) ->
-            TypeDefn.Modified (substituteTypeArgs typeArgs orig, substituteTypeArgs typeArgs after, req)
+        | TypeDefn.Modified m ->
+            TypeDefn.Modified
+                {
+                    Unmodified = substituteTypeArgs typeArgs m.Unmodified
+                    Modifier = substituteTypeArgs typeArgs m.Modifier
+                    IsRequired = m.IsRequired
+                }
         | TypeDefn.GenericInstantiation (generic, args) ->
             let generic' = substituteTypeArgs typeArgs generic
 
