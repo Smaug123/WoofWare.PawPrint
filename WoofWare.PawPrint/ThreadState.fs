@@ -155,9 +155,10 @@ type ThreadStatus =
     ///
     /// `waitAll = false` (wait-any) is satisfied by any one handle becoming
     /// acquirable. `waitAll = true` requires every handle to be simultaneously
-    /// acquirable, and acquires them atomically; the QCall decoder rejects
-    /// duplicate handles for that mode, matching the PAL, so `handles` is
-    /// distinct whenever `waitAll` is set.
+    /// acquirable, and acquires them atomically; duplicate handles are
+    /// rejected for that mode (with a guest `DuplicateWaitObjectException`,
+    /// as CoreCLR raises), so `handles` is distinct whenever `waitAll` is
+    /// set.
     ///
     /// Unlike the single-handle case, the value the guest sees is not known at
     /// park time — a wait-any returns `WAIT_OBJECT_0 + index` for whichever

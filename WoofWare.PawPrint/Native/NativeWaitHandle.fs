@@ -16,11 +16,14 @@ namespace WoofWare.PawPrint
 /// catches each entry point here and forwards it to the deterministic
 /// state machine in `WaitHandle.fs`.
 ///
-/// Semaphore, mutex, and event variants are supported today;
-/// multi-handle waits, named handles (`PAL_OpenMutexW`, `OpenEventW`),
-/// and non-zero finite timeouts are out of scope pending future PRs and
-/// a virtual clock. Zero-timeout waits (the deterministic non-blocking
-/// probe `WaitOne(0)` emits) are handled inline — no clock is needed.
+/// Semaphore, mutex, and event variants are supported today, for both
+/// single-handle waits and the multi-handle
+/// `WaitHandle_WaitMultipleIgnoringSyncContext`. Named handles
+/// (`PAL_OpenMutexW`, `OpenEventW`) remain out of scope. Timeouts run
+/// against the virtual clock: `INFINITE` parks with no deadline, a finite
+/// positive timeout records an absolute deadline the driver loop fires, and
+/// zero-timeout waits (the deterministic non-blocking probe `WaitOne(0)` /
+/// `WaitAny(..., 0)` emit) are handled inline without a clock.
 [<RequireQualifiedAccess>]
 module NativeWaitHandle =
 
@@ -47,7 +50,9 @@ module NativeWaitHandle =
 
     /// `ERROR_INVALID_PARAMETER = 87`. The Win32 error the PAL sets when a
     /// wait-all names the same handle twice (`wait.cpp`'s duplicate scan).
-    /// The QCall returns `WAIT_FAILED` alongside it.
+    /// The QCall converts it into a `DuplicateWaitObjectException` rather than
+    /// returning, but the error is still set, so a guest that reads
+    /// `Marshal.GetLastPInvokeError` after catching sees what Win32 would.
     let private errorInvalidParameter : int = 87
 
     /// The Win32 wait return codes live on `WaitHandle` rather than here:
@@ -58,7 +63,6 @@ module NativeWaitHandle =
     let private waitObjectZero : int = WaitHandle.waitObjectZero
     let private waitAbandoned : int = WaitHandle.waitAbandoned
     let private waitTimeout : int = WaitHandle.waitTimeout
-    let private waitFailed : int = WaitHandle.waitFailed
 
     /// Mutate the kernel's `LastSystemError` slot. The
     /// LibraryImport-generated stub for a `SetLastError = true` import
@@ -419,7 +423,11 @@ module NativeWaitHandle =
         : WaitHandleId list
         =
         let intPtrConcreteType = requiredIntPtrConcreteType operation baseClassTypes state
-        let stride = 8
+
+        // Derive the element stride from the cell model rather than writing 8,
+        // so that a pointer-width change shows up in one place.
+        let stride =
+            CliType.sizeOf (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
 
         [ 0 .. count - 1 ]
         |> List.map (fun index ->
@@ -662,41 +670,53 @@ module NativeWaitHandle =
             // ("makes no difference when nCount is 1"). We do not need to
             // mirror that: with one handle both modes acquire it and report
             // `WAIT_OBJECT_0 + 0`, which is the same value.
-            let state, ret =
-                if timeout = System.Threading.Timeout.Infinite then
-                    match WaitHandle.waitMultiple ctx.Thread handles waitAll None state with
-                    | WaitHandle.MultiWaitOutcome.Acquired (index, abandoned, state) ->
-                        state, multiWaitResult waitAll index abandoned
-                    // The park-time push is the optimistic `WAIT_OBJECT_0`;
-                    // the wake rewrites it once the satisfying handle (and
-                    // hence the index) is known.
-                    | WaitHandle.MultiWaitOutcome.Blocked state -> state, waitObjectZero
-                    | WaitHandle.MultiWaitOutcome.Failed state ->
-                        withLastSystemError errorInvalidParameter state, waitFailed
-                elif timeout = 0 then
-                    match WaitHandle.tryWaitMultiple ctx.Thread handles waitAll state with
-                    | WaitHandle.MultiTryWaitOutcome.Acquired (index, abandoned, state) ->
-                        state, multiWaitResult waitAll index abandoned
-                    | WaitHandle.MultiTryWaitOutcome.TimedOut state -> state, waitTimeout
-                    | WaitHandle.MultiTryWaitOutcome.Failed state ->
-                        withLastSystemError errorInvalidParameter state, waitFailed
-                elif timeout < 0 then
-                    failwith
-                        $"%s{operation}: negative timeout %d{timeout} ms is not Infinite (-1); WaitHandle.WaitMultiple validates this argument before the QCall, so reaching here means the wrapper was bypassed."
-                else
-                    let deadlineMs = state.Kernel.VirtualClockMs + int64 timeout
+            // A duplicate-handle wait-all never returns a value to managed
+            // code. The PAL answers `WAIT_FAILED` + `ERROR_INVALID_PARAMETER`,
+            // but `Thread::DoAppropriateWait` — still inside this QCall —
+            // rescans for duplicates and throws
+            // `DuplicateWaitObjectException` (threads.cpp:3404). Returning
+            // `WAIT_FAILED` to the managed wrapper instead would surface as
+            // `WaitAll` quietly reporting success, because
+            // `WaitHandle.WaitMultiple` never special-cases it and `-1 !=
+            // WaitTimeout`.
+            let raiseDuplicate (state : IlMachineState) : NativeHandlerResult option =
+                state
+                |> withLastSystemError errorInvalidParameter
+                |> NativeHandlerResult.raiseException ctx.BaseClassTypes.DuplicateWaitObjectException
+                |> Some
 
-                    match WaitHandle.waitMultiple ctx.Thread handles waitAll (Some deadlineMs) state with
-                    | WaitHandle.MultiWaitOutcome.Acquired (index, abandoned, state) ->
-                        state, multiWaitResult waitAll index abandoned
-                    | WaitHandle.MultiWaitOutcome.Blocked state -> state, waitObjectZero
-                    | WaitHandle.MultiWaitOutcome.Failed state ->
-                        withLastSystemError errorInvalidParameter state, waitFailed
+            let completeWith (state : IlMachineState) (ret : int) : NativeHandlerResult option =
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 ret) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
 
-            state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 ret) ctx.Thread
-            |> NativeHandlerResult.completed
-            |> Some
+            if timeout = System.Threading.Timeout.Infinite then
+                match WaitHandle.waitMultiple ctx.Thread handles waitAll None state with
+                | WaitHandle.MultiWaitOutcome.Acquired (index, abandoned, state) ->
+                    completeWith state (multiWaitResult waitAll index abandoned)
+                // The park-time push is the optimistic `WAIT_OBJECT_0`; the
+                // wake rewrites it once the satisfying handle (and hence the
+                // index) is known.
+                | WaitHandle.MultiWaitOutcome.Blocked state -> completeWith state waitObjectZero
+                | WaitHandle.MultiWaitOutcome.Failed state -> raiseDuplicate state
+            elif timeout = 0 then
+                match WaitHandle.tryWaitMultiple ctx.Thread handles waitAll state with
+                | WaitHandle.MultiTryWaitOutcome.Acquired (index, abandoned, state) ->
+                    completeWith state (multiWaitResult waitAll index abandoned)
+                | WaitHandle.MultiTryWaitOutcome.TimedOut state -> completeWith state waitTimeout
+                | WaitHandle.MultiTryWaitOutcome.Failed state -> raiseDuplicate state
+            elif timeout < 0 then
+                failwith
+                    $"%s{operation}: negative timeout %d{timeout} ms is not Infinite (-1); WaitHandle.WaitMultiple validates this argument before the QCall, so reaching here means the wrapper was bypassed."
+            else
+                let deadlineMs = state.Kernel.VirtualClockMs + int64 timeout
+
+                match WaitHandle.waitMultiple ctx.Thread handles waitAll (Some deadlineMs) state with
+                | WaitHandle.MultiWaitOutcome.Acquired (index, abandoned, state) ->
+                    completeWith state (multiWaitResult waitAll index abandoned)
+                | WaitHandle.MultiWaitOutcome.Blocked state -> completeWith state waitObjectZero
+                | WaitHandle.MultiWaitOutcome.Failed state -> raiseDuplicate state
 
         | "PAL_CreateMutexW",
           "System.Private.CoreLib",

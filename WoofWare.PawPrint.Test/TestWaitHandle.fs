@@ -1965,18 +1965,31 @@ module TestWaitHandle =
 
     [<Test>]
     let ``waitMultiple wait-all rejects duplicate handles`` () : unit =
+        // The native handler turns `Failed` into a guest
+        // `DuplicateWaitObjectException`, matching what CoreCLR's
+        // `Thread::DoAppropriateWait` does with the PAL's rejection. What
+        // matters here is that the state machine refuses *and changes
+        // nothing*: an auto-event consumed on the way to the rejection, or a
+        // half-acquired semaphore, would be invisible to the guest until much
+        // later.
         let state = baseState () |> withFramedThreads [ t0 ]
-        let a, state = WaitHandle.createEvent true EventResetMode.Manual state
+        let a, state = WaitHandle.createEvent true EventResetMode.Auto state
+        let b, state = WaitHandle.createSemaphore 1 1 state
 
-        match WaitHandle.waitMultiple t0 [ a ; a ] true None state with
+        match WaitHandle.waitMultiple t0 [ a ; b ; a ] true None state with
         | WaitHandle.MultiWaitOutcome.Failed failedState ->
-            // A rejected wait must not have touched anything.
             statusOf t0 failedState |> shouldEqual ThreadStatus.Runnable
             (eventOf a failedState).Signaled |> shouldEqual true
+            (semaphoreOf b failedState).Count |> shouldEqual 1
+            queues failedState |> List.forall (fun (_, q) -> q = []) |> shouldEqual true
         | other -> failwith $"expected Failed for a duplicated wait-all handle, got %O{other}"
 
+        match WaitHandle.tryWaitMultiple t0 [ a ; b ; a ] true state with
+        | WaitHandle.MultiTryWaitOutcome.Failed _ -> ()
+        | other -> failwith $"expected Failed on the zero-timeout path too, got %O{other}"
+
         // The same array is legal for a wait-any.
-        match WaitHandle.waitMultiple t0 [ a ; a ] false None state with
+        match WaitHandle.waitMultiple t0 [ a ; b ; a ] false None state with
         | WaitHandle.MultiWaitOutcome.Acquired (index, _, _) -> index |> shouldEqual 0
         | other -> failwith $"expected a duplicated wait-any to be Acquired, got %O{other}"
 

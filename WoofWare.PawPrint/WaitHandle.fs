@@ -315,10 +315,6 @@ module WaitHandle =
     /// `WaitHandle.WaitTimeout = 0x102` to decide what to hand the guest.
     let waitTimeout : int = 0x102
 
-    /// `WAIT_FAILED = -1` (Win32 `0xFFFFFFFF`). The PAL returns this, with
-    /// `ERROR_INVALID_PARAMETER`, for a wait-all naming the same handle twice.
-    let waitFailed : int = -1
-
     /// The wait queue of a handle, independent of its kind. All three kinds
     /// carry the same `ThreadId list` with the same FIFO discipline, so the
     /// wake walk can be written once rather than three times.
@@ -1058,10 +1054,16 @@ module WaitHandle =
     /// which of the mutexes was abandoned.
     ///
     /// `Blocked` means the thread was parked at every named handle's queue.
-    /// `Failed` is the wait-all-with-duplicate-handles case, which the PAL
-    /// rejects with `ERROR_INVALID_PARAMETER`; it is reachable from ordinary
-    /// guest code (`WaitHandle.WaitAll(new[]{ e, e })` compiles and the BCL
-    /// does not dedupe), so it is an outcome rather than a loud failure.
+    ///
+    /// `Failed` is the wait-all-with-duplicate-handles case. It is reachable
+    /// from ordinary guest code (`WaitHandle.WaitAll(new[]{ e, e })` compiles
+    /// and the BCL does not dedupe), so it is an outcome rather than a loud
+    /// failure — but it is *not* a return value: the PAL answers
+    /// `WAIT_FAILED` + `ERROR_INVALID_PARAMETER` and then
+    /// `Thread::DoAppropriateWait`, still inside the QCall, converts that into
+    /// a managed `DuplicateWaitObjectException`. The native handler raises
+    /// that; nothing ever hands `WAIT_FAILED` to the managed wrapper, which
+    /// would silently read as success.
     [<RequireQualifiedAccess>]
     type MultiWaitOutcome =
         | Acquired of index : int * abandoned : bool * IlMachineState

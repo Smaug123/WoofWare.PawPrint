@@ -230,6 +230,11 @@ type BaseClassTypes<'corelib> =
         MissingFieldException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         MissingMethodException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         NotSupportedException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        /// Thrown by the runtime — not the BCL — when a wait-all names the same
+        /// handle twice: CoreCLR's `Thread::DoAppropriateWait` turns the PAL's
+        /// `WAIT_FAILED` + `ERROR_INVALID_PARAMETER` into this before the managed
+        /// wrapper ever sees a return value.
+        DuplicateWaitObjectException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         NullReferenceException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         OutOfMemoryException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         ArgumentException : TypeInfo<GenericParamFromMetadata, TypeDefn>
