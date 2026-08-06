@@ -94,7 +94,9 @@ module TestMethodHandleRegistry =
 
         let state =
             { state with
-                ThreadState = Map.empty |> Map.add thread (ThreadState.New (CpuId 0) methodState)
+                ThreadState =
+                    Map.empty
+                    |> Map.add thread (ThreadState.New (CpuId 0) (OsThreadId 1u) methodState)
             }
 
         state, thread
@@ -198,7 +200,9 @@ public static class HasMethod
 
         let state =
             { state with
-                ThreadState = Map.empty |> Map.add thread (ThreadState.New (CpuId 0) methodState)
+                ThreadState =
+                    Map.empty
+                    |> Map.add thread (ThreadState.New (CpuId 0) (OsThreadId 1u) methodState)
             }
 
         let token =

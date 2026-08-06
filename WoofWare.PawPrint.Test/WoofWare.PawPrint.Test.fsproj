@@ -93,6 +93,7 @@
     <Compile Include="TestSystemTimeAsTicks.fs" />
     <Compile Include="TestMonotonicTimestamp.fs" />
     <Compile Include="TestCpuPlacement.fs" />
+    <Compile Include="TestOsThreadId.fs" />
     <Compile Include="TestSignalTermination.fs" />
     <Compile Include="TestWaitHandle.fs" />
     <Compile Include="TestSyncBlockMonitor.fs" />

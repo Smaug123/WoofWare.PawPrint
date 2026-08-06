@@ -12,23 +12,30 @@ type IlMachineState =
         ConcreteTypes : AllConcreteTypes
         Logger : ILogger
         NextThreadId : int
-        /// Round-robin cursor for `EmulatedKernel.cpuForRotation`: the number
-        /// of *guest-visible* threads created so far, and hence the rotation
-        /// index the next one will be placed by.
+        /// The number of *guest-visible* threads created so far, and hence the
+        /// ordinal the next one will be given.
+        ///
+        /// Two consumers, both of which turn this into a value the guest can
+        /// read: `EmulatedKernel.cpuForRotation` (which processor the thread is
+        /// pinned to, via `sched_getcpu`) and `EmulatedKernel.osThreadIdForGuest`
+        /// (the thread's OS thread id, via `SystemNative_*OSThreadId`). It is a
+        /// single cursor rather than one per consumer because both are asking
+        /// the same question — "which guest thread is this?" — and parallel
+        /// cursors could only drift.
         ///
         /// Deliberately separate from `NextThreadId`, which is also consumed by
         /// PawPrint-internal auxiliary threads that never run guest IL
-        /// (`allocateParkedThread`). Keying placement off `NextThreadId` would
-        /// let an interpreter-internal thread allocation shift which core every
-        /// subsequently created guest thread lands on, leaking an interpreter
-        /// detail into guest-observable state. `allocateParkedThread` therefore
-        /// leaves this cursor alone.
+        /// (`allocateParkedThread`). Keying either consumer off `NextThreadId`
+        /// would let an interpreter-internal thread allocation shift which core
+        /// — or which thread id — every subsequently created guest thread gets,
+        /// leaking an interpreter detail into guest-observable state.
+        /// `allocateParkedThread` therefore leaves this cursor alone.
         ///
         /// Advanced when a thread is *created*, not when it is started: a guest
-        /// that constructs a `Thread` and never calls `Start` still consumes a
-        /// rotation slot, mirroring real .NET's eager `ManagedThreadId`
-        /// assignment in the constructor.
-        NextCpuRotation : int
+        /// that constructs a `Thread` and never calls `Start` still consumes an
+        /// ordinal, mirroring real .NET's eager `ManagedThreadId` assignment in
+        /// the constructor.
+        NextGuestThreadOrdinal : int
         // CallStack : StackFrame list
         /// Multiple managed heaps are allowed, but we hopefully only need one.
         ManagedHeap : ManagedHeap

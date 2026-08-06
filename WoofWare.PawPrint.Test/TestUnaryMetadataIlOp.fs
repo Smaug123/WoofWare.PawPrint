@@ -96,7 +96,9 @@ module TestUnaryMetadataIlOp =
         let thread = ThreadId.ThreadId 0
 
         { state with
-            ThreadState = Map.empty |> Map.add thread (ThreadState.New (CpuId 0) methodState)
+            ThreadState =
+                Map.empty
+                |> Map.add thread (ThreadState.New (CpuId 0) (OsThreadId 1u) methodState)
         },
         thread
 

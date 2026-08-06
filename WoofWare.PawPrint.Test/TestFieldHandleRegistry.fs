@@ -738,7 +738,9 @@ public class GenericHolder<T>
 
         let state =
             { state with
-                ThreadState = Map.empty |> Map.add thread (ThreadState.New (CpuId 0) methodState)
+                ThreadState =
+                    Map.empty
+                    |> Map.add thread (ThreadState.New (CpuId 0) (OsThreadId 1u) methodState)
             }
 
         let ctx : NativeCallContext =
@@ -809,7 +811,9 @@ public class GenericHolder<T>
 
         let state =
             { state with
-                ThreadState = Map.empty |> Map.add thread (ThreadState.New (CpuId 0) methodState)
+                ThreadState =
+                    Map.empty
+                    |> Map.add thread (ThreadState.New (CpuId 0) (OsThreadId 1u) methodState)
             }
 
         let ctx : NativeCallContext =

@@ -46,6 +46,10 @@ module TestLowLevelMonitor =
             IsBackground = false
             Name = None
             Cpu = CpuId 0
+            // Inert here: a frameless stub cannot execute the `SystemNative_*OSThreadId`
+            // P/Invoke that reads it. Do not reuse this literal for a stub standing in
+            // for more than one thread -- guest OS thread ids must be distinct.
+            OsThreadId = OsThreadId 1u
         }
 
     let private withThreads (threads : ThreadId list) (state : IlMachineState) : IlMachineState =
@@ -159,7 +163,14 @@ module TestLowLevelMonitor =
             |> List.fold
                 (fun (state : IlMachineState, acc : Map<ThreadId, ThreadState>) (tid : ThreadId) ->
                     let state, methodState = mintFrame state
-                    state, acc |> Map.add tid (ThreadState.New (CpuId 0) methodState)
+                    // Distinct OS thread ids, keyed off each stub's `ThreadId`:
+                    // these stand in for guest threads, and guest threads never
+                    // share an id. `IlMachineState.addThread` mints from the
+                    // guest ordinal instead, but these stubs bypass it.
+                    let (ThreadId.ThreadId i) = tid
+                    let osThreadId = EmulatedKernel.osThreadIdForGuest i
+
+                    state, acc |> Map.add tid (ThreadState.New (CpuId 0) osThreadId methodState)
                 )
                 (state, Map.empty)
 

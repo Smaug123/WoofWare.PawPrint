@@ -342,7 +342,7 @@ module IlMachineThreadState =
                 ConcreteTypes = AllConcreteTypes.Empty
                 Logger = logger
                 NextThreadId = 0
-                NextCpuRotation = 0
+                NextGuestThreadOrdinal = 0
                 // CallStack = []
                 ManagedHeap = ManagedHeap.empty
                 ThreadState = Map.empty
@@ -371,14 +371,18 @@ module IlMachineThreadState =
     let addThread (newThreadState : MethodState) (state : IlMachineState) : IlMachineState * ThreadId =
         let thread = ThreadId state.NextThreadId
 
-        // Guest-visible, so it takes the next slot in the CPU rotation.
-        let cpu = EmulatedKernel.cpuForRotation state.NextCpuRotation state.Kernel
+        // Guest-visible, so it takes the next guest thread ordinal, which fixes
+        // both its processor placement and its OS thread id.
+        let cpu = EmulatedKernel.cpuForRotation state.NextGuestThreadOrdinal state.Kernel
+        let osThreadId = EmulatedKernel.osThreadIdForGuest state.NextGuestThreadOrdinal
 
         let newState =
             { state with
                 NextThreadId = state.NextThreadId + 1
-                NextCpuRotation = state.NextCpuRotation + 1
-                ThreadState = state.ThreadState |> Map.add thread (ThreadState.New cpu newThreadState)
+                NextGuestThreadOrdinal = state.NextGuestThreadOrdinal + 1
+                ThreadState =
+                    state.ThreadState
+                    |> Map.add thread (ThreadState.New cpu osThreadId newThreadState)
             }
 
         newState, thread
@@ -407,18 +411,19 @@ module IlMachineThreadState =
                 Status = ThreadStatus.NotStarted
                 IsBackground = false
                 Name = None
-                // Guest-visible, so it takes the next slot in the CPU rotation
-                // — here at construction time, before any `Start`, matching
+                // Guest-visible, so it takes the next guest thread ordinal —
+                // here at construction time, before any `Start`, matching
                 // real .NET's eager `ManagedThreadId` assignment in the `Thread`
                 // constructor. A guest that constructs a thread and never starts
-                // it therefore still consumes a rotation slot.
-                Cpu = EmulatedKernel.cpuForRotation state.NextCpuRotation state.Kernel
+                // it therefore still consumes an ordinal.
+                Cpu = EmulatedKernel.cpuForRotation state.NextGuestThreadOrdinal state.Kernel
+                OsThreadId = EmulatedKernel.osThreadIdForGuest state.NextGuestThreadOrdinal
             }
 
         let newState =
             { state with
                 NextThreadId = state.NextThreadId + 1
-                NextCpuRotation = state.NextCpuRotation + 1
+                NextGuestThreadOrdinal = state.NextGuestThreadOrdinal + 1
                 ThreadState = state.ThreadState |> Map.add thread unstartedState
                 ManagedThreadObjects = state.ManagedThreadObjects |> Map.add thread threadAddr
             }
@@ -453,12 +458,23 @@ module IlMachineThreadState =
                 IsBackground = false
                 Name = None
                 // Core 0 as a placeholder, and deliberately *not* drawn from
-                // `NextCpuRotation` (which this function must leave alone).
-                // This thread is PawPrint-internal: no guest can name it, so no
-                // guest can call `sched_getcpu` on it. Consuming a rotation slot
-                // here would let the interpreter's own thread bookkeeping shift
-                // which core every subsequently created guest thread lands on.
+                // `NextGuestThreadOrdinal` (which this function must leave
+                // alone). This thread is PawPrint-internal: no guest can name
+                // it, so no guest can call `sched_getcpu` on it. Consuming an
+                // ordinal here would let the interpreter's own thread
+                // bookkeeping shift which core every subsequently created guest
+                // thread lands on.
                 Cpu = CpuId 0
+                // The OS thread id, by contrast, is *not* a placeholder and
+                // must not alias a guest thread's. This thread does run guest
+                // code — `SignalDispatch` wakes it onto a managed signal
+                // handler — and that handler may take a `System.Threading.Lock`,
+                // which treats a matching thread id as the same thread
+                // re-entering. `osThreadIdForInternal` mints from a range
+                // disjoint from every guest thread's; it reads `NextThreadId`
+                // rather than the guest ordinal precisely so that it cannot
+                // collide with one.
+                OsThreadId = EmulatedKernel.osThreadIdForInternal state.NextThreadId
             }
 
         let newState =
@@ -548,6 +564,14 @@ module IlMachineThreadState =
                 // dispatcher keeps the core it was placed on, exactly as it
                 // keeps its name and background flag.
                 Cpu = existing.Cpu
+                // Likewise its OS thread id. A real kernel gives a thread one
+                // tid for its whole lifetime, and the dispatcher's lifetime
+                // spans every signal it handles — this transition is between
+                // handler invocations, not between threads. Minting a fresh id
+                // here would also let a long-running run collide with a guest
+                // thread's id eventually, since `osThreadIdForInternal` reads
+                // `NextThreadId`, which this transition does not advance.
+                OsThreadId = existing.OsThreadId
             }
 
         { state with
