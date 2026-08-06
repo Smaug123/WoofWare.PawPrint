@@ -1552,6 +1552,24 @@ module IlMachineManagedByref =
                 ManagedHeap = ManagedHeap.set addr updated state.ManagedHeap
             }
 
+    /// Whether `newValue` has the same storage shape as the existing `cell`,
+    /// for the purposes of whole-cell replacement.
+    ///
+    /// Broadens the primitive-only `haveSameCliShape` (which intentionally
+    /// rejects every `ValueType, ValueType` pair, because two different structs
+    /// could share a size) to also accept user structs whose declared
+    /// `ConcreteTypeHandle` matches the cell's. That handle is the canonical
+    /// identifier for the struct's layout, so equality means same fields in the
+    /// same storage — replacing such a cell preserves everything a later
+    /// `ldobj` needs.
+    let private cellShapeMatches (cell : CliType) (newValue : CliType) : bool =
+        if haveSameCliShape cell newValue then
+            true
+        else
+            match cell, newValue with
+            | CliType.ValueType cellVt, CliType.ValueType newVt -> cellVt.Declared = newVt.Declared
+            | _ -> false
+
     /// Whether a whole-cell store of `newValue` may replace the existing
     /// `cell`, given that the two occupy exactly the same byte range.
     ///
@@ -1573,7 +1591,7 @@ module IlMachineManagedByref =
     let private wholeCellReplacementPreservesShape (cell : CliType) (newValue : CliType) : bool =
         match CliType.ByteAddressability cell with
         | CliByteAddressability.ByteAddressable -> true
-        | CliByteAddressability.Rejected _ -> haveSameCliShape cell newValue
+        | CliByteAddressability.Rejected _ -> cellShapeMatches cell newValue
 
     /// True when `covering` — the result of a `tryFindCellCovering` at the
     /// destination offset — is a single existing cell that `newValue` replaces
@@ -1959,25 +1977,11 @@ module IlMachineManagedByref =
         // below would fail at `CliType.ToBytes`. Route such writes through
         // `setArrayValue` so the cell preserves the new value's provenance.
         //
-        // Shape acceptance broadens the primitive-only `haveSameCliShape`
-        // (which intentionally rejects `ValueType, ValueType` pairs because
-        // two different structs could share a size) to also accept user
-        // structs whose declared `ConcreteTypeHandle` matches the cell's
-        // declared type — that handle is the canonical identifier for the
-        // struct's layout, so equality means same fields and same storage.
-        // Mirrors the typed-cell write in `writeIndirectPrimitiveStore`,
-        // extended for user-struct stobj. Use `CliType.sizeOf` (not
-        // `byteAddressableCellSize`) for stride derivation because element 0
-        // itself may already carry non-byte-renderable provenance from a
-        // prior typed store.
-        let cellShapeMatches (cell : CliType) (newValue : CliType) : bool =
-            if haveSameCliShape cell newValue then
-                true
-            else
-                match cell, newValue with
-                | CliType.ValueType cellVt, CliType.ValueType newVt -> cellVt.Declared = newVt.Declared
-                | _ -> false
-
+        // Shape acceptance uses the shared `cellShapeMatches` (see its
+        // docstring for why declared-handle equality is the right rule for
+        // user structs). Use `CliType.sizeOf` (not `byteAddressableCellSize`)
+        // for stride derivation because element 0 itself may already carry
+        // non-byte-renderable provenance from a prior typed store.
         let arrayElementTypedCellWrite =
             match src with
             | ManagedPointerSource.Byref (ByrefRoot.ArrayElement _, _) ->

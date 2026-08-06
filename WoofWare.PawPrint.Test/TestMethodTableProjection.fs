@@ -3351,6 +3351,44 @@ public unsafe struct PointerWrapper
         |> ignore
 
     [<Test>]
+    let ``Stobj of the same struct type over a tagged struct-wrapper cell is accepted on both byref shapes`` () : unit =
+        // The shape rule rejects a *change* of shape, not repetition. Storing
+        // another instance of the same declared struct preserves everything a
+        // later `ldobj` needs, and must keep working over a cell that carries
+        // provenance — byte scatter is not available as a fallback there, so
+        // rejecting it would turn an ordinary reassignment into a hard failure.
+        let assertAccepted (projected : bool) : unit =
+            let _, loggerFactory = LoggerFactory.makeTest ()
+
+            let state, thread =
+                stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Nop)
+
+            let wrapper = runtimePointerValueType state
+
+            let ptr, state =
+                IlMachineState.allocateStackMemory thread MemoryBlockInitialization.ZeroInitialized 8 state
+
+            let state = IlMachineState.writeManagedByref state ptr (CliType.ValueType wrapper)
+
+            let destPtr =
+                if projected then
+                    ptr
+                    |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs (concreteTypeFor bct.Byte))
+                else
+                    ptr
+
+            let replacement = runtimePointerValueType state
+
+            let stateAfter =
+                IlMachineState.writeManagedByrefBytesOrTypedCell bct state destPtr (CliType.ValueType replacement)
+
+            IlMachineState.readManagedByref bct stateAfter ptr
+            |> shouldEqual (CliType.ValueType replacement)
+
+        assertAccepted false
+        assertAccepted true
+
+    [<Test>]
     let ``Stind_I of a tagged value over a struct-wrapper cell is rejected on both byref shapes`` () : unit =
         // The shape rule is a property of whole-cell replacement, not of the
         // byref shape that reaches it: a store that would restamp a structured
