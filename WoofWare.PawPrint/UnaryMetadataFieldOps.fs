@@ -48,37 +48,113 @@ module internal UnaryMetadataFieldOps =
         && field.DeclaringType.Name = "CastHelpers"
         && field.DeclaringType.Assembly.FullName = baseClassTypes.Corelib.Name.FullName
 
-    let executeStfld (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
-        let loggerFactory = ctx.LoggerFactory
-        let baseClassTypes = ctx.BaseClassTypes
+    /// Resolve a field-bearing metadata token to the field it names, together with the assembly
+    /// whose metadata scopes that field.
+    ///
+    /// Returning the two together is the point. A `FieldInfo` is decoded from its declaring
+    /// assembly's tables, so that assembly — not the executing one — is what interprets
+    /// `field.Signature` (whose `FromReference` case carries a `TypeRef` whose `ResolutionScope`
+    /// indexes the declaring assembly's `AssemblyRef` table), `field.Handle`, and
+    /// `field.RelativeVirtualAddress`. For a `FieldDefinition` token the two assemblies coincide;
+    /// for a `MemberReference` they need not.
+    ///
+    /// `opName` and `verb` appear in diagnostics only, the latter in the phrase "Unexpectedly asked
+    /// to <verb> a non-field".
+    let private resolveFieldToken
+        (opName : string)
+        (verb : string)
+        (ctx : UnaryMetadataIlOpContext)
+        (state : IlMachineState)
+        : IlMachineState * FieldInfo<TypeDefn, TypeDefn> * DumpedAssembly
+        =
         let activeAssy = ctx.ActiveAssembly
-        let metadataToken = ctx.MetadataToken
-        let thread = ctx.Thread
-        let logger = ctx.Logger
 
         let state, field =
-            match metadataToken with
-            | MetadataToken.FieldDefinition f ->
-                let field =
-                    activeAssy.Fields.[f]
-                    |> FieldInfo.mapTypeGenerics (fun _ -> failwith "no generics allowed in FieldDefinition")
+            match ctx.MetadataToken with
+            | MetadataToken.FieldDefinition fieldHandle ->
+                match activeAssy.Fields.TryGetValue fieldHandle with
+                | false, _ ->
+                    failwith
+                        $"TODO: %s{opName} - throw MissingFieldException. Field definition handle %O{fieldHandle} is absent from %s{activeAssy.Name.FullName}."
+                | true, field ->
+                    let field =
+                        field
+                        |> FieldInfo.mapTypeGenerics (fun _ ->
+                            failwith $"%s{opName}: generics are not allowed on a FieldDefinition token"
+                        )
 
-                state, field
+                    state, field
             | MetadataToken.MemberReference mr ->
-                let state, _, field, _ =
+                let state, _, resolved, _ =
                     IlMachineState.resolveMember
-                        loggerFactory
-                        baseClassTypes
-                        thread
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        ctx.Thread
                         activeAssy
                         ImmutableArray.Empty
                         mr
                         state
 
-                match field with
-                | Choice1Of2 _method -> failwith "member reference was unexpectedly a method"
+                match resolved with
+                | Choice1Of2 method ->
+                    failwith
+                        $"%s{opName}: member reference resolved to a method (%s{method.Name}), not a field. This indicates invalid IL or a misresolved token."
                 | Choice2Of2 field -> state, field
-            | t -> failwith $"Unexpectedly asked to store to a non-field: {t}"
+            | t -> failwith $"Unexpectedly asked to %s{verb} a non-field: {t}"
+
+        // Resolving the token is what loads the declaring assembly, so it is expected to be present.
+        let declaringAssy =
+            state.LoadedAssembly field.DeclaringType.Assembly
+            |> Option.defaultWith (fun () ->
+                failwith
+                    $"%s{opName}: declaring assembly %s{field.DeclaringType.Assembly.FullName} of field %s{field.DeclaringType.Namespace}.%s{field.DeclaringType.Name}::%s{field.Name} was not loaded. Resolving the field token is expected to have loaded it."
+            )
+
+        state, field, declaringAssy
+
+    /// Assert that a field reached through a *static* field op really is static, and vice versa.
+    /// The static ops key their storage off `(declaringTypeHandle, fieldHandle)` with no instance,
+    /// and the instance ops project through an object reference; feeding either the other's kind of
+    /// field silently misfiles the value rather than failing, so check rather than assume.
+    ///
+    /// The two directions are not symmetric, and the diagnostic says so:
+    ///
+    /// * a *static* op on an *instance* field is genuinely invalid IL — CoreCLR's importer raises
+    ///   `BADCODE("static access on an instance field")` (`jit/importer.cpp`, at the `isLoadStatic`
+    ///   and `isStoreStatic` checks);
+    /// * an *instance* op on a *static* field is legal, and CoreCLR accepts it a few lines later
+    ///   ("We are using ldfld/a on a static field. We allow it, but need to get side-effect from
+    ///   obj."), evaluating the receiver for its side effects and discarding it. PawPrint simply has
+    ///   not implemented that form: none of these ops has a path to static storage. So we reject it
+    ///   as unimplemented.
+    let private checkFieldStaticness
+        (opName : string)
+        (verb : string)
+        (expectedStatic : bool)
+        (alternativeOp : string)
+        (field : FieldInfo<'typeGeneric, 'fieldGeneric>)
+        : unit
+        =
+        if field.Attributes.HasFlag FieldAttributes.Static <> expectedStatic then
+            // The adjective describes the kind the field turned out to be, i.e. the wrong one.
+            let adjective = if expectedStatic then "instance" else "static"
+
+            let reason =
+                if expectedStatic then
+                    "This indicates invalid IL or a misresolved field token."
+                else
+                    "ECMA-335 permits this form — the receiver is evaluated for its side effects and discarded — but PawPrint does not implement it; it has no path from an instance field op to static storage."
+
+            failwith
+                $"%s{opName} cannot %s{verb} %s{adjective} field %O{field.DeclaringType.Assembly.Name}.%s{field.DeclaringType.Namespace}.%s{field.DeclaringType.Name}::%s{field.Name}; use %s{alternativeOp}. %s{reason}"
+
+    let executeStfld (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
+        let loggerFactory = ctx.LoggerFactory
+        let baseClassTypes = ctx.BaseClassTypes
+        let thread = ctx.Thread
+        let logger = ctx.Logger
+
+        let state, field, declaringAssy = resolveFieldToken "stfld" "store to" ctx state
 
         do
             logger.LogTrace (
@@ -89,9 +165,7 @@ module internal UnaryMetadataFieldOps =
                 field.Signature
             )
 
-        if field.Attributes.HasFlag FieldAttributes.Static then
-            failwith
-                $"stfld cannot store static field %O{field.DeclaringType.Assembly.Name}.%s{field.DeclaringType.Namespace}.%s{field.DeclaringType.Name}::%s{field.Name}; use stsfld. This indicates invalid IL or a misresolved field token."
+        checkFieldStaticness "stfld" "store" false "stsfld" field
 
         let valueToStore, state = IlMachineState.popEvalStack thread state
         let currentObj, state = IlMachineState.popEvalStack thread state
@@ -101,13 +175,11 @@ module internal UnaryMetadataFieldOps =
 
         let fieldId = FieldId.metadata declaringTypeHandle field.Handle field.Name
 
-        // TODO(#737): `field.Signature` is scoped to the field's *declaring* assembly, which for a
-        // `MemberReference` token need not be `activeAssy`. See `executeLdsflda` for the argument.
         let state, zero, concreteTypeHandle =
             IlMachineState.cliTypeZeroOf
                 loggerFactory
                 baseClassTypes
-                activeAssy
+                declaringAssy
                 field.Signature
                 typeGenerics
                 ImmutableArray.Empty // field can't have its own generics
@@ -172,38 +244,12 @@ module internal UnaryMetadataFieldOps =
     let executeStsfld (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
-        let activeAssy = ctx.ActiveAssembly
-        let metadataToken = ctx.MetadataToken
         let thread = ctx.Thread
         let logger = ctx.Logger
 
-        let state, field =
-            match metadataToken with
-            | MetadataToken.FieldDefinition fieldHandle ->
-                match activeAssy.Fields.TryGetValue fieldHandle with
-                | false, _ -> failwith "TODO: Stsfld - throw MissingFieldException"
-                | true, field ->
-                    let field =
-                        field
-                        |> FieldInfo.mapTypeGenerics (fun _ -> failwith "no generics allowed in FieldDefinition")
+        let state, field, declaringAssy = resolveFieldToken "stsfld" "store to" ctx state
 
-                    state, field
-            | MetadataToken.MemberReference mr ->
-                let state, _, method, _ =
-                    IlMachineState.resolveMember
-                        loggerFactory
-                        baseClassTypes
-                        thread
-                        activeAssy
-                        ImmutableArray.Empty
-                        mr
-                        state
-
-                match method with
-                | Choice1Of2 methodInfo ->
-                    failwith $"unexpectedly asked to store to a non-field method: {methodInfo.Name}"
-                | Choice2Of2 fieldInfo -> state, fieldInfo
-            | t -> failwith $"Unexpectedly asked to store to a non-field: {t}"
+        checkFieldStaticness "stsfld" "store" true "stfld" field
 
         // See `executeLdfld` for the rationale: avoid `activeAssy.TypeDefs.[…]` because a
         // cross-assembly MemberReference yields a TypeDef handle that is only valid in the
@@ -227,13 +273,11 @@ module internal UnaryMetadataFieldOps =
 
         let popped, state = IlMachineState.popEvalStack thread state
 
-        // TODO(#737): `field.Signature` is scoped to the field's *declaring* assembly, which for a
-        // `MemberReference` token need not be `activeAssy`. See `executeLdsflda` for the argument.
         let state, zero, concreteTypeHandle =
             IlMachineState.cliTypeZeroOf
                 loggerFactory
                 baseClassTypes
-                activeAssy
+                declaringAssy
                 field.Signature
                 typeGenerics
                 ImmutableArray.Empty // field can't have its own generics
@@ -254,34 +298,10 @@ module internal UnaryMetadataFieldOps =
     let executeLdfld (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
-        let activeAssy = ctx.ActiveAssembly
-        let metadataToken = ctx.MetadataToken
         let thread = ctx.Thread
         let logger = ctx.Logger
 
-        let state, field =
-            match metadataToken with
-            | MetadataToken.FieldDefinition f ->
-                let field =
-                    activeAssy.Fields.[f]
-                    |> FieldInfo.mapTypeGenerics (fun _ -> failwith "no generics allowed on FieldDefinition")
-
-                state, field
-            | MetadataToken.MemberReference mr ->
-                let state, assyName, field, _ =
-                    IlMachineState.resolveMember
-                        loggerFactory
-                        baseClassTypes
-                        thread
-                        activeAssy
-                        ImmutableArray.Empty
-                        mr
-                        state
-
-                match field with
-                | Choice1Of2 _method -> failwith "member reference was unexpectedly a method"
-                | Choice2Of2 field -> state, field
-            | t -> failwith $"Unexpectedly asked to load from a non-field: {t}"
+        let state, field, _declaringAssy = resolveFieldToken "ldfld" "load from" ctx state
 
         // The declaring type's name is carried on `field.DeclaringType` directly; we
         // deliberately do not dereference `Definition.Get` against `activeAssy.TypeDefs`
@@ -296,9 +316,7 @@ module internal UnaryMetadataFieldOps =
             field.Signature
         )
 
-        if field.Attributes.HasFlag FieldAttributes.Static then
-            failwith
-                $"ldfld cannot load static field %O{field.DeclaringType.Assembly.Name}.%s{field.DeclaringType.Namespace}.%s{field.DeclaringType.Name}::%s{field.Name}; use ldsfld. This indicates invalid IL or a misresolved field token."
+        checkFieldStaticness "ldfld" "load" false "ldsfld" field
 
         let currentObj, state = IlMachineState.popEvalStack thread state
 
@@ -384,36 +402,14 @@ module internal UnaryMetadataFieldOps =
     let executeLdflda (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
-        let activeAssy = ctx.ActiveAssembly
-        let metadataToken = ctx.MetadataToken
         let thread = ctx.Thread
 
         let ptr, state = IlMachineState.popEvalStack thread state
 
-        let state, field =
-            match metadataToken with
-            | MetadataToken.FieldDefinition f ->
-                let field =
-                    activeAssy.Fields.[f]
-                    |> FieldInfo.mapTypeGenerics (fun _ -> failwith "no generics allowed on FieldDefinition")
+        // TODO: generics
+        let state, field, _declaringAssy = resolveFieldToken "ldflda" "load from" ctx state
 
-                state, field
-            | MetadataToken.MemberReference mr ->
-                let state, assyName, field, _ =
-                    // TODO: generics
-                    IlMachineState.resolveMember
-                        loggerFactory
-                        baseClassTypes
-                        thread
-                        activeAssy
-                        ImmutableArray.Empty
-                        mr
-                        state
-
-                match field with
-                | Choice1Of2 _method -> failwith "member reference was unexpectedly a method"
-                | Choice2Of2 field -> state, field
-            | t -> failwith $"Unexpectedly asked to load from a non-field: {t}"
+        checkFieldStaticness "ldflda" "take the address of" false "ldsflda" field
 
         let state, declaringTypeHandle, _typeGenerics =
             ExecutionConcretization.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
@@ -469,37 +465,12 @@ module internal UnaryMetadataFieldOps =
     let executeLdsfld (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
-        let activeAssy = ctx.ActiveAssembly
-        let metadataToken = ctx.MetadataToken
         let thread = ctx.Thread
         let logger = ctx.Logger
 
-        let state, field =
-            match metadataToken with
-            | MetadataToken.FieldDefinition fieldHandle ->
-                match activeAssy.Fields.TryGetValue fieldHandle with
-                | false, _ -> failwith "TODO: Ldsfld - throw MissingFieldException"
-                | true, field ->
-                    let field =
-                        field
-                        |> FieldInfo.mapTypeGenerics (fun _ -> failwith "generics not allowed in FieldDefinition")
+        let state, field, declaringAssy = resolveFieldToken "ldsfld" "load from" ctx state
 
-                    state, field
-            | MetadataToken.MemberReference mr ->
-                let state, _, field, _ =
-                    IlMachineState.resolveMember
-                        loggerFactory
-                        baseClassTypes
-                        thread
-                        activeAssy
-                        ImmutableArray.Empty
-                        mr
-                        state
-
-                match field with
-                | Choice1Of2 _method -> failwith "member reference was unexpectedly a method"
-                | Choice2Of2 field -> state, field
-            | t -> failwith $"Unexpectedly asked to load from a non-field: {t}"
+        checkFieldStaticness "ldsfld" "load" true "ldfld" field
 
         do
             let declaring =
@@ -553,13 +524,11 @@ module internal UnaryMetadataFieldOps =
                     newVal
                     state
             | None ->
-                // TODO(#737): `field.Signature` is scoped to the field's *declaring* assembly, which
-                // for a `MemberReference` token need not be `activeAssy`. See `executeLdsflda`.
                 let state, newVal, concreteTypeHandle =
                     IlMachineState.cliTypeZeroOf
                         loggerFactory
                         baseClassTypes
-                        activeAssy
+                        declaringAssy
                         field.Signature
                         typeGenerics
                         ImmutableArray.Empty // field can't have its own generics
@@ -595,48 +564,14 @@ module internal UnaryMetadataFieldOps =
     let executeLdsflda (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
-        let activeAssy = ctx.ActiveAssembly
-        let metadataToken = ctx.MetadataToken
         let thread = ctx.Thread
 
 
         // TODO: check whether we should throw FieldAccessException
 
-        let state, field =
-            match metadataToken with
-            | MetadataToken.FieldDefinition fieldHandle ->
-                match activeAssy.Fields.TryGetValue fieldHandle with
-                | false, _ -> failwith "TODO: Ldsflda - throw MissingFieldException"
-                | true, field ->
-                    let field =
-                        field
-                        |> FieldInfo.mapTypeGenerics (fun _ -> failwith "generics not allowed on FieldDefinition")
+        let state, field, declaringAssy = resolveFieldToken "ldsflda" "load" ctx state
 
-                    state, field
-            | MetadataToken.MemberReference mr ->
-                let state, _, field, _ =
-                    IlMachineState.resolveMember
-                        loggerFactory
-                        baseClassTypes
-                        thread
-                        activeAssy
-                        ImmutableArray.Empty
-                        mr
-                        state
-
-                match field with
-                | Choice1Of2 _method -> failwith "member reference was unexpectedly a method"
-                | Choice2Of2 field -> state, field
-            | t -> failwith $"Unexpectedly asked to load a non-field: {t}"
-
-        // Everything below treats the field as a static slot: `getStatic`/`setStatic` key off
-        // `(declaringTypeHandle, fieldHandle)` with no instance, and we hand back a
-        // `ByrefRoot.StaticField`. An instance field here would be silently misfiled into the
-        // statics map rather than rejected, so assert the precondition instead of assuming it.
-        // (`ldfld`/`stfld` carry the mirror-image guard.)
-        if not (field.Attributes.HasFlag FieldAttributes.Static) then
-            failwith
-                $"ldsflda cannot take the address of instance field %O{field.DeclaringType.Assembly.Name}.%s{field.DeclaringType.Namespace}.%s{field.DeclaringType.Name}::%s{field.Name}; use ldflda. This indicates invalid IL or a misresolved field token."
+        checkFieldStaticness "ldsflda" "take the address of" true "ldflda" field
 
         let state, declaringTypeHandle, typeGenerics =
             ExecutionConcretization.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
@@ -646,21 +581,6 @@ module internal UnaryMetadataFieldOps =
         | ThrowingTypeInitializationException state -> state, WhatWeDid.ThrowingTypeInitializationException
         | Blocked (state, blockedBy) -> state, WhatWeDid.BlockedOnClassInit blockedBy
         | NothingToDo state ->
-
-        // `field` was decoded from its *declaring* assembly's metadata, so that is the assembly
-        // which scopes everything we go on to read off it. `field.Signature` is a `TypeDefn` whose
-        // `FromReference` case carries a `TypeRef`, and that `TypeRef`'s `ResolutionScope` is a
-        // handle into the declaring assembly's tables — for the `Assembly` case, a row index into
-        // its `AssemblyRef` table, which denotes something else entirely in ours. Likewise
-        // `field.RelativeVirtualAddress`/`field.Handle` index the declaring assembly's PE image and
-        // metadata. For a `FieldDefinition` token this is just `activeAssy`; for a `MemberReference`
-        // it need not be, and using `activeAssy` there silently misresolves.
-        let declaringAssy =
-            state.LoadedAssembly field.DeclaringType.Assembly
-            |> Option.defaultWith (fun () ->
-                failwith
-                    $"ldsflda: declaring assembly %s{field.DeclaringType.Assembly.FullName} of field %s{field.DeclaringType.Namespace}.%s{field.DeclaringType.Name}::%s{field.Name} was not loaded. Resolving the field token is expected to have loaded it."
-            )
 
         match
             IlMachineState.peByteRangeForFieldRva loggerFactory baseClassTypes declaringAssy field typeGenerics state

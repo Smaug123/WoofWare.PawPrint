@@ -46,6 +46,7 @@
     <Compile Include="TestCrossAssemblyDispatch.fs" />
     <Compile Include="TestCrossAssemblyIsAssignableFrom.fs" />
     <Compile Include="TestCrossAssemblyLdsflda.fs" />
+    <Compile Include="TestCrossAssemblyFieldScope.fs" />
     <Compile Include="TestNativeMethodDetection.fs" />
     <Compile Include="TestUnsafeAccessorRead.fs" />
     <Compile Include="TestNativeKernel32.fs" />
@@ -87,6 +88,7 @@
     <Compile Include="TestEffectiveProcessorCount.fs" />
     <Compile Include="TestSystemTimeAsTicks.fs" />
     <Compile Include="TestMonotonicTimestamp.fs" />
+    <Compile Include="TestCpuPlacement.fs" />
     <Compile Include="TestSignalTermination.fs" />
     <Compile Include="TestWaitHandle.fs" />
     <Compile Include="TestSyncBlockMonitor.fs" />

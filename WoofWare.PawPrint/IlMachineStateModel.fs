@@ -12,6 +12,23 @@ type IlMachineState =
         ConcreteTypes : AllConcreteTypes
         Logger : ILogger
         NextThreadId : int
+        /// Round-robin cursor for `EmulatedKernel.cpuForRotation`: the number
+        /// of *guest-visible* threads created so far, and hence the rotation
+        /// index the next one will be placed by.
+        ///
+        /// Deliberately separate from `NextThreadId`, which is also consumed by
+        /// PawPrint-internal auxiliary threads that never run guest IL
+        /// (`allocateParkedThread`). Keying placement off `NextThreadId` would
+        /// let an interpreter-internal thread allocation shift which core every
+        /// subsequently created guest thread lands on, leaking an interpreter
+        /// detail into guest-observable state. `allocateParkedThread` therefore
+        /// leaves this cursor alone.
+        ///
+        /// Advanced when a thread is *created*, not when it is started: a guest
+        /// that constructs a `Thread` and never calls `Start` still consumes a
+        /// rotation slot, mirroring real .NET's eager `ManagedThreadId`
+        /// assignment in the constructor.
+        NextCpuRotation : int
         // CallStack : StackFrame list
         /// Multiple managed heaps are allowed, but we hopefully only need one.
         ManagedHeap : ManagedHeap

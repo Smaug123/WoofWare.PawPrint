@@ -1956,13 +1956,28 @@ module Intrinsics =
             let src, state = IlMachineState.popEvalStack currentThread state
 
             let offset : int =
-                match offset with
-                | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) ->
+                let ofInt64 (i : int64) : int =
                     if i < int64<int> System.Int32.MinValue || i > int64<int> System.Int32.MaxValue then
                         failwith $"TODO: Unsafe.AddByteOffset: native-int byte offset %d{i} does not fit in Int32"
 
                     int32<int64> i
+
+                match offset with
+                | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) -> ofInt64 i
                 | EvalStackValue.Int32 i -> i
+                // A `nuint`/`nint` byte offset that was seeded from `IntPtr.Zero` (or `(nint)0`)
+                // arrives as `ManagedPointer Null`, because zero is the canonical null byref;
+                // accumulating onto it with `add` then yields a `NativeIntPlaceholder`. Both are
+                // bit-pattern byrefs — pure native-int values with no storage behind them — so
+                // their bits *are* the offset. `Ordinal.EqualsIgnoreCase_Scalar` is written
+                // exactly this way (`IntPtr byteOffset = IntPtr.Zero; … byteOffset += 8`).
+                // A byref anchored to real storage is not a number, and still fails loudly.
+                | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer offsetPtr) ->
+                    match ManagedPointerSource.tryBitPatternBits offsetPtr with
+                    | ValueSome bits -> ofInt64 bits
+                    | ValueNone ->
+                        failwith
+                            $"TODO: Unsafe.AddByteOffset: byte offset is an anchored byref, not a native-int value: %O{offset}"
                 | _ ->
                     failwith
                         $"TODO: Unsafe.AddByteOffset: expected Verbatim NativeInt or Int32 byte offset, got %O{offset}"
