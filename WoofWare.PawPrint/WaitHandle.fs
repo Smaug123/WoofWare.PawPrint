@@ -1078,6 +1078,22 @@ module WaitHandle =
         | TimedOut of IlMachineState
         | Failed of IlMachineState
 
+    /// Resolve every named handle, in order.
+    ///
+    /// Ordering against the duplicate check is load-bearing: the PAL resolves
+    /// the whole array (`ReferenceMultipleObjectsByHandleArray`) *before* it
+    /// scans for duplicates, so an array naming the same stale handle twice is
+    /// an invalid-handle error, not a duplicate one. Doing it the other way
+    /// round would let a use-after-free be reported as
+    /// `DuplicateWaitObjectException` — a wrong diagnosis of a real bug, and
+    /// exactly the kind of masking `lookup`'s loud failure exists to prevent.
+    let private resolveAll
+        (handles : WaitHandleId list)
+        (state : IlMachineState)
+        : (WaitHandleId * WaitHandleState) list
+        =
+        handles |> List.map (fun handle -> handle, lookup handle state)
+
     /// The PAL rejects a wait-all naming the same object twice
     /// (`wait.cpp`'s brute-force duplicate scan sets `ERROR_INVALID_PARAMETER`
     /// and returns `WAIT_FAILED`). Duplicates are legal for a wait-any.
@@ -1101,9 +1117,7 @@ module WaitHandle =
         (state : IlMachineState)
         : (int * bool * IlMachineState) option
         =
-        // Touch every handle so a stale or never-created one fails loud here
-        // rather than at some later, more confusing point.
-        let resolved = handles |> List.map (fun handle -> handle, lookup handle state)
+        let resolved = resolveAll handles state
 
         if waitAll then
             if resolved |> List.forall (fun (_, handle) -> isAcquirable thread handle) then
@@ -1140,6 +1154,10 @@ module WaitHandle =
         (state : IlMachineState)
         : MultiTryWaitOutcome
         =
+        // Resolve first: a stale handle is an invalid-handle bug even when it
+        // also happens to be duplicated. See `resolveAll`.
+        resolveAll handles state |> ignore
+
         if hasIllegalDuplicates handles waitAll then
             MultiTryWaitOutcome.Failed state
         else
@@ -1172,6 +1190,10 @@ module WaitHandle =
         (state : IlMachineState)
         : MultiWaitOutcome
         =
+        // Resolve first: a stale handle is an invalid-handle bug even when it
+        // also happens to be duplicated. See `resolveAll`.
+        resolveAll handles state |> ignore
+
         if hasIllegalDuplicates handles waitAll then
             MultiWaitOutcome.Failed state
         else

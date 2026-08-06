@@ -1994,6 +1994,27 @@ module TestWaitHandle =
         | other -> failwith $"expected a duplicated wait-any to be Acquired, got %O{other}"
 
     [<Test>]
+    let ``a stale handle is diagnosed as such even when it is also duplicated`` () : unit =
+        // Handle resolution has to happen before the duplicate scan, as it
+        // does in the PAL. Otherwise a use-after-free that happens to name the
+        // same dead handle twice gets reported as
+        // DuplicateWaitObjectException — a confident, wrong diagnosis of a
+        // real bug, which is worse than the loud failure `lookup` exists to
+        // produce.
+        let state = baseState () |> withFramedThreads [ t0 ]
+        let a, state = WaitHandle.createEvent true EventResetMode.Manual state
+        let state = WaitHandle.close a state
+
+        let assertStale (run : unit -> unit) : unit =
+            let ex = Assert.Throws<System.Exception> (fun () -> run ())
+            ex.Message |> shouldContainText "not registered"
+
+        assertStale (fun () -> WaitHandle.waitMultiple t0 [ a ; a ] true None state |> ignore)
+        assertStale (fun () -> WaitHandle.tryWaitMultiple t0 [ a ; a ] true state |> ignore)
+        // ... and for a wait-any, where duplicates are legal anyway.
+        assertStale (fun () -> WaitHandle.waitMultiple t0 [ a ; a ] false None state |> ignore)
+
+    [<Test>]
     let ``tryWaitMultiple never enqueues`` () : unit =
         let state = baseState () |> withFramedThreads [ t0 ]
         let a, state = WaitHandle.createSemaphore 0 1 state
