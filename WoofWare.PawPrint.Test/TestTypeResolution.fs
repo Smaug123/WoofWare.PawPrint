@@ -1208,3 +1208,64 @@ public class Outer<T>
             )
 
         Assert.That (ex.Message, Does.Contain "missing type definition handle")
+
+    /// `loadAssembly` binds by simple name against the runtime dirs "in turn", taking the
+    /// first hit. Directories after that hit must therefore not be read at all. This is not
+    /// hypothetical: a runtime dir list routinely holds more than one framework, and only
+    /// the first is meant to be consulted — so a later directory containing an unreadable
+    /// `<name>.dll` (a native DLL, a truncated file, a foreign-RID pack) must not be able to
+    /// break a load the earlier directory already satisfied.
+    [<Test>]
+    let ``loadAssembly does not read runtime dirs past the first hit`` () : unit =
+        let targetBytes =
+            compileLibrary "Probe.Target" [] [ "namespace N; public class T { }" ]
+
+        let referencingBytes =
+            compileLibrary
+                "Probe.Referencing"
+                [ metadataReferenceFromImage targetBytes ]
+                [ "namespace N; public class C { public static T M() => new T(); }" ]
+
+        let referencing = dumpedAssembly (Some "Probe.Referencing.dll") referencingBytes
+
+        let handle =
+            referencing.AssemblyReferences
+            |> Seq.choose (fun (KeyValue (handle, assemblyRef)) ->
+                if assemblyRef.Name.Name = "Probe.Target" then
+                    Some handle
+                else
+                    None
+            )
+            |> Seq.exactlyOne
+
+        // A fresh directory per run: `Assembly.readFile` memoises by path for the lifetime of
+        // the process, so a fixed path would let one run's parse answer another's.
+        let root = Path.Combine (Path.GetTempPath (), Path.GetRandomFileName ())
+        let firstDir = Path.Combine (root, "first")
+        let secondDir = Path.Combine (root, "second")
+        Directory.CreateDirectory firstDir |> ignore<DirectoryInfo>
+        Directory.CreateDirectory secondDir |> ignore<DirectoryInfo>
+
+        try
+            let firstPath = Path.Combine (firstDir, "Probe.Target.dll")
+            File.WriteAllBytes (firstPath, targetBytes)
+
+            // Not a PE image at all, so reading it throws something other than
+            // FileNotFoundException: a loader that probes past the first hit fails the load.
+            File.WriteAllBytes (Path.Combine (secondDir, "Probe.Target.dll"), "not a PE image"B)
+
+            let _, loggerFactory = LoggerFactory.makeTest ()
+            use _loggerFactoryResource = loggerFactory
+
+            let _, loaded, name =
+                TypeResolution.loadAssembly
+                    loggerFactory
+                    [ firstDir ; secondDir ]
+                    referencing
+                    handle
+                    (loadedAssemblies [])
+
+            name.Name |> shouldEqual "Probe.Target"
+            loaded.OriginalPath |> shouldEqual (Some firstPath)
+        finally
+            Directory.Delete (root, true)
