@@ -119,29 +119,23 @@ module PointerHashSynthesis =
             failwith
                 $"PointerHashSynthesis.canonicalKey: %O{src} is not a canonicalisable pointer shape; verbatim / managed-pointer / cross-array / already-synthesised values / PerInstInfo chain intermediates must be handled before reaching this function"
 
-    /// Low-bit pattern required for a canonical key. Mirrors
-    /// `NullaryIlOp.typeHandleLowAddressBits`: MethodTable* is aligned
-    /// (low 2 bits clear); TypeDesc-shaped handles (Byref / Pointer /
-    /// FunctionPointer / generic parameters) carry bit 1 set as the
-    /// tagged-pointer marker; other handles are conventionally aligned.
+    /// Low-bit pattern required for a canonical key. The type-handle tag rule
+    /// itself lives in `TypeHandleTag.forTarget`, which is shared with the `and`
+    /// arms in `NullaryIlOp`: the two must agree, because a handle's tag is
+    /// observable both by masking it directly and by comparing synthesised bits.
+    /// MethodTable* is aligned (low 2 bits clear), and other handle kinds are
+    /// conventionally aligned.
     let private lowBitsForKey (key : CanonicalPointerKey) : uint64 =
         match key with
         | CanonicalPointerKey.MethodTable _ -> 0UL
         | CanonicalPointerKey.TypeHandle target ->
             match target with
-            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> 0UL
-            | RuntimeTypeHandleTarget.GenericParameter _
-            | RuntimeTypeHandleTarget.MethodGenericParameter _ -> 2UL
-            | RuntimeTypeHandleTarget.Closed handle ->
-                match handle with
-                | ConcreteTypeHandle.Byref _
-                | ConcreteTypeHandle.Pointer _
-                | ConcreteTypeHandle.FunctionPointer _ -> 2UL
-                | ConcreteTypeHandle.Concrete _
-                | ConcreteTypeHandle.OneDimArrayZero _
-                | ConcreteTypeHandle.Array _ ->
-                    failwith
-                        $"PointerHashSynthesis.lowBitsForKey: TypeHandle(Closed(%O{handle})) should have been collapsed to MethodTable by canonicalKey; this is an interpreter bug"
+            | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as handle)
+            | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.OneDimArrayZero _ as handle)
+            | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Array _ as handle) ->
+                failwith
+                    $"PointerHashSynthesis.lowBitsForKey: TypeHandle(Closed(%O{handle})) should have been collapsed to MethodTable by canonicalKey; this is an interpreter bug"
+            | _ -> TypeHandleTag.forTarget target |> uint64
         | CanonicalPointerKey.MethodTableAuxiliaryData _
         | CanonicalPointerKey.FunctionPointer _
         | CanonicalPointerKey.MethodHandle _
