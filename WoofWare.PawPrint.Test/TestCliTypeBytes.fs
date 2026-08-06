@@ -319,9 +319,11 @@ module TestCliTypeBytes =
                     intPtrHandle
             ]
 
-    /// `struct { int N; Box B; }` under sequential layout: `N` at [0,4), 4 bytes of padding,
-    /// `B` at [8,16). This is the shape of `Dictionary<K,V>.Entry`, and the reason a
-    /// pointer-slot walk over such an array has slots that contain no reference at all.
+    /// `struct { int N; Box B; }`. A value type holding a reference gets CoreCLR's auto layout,
+    /// which hoists references to the front of the pointer-sized class, so this is `B` at [0,8)
+    /// and `N` at [8,12) — the reference lands in the *low* slot whatever the declaration order.
+    /// This is the shape of `Dictionary<K,V>.Entry`, and the reason a pointer-slot walk over such
+    /// an array has slots that contain no reference at all.
     let private mixedReferenceValueType () : CliValueType =
         CliValueType.OfFields
             bct
@@ -334,11 +336,24 @@ module TestCliTypeBytes =
                 cliField "B" (CliType.ObjectRef None) None objectHandle
             ]
 
-    /// The same mix with the reference *first*: `B` at [0,8), `N` at [8,12). Distinct from
-    /// `mixedReferenceValueType` because it puts the reference in the low slot, so a walk that
-    /// writes the high slot first leaves a live reference in place while the low slot is
-    /// processed.
-    let private referenceFirstValueType () : CliValueType =
+    /// A single-field wrapper around a reference. As a *field* this is a value class rather than
+    /// a primitive, so auto layout places it after every size-class bucket instead of hoisting it.
+    let private referenceWrapperValueType () : CliValueType =
+        CliValueType.OfFields
+            bct
+            allCt
+            declaredHandle
+            Layout.Default
+            CharSet.Ansi
+            [ cliField "B" (CliType.ObjectRef None) None objectHandle ]
+
+    /// `struct { long L; struct { Box B } W; }`: `L` at [0,8) and the wrapper — so the reference —
+    /// at [8,16). Distinct from `mixedReferenceValueType` because it puts the reference in the
+    /// *high* slot, so a walk that writes the low slot first leaves a live reference in place
+    /// while the low slot is processed. Declaration order alone cannot produce this shape: auto
+    /// layout always hoists a directly-held reference to the front, so the reference has to be
+    /// buried in a by-value field to keep it out of the low slots.
+    let private referenceHighSlotValueType () : CliValueType =
         CliValueType.OfFields
             bct
             allCt
@@ -346,8 +361,8 @@ module TestCliTypeBytes =
             Layout.Default
             CharSet.Ansi
             [
-                cliField "B" (CliType.ObjectRef None) None objectHandle
-                cliField "N" (CliType.Numeric (CliNumericType.Int32 0)) None int32Handle
+                cliField "L" (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))) None int64Handle
+                cliField "W" (referenceWrapperValueType () |> CliType.ValueType) None declaredHandle
             ]
 
     /// A struct whose reference is buried inside a nested struct, so a range covering the
@@ -462,7 +477,7 @@ module TestCliTypeBytes =
                 Gen.constant (nestedObjectReferenceValueType () |> CliType.ValueType)
                 Gen.constant (objectAndRuntimePointerValueType () |> CliType.ValueType)
                 Gen.constant (mixedReferenceValueType () |> CliType.ValueType)
-                Gen.constant (referenceFirstValueType () |> CliType.ValueType)
+                Gen.constant (referenceHighSlotValueType () |> CliType.ValueType)
                 Gen.constant (nestedMixedValueType () |> CliType.ValueType)
                 Gen.constant (misalignedReferenceValueType () |> CliType.ValueType)
                 Gen.constant (overlappingReferenceUnionValueType () |> CliType.ValueType)
@@ -1506,7 +1521,8 @@ module TestCliTypeBytes =
             | CliType.ValueType vt -> CliValueType.DereferenceFieldById (FieldId.named name) vt
             | other -> failwith $"expected a value type, got %O{other}"
 
-        // struct { int N; Box B; } -- slot [0,8) is the int plus padding, slot [8,16) is the ref.
+        // struct { int N; Box B; } -- auto layout hoists the reference, so slot [0,8) is the ref
+        // and the int sits at [8,12) with padding out to 16.
         let mixed =
             mixedReferenceValueType ()
             |> CliValueType.WithFieldSet "N" (CliType.Numeric (CliNumericType.Int32 7))
@@ -1516,28 +1532,47 @@ module TestCliTypeBytes =
         match CliType.WithZeroedRangeIfChanged 0 8 mixed with
         | None -> failwith "expected the low slot of a populated mixed struct to change"
         | Some result ->
-            // The int is cleared; the reference in the *other* slot is untouched.
-            field "N" result |> shouldEqual (CliType.Numeric (CliNumericType.Int32 0))
-            field "B" result |> shouldEqual heapRef
+            // The reference is cleared; the int in the *other* slot is untouched.
+            field "B" result |> shouldEqual (CliType.ObjectRef None)
+            field "N" result |> shouldEqual (CliType.Numeric (CliNumericType.Int32 7))
 
         match CliType.WithZeroedRangeIfChanged 8 8 mixed with
         | None -> failwith "expected the high slot of a populated mixed struct to change"
         | Some result ->
-            field "N" result |> shouldEqual (CliType.Numeric (CliNumericType.Int32 7))
-            field "B" result |> shouldEqual (CliType.ObjectRef None)
+            field "B" result |> shouldEqual heapRef
+            field "N" result |> shouldEqual (CliType.Numeric (CliNumericType.Int32 0))
 
-        // Reference-first: the reference is in the LOW slot.
-        let refFirst =
-            referenceFirstValueType ()
-            |> CliValueType.WithFieldSet "B" heapRef
-            |> CliValueType.WithFieldSet "N" (CliType.Numeric (CliNumericType.Int32 9))
+        // A reference buried in a by-value field, so that it lands in the HIGH slot.
+        let nestedRef (value : CliType) : CliType =
+            match value with
+            | CliType.ValueType w -> CliValueType.DereferenceFieldById (FieldId.named "B") w
+            | other -> failwith $"expected a value type, got %O{other}"
+
+        let refHigh =
+            referenceHighSlotValueType ()
+            |> CliValueType.WithFieldSet "L" (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 9L)))
+            |> CliValueType.WithFieldSet
+                "W"
+                (referenceWrapperValueType ()
+                 |> CliValueType.WithFieldSet "B" heapRef
+                 |> CliType.ValueType)
             |> CliType.ValueType
 
-        match CliType.WithZeroedRangeIfChanged 0 8 refFirst with
-        | None -> failwith "expected the low slot of a populated reference-first struct to change"
+        match CliType.WithZeroedRangeIfChanged 0 8 refHigh with
+        | None -> failwith "expected the low slot of a populated high-reference struct to change"
         | Some result ->
-            field "B" result |> shouldEqual (CliType.ObjectRef None)
-            field "N" result |> shouldEqual (CliType.Numeric (CliNumericType.Int32 9))
+            field "L" result
+            |> shouldEqual (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L)))
+
+            nestedRef (field "W" result) |> shouldEqual heapRef
+
+        match CliType.WithZeroedRangeIfChanged 8 8 refHigh with
+        | None -> failwith "expected the high slot of a populated high-reference struct to change"
+        | Some result ->
+            field "L" result
+            |> shouldEqual (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 9L)))
+
+            nestedRef (field "W" result) |> shouldEqual (CliType.ObjectRef None)
 
     [<Test>]
     let ``Zeroing refuses to half-clear a reference`` () : unit =
