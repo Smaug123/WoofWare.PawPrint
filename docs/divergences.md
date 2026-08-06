@@ -55,4 +55,6 @@ var c = new C();
 double d = Math.Pow(667.32139499267623, 24.249516112846091);
 ```
 
+**A second, coarser divergence, in the same place**: hosts also disagree about `pow` given a *signalling* NaN operand in one of the two cases that override a NaN — `pow(x, ±0)` and `pow(+1, y)`. IEEE 754 clause 9.2.1 grants those overrides against a "quiet NaN" specifically, so a signalling NaN falls back to clause 7.2 and comes back quietened; glibc implements exactly that, and Apple's libm returns 1 regardless. PawPrint specifies glibc's answer, since it is both the standard reading and the behaviour of the linux-x64 host CI differentially tests against. A guest can see the difference only through `BitConverter`, since C# has no way to write a signalling NaN literal.
+
 **Where this lives in code**: `WoofWare.PawPrint/DeterministicMath.fs`, dispatched from the `Math.Pow` arm of `Intrinsics.fs`. Only `Pow` is implemented so far; `Sqrt`, `Log`, `Exp`, `Sin` and the rest of `Math.CoreCLR.cs` remain unimplemented and fail loudly, and should join this module rather than being forwarded to the host.

@@ -300,9 +300,11 @@ module TestDeterministicMath =
             2.0, ofBits 0x7FF0000000000123UL, 0x7FF8000000000123UL
             ofBits 0xFFF0000000000123UL, 2.0, 0xFFF8000000000123UL
             ofBits 0x7FF0000000000001UL, 2.0, 0x7FF8000000000001UL
-            // ...and the two overrides still beat a signaling NaN.
-            ofBits 0x7FF0000000000123UL, 0.0, one
-            1.0, ofBits 0x7FF0000000000123UL, one
+            // ...and it beats the two overrides, which clause 9.2.1 grants only against a
+            // *quiet* NaN. This is where the two hosts part company; see `hostAlternatives`.
+            ofBits 0x7FF0000000000123UL, 0.0, 0x7FF8000000000123UL
+            ofBits 0x7FF0000000000123UL, -0.0, 0x7FF8000000000123UL
+            1.0, ofBits 0x7FF0000000000123UL, 0x7FF8000000000123UL
             // A negative base with a non-integer exponent is a domain error.
             -2.0, 0.5, positiveNaN
             -2.0, 1.5, positiveNaN
@@ -350,29 +352,85 @@ module TestDeterministicMath =
             2.0, -1075.0, positiveZero
         ]
 
+    /// Report every row that failed rather than only the first: a divergence found on a
+    /// remote runner we cannot reproduce locally is much cheaper to diagnose whole.
+    let private reportFailures (failures : string list) : unit =
+        match failures with
+        | [] -> ()
+        | failures -> failwith (String.concat "\n" failures)
+
     [<Test>]
     let ``pow matches the IEEE 754 special cases`` () : unit =
-        for x, y, expected in specialCases do
+        specialCases
+        |> List.choose (fun (x, y, expected) ->
             let actual = BitConverter.DoubleToUInt64Bits (DeterministicMath.pow x y)
 
-            if actual <> expected then
-                failwith $"pow(%.17g{x}, %.17g{y}): expected bits %016x{expected}, got %016x{actual}"
+            if actual = expected then
+                None
+            else
+                Some $"pow(%.17g{x}, %.17g{y}): expected bits %016x{expected}, got %016x{actual}"
+        )
+        |> reportFailures
+
+    /// The rows of `specialCases` on which the host libm is allowed to disagree with the
+    /// specification, together with the one *other* answer it may give. Keyed on the exact
+    /// bits of both arguments rather than on the expected result, so that a later row which
+    /// happens to produce those bits does not silently stop being checked; and stated as a
+    /// specific alternative rather than a blanket exemption, so that a host doing something
+    /// else entirely is still a failure.
+    let private hostAlternatives : Map<uint64 * uint64, uint64> =
+        let bitsOf (x : float) (y : float) : uint64 * uint64 =
+            BitConverter.DoubleToUInt64Bits x, BitConverter.DoubleToUInt64Bits y
+
+        let signallingNaN = BitConverter.UInt64BitsToDouble 0x7FF0000000000123UL
+        let negativeNaN = 0xFFF8000000000000UL
+        let one = 0x3FF0000000000000UL
+
+        [
+            // The payload of a *freshly generated* NaN is left to the implementation, and
+            // hardware differs: x86 produces the negative quiet NaN (which is what
+            // `Double.NaN` is) and Arm the positive one. glibc reaches these cases through
+            // `__math_invalid`, i.e. (x - x) / (x - x), so the payload is the hardware's.
+            bitsOf -2.0 0.5, negativeNaN
+            bitsOf -2.0 1.5, negativeNaN
+            bitsOf -0.5 -0.5, negativeNaN
+            // Apple's libm applies pow(x, ±0) = 1 and pow(+1, y) = 1 even to a *signalling*
+            // NaN operand, where glibc and clause 9.2.1 hand back a quiet NaN. See the
+            // comment on `DeterministicMath.pow`: we specify glibc's answer, so it is macOS
+            // that needs the exemption here.
+            bitsOf signallingNaN 0.0, one
+            bitsOf signallingNaN -0.0, one
+            bitsOf 1.0 signallingNaN, one
+        ]
+        |> Map.ofList
 
     [<Test>]
     let ``the host agrees about the IEEE 754 special cases`` () : unit =
         // The special-case table above is a *specification*, asserted independently of the
         // host. This test additionally records that the host we are differentially tested
-        // against agrees with it — apart from the one place where IEEE 754 leaves the
-        // answer open, and platforms genuinely differ: the payload of a freshly generated
-        // NaN. x86 hardware produces the negative quiet NaN there and Arm the positive one,
-        // so a mismatch on exactly those rows is expected, not a bug.
-        let quietNaNBits = 0x7FF8000000000000UL
-
-        for x, y, expected in specialCases do
+        // against agrees with it, except in the handful of places where IEEE 754 leaves the
+        // answer open and real platforms genuinely differ. Those are enumerated in
+        // `hostAlternatives`, which still pins the host to one of exactly two answers.
+        specialCases
+        |> List.choose (fun (x, y, expected) ->
             let host = BitConverter.DoubleToUInt64Bits (Math.Pow (x, y))
 
-            if host <> expected && expected <> quietNaNBits then
-                failwith $"host pow(%.17g{x}, %.17g{y}): expected bits %016x{expected}, got %016x{host}"
+            let key = BitConverter.DoubleToUInt64Bits x, BitConverter.DoubleToUInt64Bits y
+
+            let permitted =
+                match Map.tryFind key hostAlternatives with
+                | None -> [ expected ]
+                | Some alternative -> [ expected ; alternative ]
+
+            if List.contains host permitted then
+                None
+            else
+
+            let permitted = permitted |> List.map (sprintf "%016x") |> String.concat " or "
+
+            Some $"host pow(%.17g{x}, %.17g{y}): expected bits {permitted}, got %016x{host}"
+        )
+        |> reportFailures
 
     [<Test>]
     let ``pow is a pure function of its arguments`` () : unit =

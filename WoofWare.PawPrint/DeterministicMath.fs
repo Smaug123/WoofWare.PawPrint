@@ -266,6 +266,12 @@ module DeterministicMath =
     let private quieted (x : float) : float =
         BitConverter.UInt64BitsToDouble (BitConverter.DoubleToUInt64Bits x ||| 0x0008000000000000UL)
 
+    /// A NaN whose leading significand bit is clear: IEEE 754's *signaling* NaN, the one an
+    /// operation must not silently swallow.
+    let private isSignallingNaN (x : float) : bool =
+        Double.IsNaN x
+        && BitConverter.DoubleToUInt64Bits x &&& 0x0008000000000000UL = 0UL
+
     /// The largest integer exponent handled by exact integer exponentiation. Chosen so
     /// that the intermediate `BigInteger` stays under about 54 000 bits.
     let private maxExactPower = 1024
@@ -298,13 +304,27 @@ module DeterministicMath =
     /// disagreement is the host's rounding error, not ours; there was no input on which
     /// this implementation was the further of the two.
     let pow (x : float) (y : float) : float =
-        // Ordered to match IEEE 754's own case analysis: the two cases that override a
-        // NaN operand come first.
-        if y = 0.0 then
-            // Including x = NaN.
+        // Ordered to match IEEE 754's own case analysis. Clause 9.2.1 gives two cases that
+        // override a NaN operand -- pow(x, ±0) is 1 "for any x, even a zero, quiet NaN, or
+        // infinity", and pow(+1, y) is 1 "for any y, even a quiet NaN" -- but both say
+        // *quiet* NaN, where the rest of the table just says NaN. A signalling NaN therefore
+        // falls back to the general rule of clause 7.2 (raise invalid-operation, deliver a
+        // quiet NaN) and beats the overrides instead.
+        //
+        // Platforms differ on this. glibc implements the reading above
+        // (`return issignaling_inline (x) ? x + y : 1.0;` in
+        // sysdeps/ieee754/dbl-64/e_pow.c, where the addition is what quietens the operand),
+        // and Apple's libm returns 1 unconditionally. We follow the standard, which is also
+        // the behaviour of the linux-x64 host this is differentially tested against in CI.
+        if isSignallingNaN x then
+            quieted x
+        elif isSignallingNaN y then
+            quieted y
+        elif y = 0.0 then
+            // Including x = quiet NaN.
             1.0
         elif x = 1.0 then
-            // Including y = NaN.
+            // Including y = quiet NaN.
             1.0
         elif Double.IsNaN x then
             quieted x
