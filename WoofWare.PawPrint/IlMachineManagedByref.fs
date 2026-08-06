@@ -1556,12 +1556,8 @@ module IlMachineManagedByref =
     /// for the purposes of whole-cell replacement.
     ///
     /// Broadens the primitive-only `haveSameCliShape` (which intentionally
-    /// rejects every `ValueType, ValueType` pair, because two different structs
-    /// could share a size) to also accept user structs whose declared
-    /// `ConcreteTypeHandle` matches the cell's. That handle is the canonical
-    /// identifier for the struct's layout, so equality means same fields in the
-    /// same storage — replacing such a cell preserves everything a later
-    /// `ldobj` needs.
+    /// rejects every `ValueType, ValueType` pair) to also accept user structs
+    /// whose declared `ConcreteTypeHandle` matches the cell's.
     let private cellShapeMatches (cell : CliType) (newValue : CliType) : bool =
         if haveSameCliShape cell newValue then
             true
@@ -1573,12 +1569,11 @@ module IlMachineManagedByref =
     /// Whether a whole-cell store of `newValue` may replace the existing
     /// `cell`, given that the two occupy exactly the same byte range.
     ///
-    /// When both sides render as bytes, the replacement is *equivalent to* a
+    /// When both sides render as bytes, the replacement is equivalent to a
     /// byte scatter that the caller could have performed instead, so it is
-    /// always allowed. Restamping the payload's primitive shape over a
-    /// differently-shaped same-width template is deliberate here: the tag is
-    /// part of the value being stored, and any later reader that wanted the old
-    /// interpretation can still recover it from the bytes.
+    /// always allowed, even if the new value has a different shape.
+    /// The byte rendering already preserves whatever information the caller
+    /// would need to recover the shape.
     ///
     /// When either side has no byte rendering — a tagged pointer, an object
     /// reference, a value type containing either — byte scatter is not
@@ -1613,10 +1608,8 @@ module IlMachineManagedByref =
     /// second store is byte-addressable and would otherwise take the scatter
     /// path into a cell that cannot accept it.
     ///
-    /// The width condition is load-bearing, not defensive: a narrower store
-    /// (`stind.i1` into a tagged pointer cell) has no representable outcome at
-    /// all — whole-cell replacement would fabricate the bytes it does not write
-    /// — and must remain a loud failure.
+    /// The width condition is necessary, because a narrower store cannot
+    /// come up with new values for the bytes it doesn't touch.
     let private replacesWholeNonByteAddressableCell
         (covering : (int * CliType) option)
         (byteOffset : int)
