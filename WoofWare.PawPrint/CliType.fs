@@ -387,25 +387,6 @@ type CliType =
                 Array.blit bytes offset result 0 count
                 result
 
-    /// Zero the byte range `[offset, offset + count)` of `value`, returning `None` if that would
-    /// leave it unchanged.
-    ///
-    /// Unlike `WithBytesAtIfChanged`, this works on storage that has no byte rendering at all:
-    /// it walks structure rather than materialising bytes, so a range covering a whole object
-    /// reference nulls it, and a range covering a plain field of a *reference-containing* struct
-    /// zeroes just that field. `Array.Clear` on a reference-containing element type needs
-    /// exactly this — `SpanHelpers.ClearWithReferences` reinterprets the element data as
-    /// `IntPtr` slots and stores zero into each, and for a struct like
-    /// `Dictionary<K,V>.Entry` the slots do not line up one-to-one with reference fields.
-    ///
-    /// A field only *partially* covered by the range is an error unless it can itself absorb a
-    /// partial zeroing — a nested value type recurses, and a byte-addressable primitive has its
-    /// own sub-range zeroed. Partially zeroing an object reference or a runtime pointer has no
-    /// meaning and fails loudly. That "reject on partial overlap" rule is what makes this safe
-    /// without assuming anything about alignment: PawPrint's explicit-layout path takes
-    /// `[FieldOffset(n)]` verbatim (see `ComputeConcreteFields`) and does not reject the
-    /// misaligned reference fields that real CoreCLR refuses at type load, so an
-    /// alignment-derived precondition would not actually hold.
     /// Did zeroing actually change anything? Deliberately not `=`: structural equality on
     /// floats follows IEEE, so it calls `-0.0` equal to `0.0` even though they differ in every
     /// byte that matters. Zeroing a cell holding `-0.0` really does change memory, and
@@ -416,12 +397,13 @@ type CliType =
         match CliType.ByteAddressability before, CliType.ByteAddressability after with
         | CliByteAddressability.ByteAddressable, CliByteAddressability.ByteAddressable ->
             CliType.ToBytes before <> CliType.ToBytes after
+        | _ ->
+
         // No byte rendering on at least one side, so descend instead of comparing the whole
         // thing: a struct can be unrenderable because of a *pointer* field while also holding a
         // `-0.0` float, and comparing the aggregates structurally would hit exactly the IEEE
         // trap this function exists to avoid. Each field is judged by the same rule, so
         // byte-renderable subfields still get the byte comparison.
-        | _ ->
 
         match before, after with
         | CliType.ValueType b, CliType.ValueType a -> CliValueType.ZeroingChangedAnything b a
@@ -430,7 +412,22 @@ type CliType =
         // only cost of a false "changed" is one redundant write of an identical value.
         | _ -> before <> after
 
+    /// Zero the byte range `[offset, offset + count)` of `value`, returning `None` if that would
+    /// leave it unchanged.
+    ///
+    /// Unlike `WithBytesAtIfChanged`, this works on storage that has no byte rendering at all:
+    /// it walks structure rather than materialising bytes, so a range covering a whole object
+    /// reference nulls it, and a range covering a plain field of a *reference-containing* struct
+    /// zeroes just that field.
+    ///
+    /// A field only *partially* covered by the range is an error unless it can itself absorb a
+    /// partial zeroing — a nested value type recurses, and a byte-addressable primitive has its
+    /// own sub-range zeroed. Partially zeroing an object reference or a runtime pointer has no
+    /// meaning and fails loudly
     static member WithZeroedRangeIfChanged (offset : int) (count : int) (value : CliType) : CliType option =
+        // `SpanHelpers.ClearWithReferences` uses this, reinterpreting the
+        // element data as `IntPtr` slots and storing zero into each, and for a struct like
+        // `Dictionary<K,V>.Entry` the slots do not line up one-to-one with reference fields.
         let size = CliType.SizeOf(value).Size
 
         // Bounds-check without forming `offset + count`, which wraps for large inputs and would

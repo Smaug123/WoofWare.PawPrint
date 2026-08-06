@@ -1408,10 +1408,6 @@ module IlMachineManagedByref =
             let canTake = cellSize - inCellOffset
             let take = min canTake (bytes.Length - filled)
 
-            // `filled` only advances by `take`, so a non-positive `take` would spin this loop
-            // forever rather than failing. That needs a zero-sized cell (PawPrint gives
-            // fieldless default-layout structs `sizeOf = 0`) or an in-cell offset past the end
-            // of the cell, both of which are interpreter-bug shapes.
             if take <= 0 then
                 failwith
                     $"byte-view write to array %O{arr} element %d{cell} made no progress: cell size %d{cellSize}, in-cell offset %d{inCellOffset}, %d{bytes.Length - filled} byte(s) still to write"
@@ -1419,33 +1415,7 @@ module IlMachineManagedByref =
             let cellBytes = bytes.[filled .. filled + take - 1]
 
             // A run of zero bytes is the one byte-level write that is meaningful against
-            // storage with no byte rendering: zero bits in a reference slot are the null
-            // reference, and in a provenance-carrying native int they are the numeric zero.
-            // `Array.Clear` on a reference-containing element type arrives here, via
-            // `SpanHelpers.ClearWithReferences` reinterpreting the element data as `IntPtr`
-            // slots and storing zero into each. Routing zero runs through the structural
-            // zeroing keeps that working without weakening the byte-view model for any other
-            // write: `WithZeroedRangeIfChanged` still refuses to half-clear a reference, and
-            // for byte-renderable cells it agrees byte-for-byte with the path below (pinned by
-            // the oracle property in TestCliTypeBytes).
-            //
-            // The slot count the BCL derives is `byteLength / sizeof(IntPtr)`, so it is only
-            // meaningful if the element size agrees with CoreCLR's. For a GC-containing value
-            // type CoreCLR forces pointer alignment even under `Pack = 1`, and PawPrint's
-            // layout does not, so such an element is smaller here and the slots stop lining up
-            // with the fields. That surfaces as a loud "cannot partially clear a reference"
-            // from the range walk rather than as a quietly missed field — see
-            // `ArrayClearPackedReferenceStruct.cs` in the unimplemented set.
-            //
-            // Deliberately only the array root. The sibling byte-write roots
-            // (`writeHeapValueBytes`, `writeStackMemoryBytesAt`, `writeNativeMemoryBytesAt`,
-            // `writeStringBytes`) are left alone, so a zero run through one of those over
-            // reference-bearing storage still fails exactly as loudly as before. `Array.Clear`
-            // is the only path that currently forces `ClearWithReferences`' IL to be
-            // interpreted; extending the others is work for whoever finds a caller that needs
-            // it.
-            // Both arms must converge here rather than one of them falling through to the end
-            // of the loop body: the cursor updates below have to run whichever path wrote.
+            // storage with no byte rendering.
             let updated =
                 if cellBytes |> Array.forall (fun b -> b = 0uy) then
                     // The slot count the BCL derives is `byteLength / sizeof(IntPtr)`, which
@@ -1453,7 +1423,7 @@ module IlMachineManagedByref =
                     // value type up to pointer alignment. PawPrint's layout does not do that,
                     // so for such a type the count truncates and the tail of the element gets
                     // no store at all — `Array.Clear` would return having quietly left it set.
-                    // Refuse instead: a wrong answer here is worse than no answer.
+                    // Refuse rather than giving a wrong answer.
                     if CliType.ContainsObjectReferences existing && cellSize % NATIVE_INT_SIZE <> 0 then
                         failwith
                             $"TODO: array %O{arr} element %d{cell} contains object references but its %d{cellSize}-byte size is not a multiple of %d{NATIVE_INT_SIZE}; CoreCLR pointer-aligns such a value type (even under `Pack = 1`) and derives its clear length from that, so PawPrint's smaller element would be only partially cleared. Fix the layout in CliValueType.ComputeConcreteFields rather than the clear."
