@@ -82,12 +82,12 @@ module internal CellAwareMemOps =
             ManagedHeap.get addr state.ManagedHeap
             |> AllocatedNonArrayObject.DereferenceFieldById field
         | ByrefRoot.ArrayElement (arr, index) -> IlMachineThreadState.getArrayValue arr index state
-        | ByrefRoot.StaticField (ty, field) ->
-            match IlMachineManagedByref.getStatic ty field state with
+        | ByrefRoot.StaticField (ty, field, owner) ->
+            match IlMachineManagedByref.getStatic owner ty field state with
             | Some value -> value
             | None ->
                 failwith
-                    $"rootTemplate: static field byref %O{field.Get} on %O{ty} was read before its static slot was initialised"
+                    $"rootTemplate: static field byref %O{field.Get} on %O{ty} in %O{owner} was read before its static slot was initialised"
         | ByrefRoot.StringCharAt _ ->
             // A char is a single UTF-16 unit; no `Field` projection makes
             // sense on it. The caller's try/with degrades to `None`.
@@ -167,9 +167,9 @@ module internal CellAwareMemOps =
         | ManagedPointerSource.Byref (ByrefRoot.Argument (thread, frame, arg) as root, projs) ->
             tryProjectionByteOffset baseClassTypes state root projs
             |> Option.map (fun byteOffset -> ByteStorageIdentity.StackArgument (thread, frame, arg), byteOffset)
-        | ManagedPointerSource.Byref (ByrefRoot.StaticField (declaringType, field) as root, projs) ->
+        | ManagedPointerSource.Byref (ByrefRoot.StaticField (declaringType, field, owner) as root, projs) ->
             tryProjectionByteOffset baseClassTypes state root projs
-            |> Option.map (fun byteOffset -> ByteStorageIdentity.StaticField (declaringType, field), byteOffset)
+            |> Option.map (fun byteOffset -> ByteStorageIdentity.StaticField (declaringType, field, owner), byteOffset)
         | ManagedPointerSource.Byref (ByrefRoot.HeapValue addr as root, projs) ->
             tryProjectionByteOffset baseClassTypes state root projs
             |> Option.map (fun byteOffset -> ByteStorageIdentity.HeapObject addr, byteOffset)
@@ -218,8 +218,8 @@ module internal CellAwareMemOps =
             SharedStorageKey.Flat (ByteStorageIdentity.StackLocal (thread, frame, local))
         | ByrefRoot.Argument (thread, frame, arg) ->
             SharedStorageKey.Flat (ByteStorageIdentity.StackArgument (thread, frame, arg))
-        | ByrefRoot.StaticField (declaringType, field) ->
-            SharedStorageKey.Flat (ByteStorageIdentity.StaticField (declaringType, field))
+        | ByrefRoot.StaticField (declaringType, field, owner) ->
+            SharedStorageKey.Flat (ByteStorageIdentity.StaticField (declaringType, field, owner))
         | ByrefRoot.HeapValue addr -> SharedStorageKey.HeapValue addr
         | ByrefRoot.HeapObjectField (addr, field) -> SharedStorageKey.HeapObjectField (addr, field)
         | ByrefRoot.MethodTableExposedClassObject decl -> SharedStorageKey.RuntimeTypeAux decl

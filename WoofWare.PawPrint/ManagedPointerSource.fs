@@ -93,7 +93,13 @@ type ByrefRoot =
     /// Address of a read-only byte range stored in a PE image.
     | PeByteRange of PeByteRangePointer
     /// Address of a static field slot in the interpreter's static storage map.
-    | StaticField of declaringType : ConcreteTypeHandle * field : ComparableFieldDefinitionHandle
+    ///
+    /// `owner` is fixed when the byref is constructed (`ldsflda`), not resolved from whichever
+    /// thread later dereferences it. That matches .NET: `ldsflda` on a `[ThreadStatic]` field
+    /// resolves to a concrete per-thread address when it executes, and the resulting managed
+    /// pointer is a plain address, so a byref taken on thread A and dereferenced on thread B
+    /// still addresses A's slot.
+    | StaticField of declaringType : ConcreteTypeHandle * field : ComparableFieldDefinitionHandle * owner : StaticOwner
     /// Address of a UTF-16 character within a heap-allocated string's trailing
     /// character data. Created by `ldflda` on `String._firstChar`.
     | StringCharAt of str : ManagedHeapAddress * charIndex : int
@@ -126,7 +132,9 @@ type ByteStorageIdentity =
     | Array of ManagedHeapAddress
     | String of ManagedHeapAddress
     | PeByteRange of PeByteRangePointer
-    | StaticField of ConcreteTypeHandle * ComparableFieldDefinitionHandle
+    /// Two threads' slots of the same `[ThreadStatic]` field are separate storage, so the
+    /// owner is part of the identity; see `ByrefRoot.StaticField`.
+    | StaticField of ConcreteTypeHandle * ComparableFieldDefinitionHandle * StaticOwner
     | StackMemory of ThreadId * FrameId * StackMemoryBlockId
     | StackLocal of ThreadId * FrameId * uint16
     | StackArgument of ThreadId * FrameId * uint16
@@ -154,8 +162,9 @@ module ByteStorageIdentity =
         | ByteStorageIdentity.Array left, ByteStorageIdentity.Array right -> Operators.compare left right
         | ByteStorageIdentity.String left, ByteStorageIdentity.String right -> Operators.compare left right
         | ByteStorageIdentity.PeByteRange left, ByteStorageIdentity.PeByteRange right -> Operators.compare left right
-        | ByteStorageIdentity.StaticField (leftType, leftField), ByteStorageIdentity.StaticField (rightType, rightField) ->
-            Operators.compare (leftType, leftField) (rightType, rightField)
+        | ByteStorageIdentity.StaticField (leftType, leftField, leftOwner),
+          ByteStorageIdentity.StaticField (rightType, rightField, rightOwner) ->
+            Operators.compare (leftType, leftField, leftOwner) (rightType, rightField, rightOwner)
         | ByteStorageIdentity.StackMemory (leftThread, leftFrame, leftBlock),
           ByteStorageIdentity.StackMemory (rightThread, rightFrame, rightBlock) ->
             Operators.compare (leftThread, leftFrame, leftBlock) (rightThread, rightFrame, rightBlock)
@@ -232,8 +241,8 @@ type ManagedPointerSource =
                 | ByrefRoot.HeapObjectField (addr, field) -> $"<field %O{field} of heap object %O{addr}>"
                 | ByrefRoot.ArrayElement (arr, index) -> $"<element %i{index} of array %O{arr}>"
                 | ByrefRoot.PeByteRange peByteRange -> $"%O{peByteRange}"
-                | ByrefRoot.StaticField (declaringType, field) ->
-                    $"<static field %O{field.Get} of type %O{declaringType}>"
+                | ByrefRoot.StaticField (declaringType, field, owner) ->
+                    $"<static field %O{field.Get} of type %O{declaringType} in %O{owner}>"
                 | ByrefRoot.StringCharAt (str, charIndex) -> $"<char %i{charIndex} of string %O{str}>"
                 | ByrefRoot.MethodTableExposedClassObject declaringType ->
                     $"<ExposedClassObjectRaw cell of MethodTableAuxiliaryData for type %O{declaringType}>"

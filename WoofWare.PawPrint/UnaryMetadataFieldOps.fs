@@ -251,6 +251,12 @@ module internal UnaryMetadataFieldOps =
 
         checkFieldStaticness "stsfld" "store" true "stfld" field
 
+        // A `[ThreadStatic]` field is written into the storing thread's own slot. This holds
+        // uniformly, with no `.cctor` special-casing: `[ThreadStatic] static int x = 5;` is legal
+        // C#, and only the thread that runs the initialiser ends up seeing 5 — which is exactly
+        // the real .NET behaviour.
+        let owner = StaticOwner.forField thread field
+
         // See `executeLdfld` for the rationale: avoid `activeAssy.TypeDefs.[…]` because a
         // cross-assembly MemberReference yields a TypeDef handle that is only valid in the
         // declaring assembly's metadata.
@@ -287,6 +293,7 @@ module internal UnaryMetadataFieldOps =
 
         let state =
             IlMachineState.setStatic
+                owner
                 declaringTypeHandle
                 (ComparableFieldDefinitionHandle.Make field.Handle)
                 toStore
@@ -472,6 +479,11 @@ module internal UnaryMetadataFieldOps =
 
         checkFieldStaticness "ldsfld" "load" true "ldfld" field
 
+        // A `[ThreadStatic]` field is read from the loading thread's own slot; a thread that has
+        // never written it simply misses and gets `cliTypeZeroOf` below, which is exactly .NET's
+        // zero-initialisation guarantee.
+        let owner = StaticOwner.forField thread field
+
         do
             let declaring =
                 state.LoadedAssembly field.DeclaringType.Assembly
@@ -497,7 +509,11 @@ module internal UnaryMetadataFieldOps =
 
         let fieldValue, state =
             match
-                IlMachineState.getStatic declaringTypeHandle (ComparableFieldDefinitionHandle.Make field.Handle) state
+                IlMachineState.getStatic
+                    owner
+                    declaringTypeHandle
+                    (ComparableFieldDefinitionHandle.Make field.Handle)
+                    state
             with
             | None when isSystemStringEmptyField baseClassTypes field ->
                 let addr, state =
@@ -507,6 +523,7 @@ module internal UnaryMetadataFieldOps =
 
                 newVal,
                 IlMachineState.setStatic
+                    owner
                     declaringTypeHandle
                     (ComparableFieldDefinitionHandle.Make field.Handle)
                     newVal
@@ -519,6 +536,7 @@ module internal UnaryMetadataFieldOps =
 
                 newVal,
                 IlMachineState.setStatic
+                    owner
                     declaringTypeHandle
                     (ComparableFieldDefinitionHandle.Make field.Handle)
                     newVal
@@ -536,6 +554,7 @@ module internal UnaryMetadataFieldOps =
 
                 newVal,
                 IlMachineState.setStatic
+                    owner
                     declaringTypeHandle
                     (ComparableFieldDefinitionHandle.Make field.Handle)
                     newVal
@@ -573,6 +592,12 @@ module internal UnaryMetadataFieldOps =
 
         checkFieldStaticness "ldsflda" "take the address of" true "ldflda" field
 
+        // Resolved before the field-RVA branch below, both so the `[ThreadStatic]`-implies-not-RVA
+        // assert inside `forField` fires on every path, and because the owner is baked into the
+        // byref we hand out: the pointer addresses *this* thread's slot forever after, even if
+        // some other thread dereferences it.
+        let owner = StaticOwner.forField thread field
+
         let state, declaringTypeHandle, typeGenerics =
             ExecutionConcretization.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
 
@@ -598,14 +623,14 @@ module internal UnaryMetadataFieldOps =
             let fieldHandle = ComparableFieldDefinitionHandle.Make field.Handle
 
             let state =
-                match IlMachineState.getStatic declaringTypeHandle fieldHandle state with
+                match IlMachineState.getStatic owner declaringTypeHandle fieldHandle state with
                 | Some _ -> state
                 | None when isSystemStringEmptyField baseClassTypes field ->
                     // See `isSystemStringEmptyField` for why this is special-cased.
                     let addr, state =
                         IlMachineState.internCanonicalEmptyString loggerFactory baseClassTypes state
 
-                    IlMachineState.setStatic declaringTypeHandle fieldHandle (CliType.ObjectRef (Some addr)) state
+                    IlMachineState.setStatic owner declaringTypeHandle fieldHandle (CliType.ObjectRef (Some addr)) state
                 | None when isCastHelpersTableField baseClassTypes field ->
                     // See `isCastHelpersTableField` for why this is special-cased. The BCL
                     // does not actually take the address of `s_table`, but installing the
@@ -614,7 +639,7 @@ module internal UnaryMetadataFieldOps =
                     let addr, state =
                         IlMachineState.internCastCacheSentinelTable loggerFactory baseClassTypes state
 
-                    IlMachineState.setStatic declaringTypeHandle fieldHandle (CliType.ObjectRef (Some addr)) state
+                    IlMachineState.setStatic owner declaringTypeHandle fieldHandle (CliType.ObjectRef (Some addr)) state
                 | None ->
                     // Field is not yet initialised
                     let state, zero, _concreteTypeHandle =
@@ -627,10 +652,10 @@ module internal UnaryMetadataFieldOps =
                             ImmutableArray.Empty // field can't have its own generics
                             state
 
-                    IlMachineState.setStatic declaringTypeHandle fieldHandle zero state
+                    IlMachineState.setStatic owner declaringTypeHandle fieldHandle zero state
 
             let ptr =
-                ManagedPointerSource.Byref (ByrefRoot.StaticField (declaringTypeHandle, fieldHandle), [])
+                ManagedPointerSource.Byref (ByrefRoot.StaticField (declaringTypeHandle, fieldHandle, owner), [])
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) thread
