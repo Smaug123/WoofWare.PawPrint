@@ -9,6 +9,18 @@ This is NOT a high-performance runtime - it's a very slow IL interpreter priorit
 
 If you need to check upstream behaviour, the genuine .NET runtime's source is pinned in `flake.nix` (`dotnet-runtime-src`) and exposed inside the Nix devshell as `$DOTNET_RUNTIME_SRC`. The pin tracks the .NET 10 servicing version the devshell runs (kept honest by the `runtime-version-pin` flake check and the `TestEmulatedRuntime` drift test). To keep the closure small it is sparse-checked-out to the trees we read most — `src/coreclr`, `src/libraries/System.Private.CoreLib`, and `eng`; if you need another tree, add it to the `sparseCheckout` list in `flake.nix`. See the `.claude/commands/sync-dotnet-runtime.md` Claude command for how to bump the pin. (The old ad-hoc `../dotnet-runtime` sibling checkout is no longer used; `../dotnet`, without the `-runtime` suffix, is the .NET SDK source and is not what you want.)
 
+## CoreLib flavour
+
+There are two distinct kinds of OS divergence, and they are handled in different places. Do not conflate them.
+
+*Facts the guest reads about its platform* (kernel release, processor count, clock) are **data in the emulated kernel**, never a host read — see `SimulatedUnixPlatform` in `EmulatedKernel.fs`, which defaults to `LinuxX64`. A host read would make a replay depend on the machine that produced it, and guests branch on `Environment.OSVersion`, so it would change guest *control flow* between runs.
+
+*Which BCL code path exists at all* is a different thing: CoreLib is `#if`-split per target at its own compile time, so `System.Threading.Lock.ThreadId.InitializeForCurrentThread` calls `GetUInt64OSThreadId` under `TARGET_OSX` and `TryGetUInt32OSThreadId` everywhere else. PawPrint interprets whichever CoreLib its runtime-dir list resolves, and that is normally the *host's* shared framework — so a macOS dev box runs different guest code from CI and production, both of which are Linux.
+
+To exercise the production flavour anywhere, `flake.nix` pins the managed linux-x64 runtime pack (`dotnet-linux-framework`, at `expectedRuntimeVersion`, managed assemblies only — PawPrint never loads native code) and the devshell exposes it as `$DOTNET_LINUX_FRAMEWORK_DIR`. Put that directory at the *head* of the runtime-dir list you pass to `Program.run`: binding is by simple name and takes the first hit, so every framework assembly then resolves from the pack. `TestLinuxCoreLibFlavour.fs` is the worked example, and tests that need it should `Assert.Ignore` when the variable is unset so a non-Nix checkout still passes. Bumping `expectedRuntimeVersion` means bumping that derivation's `hash` in the same commit.
+
+Note the differential-oracle limit: `RealRuntime.executeWithRealRuntime` loads the guest in-process on the *host* runtime, so it cannot be the oracle for a foreign flavour. A linux-flavour test compares PawPrint-on-Linux-CoreLib against the host runtime, which is a claim about facts that hold across flavours (an exit code), not a same-image comparison.
+
 Standard `dotnet` toolchain is provided by the Nix devshell. Run `dotnet` commands as `nix develop -c dotnet ...` rather than invoking `dotnet` directly.
 
 After changes, `nix develop -c dotnet fantomas .` to format.
