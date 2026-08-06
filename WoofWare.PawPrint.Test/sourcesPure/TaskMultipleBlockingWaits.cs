@@ -14,12 +14,14 @@ using System.Threading.Tasks;
 // the other files stick to one wait apiece.
 //
 // Why exactly three: the budget is currently bounded above. Measured on this branch, three
-// blocking pool waits pass and the *fourth* reaches a further unimplemented primitive,
-// `SystemNative_GetTimestamp` (filed as issue #726) -- the thread pool starts consulting the
-// clock once it has adjusted often enough. The boundary is sharp and reproducible: 3x
-// `Task.Run(...).Result` passes, 4x fails, as does 3x plus an awaited `Task.Yield()`. So this
-// number is deliberately sized to the current frontier, not chosen arbitrarily; raise it once
-// #726 lands.
+// blocking pool waits pass and the *fourth* reaches a further unimplemented primitive. That
+// primitive used to be `SystemNative_GetTimestamp` (issue #726); since that landed in #735 the
+// fourth wait instead gets as far as the pool's hill-climbing controller adjusting its thread
+// count, which calls `Math.Pow` (PortableThreadPool.HillClimbing.cs:301) -- an unimplemented JIT
+// intrinsic, filed as issue #755. The boundary is sharp and reproducible: 3x
+// `Task.Run(...).Result` passes; 4x, 6x, 8x, 10x all fail, as does 3x plus an awaited
+// `Task.Yield()`. So this number is deliberately sized to the current frontier, not chosen
+// arbitrarily; raise it once #755 lands.
 //
 // Every assertion is on a returned value, never on which worker thread ran something, nor on
 // timing, nor on ordering between independent tasks -- all of which are guaranteed under both
