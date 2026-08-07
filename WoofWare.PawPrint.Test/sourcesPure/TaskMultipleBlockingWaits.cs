@@ -15,20 +15,20 @@ using System.Threading.Tasks;
 //
 // Why twelve: the budget is still bounded above, and this is deliberately sized an order of
 // magnitude clear of the ceiling rather than sitting on top of it, as previous numbers did.
-// That ceiling was two immediately before this branch, because the third wait reached
-// `Math.Pow` in the pool's hill-climbing controller (PortableThreadPool.HillClimbing.cs:301)
-// -- an unimplemented JIT intrinsic, issue #755. (It had been three until `[ThreadStatic]`
-// fields gained real per-thread storage in #777; the pool is built on thread-static per-worker
-// state, so that change made more of the controller's real accounting actually run, and
-// `Math.Pow` came up sooner.)
+// That ceiling used to be a handful of waits, because the pool's hill-climbing controller
+// reaches the transcendental `Math` intrinsics -- `[Intrinsic]` + `InternalCall`, with no IL
+// body to fall back on -- as soon as it has adjusted its thread count a few times: first
+// `Math.Pow` in the gain calculation (PortableThreadPool.HillClimbing.cs:301, issue #755,
+// implemented in #763) and then `Math.Cos` in `GetWaveComponent` (line 448, implemented on
+// this branch).
 //
-// With `Math.Pow` implemented the frontier moves a long way out. Measured on this branch after
-// rebasing onto #777, with exactly the loop below: 160 blocking pool waits (80 iterations) pass
-// and 240 (120 iterations) fail. The failure is again an unimplemented JIT intrinsic in the
-// same controller, `Math.Cos` -- so this is still a missing-primitive boundary, not a
-// correctness bug. Note that where exactly the boundary falls depends on the shape of the loop
-// body and not only on the number of waits, which is why this file no longer tries to sit
-// exactly on it.
+// Measured on this branch, with exactly the loop below: 160 blocking pool waits (80
+// iterations) pass and 240 (120 iterations) fail. The failure is `Math.Sin`, nine lines
+// further down that same `GetWaveComponent` (line 457) -- so this is still a
+// missing-primitive boundary rather than a correctness bug, and implementing it will move the
+// name in the failure without moving the number. Note that where exactly the boundary falls
+// depends on the shape of the loop body and not only on the number of waits, which is why
+// this file no longer tries to sit exactly on it.
 //
 // Every assertion is on a returned value, never on which worker thread ran something, nor on
 // timing, nor on ordering between independent tasks -- all of which are guaranteed under both
