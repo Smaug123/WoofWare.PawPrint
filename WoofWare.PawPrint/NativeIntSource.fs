@@ -286,6 +286,48 @@ type NativeIntSource =
         | NativeIntSource.LowLevelMonitorPtr id -> HashCode.Combine (16, id)
         | NativeIntSource.WaitHandlePtr id -> HashCode.Combine (17, id)
 
+/// CoreCLR's `TypeHandle` is a tagged pointer: it wraps either a `MethodTable*`
+/// or a `TypeDesc*`, and distinguishes them by setting bit 1 in the TypeDesc
+/// case. The managed `TypeHandle` struct in
+/// src/coreclr/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.CoreCLR.cs
+/// both reads that tag (`IsTypeDesc` is `((nint)m_asTAddr & 2) != 0`) and strips
+/// it (`AsTypeDesc` is `(TypeDesc*)((nint)m_asTAddr & ~2)`).
+///
+/// This is the single home for that rule. It has two consumers — the `and`
+/// arms in `NullaryIlOp` and the synthesised low bits in
+/// `PointerHashSynthesis` — which must agree, because a handle's tag is
+/// observable both by masking it directly and by comparing synthesised bits.
+[<RequireQualifiedAccess>]
+module TypeHandleTag =
+    /// Width of the region whose bits are known. Both a `MethodTable` and a
+    /// `TypeDesc` are at least pointer-aligned, so bits 0-2 of either address are
+    /// provably clear; claiming two bits is conservative and true, and covers the
+    /// only tag bit CoreCLR actually uses.
+    let widthBits : int = 2
+
+    /// The tag carried by a handle to `target`. Unlike a GC handle's tag — which
+    /// is independent state that managed code sets and clears — this is a
+    /// *function of the target*: `IsTypeDesc` is determined by what the handle
+    /// points at. A handle whose tag differs from this is therefore a different
+    /// kind of pointer, not the same handle retagged.
+    let forTarget (target : RuntimeTypeHandleTarget) : int64 =
+        match target with
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> 0L
+        // Generic parameters in CoreCLR are TypeVarTypeDesc, a TypeDesc subclass, so the
+        // tagged-pointer encoding sets the second-lowest bit. Reflection paths such as
+        // `RuntimeType.get_IsInterface` rely on `TypeHandle.IsTypeDesc` to short-circuit
+        // before dereferencing a non-existent MethodTable; honour that contract.
+        | RuntimeTypeHandleTarget.GenericParameter _
+        | RuntimeTypeHandleTarget.MethodGenericParameter _ -> 2L
+        | RuntimeTypeHandleTarget.Closed typeHandle ->
+            match typeHandle with
+            | ConcreteTypeHandle.Byref _
+            | ConcreteTypeHandle.Pointer _
+            | ConcreteTypeHandle.FunctionPointer _ -> 2L
+            | ConcreteTypeHandle.Concrete _
+            | ConcreteTypeHandle.OneDimArrayZero _
+            | ConcreteTypeHandle.Array _ -> 0L
+
 [<RequireQualifiedAccess>]
 module NativeIntSource =
     let syntheticCrossStorageByteOffset
