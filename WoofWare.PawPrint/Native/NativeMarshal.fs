@@ -108,7 +108,7 @@ module NativeMarshal =
             let throwIfNotMarshalable =
                 match instruction.Arguments.[1] |> EvalStackValue.ofCliType with
                 | EvalStackValue.Int32 (Int32Source.Verbatim 0) -> false
-                | EvalStackValue.Int32 _ -> true
+                | EvalStackValue.Int32 (Int32Source.Verbatim _) -> true
                 | other -> failwith $"%s{operation}: expected throwIfNotMarshalable as Int32, got %O{other}"
 
             match CliType.TryComputeMarshalSize state.ConcreteTypes state._LoadedAssemblies ctx.BaseClassTypes zero with

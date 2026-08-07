@@ -1256,7 +1256,13 @@ module NullaryIlOp =
     let internal endfilterAccepts (filterResult : EvalStackValue) : bool =
         match filterResult with
         | EvalStackValue.Int32 (Int32Source.Verbatim 0) -> false
-        | EvalStackValue.Int32 _ -> true
+        | EvalStackValue.Int32 (Int32Source.Verbatim _) -> true
+        // A byref that `conv.i4` truncated is not known to be non-zero: the low half
+        // of an address PawPrint does not model can perfectly well be zero. Guessing
+        // "true" here would pick an exception handler the guest did not select.
+        | EvalStackValue.Int32 (Int32Source.NarrowedManagedPointer ptr) ->
+            failwith
+                $"Endfilter: refusing to decide whether managed pointer %O{ptr}, truncated to 32 bits, is a non-zero filter result; that depends on the container's address, which PawPrint does not model"
         | value -> failwith $"Endfilter requires an int32 result on the stack; got %O{value}"
 
     /// Store into an array element, coercing to the array's *declared* element type.
