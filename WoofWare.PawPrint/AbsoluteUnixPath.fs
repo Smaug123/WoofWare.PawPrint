@@ -5,11 +5,6 @@ open System.Collections.Immutable
 open System.Text
 
 /// Why a candidate string is not a path `getcwd(3)` could ever have returned.
-///
-/// A DU rather than a message string so that callers — most usefully the
-/// property tests — can assert *which* rule a rejection tripped, rather than
-/// pattern-matching on prose. `AbsoluteUnixPath.describe` renders these for
-/// humans.
 [<RequireQualifiedAccess>]
 type AbsoluteUnixPathError =
     /// The candidate was null or empty. `getcwd` never yields an empty string:
@@ -44,26 +39,13 @@ type AbsoluteUnixPathError =
 /// return, and hence the only shape PawPrint's simulated current directory is
 /// allowed to take.
 ///
-/// The case is private, so the only way to *construct* one is
-/// `AbsoluteUnixPath.parse` (or the `root` constant). That is the point:
-/// consumers — the `SystemNative_GetCwd` handler, and whatever simulated
-/// filesystem comes later — receive a proof that the path is rooted,
-/// separator-normalised, resolved, and UTF-8 encodable, instead of a promise
-/// they would each have to re-check.
-///
-/// One hole `private` cannot close: `Unchecked.defaultof<AbsoluteUnixPath>`
-/// (and C#'s `default(AbsoluteUnixPath)`) bypasses every constructor and yields
-/// a value whose payload is null — this is a struct, but a reference-typed
-/// single-case union would have exactly the same hole. Nothing in PawPrint
-/// produces one, and no *interior* consumer should re-check; instead the
-/// boundaries that accept a path from outside the library assert the invariant
-/// once, via `AbsoluteUnixPath.assertValid`. That is the gospel's "when types
-/// can't express an invariant, assert it".
+/// Construct via `AbsoluteUnixPath.parse` (or the `root` constant).
 [<Struct>]
 type AbsoluteUnixPath =
     private
     | AbsoluteUnixPath of path : string
 
+    /// Round-trippable string representation.
     override this.ToString () : string =
         match this with
         | AbsoluteUnixPath path -> path
