@@ -1488,7 +1488,38 @@ module IlMachineStateExecution =
 
                 state, Some resolved
 
-    let rec callMethod
+    /// What `callMethodWithCommitment` actually did, for callers that must distinguish the cases.
+    ///
+    /// Most callers do not care: a `call`/`callvirt`/`newobj` names its callee in a metadata
+    /// token, so if the call is to be retried the instruction simply re-executes and re-derives
+    /// everything. `calli` is different — its callee comes off the evaluation stack, and the
+    /// pointer must be popped before the arguments can be, so a retry only works if the caller
+    /// puts it back. That caller needs to know which of these happened, and it cannot reliably
+    /// infer it: `SuspendedForClassInit` and `Raised` both leave the calling program counter
+    /// unadvanced, the first so the instruction re-runs and the second so exception dispatch
+    /// sees the faulting offset.
+    [<RequireQualifiedAccess>]
+    type CallCommitment =
+        /// The call happened: a frame was pushed for the callee, or an intrinsic serviced it
+        /// inline.
+        ///
+        /// This says the *call* took effect, not that the calling instruction is finished.
+        /// Whether that instruction re-executes is the caller's own choice, made through
+        /// `advanceProgramCounterOfCaller` — `ensureTypeInitialised` passes `false` when kicking
+        /// off a `.cctor` precisely so the instruction runs again afterwards, and that call still
+        /// commits. For a caller that passes `true`, as `calli` does, `Committed` does mean the
+        /// instruction is done.
+        | Committed
+        /// A class initialiser had to run first and is now the active frame. The calling
+        /// instruction's program counter is deliberately unadvanced: it will re-execute once the
+        /// initialiser returns, and must find the evaluation stack as it left it.
+        | SuspendedForClassInit
+        /// The callee raised instead of running: an exception constructor is now the active frame
+        /// and dispatch follows. The calling instruction will not re-execute, and its arguments
+        /// have already been consumed.
+        | Raised
+
+    let rec callMethodWithCommitment
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (wasInitialising : ConcreteTypeHandle option)
@@ -1504,7 +1535,7 @@ module IlMachineStateExecution =
         (constructedObjectDisposition : ConstructedObjectDisposition)
         (wrapExceptionInTargetInvocation : bool)
         (state : IlMachineState)
-        : IlMachineState
+        : IlMachineState * CallCommitment
         =
         let logger = loggerFactory.CreateLogger "CallMethod"
 
@@ -1655,7 +1686,7 @@ module IlMachineStateExecution =
         //    Activator allocation/ctor pair. PawPrint's `newobj` (UnaryMetadataObjectOps.fs:240)
         //    runs cctor eagerly on every instance creation regardless of the flag, so this
         //    intrinsic follows the same convention. ECMA-335 II.10.5.3.2 permits eager schedules.
-        let tryHandleActivatorCreateInstance () : IlMachineState option =
+        let tryHandleActivatorCreateInstance () : (IlMachineState * CallCommitment) option =
             if
                 intrinsicKey.AssemblyName = "System.Private.CoreLib"
                 && intrinsicKey.DeclaringTypeFullName = "System.Activator"
@@ -1711,7 +1742,8 @@ module IlMachineStateExecution =
                         else
                             state
 
-                    Some state
+                    // Serviced inline: the zero value is already on the caller's stack.
+                    Some (state, CallCommitment.Committed)
                 else
 
                 match tHandle with
@@ -1815,7 +1847,7 @@ module IlMachineStateExecution =
                             tieAddr
                             tieType
                     with
-                    | ExceptionDispatchResult.HandlerFound state -> Some state
+                    | ExceptionDispatchResult.HandlerFound state -> Some (state, CallCommitment.Raised)
                     | ExceptionDispatchResult.ExceptionUnhandled _ ->
                         failwith
                             "Unhandled TargetInvocationException wrapping a cached TypeInitializationException during Activator.CreateInstance<T>(); should have been caught by a handler"
@@ -1872,7 +1904,8 @@ module IlMachineStateExecution =
                         ConstructedObjectDisposition.PushToCaller
                         true // wrapExceptionInTargetInvocation: mirror CreateInstanceOfT
                         state
-                    |> Some
+                    // T's ctor frame is pushed; the activator call itself is done.
+                    |> fun state -> Some (state, CallCommitment.Committed)
                 | WhatWeDid.SuspendedForClassInit ->
                     // T's cctor was kicked off and is now running on top of the current frame.
                     // We need the activator call to be retried after the cctor returns. The
@@ -1889,7 +1922,7 @@ module IlMachineStateExecution =
                     // when the cctor frame unwinds — see comment block (a)/(b)/(c) above.
                     let state = IlMachineState.markActiveFrameWrapInTargetInvocation thread state
 
-                    Some state
+                    Some (state, CallCommitment.SuspendedForClassInit)
                 | WhatWeDid.BlockedOnClassInit _ ->
                     failwith
                         "TODO: cross-thread class init blocking inside Activator.CreateInstance<T>() is not yet handled"
@@ -1914,7 +1947,7 @@ module IlMachineStateExecution =
                 | None ->
 
                 match Intrinsics.call loggerFactory baseClassTypes wasConstructing methodToCall thread state with
-                | IntrinsicResult.Completed result -> Some result
+                | IntrinsicResult.Completed result -> Some (result, CallCommitment.Committed)
                 | IntrinsicResult.RaiseException (state, exnType, message) ->
                     // The intrinsic described an exception rather than raising it, because it
                     // cannot see `raiseRuntimeException` (compile order) and because raising it
@@ -1926,7 +1959,7 @@ module IlMachineStateExecution =
                     // frame, exactly as for an opcode-manufactured exception.
                     raiseRuntimeExceptionWithMessage loggerFactory baseClassTypes exnType message thread state
                     |> fst
-                    |> Some
+                    |> fun state -> Some (state, CallCommitment.Raised)
                 | IntrinsicResult.Unrecognised ->
                     failwith
                         $"TODO: implement JIT intrinsic %s{Intrinsics.formatMethodKey intrinsicKey}, or add it to safeIntrinsics after reviewing its IL"
@@ -2105,9 +2138,50 @@ module IlMachineStateExecution =
         let calleeFrameId, threadState = ThreadState.appendFrame newFrame threadState
         let newThreadState = ThreadState.setActiveFrame calleeFrameId threadState
 
+        // The callee's frame is now active and the caller's PC has been advanced (unless the
+        // caller asked otherwise): the call has happened.
         { state with
             ThreadState = state.ThreadState |> Map.add thread newThreadState
-        }
+        },
+        CallCommitment.Committed
+
+    /// `callMethodWithCommitment` for the callers that do not need to distinguish how the call
+    /// resolved — which is all of them except `calli`. See `CallCommitment` for why `calli` does.
+    and callMethod
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (wasInitialising : ConcreteTypeHandle option)
+        (wasConstructing : ConstructionState)
+        (performInterfaceResolution : bool)
+        (wasClassConstructor : bool)
+        (advanceProgramCounterOfCaller : bool)
+        (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (thread : ThreadId)
+        (threadState : ThreadState)
+        (callSiteIlOpIndexOverride : int option)
+        (constructedObjectDisposition : ConstructedObjectDisposition)
+        (wrapExceptionInTargetInvocation : bool)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        callMethodWithCommitment
+            loggerFactory
+            baseClassTypes
+            wasInitialising
+            wasConstructing
+            performInterfaceResolution
+            wasClassConstructor
+            advanceProgramCounterOfCaller
+            methodGenerics
+            methodToCall
+            thread
+            threadState
+            callSiteIlOpIndexOverride
+            constructedObjectDisposition
+            wrapExceptionInTargetInvocation
+            state
+        |> fst
 
     and loadClass
         (loggerFactory : ILoggerFactory)
