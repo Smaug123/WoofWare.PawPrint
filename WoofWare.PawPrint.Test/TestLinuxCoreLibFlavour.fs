@@ -195,3 +195,70 @@ public class Program
 
         exitCode terminalState thread |> shouldEqual 0
         loadedCorelibPath terminalState |> shouldEqual (corelibPath frameworkDir)
+
+    /// The production path for `SystemNative_TryGetUInt32OSThreadId`, which is the whole reason
+    /// the two arms of `Lock.NonNativeAot.cs`'s `#if` are worth distinguishing.
+    ///
+    /// `sourcesPure/SystemNativeOSThreadId.cs` covers the handler through a hand-rolled
+    /// `DllImport`, which reaches it on any host but proves nothing about how CoreLib gets
+    /// there. This reaches it the way real guest code does — `System.Threading.Lock` ->
+    /// `Lock.ThreadId.InitializeForCurrentThread` -> `Interop.Sys.TryGetUInt32OSThreadId` — and
+    /// only the Linux flavour takes that arm, so on a macOS host this is the only place the
+    /// 32-bit entry point is exercised in anger at all.
+    ///
+    /// Asserting mutual exclusion would prove more, but PawPrint's scheduler makes an
+    /// uncontended `Lock` the only shape reachable without a great deal more machinery. What is
+    /// asserted is the property `InitializeForCurrentThread` actually depends on: that the id it
+    /// stored is usable as an identity, so a recursive acquire is recognised as the *same*
+    /// thread and a nested `Exit` does not throw `SynchronizationLockException`.
+    [<Test>]
+    let ``System.Threading.Lock reaches TryGetUInt32OSThreadId on the linux-x64 CoreLib`` () : unit =
+        let frameworkDir = requireLinuxFramework ()
+
+        let source =
+            """
+using System.Threading;
+
+public class Program
+{
+    public static int Main(string[] args)
+    {
+        Lock gate = new Lock();
+
+        // Enter/Exit drives ThreadId.InitializeForCurrentThread, which on this
+        // CoreLib flavour is the TryGetUInt32OSThreadId arm of the #if.
+        gate.Enter();
+        if (!gate.IsHeldByCurrentThread)
+        {
+            return 1;
+        }
+
+        // Recursive acquire: only recognised as re-entry if the id minted for
+        // this thread compares equal to itself, i.e. is a stable identity.
+        gate.Enter();
+        if (!gate.IsHeldByCurrentThread)
+        {
+            return 2;
+        }
+
+        gate.Exit();
+        if (!gate.IsHeldByCurrentThread)
+        {
+            return 3;
+        }
+
+        gate.Exit();
+        if (gate.IsHeldByCurrentThread)
+        {
+            return 4;
+        }
+
+        return 0;
+    }
+}
+"""
+
+        let terminalState, thread = runOnLinuxFramework frameworkDir source
+
+        exitCode terminalState thread |> shouldEqual 0
+        loadedCorelibPath terminalState |> shouldEqual (corelibPath frameworkDir)

@@ -371,14 +371,19 @@ module IlMachineThreadState =
     let addThread (newThreadState : MethodState) (state : IlMachineState) : IlMachineState * ThreadId =
         let thread = ThreadId state.NextThreadId
 
-        // Guest-visible, so it takes the next slot in the CPU rotation.
+        // Guest-visible, so it takes the next slot in the CPU rotation. Its OS
+        // thread id, by contrast, comes from the `ThreadId` just allocated:
+        // every thread has one of those, so `osThreadId` needs no cursor.
         let cpu = EmulatedKernel.cpuForRotation state.NextCpuRotation state.Kernel
+        let osThreadId = EmulatedKernel.osThreadId thread
 
         let newState =
             { state with
                 NextThreadId = state.NextThreadId + 1
                 NextCpuRotation = state.NextCpuRotation + 1
-                ThreadState = state.ThreadState |> Map.add thread (ThreadState.New cpu newThreadState)
+                ThreadState =
+                    state.ThreadState
+                    |> Map.add thread (ThreadState.New cpu osThreadId newThreadState)
             }
 
         newState, thread
@@ -413,6 +418,7 @@ module IlMachineThreadState =
                 // constructor. A guest that constructs a thread and never starts
                 // it therefore still consumes a rotation slot.
                 Cpu = EmulatedKernel.cpuForRotation state.NextCpuRotation state.Kernel
+                OsThreadId = EmulatedKernel.osThreadId thread
             }
 
         let newState =
@@ -455,10 +461,20 @@ module IlMachineThreadState =
                 // Core 0 as a placeholder, and deliberately *not* drawn from
                 // `NextCpuRotation` (which this function must leave alone).
                 // This thread is PawPrint-internal: no guest can name it, so no
-                // guest can call `sched_getcpu` on it. Consuming a rotation slot
-                // here would let the interpreter's own thread bookkeeping shift
-                // which core every subsequently created guest thread lands on.
+                // guest can call `sched_getcpu` on it. Consuming a rotation
+                // slot here would let the interpreter's own thread bookkeeping
+                // shift which core every subsequently created guest thread
+                // lands on.
                 Cpu = CpuId 0
+                // The OS thread id, by contrast, is *not* a placeholder and
+                // must not alias a guest thread's. This thread does run guest
+                // code — `SignalDispatch` wakes it onto a managed signal
+                // handler — and that handler may take a `System.Threading.Lock`,
+                // which treats a matching thread id as the same thread
+                // re-entering. It needs no special-casing to stay distinct:
+                // `osThreadId` is a function of the `ThreadId` allocated just
+                // above, which is unique to this thread like any other's.
+                OsThreadId = EmulatedKernel.osThreadId thread
             }
 
         let newState =
@@ -548,6 +564,15 @@ module IlMachineThreadState =
                 // dispatcher keeps the core it was placed on, exactly as it
                 // keeps its name and background flag.
                 Cpu = existing.Cpu
+                // Likewise its OS thread id. A real kernel gives a thread one
+                // tid for its whole lifetime, and the dispatcher's lifetime
+                // spans every signal it handles — this transition is between
+                // handler invocations, not between threads. (Carrying `existing`
+                // forward and re-deriving from `thread` would agree here, since
+                // `osThreadId` is a function of the unchanged `ThreadId`; the
+                // field is copied like every other per-thread fact rather than
+                // recomputed, so it stays correct if that ever stops holding.)
+                OsThreadId = existing.OsThreadId
             }
 
         { state with

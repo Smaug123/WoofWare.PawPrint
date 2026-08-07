@@ -48,6 +48,10 @@ module TestSyncBlockMonitor =
             IsBackground = false
             Name = None
             Cpu = CpuId 0
+            // Inert here: a frameless stub cannot execute the `SystemNative_*OSThreadId`
+            // P/Invoke that reads it. Do not reuse this literal for a stub standing in
+            // for more than one thread -- guest OS thread ids must be distinct.
+            OsThreadId = OsThreadId 1u
         }
 
     let private withThreads (threads : ThreadId list) (state : IlMachineState) : IlMachineState =
@@ -248,7 +252,12 @@ module TestSyncBlockMonitor =
             |> List.fold
                 (fun (state : IlMachineState, acc : Map<ThreadId, ThreadState>) (tid : ThreadId) ->
                     let state, methodState = mintFrame state
-                    state, acc |> Map.add tid (ThreadState.New (CpuId 0) methodState)
+                    // Distinct OS thread ids, minted by the same policy the
+                    // real allocation sites use: these stand in for guest
+                    // threads, and no two threads may share an id.
+                    let osThreadId = EmulatedKernel.osThreadId tid
+
+                    state, acc |> Map.add tid (ThreadState.New (CpuId 0) osThreadId methodState)
                 )
                 (state, Map.empty)
 

@@ -33,6 +33,43 @@ type CpuId =
         match this with
         | CpuId.CpuId i -> $"<cpu #%i{i}>"
 
+/// The operating-system thread identifier the simulated kernel reports for a
+/// thread: what `gettid(2)` returns on Linux, and what
+/// `pthread_threadid_np(3)` returns on macOS. Reaches the guest through the
+/// `SystemNative_TryGetUInt32OSThreadId` / `SystemNative_GetUInt64OSThreadId`
+/// PAL entry points, which are two width-projections of this one value rather
+/// than two independent quantities (upstream both read the same
+/// `minipal_get_current_thread_id()`).
+///
+/// Held as a `uint32` because the two sentinel values that must be dodged are
+/// both 32-bit facts. `TryGetUInt32OSThreadId` returns `(uint32)-1` to mean
+/// "this platform does not know how to get a thread id", and CoreLib's
+/// `Lock.ThreadId.InitializeForCurrentThread` (Lock.NonNativeAot.cs) maps a
+/// zero id to `0xFFFF_FFFF` by decrement — so a `0` or `0xFFFF_FFFF` id would
+/// silently become a *shared* id across every thread that produced one. The
+/// 64-bit entry point reports the zero-extension.
+///
+/// Nothing cares about specific numbers, only uniqueness.
+/// (`System.Threading.Lock` uses this value as its owner identity, for both
+/// mutual exclusion and recursive re-entry detection.) There is exactly one
+/// producer, `EmulatedKernel.osThreadId`, which derives the id from the
+/// thread's `ThreadId`; uniqueness is therefore inherited from `ThreadId`
+/// rather than being an invariant this type has to defend.
+///
+/// Still a distinct type from `ThreadId`, though currently in bijection with
+/// it, because the two answer different questions and are confusable at
+/// exactly the boundary where confusing them is expensive. A `ThreadId` is
+/// interpreter-private: it keys `IlMachineState.ThreadState` and the scheduler
+/// picks by it. An `OsThreadId` is a value the *guest* reads and stores —
+/// notably in `Lock._owningThreadId`, where a wrong-but-plausible number is
+/// silently mistaken for an owner rather than crashing.
+type OsThreadId =
+    | OsThreadId of uint32
+
+    override this.ToString () =
+        match this with
+        | OsThreadId.OsThreadId i -> $"<os thread #%i{i}>"
+
 /// Currently this is just an opaque handle; it can't be treated as a pointer.
 type ManagedHeapAddress =
     | ManagedHeapAddress of int
