@@ -560,8 +560,10 @@ module TestDeterministicMath =
 
     [<Test>]
     let ``cos is even`` () : unit =
-        // Cosine is even as a real function, and the implementation reduces |x|, so this must
-        // hold exactly rather than to within a rounding.
+        // Not merely a property of the real cosine that a good approximation inherits: IEEE
+        // 754-2019 clause 9.2 requires it of the operation, for every rounding attribute and
+        // over the whole domain. So this must hold exactly rather than to within a rounding —
+        // which it does, because the reduction takes |x|.
         let property (x : float) : bool =
             let atX = BitConverter.DoubleToUInt64Bits (DeterministicMath.cos x)
             atX = BitConverter.DoubleToUInt64Bits (DeterministicMath.cos -x)

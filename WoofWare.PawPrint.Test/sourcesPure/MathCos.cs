@@ -69,7 +69,11 @@ public static class MathCos
 
             if (double.IsNaN(c)) return 100 + i;
             if (c < -1.0 || c > 1.0) return 200 + i;
-            if (Math.Cos(-x) != c) return 300 + i; // cosine is even
+
+            // Evenness is required of the operation, not just of the real function it
+            // approximates: IEEE 754-2019 clause 9.2 says so for every rounding attribute
+            // over the whole domain. So both runtimes owe it exactly, not to within an ulp.
+            if (Math.Cos(-x) != c) return 300 + i;
         }
 
         return 0;
