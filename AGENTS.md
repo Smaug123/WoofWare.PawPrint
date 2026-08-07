@@ -64,6 +64,7 @@ nix develop -c dotnet run --project WoofWare.PawPrint.App/WoofWare.PawPrint.App.
 - Run a filtered subset with `nix develop -c dotnet test WoofWare.PawPrint.Test/WoofWare.PawPrint.Test.fsproj --no-build --filter "Name~TypeRef" --verbosity normal`
 - List adapter-discovered tests with `nix develop -c dotnet test WoofWare.PawPrint.Test/WoofWare.PawPrint.Test.fsproj --list-tests`
 - The `dotnet run`-based runner (`dotnet run --project ... -- --filter-test-case Foo --no-spinner`) may produce no visible output in non-interactive shells; prefer `dotnet test` with `--filter "Name~..."` instead
+- The test host runs with its GC heap capped at 50% of physical memory (`System.GC.HeapHardLimitPercent` in the test `.fsproj`, asserted by `TestGcHeapHardLimit.fs`). Unbounded, the suite's peak RSS exceeds what a 16 GB CI runner has, and the OOM killer reaps the test host mid-run — which reports only "Test host process crashed" with no stderr. If you see that shape of failure, suspect memory rather than the diff under test
 
 **WoofWare.PawPrint.App**
 - Entry point application for running the interpreter
