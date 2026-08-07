@@ -355,15 +355,25 @@ module EvalStackValue =
     /// `NativeIntSource.NarrowedManagedPointer`.
     let private int32WidthBits : int = 32
 
-    /// `conv.i4` / `conv.u4` on a byref. Managed code narrows a pointer only to mask
-    /// it — `SpanHelpers.IndexOfNullCharacter` opens with
-    /// `((int)searchSpace & 1) != 0` — so the byref has to survive the conversion for
-    /// the mask to be answerable. A plain `int32` cannot carry it and filling one in
-    /// would mean fabricating an address, so the result lands in the native-int slot
-    /// as a `NarrowedManagedPointer`, which refuses everything except that mask.
-    let private narrowByrefToInt32 (ptr : ManagedPointerSource) : EvalStackValue =
-        NativeIntSource.narrowManagedPointer int32WidthBits ptr
-        |> EvalStackValue.NativeInt
+    /// `conv.i4` / `conv.u4` on a byref, given that conversion's own truncation.
+    ///
+    /// A byref whose bit pattern is exactly known — `Null`, and the
+    /// `Unsafe.AsRef<T>((void*)bits)` placeholder — is an ordinary value, so it
+    /// truncates to an ordinary `int32`, on the int32 stack kind the opcode is
+    /// specified to push.
+    ///
+    /// An unknown address cannot: managed code narrows such a pointer only to mask
+    /// it (`SpanHelpers.IndexOfNullCharacter` opens with
+    /// `((int)searchSpace & 1) != 0`), so the byref has to survive the conversion
+    /// for the mask to be answerable, and filling in an `int32` would mean
+    /// fabricating an address. Those land in the native-int slot as a
+    /// `NarrowedManagedPointer`, which refuses everything except that mask.
+    let private narrowByrefTo32 (truncate : int64 -> int32) (ptr : ManagedPointerSource) : EvalStackValue =
+        match ManagedPointerSource.tryBitPatternBits ptr with
+        | ValueSome bits -> truncate bits |> EvalStackValue.Int32
+        | ValueNone ->
+            NativeIntSource.narrowManagedPointer int32WidthBits ptr
+            |> EvalStackValue.NativeInt
 
     let convToInt32 (value : EvalStackValue) : EvalStackValue =
         match value with
@@ -378,13 +388,13 @@ module EvalStackValue =
             // to produce an array index. The result has no provenance, but
             // an array index doesn't need one.
             convI4FromInt64 bits |> EvalStackValue.Int32
-        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) -> narrowByrefToInt32 ptr
+        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) -> narrowByrefTo32 convI4FromInt64 ptr
         | EvalStackValue.NativeInt src ->
             nativeIntBitsForIntegerConversion "Conv_I4" src
             |> convI4FromInt64
             |> EvalStackValue.Int32
         | EvalStackValue.Float f -> convI4FromFloat f |> EvalStackValue.Int32
-        | EvalStackValue.ManagedPointer ptr -> narrowByrefToInt32 ptr
+        | EvalStackValue.ManagedPointer ptr -> narrowByrefTo32 convI4FromInt64 ptr
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ObjectRef _
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_I4" value
@@ -468,13 +478,13 @@ module EvalStackValue =
         | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) -> convU4FromInt64 bits |> EvalStackValue.Int32
         // Same rationale as `convToInt32`: the byref survives the narrowing so that
         // the mask managed code is about to apply stays answerable.
-        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) -> narrowByrefToInt32 ptr
+        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) -> narrowByrefTo32 convU4FromInt64 ptr
         | EvalStackValue.NativeInt src ->
             nativeIntBitsForIntegerConversion "Conv_U4" src
             |> convU4FromInt64
             |> EvalStackValue.Int32
         | EvalStackValue.Float f -> convU4FromFloat f |> EvalStackValue.Int32
-        | EvalStackValue.ManagedPointer ptr -> narrowByrefToInt32 ptr
+        | EvalStackValue.ManagedPointer ptr -> narrowByrefTo32 convU4FromInt64 ptr
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ObjectRef _
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_U4" value

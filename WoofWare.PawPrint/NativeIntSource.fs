@@ -402,25 +402,27 @@ module NativeIntSource =
 
         NativeIntSource.GcHandlePtr (handle, tag)
 
-    /// Smart constructor for `NativeIntSource.NarrowedManagedPointer`: the result of
-    /// `conv.i4` / `conv.u4` on a byref. Byrefs whose bit pattern is exactly known
-    /// (`Null`, and the `NativeIntPlaceholder` produced by
-    /// `Unsafe.AsRef<T>((void*)bits)`) narrow to those bits, since truncating a
-    /// known value is just truncation; only an unknown address needs the pointer to
-    /// survive the narrowing.
+    /// Smart constructor for `NativeIntSource.NarrowedManagedPointer`: what
+    /// `conv.i4` / `conv.u4` push for a byref whose address PawPrint does not model.
+    ///
+    /// A byref whose bit pattern is exactly known (`Null`, and the
+    /// `NativeIntPlaceholder` produced by `Unsafe.AsRef<T>((void*)bits)`) must not
+    /// reach here. Truncating a known value is ordinary truncation, it belongs on
+    /// the int32 stack kind the opcode is specified to push, and it has to happen
+    /// with the *conversion's* signedness — none of which this constructor can
+    /// supply. `EvalStackValue.convToInt32` / `convToUInt32` handle those.
     let narrowManagedPointer (widthBits : int) (src : ManagedPointerSource) : NativeIntSource =
         Debug.Assert (
             widthBits > 0 && widthBits < 64,
             $"narrowing width %i{widthBits} out of range; a narrowing must discard some bits but not all"
         )
 
-        match ManagedPointerSource.tryBitPatternBits src with
-        | ValueSome bits ->
-            // Sign-extending truncation, matching `conv.i4`'s int32 result being
-            // sign-extended back into the native-int slot.
-            let shift = 64 - widthBits
-            NativeIntSource.Verbatim ((bits <<< shift) >>> shift)
-        | ValueNone -> NativeIntSource.NarrowedManagedPointer (src, widthBits)
+        Debug.Assert (
+            (ManagedPointerSource.tryBitPatternBits src).IsNone,
+            $"byref %O{src} has an exactly-known bit pattern; narrowing it is ordinary truncation to an int32, not a NarrowedManagedPointer"
+        )
+
+        NativeIntSource.NarrowedManagedPointer (src, widthBits)
 
     let isZero (n : NativeIntSource) : bool =
         match n with

@@ -1061,17 +1061,29 @@ module TestNullaryIlOp =
         |> shouldEqual (narrowed 6)
 
     [<Test>]
-    let ``a byref with an exactly-known bit pattern narrows to those bits`` () : unit =
+    let ``a byref with an exactly-known bit pattern narrows to an ordinary int32`` () : unit =
         // `Null` and the `Unsafe.AsRef<T>((void*)bits)` placeholder are values, not
-        // unknown addresses, so they must not become NarrowedManagedPointer.
-        runUnary NullaryIlOp.Conv_I4 (EvalStackValue.ManagedPointer ManagedPointerSource.Null)
-        |> shouldEqual (EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L))
+        // unknown addresses. They must not become NarrowedManagedPointer, and they
+        // must land on the int32 stack kind `conv.i4` is specified to push — a
+        // native int there would break the int32 comparisons and stores that
+        // legitimately follow.
+        let placeholder (bits : int64) : EvalStackValue =
+            EvalStackValue.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits)
 
-        runUnary
-            NullaryIlOp.Conv_I4
-            (EvalStackValue.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder 0x1_0000_0004L))
-        // Truncated to 32 bits: the placeholder's high word is discarded.
-        |> shouldEqual (EvalStackValue.NativeInt (NativeIntSource.Verbatim 4L))
+        for op in [ NullaryIlOp.Conv_I4 ; NullaryIlOp.Conv_U4 ] do
+            runUnary op (EvalStackValue.ManagedPointer ManagedPointerSource.Null)
+            |> shouldEqual (EvalStackValue.Int32 0)
+
+            runUnary op (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null))
+            |> shouldEqual (EvalStackValue.Int32 0)
+
+            // The placeholder's high word is discarded.
+            runUnary op (placeholder 0x1_0000_0004L) |> shouldEqual (EvalStackValue.Int32 4)
+
+            // Bit 31 set: both conversions keep the same 32 bits, and neither may
+            // sign-extend them back up into a native int.
+            runUnary op (placeholder 0x8000_0000L)
+            |> shouldEqual (EvalStackValue.Int32 Int32.MinValue)
 
     [<Test>]
     let ``a mask inside the container's alignment yields an int32`` () : unit =
