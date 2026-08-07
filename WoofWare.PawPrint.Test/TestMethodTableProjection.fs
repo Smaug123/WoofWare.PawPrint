@@ -909,7 +909,7 @@ public unsafe struct PointerWrapper
             NativeIntSource.AssemblyHandle "test-assembly"
             NativeIntSource.ModuleHandle "test-module"
             NativeIntSource.MetadataImportHandle "test-metadata-import"
-            NativeIntSource.GcHandlePtr (GcHandleAddress 42)
+            NativeIntSource.GcHandlePtr (GcHandleAddress 42, 0L)
             syntheticCrossStorageNativeIntSource ()
         ]
 

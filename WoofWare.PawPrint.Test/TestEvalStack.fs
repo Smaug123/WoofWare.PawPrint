@@ -55,25 +55,39 @@ module TestEvalStack =
         | EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr actual) when actual = typeHandle -> ()
         | other -> failwith $"Expected NativeInt(MethodTablePtr %O{typeHandle}), got %O{other}"
 
-    [<Test>]
-    let ``toCliTypeCoerced RuntimePointer target preserves GC handle pointer provenance`` () : unit =
+    // A GC handle's tag bits are part of the value managed code is holding — a
+    // `WeakReference` keeps `handle | TracksResurrectionBit` in a field for the
+    // object's whole lifetime — so they have to survive storage round-trips
+    // alongside the handle's identity, not just the identity on its own.
+    [<TestCase(0L)>]
+    [<TestCase(1L)>]
+    [<TestCase(3L)>]
+    let ``toCliTypeCoerced RuntimePointer target preserves GC handle pointer provenance`` (tag : int64) : unit =
         let handle = GcHandleAddress.GcHandleAddress 42
 
         match
             EvalStackValue.toCliTypeCoerced
                 runtimePointerTarget
-                (EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr handle))
+                (EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr (handle, tag)))
         with
-        | CliType.RuntimePointer (CliRuntimePointer.GcHandlePtr actual) when actual = handle -> ()
-        | other -> failwith $"Expected RuntimePointer(GcHandlePtr %O{handle}), got %O{other}"
+        | CliType.RuntimePointer (CliRuntimePointer.GcHandlePtr (actual, actualTag)) when
+            actual = handle && actualTag = tag
+            ->
+            ()
+        | other -> failwith $"Expected RuntimePointer(GcHandlePtr %O{handle}, tag 0x%x{tag}), got %O{other}"
 
-    [<Test>]
-    let ``RuntimePointer carrying GC handle pointer flattens back to native int`` () : unit =
+    [<TestCase(0L)>]
+    [<TestCase(1L)>]
+    [<TestCase(3L)>]
+    let ``RuntimePointer carrying GC handle pointer flattens back to native int`` (tag : int64) : unit =
         let handle = GcHandleAddress.GcHandleAddress 42
 
-        match EvalStackValue.ofCliType (CliType.RuntimePointer (CliRuntimePointer.GcHandlePtr handle)) with
-        | EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr actual) when actual = handle -> ()
-        | other -> failwith $"Expected NativeInt(GcHandlePtr %O{handle}), got %O{other}"
+        match EvalStackValue.ofCliType (CliType.RuntimePointer (CliRuntimePointer.GcHandlePtr (handle, tag))) with
+        | EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr (actual, actualTag)) when
+            actual = handle && actualTag = tag
+            ->
+            ()
+        | other -> failwith $"Expected NativeInt(GcHandlePtr %O{handle}, tag 0x%x{tag}), got %O{other}"
 
     [<Test>]
     let ``Conv_U preserves PE byte-range managed pointer provenance`` () : unit =
@@ -307,8 +321,13 @@ module TestEvalStack =
         if not (EvalStackValueComparisons.cleUn one nan) then
             failwith "Expected ble.un-style float comparison to be true when right operand is NaN"
 
-    [<Test>]
-    let ``unsigned comparisons treat GcHandlePtr as strictly greater than zero`` () : unit =
+    // Tag bits never make a handle look null: `base` is non-zero on its own, so
+    // `WeakReference.get_Target`'s `if (th == 0) return default` must not fire for
+    // a stripped-but-still-live handle either.
+    [<TestCase(0L)>]
+    [<TestCase(1L)>]
+    [<TestCase(3L)>]
+    let ``unsigned comparisons treat GcHandlePtr as strictly greater than zero`` (tag : int64) : unit =
         // GC handle addresses are minted starting from 1 by GcHandleRegistry, so a
         // GcHandlePtr is never null. `cgt.un` is the unsigned greater-than
         // comparison; on native-int operands it's emitted by `nuint`/`UIntPtr`
@@ -319,7 +338,7 @@ module TestEvalStack =
         // therefore `cge.un` / `cle.un`, which are derived from the two) must
         // also answer truthfully.
         let handle =
-            EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr (GcHandleAddress.GcHandleAddress 42))
+            EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr (GcHandleAddress.GcHandleAddress 42, tag))
 
         let zero = EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L)
 

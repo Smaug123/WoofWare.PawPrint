@@ -438,7 +438,7 @@ module TestCliTypeBytes =
             NativeIntSource.AssemblyHandle "assembly"
             NativeIntSource.ModuleHandle "module"
             NativeIntSource.MetadataImportHandle "metadata"
-            NativeIntSource.GcHandlePtr (GcHandleAddress 0)
+            NativeIntSource.GcHandlePtr (GcHandleAddress 0, 0L)
             syntheticCrossStorageNativeIntSource ()
         ]
 

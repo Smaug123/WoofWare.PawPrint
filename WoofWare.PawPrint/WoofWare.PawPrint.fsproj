@@ -23,6 +23,7 @@
     <Compile Include="ImmutableArray.fs" />
     <Compile Include="Result.fs" />
     <Compile Include="Corelib.fs" />
+    <Compile Include="TaggedPointerBits.fs" />
     <Compile Include="AbstractMachineDomain.fs" />
     <Compile Include="StaticOwner.fs" />
     <Compile Include="SchedulerState.fs" />
