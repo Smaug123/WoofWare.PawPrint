@@ -119,71 +119,25 @@ module FieldMarshalDescriptor =
 
 [<RequireQualifiedAccess>]
 module FieldInfo =
-    /// Namespace and name of the type declaring a custom attribute's constructor, or `None` when
-    /// the parent provably cannot be `System.ThreadStaticAttribute`.
-    ///
-    /// This walk deliberately uses raw `MetadataReader` calls only: it runs while fields are
-    /// being parsed, before any cross-assembly resolution (or even this assembly's method
-    /// dictionary) exists. `TypeRef` rows carry `Namespace`/`Name` directly, so no resolution is
-    /// needed.
-    ///
-    /// A `TypeSpecification` parent denotes a member of a *generic instantiation*
-    /// (`[MyAttr<int>]`, legal since C# 11). `System.ThreadStaticAttribute` is non-generic, so
-    /// such a parent can never be it; returning `None` there is a correct answer rather than the
-    /// silent `("", "")` false negative the shape of this walk otherwise invites. Every other
-    /// shape is unexpected, and we fail loudly rather than silently reporting "not thread
-    /// static".
-    let private attributeConstructorParentName
-        (mr : MetadataReader)
-        (describeField : unit -> string)
-        (attr : CustomAttribute)
-        : (string * string) option
-        =
-        match attr.Constructor.Kind with
-        | HandleKind.MemberReference ->
-            let memberRef =
-                mr.GetMemberReference (MemberReferenceHandle.op_Explicit attr.Constructor)
-
-            match memberRef.Parent.Kind with
-            | HandleKind.TypeReference ->
-                let typeRef = mr.GetTypeReference (TypeReferenceHandle.op_Explicit memberRef.Parent)
-                Some (mr.GetString typeRef.Namespace, mr.GetString typeRef.Name)
-            | HandleKind.TypeDefinition ->
-                let typeDef =
-                    mr.GetTypeDefinition (TypeDefinitionHandle.op_Explicit memberRef.Parent)
-
-                Some (mr.GetString typeDef.Namespace, mr.GetString typeDef.Name)
-            | HandleKind.TypeSpecification ->
-                // A generic attribute instantiation; cannot be the non-generic
-                // System.ThreadStaticAttribute.
-                None
-            | parentKind ->
-                failwith
-                    $"custom attribute on field %s{describeField ()}: constructor MemberReference has unsupported parent kind %O{parentKind}, so we cannot decide whether it is System.ThreadStaticAttribute"
-        | HandleKind.MethodDefinition ->
-            let methodDef =
-                mr.GetMethodDefinition (MethodDefinitionHandle.op_Explicit attr.Constructor)
-
-            let typeDef = mr.GetTypeDefinition (methodDef.GetDeclaringType ())
-            Some (mr.GetString typeDef.Namespace, mr.GetString typeDef.Name)
-        | constructorKind ->
-            failwith
-                $"custom attribute on field %s{describeField ()}: constructor has unsupported handle kind %O{constructorKind}, so we cannot decide whether it is System.ThreadStaticAttribute"
-
     /// Does this field carry `[System.ThreadStaticAttribute]`?
     ///
-    /// Accepted risk (consistent with the existing precedent in `MethodInfo.isIntrinsicAttribute`):
-    /// the match is on namespace+name strings and does not verify that the type resolves to
-    /// corelib's `System.ThreadStaticAttribute`.
+    /// Accepted risk (consistent with the existing precedent in `MethodInfo.isIntrinsicAttribute`,
+    /// and inherited from `CustomAttribute.constructorParentName`): the match is on namespace+name
+    /// strings and does not verify that the type resolves to corelib's
+    /// `System.ThreadStaticAttribute`.
     let private hasThreadStaticAttribute
         (mr : MetadataReader)
         (describeField : unit -> string)
         (def : FieldDefinition)
         : bool
         =
+        let describeTarget () = $"field %s{describeField ()}"
+
         def.GetCustomAttributes ()
         |> Seq.exists (fun handle ->
-            match attributeConstructorParentName mr describeField (mr.GetCustomAttribute handle) with
+            let attr = mr.GetCustomAttribute handle
+
+            match CustomAttribute.constructorParentName mr describeTarget attr.Constructor with
             | Some (ns, name) -> ns = "System" && name = "ThreadStaticAttribute"
             | None -> false
         )

@@ -92,6 +92,57 @@ module CustomAttribute =
             Value = value
         }
 
+    /// Namespace and name of the type declaring the constructor a custom attribute invokes, or
+    /// `None` when the parent provably cannot be a non-generic well-known attribute.
+    ///
+    /// This walk deliberately uses raw `MetadataReader` calls only: it runs while metadata is being
+    /// parsed, before any cross-assembly resolution (or even this assembly's method dictionary)
+    /// exists. `TypeRef` rows carry `Namespace`/`Name` directly, so no resolution is needed. The
+    /// match this feeds is therefore on namespace+name strings and does not verify that the type
+    /// resolves to corelib's copy of the attribute.
+    ///
+    /// A `TypeSpecification` parent denotes a member of a *generic instantiation* (`[MyAttr&lt;int&gt;]`,
+    /// legal since C# 11). No non-generic well-known attribute can be reached that way, so `None`
+    /// is a correct answer rather than the silent `("", "")` false negative the shape of this walk
+    /// otherwise invites. ECMA-335 II.22.10 admits only `MethodDef` and `MemberRef` for a
+    /// `CustomAttribute`'s `Type` column, so every other shape is malformed metadata and fails
+    /// loudly; `describeTarget` names the entity carrying the attribute in that message.
+    let constructorParentName
+        (mr : MetadataReader)
+        (describeTarget : unit -> string)
+        (constructor : EntityHandle)
+        : (string * string) option
+        =
+        match constructor.Kind with
+        | HandleKind.MemberReference ->
+            let memberRef =
+                mr.GetMemberReference (MemberReferenceHandle.op_Explicit constructor)
+
+            match memberRef.Parent.Kind with
+            | HandleKind.TypeReference ->
+                let typeRef = mr.GetTypeReference (TypeReferenceHandle.op_Explicit memberRef.Parent)
+                Some (mr.GetString typeRef.Namespace, mr.GetString typeRef.Name)
+            | HandleKind.TypeDefinition ->
+                let typeDef =
+                    mr.GetTypeDefinition (TypeDefinitionHandle.op_Explicit memberRef.Parent)
+
+                Some (mr.GetString typeDef.Namespace, mr.GetString typeDef.Name)
+            | HandleKind.TypeSpecification ->
+                // A generic attribute instantiation; cannot be a non-generic well-known attribute.
+                None
+            | parentKind ->
+                failwith
+                    $"custom attribute on %s{describeTarget ()}: constructor MemberReference has unsupported parent kind %O{parentKind}, so we cannot identify the attribute type"
+        | HandleKind.MethodDefinition ->
+            let methodDef =
+                mr.GetMethodDefinition (MethodDefinitionHandle.op_Explicit constructor)
+
+            let typeDef = mr.GetTypeDefinition (methodDef.GetDeclaringType ())
+            Some (mr.GetString typeDef.Namespace, mr.GetString typeDef.Name)
+        | constructorKind ->
+            failwith
+                $"custom attribute on %s{describeTarget ()}: constructor has unsupported handle kind %O{constructorKind}, so we cannot identify the attribute type"
+
     /// <summary>
     /// Decode the leading <c>SerString</c> from a <c>CustomAttrib</c> blob
     /// (ECMA-335 II.23.3). The blob must start with the two-byte prolog
