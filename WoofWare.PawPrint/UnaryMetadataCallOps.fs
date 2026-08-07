@@ -1108,3 +1108,350 @@ module internal UnaryMetadataCallOps =
             )
         |> IlMachineState.advanceProgramCounter thread
         |> Tuple.withRight WhatWeDid.Executed
+
+    /// How much two types must agree for PawPrint's callee-driven `calli` to reproduce what the
+    /// real runtime does. This starts from the CLI evaluation-stack representation (ECMA-335
+    /// III.1.1) — signedness and sub-`int32` width do not survive the load onto the stack, so a
+    /// call site and its target may disagree about those and still describe the same call — but
+    /// it is *not* simply that model, because a `calli` also crosses a method boundary where the
+    /// ABI footprint matters.
+    ///
+    /// Hence `Float32` and `Float64` are distinguished even though both are `F` on the stack:
+    /// reading a `float32` return slot as `float64` yields garbage on CoreCLR, not the target's
+    /// value, so permitting that pun would make PawPrint silently return the plausible answer
+    /// where the real runtime returns nonsense. The integer widths and signedness are
+    /// deliberately *not* split, because there the two runtimes do agree. Both halves of that
+    /// were measured rather than reasoned about: a bitmask probe over five puns
+    /// (`short`/`byte`/`uint`/`float` returns and a signedness-punned parameter) on osx-arm64
+    /// gave CoreCLR 23 and PawPrint 31 — differing on the float bit alone. Splitting the
+    /// integer cases would reject calls that work today.
+    ///
+    /// `None` from `calliStackKind` means "not classified" — a non-primitive type, or a generic
+    /// parameter left unsubstituted in a raw signature. Those are not compared, so this
+    /// classifier is a source of *refusals*, never of permission: agreeing here does not assert
+    /// the call is well-typed, only that it is not one of the mismatches we can detect cheaply.
+    [<RequireQualifiedAccess>]
+    type private CalliStackKind =
+        | Int32
+        | Int64
+        | Float32
+        | Float64
+        | NativeInt
+        | ObjectRef
+
+    /// Strip `modopt`/`modreq` wrappers. Custom modifiers carry calling-convention and
+    /// language-level information (`CallConvCdecl`, `InAttribute`, `IsVolatile`); none of it
+    /// changes the type's evaluation-stack shape, so anything classifying that shape must look
+    /// through them or it will misread `modopt(...) void` as value-returning and decline to
+    /// classify a modified primitive.
+    let rec private stripCustomModifiers (t : TypeDefn) : TypeDefn =
+        match t with
+        | TypeDefn.Modified m -> stripCustomModifiers m.Unmodified
+        | t -> t
+
+    let private calliStackKind (t : TypeDefn) : CalliStackKind option =
+        match stripCustomModifiers t with
+        | TypeDefn.PrimitiveType p ->
+            match p with
+            | PrimitiveType.Boolean
+            | PrimitiveType.Char
+            | PrimitiveType.SByte
+            | PrimitiveType.Byte
+            | PrimitiveType.Int16
+            | PrimitiveType.UInt16
+            | PrimitiveType.Int32
+            | PrimitiveType.UInt32 -> Some CalliStackKind.Int32
+            | PrimitiveType.Int64
+            | PrimitiveType.UInt64 -> Some CalliStackKind.Int64
+            // Separated, unlike the integer widths above: see the type's doc comment.
+            | PrimitiveType.Single -> Some CalliStackKind.Float32
+            | PrimitiveType.Double -> Some CalliStackKind.Float64
+            | PrimitiveType.IntPtr
+            | PrimitiveType.UIntPtr -> Some CalliStackKind.NativeInt
+            | PrimitiveType.String
+            | PrimitiveType.Object -> Some CalliStackKind.ObjectRef
+            // A TypedReference is not an ordinary stack value; don't pretend to classify it.
+            | PrimitiveType.TypedReference -> None
+        | _ -> None
+
+    /// Both kinds are known and they differ, i.e. this is a mismatch we can prove.
+    let private calliKindsConflict (a : TypeDefn) (b : TypeDefn) : bool =
+        match calliStackKind a, calliStackKind b with
+        | Some ka, Some kb -> ka <> kb
+        | _ -> false
+
+    /// `calli` (ECMA-335 III.3.20). The function pointer sits on top of the eval stack,
+    /// above the arguments; the metadata token is a StandaloneSignature describing the
+    /// *call site*, not the callee.
+    ///
+    /// Design note. We drive the actual invocation from the `MethodInfo` carried by the
+    /// function-pointer value (`NativeIntSource.FunctionPointer`), exactly as the delegate
+    /// dispatch path does in `AbstractMachine.dispatchDelegateInvoke` — `callMethod` pops
+    /// arguments according to the callee's own signature, so that is the single source of
+    /// truth for argument handling. The call-site signature is used only to *validate*
+    /// that the two agree on how many eval-stack slots this call consumes. Without that
+    /// check, a mismatch (whether from a bug in our own `ldftn`/function-pointer
+    /// representation, or from genuinely divergent IL) would silently pop the wrong number
+    /// of values and corrupt the frame — a failure that surfaces arbitrarily far from its
+    /// cause.
+    ///
+    /// Known divergence. ECMA-335 defines `calli`'s marshalling by the call-site signature,
+    /// so a guest may legally pun a function pointer to a signature whose *types* differ from
+    /// the target's (C# permits `(delegate*&lt;int, long&gt;)p` where `p` is
+    /// `delegate*&lt;int, int&gt;`, and CoreCLR runs it). Driving invocation from the callee
+    /// cannot reproduce that: the result would be pushed as the target's `Int32` and the
+    /// caller's `int64` store would then have no legal coercion. Doing it properly means
+    /// coercing arguments and the result to the call-site types, which requires carrying the
+    /// call-site signature onto the frame and applying it in `returnStackFrame`. Until then we
+    /// detect the mismatch here and fail at the faulting instruction, rather than letting the
+    /// call proceed and die later inside `toCliTypeCoerced` with a message that never mentions
+    /// `calli`. See docs/divergences.md.
+    let executeCalli (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
+        let loggerFactory = ctx.LoggerFactory
+        let baseClassTypes = ctx.BaseClassTypes
+        let activeAssy = ctx.ActiveAssembly
+        let thread = ctx.Thread
+
+        let callSiteSignature =
+            match ctx.MetadataToken with
+            | MetadataToken.StandaloneSignature handle ->
+                let metadataReader = activeAssy.PeReader.GetMetadataReader ()
+
+                (metadataReader.GetStandaloneSignature handle)
+                    .DecodeMethodSignature (TypeDefn.typeProvider activeAssy.Name, ())
+                |> TypeMethodSignature.make (fun retType ->
+                    // Match on the unmodified type: `modopt(CallConvCdecl) void` decodes to a
+                    // `Modified` wrapper, and treating that as value-returning would reject a
+                    // genuinely void target in the return-shape check below.
+                    match stripCustomModifiers retType with
+                    | TypeDefn.Void -> MethodReturnType.Void
+                    | _ -> MethodReturnType.Returns retType
+                )
+            | k -> failwith $"calli: expected a StandaloneSignature metadata token describing the call site, got %O{k}"
+
+        // Peek rather than pop: `loadClass` below may suspend this instruction for class
+        // initialisation, in which case the PC is not advanced and the whole `calli` is
+        // re-executed later. Popping here would lose the function pointer on that retry.
+        let fnPtr = IlMachineState.peekEvalStack thread state
+
+        // A function pointer is recognised by its `FunctionPointer` provenance; anything
+        // that is semantically zero is a null pointer. The `FunctionPointer` case must be
+        // matched first — `NativeIntSource.isZero` has no answer for it (and says so).
+        let methodToCall =
+            match fnPtr with
+            | None -> failwith "calli: eval stack was empty; expected a function pointer on top"
+            | Some (EvalStackValue.NativeInt (NativeIntSource.FunctionPointer mi)) -> Some mi
+            | Some (EvalStackValue.NativeInt src) when NativeIntSource.isZero src ->
+                // Every spelling of a null function pointer lands here, not just
+                // `Verbatim 0L`: `ldnull; conv.i` yields
+                // `ManagedPointer ManagedPointerSource.Null`, which is zero throughout
+                // PawPrint. Reusing the existing predicate keeps this arm honest as new
+                // `NativeIntSource` cases appear.
+                None
+            | Some other ->
+                // Anything else is either a genuinely bogus value or a pointer provenance
+                // our `NativeIntSource` model can't yet render as a callable target; either
+                // way, calling through it would be a guess.
+                failwith $"calli: expected a function pointer on top of the eval stack, got %O{other}"
+
+        match methodToCall with
+        | None ->
+            // ECMA-335 III.3.20: calli throws NullReferenceException if the function
+            // pointer is null. Don't advance the PC; exception dispatch needs the
+            // faulting instruction's offset.
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                baseClassTypes
+                baseClassTypes.NullReferenceException
+                thread
+                state
+        | Some methodToCall ->
+
+        // Slots this call consumes: the callee's declared parameters, plus `this` when the
+        // callee is an instance method. Arity comes from the signature, not the Param table:
+        // see `MethodInfo.Parameters` for why `Parameters.Length` understates arity for
+        // methods whose parameters carry no metadata.
+        let calleeSlots =
+            MethodInfo.arity methodToCall + (if methodToCall.IsStatic then 0 else 1)
+
+        // Slots the call site pushed: its declared parameters, plus `this` when the
+        // signature carries an *implicit* receiver. Under EXPLICITTHIS (ECMA-335 II.15.3)
+        // HASTHIS is also set, but the receiver is already the first entry in
+        // ParameterTypes, so counting it again would reject legal instance stubs.
+        //
+        // Note the two sides need not agree on *which* of them supplies `this`: CoreCLR
+        // takes the address of an instance method (e.g. a constructor, via
+        // `GetMultiCallableAddrOfCode`) and calls it through a call site whose signature is
+        // static with the receiver as an explicit leading argument. Only the total matters.
+        let callSiteHeader = callSiteSignature.Header.Get
+
+        let callSiteHasImplicitThis =
+            callSiteHeader.IsInstance
+            && not (callSiteHeader.Attributes.HasFlag SignatureAttributes.ExplicitThis)
+
+        let callSiteSlots =
+            callSiteSignature.ParameterTypes.Length
+            + (if callSiteHasImplicitThis then 1 else 0)
+
+        if calleeSlots <> callSiteSlots then
+            failwith
+                $"calli: call-site signature consumes %d{callSiteSlots} eval-stack slots but target %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}::%s{methodToCall.Name} consumes %d{calleeSlots}; refusing to execute a call that would corrupt the frame"
+
+        // Whether a result is left on the caller's stack is decided by the *callee*
+        // signature, because that is what `callMethod` and the frame return use. If the
+        // call site disagrees about void-ness, the caller's stack ends up one slot short
+        // (calling a void target through a value-returning signature, so the following
+        // load underflows) or one slot long (the reverse, leaving junk behind). Neither is
+        // recoverable, and both would surface far from here.
+        let returnsValue (ret : MethodReturnType<'a>) : bool =
+            match ret with
+            | MethodReturnType.Void -> false
+            | MethodReturnType.Returns _ -> true
+
+        let callSiteReturnsValue = returnsValue callSiteSignature.ReturnType
+        let calleeReturnsValue = returnsValue methodToCall.Signature.ReturnType
+
+        if callSiteReturnsValue <> calleeReturnsValue then
+            let describe (b : bool) = if b then "a value" else "void"
+
+            failwith
+                $"calli: call-site signature returns %s{describe callSiteReturnsValue} but target %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}::%s{methodToCall.Name} returns %s{describe calleeReturnsValue}; refusing to execute a call that would leave the caller's eval stack the wrong depth"
+
+        // The two signatures agree on shape; now check they agree on *representation*, to the
+        // extent we can prove it. See the "Known divergence" note on this function: we invoke
+        // the target directly, so a call site that puns the types would be silently ignored
+        // here and would fail later in `toCliTypeCoerced` with no mention of `calli`.
+        //
+        // Compare against the target's *raw* signature, which is in the same `TypeDefn` form as
+        // the decoded call site (`Signature` is concretized to `ConcreteTypeHandle`s and so is
+        // not comparable). For a generic target the raw signature still holds type parameters;
+        // `calliStackKind` declines to classify those, so they are skipped rather than
+        // spuriously rejected.
+        let calleeRaw = methodToCall.RawSignature
+
+        // Positions only line up when both sides agree on who supplies `this`. When they do not
+        // (the EXPLICITTHIS / receiver-as-explicit-argument case described above) the lists are
+        // offset relative to each other and cannot be compared element-wise; the slot-count
+        // check above still guards frame integrity there.
+        let receiverConventionsAgree = callSiteHasImplicitThis = not methodToCall.IsStatic
+
+        if
+            receiverConventionsAgree
+            && callSiteSignature.ParameterTypes.Length = calleeRaw.ParameterTypes.Length
+        then
+            List.iteri2
+                (fun i (callSiteTy : TypeDefn) (calleeTy : TypeDefn) ->
+                    if calliKindsConflict callSiteTy calleeTy then
+                        failwith
+                            $"calli: call-site signature declares parameter %d{i} as %O{callSiteTy} but target %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}::%s{methodToCall.Name} declares it as %O{calleeTy}; these occupy different evaluation-stack representations, and PawPrint does not yet marshal calli arguments through the call-site signature"
+                )
+                callSiteSignature.ParameterTypes
+                calleeRaw.ParameterTypes
+
+        match callSiteSignature.ReturnType, calleeRaw.ReturnType with
+        | MethodReturnType.Returns callSiteRet, MethodReturnType.Returns calleeRet when
+            calliKindsConflict callSiteRet calleeRet
+            ->
+            failwith
+                $"calli: call-site signature declares a return type of %O{callSiteRet} but target %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}::%s{methodToCall.Name} returns %O{calleeRet}; these occupy different evaluation-stack representations, and PawPrint does not yet marshal the calli result through the call-site signature"
+        | _ -> ()
+
+        let declaringTypeHandle =
+            AllConcreteTypes.findExistingConcreteType
+                state.ConcreteTypes
+                methodToCall.DeclaringType.Identity
+                methodToCall.DeclaringType.Generics
+            |> Option.defaultWith (fun () ->
+                failwith
+                    $"calli: declaring type %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name} of the target method is not registered in AllConcreteTypes"
+            )
+
+        match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
+        | NothingToDo state ->
+            // Our own frame, so the restore below can target it by id: on the suspension path the
+            // *active* frame is the class initialiser's, not ours.
+            let callerFrameId = state.ThreadState.[thread].ActiveMethodState
+
+            // Depth before we touch anything, so the suspension path below can check that the only
+            // thing missing is the pointer we removed.
+            let depthBeforePop =
+                (IlMachineState.getFrame thread callerFrameId state).EvaluationStack.Values.Length
+
+            // The pointer sits above the arguments, and arguments are popped from the top of the
+            // stack, so it has to come off before we call in.
+            let fnPtrValue, state = IlMachineState.popEvalStack thread state
+            let threadState = state.ThreadState.[thread]
+
+            let state, commitment =
+                IlMachineStateExecution.callMethodWithCommitment
+                    loggerFactory
+                    baseClassTypes
+                    None
+                    ConstructionState.NotConstructing
+                    false
+                    false
+                    true
+                    methodToCall.Generics
+                    methodToCall
+                    thread
+                    threadState
+                    None
+                    ConstructedObjectDisposition.PushToCaller
+                    false // wrapExceptionInTargetInvocation
+                    state
+
+            // The call does not always happen. When the callee needs a class initialiser run
+            // first, the initialiser becomes the active frame and our program counter is
+            // deliberately left unadvanced so this `calli` re-executes once it returns. The retry
+            // re-pops the arguments, which `callMethodWithCommitment` left in place — but not the
+            // function pointer, which we popped out here before calling in (it sits above the
+            // arguments, and arguments are popped from the top). So restoring it is our job, and
+            // omitting it makes the retry fail with "expected a function pointer on top".
+            //
+            // We ask which case occurred rather than inferring it. The tempting proxy — "our
+            // program counter did not move" — is wrong, because `Raised` leaves it unmoved too, on
+            // purpose, so exception dispatch sees the faulting instruction's offset. Treating that
+            // as a retry would strand the pointer on a frame whose arguments are already consumed
+            // and would tell the scheduler to hold threads behind a class initialisation that is
+            // not running.
+            //
+            // The outcome is also what the scheduler sees: `Scheduler.onStepOutcome` treats
+            // `Executed` as forward progress and wakes every thread parked `BlockedOnClassInit` on
+            // us, whereas `SuspendedForClassInit` leaves them parked because our class init has not
+            // finished. Reporting the truth here is the accurate thing to do, but note it is not
+            // load-bearing for correctness: a spuriously woken thread re-checks its blocker and
+            // re-blocks, which `Scheduler.onStepOutcome` itself describes as "correct but
+            // wasteful", and the schedule stays deterministic either way. The sibling call ops
+            // still report `Executed` unconditionally in this situation.
+            match commitment with
+            | IlMachineStateExecution.CallCommitment.Committed
+            | IlMachineStateExecution.CallCommitment.Raised -> state, WhatWeDid.Executed
+            | IlMachineStateExecution.CallCommitment.SuspendedForClassInit ->
+                // The frame is still live: a class-init suspension pushes a frame on top of ours,
+                // it does not unwind us (unlike `Raised`, which can).
+                let callerFrame = IlMachineState.getFrame thread callerFrameId state
+
+                // Restoring the pointer is only sound if the suspended callee consumed nothing
+                // else. That holds today because the one intrinsic that can suspend
+                // (`Activator.CreateInstance<T>()`) takes no arguments, so nothing has been popped
+                // but our pointer — an invariant of a different module, and one that a future
+                // argument-taking intrinsic learning to suspend would break silently, leaving the
+                // retry to re-pop arguments that are no longer there. Check it rather than trust
+                // it.
+                let depthNow = callerFrame.EvaluationStack.Values.Length
+
+                if depthNow <> depthBeforePop - 1 then
+                    failwith
+                        $"calli: callee suspended for class init having consumed %d{depthBeforePop - 1 - depthNow} evaluation-stack slot(s) beyond the function pointer; restoring the pointer would corrupt the frame for the retry"
+
+                let restored = callerFrame |> MethodState.pushToEvalStack' fnPtrValue
+
+                IlMachineState.setFrame thread callerFrameId restored state, WhatWeDid.SuspendedForClassInit
+
+        | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
+        | ThrowingTypeInitializationException state -> state, WhatWeDid.ThrowingTypeInitializationException
+        | Blocked (state, blockedBy) ->
+            // Park this thread on the other thread's in-progress cctor. The PC has not been
+            // advanced and we have not popped the function pointer, so re-executing this
+            // `calli` when the scheduler wakes us sees exactly the stack we started with.
+            state, WhatWeDid.BlockedOnClassInit blockedBy

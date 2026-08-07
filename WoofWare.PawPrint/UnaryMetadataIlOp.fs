@@ -62,7 +62,7 @@ module internal UnaryMetadataIlOp =
         | UnaryMetadataTokenIlOp.Cpobj -> failwith "TODO: Cpobj unimplemented"
         | UnaryMetadataTokenIlOp.Ldobj -> UnaryMetadataMemoryOps.executeLdobj ctx state
         | UnaryMetadataTokenIlOp.Sizeof -> UnaryMetadataMemoryOps.executeSizeof ctx state
-        | UnaryMetadataTokenIlOp.Calli -> failwith "TODO: Calli unimplemented"
+        | UnaryMetadataTokenIlOp.Calli -> UnaryMetadataCallOps.executeCalli ctx state
         | UnaryMetadataTokenIlOp.Unbox -> UnaryMetadataObjectOps.executeUnbox ctx state
         | UnaryMetadataTokenIlOp.Ldvirtftn -> failwith "TODO: Ldvirtftn unimplemented"
         | UnaryMetadataTokenIlOp.Mkrefany -> failwith "TODO: Mkrefany unimplemented"

@@ -78,3 +78,53 @@ A guest can see any of these only through `BitConverter`, since C# has no way to
 `Math.Sqrt` is the exception to everything above, and appears in this section only for the NaN bullet. `squareRoot` is one of the operations IEEE 754 *requires* to be correctly rounded (§5.4.1, not the recommendation of §9.2), the JIT lowers it to a hardware instruction rather than to a libm call, and every platform's instruction obeys — so there is exactly one right answer for every argument and PawPrint returns it. `TestDeterministicMath.fs` asserts bit-for-bit agreement with the host as a property, which is an assertion the other three functions cannot make; `sourcesPure/MathSqrt.cs` correspondingly pins irrational roots exactly, where its `Pow`/`Cos`/`Sin` siblings can only assert identities and slack bounds.
 
 Computing it in-tree anyway is not about changing the answer, then, but about where the guarantee comes from: the interpreter promises correct rounding on its own account rather than inheriting it from whatever machine the recording happened on, and the tests get an exact oracle out of it.
+
+## `calli` through a null function pointer
+
+**CoreCLR**: Faults. On osx-arm64 the process dies with SIGSEGV (exit 139); the null address is called directly, and nothing converts that into a managed exception the guest could catch. Because the fault is a hardware trap rather than a runtime check, exactly what a program observes depends on the platform's signal handling rather than on any CLI rule.
+
+**PawPrint**: Raises a catchable `NullReferenceException` at the `calli` site, before consuming the function pointer or any arguments from the evaluation stack. A guest `try`/`catch (NullReferenceException)` around the call therefore runs.
+
+**Spec status**: Compliant, and strictly closer to the specification than CoreCLR. ECMA-335 III.3.20 lists `NullReferenceException` as the exception `calli` throws when the function pointer is null.
+
+**Why we chose this**: PawPrint has no host address space to fault in — a null function pointer is just a value we can recognise, so we are free to implement the specified behaviour rather than emulate a segfault. Reproducing the fault would mean tearing down the simulated process in a way that carries no information, and would make the interpreter's behaviour depend on the host platform's signal handling, which is precisely the kind of nondeterminism PawPrint exists to eliminate.
+
+**Observable example**:
+
+```csharp
+delegate*<int, int> nil = null;
+try { nil(1); }
+catch (NullReferenceException) { /* PawPrint: reached. CoreCLR: process is already dead. */ }
+```
+
+**Testing note**: This divergence is why the case cannot be a `sourcesPure` comparison test — running the real runtime in-process would take the test host down. It is covered by a PawPrint-only test, `calli through a null function pointer throws NullReferenceException` in `TestPureCases.fs`.
+
+**Where this lives in code**: `UnaryMetadataCallOps.executeCalli`.
+
+## `calli` through a punned function-pointer signature
+
+**CoreCLR**: Runs the call. ECMA-335 III.3.20 defines `calli`'s marshalling by the call-site StandaloneSignature, and C# lets a guest cast a function pointer to a different signature of the same arity, so `((delegate*<int, long>)p)(3)` — where `p` is a `delegate*<int, int>` — is accepted and returns `3`. The argument direction behaves likewise: calling a `long`-taking target through an `int`-declaring call site returns `7` for input `7`. (Both verified standalone on osx-arm64.) Note that CoreCLR is relying on the platform ABI here: whether a narrower return value arrives with its upper bits in a usable state is an ABI property, not something the CLI specifies.
+
+**PawPrint**: Refuses the call at the `calli` instruction, with an error naming the instruction, both types, and the fact that call-site marshalling is unimplemented.
+
+**Spec status**: Non-compliant, deliberately and detectably. The specified behaviour is to marshal arguments and the result through the call-site signature; PawPrint drives invocation from the target's own `MethodInfo` instead, so it has no way to produce the widened result.
+
+**Why we chose this**: Doing it properly means coercing arguments to the call-site parameter types on the way in and the result to the call-site return type on the way out, which requires carrying the call-site signature onto the frame and applying it in `returnStackFrame` — the return path shared by every call in the interpreter. That was out of scope for the change that introduced `calli`. The alternative to refusing was to let the call proceed, which is what the first implementation did: it died afterwards in `toCliTypeCoerced` with `TODO: Int32(3)`, at the `stloc` rather than at the `calli`, with nothing in the message connecting it to a function pointer. Failing at the faulting instruction with a message that says what is unimplemented is strictly more useful, and keeps the limitation visible rather than latent.
+
+**Scope of the check**: The comparison starts from evaluation-stack representation (ECMA-335 III.1.1) rather than exact type, so signedness and sub-`int32` width may legitimately differ between the two signatures without being rejected — but it is not purely that model, because a `calli` also crosses a method boundary where the ABI footprint matters. `float32` and `float64` are therefore treated as conflicting even though both are `F` on the stack: reading a `float32` return slot as `float64` gives garbage on CoreCLR rather than the target's value, so permitting that pun would make PawPrint silently return the plausible answer where the real runtime returns nonsense.
+
+Which conflations are safe was measured, not assumed. A bitmask probe over five puns (`short`, `byte`, `uint` and `float` returns, plus a signedness-punned parameter) on osx-arm64 gave CoreCLR 23 and PawPrint 31 — identical except for the float bit. That is why the integer widths and signedness are deliberately *not* split: there the two runtimes agree, and splitting them would reject calls that work today.
+
+The check is a source of refusals only: non-primitive types and unsubstituted generic parameters are not classified and so are not compared, and the parameter lists are only compared element-wise when both signatures agree on which of them supplies `this`. Agreement therefore does not assert the call is well-typed — only that it is not one of the mismatches that can be detected cheaply.
+
+**Observable example**:
+
+```csharp
+static int Id(int x) => x;
+delegate*<int, int> p = &Id;
+long r = ((delegate*<int, long>)p)(3);  // CoreCLR: r == 3. PawPrint: refused at the calli.
+```
+
+**Testing note**: Cannot be a `sourcesPure` comparison test, since CoreCLR succeeds and PawPrint deliberately does not. Covered by the PawPrint-only tests `calli refuses a punned return type at the faulting instruction` and `calli refuses a punned parameter type at the faulting instruction` in `TestPureCases.fs`.
+
+**Where this lives in code**: `UnaryMetadataCallOps.executeCalli`, and the `CalliStackKind` classifier above it.

@@ -18,7 +18,7 @@ module TestPureCases =
         [
             "GCMemoryInfoSpanProperties.cs" // `GC.GetGCMemoryInfo()` itself works (see GCGetMemoryInfo.cs), but its two span-valued properties don't past index 0. CoreLib builds them with `MemoryMarshal.CreateReadOnlySpan(ref _generationInfo0, 5)` / `(ref _pauseDuration0, 2)`: a byref to the *first* of a run of sibling fields, walked forward by sizeof(element), relying on `[StructLayout(Sequential)]` having laid them out contiguously. PawPrint models a heap object as named field cells, not a byte block, so `GenerationInfo[1]` becomes a byte-view read at offset 48 into `_generationInfo0`'s own 32-byte cell and fails in `IlMachineManagedByref.resolveCell` (IlMachineManagedByref.fs:1086) with "does not fit in single primitive cell". `Length` and index 0 both work. This is the general "sibling fields are not contiguous" gap rather than anything GC-specific; tracked as issue #729.
             "InterfaceSlotHiddenByDerivedMethod.cs" // PawPrint does not model interface slot ownership — which type's method implements a given interface-map entry's slot. `findClassImplementation` starts at the receiver and takes the first name/signature match, and `methodMatches` skips its non-virtual/`newslot` guard whenever the call target is an interface, so any same-signature method on the way down wins. The file covers both directions: a derived type that must *not* take an inherited slot (reproducible with no variance at all, and failing identically on `main`), and one that *must* take a slot it re-declares. Fixing it needs a real slot-to-implementation dispatch map, which changes ordinary non-variant interface dispatch too and so wants its own change; `VariantInterfaceSlotOwnership.cs` covers the cases the interface map alone can get right.
-            "MarshalPtrToStructure.cs" // blocked at the unimplemented RuntimeTypeHandle_GetActivationInfo QCall. The non-generic `Marshal.PtrToStructure(IntPtr, Type)` allocates its result via `Activator.CreateInstance(Type, bool)` (Marshal.cs:572) before marshalling anything, which reaches `RuntimeType.CreateInstanceDefaultCtor` -> `RuntimeType.ActivatorCache` -> the QCall. PawPrint only intercepts the generic `Activator.CreateInstance<T>()` (IlMachineStateExecution.fs:875). Landing the QCall alone is not sufficient: `ActivatorCache` invokes the returned allocator/ctor addresses via `calli` (UnaryMetadataIlOp.fs:65, unimplemented), and CoreCLR's allocator is a JIT helper (reflectioninvocation.cpp:1565) with no managed MethodInfo to put in `NativeIntSource.FunctionPointer`. Split out of AdvancedStructLayout.cs, which now passes in full.
+            "MarshalPtrToStructure.cs" // blocked at the unimplemented RuntimeTypeHandle_GetActivationInfo QCall. The non-generic `Marshal.PtrToStructure(IntPtr, Type)` allocates its result via `Activator.CreateInstance(Type, bool)` (Marshal.cs:572) before marshalling anything, which reaches `RuntimeType.CreateInstanceDefaultCtor` -> `RuntimeType.ActivatorCache` -> the QCall. PawPrint only intercepts the generic `Activator.CreateInstance<T>()` (IlMachineStateExecution.fs:875). Landing the QCall alone is not sufficient: `ActivatorCache` invokes the returned allocator/ctor addresses via `calli`, and while `calli` itself is now implemented, CoreCLR's allocator is a JIT helper (reflectioninvocation.cpp:1565) with no managed MethodInfo to put in `NativeIntSource.FunctionPointer`. Split out of AdvancedStructLayout.cs, which now passes in full.
             "MarshalStructureToPtrDateTimeField.cs" // MarshalNative_TryGetStructMarshalStub doesn't yet synthesise an IL stub for has-layout-non-blittable structs; CoreCLR writes an 8-byte OADate (`MARSHAL_TYPE_DATE`) for a `DateTime` field, but PawPrint currently rejects the struct loudly rather than memmove-ing the managed `_dateData` bytes. Real implementation needs the OADate-conversion stub.
             "MarshalStructureToPtrDecimalField.cs" // MarshalNative_TryGetStructMarshalStub now rejects Decimal fields (CoreCLR routes them through `NFT_DECIMAL` stub synthesis because native `DECIMAL` is 8-byte aligned while managed `Decimal` is 4-byte aligned). Two follow-on gaps remain before this test can pass: (1) `Marshal.SizeOf<{int; decimal}>()` returns 20 instead of 24 because the marshal-size walk in `CliValueType.TryComputeMarshalSize` doesn't bump Decimal's field alignment to 8, and (2) the actual Decimal-marshal stub that writes a 16-byte native `DECIMAL` at the 8-byte-aligned offset.
             "StructLayoutAutoWithoutReferences.cs" // CoreCLR reaches `HandleAutoLayout` either because the type declares `LayoutKind.Auto` or because it holds GC references and is promoted (`PlaceInstanceFields`, methodtablebuilder.cpp:8212). PawPrint implements the promotion route only, and cannot implement the other: `Layout` (TypeInfo.fs:47) is built from the `ClassLayout` table, which carries only `Pack` and `Size`, while the LayoutKind lives in `TypeAttributes.LayoutMask` and is discarded — so a reference-free type declared `LayoutKind.Auto` is indistinguishable from a sequential one where fields are laid out. The file's sequential controls pass, which is what makes this a LayoutKind gap rather than a bucketing one. Closing it means widening `Layout` to carry the kind and threading it through every construction site, so it is its own change.
@@ -160,6 +160,165 @@ module TestPureCases =
                         $"PawPrint guest was terminated by POSIX signal %O{signal} for %s{case.FileName}; this test does not exercise signal-driven termination"
                 | _, RunOutcome.ProcessExit _ -> failwith "unreachable: normalised away above"
             )
+
+    /// `calli` through a null function pointer. This cannot be a comparison test in
+    /// `sourcesPure`: the real runtime does not raise a catchable NullReferenceException
+    /// here, it segfaults (observed as exit 139 on osx-arm64), which would take the test
+    /// host down with it. PawPrint instead implements the behaviour ECMA-335 III.3.20
+    /// actually specifies. See docs/divergences.md.
+    [<Test>]
+    let ``calli through a null function pointer throws NullReferenceException`` () =
+        let source =
+            """
+using System;
+
+public class Program
+{
+    public static unsafe int Main(string[] args)
+    {
+        // Two spellings of a null function pointer. Both currently reach the interpreter
+        // as a verbatim zero, so this does not by itself exercise the other zero-valued
+        // `NativeIntSource` shapes that `executeCalli` accepts as null (notably
+        // `ManagedPointer ManagedPointerSource.Null`); that handling is deliberately
+        // broader than any C# spelling reachable today. (`IntPtr.Zero.ToPointer()` would
+        // be a third spelling, but it needs `ldsflda` of a MemberReference, which is a
+        // separate unimplemented gap.)
+        delegate*<int, int> a = null;
+        delegate*<int, int> b = (delegate*<int, int>)(void*)null;
+
+        int caught = 0;
+        try { a(1); } catch (NullReferenceException) { caught += 1; }
+        try { b(1); } catch (NullReferenceException) { caught += 2; }
+
+        return caught == 3 ? 0 : caught;
+    }
+}
+"""
+
+        runPawPrintSource
+            "CalliNullFunctionPointer.cs"
+            source
+            KernelConfig.Default
+            (fun _image pawPrintResult ->
+                match pawPrintResult with
+                | RunOutcome.NormalExit (terminalState, terminatingThread) ->
+                    match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
+                    | EvalStackValue.Int32 (Int32Source.Verbatim exitCode) :: _ -> exitCode |> shouldEqual 0
+                    | [] -> failwith "expected program to return an int, but it returned void"
+                    | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
+                | outcome ->
+                    failwith
+                        $"Expected the guest to catch a NullReferenceException from the null calli, got %O{outcome}"
+            )
+
+    /// ECMA-335 III.3.20 defines `calli`'s marshalling by the call-site StandaloneSignature,
+    /// so a guest may legally pun a function pointer to a signature whose types differ from
+    /// the target's. PawPrint invokes the target directly, so it is the *target's* types that
+    /// drive argument coercion and the return push; until that is fixed (i.e. until arguments
+    /// and the result are coerced to the call-site types) such a call must be refused at the
+    /// faulting instruction rather than proceeding and failing far away inside
+    /// `toCliTypeCoerced` with a message that never mentions `calli`.
+    ///
+    /// These cannot be `sourcesPure` comparison tests: CoreCLR accepts both (verified
+    /// standalone on osx-arm64 — the return case prints 3, the argument case prints 7), so a
+    /// comparison test would assert PawPrint reproduces behaviour it deliberately does not.
+    /// See docs/divergences.md.
+    [<Test>]
+    let ``calli refuses a punned return type at the faulting instruction`` () =
+        let source =
+            """
+using System;
+
+public class Program
+{
+    static int Id(int x) => x;
+
+    public static unsafe int Main(string[] args)
+    {
+        delegate*<int, int> p = &Id;
+        // Same arity, same void-ness, wider return: passes the slot-count and void-ness
+        // checks, and would otherwise die in toCliTypeCoerced at the `stloc` of the long.
+        long r = ((delegate*<int, long>)p)(3);
+        return (int)r;
+    }
+}
+"""
+
+        let exn =
+            Assert.Throws (fun () ->
+                runPawPrintSource "CalliPunnedReturn.cs" source KernelConfig.Default (fun _image _result -> ())
+            )
+
+        exn.Message |> shouldContainText "calli"
+        exn.Message |> shouldContainText "return"
+        exn.Message |> shouldContainText "Program"
+
+    [<Test>]
+    let ``calli refuses a punned parameter type at the faulting instruction`` () =
+        let source =
+            """
+using System;
+
+public class Program
+{
+    static long Id(long x) => x;
+
+    public static unsafe int Main(string[] args)
+    {
+        delegate*<long, long> p = &Id;
+        // Arity and return type agree; only the parameter's stack representation differs.
+        long r = ((delegate*<int, long>)p)(7);
+        return (int)r;
+    }
+}
+"""
+
+        let exn =
+            Assert.Throws (fun () ->
+                runPawPrintSource "CalliPunnedParameter.cs" source KernelConfig.Default (fun _image _result -> ())
+            )
+
+        exn.Message |> shouldContainText "calli"
+        exn.Message |> shouldContainText "parameter"
+        exn.Message |> shouldContainText "Program"
+
+    /// `float32` and `float64` are the same type (`F`) on the CLI evaluation stack, but a
+    /// `calli` marshals across a method boundary, where their ABI footprints differ. Reading a
+    /// `float32` return slot as `float64` yields garbage on CoreCLR rather than the target's
+    /// value, so this pun must be refused like the integer ones — otherwise PawPrint invokes
+    /// the target and silently returns the *plausible* answer where the real runtime returns
+    /// nonsense, which is worse than crashing.
+    ///
+    /// Measured on osx-arm64 with a bitmask probe over five puns (short/byte/uint/float
+    /// returns and a signedness-punned parameter): CoreCLR returned 23 and PawPrint 31,
+    /// differing on the float bit alone. That is why only `Single`/`Double` are separated and
+    /// the integer widths and signedness deliberately are not — conflating those matches the
+    /// real runtime, and splitting them would reject calls that work.
+    [<Test>]
+    let ``calli refuses a punned float width at the faulting instruction`` () =
+        let source =
+            """
+public class Program
+{
+    static float Id(float x) => x;
+
+    public static unsafe int Main(string[] args)
+    {
+        delegate*<float, float> p = &Id;
+        double r = ((delegate*<float, double>)p)(1.5f);
+        return r == 1.5 ? 42 : 7;
+    }
+}
+"""
+
+        let exn =
+            Assert.Throws (fun () ->
+                runPawPrintSource "CalliPunnedFloatWidth.cs" source KernelConfig.Default (fun _image _result -> ())
+            )
+
+        exn.Message |> shouldContainText "calli"
+        exn.Message |> shouldContainText "return"
+        exn.Message |> shouldContainText "Program"
 
     [<Test>]
     let ``Unhandled rethrow preserves original throw stack frame`` () =
