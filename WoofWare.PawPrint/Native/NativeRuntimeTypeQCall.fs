@@ -341,6 +341,92 @@ module NativeRuntimeTypeQCall =
                     genericArgumentTargets
 
             NativeHandlerResult.completed state |> Some
+        | "RuntimeTypeHandle_GetGenericTypeDefinition",
+          "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "GetGenericTypeDefinition",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "QCallTypeHandle",
+                                              qCallGenerics)
+            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "ObjectHandleOnStack",
+                                              objectHandleGenerics) ],
+          MethodReturnType.Void when qCallGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
+            let operation = "RuntimeTypeHandle.GetGenericTypeDefinition"
+
+            if instruction.Arguments.Length <> 2 then
+                failwith $"%s{operation}: expected two native arguments, got %d{instruction.Arguments.Length}"
+
+            let typeHandleTarget =
+                NativeCall.qCallTypeHandleToRuntimeTypeHandleTarget
+                    operation
+                    state
+                    (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
+
+            let retType =
+                NativeCall.objectHandleOnStackTarget operation state "retType" instruction.Arguments.[1]
+
+            // CoreCLR (runtimehandles.cpp:1122) reloads the TypeDef named by the MethodTable's
+            // (module, GetCl()) pair, i.e. the uninstantiated definition. A `ConcreteType`'s
+            // `Identity` is exactly that pair, so the whole operation is the projection from a
+            // closed instantiation to its open definition.
+            //
+            // Only one target shape can legitimately arrive here. `RuntimeType
+            // .GetGenericTypeDefinition` (RuntimeType.CoreCLR.cs:3557) throws
+            // InvalidOperationException unless `IsGenericType`, and
+            // `RuntimeTypeCache.GetGenericTypeDefinition` (RuntimeType.CoreCLR.cs:1639) returns
+            // the receiver without calling the QCall at all when `IsGenericTypeDefinition`. Both
+            // flags are read off the projected MethodTable, and `MethodTableProjection
+            // .genericsFlags` reports GenericInst only for a nominal concrete type with a
+            // non-empty instantiation. Every other shape is a BCL contract violation: fail
+            // loudly rather than mint an `OpenGenericTypeDefinition` for a type with no generic
+            // parameters, which would break the invariant asserted in
+            // `MethodTableProjection.targetContainsGenericVariables`.
+            let definitionTarget =
+                match typeHandleTarget with
+                | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as handle) ->
+                    let concreteType =
+                        AllConcreteTypes.lookup handle state.ConcreteTypes
+                        |> Option.defaultWith (fun () ->
+                            failwith $"%s{operation}: concrete type handle was not registered: %O{handle}"
+                        )
+
+                    if concreteType.Generics.IsEmpty then
+                        failwith
+                            $"%s{operation}: BCL contract violation: QCall reached for non-generic target %O{typeHandleTarget}; the managed wrapper throws InvalidOperationException unless IsGenericType"
+
+                    RuntimeTypeHandleTarget.OpenGenericTypeDefinition concreteType.Identity
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
+                    failwith
+                        $"%s{operation}: BCL contract violation: QCall reached for open generic type definition %O{typeHandleTarget}; RuntimeTypeCache.GetGenericTypeDefinition returns the receiver unchanged when IsGenericTypeDefinition"
+                | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.OneDimArrayZero _)
+                | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Array _)
+                | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref _)
+                | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Pointer _)
+                | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.FunctionPointer _)
+                | RuntimeTypeHandleTarget.GenericParameter _
+                | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
+                    failwith
+                        $"%s{operation}: BCL contract violation: QCall reached for target %O{typeHandleTarget}, which reports IsGenericType=false; the managed wrapper throws InvalidOperationException without invoking this QCall"
+
+            // The type-handle registry is keyed on the whole `RuntimeTypeHandleTarget`, so this
+            // is the very same `RuntimeType` object that `ldtoken Foo<>` yields — which is what
+            // makes `x.GetGenericTypeDefinition() == typeof(Foo<>)` (reference equality for
+            // RuntimeType operands, Type.cs:703) answer true.
+            let runtimeTypeAddr, state =
+                IlMachineState.getOrAllocateType ctx.LoggerFactory ctx.BaseClassTypes definitionTarget state
+
+            let state =
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    retType
+                    (CliType.ObjectRef (Some runtimeTypeAddr))
+
+            NativeHandlerResult.completed state |> Some
         | "RuntimeTypeHandle_GetConstraints",
           "System.Private.CoreLib",
           "System",
