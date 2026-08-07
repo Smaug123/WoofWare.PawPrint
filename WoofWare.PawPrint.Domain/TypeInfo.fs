@@ -114,6 +114,24 @@ type TypeInfo<'generic, 'fieldGeneric> =
         ImplementedInterfaces : InterfaceImplementation ImmutableArray
 
         Layout : Layout
+
+        /// <summary>
+        /// The repeat count <c>N</c> from <c>[InlineArray(N)]</c>, exactly as the metadata declares
+        /// it, or <c>None</c> for the overwhelming majority of types that do not carry it. A
+        /// non-positive count is recorded rather than rejected: whether it is legal is a type-load
+        /// question that only arises for value types, and it is asked by
+        /// <c>InlineArrayStorage.expand</c>.
+        /// </summary>
+        /// <remarks>
+        /// CoreCLR reads this attribute in <c>MethodTableBuilder::PlaceInstanceFields</c>
+        /// (methodtablebuilder.cpp:1743) and lays the type out *as if it had its one declared
+        /// instance field*, then multiplies the resulting instance size by <c>N</c> (:8612 for the
+        /// auto-layout route, :8663 for sequential, :8696 for explicit). There is only ever one
+        /// <c>FieldDesc</c>: the N-1 repeats are storage, not fields, so reflection never sees
+        /// them. This is *not* part of <c>Layout</c>, which models the <c>ClassLayout</c> metadata
+        /// table (<c>Pack</c>/<c>Size</c>) and nothing else.
+        /// </remarks>
+        InlineArrayLength : int option
     }
 
     member this.IsInterface = this.TypeAttributes.HasFlag TypeAttributes.Interface
@@ -327,6 +345,7 @@ module TypeInfo =
             Events = t.Events
             ImplementedInterfaces = t.ImplementedInterfaces
             Layout = t.Layout
+            InlineArrayLength = t.InlineArrayLength
         }
 
     let mapGeneric<'a, 'b, 'field> (f : 'a -> 'b) (t : TypeInfo<'a, 'field>) : TypeInfo<'b, 'field> =
@@ -422,6 +441,48 @@ module TypeInfo =
             else
                 Layout.Custom (size = l.Size, packingSize = l.PackingSize)
 
+        // CoreCLR's `MethodTableBuilder::PlaceInstanceFields` (methodtablebuilder.cpp:1743) reads
+        // this attribute off the TypeDef and rejects `repeat <= 0`
+        // (`IDS_CLASSLOAD_INLINE_ARRAY_LENGTH`). The other three conditions it enforces there —
+        // exactly one instance field, no explicit field-offset layout, no explicit `ClassSize` —
+        // are checked where the storage slots are actually built (`InlineArrayStorage.expand`),
+        // because that is where the concretized fields are in hand.
+        //
+        // Deliberate divergence: CoreCLR treats a blob too short to hold the count
+        // (`cbVal >= sizeof(INT32) + 2`) as "not an inline array" and lays out one slot. Only
+        // hand-crafted IL can produce that, and silently giving the guest one slot where it asked
+        // for N is exactly the silent corruption we would rather crash on, so we fail loudly.
+        let inlineArrayLength =
+            let describeTarget () = $"type %s{ns}.%s{name}"
+
+            typeDef.GetCustomAttributes ()
+            |> Seq.tryPick (fun handle ->
+                let attr = metadataReader.GetCustomAttribute handle
+
+                match CustomAttribute.constructorParentName metadataReader describeTarget attr.Constructor with
+                | Some ("System.Runtime.CompilerServices", "InlineArrayAttribute") ->
+                    let blob =
+                        if attr.Value.IsNil then
+                            ImmutableArray.Empty
+                        else
+                            ImmutableArray.Create<byte> (metadataReader.GetBlobBytes attr.Value)
+
+                    match CustomAttribute.readFixedArgs [ TypeDefn.PrimitiveType PrimitiveType.Int32 ] blob with
+                    // Recorded exactly as decoded, including a non-positive count. That is a
+                    // type-load rule (`IDS_CLASSLOAD_INLINE_ARRAY_LENGTH`) and CoreCLR only reaches
+                    // it for value types, so rejecting it here would refuse an assembly CoreCLR
+                    // loads happily — `[InlineArray(0)]` on a *class* is simply ignored there. The
+                    // check lives in `InlineArrayStorage.expand`, downstream of
+                    // `InlineArrayStorage.effectiveLength`, which is where the type's kind is known.
+                    | Ok ([ CustomAttribFixedArg.I4 repeat ], _) -> Some repeat
+                    | Ok (args, _) ->
+                        failwith
+                            $"[InlineArray] on %s{describeTarget ()}: expected a single Int32 constructor argument, got %A{args}"
+                    | Error e ->
+                        failwith $"[InlineArray] on %s{describeTarget ()}: could not decode the attribute blob: %s{e}"
+                | _ -> None
+            )
+
         {
             Namespace = ns
             Name = name
@@ -438,6 +499,7 @@ module TypeInfo =
             ImplementedInterfaces = interfaces
             DeclaringType = declaringType
             Layout = layout
+            InlineArrayLength = inlineArrayLength
         }
 
     let isBaseType<'corelib>
