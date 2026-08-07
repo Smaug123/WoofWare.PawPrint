@@ -1094,19 +1094,10 @@ module EmulatedKernel =
     ///
     /// `ordinal` is `IlMachineState.NextGuestThreadOrdinal`, the same cursor
     /// `cpuForRotation` consumes, and deliberately *not* the thread's
-    /// `ThreadId` — for exactly the reason spelled out on `cpuForRotation`
-    /// above. An interpreter-internal thread allocation must not shift the id
-    /// of every guest thread created after it.
+    /// `ThreadId`, which is PawPrint-internal rather than guest-visible.
     ///
-    /// Ids are **odd**. That is what keeps them disjoint from
-    /// `osThreadIdForInternal`'s even ids, and disjointness is load-bearing:
-    /// `System.Threading.Lock` treats a matching thread id as "the same thread
-    /// re-entering", so an internal thread that aliased a guest thread's id
-    /// could take a lock the guest thread already holds. Parity is chosen over
-    /// a high/low range split because it needs no bookkeeping to stay disjoint
-    /// as either population grows, and because it makes the numbers visibly
-    /// non-consecutive — a guest that assumes consecutive thread ids is wrong
-    /// on real kernels too, so it should be wrong here.
+    /// Ids are **odd**, so that they never collide with PawPrint's minted
+    /// `OsThreadId`s for synthetic threads.
     let osThreadIdForGuest (ordinal : int) : OsThreadId =
         if ordinal < 0 || ordinal > maxOsThreadOrdinal then
             failwith
@@ -1120,20 +1111,8 @@ module EmulatedKernel =
     /// Such a thread needs a real, distinct id even though no guest can name
     /// it, because it *runs* guest code: `SignalDispatch` wakes it onto a
     /// managed signal handler, and that handler may take a `System.Threading.Lock`.
-    /// This is the point where the dispatcher's treatment diverges from its
-    /// `CpuId`, which `allocateParkedThread` is free to hard-code to core 0: a
-    /// processor index is a shared-resource key, so aliasing is meaningful and
-    /// harmless, whereas a thread id is an ownership identity and aliasing is a
-    /// silent mutual-exclusion bug.
     ///
-    /// `i` is `IlMachineState.NextThreadId` rather than a dedicated cursor.
-    /// Guest thread creation therefore shifts which even id an internal thread
-    /// receives — which is fine, and is the harmless direction: the leak that
-    /// matters is interpreter state reaching guest-observable values, not the
-    /// reverse. Adding a parallel cursor to avoid it would buy nothing and add
-    /// a counter that could drift.
-    ///
-    /// Ids are **even**; see `osThreadIdForGuest` for why parity.
+    /// Ids are **even**, so that they never collide with guest-visible threads.
     let osThreadIdForInternal (i : int) : OsThreadId =
         if i < 0 || i > maxOsThreadOrdinal then
             failwith

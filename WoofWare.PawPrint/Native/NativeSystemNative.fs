@@ -10,12 +10,6 @@ module NativeSystemNative =
         | _ -> None
 
     /// The OS thread id of the thread currently executing the native call.
-    ///
-    /// Reads the stored `ThreadState.OsThreadId` rather than re-deriving one:
-    /// guest threads and PawPrint-internal threads mint from disjoint ranges,
-    /// so there is no function of `ThreadId` that could answer this, and an id
-    /// invented here would be free to alias another thread's — which is exactly
-    /// the failure `System.Threading.Lock` cannot survive.
     let private osThreadIdOf (operation : string) (ctx : NativeCallContext) : OsThreadId =
         match Map.tryFind ctx.Thread ctx.State.ThreadState with
         | Some threadState -> threadState.OsThreadId
@@ -418,9 +412,7 @@ module NativeSystemNative =
             //
             // PawPrint's ids are 32-bit-canonical (`OsThreadId` explains why:
             // both sentinels it must dodge are 32-bit facts), so this reports
-            // the zero-extension. That is consistent rather than merely
-            // convenient — it makes the two entry points agree on the low word
-            // for every thread, which is what a Linux kernel would also do.
+            // the zero-extension.
             let (OsThreadId.OsThreadId osThreadId) =
                 osThreadIdOf "SystemNative_GetUInt64OSThreadId" ctx
 

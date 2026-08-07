@@ -49,27 +49,19 @@ type CpuId =
 /// silently become a *shared* id across every thread that produced one. The
 /// 64-bit entry point reports the zero-extension.
 ///
-/// The load-bearing property is **uniqueness**, not the specific numbers:
-/// `System.Threading.Lock` uses this value as its owner identity, for both
-/// mutual exclusion and recursive re-entry detection, so two live threads
-/// sharing an id is a silent correctness failure rather than a crash. There
-/// are exactly two producers, and they mint into disjoint halves of the range
-/// so that uniqueness holds *between* them and not merely within each:
+/// Nothing cares about specific numbers, only uniqueness.
+/// (`System.Threading.Lock` uses this value as its owner identity, for both
+/// mutual exclusion and recursive re-entry detection.)
+/// There are exactly two producers, and they mint into disjoint halves of
+/// the range so that uniqueness holds between them:
 /// `EmulatedKernel.osThreadIdForGuest` mints odd ids for guest-visible
 /// threads, and `EmulatedKernel.osThreadIdForInternal` mints even ids for
-/// PawPrint-internal auxiliary threads (currently just the signal dispatcher,
-/// which does run guest handler code and therefore does need a real, distinct
-/// id — unlike its `CpuId`, which may safely alias a guest thread's, because a
-/// processor index is a shared-resource key whereas a thread id is an
-/// identity).
+/// PawPrint-internal auxiliary threads.
 ///
-/// A distinct type from `ThreadId` and `CpuId` because all three are small
-/// integers naming a scheduling entity, and swapping them would produce a
-/// plausible-looking wrong answer rather than a crash. In particular this is
-/// *not* `ThreadId`: `ThreadId` is PawPrint's interpreter-private allocation
-/// counter, which internal threads also consume, and deriving a guest-visible
-/// id from it directly would let an interpreter-internal allocation shift
-/// every subsequent guest thread's id.
+/// This is *not* the `ThreadId` concept: `ThreadId` is PawPrint's
+/// interpreter-private allocation counter, which internal threads also consume,
+/// and deriving a guest-visible id from it directly would let an
+/// interpreter-internal allocation shift guest-visible thread IDs.
 type OsThreadId =
     | OsThreadId of uint32
 
