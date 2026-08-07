@@ -17,18 +17,17 @@ using System.Threading.Tasks;
 // magnitude clear of the ceiling rather than sitting on top of it, as previous numbers did.
 // That ceiling used to be a handful of waits, because the pool's hill-climbing controller
 // reaches the transcendental `Math` intrinsics -- `[Intrinsic]` + `InternalCall`, with no IL
-// body to fall back on -- as soon as it has adjusted its thread count a few times: first
+// body to fall back on -- as soon as it has adjusted its thread count a few times:
 // `Math.Pow` in the gain calculation (PortableThreadPool.HillClimbing.cs:301, issue #755,
-// implemented in #763) and then `Math.Cos` in `GetWaveComponent` (line 448, implemented on
-// this branch).
+// implemented in #763), then `Math.Cos` in `GetWaveComponent` (line 448, implemented in
+// #779), then `Math.Sin` nine lines below it (line 457, implemented on this branch).
 //
-// Measured on this branch, with exactly the loop below: 160 blocking pool waits (80
-// iterations) pass and 240 (120 iterations) fail. The failure is `Math.Sin`, nine lines
-// further down that same `GetWaveComponent` (line 457) -- so this is still a
-// missing-primitive boundary rather than a correctness bug, and implementing it will move the
-// name in the failure without moving the number. Note that where exactly the boundary falls
-// depends on the shape of the loop body and not only on the number of waits, which is why
-// this file no longer tries to sit exactly on it.
+// Measured on this branch, with exactly the loop below: 200 blocking pool waits (100
+// iterations) pass and 240 (120 iterations) fail. The failure is now `Math.Sqrt`, reached
+// from the `Complex` arithmetic the controller performs on those wave components -- so this
+// is still a missing-primitive boundary rather than a correctness bug. Note that where
+// exactly the boundary falls depends on the shape of the loop body and not only on the
+// number of waits, which is why this file no longer tries to sit exactly on it.
 //
 // Every assertion is on a returned value, never on which worker thread ran something, nor on
 // timing, nor on ordering between independent tasks -- all of which are guaranteed under both
