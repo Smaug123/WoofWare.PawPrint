@@ -373,3 +373,183 @@ module DeterministicMath =
                 powOfPositiveViaLogarithm magnitude y
 
         if signIsNegative then -result else result
+
+    /// Number of fractional bits carried by the value of pi used for trigonometric range
+    /// reduction. This is not the accuracy of the answer, which `fractionBits` governs; it
+    /// is the accuracy needed to *subtract* a multiple of pi/2 from an argument that may be
+    /// as large as 2^1024 without the difference becoming meaningless. Every bit of the
+    /// argument's exponent is a bit of pi consumed by that subtraction, so this must exceed
+    /// 1024 by whatever margin the reduced argument is then wanted to.
+    let internal piBits : int = 1500
+
+    /// `atan(1/n)` in fixed point with `bits` fractional bits, by its alternating series
+    /// `1/n - 1/(3n^3) + 1/(5n^5) - ...`. Callers use n >= 5, so successive terms shrink by
+    /// a factor of at least 25 and the loop runs about `bits / 4.6` times.
+    ///
+    /// Each division truncates towards zero, so the running `term` carries an error under
+    /// `n^2 / (n^2 - 1)` units and each contribution adds under two more; over the few
+    /// hundred terms that bounds the loss at under ten bits at the bottom (five, measured
+    /// against a 600-digit decimal evaluation), which the margin in `piBits` absorbs many
+    /// times over.
+    let private atanReciprocal (bits : int) (n : int) : BigInteger =
+        let nSquared = BigInteger (n * n)
+        let mutable term = (BigInteger.One <<< bits) / BigInteger n
+        let mutable acc = BigInteger.Zero
+        let mutable k = 0
+
+        while not term.IsZero do
+            let contribution = term / BigInteger (2 * k + 1)
+            acc <- (if k % 2 = 0 then acc + contribution else acc - contribution)
+            term <- term / nSquared
+            k <- k + 1
+
+        acc
+
+    /// pi, in fixed point with `piBits` fractional bits, by Machin's formula
+    /// `pi = 16 atan(1/5) - 4 atan(1/239)`. Computed rather than transcribed so that there
+    /// is no hand-copied constant to get wrong; `TestDeterministicMath` checks the first
+    /// sixty decimal digits against the published expansion.
+    let internal pi : BigInteger =
+        (BigInteger 16 * atanReciprocal piBits 5)
+        - (BigInteger 4 * atanReciprocal piBits 239)
+
+    /// pi/2, the period of the quadrant reduction below.
+    let private piOverTwo : BigInteger = pi >>> 1
+
+    /// 2/pi, used to find how many quarter-turns an argument contains. Dividing once here
+    /// turns the per-call reduction into a multiplication. The exponent is `2 piBits + 1`
+    /// rather than `2 piBits` because `pi` is itself scaled by 2^`piBits`: the quotient of
+    /// 2^(2 piBits + 1) by `pi` is 2^`piBits` times 2/pi, which is what the callers want.
+    let private twoOverPi : BigInteger = (BigInteger.One <<< ((2 * piBits) + 1)) / pi
+
+    /// `sin` or `cos` of a fixed-point argument, by the shared alternating series
+    /// `t0 - t0 r^2/((k+1)(k+2)) + ...`; seeding it with `(r, 1)` gives sin and with
+    /// `(1, 0)` gives cos. Callers keep |r| below about pi/4, so the factorial denominators
+    /// dominate immediately and the loop runs about 30 times.
+    let private trigSeries (initialTerm : BigInteger) (initialIndex : int) (rSquared : BigInteger) : BigInteger =
+        let mutable term = initialTerm
+        let mutable acc = BigInteger.Zero
+        let mutable k = initialIndex
+
+        while not term.IsZero do
+            acc <- acc + term
+            term <- -(mulFixed term rSquared) / BigInteger ((k + 1) * (k + 2))
+            k <- k + 2
+
+        acc
+
+    /// The number of significant bits a reduced argument must retain for the accuracy
+    /// argument on `cos` to hold. A double's significand is 53 of those, so this leaves a
+    /// factor of two in hand over what correct rounding needs.
+    let private reducedArgumentFloor : int = 128
+
+    /// Reduce a finite `x` modulo pi/2. Returns `(quadrant, r)` where `quadrant` is
+    /// `k % 4` for the nearest integer `k` of quarter-turns in |x|, and `r = |x| - k pi/2`
+    /// is a fixed-point value with `fractionBits` fractional bits satisfying |r| <= pi/4.
+    ///
+    /// Sign is not part of the result: both `sin` and `cos` are determined on all of the
+    /// reals by their behaviour on |x| together with a parity rule, so folding the sign in
+    /// here would only give each caller a second thing to undo.
+    ///
+    /// This is Payne–Hanek reduction with the table replaced by a single wide constant.
+    /// The subtraction `|x| - k pi/2` cancels every bit of `|x|`'s exponent, so `pi` must be
+    /// known to `piBits` places for the difference to retain `piBits - 1024` of them; that
+    /// is what makes a naive `x % (2 pi)` in double arithmetic useless above a few dozen
+    /// bits and why `piBits` is what it is.
+    let internal reduceModuloQuarterTurn (x : float) : int * BigInteger =
+        let mantissa, exponent = decompose (abs x)
+
+        // |x| (2/pi), with `piBits` fractional bits. The error is under |x| 2^-piBits,
+        // i.e. under 2^-476 for any double, which decides `k` correctly unless |x| (2/pi)
+        // is within that of a half-integer — and a `k` off by one is harmless anyway, since
+        // it only widens |r| past pi/4 by the same negligible amount.
+        let scaledByTwoOverPi = mantissa * twoOverPi
+
+        let quarterTurns =
+            if exponent >= 0 then
+                scaledByTwoOverPi <<< exponent
+            else
+                scaledByTwoOverPi >>> -exponent
+
+        let k = (quarterTurns + (BigInteger.One <<< (piBits - 1))) >>> piBits
+
+        // `exponent` is at least -1074 and `piBits` far exceeds that, so this shift is
+        // left and `|x|` is represented exactly.
+        let xFixed = mantissa <<< (exponent + piBits)
+
+        // The error here is under `k` 2^-piBits, again under 2^-476.
+        let reduced = xFixed - (k * piOverTwo)
+
+        // |r| <= pi/4 is what makes the series in `cos` converge, and it is what the
+        // arithmetic above delivers rather than something a caller must arrange — but it is
+        // worth checking, because the way it fails is not a wrong answer. A reduction that
+        // returns a large `r` makes the alternating series grow for as many terms as it
+        // takes the factorial to overtake `r^2`, which for a badly wrong `r` is longer than
+        // anyone will wait. A loud failure beats a hang.
+        // The slack is 2^-64: far above the 2^-475 by which a `k` off by one can genuinely
+        // overshoot pi/4, and far below the pi/4 itself, so this catches only real breakage.
+        let quarterTurnCeiling = (pi >>> 2) + (BigInteger.One <<< (piBits - 64))
+
+        if BigInteger.Abs reduced > quarterTurnCeiling then
+            failwith
+                $"DeterministicMath: reducing %.17g{x} modulo pi/2 left a remainder outside [-pi/4, pi/4]; the reduction is broken, not merely imprecise"
+
+        // Down to the working precision. The shift floors rather than rounds, which costs
+        // at most one unit in the last place of the result.
+        (int (k &&& BigInteger 3)), (reduced >>> (piBits - fractionBits))
+
+    /// The cosine of `x` in radians, with the semantics of IEEE 754 / C99 `cos` — which is
+    /// what CoreCLR's `Math.Cos` inherits from the platform C library.
+    ///
+    /// Accuracy: the argument is reduced modulo pi/2 against a `piBits`-place pi, leaving a
+    /// reduced argument whose absolute error is under 2^-475, and the series that follows
+    /// is evaluated to `fractionBits` places. For the two quadrants answering ±cos(r) the
+    /// result is at least cos(pi/4) in magnitude, so its relative error is under 2^-255. For
+    /// the two answering ±sin(r) the result is proportional to `r` itself, so the relative
+    /// error is set by how much cancellation the reduction suffered — 256 bits less the
+    /// number of leading zeros in `r`.
+    ///
+    /// The reduced argument therefore has to stay clear of zero, and it does: the doubles
+    /// nearest an odd multiple of pi/2 leave |r| near 2^-61 (Kahan's worst case for binary64
+    /// reduction, 6381956970095103 * 2^797, is the standard witness and `TestDeterministicMath`
+    /// measures it), which leaves about 195 significant bits. `reducedArgumentFloor` asserts
+    /// a bound two-and-a-half times weaker than that rather than trusting the claim: if it
+    /// ever fires, the fix is to carry the reduced argument at more than `fractionBits`
+    /// places, not to relax the bound.
+    let cos (x : float) : float =
+        // No case overrides a NaN operand, so unlike `pow` this needs no separate
+        // signalling test: `quieted` is the identity on a NaN that is already quiet.
+        if Double.IsNaN x then
+            quieted x
+        elif Double.IsInfinity x then
+            // A domain error: an infinite argument names no point on the circle.
+            quietNaN
+        else
+
+        let quadrant, r = reduceModuloQuarterTurn x
+
+        // cos(k pi/2 + r) is cos(r), -sin(r), -cos(r), sin(r) as k runs through the
+        // residues mod 4.
+        let isSine = quadrant % 2 = 1
+
+        if isSine then
+            // `r` is less than 1, so its bit length as a fixed-point value *is* its number
+            // of significant bits.
+            let significantBits = int ((BigInteger.Abs r).GetBitLength ())
+
+            if significantBits < reducedArgumentFloor then
+                failwith
+                    $"DeterministicMath.cos: reducing %.17g{x} modulo pi/2 left a remainder with only %i{significantBits} significant bits, below the %i{reducedArgumentFloor} this implementation's accuracy argument assumes; the reduced argument needs to be carried at more than %i{fractionBits} places"
+
+        let rSquared = mulFixed r r
+
+        let value =
+            if isSine then
+                trigSeries r 1 rSquared
+            else
+                trigSeries scale 0 rSquared
+
+        let result = roundToDouble value -fractionBits
+
+        // Quadrants 1 and 2 are the half-turn on which cosine is negative.
+        if quadrant = 1 || quadrant = 2 then -result else result
