@@ -292,29 +292,82 @@ module internal UnaryMetadataObjectOps =
         // The CLI's variable-size-object case: types whose instance size depends on the
         // constructor arguments, which CoreCLR flags `CORINFO_FLG_VAROBJSIZE` (set whenever
         // the MethodTable `HasComponentSize` — see `vm/jitinterface.cpp`). The runtime cannot
-        // allocate before the constructor runs, so it allocates nothing and passes no `this`;
-        // the constructor allocates the object and effectively returns it. Both the JIT
+        // allocate before the constructor runs, so it allocates nothing and passes no `this`
         // (`jit/importer.cpp`, CEE_NEWOBJ: "At present this can only be String",
-        // `newObjThisPtr = nullptr`) and the CoreCLR interpreter (`interpreter/compiler.cpp`,
-        // `doCallInsteadOfNew = true`) special-case it this way.
+        // `newObjThisPtr = nullptr`; `interpreter/compiler.cpp`, `doCallInsteadOfNew = true`).
         //
         // Arrays are the CLI's only other variable-size case and never reach here:
         // multi-dimensional array constructors were diverted to `executeMultiDimArrayNewobj`
         // above, and szarrays go through `newarr` rather than `newobj`. So, exactly as CoreCLR
         // asserts, this is System.String and nothing else.
+        //
+        // Every `System.String` constructor is declared `extern` with
+        // `MethodImplOptions.InternalCall` and has an empty body; the *implementation* is the
+        // sibling managed static `String.Ctor` of the same parameter signature, returning
+        // `string`. CoreCLR wires the two together in `vm/ecall.cpp`
+        // (`PopulateManagedStringConstructors`), which walks the nine `METHOD__STRING__CTORF_*`
+        // binder entries and dynamically assigns each `Ctor` method's own compiled code as the
+        // ctor's FCall implementation. So a `newobj` on String really does execute CoreLib IL —
+        // `Ctor`'s — and we reproduce that by redirecting the call here rather than
+        // hand-implementing each overload at the native boundary.
+        //
+        // The stack shapes line up exactly: `newobj` has pushed the N constructor arguments and
+        // no `this`, which is precisely what a static N-ary `Ctor` pops, and `Ctor`'s `string`
+        // return value is pushed to the caller by the ordinary `NotConstructing` return path —
+        // which is what `newobj` must leave behind.
         if TypeInfo.NominallyEqual ctorType baseClassTypes.String then
+            let ctorImplementation =
+                ctorType.Methods
+                |> List.filter (fun candidate ->
+                    candidate.Name = "Ctor"
+                    && candidate.IsStatic
+                    && candidate.RawSignature.ParameterTypes = ctor.RawSignature.ParameterTypes
+                )
+
+            let describedSignature : string =
+                ctor.RawSignature.ParameterTypes |> List.map string |> String.concat ", "
+
+            let ctorImplementation =
+                match ctorImplementation with
+                | [ single ] -> single
+                | [] ->
+                    failwith
+                        $"newobj on System.String::.ctor(%s{describedSignature}) found no matching static String.Ctor to redirect to. CoreCLR implements every string constructor as its same-signature `Ctor` sibling (vm/ecall.cpp, PopulateManagedStringConstructors); a missing one means this CoreLib declares a constructor overload we do not know about."
+                | _ :: _ :: _ ->
+                    failwith
+                        $"newobj on System.String::.ctor(%s{describedSignature}) found several matching static String.Ctor overloads; the parameter signature should identify exactly one."
+
+            match ctorImplementation.RawSignature.ReturnType with
+            | MethodReturnType.Returns (TypeDefn.PrimitiveType PrimitiveType.String) -> ()
+            | other ->
+                failwith
+                    $"String.Ctor selected for newobj returns %O{other}; every String.Ctor overload must return String, because its return value is what newobj pushes."
+
+            // String is non-generic, so there are no type generics to substitute, and no
+            // `Ctor` overload is itself generic.
+            let state, concretizedCtorImplementation, _ =
+                ExecutionConcretization.concretizeMethodWithTypeGenerics
+                    loggerFactory
+                    baseClassTypes
+                    ImmutableArray.Empty
+                    ctorImplementation
+                    None
+                    ctorAssembly.Name
+                    ImmutableArray.Empty
+                    state
+
             let threadState = state.ThreadState.[thread]
 
             IlMachineStateExecution.callMethod
                 loggerFactory
                 baseClassTypes
                 None
-                ConstructionState.ConstructingVariableSize
+                ConstructionState.NotConstructing
                 false
                 false
                 true
-                concretizedCtor.Generics
-                concretizedCtor
+                concretizedCtorImplementation.Generics
+                concretizedCtorImplementation
                 thread
                 threadState
                 None
