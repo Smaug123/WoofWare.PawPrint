@@ -1,6 +1,7 @@
 namespace WoofWare.PawPrint
 
 open System
+open System.Collections.Immutable
 open System.Reflection.Metadata
 
 [<RequireQualifiedAccess>]
@@ -140,28 +141,39 @@ module IlMachineManagedByref =
         | CliByteAddressability.ByteAddressable -> ValueSome (CliType.ToBytes value)
 
     let setStatic
+        (owner : StaticOwner)
         (ty : ConcreteTypeHandle)
         (field : ComparableFieldDefinitionHandle)
         (value : CliType)
         (this : IlMachineState)
         : IlMachineState
         =
-        let statics =
-            match this._Statics.TryGetValue ty with
-            | false, _ -> this._Statics.Add (ty, Map.ofList [ field, value ])
-            | true, v -> this._Statics.SetItem (ty, Map.add field value v)
+        let ownerStatics =
+            match this._Statics.TryGetValue owner with
+            | false, _ -> ImmutableDictionary.Empty
+            | true, v -> v
+
+        let ownerStatics =
+            match ownerStatics.TryGetValue ty with
+            | false, _ -> ownerStatics.Add (ty, Map.ofList [ field, value ])
+            | true, v -> ownerStatics.SetItem (ty, Map.add field value v)
 
         { this with
-            _Statics = statics
+            _Statics = this._Statics.SetItem (owner, ownerStatics)
         }
 
     let getStatic
+        (owner : StaticOwner)
         (ty : ConcreteTypeHandle)
         (field : ComparableFieldDefinitionHandle)
         (this : IlMachineState)
         : CliType option
         =
-        match this._Statics.TryGetValue ty with
+        match this._Statics.TryGetValue owner with
+        | false, _ -> None
+        | true, ownerStatics ->
+
+        match ownerStatics.TryGetValue ty with
         | false, _ -> None
         | true, v -> Map.tryFind field v
 
@@ -225,12 +237,12 @@ module IlMachineManagedByref =
         | ByrefRoot.PeByteRange peByteRange ->
             failwith
                 $"TODO: reading PE byte-range root %O{peByteRange} requires a primitive byte-view projection; plain typed PE byte-range root reads are not modelled"
-        | ByrefRoot.StaticField (ty, field) ->
-            match getStatic ty field state with
+        | ByrefRoot.StaticField (ty, field, owner) ->
+            match getStatic owner ty field state with
             | Some value -> value
             | None ->
                 failwith
-                    $"Static field byref %O{field.Get} on concrete type %O{ty} was read before the static slot was initialised"
+                    $"Static field byref %O{field.Get} on concrete type %O{ty} in %O{owner} was read before the static slot was initialised"
         | ByrefRoot.StringCharAt (str, charIndex) ->
             ManagedHeap.getStringChar str charIndex state.ManagedHeap |> CliType.ofChar
         | ByrefRoot.MethodTableExposedClassObject target ->
@@ -410,10 +422,10 @@ module IlMachineManagedByref =
                 state |> IlMachineThreadState.setArrayValue arr updated index
         | ByrefRoot.PeByteRange peByteRange ->
             failwith $"PE byte range is read-only; refusing to write %O{updated} through %O{peByteRange}"
-        | ByrefRoot.StaticField (ty, field) ->
-            match getStatic ty field state with
+        | ByrefRoot.StaticField (ty, field, owner) ->
+            match getStatic owner ty field state with
             | Some existing when System.Object.ReferenceEquals (existing, updated) -> state
-            | _ -> state |> setStatic ty field updated
+            | _ -> state |> setStatic owner ty field updated
         | ByrefRoot.StringCharAt (str, charIndex) ->
             let updated =
                 match updated with

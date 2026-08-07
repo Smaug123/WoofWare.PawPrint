@@ -26,6 +26,7 @@
     <Compile Include="TestTypeResolution.fs" />
     <Compile Include="TestTypeIdentityProperties.fs" />
     <Compile Include="TestEvalStack.fs" />
+    <Compile Include="TestTaggedPointerBits.fs" />
     <Compile Include="TestNativeIntSource.fs" />
     <Compile Include="TestPointerHashSynthesis.fs" />
     <Compile Include="TestCliTypeBytes.fs" />
@@ -81,6 +82,7 @@
     <Compile Include="TestProgramDebugger.fs" />
     <Compile Include="TestDebuggerServer.fs" />
     <Compile Include="TestBclIntrinsicStaticFields.fs" />
+    <Compile Include="TestThreadStatics.fs" />
     <Compile Include="TestLowLevelMonitor.fs" />
     <Compile Include="TestSignal.fs" />
     <Compile Include="TestSignalState.fs" />

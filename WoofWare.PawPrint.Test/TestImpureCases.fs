@@ -244,6 +244,24 @@ module TestImpureCases =
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
+            {
+                // A byref to a `[ThreadStatic]` field taken on thread A still addresses A's
+                // slot when dereferenced on thread B, because `ldsflda` bakes the owning thread
+                // into the pointer rather than re-resolving it at each access. That is a real
+                // CLI fact, but it cannot be a differential case: the only way to move a byref
+                // across a thread boundary in C# is through a raw pointer, and a .NET 9+
+                // thread-static lives in a movable GC-heap block, so on the real runtime the
+                // program is undefined behaviour - and it really does misbehave in-process
+                // under the suite's allocation pressure. PawPrint's byrefs are symbolic and
+                // never move. See the file's own comment, plus the unit property in
+                // `TestThreadStatics.fs`; `sourcesPure/ThreadStaticIsolation.cs` carries the
+                // cross-runtime half of the thread-static contract.
+                FileName = "ThreadStaticByrefAcrossThreads.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
         ]
 
     let runTest (case : EndToEndTestCase) : unit =

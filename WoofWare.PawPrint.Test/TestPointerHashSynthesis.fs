@@ -225,9 +225,32 @@ module TestPointerHashSynthesis =
     [<Test>]
     let ``low bits are clear for GcHandlePtr`` () : unit =
         let bits, _ =
-            materialise (NativeIntSource.GcHandlePtr (GcHandleAddress.GcHandleAddress 17)) PointerHashCounters.empty
+            materialise (NativeIntSource.GcHandlePtr (GcHandleAddress.GcHandleAddress 17, 0L)) PointerHashCounters.empty
 
         bits &&& 3L |> shouldEqual 0L
+
+    [<Test>]
+    let ``a GC handle's tag bits land in the low bits and leave its identity alone`` () : unit =
+        // Tag bits are a view over one identity, so all three views must agree
+        // above the tag region and differ exactly within it — which is what
+        // happens for real, where the tag really is stored in the pointer's spare
+        // low bits.
+        let handle = GcHandleAddress.GcHandleAddress 17
+
+        let untagged, counters =
+            materialise (NativeIntSource.GcHandlePtr (handle, 0L)) PointerHashCounters.empty
+
+        let tagged1, counters =
+            materialise (NativeIntSource.GcHandlePtr (handle, 1L)) counters
+
+        let tagged3, counters =
+            materialise (NativeIntSource.GcHandlePtr (handle, 3L)) counters
+
+        tagged1 |> shouldEqual (untagged ||| 1L)
+        tagged3 |> shouldEqual (untagged ||| 3L)
+
+        // One identity, so only one counter was ever spent.
+        counters.NextCounter |> shouldEqual 1UL
 
     [<Test>]
     let ``low bits are clear for AssemblyHandle / ModuleHandle / MetadataImportHandle`` () : unit =
@@ -331,7 +354,7 @@ module TestPointerHashSynthesis =
                     )
                 for i in 0..9 -> NativeIntSource.MethodHandlePtr (int64 i)
                 for i in 0..9 -> NativeIntSource.FieldHandlePtr (int64 i)
-                for i in 0..9 -> NativeIntSource.GcHandlePtr (GcHandleAddress.GcHandleAddress i)
+                for i in 0..9 -> NativeIntSource.GcHandlePtr (GcHandleAddress.GcHandleAddress i, 0L)
                 for i in 0..9 -> NativeIntSource.EventPipeProviderPtr (int64 i)
                 for i in 0..9 -> NativeIntSource.EventPipeEventPtr (int64 i)
             ]

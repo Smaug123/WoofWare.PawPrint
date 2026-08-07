@@ -909,7 +909,7 @@ public unsafe struct PointerWrapper
             NativeIntSource.AssemblyHandle "test-assembly"
             NativeIntSource.ModuleHandle "test-module"
             NativeIntSource.MetadataImportHandle "test-metadata-import"
-            NativeIntSource.GcHandlePtr (GcHandleAddress 42)
+            NativeIntSource.GcHandlePtr (GcHandleAddress 42, 0L)
             syntheticCrossStorageNativeIntSource ()
         ]
 
@@ -3705,11 +3705,13 @@ public unsafe struct PointerWrapper
         let staticFieldInfo = int32StaticField "MaxValue"
         let staticField = ComparableFieldDefinitionHandle.Make staticFieldInfo.Handle
 
+        // `Int32::MaxValue` is an ordinary static, so it lives in the single shared slot.
         let staticState =
-            state () |> IlMachineState.setStatic staticType staticField staticInitial
+            state ()
+            |> IlMachineState.setStatic StaticOwner.Shared staticType staticField staticInitial
 
         let staticPtr =
-            ManagedPointerSource.Byref (ByrefRoot.StaticField (staticType, staticField), [])
+            ManagedPointerSource.Byref (ByrefRoot.StaticField (staticType, staticField, StaticOwner.Shared), [])
 
         let staticAfter =
             IlMachineState.writeManagedByref staticState staticPtr staticInitial
