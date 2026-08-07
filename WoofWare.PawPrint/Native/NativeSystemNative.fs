@@ -602,7 +602,7 @@ module NativeSystemNative =
             //   bufferSize < strlen(cwd) + 1        -> errno ERANGE, NULL
             //   otherwise      -> write the NUL-terminated path, return buffer
             //
-            // The ERANGE case is load-bearing rather than merely diagnostic:
+            // The ERANGE case is used in actual domain logic:
             // CoreLib's `Interop.Sys.GetCwd()` tries a 256-byte `localloc`
             // first, and `GetCwdHelper` reads the errno back (as the PAL
             // `Interop.Error.ERANGE`) to decide whether to retry with
