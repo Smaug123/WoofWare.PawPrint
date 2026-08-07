@@ -1,6 +1,7 @@
 namespace WoofWare.PawPrint.Test
 
 open System
+open System.IO
 open System.Text.Json
 open FsCheck
 open FsCheck.FSharp
@@ -34,15 +35,24 @@ module TestRuntimeConfig =
         }
         """
 
-    let private parseOk (json : string) : Map<string, string> =
+    /// `parse` takes the file's bytes, because the encoding rules are part of what it is
+    /// reproducing; the overwhelming majority of these tests care only about the JSON, so
+    /// they go through UTF-8 here and the encoding-specific ones build their own bytes.
+    let private parseBytesOk (json : byte[]) : Map<string, string> =
         match RuntimeConfig.parse json with
         | Ok props -> AppContextProperties.toMap props
         | Error e -> failwith $"expected a successful parse, but got: %s{e}"
 
-    let private parseError (json : string) : string =
+    let private parseBytesError (json : byte[]) : string =
         match RuntimeConfig.parse json with
         | Error e -> e
         | Ok props -> failwith $"expected a failed parse, but got: %O{AppContextProperties.toMap props |> Map.toList}"
+
+    let private parseOk (json : string) : Map<string, string> =
+        parseBytesOk (Text.Encoding.UTF8.GetBytes json)
+
+    let private parseError (json : string) : string =
+        parseBytesError (Text.Encoding.UTF8.GetBytes json)
 
     // ------------------------------------------------------------------
     // The measured oracle.
@@ -231,6 +241,55 @@ module TestRuntimeConfig =
         // rapidjson is not given kParseTrailingCommasFlag, so nor do we allow them.
         parseError (document """{ "P": "v", }""") |> ignore
 
+    // ------------------------------------------------------------------
+    // Encoding and framing, which are properties of the *bytes*.
+    // ------------------------------------------------------------------
+
+    [<Test>]
+    let ``content after the root value is ignored`` () =
+        // The host parses with `kParseStopWhenDoneFlag`, which suppresses rapidjson's
+        // "document root not singular" error, so it launches these happily. Refusing them
+        // would make PawPrint unable to run a program that really runs.
+        parseOk (document """{ "P": "v" }""" + """ {"another": "document"}""")
+        |> shouldEqual (Map.ofList [ "P", "v" ])
+
+        parseOk (document """{ "P": "v" }""" + " not even json")
+        |> shouldEqual (Map.ofList [ "P", "v" ])
+
+    [<Test>]
+    let ``a UTF-8 BOM is skipped`` () =
+        // `parse_file` steps over exactly these three bytes and parses the rest.
+        let bom = [| 0xEFuy ; 0xBBuy ; 0xBFuy |]
+
+        let bytes =
+            Array.append bom (Text.Encoding.UTF8.GetBytes (document """{ "P": "v" }"""))
+
+        parseBytesOk bytes |> shouldEqual (Map.ofList [ "P", "v" ])
+
+    [<Test>]
+    let ``other encodings are refused`` () =
+        // hostpolicy mmaps the file and parses it as UTF-8, skipping only a UTF-8 BOM, so a
+        // UTF-16 or UTF-32 config fails there with "Invalid value" at offset 0 and the app
+        // does not launch. `File.ReadAllText` would have sniffed the BOM and decoded it,
+        // which is why `parse` takes bytes rather than a string.
+        let json = document """{ "P": "v" }"""
+
+        parseBytesError (
+            Text.Encoding.Unicode.GetPreamble () |> Array.append
+            <| Text.Encoding.Unicode.GetBytes json
+        )
+        |> ignore
+
+        parseBytesError (
+            Text.Encoding.UTF32.GetPreamble () |> Array.append
+            <| Text.Encoding.UTF32.GetBytes json
+        )
+        |> ignore
+
+        // ... and a sanity check that the same document in UTF-8 is fine, so the assertions
+        // above are about the encoding rather than about the document.
+        parseOk json |> shouldEqual (Map.ofList [ "P", "v" ])
+
     [<Test>]
     let ``sections of the wrong shape are refused`` () =
         // `parse_opts` returns false for a non-object, non-null `runtimeOptions`, and calls
@@ -331,6 +390,20 @@ module TestRuntimeConfig =
         |> shouldEqual (Map.ofList [ "A", "v" ])
 
     [<Test>]
+    let ``overlay lets the later config win key by key`` () =
+        // How hostpolicy combines runtimeconfig.dev.json with the main config: the dev one
+        // populates `m_properties`, the main one assigns over the top.
+        let dev =
+            AppContextProperties.ofMap (Map.ofList [ "Shared", "from dev" ; "DevOnly", "dev" ])
+
+        let main =
+            AppContextProperties.ofMap (Map.ofList [ "Shared", "from main" ; "MainOnly", "main" ])
+
+        AppContextProperties.overlay dev main
+        |> AppContextProperties.toMap
+        |> shouldEqual (Map.ofList [ "Shared", "from main" ; "DevOnly", "dev" ; "MainOnly", "main" ])
+
+    [<Test>]
     let ``ofMap rejects names that collide only after truncation`` () =
         // A `Map` has no document order, so there is no principled way to pick a winner;
         // silently dropping one would hand the caller a property set that is not the one they
@@ -358,3 +431,103 @@ module TestRuntimeConfig =
         |> shouldEqual "/a/v1.2/My.App.runtimeconfig.json"
 
         RuntimeConfig.pathForAssembly "App.dll" |> shouldEqual "App.runtimeconfig.json"
+
+    [<Test>]
+    let ``the dev config sits beside the assembly too`` () =
+        RuntimeConfig.devPathForAssembly "/a/b/App.dll"
+        |> shouldEqual "/a/b/App.runtimeconfig.dev.json"
+
+        RuntimeConfig.devPathForAssembly "/a/v1.2/My.App.dll"
+        |> shouldEqual "/a/v1.2/My.App.runtimeconfig.dev.json"
+
+    // ------------------------------------------------------------------
+    // The CLI's filesystem half.
+    // ------------------------------------------------------------------
+
+    /// Lay out a scratch directory containing a fake `App.dll` plus whichever sidecars the
+    /// test wants, and ask `HostRuntimeConfig` what a guest there would be seeded with.
+    let private withSidecars (main : string option) (dev : string option) (f : string -> unit) : unit =
+        let dir =
+            Path.Combine (Path.GetTempPath (), $"pawprint-runtimeconfig-%s{Path.GetRandomFileName ()}")
+
+        Directory.CreateDirectory dir |> ignore
+
+        try
+            let dll = Path.Combine (dir, "App.dll")
+            File.WriteAllText (dll, "not a real assembly; nothing here opens it")
+
+            match main with
+            | None -> ()
+            | Some contents -> File.WriteAllText (RuntimeConfig.pathForAssembly dll, contents)
+
+            match dev with
+            | None -> ()
+            | Some contents -> File.WriteAllText (RuntimeConfig.devPathForAssembly dll, contents)
+
+            f dll
+        finally
+            Directory.Delete (dir, true)
+
+    [<Test>]
+    let ``the main config overrides the dev config`` () =
+        withSidecars
+            (Some (document """{ "Shared": "from main", "MainOnly": "main" }"""))
+            (Some (document """{ "Shared": "from dev", "DevOnly": "dev" }"""))
+            (fun dll ->
+                HostRuntimeConfig.forAssembly dll
+                |> AppContextProperties.toMap
+                |> shouldEqual (Map.ofList [ "Shared", "from main" ; "DevOnly", "dev" ; "MainOnly", "main" ])
+            )
+
+    [<Test>]
+    let ``a dev config alone still supplies properties`` () =
+        // hostpolicy reads the dev config whether or not the main one exists, so a switch set
+        // only there must still reach the guest.
+        withSidecars
+            None
+            (Some (document """{ "DevOnly": "dev" }"""))
+            (fun dll ->
+                HostRuntimeConfig.forAssembly dll
+                |> AppContextProperties.toMap
+                |> shouldEqual (Map.ofList [ "DevOnly", "dev" ])
+            )
+
+    [<Test>]
+    let ``a broken dev config is not fatal`` () =
+        // `ensure_dev_config_parsed`'s failures are swallowed: `ensure_parsed` emits a verbose
+        // trace and carries on, and `parse_opts`' return value is discarded at the call site.
+        // A dev config is a developer convenience; a broken one must not stop the app.
+        for broken in [ "}{ not json" ; """{}""" ; """{ "runtimeOptions": [] }""" ] do
+            withSidecars
+                (Some (document """{ "P": "v" }"""))
+                (Some broken)
+                (fun dll ->
+                    HostRuntimeConfig.forAssembly dll
+                    |> AppContextProperties.toMap
+                    |> shouldEqual (Map.ofList [ "P", "v" ])
+                )
+
+    [<Test>]
+    let ``a broken main config is fatal`` () =
+        // The opposite of the dev config: this one is the guest's actual configuration, and
+        // running with its feature switches silently dropped is the failure we are avoiding.
+        withSidecars
+            (Some "}{ not json")
+            None
+            (fun dll ->
+                let exn = Assert.Throws<exn> (fun () -> HostRuntimeConfig.forAssembly dll |> ignore)
+                exn.Message |> shouldContainText "App.runtimeconfig.json"
+            )
+
+    [<Test>]
+    let ``no sidecars at all means no properties`` () =
+        // PawPrint is routinely pointed at a bare dll, and `ensure_parsed` treats a
+        // non-existent config as success.
+        withSidecars
+            None
+            None
+            (fun dll ->
+                HostRuntimeConfig.forAssembly dll
+                |> AppContextProperties.toMap
+                |> shouldEqual Map.empty
+            )

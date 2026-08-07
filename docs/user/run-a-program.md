@@ -58,9 +58,11 @@ let runGuest (dllPath : string) : int * ImmutableArray<OutputLogEntry> =
             // `"System.Diagnostics.Tracing.EventSource.IsSupported", "false"`.
             //
             // To take them from the guest's own runtimeconfig.json, as the CLI does:
-            //     RuntimeConfig.parse (File.ReadAllText (RuntimeConfig.pathForAssembly dllPath))
+            //     RuntimeConfig.parse (File.ReadAllBytes (RuntimeConfig.pathForAssembly dllPath))
             // `RuntimeConfig.parse` is pure — reading the file is the host's job, so that a
-            // replay never depends on the machine that produced it.
+            // replay never depends on the machine that produced it. It takes the raw bytes
+            // because the encoding rules are part of what it reproduces: a real host parses
+            // UTF-8 and skips only a UTF-8 BOM, so a UTF-16 config is one it refuses to run.
             AppContext = AppContextProperties.empty
         }
 

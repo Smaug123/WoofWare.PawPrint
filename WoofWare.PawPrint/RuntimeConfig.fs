@@ -88,6 +88,19 @@ module AppContextProperties =
 
     let isEmpty (properties : AppContextProperties) : bool = Map.isEmpty properties.Values
 
+    /// Lay `overrides` on top of `baseline`, key by key.
+    ///
+    /// This is how hostpolicy combines the two sidecar configs: `ensure_dev_config_parsed`
+    /// populates `m_properties` from `runtimeconfig.dev.json` first, then the main config's
+    /// `parse_opts` assigns over the top — "runtime_config will override whatever
+    /// dev_runtime_config populated", as the comment there puts it.
+    let overlay (baseline : AppContextProperties) (overrides : AppContextProperties) : AppContextProperties =
+        {
+            Values =
+                (baseline.Values, overrides.Values)
+                ||> Map.fold (fun acc k v -> Map.add k v acc)
+        }
+
 [<RequireQualifiedAccess>]
 module RuntimeConfig =
 
@@ -97,6 +110,12 @@ module RuntimeConfig =
     /// testable.
     let pathForAssembly (assemblyPath : string) : string =
         Path.ChangeExtension (assemblyPath, ".runtimeconfig.json")
+
+    /// The companion `runtimeconfig.dev.json`, which `dotnet build` emits beside the main
+    /// config (mostly for `additionalProbingPaths`, but it may carry `configProperties` too).
+    /// hostpolicy reads this one *first* and lets the main config override it.
+    let devPathForAssembly (assemblyPath : string) : string =
+        Path.ChangeExtension (assemblyPath, ".runtimeconfig.dev.json")
 
     /// Render one `configProperties` value the way `hostpolicy` does.
     ///
@@ -161,11 +180,52 @@ module RuntimeConfig =
         obj.EnumerateObject ()
         |> Seq.tryPick (fun property -> if property.Name = name then Some property.Value else None)
 
+    /// The UTF-8 byte-order mark, the only encoding preamble `json_parser_t::parse_file`
+    /// recognises.
+    let private utf8Bom : byte[] = [| 0xEFuy ; 0xBBuy ; 0xBFuy |]
+
+    /// Read one JSON value from the head of `contents`, ignoring anything after it.
+    ///
+    /// Bytes rather than a string, because that is what the host has: `parse_file` mmaps the
+    /// file, skips a UTF-8 BOM if there is one, and parses the remainder as UTF-8. A
+    /// `File.ReadAllText` would instead sniff a UTF-16 or UTF-32 BOM and decode happily,
+    /// letting PawPrint launch a configuration that a real host rejects outright.
+    ///
+    /// Trailing content is ignored rather than rejected because the host parses with
+    /// `kParseStopWhenDoneFlag`, which suppresses rapidjson's "document root not singular"
+    /// error. Being stricter than the host would mean refusing to run a program that runs.
+    let private parseRootValue (contents : byte[]) : Result<JsonDocument, string> =
+        let body =
+            if
+                contents.Length >= utf8Bom.Length
+                && Array.forall2 (=) utf8Bom contents.[0 .. utf8Bom.Length - 1]
+            then
+                contents.[utf8Bom.Length ..]
+            else
+                contents
+
+        let options =
+            JsonReaderOptions (
+                // The host parses with `kParseCommentsFlag` (json_parser.cpp), so a config
+                // with comments is one a real runtime accepts. It does *not* pass
+                // `kParseTrailingCommasFlag`, and neither do we (that is the default).
+                CommentHandling = JsonCommentHandling.Skip
+            )
+
+        try
+            let mutable reader = Utf8JsonReader (ReadOnlySpan<byte> body, options)
+
+            match JsonDocument.TryParseValue &reader with
+            | true, doc -> Ok doc
+            | false, _ -> Error "could not parse runtimeconfig.json: it contains no JSON value"
+        with :? JsonException as e ->
+            Error $"could not parse runtimeconfig.json: %s{e.Message}"
+
     /// Read the AppContext properties out of the contents of a `runtimeconfig.json`.
     ///
-    /// Pure: the caller supplies the text, because a library that read the host filesystem
-    /// would make a replay depend on the machine that produced it (and the test harness
-    /// compiles its guests straight to a `MemoryStream`, so there is no file to read).
+    /// Pure, and takes the file's bytes: a library that read the host filesystem would make a
+    /// replay depend on the machine that produced it (and the test harness compiles its
+    /// guests straight to a `MemoryStream`, so there is no file to read).
     ///
     /// Mirrors `runtime_config_t::ensure_parsed`/`parse_opts`. A file that exists but has no
     /// `runtimeOptions` is *invalid* there (`ensure_parsed` falls through to `return false`),
@@ -177,22 +237,8 @@ module RuntimeConfig =
     /// Malformed JSON, a section of the wrong shape, and a value whose hostpolicy rendering
     /// we do not reproduce are all errors: a misconfigured file should be loud, not silently
     /// equivalent to an empty one.
-    let parse (contents : string) : Result<AppContextProperties, string> =
-        let options =
-            JsonDocumentOptions (
-                // The host parses with `kParseCommentsFlag` (json_parser.cpp), so a config
-                // with comments is one a real runtime accepts. It does *not* pass
-                // `kParseTrailingCommasFlag`, and neither do we (that is the default).
-                CommentHandling = JsonCommentHandling.Skip
-            )
-
-        let doc =
-            try
-                Ok (JsonDocument.Parse (contents, options))
-            with :? JsonException as e ->
-                Error $"could not parse runtimeconfig.json: %s{e.Message}"
-
-        match doc with
+    let parse (contents : byte[]) : Result<AppContextProperties, string> =
+        match parseRootValue contents with
         | Error e -> Error e
         | Ok doc ->
 
