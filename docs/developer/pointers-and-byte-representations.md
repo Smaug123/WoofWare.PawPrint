@@ -84,6 +84,21 @@ The two identities are deliberately *not* aliased. They share a canonical key in
 
 Low bits are always computed from the *source*, never stored on the identity. That is what lets several views of one identity — a tagged and untagged GC handle, a type handle and its TypeDesc — share address bits while differing only in the tag region.
 
+## Narrowing A Byref
+
+Managed code asks whether a pointer is aligned by narrowing it and masking: `SpanHelpers.IndexOfNullCharacter` — which `String.wcslen`, and hence `new string(char*)`, runs first — opens with `((int)searchSpace & 1) != 0`. The mask is answerable, but only if the byref survives the `conv.i4`; an `int32` cannot carry one, and filling it with an address would be the fabrication this document forbids.
+
+`conv.i4` / `conv.u4` on a byref therefore push `NativeIntSource.NarrowedManagedPointer (source, widthBits)`. Byrefs whose bit pattern is exactly known — `Null`, and the `Unsafe.AsRef<T>((void*)bits)` placeholder — narrow to those bits instead; this case is only ever an *unknown* address.
+
+The value sits in the native-int slot rather than the int32 slot it nominally belongs to. That is sound only because every operation whose answer would depend on the slot's width is refused: widening back (`conv.i` / `conv.u` / `conv.i8` / `conv.u8`), dereferencing, arithmetic, comparison, byte views, and storing to a numeric location all fail loudly. The single admitted operation is `and` against a mask, whose answer is the same at either width. So no guest program can observe the discrepancy.
+
+That mask is decided by pairing two halves of the byref model:
+
+- `ManagedPointerSource.tryContainerAlignmentBits` states how many low bits of the *container start* the real runtime guarantees to be zero. Array data is 8-byte aligned, string character data only 4-byte (it begins at object + 12), `malloc` and `localloc` storage 8-byte, a PE image's RVAs page-aligned. Object fields, static fields and stack slots make no claim, and neither expose a stable offset.
+- `tryStableAddressBits` (and its array/string counterpart in `NullaryIlOp`) states the known in-container byte offset.
+
+`TaggedPointerBits.bitAndOffsetFromAlignedBase` then reduces `(base + offset) & mask` to the tagged-pointer decision procedure above, because `base + offset = base' ||| (offset & lowBits)` for the equally admissible base `base' = base + (offset & ~lowBits)`. The mask is answerable when it selects nothing above the guaranteed alignment (the result is those low bits, as an `int32`), or when it preserves every bit (the value is unchanged). Aligning *down* — `p & ~7`, whose answer is a different location in the same container — is refused rather than approximated, because PawPrint cannot yet re-express it as a byref.
+
 ## Extension Rules
 
 When extending this area, keep the model honest:

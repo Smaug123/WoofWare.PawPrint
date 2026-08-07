@@ -467,8 +467,11 @@ module Intrinsics =
                 let byrefArg, state = IlMachineState.popEvalStack currentThread state
 
                 let value =
-                    EvalStackValue.convToInt32 valueArg
-                    |> Option.defaultWith (fun () -> failwith $"%s{operation}: expected int32 value, got %O{valueArg}")
+                    match EvalStackValue.convToInt32 valueArg with
+                    | EvalStackValue.Int32 value -> value
+                    | converted ->
+                        failwith
+                            $"%s{operation}: expected int32 value, got %O{valueArg} (which narrowed to %O{converted})"
 
                 match popManagedByrefArgument operation byrefArg with
                 | ManagedPointerSource.Null -> interlockedNullLocation state
@@ -574,8 +577,11 @@ module Intrinsics =
                 let byrefArg, state = IlMachineState.popEvalStack currentThread state
 
                 let value =
-                    EvalStackValue.convToInt32 valueArg
-                    |> Option.defaultWith (fun () -> failwith $"%s{operation}: expected int32 value, got %O{valueArg}")
+                    match EvalStackValue.convToInt32 valueArg with
+                    | EvalStackValue.Int32 value -> value
+                    | converted ->
+                        failwith
+                            $"%s{operation}: expected int32 value, got %O{valueArg} (which narrowed to %O{converted})"
 
                 match popManagedByrefArgument operation byrefArg with
                 | ManagedPointerSource.Null -> interlockedNullLocation state

@@ -137,6 +137,57 @@ module NullaryIlOp =
             failwith
                 $"%s{operation}: refusing to apply 0x%x{operand} to GC handle %O{handle}; the result would depend on the handle's address, which PawPrint does not model"
 
+    /// Mask a byref that `conv.i4` / `conv.u4` has truncated (see
+    /// `NativeIntSource.NarrowedManagedPointer`). The byref is modelled as an
+    /// unknown container address with its low `alignmentBits` bits clear, plus a
+    /// known in-container offset, so `TaggedPointerBits` decides what the mask can
+    /// say — and truncation does not change the answer, because every bit the mask
+    /// is allowed to select lies inside the alignment region, far below the width
+    /// that was discarded.
+    let private andNarrowedManagedPointerBits
+        (state : IlMachineState)
+        (ptr : ManagedPointerSource)
+        (widthBits : int)
+        (mask : int64)
+        : EvalStackValue
+        =
+        let refuse (reason : string) : EvalStackValue =
+            failwith
+                $"And: refusing to mask managed pointer %O{ptr}, truncated to %i{widthBits} bits, with 0x%x{mask}: %s{reason}"
+
+        match ManagedPointerSource.tryContainerAlignmentBits ptr, tryManagedPointerAddressBits state ptr with
+        | None, _ -> refuse "PawPrint claims no alignment for this byref's container"
+        | _, None -> refuse "PawPrint cannot state this byref's offset within its container"
+        | Some alignmentBits, Some offset ->
+            match TaggedPointerBits.bitAndOffsetFromAlignedBase alignmentBits offset mask with
+            | TaggedPointerBitsResult.TagBitsOnly bits ->
+                // The narrowed pointer nominally occupies an int32 stack slot, so
+                // its masked result is an int32 too — the guest goes on to compare
+                // it against an `int` literal. `TagBitsOnly` only fires when the
+                // mask selects nothing above the container's alignment, so `bits`
+                // is a handful of low bits and the narrowing is exact.
+                Debug.Assert (
+                    (bits &&& ~~~(TaggedPointerBits.tagMask alignmentBits)) = 0L,
+                    $"masked byref bits 0x%x{bits} escape the %i{alignmentBits}-bit alignment region"
+                )
+
+                int32<int64> bits |> EvalStackValue.Int32
+            | TaggedPointerBitsResult.Retagged newLowBits when
+                newLowBits = (offset &&& TaggedPointerBits.tagMask alignmentBits)
+                ->
+                // The mask preserved every bit, so the value is unchanged.
+                NativeIntSource.NarrowedManagedPointer (ptr, widthBits)
+                |> EvalStackValue.NativeInt
+            | TaggedPointerBitsResult.Retagged _ ->
+                // Align-down (`p & ~7`). The answer is a *different* byref, which
+                // would have to be expressed by walking the offset back; PawPrint
+                // has no consumer for that yet, so refuse rather than approximate.
+                refuse
+                    "the result is the same container at a lower offset, which PawPrint does not yet re-express as a byref"
+            | TaggedPointerBitsResult.NotStatable ->
+                refuse
+                    $"the result would depend on address bits above the container's guaranteed %i{alignmentBits}-bit alignment"
+
     let private andNativeIntAddressBits
         (state : IlMachineState)
         (source : NativeIntSource)
@@ -146,6 +197,8 @@ module NullaryIlOp =
         match source with
         | NativeIntSource.Verbatim bits -> NativeIntSource.Verbatim (bits &&& mask) |> EvalStackValue.NativeInt
         | NativeIntSource.ManagedPointer ptr -> andManagedPointerAddressBits state ptr mask
+        | NativeIntSource.NarrowedManagedPointer (ptr, widthBits) ->
+            andNarrowedManagedPointerBits state ptr widthBits mask
         | NativeIntSource.GcHandlePtr (handle, tag) ->
             gcHandleTagOp "And" TaggedPointerBits.bitAnd handle tag mask
             |> EvalStackValue.NativeInt
@@ -264,6 +317,7 @@ module NullaryIlOp =
             | EvalStackValue.NativeInt (NativeIntSource.FieldHandlePtr _)
             | EvalStackValue.NativeInt (NativeIntSource.MethodHandlePtr _)
             | EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr _)
+            | EvalStackValue.NativeInt (NativeIntSource.NarrowedManagedPointer _)
             | EvalStackValue.NativeInt (NativeIntSource.AssemblyHandle _)
             | EvalStackValue.NativeInt (NativeIntSource.ModuleHandle _)
             | EvalStackValue.NativeInt (NativeIntSource.MetadataImportHandle _)
@@ -398,6 +452,8 @@ module NullaryIlOp =
             | NativeIntSource.ManagedPointer ManagedPointerSource.Null ->
                 NativeIntSource.Verbatim 0L |> EvalStackValue.NativeInt, counters
             | NativeIntSource.ManagedPointer ptr -> failwith $"Neg: refusing to negate managed pointer %O{ptr}"
+            | NativeIntSource.NarrowedManagedPointer (ptr, widthBits) ->
+                failwith $"Neg: refusing to negate managed pointer %O{ptr} truncated to %i{widthBits} bits"
             | NativeIntSource.FunctionPointer methodInfo ->
                 failwith $"Neg: refusing to negate function pointer %O{methodInfo}"
             | NativeIntSource.TypeHandlePtr typeHandle ->
@@ -752,6 +808,9 @@ module NullaryIlOp =
             | NativeIntSource.SyntheticCrossArrayOffset _ -> Ok src
             | NativeIntSource.ManagedPointer _ -> Ok src
             | NativeIntSource.OpaqueHashBits _ -> Ok src
+            | NativeIntSource.NarrowedManagedPointer (ptr, widthBits) ->
+                failwith
+                    $"Conv_ovf_u: refusing to widen managed pointer %O{ptr} back from %i{widthBits}-bit truncation to unsigned native int; the discarded high bits are not recoverable"
             | NativeIntSource.FunctionPointer methodInfo ->
                 failwith $"Conv_ovf_u: refusing to convert function pointer %O{methodInfo} to unsigned native int"
             | NativeIntSource.FieldHandlePtr handle ->
@@ -843,6 +902,9 @@ module NullaryIlOp =
             | NativeIntSource.SyntheticCrossArrayOffset _ -> Ok src
             | NativeIntSource.ManagedPointer _ -> Ok src
             | NativeIntSource.OpaqueHashBits _ -> Ok src
+            | NativeIntSource.NarrowedManagedPointer (ptr, widthBits) ->
+                failwith
+                    $"Conv_ovf_i: refusing to widen managed pointer %O{ptr} back from %i{widthBits}-bit truncation to signed native int; the discarded high bits are not recoverable"
             | NativeIntSource.FunctionPointer methodInfo ->
                 failwith $"Conv_ovf_i: refusing to convert function pointer %O{methodInfo} to signed native int"
             | NativeIntSource.FieldHandlePtr handle ->
@@ -1117,6 +1179,7 @@ module NullaryIlOp =
                 | NativeIntSource.EventPipeEventPtr _
                 | NativeIntSource.LowLevelMonitorPtr _
                 | NativeIntSource.WaitHandlePtr _
+                | NativeIntSource.NarrowedManagedPointer _
                 | NativeIntSource.ManagedPointer _ -> failwith "Refusing to treat a pointer as an array index"
                 | NativeIntSource.SyntheticCrossArrayOffset _ ->
                     failwith "Refusing to treat a synthetic cross-storage byte offset as an array index"
@@ -1207,6 +1270,7 @@ module NullaryIlOp =
                 | NativeIntSource.EventPipeEventPtr _
                 | NativeIntSource.LowLevelMonitorPtr _
                 | NativeIntSource.WaitHandlePtr _
+                | NativeIntSource.NarrowedManagedPointer _
                 | NativeIntSource.ManagedPointer _ -> failwith "Refusing to treat a pointer as an array index"
                 | NativeIntSource.SyntheticCrossArrayOffset _ ->
                     failwith "Refusing to treat a synthetic cross-storage byte offset as an array index"
@@ -1997,16 +2061,11 @@ module NullaryIlOp =
             (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Conv_I4 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
-            let converted = EvalStackValue.convToInt32 popped
 
             let state =
-                match converted with
-                | None -> failwith "TODO: Conv_I4 conversion failure unimplemented"
-                | Some conv ->
-                    state
-                    |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 conv) currentThread
-
-            let state = state |> IlMachineState.advanceProgramCounter currentThread
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.convToInt32 popped) currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
 
             (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Conv_I8 ->
@@ -2116,16 +2175,11 @@ module NullaryIlOp =
             (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Conv_U4 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
-            let converted = EvalStackValue.convToUInt32 popped
 
             let state =
-                match converted with
-                | None -> failwith "TODO: Conv_U4 conversion failure unimplemented"
-                | Some conv ->
-                    state
-                    |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 conv) currentThread
-
-            let state = state |> IlMachineState.advanceProgramCounter currentThread
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.convToUInt32 popped) currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
 
             (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Conv_U8 ->

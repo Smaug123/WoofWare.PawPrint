@@ -99,6 +99,25 @@ module TaggedPointerBits =
         else
             TaggedPointerBitsResult.NotStatable
 
+    /// `(base + offset) &&& mask`, where `base` is unknown but has its low
+    /// `alignmentBits` bits clear and `offset` is a known, arbitrary displacement.
+    ///
+    /// This is the shape a byref takes: PawPrint models a managed pointer as a
+    /// container whose start address it does not know, plus a known in-container
+    /// byte offset, and the real runtime guarantees the container start is aligned
+    /// (see `ManagedPointerSource.tryContainerAlignmentBits`). It reduces to
+    /// `bitAnd` because
+    ///
+    ///     base + offset = (base + (offset &&& ~~~low)) ||| (offset &&& low)
+    ///
+    /// where `low = tagMask alignmentBits`: the left summand is a sum of two
+    /// multiples of `2^alignmentBits`, so it is itself a multiple, hence an equally
+    /// admissible base, and it shares no set bit with `offset &&& low`, so `+` and
+    /// `|||` agree. `bitAnd` quantifies over *all* admissible bases, so replacing
+    /// one by another does not weaken its answer.
+    let bitAndOffsetFromAlignedBase (alignmentBits : int) (offset : int64) (mask : int64) : TaggedPointerBitsResult =
+        bitAnd alignmentBits (offset &&& tagMask alignmentBits) mask
+
     /// `(base ||| tag) ||| operand`, where `base` is unknown.
     let bitOr (tagWidthBits : int) (tag : int64) (operand : int64) : TaggedPointerBitsResult =
         assertTagInRange tagWidthBits tag

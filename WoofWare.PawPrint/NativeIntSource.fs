@@ -191,6 +191,30 @@ type NativeIntSource =
     /// via `Int64Source.widenedNativeInt`. See
     /// `docs/plans/2026-05-13-castcache-synthetic-hash-bits.md`.
     | OpaqueHashBits of int64
+    /// A byref that `conv.i4` / `conv.u4` has truncated to `widthBits` bits.
+    ///
+    /// CoreLib asks whether a pointer is aligned by narrowing it and masking:
+    /// `SpanHelpers.IndexOfNullCharacter` — which `String.wcslen`, and hence
+    /// `new string(char*)`, runs first — opens with `((int)searchSpace & 1) != 0`.
+    /// The mask is answerable (see `TaggedPointerBits`, and
+    /// `ManagedPointerSource.tryContainerAlignmentBits` for the guarantee it rests
+    /// on), but only if the byref survives the narrowing: a plain `int32` could not
+    /// carry it, and materialising address bits to fill one would be exactly the
+    /// fabrication `docs/developer/pointers-and-byte-representations.md` forbids.
+    ///
+    /// This case is therefore the value `conv.i4` pushes. It sits in the native-int
+    /// slot rather than the int32 slot it nominally belongs to, which is sound only
+    /// because *every* operation whose answer would depend on the slot's width is
+    /// refused: widening back (`conv.i`/`conv.u`/`conv.i8`), dereferencing,
+    /// arithmetic, comparison, and storing to a numeric location all fail loudly.
+    /// The single admitted operation is a bitwise mask that stays inside the
+    /// container's guaranteed alignment, whose answer is the same at either width.
+    /// So no guest program can observe the discrepancy.
+    ///
+    /// Always construct via `NativeIntSource.narrowManagedPointer`, which routes
+    /// byrefs with exactly-known bit patterns (`Null`, `NativeIntPlaceholder`) to
+    /// `Verbatim` instead; this case is only ever an *unknown* address.
+    | NarrowedManagedPointer of source : ManagedPointerSource * widthBits : int
 
     override this.ToString () : string =
         match this with
@@ -217,6 +241,8 @@ type NativeIntSource =
         | NativeIntSource.WaitHandlePtr id -> $"%O{id}"
         | NativeIntSource.SyntheticCrossArrayOffset _ -> "<synthetic cross-storage byte offset>"
         | NativeIntSource.OpaqueHashBits bits -> $"<opaque hash bits (native int) 0x%x{bits}>"
+        | NativeIntSource.NarrowedManagedPointer (ptr, widthBits) ->
+            $"<managed pointer {ptr}, truncated to %i{widthBits} bits>"
 
     override this.Equals (other : obj) : bool =
         match other with
@@ -247,6 +273,9 @@ type NativeIntSource =
             | NativeIntSource.SyntheticCrossArrayOffset left, NativeIntSource.SyntheticCrossArrayOffset right ->
                 left = right
             | NativeIntSource.OpaqueHashBits left, NativeIntSource.OpaqueHashBits right -> left = right
+            | NativeIntSource.NarrowedManagedPointer (leftPtr, leftWidth),
+              NativeIntSource.NarrowedManagedPointer (rightPtr, rightWidth) ->
+                leftPtr = rightPtr && leftWidth = rightWidth
             | NativeIntSource.Verbatim _, _
             | NativeIntSource.ManagedPointer _, _
             | NativeIntSource.FunctionPointer _, _
@@ -267,7 +296,8 @@ type NativeIntSource =
             | NativeIntSource.LowLevelMonitorPtr _, _
             | NativeIntSource.WaitHandlePtr _, _
             | NativeIntSource.SyntheticCrossArrayOffset _, _
-            | NativeIntSource.OpaqueHashBits _, _ -> false
+            | NativeIntSource.OpaqueHashBits _, _
+            | NativeIntSource.NarrowedManagedPointer _, _ -> false
         | _ -> false
 
     override this.GetHashCode () : int =
@@ -300,6 +330,7 @@ type NativeIntSource =
         | NativeIntSource.OpaqueHashBits bits -> HashCode.Combine (15, bits)
         | NativeIntSource.LowLevelMonitorPtr id -> HashCode.Combine (16, id)
         | NativeIntSource.WaitHandlePtr id -> HashCode.Combine (17, id)
+        | NativeIntSource.NarrowedManagedPointer (ptr, widthBits) -> HashCode.Combine (20, ptr, widthBits)
 
 /// CoreCLR's `TypeHandle` is a tagged pointer: it wraps either a `MethodTable*`
 /// or a `TypeDesc*`, and distinguishes them by setting bit 1 in the TypeDesc
@@ -371,6 +402,26 @@ module NativeIntSource =
 
         NativeIntSource.GcHandlePtr (handle, tag)
 
+    /// Smart constructor for `NativeIntSource.NarrowedManagedPointer`: the result of
+    /// `conv.i4` / `conv.u4` on a byref. Byrefs whose bit pattern is exactly known
+    /// (`Null`, and the `NativeIntPlaceholder` produced by
+    /// `Unsafe.AsRef<T>((void*)bits)`) narrow to those bits, since truncating a
+    /// known value is just truncation; only an unknown address needs the pointer to
+    /// survive the narrowing.
+    let narrowManagedPointer (widthBits : int) (src : ManagedPointerSource) : NativeIntSource =
+        Debug.Assert (
+            widthBits > 0 && widthBits < 64,
+            $"narrowing width %i{widthBits} out of range; a narrowing must discard some bits but not all"
+        )
+
+        match ManagedPointerSource.tryBitPatternBits src with
+        | ValueSome bits ->
+            // Sign-extending truncation, matching `conv.i4`'s int32 result being
+            // sign-extended back into the native-int slot.
+            let shift = 64 - widthBits
+            NativeIntSource.Verbatim ((bits <<< shift) >>> shift)
+        | ValueNone -> NativeIntSource.NarrowedManagedPointer (src, widthBits)
+
     let isZero (n : NativeIntSource) : bool =
         match n with
         | NativeIntSource.Verbatim i -> i = 0L
@@ -392,6 +443,12 @@ module NativeIntSource =
         | NativeIntSource.MetadataImportHandle _
         | NativeIntSource.ModuleHandle _ -> false
         | NativeIntSource.OpaqueHashBits bits -> bits = 0L
+        // The discarded high bits are exactly what decides this: a container whose
+        // address happens to be a multiple of 2^widthBits truncates to zero, and
+        // PawPrint does not model the address.
+        | NativeIntSource.NarrowedManagedPointer (ptr, widthBits) ->
+            failwith
+                $"refusing to decide whether managed pointer %O{ptr}, truncated to %i{widthBits} bits, is zero: that depends on the container's address, which PawPrint does not model"
         | NativeIntSource.FunctionPointer _ -> failwith "TODO"
         | NativeIntSource.ManagedPointer src ->
             match src with
@@ -422,6 +479,11 @@ module NativeIntSource =
         | NativeIntSource.ModuleHandle _ -> true
         | NativeIntSource.OpaqueHashBits bits -> bits >= 0L
         | NativeIntSource.ManagedPointer _ -> true
+        // `conv.i4` sign-extends its int32 result, so the sign is bit 31 of the
+        // container's address — a bit PawPrint does not model.
+        | NativeIntSource.NarrowedManagedPointer (ptr, widthBits) ->
+            failwith
+                $"refusing to decide the sign of managed pointer %O{ptr} truncated to %i{widthBits} bits: that depends on the container's address, which PawPrint does not model"
 
     /// CEQ semantics on `NativeIntSource` pairs: matches the
     /// `native int × native int` arm of ECMA Table III.4. Distinct from the
@@ -454,6 +516,15 @@ module NativeIntSource =
         let b = unwrapPlaceholder b
 
         match a, b with
+        // Two truncated byrefs are equal iff their full addresses agree in the low
+        // `widthBits`, which is only decidable when they share a container — and
+        // even then the answer would depend on bits above the guaranteed alignment.
+        // Real managed code masks a narrowed pointer and tests the mask; it does not
+        // compare one against anything.
+        | NativeIntSource.NarrowedManagedPointer _, _
+        | _, NativeIntSource.NarrowedManagedPointer _ ->
+            failwith
+                $"refusing to compare a truncated managed pointer for equality; that depends on the container's address, which PawPrint does not model: {a} vs {b}"
         | NativeIntSource.FunctionPointer f1, NativeIntSource.FunctionPointer f2 -> MethodInfo.NominallyEqual f1 f2
         | NativeIntSource.TypeHandlePtr f1, NativeIntSource.TypeHandlePtr f2 -> f1 = f2
         // A `TypeDescPtr` is the same base address as the `TypeHandlePtr` it was

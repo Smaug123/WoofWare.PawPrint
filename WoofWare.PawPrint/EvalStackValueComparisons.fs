@@ -213,8 +213,8 @@ module EvalStackValueComparisons =
             | _ -> failwith $"TODO: cgt.un on non-Verbatim nativeints: %O{var1} vs %O{var2}"
         | EvalStackValue.NativeInt _, EvalStackValue.ManagedPointer var2 ->
             cgtUn var1 (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var2))
-        | EvalStackValue.NativeInt var1, EvalStackValue.Int32 var2 ->
-            failwith "TODO: comparison of unsigned nativeint with int32"
+        | EvalStackValue.NativeInt _, EvalStackValue.Int32 _ ->
+            failwith $"TODO: cgt.un comparing a native int with an int32: %O{var1} vs %O{var2}"
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> not (var1 <= var2)
         | EvalStackValue.Float _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
         | EvalStackValue.ManagedPointer var1, EvalStackValue.NativeInt _ ->
@@ -308,8 +308,8 @@ module EvalStackValueComparisons =
             | _, _ -> failwith $"TODO: clt.un on non-Verbatim nativeints: %O{var1} vs %O{var2}"
         | EvalStackValue.NativeInt _, EvalStackValue.ManagedPointer var2 ->
             cltUn var1 (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var2))
-        | EvalStackValue.NativeInt var1, EvalStackValue.Int32 var2 ->
-            failwith "TODO: comparison of unsigned nativeint with int32"
+        | EvalStackValue.NativeInt _, EvalStackValue.Int32 _ ->
+            failwith $"TODO: clt.un comparing a native int with an int32: %O{var1} vs %O{var2}"
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> not (var1 >= var2)
         | EvalStackValue.Float _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
         | EvalStackValue.ManagedPointer var1, EvalStackValue.NativeInt _ ->

@@ -39,6 +39,11 @@ module EvalStackValue =
             bits
         | NativeIntSource.ManagedPointer ptr ->
             failwith $"%s{operation}: refusing to convert managed pointer %O{ptr} to an integer"
+        | NativeIntSource.NarrowedManagedPointer (ptr, widthBits) ->
+            // The truncation already discarded bits PawPrint never had; producing an
+            // integer now would have to invent the ones it kept, too.
+            failwith
+                $"%s{operation}: refusing to convert managed pointer %O{ptr}, truncated to %i{widthBits} bits, to an integer"
         | NativeIntSource.FunctionPointer methodInfo ->
             failwith $"%s{operation}: refusing to convert function pointer %O{methodInfo} to an integer"
         | NativeIntSource.TypeHandlePtr typeHandle ->
@@ -233,6 +238,11 @@ module EvalStackValue =
             | NativeIntSource.SyntheticCrossArrayOffset i ->
                 UnsignedNativeIntSource.FromSyntheticCrossArrayStorage i |> Some
             | NativeIntSource.ManagedPointer ptr -> UnsignedNativeIntSource.FromManagedPointer ptr |> Some
+            | NativeIntSource.NarrowedManagedPointer (ptr, widthBits) ->
+                // Widening back to native-int width would resurrect the bits the
+                // narrowing threw away, handing the guest a pointer it cannot have.
+                failwith
+                    $"Conv_U: refusing to widen managed pointer %O{ptr} back from %i{widthBits}-bit truncation to unsigned native int; the discarded high bits are not recoverable"
             | NativeIntSource.FunctionPointer methodInfo ->
                 failwith $"Conv_U: refusing to convert function pointer %O{methodInfo} to unsigned native int"
             | NativeIntSource.FieldHandlePtr handle ->
@@ -294,6 +304,15 @@ module EvalStackValue =
             // distinguishable from real-pointer NativeInt sources.
             NativeIntSource.OpaqueHashBits bits |> Some
         | EvalStackValue.Int32 i -> i |> convIFromInt32 |> NativeIntSource.Verbatim |> Some
+        | EvalStackValue.NativeInt (NativeIntSource.NarrowedManagedPointer (ptr, widthBits)) ->
+            // `(nint)(int)p` sign-extends bit 31 of an address PawPrint does not
+            // model, so the result is a different number from `p`. Passing the
+            // narrowed byref through unchanged would be sound (its low bits are
+            // unaffected, and every other use is already refused), but nothing needs
+            // it, and a silent identity here is the kind of thing that later gets
+            // mistaken for a recovered pointer.
+            failwith
+                $"Conv_I: refusing to widen managed pointer %O{ptr} back from %i{widthBits}-bit truncation to native int; the discarded high bits are not recoverable"
         | EvalStackValue.NativeInt src -> Some src
         | EvalStackValue.Float f -> f |> convIFromFloat |> NativeIntSource.Verbatim |> Some
         | EvalStackValue.ManagedPointer ptr -> NativeIntSource.ManagedPointer ptr |> Some
@@ -331,10 +350,25 @@ module EvalStackValue =
         | EvalStackValue.ObjectRef _
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_I2" value
 
-    let convToInt32 (value : EvalStackValue) : int32 option =
+    /// Width of the int32 that `conv.i4` / `conv.u4` produce. Named because it is
+    /// the `widthBits` recorded when a byref survives one of those conversions; see
+    /// `NativeIntSource.NarrowedManagedPointer`.
+    let private int32WidthBits : int = 32
+
+    /// `conv.i4` / `conv.u4` on a byref. Managed code narrows a pointer only to mask
+    /// it — `SpanHelpers.IndexOfNullCharacter` opens with
+    /// `((int)searchSpace & 1) != 0` — so the byref has to survive the conversion for
+    /// the mask to be answerable. A plain `int32` cannot carry it and filling one in
+    /// would mean fabricating an address, so the result lands in the native-int slot
+    /// as a `NarrowedManagedPointer`, which refuses everything except that mask.
+    let private narrowByrefToInt32 (ptr : ManagedPointerSource) : EvalStackValue =
+        NativeIntSource.narrowManagedPointer int32WidthBits ptr
+        |> EvalStackValue.NativeInt
+
+    let convToInt32 (value : EvalStackValue) : EvalStackValue =
         match value with
-        | EvalStackValue.Int32 i -> Some i
-        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convI4FromInt64 i |> Some
+        | EvalStackValue.Int32 i -> EvalStackValue.Int32 i
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convI4FromInt64 i |> EvalStackValue.Int32
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
             failwith $"TODO: Conv_I4 from widened native int %O{src} (truncating pointer-shaped int64 to int32)"
@@ -343,10 +377,14 @@ module EvalStackValue =
             // path: `CastCache.KeyToBucket` ends in `(int)((hash * c) >> shift)`
             // to produce an array index. The result has no provenance, but
             // an array index doesn't need one.
-            convI4FromInt64 bits |> Some
-        | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_I4" src |> convI4FromInt64 |> Some
-        | EvalStackValue.Float f -> convI4FromFloat f |> Some
-        | EvalStackValue.ManagedPointer _
+            convI4FromInt64 bits |> EvalStackValue.Int32
+        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) -> narrowByrefToInt32 ptr
+        | EvalStackValue.NativeInt src ->
+            nativeIntBitsForIntegerConversion "Conv_I4" src
+            |> convI4FromInt64
+            |> EvalStackValue.Int32
+        | EvalStackValue.Float f -> convI4FromFloat f |> EvalStackValue.Int32
+        | EvalStackValue.ManagedPointer ptr -> narrowByrefToInt32 ptr
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ObjectRef _
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_I4" value
@@ -420,17 +458,23 @@ module EvalStackValue =
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_U2" value
 
     /// Then truncates to int32.
-    let convToUInt32 (value : EvalStackValue) : int32 option =
+    let convToUInt32 (value : EvalStackValue) : EvalStackValue =
         match value with
-        | EvalStackValue.Int32 i -> convU4FromInt32 i |> Some
-        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convU4FromInt64 i |> Some
+        | EvalStackValue.Int32 i -> convU4FromInt32 i |> EvalStackValue.Int32
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convU4FromInt64 i |> EvalStackValue.Int32
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
             failwith $"TODO: Conv_U4 from widened native int %O{src} (truncating pointer-shaped int64 to uint32)"
-        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) -> convU4FromInt64 bits |> Some
-        | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_U4" src |> convU4FromInt64 |> Some
-        | EvalStackValue.Float f -> convU4FromFloat f |> Some
-        | EvalStackValue.ManagedPointer _
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) -> convU4FromInt64 bits |> EvalStackValue.Int32
+        // Same rationale as `convToInt32`: the byref survives the narrowing so that
+        // the mask managed code is about to apply stays answerable.
+        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) -> narrowByrefToInt32 ptr
+        | EvalStackValue.NativeInt src ->
+            nativeIntBitsForIntegerConversion "Conv_U4" src
+            |> convU4FromInt64
+            |> EvalStackValue.Int32
+        | EvalStackValue.Float f -> convU4FromFloat f |> EvalStackValue.Int32
+        | EvalStackValue.ManagedPointer ptr -> narrowByrefToInt32 ptr
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ObjectRef _
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_U4" value
@@ -579,6 +623,9 @@ module EvalStackValue =
                         failwith $"refusing to coerce PerInstInfo pointer %O{f} to int64"
                     | NativeIntSource.PerInstDictPtr f ->
                         failwith $"refusing to coerce PerInstDict pointer %O{f} to int64"
+                    | NativeIntSource.NarrowedManagedPointer (ptr, widthBits) ->
+                        failwith
+                            $"refusing to coerce managed pointer %O{ptr}, truncated to %i{widthBits} bits, to int64: storing it would require inventing the container's address"
                     | NativeIntSource.GcHandlePtr (f, tag) -> failwith $"TODO: {f} (tag 0x%x{tag})"
                     | NativeIntSource.EventPipeProviderPtr id ->
                         failwith $"refusing to coerce EventPipe provider handle #%d{id} to int64"
@@ -712,6 +759,9 @@ module EvalStackValue =
                 | NativeIntSource.MethodHandlePtr _ ->
                     failwith "refusing to interpret method handle ID as an object ref"
                 | NativeIntSource.FieldHandlePtr _ -> failwith "refusing to interpret field handle ID as an object ref"
+                | NativeIntSource.NarrowedManagedPointer (ptr, widthBits) ->
+                    failwith
+                        $"refusing to interpret managed pointer %O{ptr}, truncated to %i{widthBits} bits, as an object ref"
                 | NativeIntSource.GcHandlePtr _ -> failwith "refusing to interpret GC handle ID as an object ref"
                 | NativeIntSource.EventPipeProviderPtr _ ->
                     failwith "refusing to interpret EventPipe provider handle as an object ref"
@@ -758,6 +808,12 @@ module EvalStackValue =
                     failwith
                         "refusing to interpret synthetic cross-storage byte offset as a runtime pointer: the value is a deterministic sentinel, not a real address"
                 | NativeIntSource.ManagedPointer src -> src |> CliRuntimePointer.Managed |> CliType.RuntimePointer
+                | NativeIntSource.NarrowedManagedPointer (ptr, widthBits) ->
+                    // Recovering the byref here would silently undo the truncation,
+                    // making a pointer the guest cannot legitimately hold
+                    // dereferenceable again.
+                    failwith
+                        $"refusing to coerce managed pointer %O{ptr}, truncated to %i{widthBits} bits, back to a runtime pointer; the discarded high bits are not recoverable"
                 | NativeIntSource.FunctionPointer methodInfo ->
                     CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer methodInfo))
                 | NativeIntSource.TypeHandlePtr typeHandle ->

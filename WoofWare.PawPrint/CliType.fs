@@ -103,6 +103,7 @@ module private ByteAddressabilityClassifier =
         | NativeIntSource.ModuleHandle _
         | NativeIntSource.MetadataImportHandle _
         | NativeIntSource.GcHandlePtr _
+        | NativeIntSource.NarrowedManagedPointer _
         | NativeIntSource.EventPipeProviderPtr _
         | NativeIntSource.EventPipeEventPtr _
         | NativeIntSource.LowLevelMonitorPtr _

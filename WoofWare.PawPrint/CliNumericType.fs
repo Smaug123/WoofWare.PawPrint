@@ -73,6 +73,13 @@ module Int64Source =
             // defending in depth keeps the invariant local.
             Int64Source.Verbatim bits
         | NativeIntSource.OpaqueHashBits bits -> Int64Source.OpaqueHashBits bits
+        // Widening a truncated byref is not provenance-preserving: `conv.i4`
+        // discarded the high half of an address PawPrint never modelled, and
+        // wrapping the byref back up would quietly restore a pointer the guest's
+        // own truncation had destroyed. See `NativeIntSource.NarrowedManagedPointer`.
+        | NativeIntSource.NarrowedManagedPointer (ptr, widthBits) ->
+            failwith
+                $"refusing to widen managed pointer %O{ptr} back from %i{widthBits}-bit truncation to int64; the discarded high bits are not recoverable"
         | _ -> Int64Source.WidenedNativeInt (src, signed)
 
     let isZero (i : Int64Source) : bool =
@@ -337,6 +344,8 @@ type CliNumericType =
             | NativeIntSource.PerInstInfoPtr _ -> failwith "refusing to express PerInstInfoPtr as bytes"
             | NativeIntSource.PerInstDictPtr _ -> failwith "refusing to express PerInstDictPtr as bytes"
             | NativeIntSource.GcHandlePtr _ -> failwith "refusing to express GcHandlePtr as bytes"
+            | NativeIntSource.NarrowedManagedPointer _ ->
+                failwith "refusing to express a truncated managed pointer as bytes"
             | NativeIntSource.EventPipeProviderPtr _ -> failwith "refusing to express EventPipeProviderPtr as bytes"
             | NativeIntSource.EventPipeEventPtr _ -> failwith "refusing to express EventPipeEventPtr as bytes"
             | NativeIntSource.LowLevelMonitorPtr _ -> failwith "refusing to express LowLevelMonitorPtr as bytes"

@@ -245,6 +245,116 @@ module TestTaggedPointerBits =
                 )
         )
 
+    /// `bitAndOffsetFromAlignedBase` claims that `base + offset` (base aligned,
+    /// offset arbitrary) is answerable by the same procedure as `base ||| tag`.
+    /// That reduction is the whole justification for answering alignment masks on
+    /// byrefs, so check it directly against `+` rather than against `|||`.
+    type private OffsetScenario =
+        {
+            AlignmentBits : int
+            Offset : int64
+            Mask : int64
+        }
+
+        override this.ToString () : string =
+            $"alignment=%i{this.AlignmentBits} offset=0x%x{this.Offset} mask=0x%x{this.Mask}"
+
+    let private genOffsetScenario : Gen<OffsetScenario> =
+        gen {
+            let! alignmentBits = Gen.choose (1, 8)
+            let low = TaggedPointerBits.tagMask alignmentBits
+            let! arbitraryHigh = ArbMap.defaults |> ArbMap.generate<int64>
+            let! maskLow = ArbMap.defaults |> ArbMap.generate<int64>
+
+            let! high =
+                Gen.frequency
+                    [
+                        3, Gen.constant 0L
+                        3, Gen.constant ~~~low
+                        2, Gen.constant (arbitraryHigh &&& ~~~low)
+                        1, Gen.constant (1L <<< alignmentBits)
+                    ]
+
+            // Offsets are in-container byte displacements: mostly small, but a
+            // negative or very large one must not break the reduction either.
+            let! offset =
+                Gen.frequency
+                    [
+                        4, Gen.choose (0, 4096) |> Gen.map int64<int>
+                        1, Gen.choose (-4096, 0) |> Gen.map int64<int>
+                        1, ArbMap.defaults |> ArbMap.generate<int64>
+                    ]
+
+            return
+                {
+                    AlignmentBits = alignmentBits
+                    Offset = offset
+                    Mask = (maskLow &&& low) ||| high
+                }
+        }
+
+    [<Test>]
+    let ``an offset from an aligned base answers as if it were a tag`` () : unit =
+        Check.One (
+            config,
+            Prop.forAll
+                (Arb.fromGen genOffsetScenario)
+                (fun scenario ->
+                    let low = TaggedPointerBits.tagMask scenario.AlignmentBits
+
+                    let actual =
+                        TaggedPointerBits.bitAndOffsetFromAlignedBase
+                            scenario.AlignmentBits
+                            scenario.Offset
+                            scenario.Mask
+
+                    // Admissible bases, checked through `+` — the operation the
+                    // byref model actually performs.
+                    let bases = sampleBases scenario.AlignmentBits
+
+                    match actual with
+                    | TaggedPointerBitsResult.NotStatable -> true
+                    | TaggedPointerBitsResult.TagBitsOnly bits ->
+                        bases
+                        |> List.forall (fun b -> (b + scenario.Offset) &&& scenario.Mask = bits)
+                        |> holds $"%O{scenario}: claimed TagBitsOnly 0x%x{bits}"
+                    | TaggedPointerBitsResult.Retagged tag ->
+                        // Every base bit survived, so the masked value must still be
+                        // `someAdmissibleBase ||| tag`.
+                        let inRange = tag &&& ~~~low = 0L
+
+                        let agrees =
+                            bases
+                            |> List.forall (fun b ->
+                                let value = b + scenario.Offset
+                                let masked = value &&& scenario.Mask
+                                (masked &&& ~~~low) = (value &&& ~~~low) && (masked &&& low) = tag
+                            )
+
+                        holds
+                            $"%O{scenario}: claimed Retagged 0x%x{tag} (in range: %b{inRange}, agrees: %b{agrees})"
+                            (inRange && agrees)
+                )
+        )
+
+    [<Test>]
+    let ``the alignment masks CoreLib actually writes are answerable`` () : unit =
+        // `SpanHelpers.IndexOfNullCharacter` opens with `((int)searchSpace & 1) != 0`.
+        // A char array's element storage is 8-byte aligned, so element k sits at
+        // offset 2k and the one-bit question is always answerable.
+        for index in 0..7 do
+            TaggedPointerBits.bitAndOffsetFromAlignedBase 3 (2L * int64<int> index) 1L
+            |> shouldEqual (TaggedPointerBitsResult.TagBitsOnly 0L)
+
+        // A byte array element at an odd index genuinely is misaligned for chars.
+        TaggedPointerBits.bitAndOffsetFromAlignedBase 3 3L 1L
+        |> shouldEqual (TaggedPointerBitsResult.TagBitsOnly 1L)
+
+        // Masking beyond the guaranteed alignment is a question about the unknown
+        // container address, and must be refused rather than guessed.
+        TaggedPointerBits.bitAndOffsetFromAlignedBase 3 2L 15L
+        |> shouldEqual TaggedPointerBitsResult.NotStatable
+
     // The specific operations the CoreLib IL performs on a tagged GC handle. See
     // docs/plans/2026-08-06-tagged-gc-handles.md for the IL these come from.
 

@@ -122,6 +122,10 @@ module PointerHashSynthesis =
         | NativeIntSource.MetadataImportHandle name -> CanonicalPointerKey.MetadataImportHandle name
         | NativeIntSource.Verbatim _
         | NativeIntSource.ManagedPointer _
+        // Same reason as `ManagedPointer`: a byref's identity is storage plus
+        // offset, and synthesising bits for it would let a non-address be used as
+        // one. Truncation does not change that.
+        | NativeIntSource.NarrowedManagedPointer _
         | NativeIntSource.SyntheticCrossArrayOffset _
         | NativeIntSource.OpaqueHashBits _
         | NativeIntSource.PerInstInfoPtr _
