@@ -155,36 +155,48 @@ module NullaryIlOp =
             failwith
                 $"And: refusing to mask managed pointer %O{ptr}, truncated to %i{widthBits} bits, with 0x%x{mask}: %s{reason}"
 
-        match ManagedPointerSource.tryContainerAlignmentBits ptr, tryManagedPointerAddressBits state ptr with
-        | None, _ -> refuse "PawPrint claims no alignment for this byref's container"
-        | _, None -> refuse "PawPrint cannot state this byref's offset within its container"
-        | Some alignmentBits, Some offset ->
-            match TaggedPointerBits.bitAndOffsetFromAlignedBase alignmentBits offset mask with
-            | TaggedPointerBitsResult.TagBitsOnly bits ->
-                // The narrowed pointer nominally occupies an int32 stack slot, so
-                // its masked result is an int32 too — the guest goes on to compare
-                // it against an `int` literal. `TagBitsOnly` only fires when the
-                // mask selects nothing above the container's alignment, so `bits`
-                // is a handful of low bits and the narrowing is exact.
-                Debug.Assert (
-                    (bits &&& ~~~(TaggedPointerBits.tagMask alignmentBits)) = 0L,
-                    $"masked byref bits 0x%x{bits} escape the %i{alignmentBits}-bit alignment region"
-                )
+        // A byref whose container has no alignment claim, or no stable in-container
+        // offset, is not outside the model: it is an unknown address with an *empty*
+        // tag region. `TaggedPointerBits` still answers the two address-independent
+        // masks from that — `p & 0` is zero and `p & -1` is the identity, whatever
+        // the address — and refuses the rest. Rejecting outright would be a refusal
+        // of something answerable, which is the one thing this decision procedure is
+        // not allowed to do.
+        let alignmentBits, offset =
+            match ManagedPointerSource.tryContainerAlignmentBits ptr, tryManagedPointerAddressBits state ptr with
+            | Some alignmentBits, Some offset -> alignmentBits, offset
+            | _ -> 0, 0L
 
-                int32<int64> bits |> EvalStackValue.Int32
-            | TaggedPointerBitsResult.Retagged newLowBits when
-                newLowBits = (offset &&& TaggedPointerBits.tagMask alignmentBits)
-                ->
-                // The mask preserved every bit, so the value is unchanged.
-                NativeIntSource.NarrowedManagedPointer (ptr, widthBits)
-                |> EvalStackValue.NativeInt
-            | TaggedPointerBitsResult.Retagged _ ->
-                // Align-down (`p & ~7`). The answer is a *different* byref, which
-                // would have to be expressed by walking the offset back; PawPrint
-                // has no consumer for that yet, so refuse rather than approximate.
+        match TaggedPointerBits.bitAndOffsetFromAlignedBase alignmentBits offset mask with
+        | TaggedPointerBitsResult.TagBitsOnly bits ->
+            // The narrowed pointer nominally occupies an int32 stack slot, so its
+            // masked result is an int32 too — the guest goes on to compare it
+            // against an `int` literal. `TagBitsOnly` only fires when the mask
+            // selects nothing above the container's alignment, so `bits` is a
+            // handful of low bits and the narrowing is exact.
+            Debug.Assert (
+                (bits &&& ~~~(TaggedPointerBits.tagMask alignmentBits)) = 0L,
+                $"masked byref bits 0x%x{bits} escape the %i{alignmentBits}-bit alignment region"
+            )
+
+            int32<int64> bits |> EvalStackValue.Int32
+        | TaggedPointerBitsResult.Retagged newLowBits when
+            newLowBits = (offset &&& TaggedPointerBits.tagMask alignmentBits)
+            ->
+            // The mask preserved every bit, so the value is unchanged.
+            NativeIntSource.NarrowedManagedPointer (ptr, widthBits)
+            |> EvalStackValue.NativeInt
+        | TaggedPointerBitsResult.Retagged _ ->
+            // Align-down (`p & ~7`). The answer is a *different* byref, which would
+            // have to be expressed by walking the offset back; PawPrint has no
+            // consumer for that yet, so refuse rather than approximate.
+            refuse
+                "the result is the same container at a lower offset, which PawPrint does not yet re-express as a byref"
+        | TaggedPointerBitsResult.NotStatable ->
+            if alignmentBits = 0 then
                 refuse
-                    "the result is the same container at a lower offset, which PawPrint does not yet re-express as a byref"
-            | TaggedPointerBitsResult.NotStatable ->
+                    "PawPrint claims no alignment for this byref's container, so only masks of 0 and -1 are answerable"
+            else
                 refuse
                     $"the result would depend on address bits above the container's guaranteed %i{alignmentBits}-bit alignment"
 

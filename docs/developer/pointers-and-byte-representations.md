@@ -99,6 +99,8 @@ That mask is decided by pairing two halves of the byref model:
 
 `TaggedPointerBits.bitAndOffsetFromAlignedBase` then reduces `(base + offset) & mask` to the tagged-pointer decision procedure above, because `base + offset = base' ||| (offset & lowBits)` for the equally admissible base `base' = base + (offset & ~lowBits)`. The mask is answerable when it selects nothing above the guaranteed alignment (the result is those low bits, as an `int32`), or when it preserves every bit (the value is unchanged). Aligning *down* — `p & ~7`, whose answer is a different location in the same container — is refused rather than approximated, because PawPrint cannot yet re-express it as a byref.
 
+A byref with no alignment claim, or no stable offset, is not outside this model: it is an unknown address with an empty tag region, so `p & 0` and `p & -1` are still answerable and everything else is refused. Declining those would be refusing a question the model can answer, which is the one thing the decision procedure must not do.
+
 ## Extension Rules
 
 When extending this area, keep the model honest:

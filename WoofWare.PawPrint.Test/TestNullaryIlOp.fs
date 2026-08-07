@@ -1130,21 +1130,32 @@ module TestNullaryIlOp =
         exn.Message |> shouldContainText "the same container at a lower offset"
 
     [<Test>]
-    let ``a byref whose container has no alignment claim is refused`` () : unit =
-        // Object fields expose no stable low bits, so there is nothing to mask.
+    let ``a byref whose container has no alignment claim answers only the address-independent masks`` () : unit =
+        // Object fields expose no stable low bits, so the tag region is empty. That
+        // still leaves `p & 0` and `p & -1` answerable for *any* address, and a
+        // decision procedure that refused them would be refusing something it could
+        // have answered.
         let fieldByref =
             ManagedPointerSource.Byref (ByrefRoot.HeapValue (ManagedHeapAddress.ManagedHeapAddress 1), [])
 
-        let exn =
-            Assert.Throws (fun () ->
-                runBinary
-                    NullaryIlOp.And
-                    (EvalStackValue.NativeInt (NativeIntSource.NarrowedManagedPointer (fieldByref, 32)))
-                    (EvalStackValue.Int32 1)
-                |> ignore<EvalStackValue>
-            )
+        let narrowedField =
+            EvalStackValue.NativeInt (NativeIntSource.NarrowedManagedPointer (fieldByref, 32))
 
-        exn.Message |> shouldContainText "claims no alignment"
+        runBinary NullaryIlOp.And narrowedField (EvalStackValue.Int32 0)
+        |> shouldEqual (EvalStackValue.Int32 0)
+
+        runBinary NullaryIlOp.And narrowedField (EvalStackValue.Int32 -1)
+        |> shouldEqual narrowedField
+
+        // Every other mask is a question about the address.
+        for mask in [ 1 ; 3 ; 7 ; -2 ] do
+            let exn =
+                Assert.Throws (fun () ->
+                    runBinary NullaryIlOp.And narrowedField (EvalStackValue.Int32 mask)
+                    |> ignore<EvalStackValue>
+                )
+
+            exn.Message |> shouldContainText "claims no alignment"
 
     let private peByteRangeByref (source : PeByteRangePointerSource) (rva : int) : ManagedPointerSource =
         ManagedPointerSource.Byref (
