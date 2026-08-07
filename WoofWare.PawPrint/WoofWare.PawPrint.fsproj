@@ -22,6 +22,7 @@
     <Compile Include="List.fs" />
     <Compile Include="ImmutableArray.fs" />
     <Compile Include="Result.fs" />
+    <Compile Include="DeterministicMath.fs" />
     <Compile Include="Corelib.fs" />
     <Compile Include="TaggedPointerBits.fs" />
     <Compile Include="AbstractMachineDomain.fs" />
