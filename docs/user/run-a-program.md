@@ -19,7 +19,6 @@ open System.IO
 open Microsoft.Extensions.Logging
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
-open WoofWare.PawPrint.ExternImplementations
 
 /// Runs the guest program at `dllPath`, returning the exit code it asked for
 /// and everything it wrote to stdout/stderr.
@@ -33,30 +32,30 @@ let runGuest (dllPath : string) : int * ImmutableArray<OutputLogEntry> =
     let dotnetRuntimes =
         DotnetRuntime.SelectForDll dllPath |> ImmutableArray.CreateRange
 
-    // When PawPrint requires a native call, e.g. a result from System.Environment,
-    // just pass through to the host.
-    // This actually isn't a pure pass-through: System.Environment.FailFast, for example,
-    // is trapped.
-    let nativeImpls = NativeImpls.PassThru ()
-
-    // Whatever you pass here is overlaid on top of `EmulatedKernel.defaultEnvironment`,
-    // so even `Map.empty` gets you DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 (invariant
-    // globalization is the only mode PawPrint implements); the keys you supply win over
-    // the defaults. Pass the host's own environment if you want the guest to see it.
-    let environmentVariables : Map<string, string> = Map.empty
+    // Everything the host supplies to configure the run. `HostConfig.Default` gives
+    // you the default kernel state, the round-robin scheduler, and no guest argv;
+    // override only what you care about.
+    let hostConfig =
+        { HostConfig.Default dotnetRuntimes with
+            Kernel =
+                { KernelConfig.Default with
+                    // Whatever you pass here is overlaid on top of
+                    // `EmulatedKernel.defaultEnvironment`, so even `Map.empty` gets you
+                    // DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 (invariant globalization is
+                    // the only mode PawPrint implements); the keys you supply win over the
+                    // defaults. Pass the host's own environment if you want the guest to
+                    // see it.
+                    Environment = Map.empty
+                }
+            // `None` uses the default round-robin thread scheduler; `Some yourChoiceOfSeed`
+            // explores thread scheduling intelligently. See ./fuzz-over-thread-scheduler.md.
+            PctSeed = None
+            // argv passed to the emulated program
+            Argv = []
+        }
 
     let terminalState, terminatingThread =
-        match
-            Program.run
-                loggerFactory
-                (Some dllPath)
-                peImage
-                dotnetRuntimes
-                nativeImpls
-                environmentVariables
-                None // use a default thread scheduler; or `Some yourChoiceOfSeed` to explore thread scheduling intelligently
-                [] // argv passed to emulated program
-        with
+        match Program.run loggerFactory (Some dllPath) peImage hostConfig with
         | RunOutcome.GuestUnhandledException (_, _, exn) ->
             failwith $"Guest threw unhandled exception: %O{exn.ExceptionObject}"
         | RunOutcome.FailFast (_, _, message) ->
@@ -71,7 +70,7 @@ let runGuest (dllPath : string) : int * ImmutableArray<OutputLogEntry> =
         | [] -> failwith "expected program to return a value, but it returned void"
         | head :: _ ->
             match head with
-            | EvalStackValue.Int32 i -> i
+            | EvalStackValue.Int32 (Int32Source.Verbatim i) -> i
             | ret -> failwith $"expected program to return an int, but it returned %O{ret}"
 
     // The guest's own writes to stdout/stderr never reach the host's streams during

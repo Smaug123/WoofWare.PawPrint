@@ -38,58 +38,6 @@ module IlMachineThreadState =
             ThreadState = state.ThreadState |> Map.add thread threadState
         }
 
-    /// Nominate `newAddr` as the object constructed by the active variable-size
-    /// constructor frame, moving its `ConstructionState` from `ConstructingVariableSize`
-    /// to `Constructing newAddr`. The next `returnStackFrame` then pushes `newAddr` onto
-    /// the caller's eval stack, completing the `newobj`.
-    ///
-    /// This is the second half of the `CORINFO_FLG_VAROBJSIZE` calling convention (see
-    /// `ConstructionState.ConstructingVariableSize`): `executeNewobj` deliberately
-    /// allocated nothing and passed no `this`, so the constructor — currently only
-    /// `String..ctor(char*)` and `String..ctor(ReadOnlySpan<char>)` — is the sole party
-    /// that knows the object's address.
-    ///
-    /// Fails loudly if the active frame is not a variable-size constructor frame: calling
-    /// it on a fixed-size `Constructing` frame would silently orphan the object that
-    /// `newobj` already allocated and handed the ctor as `this`, which is exactly the
-    /// class of bug this convention exists to prevent.
-    let withSuppliedConstructedObject
-        (newAddr : ManagedHeapAddress)
-        (thread : ThreadId)
-        (state : IlMachineState)
-        : IlMachineState
-        =
-        let threadState = state.ThreadState.[thread]
-        let activeFrameId = threadState.ActiveMethodState
-
-        let updateFrame (frame : MethodState) : MethodState =
-            match frame.ReturnState with
-            | None ->
-                failwith
-                    $"withSuppliedConstructedObject: active frame %s{frame.ExecutingMethod.Name} has no ReturnState; cannot supply an object for a non-existent constructor return"
-            | Some returnState ->
-                match returnState.Constructing with
-                | ConstructionState.NotConstructing ->
-                    failwith
-                        $"withSuppliedConstructedObject: active frame %s{frame.ExecutingMethod.Name} is not a constructor frame (ConstructionState is NotConstructing)"
-                | ConstructionState.Constructing existing ->
-                    failwith
-                        $"withSuppliedConstructedObject: active frame %s{frame.ExecutingMethod.Name} is a fixed-size constructor frame already constructing %O{existing}; only variable-size (CORINFO_FLG_VAROBJSIZE) constructors supply their own object, and overwriting here would orphan the object newobj passed as `this`"
-                | ConstructionState.ConstructingVariableSize ->
-                    { frame with
-                        ReturnState =
-                            Some
-                                { returnState with
-                                    Constructing = ConstructionState.Constructing newAddr
-                                }
-                    }
-
-        let threadState = ThreadState.mapFrame activeFrameId updateFrame threadState
-
-        { state with
-            ThreadState = state.ThreadState |> Map.add thread threadState
-        }
-
     /// Set `WrapExceptionInTargetInvocation = true` on the active frame's `ReturnState`.
     /// Used by `Activator.CreateInstance<T>()` after `ensureTypeInitialised` has just
     /// pushed `T`'s `.cctor` frame: marking it ensures that if the .cctor throws (producing
@@ -195,8 +143,7 @@ module IlMachineThreadState =
         | None -> ReturnFrameResult.NoFrameToReturn
         | Some returnState ->
             match returnState.Constructing with
-            | ConstructionState.Constructing _
-            | ConstructionState.ConstructingVariableSize ->
+            | ConstructionState.Constructing _ ->
                 failwith
                     $"Synthetic stack frame %s{threadStateWithSyntheticFrame.MethodState.ExecutingMethod.Name} unexpectedly represented object construction"
             | ConstructionState.NotConstructing ->
@@ -266,14 +213,6 @@ module IlMachineThreadState =
             }
 
         match returnState.Constructing with
-        | ConstructionState.ConstructingVariableSize ->
-            // The variable-size (CORINFO_FLG_VAROBJSIZE) convention: `newobj` allocated
-            // nothing and passed no `this`, so the constructor was the only party that
-            // could name the object. Reaching `ret` without having called
-            // `withSuppliedConstructedObject` means it never did, and there is nothing
-            // to push for the pending `newobj`.
-            failwith
-                $"Variable-size constructor %s{returningMethodState.ExecutingMethod.Name} returned without supplying a constructed object; it must call IlMachineState.withSuppliedConstructedObject before returning"
         | ConstructionState.Constructing constructing ->
             match returnState.ConstructedObjectDisposition with
             | ConstructedObjectDisposition.DispatchAsException message ->

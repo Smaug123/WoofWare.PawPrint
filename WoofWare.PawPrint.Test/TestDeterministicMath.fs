@@ -668,8 +668,9 @@ module TestDeterministicMath =
             // An infinite argument names no point on the circle: a domain error.
             infinity, positiveNaN
             -infinity, positiveNaN
-            // A NaN propagates with its sign and payload intact, as IEEE 754 clause 7.2
-            // recommends; `Double.NaN` is the *negative* quiet NaN.
+            // A NaN propagates with its payload intact, which IEEE 754-2019 clause 6.2.3
+            // recommends; the sign clause 6.3 leaves unspecified, and PawPrint keeps it for
+            // consistency with its own `pow`. `Double.NaN` is the *negative* quiet NaN.
             nan, negativeNaN
             ofBits 0x7FF8000000000123UL, 0x7FF8000000000123UL
             ofBits 0xFFF8000000000123UL, 0xFFF8000000000123UL
@@ -706,10 +707,10 @@ module TestDeterministicMath =
             // pattern. macOS/Arm gives the positive one this table specifies.
             BitConverter.DoubleToUInt64Bits infinity, negativeNaN
             BitConverter.DoubleToUInt64Bits -infinity, negativeNaN
-            // macOS/Arm's `cos` clears the sign of a NaN argument rather than propagating it,
-            // where clause 7.2 recommends returning the input NaN quieted. Payload survives
-            // either way, so the alternative differs from the specified answer only in the
-            // sign bit.
+            // macOS/Arm's `cos` clears the sign of a NaN argument rather than propagating it.
+            // Clause 6.3 does not specify the sign of a NaN result, so both conform; the
+            // payload survives either way, so the alternative differs from the specified
+            // answer only in the sign bit.
             0xFFF8000000000000UL, positiveNaN
             0xFFF8000000000123UL, 0x7FF8000000000123UL
             0xFFF0000000000123UL, 0x7FF8000000000123UL
@@ -735,5 +736,682 @@ module TestDeterministicMath =
             let permitted = permitted |> List.map (sprintf "%016x") |> String.concat " or "
 
             Some $"host cos(%.17g{x}): expected bits {permitted}, got %016x{host}"
+        )
+        |> reportFailures
+
+    /// An independent sine, built the same way `referenceCos` is: reduce modulo 2 pi against
+    /// Euler's pi and evaluate the sine series directly on the result, sharing neither the
+    /// constant, nor the modulus, nor the quadrant table with the implementation.
+    ///
+    /// This stays valid all the way down to `Double.Epsilon`, because it carries the reduced
+    /// argument at `referenceBits` fractional bits without ever narrowing it — which is what
+    /// lets it act as the oracle for the implementation's small-argument shortcut as well as
+    /// for the series.
+    let private referenceSin (x : float) : float =
+        let mantissa, exponent = DeterministicMath.decompose (abs x)
+
+        let scaled = mantissa * referenceOneOverTwoPi
+
+        let turns =
+            if exponent >= 0 then
+                scaled <<< exponent
+            else
+                scaled >>> -exponent
+
+        let k = (turns + (BigInteger.One <<< (referenceBits - 1))) >>> referenceBits
+        let reduced = (mantissa <<< (exponent + referenceBits)) - (k * referenceTwoPi)
+
+        // As in `referenceCos`, the series converges on the whole of [-pi, pi]. Its worst
+        // cancellation is at an argument near ±pi, where the terms peak around pi^3/6 and the
+        // sum comes back near 2^-53: about 55 bits lost out of `referenceBits`.
+        let reducedSquared = referenceMultiply reduced reduced
+        let mutable term = reduced
+        let mutable acc = BigInteger.Zero
+        let mutable j = 1
+
+        while not term.IsZero do
+            acc <- acc + term
+            term <- -(referenceMultiply term reducedSquared) / BigInteger ((j + 1) * (j + 2))
+            j <- j + 2
+
+        let magnitude = DeterministicMath.roundToDouble acc -referenceBits
+
+        // The reduction above took |x|; sine is odd, and `Double.IsNegative` rather than
+        // `< 0.0` so that the sign of a zero survives.
+        if Double.IsNegative x then -magnitude else magnitude
+
+    [<Test>]
+    let ``sin matches an independently computed reference`` () : unit =
+        // The real specification of `sin`, as `cos` has above: bit-for-bit equality with a
+        // reference accurate to several hundred bits.
+        let property (x : float) : bool =
+            let actual = BitConverter.DoubleToUInt64Bits (DeterministicMath.sin x)
+            actual = BitConverter.DoubleToUInt64Bits (referenceSin x)
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genFiniteDouble) property)
+
+    [<Test>]
+    let ``sin agrees with the host libm to within one ulp`` () : unit =
+        // A sanity check rather than a specification: the host's `sin` is not correctly
+        // rounded either, so where the two disagree it is PawPrint that is expected to be
+        // right, and `sin matches an independently computed reference` is what says so.
+        // Measured on a sample of 1500 random doubles, the two differed on 25, always by
+        // exactly one ulp, and on every one of those the exact value (computed to 1400 bits)
+        // was nearer to PawPrint's answer — 0.4996 ulp at worst, against 0.5004 to 0.6554
+        // for the host.
+        let property (x : float) : bool =
+            ulpDistance (DeterministicMath.sin x) (Math.Sin x) <= 1.0
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genFiniteDouble) property)
+
+    [<Test>]
+    let ``sin is odd`` () : unit =
+        // IEEE 754-2019 clause 9.2 requires this of the operation, not merely of the real
+        // sine: "For operations f defined by odd mathematical functions, f(-x) is -f(x) for
+        // roundTiesToEven, roundTiesToAway, and roundTowardZero for their entire domain and
+        // range." Note the narrower scope than the evenness rule `cos is even` asserts, which
+        // holds for every rounding attribute; under the directed roundings an odd function
+        // need not be exactly odd. We round ties to even throughout, so it binds here.
+        //
+        // It holds exactly rather than to within a rounding because the reduction takes |x|
+        // and the sign is reapplied to the result.
+        let property (x : float) : bool =
+            let atMinusX = BitConverter.DoubleToUInt64Bits (DeterministicMath.sin -x)
+            atMinusX = BitConverter.DoubleToUInt64Bits (-(DeterministicMath.sin x))
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genFiniteDouble) property)
+
+    [<Test>]
+    let ``sin stays within the unit interval`` () : unit =
+        let property (x : float) : bool =
+            let result = DeterministicMath.sin x
+            result >= -1.0 && result <= 1.0
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genFiniteDouble) property)
+
+    [<Test>]
+    let ``sin is a pure function of its argument`` () : unit =
+        let property (x : float) : bool =
+            let first = BitConverter.DoubleToUInt64Bits (DeterministicMath.sin x)
+            first = BitConverter.DoubleToUInt64Bits (DeterministicMath.sin x)
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genFiniteDouble) property)
+
+    [<Test>]
+    let ``sin and cos satisfy the Pythagorean identity`` () : unit =
+        // The one check that ties the two quadrant tables to each other. `sin` and `cos` read
+        // the same reduction and the same series, differing only in which residues call for
+        // the sine and which of them negate; rotating one table relative to the other leaves
+        // both functions individually plausible — still bounded, still the right parity — but
+        // breaks this immediately.
+        //
+        // Both operands are correctly rounded, so the two squarings and the addition are the
+        // only error: a few ulps of 1, far inside this bound.
+        let property (x : float) : bool =
+            let s = DeterministicMath.sin x
+            let c = DeterministicMath.cos x
+            abs ((s * s) + (c * c) - 1.0) < 1e-15
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genFiniteDouble) property)
+
+    /// A double whose magnitude is below 2^-27, spanning the subnormals up to the largest
+    /// octave on which `sin x` is exactly `x`. Biased exponent 995 is the octave
+    /// [2^-28, 2^-27), so every draw is strictly below the bound.
+    let private genTinyDouble : Gen<float> =
+        gen {
+            let! sign = Gen.elements [ 0UL ; 1UL ]
+            let! biasedExponent = Gen.choose (0, 995)
+            let! fraction = Gen.choose64 (0L, 0xF_FFFF_FFFF_FFFFL)
+
+            return
+                BitConverter.UInt64BitsToDouble ((sign <<< 63) ||| (uint64 biasedExponent <<< 52) ||| uint64 fraction)
+        }
+
+    [<Test>]
+    let ``sin returns its argument unchanged on the octaves where that is correct`` () : unit =
+        // `sin x` differs from `x` in binary64 only once `x^3/6` reaches half an ulp of `x`,
+        // i.e. once |x| exceeds about 2^-25.2; below that the correctly rounded answer is the
+        // argument itself.
+        //
+        // This range straddles `smallArgumentThreshold`, which is 2^-128: draws above it go
+        // through the reduction and the series, draws below it take the shortcut. So this is
+        // simultaneously the specification of the shortcut and the evidence that the
+        // threshold sits a hundred octaves inside the region where the shortcut is valid,
+        // rather than at the edge of it.
+        let property (x : float) : bool =
+            BitConverter.DoubleToUInt64Bits (DeterministicMath.sin x) = BitConverter.DoubleToUInt64Bits x
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genTinyDouble) property)
+
+    [<Test>]
+    let ``the small-argument shortcut agrees with the series across the boundary`` () : unit =
+        // The two doubles either side of `smallArgumentThreshold` take different code paths
+        // and must not disagree. The one at the threshold is the hardest input the series is
+        // ever asked for: its reduced argument has exactly `reducedArgumentFloor` significant
+        // bits, so it is the point at which the floor assertion is closest to firing.
+        let threshold =
+            DeterministicMath.roundToDouble
+                BigInteger.One
+                (DeterministicMath.reducedArgumentFloor - DeterministicMath.fractionBits)
+
+        let below = Math.BitDecrement threshold
+
+        [ below, "below" ; threshold, "at" ; Math.BitIncrement threshold, "above" ]
+        |> List.collect (fun (x, where) ->
+            let actual = BitConverter.DoubleToUInt64Bits (DeterministicMath.sin x)
+
+            [
+                if actual <> BitConverter.DoubleToUInt64Bits x then
+                    yield
+                        $"sin(%.17g{x}), %s{where} the threshold: expected the argument back, got %.17g{DeterministicMath.sin x}"
+                if actual <> BitConverter.DoubleToUInt64Bits (referenceSin x) then
+                    yield
+                        $"sin(%.17g{x}), %s{where} the threshold: got bits %016x{actual}, reference says %016x{BitConverter.DoubleToUInt64Bits (referenceSin x)}"
+            ]
+        )
+        |> reportFailures
+
+    /// The IEEE 754 / C99 `sin` special cases, as a table of (x, expected bits).
+    let private sinSpecialCases : (float * uint64) list =
+        let ofBits (bits : uint64) : float = BitConverter.UInt64BitsToDouble bits
+        let positiveNaN = 0x7FF8000000000000UL
+        let negativeNaN = 0xFFF8000000000000UL
+        let positiveZero = 0x0000000000000000UL
+        let negativeZero = 0x8000000000000000UL
+
+        [
+            // IEEE 754-2019 clause 9.2.1: "For the operations sin, tan, ... f(+0) is +0 and
+            // f(-0) is -0 with no exception." So the sign of a zero is specified, unlike the
+            // sign of a NaN below.
+            0.0, positiveZero
+            -0.0, negativeZero
+            // sin(x) is exactly x for any x small enough that x - x^3/6 rounds back to x.
+            ofBits 0x3E10000000000000UL, 0x3E10000000000000UL // 2^-30
+            ofBits 0xBE10000000000000UL, 0xBE10000000000000UL // -2^-30
+            // An infinite argument names no point on the circle: a domain error.
+            infinity, positiveNaN
+            -infinity, positiveNaN
+            // A NaN propagates with its payload intact, which IEEE 754-2019 clause 6.2.3
+            // recommends; the sign clause 6.3 leaves unspecified, and PawPrint keeps it for
+            // consistency with its own `pow` and `cos`. `Double.NaN` is the *negative* quiet
+            // NaN.
+            nan, negativeNaN
+            ofBits 0x7FF8000000000123UL, 0x7FF8000000000123UL
+            ofBits 0xFFF8000000000123UL, 0xFFF8000000000123UL
+            // A *signalling* NaN comes back quieted, again keeping sign and payload.
+            ofBits 0x7FF0000000000123UL, 0x7FF8000000000123UL
+            ofBits 0xFFF0000000000123UL, 0xFFF8000000000123UL
+            ofBits 0x7FF0000000000001UL, 0x7FF8000000000001UL
+        ]
+
+    [<Test>]
+    let ``sin matches the IEEE 754 special cases`` () : unit =
+        sinSpecialCases
+        |> List.choose (fun (x, expected) ->
+            let actual = BitConverter.DoubleToUInt64Bits (DeterministicMath.sin x)
+
+            if actual = expected then
+                None
+            else
+                Some $"sin(%.17g{x}): expected bits %016x{expected}, got %016x{actual}"
+        )
+        |> reportFailures
+
+    /// The rows of `sinSpecialCases` on which the host is allowed to disagree, with the one
+    /// other answer it may give. As with `cos`, every row here is a NaN payload or sign; the
+    /// zeros and the finite rows admit no alternative, because clause 9.2.1 fixes them.
+    let private sinHostAlternatives : Map<uint64, uint64> =
+        let positiveNaN = 0x7FF8000000000000UL
+        let negativeNaN = 0xFFF8000000000000UL
+
+        [
+            // The payload of a *freshly generated* NaN is the hardware's: x86 produces the
+            // negative quiet NaN and Arm the positive one.
+            BitConverter.DoubleToUInt64Bits infinity, negativeNaN
+            BitConverter.DoubleToUInt64Bits -infinity, negativeNaN
+            // macOS/Arm's libm clears the sign of a NaN argument rather than propagating it.
+            0xFFF8000000000000UL, positiveNaN
+            0xFFF8000000000123UL, 0x7FF8000000000123UL
+            0xFFF0000000000123UL, 0x7FF8000000000123UL
+        ]
+        |> Map.ofList
+
+    [<Test>]
+    let ``the host agrees about the sin special cases`` () : unit =
+        sinSpecialCases
+        |> List.choose (fun (x, expected) ->
+            let host = BitConverter.DoubleToUInt64Bits (Math.Sin x)
+            let key = BitConverter.DoubleToUInt64Bits x
+
+            let permitted =
+                match Map.tryFind key sinHostAlternatives with
+                | None -> [ expected ]
+                | Some alternative -> [ expected ; alternative ]
+
+            if List.contains host permitted then
+                None
+            else
+
+            let permitted = permitted |> List.map (sprintf "%016x") |> String.concat " or "
+
+            Some $"host sin(%.17g{x}): expected bits {permitted}, got %016x{host}"
+        )
+        |> reportFailures
+
+    /// `x` written exactly as an integer count of `2^exponent`. Every double is a dyadic
+    /// rational, so this is lossless as long as `exponent` is at or below the exponent of the
+    /// smallest subnormal.
+    let private atExponent (exponent : int) (x : float) : BigInteger =
+        let mantissa, ownExponent = DeterministicMath.decompose x
+        mantissa <<< (ownExponent - exponent)
+
+    /// Whether `r` really is the double nearest to the exact square root of `x`, decided
+    /// without reference to any other square-root implementation: `r` is nearest exactly when
+    /// `x` lies between the squares of the two midpoints bracketing `r`. Everything in sight
+    /// is a dyadic rational, so `BigInteger` settles it exactly.
+    ///
+    /// The comparisons are non-strict at both ends, which would admit either neighbour at a
+    /// tie — but no tie exists to admit. One would need the exact square root of a double to
+    /// be an odd 54-bit value, whose square has 107 significant bits and so is not a double.
+    let private isCorrectlyRoundedSqrt (x : float) (r : float) : bool =
+        // One octave below the smallest subnormal, so that doubling a midpoint (see below)
+        // cannot run out of room at the bottom either.
+        let fixedPoint = -1080
+        let asFixed = atExponent fixedPoint
+
+        // Twice each midpoint, which keeps the arithmetic in integers with no division.
+        let twiceLower = asFixed r + asFixed (Math.BitDecrement r)
+        let twiceUpper = asFixed r + asFixed (Math.BitIncrement r)
+
+        // `twiceLower^2 <= 4x <= twiceUpper^2`, with `4x` carried at the squared scale.
+        let fourX = asFixed x <<< (2 - fixedPoint)
+
+        twiceLower * twiceLower <= fourX && fourX <= twiceUpper * twiceUpper
+
+    /// Wide `BigInteger`s spanning many bit lengths: the Newton iteration below derives its
+    /// starting point from the bit length, so that is the axis worth varying.
+    let private genWideInteger : Gen<BigInteger> =
+        gen {
+            let! shift = Gen.choose (0, 400)
+            let! seed = Gen.choose64 (0L, Int64.MaxValue)
+            let! low = Gen.choose64 (0L, Int64.MaxValue)
+            return ((BigInteger seed) <<< shift) + BigInteger low
+        }
+
+    [<Test>]
+    let ``integerSqrt brackets its argument`` () : unit =
+        // The defining property, and the only thing `sqrt` assumes of it.
+        let property (n : BigInteger) : bool =
+            let r = DeterministicMath.integerSqrt n
+            r * r <= n && n < (r + BigInteger.One) * (r + BigInteger.One)
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genWideInteger) property)
+
+    [<Test>]
+    let ``integerSqrt is exact on squares`` () : unit =
+        // Perfect squares are where the bracket above is tightest, and they are the inputs on
+        // which `sqrt`'s sticky bit has to come out zero. A random draw almost never hits one.
+        let property (r : BigInteger) : bool =
+            DeterministicMath.integerSqrt (r * r) = r
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genWideInteger) property)
+
+    /// Doubles whose exponent leaves room to square them without overflowing or reaching the
+    /// subnormals, where the squaring below would lose bits of its own.
+    let private genSquarableDouble : Gen<float> =
+        gen {
+            let! biasedExponent = Gen.choose (1023 - 500, 1023 + 500)
+            let! fraction = Gen.choose64 (0L, 0xF_FFFF_FFFF_FFFFL)
+            return BitConverter.UInt64BitsToDouble ((uint64 biasedExponent <<< 52) ||| uint64 fraction)
+        }
+
+    /// Arguments whose exact square root sits within about a quarter of an ulp of a midpoint
+    /// between two representable results — near enough that which way the answer goes is
+    /// decided by bits a uniform draw leaves nowhere near the boundary.
+    ///
+    /// These are constructed rather than searched for. The midpoint `m` between a double and
+    /// its successor is exactly representable in 54 bits, so `m^2` is exact in `BigInteger`,
+    /// and the double nearest `m^2` has a square root within a relative 2^-54 of `m`.
+    ///
+    /// A quarter of an ulp is as close as this construction gets, which is *not* close enough
+    /// to make the discarded remainder decide the answer — that needs 2^-91, and is what the
+    /// constructive test below is for. This generator covers the surrounding regime instead:
+    /// every draw exercises the rounding boundary itself, where a uniform draw lands within a
+    /// quarter-ulp of it about one time in two million.
+    let private genNearMidpointSquare : Gen<float> =
+        genSquarableDouble
+        |> Gen.map (fun r ->
+            let fixedPoint = -1080
+
+            let twiceMidpoint =
+                atExponent fixedPoint r + atExponent fixedPoint (Math.BitIncrement r)
+
+            // Squaring twice the midpoint gives 4 m^2, hence the compensating -2 below.
+            DeterministicMath.roundToDouble (twiceMidpoint * twiceMidpoint) ((2 * fixedPoint) - 2)
+        )
+
+    /// Whether the exact integer `v` is a double: at most 53 significant bits, however many
+    /// trailing zeros it takes to get there.
+    let private isExactlyRepresentable (v : BigInteger) : bool =
+        let bitLength = int (v.GetBitLength ())
+        bitLength <= 53 || ((v >>> (bitLength - 53)) <<< (bitLength - 53)) = v
+
+    /// An `m` with `m * m = target` modulo 2^`bits`, found by lifting one bit at a time. Every
+    /// odd square is 1 modulo 8, and conversely any `target` that is 1 modulo 8 has such an
+    /// `m`; each new bit of the answer is then forced, so the lift never has to backtrack.
+    let private squareRootModuloPowerOfTwo (bits : int) (target : BigInteger) : BigInteger =
+        let mutable m = BigInteger.One
+
+        for k in 3..bits do
+            let modulus = BigInteger.One <<< k
+
+            if (((m * m) - target) % modulus + modulus) % modulus <> BigInteger.Zero then
+                m <- m + (BigInteger.One <<< (k - 2))
+
+        m
+
+    [<Test>]
+    let ``sqrt rounds correctly where the remainder alone decides the answer`` () : unit =
+        // The one input class that random draws cannot reach, and the reason `sqrt` carries a
+        // sticky bit rather than just rounding its truncated integer root.
+        //
+        // The integer root is taken to 128 guard bits, so for a normal argument it agrees with
+        // the true root to 38 bits below the last one the answer keeps. Only when *all* 38 of
+        // those bits read 1000...0 -- the true root sitting just above the midpoint between two
+        // doubles, by less than 2^-91 relative -- does the discarded remainder change the
+        // answer: with it the value is above the midpoint and rounds up, without it the value
+        // is exactly on the midpoint and ties to even. That is about one double in 2^37, so a
+        // uniform search finds none: 400 000 random arguments produced no disagreement at all,
+        // and neither did the quarter-ulp generator above.
+        //
+        // These are constructed instead. Take an odd 54-bit `m`, which is exactly a midpoint
+        // between two representable results, and ask for `m * m` to sit just *below* a double:
+        // that is `m^2 = -c (mod 2^54)` for a small `c`, which the bitwise lift above solves
+        // whenever `-c` is 1 modulo 8. Then `x = m^2 + c` is exactly a double, and its root
+        // exceeds the midpoint `m` by about `c / 2m`, which for the `c` below is between 2^-104
+        // and 2^-100 in relative terms -- nine octaves or more inside the 2^-91 window where
+        // the remainder decides.
+        //
+        // Every such `x` lands on an even exponent by construction, so this says nothing about
+        // the parity adjustment; the general properties above cover that.
+        let constructed =
+            [ 7..8..199 ]
+            |> List.collect (fun c ->
+                let modulus = BigInteger.One <<< 54
+                let root = squareRootModuloPowerOfTwo 54 (modulus - BigInteger c)
+
+                // `m` and `m + 2^53` are both solutions modulo 2^54; a midpoint needs the one
+                // that is odd and has 54 bits.
+                [ root ; root + (BigInteger.One <<< 53) ]
+                |> List.filter (fun m -> not m.IsEven && m > (BigInteger.One <<< 53) && m < modulus)
+                |> List.map (fun m -> c, m, (m * m) + BigInteger c)
+            )
+            // Not every `m` the lift produces yields a *double*: `m^2 + c` is a multiple of
+            // 2^54 by construction, but it also has to fit a 53-bit significand, which needs
+            // `m` below 2^53.5 and the quotient even above it. Rows that miss are dropped
+            // rather than silently weakening the check, and the count assertion at the end is
+            // what stops that from emptying the test.
+            |> List.filter (fun (_, _, exact) -> isExactlyRepresentable exact)
+            |> List.map (fun (c, m, exact) -> c, m, exact, DeterministicMath.roundToDouble exact 0)
+
+        // The construction is only meaningful if `x` really is `m^2 + c` exactly; a value that
+        // had to be rounded would not sit where the argument above says it does.
+        constructed
+        |> List.choose (fun (c, m, exact, x) ->
+            let mantissa, exponent = DeterministicMath.decompose x
+
+            if (mantissa <<< exponent) = exact then
+                None
+            else
+                Some $"the constructed argument for c = %i{c}, m = %O{m} is not exactly representable"
+        )
+        |> reportFailures
+
+        constructed
+        |> List.choose (fun (c, m, _, x) ->
+            let actual = DeterministicMath.sqrt x
+            let host = Math.Sqrt x
+
+            if
+                isCorrectlyRoundedSqrt x actual
+                && BitConverter.DoubleToUInt64Bits actual = BitConverter.DoubleToUInt64Bits host
+            then
+                None
+            else
+                Some
+                    $"sqrt of the constructed argument for c = %i{c}, m = %O{m} (%.17g{x}): got %016x{BitConverter.DoubleToUInt64Bits actual}, host %016x{BitConverter.DoubleToUInt64Bits host}"
+        )
+        |> reportFailures
+
+        // Guards against the construction quietly producing nothing to check. Nineteen of the
+        // twenty-five rows above survive the filter as this is written.
+        if List.length constructed < 8 then
+            failwith $"the near-tie construction produced only %i{List.length constructed} arguments to check"
+
+    [<Test>]
+    let ``sqrt is correctly rounded where the answer is nearly a tie`` () : unit =
+        // Checked twice over: against the exact predicate, and against the host, which must
+        // resolve these the same way for the same reason.
+        let property (x : float) : bool =
+            let root = DeterministicMath.sqrt x
+
+            isCorrectlyRoundedSqrt x root
+            && BitConverter.DoubleToUInt64Bits root = BitConverter.DoubleToUInt64Bits (Math.Sqrt x)
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genNearMidpointSquare) property)
+
+    [<Test>]
+    let ``sqrt is correctly rounded`` () : unit =
+        // Not "to within an ulp", as the corresponding pow, sin and cos properties have to
+        // say. IEEE 754 clause 5.4.1 makes squareRoot a *required* operation and requires it
+        // to be correctly rounded, so this is exact — and it is checked against an exact
+        // predicate rather than against another implementation.
+        let property (x : float) : bool =
+            isCorrectlyRoundedSqrt x (DeterministicMath.sqrt x)
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genPositiveFiniteDouble) property)
+
+    [<Test>]
+    let ``sqrt agrees with the host bit-for-bit`` () : unit =
+        // The one place in this module where the host is an exact oracle rather than a bound.
+        // `pow`, `sin` and `cos` are clause 9.2 operations, which libms round to about
+        // 0.5 + epsilon ulp, so their tests can only limit how far the two may drift apart;
+        // squareRoot must be correctly rounded and every platform emits a hardware instruction
+        // that is, so any disagreement here at all is a bug in one of the two.
+        let property (x : float) : bool =
+            BitConverter.DoubleToUInt64Bits (DeterministicMath.sqrt x) = BitConverter.DoubleToUInt64Bits (Math.Sqrt x)
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genPositiveFiniteDouble) property)
+
+    [<Test>]
+    let ``sqrt is exact on squares of exactly representable values`` () : unit =
+        // A double with at most 26 significant bits has a square that is still a double, so
+        // the root is recoverable exactly and no rounding may intervene. This is the case in
+        // which `sqrt`'s sticky bit is zero, which a random draw would essentially never hit.
+        let property (significand : int, exponent : int) : bool =
+            // Exponents kept well inside the range where the square neither overflows nor
+            // reaches the subnormals, since squaring would there lose bits of its own.
+            let y = DeterministicMath.roundToDouble (BigInteger significand) exponent
+            DeterministicMath.sqrt (y * y) = y
+
+        Check.One (
+            propertyConfig,
+            Prop.forAll (Arb.fromGen (Gen.zip (Gen.choose (1, (1 <<< 26) - 1)) (Gen.choose (-400, 400)))) property
+        )
+
+    [<Test>]
+    let ``sqrt inverts squaring to within a rounding`` () : unit =
+        // Squaring a general double loses bits, so `sqrt (x * x)` cannot always be `x` — but
+        // the true root of the rounded square is within an ulp of `x`, and `sqrt` rounds
+        // correctly, so the answer is `x` or one of its immediate neighbours.
+        let property (x : float) : bool =
+            let squared = x * x
+
+            // A square that overflows, or that lands in the subnormals where squaring
+            // discards far more than a rounding, says nothing about `sqrt`.
+            if not (Double.IsNormal squared) then
+                true
+            else
+                ulpDistance (DeterministicMath.sqrt squared) x <= 1.0
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genPositiveFiniteDouble) property)
+
+    [<Test>]
+    let ``sqrt is monotone`` () : unit =
+        // The correct rounding of a monotone function is monotone, so this holds exactly
+        // rather than up to an error term.
+        let property (a : float, b : float) : bool =
+            let smaller, larger = if a <= b then a, b else b, a
+            DeterministicMath.sqrt smaller <= DeterministicMath.sqrt larger
+
+        Check.One (
+            propertyConfig,
+            Prop.forAll (Arb.fromGen (Gen.zip genPositiveFiniteDouble genPositiveFiniteDouble)) property
+        )
+
+    [<Test>]
+    let ``sqrt is a pure function of its argument`` () : unit =
+        let property (x : float) : bool =
+            let first = DeterministicMath.sqrt x
+            let second = DeterministicMath.sqrt x
+            BitConverter.DoubleToUInt64Bits first = BitConverter.DoubleToUInt64Bits second
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genFiniteDouble) property)
+
+    /// `(argument, expected bits)` for the arguments on which IEEE 754 fixes an answer
+    /// exactly. Stated in bits so that the sign of a zero and the payload of a NaN are pinned
+    /// rather than compared by an equality that ignores them.
+    ///
+    /// The irrational rows are not transcribed on trust: the test below re-derives that each
+    /// one is the correctly rounded root, so a mistyped constant fails whatever `sqrt` does.
+    let private sqrtSpecialCases : (float * uint64) list =
+        let ofBits (b : uint64) : float = BitConverter.UInt64BitsToDouble b
+        let positiveNaN = 0x7FF8000000000000UL
+
+        [
+            // Clause 5.4.1: squareRoot(+/-0) is that same zero, and squareRoot(+infinity) is
+            // +infinity. Exact, not merely correctly rounded.
+            0.0, 0x0000000000000000UL
+            -0.0, 0x8000000000000000UL
+            infinity, 0x7FF0000000000000UL
+
+            // Every *other* negative argument is outside the domain: invalid operation, and a
+            // quiet NaN. -0 above is not, which is why it has to be handled before them.
+            -1.0, positiveNaN
+            -0.5, positiveNaN
+            -Double.Epsilon, positiveNaN
+            -infinity, positiveNaN
+            Double.MinValue, positiveNaN
+
+            // Roots that are themselves representable: every correctly rounded implementation
+            // returns these bit-for-bit, and so must an exact one.
+            1.0, 0x3FF0000000000000UL
+            4.0, 0x4000000000000000UL
+            9.0, 0x4008000000000000UL
+            2.25, 0x3FF8000000000000UL
+            0.25, 0x3FE0000000000000UL
+
+            // Irrational roots, correctly rounded, including both ends of the range: the
+            // smallest subnormal and the largest finite double, where the argument's exponent
+            // is furthest from even and the widening in `sqrt` does the most work.
+            2.0, 0x3FF6A09E667F3BCDUL
+            3.0, 0x3FFBB67AE8584CAAUL
+            10.0, 0x40094C583ADA5B53UL
+            0.5, 0x3FE6A09E667F3BCDUL
+            1e-300, 0x20CA2FE76A3F9475UL
+            1e300, 0x5F138D352E5096AFUL
+            Double.Epsilon, 0x1E60000000000000UL
+            Double.MaxValue, 0x5FEFFFFFFFFFFFFFUL
+
+            // A NaN argument comes back with its payload and sign intact, and quietened if it
+            // was signalling. Unlike the NaN *generated* above for a negative argument, this
+            // is what both x86 and Arm hardware do, so no host exemption is needed for it.
+            ofBits 0x7FF8000000000000UL, 0x7FF8000000000000UL
+            ofBits 0xFFF8000000000000UL, 0xFFF8000000000000UL
+            ofBits 0x7FF8000000000123UL, 0x7FF8000000000123UL
+            ofBits 0xFFF8000000000123UL, 0xFFF8000000000123UL
+            ofBits 0x7FF0000000000123UL, 0x7FF8000000000123UL
+            ofBits 0xFFF0000000000123UL, 0xFFF8000000000123UL
+            ofBits 0x7FF0000000000001UL, 0x7FF8000000000001UL
+        ]
+
+    [<Test>]
+    let ``the sqrt special cases are correctly rounded`` () : unit =
+        // Keeps the table above honest independently of `sqrt`: for every row whose argument
+        // and expected result are both finite and positive, the expected bits really are the
+        // nearest double to the true square root.
+        sqrtSpecialCases
+        |> List.choose (fun (x, expected) ->
+            let result = BitConverter.UInt64BitsToDouble expected
+
+            if
+                Double.IsNaN x
+                || x <= 0.0
+                || Double.IsInfinity x
+                || Double.IsNaN result
+                || result = 0.0
+                || Double.IsInfinity result
+            then
+                None
+            elif isCorrectlyRoundedSqrt x result then
+                None
+            else
+                Some $"the table's sqrt(%.17g{x}) = %016x{expected} is not the correctly rounded root"
+        )
+        |> reportFailures
+
+    [<Test>]
+    let ``sqrt matches the IEEE 754 special cases`` () : unit =
+        sqrtSpecialCases
+        |> List.choose (fun (x, expected) ->
+            let actual = BitConverter.DoubleToUInt64Bits (DeterministicMath.sqrt x)
+
+            if actual = expected then
+                None
+            else
+                Some $"sqrt(%.17g{x}): expected bits %016x{expected}, got %016x{actual}"
+        )
+        |> reportFailures
+
+    /// The rows of `sqrtSpecialCases` on which the host is allowed to disagree, with the one
+    /// other answer it may give.
+    ///
+    /// This map is much shorter than its `pow` and `sin` counterparts, and that is the point:
+    /// squareRoot is correctly rounded everywhere, so no *finite* row can appear here. Only
+    /// the NaN generated for a negative argument is open, and only in its sign.
+    let private sqrtHostAlternatives : Map<uint64, uint64> =
+        let negativeNaN = 0xFFF8000000000000UL
+
+        [
+            // The payload of a freshly generated NaN is the hardware's: x86's `sqrtsd` yields
+            // the negative quiet NaN (the "indefinite" value, which is what `Double.NaN` is)
+            // and Arm's `fsqrt` the positive one.
+            BitConverter.DoubleToUInt64Bits -1.0, negativeNaN
+            BitConverter.DoubleToUInt64Bits -0.5, negativeNaN
+            BitConverter.DoubleToUInt64Bits -Double.Epsilon, negativeNaN
+            BitConverter.DoubleToUInt64Bits -infinity, negativeNaN
+            BitConverter.DoubleToUInt64Bits Double.MinValue, negativeNaN
+        ]
+        |> Map.ofList
+
+    [<Test>]
+    let ``the host agrees about the sqrt special cases`` () : unit =
+        sqrtSpecialCases
+        |> List.choose (fun (x, expected) ->
+            let host = BitConverter.DoubleToUInt64Bits (Math.Sqrt x)
+            let key = BitConverter.DoubleToUInt64Bits x
+
+            let permitted =
+                match Map.tryFind key sqrtHostAlternatives with
+                | None -> [ expected ]
+                | Some alternative -> [ expected ; alternative ]
+
+            if List.contains host permitted then
+                None
+            else
+
+            let permitted = permitted |> List.map (sprintf "%016x") |> String.concat " or "
+
+            Some $"host sqrt(%.17g{x}): expected bits {permitted}, got %016x{host}"
         )
         |> reportFailures

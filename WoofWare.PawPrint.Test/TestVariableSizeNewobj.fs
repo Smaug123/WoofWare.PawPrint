@@ -16,9 +16,14 @@ open WoofWare.PawPrint.Test
 /// `newObjThisPtr = nullptr`) and `src/coreclr/interpreter/compiler.cpp`
 /// (`doCallInsteadOfNew = true`).
 ///
-/// These tests pin the observable consequence of modelling that correctly:
-/// `newobj String::.ctor(...)` must not leave a half-built placeholder String
-/// on the managed heap.
+/// PawPrint realises it the way CoreCLR does rather than by special-casing the
+/// allocation: `ecall.cpp`'s `PopulateManagedStringConstructors` points each of
+/// the nine `String` constructors at the managed static `String.Ctor` of matching
+/// signature, which allocates and returns the string, so `executeNewobj` redirects
+/// to that static and pushes its return value.
+///
+/// These tests pin the observable consequence: `newobj String::.ctor(...)` must
+/// not leave a half-built placeholder String on the managed heap.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestVariableSizeNewobj =
@@ -83,7 +88,7 @@ module TestVariableSizeNewobj =
         use peImage = new MemoryStream (image)
 
         try
-            match Program.run loggerFactory (Some sourceName) peImage dotnetRuntimes KernelConfig.Default None [] with
+            match Program.run loggerFactory (Some sourceName) peImage (HostConfig.Default dotnetRuntimes) with
             | RunOutcome.NormalExit (state, terminatingThread) ->
                 match state.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
                 | EvalStackValue.Int32 (Int32Source.Verbatim 0) :: _ -> ()

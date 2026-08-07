@@ -157,10 +157,7 @@ type StackHeavyProgramBenchmarks () =
                 NullLoggerFactory.Instance
                 (Some sourceName)
                 peImage
-                dotnetRuntimeDirs
-                KernelConfig.Default
-                None
-                []
+                (HostConfig.Default dotnetRuntimeDirs)
         with
         | RunOutcome.NormalExit (terminalState, terminatingThread)
         | RunOutcome.ProcessExit (terminalState, terminatingThread) ->

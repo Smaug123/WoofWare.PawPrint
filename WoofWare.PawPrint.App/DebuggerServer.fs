@@ -348,7 +348,17 @@ module DebuggerServer =
         =
         use fileStream = new FileStream (dllPath, FileMode.Open, FileAccess.Read)
 
-        match Program.prepare loggerFactory (Some dllPath) fileStream dotnetRuntimeDirs kernelConfig pctSeed argv with
+        match
+            Program.prepare
+                loggerFactory
+                (Some dllPath)
+                fileStream
+                { HostConfig.Default dotnetRuntimeDirs with
+                    Kernel = kernelConfig
+                    PctSeed = pctSeed
+                    Argv = argv
+                }
+        with
         | Program.ProgramStartResult.Ready prepared -> SessionState.Running (prepared, 0L)
         | Program.ProgramStartResult.CompletedBeforeMain outcome -> SessionState.Finished (outcome, 0L)
 

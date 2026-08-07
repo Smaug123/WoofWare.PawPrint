@@ -374,6 +374,99 @@ module DeterministicMath =
 
         if signIsNegative then -result else result
 
+    /// The integer square root of a non-negative `n`: the greatest `r` with `r * r <= n`.
+    ///
+    /// Newton's iteration, run entirely in integers so that it is exact rather than
+    /// approximate. Starting at or above the answer, `x -> (x + n/x) / 2` decreases strictly
+    /// until it reaches `floor(sqrt n)` and never goes below it, so the first non-decrease is
+    /// the termination condition and the value before it is the answer. `2^ceil(b/2)` is such
+    /// a starting point: `n < 2^b` gives `sqrt n < 2^(b/2)`.
+    let internal integerSqrt (n : BigInteger) : BigInteger =
+        if n.Sign < 0 then
+            failwith $"DeterministicMath: integerSqrt of the negative value %O{n}"
+        elif n.IsZero then
+            // The iteration below would divide by its own zero starting point.
+            BigInteger.Zero
+        else
+
+        let mutable current = BigInteger.One <<< ((int (n.GetBitLength ()) + 1) / 2)
+        let mutable next = (current + (n / current)) >>> 1
+
+        while next < current do
+            current <- next
+            next <- (current + (n / current)) >>> 1
+
+        current
+
+    /// How far `sqrt` widens the mantissa before taking its integer square root. Two
+    /// constraints: it must be even, so that halving the exponent that comes with it stays
+    /// exact; and it must leave the root wider than the 54 significant bits a rounding
+    /// midpoint has, which is what the argument on `sqrt` below turns on. A mantissa of `L`
+    /// bits gives a root of `ceil((L + 128) / 2)`, so with `L` between 1 (the smallest
+    /// subnormal) and 54 (a normal after the parity adjustment) the root runs from 65 bits to
+    /// 91 — comfortably clear at both ends.
+    let private sqrtGuardBits : int = 128
+
+    /// The square root of `x`, with the semantics of IEEE 754's `squareRoot` operation —
+    /// which is what CoreCLR's `Math.Sqrt` inherits from the hardware instruction the JIT
+    /// emits for it.
+    ///
+    /// This function is the odd one out in this module, and deliberately so. `pow`, `sin` and
+    /// `cos` are clause 9.2 *recommended* operations that no mainstream libm rounds correctly,
+    /// so computing them here changes the answer in the last bit; `squareRoot` is a clause
+    /// 5.4.1 *required* operation, every platform implements it as a correctly rounded
+    /// hardware instruction, and so this implementation agrees with the host bit-for-bit on
+    /// every argument on which IEEE 754 fixes an answer at all. Computing it in-tree is
+    /// therefore not about changing the result but about not having to trust that the host
+    /// conforms — and about giving the tests an exact oracle, which the other three lack.
+    ///
+    /// Correct rounding here is a proof rather than an error budget. `integerSqrt` returns
+    /// `floor(sqrt scaled)` exactly, so the true root lies in `[root, root + 1)` and equals
+    /// `root` precisely when the remainder vanishes; `2 * root` with a sticky bit therefore
+    /// names a value on the same side of every 53-bit rounding boundary as the truth. It can
+    /// never sit *on* one: with the sticky bit set the value is odd and has at least 66 bits,
+    /// while a midpoint has at most 54, and without it the root is `2^(sqrtGuardBits / 2)`
+    /// times an integer of at most 27 bits and so is representable exactly. (Nor can the true
+    /// square root of a double ever be a midpoint: that would need a 54-bit odd square root,
+    /// whose square has 107 bits and is not a double.)
+    let sqrt (x : float) : float =
+        if Double.IsNaN x then
+            quieted x
+        elif x = 0.0 then
+            // Both zeros are their own square root; clause 5.4.1 gives squareRoot(-0) = -0,
+            // so this must come before the negative case below rather than after it.
+            x
+        elif Double.IsNegative x then
+            // Every other negative, including -infinity, is a domain error.
+            quietNaN
+        elif Double.IsPositiveInfinity x then
+            infinity
+        else
+
+        // x = mantissa * 2^exponent exactly, with mantissa > 0. Halving the exponent needs it
+        // to be even, so a spare factor of two moves into the mantissa when it is not.
+        let mantissa, exponent = decompose x
+
+        let mantissa, exponent =
+            if exponent % 2 = 0 then
+                mantissa, exponent
+            else
+                mantissa <<< 1, exponent - 1
+
+        let scaled = mantissa <<< sqrtGuardBits
+        let root = integerSqrt scaled
+
+        let sticky =
+            if root * root = scaled then
+                BigInteger.Zero
+            else
+                BigInteger.One
+
+        // sqrt(x) = sqrt(scaled) * 2^((exponent - sqrtGuardBits) / 2), and the bracketing
+        // value is (2 * root + sticky) / 2 -- hence the extra -1 on the exponent. Both terms
+        // of the subtraction are even, so the halving is exact.
+        roundToDouble ((root <<< 1) + sticky) (((exponent - sqrtGuardBits) / 2) - 1)
+
     /// Number of fractional bits carried by the value of pi used for trigonometric range
     /// reduction. This is not the accuracy of the answer, which `fractionBits` governs; it
     /// is the accuracy needed to *subtract* a multiple of pi/2 from an argument that may be
@@ -439,9 +532,9 @@ module DeterministicMath =
         acc
 
     /// The number of significant bits a reduced argument must retain for the accuracy
-    /// argument on `cos` to hold. A double's significand is 53 of those, so this leaves a
-    /// factor of two in hand over what correct rounding needs.
-    let private reducedArgumentFloor : int = 128
+    /// argument on `sin` and `cos` to hold. A double's significand is 53 of those, so this
+    /// leaves a factor of two in hand over what correct rounding needs.
+    let internal reducedArgumentFloor : int = 128
 
     /// Reduce a finite `x` modulo pi/2. Returns `(quadrant, r)` where `quadrant` is
     /// `k % 4` for the nearest integer `k` of quarter-turns in |x|, and `r = |x| - k pi/2`
@@ -516,6 +609,34 @@ module DeterministicMath =
     /// a bound two-and-a-half times weaker than that rather than trusting the claim: if it
     /// ever fires, the fix is to carry the reduced argument at more than `fractionBits`
     /// places, not to relax the bound.
+    /// `sin r` or `cos r` for a reduced argument `r`, which both entry points below want
+    /// depending on which residue their argument fell into. `x` is passed only so that a
+    /// failure can name the argument that produced it.
+    ///
+    /// The precision floor is checked on the sine branch alone: `cos r` is at least
+    /// cos(pi/4) in magnitude for any `r` the reduction can return, so it is insensitive to
+    /// how many bits `r` kept, whereas `sin r` is proportional to `r` itself and inherits
+    /// whatever cancellation the reduction suffered.
+    let private evaluateReduced (x : float) (isSine : bool) (r : BigInteger) : float =
+        if isSine then
+            // `r` is less than 1, so its bit length as a fixed-point value *is* its number
+            // of significant bits.
+            let significantBits = int ((BigInteger.Abs r).GetBitLength ())
+
+            if significantBits < reducedArgumentFloor then
+                failwith
+                    $"DeterministicMath: reducing %.17g{x} modulo pi/2 left a remainder with only %i{significantBits} significant bits, below the %i{reducedArgumentFloor} this implementation's accuracy argument assumes; the reduced argument needs to be carried at more than %i{fractionBits} places"
+
+        let rSquared = mulFixed r r
+
+        let value =
+            if isSine then
+                trigSeries r 1 rSquared
+            else
+                trigSeries scale 0 rSquared
+
+        roundToDouble value -fractionBits
+
     let cos (x : float) : float =
         // No case overrides a NaN operand, so unlike `pow` this needs no separate
         // signalling test: `quieted` is the identity on a NaN that is already quiet.
@@ -530,26 +651,66 @@ module DeterministicMath =
 
         // cos(k pi/2 + r) is cos(r), -sin(r), -cos(r), sin(r) as k runs through the
         // residues mod 4.
-        let isSine = quadrant % 2 = 1
-
-        if isSine then
-            // `r` is less than 1, so its bit length as a fixed-point value *is* its number
-            // of significant bits.
-            let significantBits = int ((BigInteger.Abs r).GetBitLength ())
-
-            if significantBits < reducedArgumentFloor then
-                failwith
-                    $"DeterministicMath.cos: reducing %.17g{x} modulo pi/2 left a remainder with only %i{significantBits} significant bits, below the %i{reducedArgumentFloor} this implementation's accuracy argument assumes; the reduced argument needs to be carried at more than %i{fractionBits} places"
-
-        let rSquared = mulFixed r r
-
-        let value =
-            if isSine then
-                trigSeries r 1 rSquared
-            else
-                trigSeries scale 0 rSquared
-
-        let result = roundToDouble value -fractionBits
+        let magnitude = evaluateReduced x (quadrant % 2 = 1) r
 
         // Quadrants 1 and 2 are the half-turn on which cosine is negative.
-        if quadrant = 1 || quadrant = 2 then -result else result
+        if quadrant = 1 || quadrant = 2 then
+            -magnitude
+        else
+            magnitude
+
+    /// Below this magnitude `sin x` is answered by `x` itself rather than by the reduction
+    /// and the series.
+    ///
+    /// Two facts meet here. Downwards: the reduction narrows its result to `fractionBits`
+    /// fractional bits, so an argument below 2^-`fractionBits` reduces to nothing at all and
+    /// one below 2^-(`fractionBits` - `reducedArgumentFloor`) keeps too few bits for the
+    /// accuracy argument — this is exactly the magnitude at which `evaluateReduced` would
+    /// start to complain, which is why it is written in terms of those two constants rather
+    /// than as a literal, and why it cannot drift out of step with them. `cos` needs no such
+    /// bound because its answer near zero is 1 regardless.
+    ///
+    /// Upwards: `x - sin x` is about x^3/6, which stays under half an ulp of `x` until |x|
+    /// reaches roughly 2^-25.2, so returning the argument is the correctly rounded answer
+    /// anywhere below that. The threshold sits a hundred octaves inside that region, and
+    /// `TestDeterministicMath` checks the whole of the gap rather than the boundary alone.
+    ///
+    /// It also disposes of the zeros: clause 9.2.1 of IEEE 754-2019 asks for sin(+0) = +0 and
+    /// sin(-0) = -0, and returning the argument gives both.
+    let private smallArgumentThreshold : float =
+        roundToDouble BigInteger.One (reducedArgumentFloor - fractionBits)
+
+    /// The sine of `x` in radians, with the semantics of IEEE 754 / C99 `sin` — which is what
+    /// CoreCLR's `Math.Sin` inherits from the platform C library.
+    ///
+    /// The accuracy argument is the one written out over `cos`, with the two branches
+    /// exchanged: here it is the *even* residues that answer ±sin(r) and so depend on how
+    /// much of `r` survived the reduction.
+    let sin (x : float) : float =
+        if Double.IsNaN x then
+            quieted x
+        elif Double.IsInfinity x then
+            // A domain error, as for `cos`.
+            quietNaN
+        elif abs x < smallArgumentThreshold then
+            x
+        else
+
+        let quadrant, r = reduceModuloQuarterTurn x
+
+        // sin(k pi/2 + r) is sin(r), cos(r), -sin(r), -cos(r) as k runs through the
+        // residues mod 4 — the cosine table rotated by one, since the reduction is shared.
+        let magnitude = evaluateReduced x (quadrant % 2 = 0) r
+
+        // Quadrants 2 and 3 are the half-turn on which the sine of |x| is negative.
+        let atMagnitude =
+            if quadrant = 2 || quadrant = 3 then
+                -magnitude
+            else
+                magnitude
+
+        // The reduction took |x|, so the oddness of sine is applied here. `Double.IsNegative`
+        // rather than `< 0.0`: the latter is false for -0.0, and clause 9.2.1 wants -0 back.
+        // (A negative zero never reaches this line, being below the threshold above, but a
+        // sign rule that is wrong on it is a trap for anyone who moves the threshold.)
+        if Double.IsNegative x then -atMagnitude else atMagnitude

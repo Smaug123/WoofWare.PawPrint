@@ -97,10 +97,7 @@ module TestLinuxCoreLibFlavour =
                 loggerFactory
                 (Some "LinuxCoreLibFlavour.cs")
                 peImage
-                (runtimeDirsPreferringLinux frameworkDir)
-                KernelConfig.Default
-                None
-                []
+                (HostConfig.Default (runtimeDirsPreferringLinux frameworkDir))
 
         match outcome with
         | RunOutcome.NormalExit (terminalState, terminatingThread) -> terminalState, terminatingThread

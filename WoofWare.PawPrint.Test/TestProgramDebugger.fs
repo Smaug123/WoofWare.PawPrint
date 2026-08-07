@@ -120,14 +120,7 @@ class Program
             let normalOutcome =
                 use stream = new MemoryStream (image)
 
-                Program.run
-                    normalLoggerFactory
-                    (Some "DebuggerProperty.cs")
-                    stream
-                    dotnetRuntimes
-                    KernelConfig.Default
-                    None
-                    []
+                Program.run normalLoggerFactory (Some "DebuggerProperty.cs") stream (HostConfig.Default dotnetRuntimes)
 
             let _, debuggerLoggerFactory = LoggerFactory.makeTest ()
             use _debuggerLoggerFactoryResource = debuggerLoggerFactory
@@ -141,10 +134,7 @@ class Program
                         debuggerLoggerFactory
                         (Some "DebuggerProperty.cs")
                         stream
-                        dotnetRuntimes
-                        KernelConfig.Default
-                        None
-                        []
+                        (HostConfig.Default dotnetRuntimes)
                 with
                 | Program.ProgramStartResult.Ready prepared -> stepToCompletion debuggerLoggerFactory logger prepared
                 | Program.ProgramStartResult.CompletedBeforeMain outcome -> outcome

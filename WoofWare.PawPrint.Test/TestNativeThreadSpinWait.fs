@@ -62,7 +62,13 @@ public static class Entry
         use peImage = new MemoryStream (image)
 
         match
-            Program.prepare loggerFactory (Some "ThreadSpinWaitTest.cs") peImage dotnetRuntimes kernelConfig None []
+            Program.prepare
+                loggerFactory
+                (Some "ThreadSpinWaitTest.cs")
+                peImage
+                { HostConfig.Default dotnetRuntimes with
+                    Kernel = kernelConfig
+                }
         with
         | Program.ProgramStartResult.Ready prepared -> prepared
         | Program.ProgramStartResult.CompletedBeforeMain outcome ->

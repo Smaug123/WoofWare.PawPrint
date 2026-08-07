@@ -102,6 +102,98 @@ module NativeSystemNative =
         | CliType.Numeric (CliNumericType.Int32 count) -> checkedCount (int64 count)
         | other -> failwith $"%s{operation}: expected UIntPtr allocation size, got %O{other}"
 
+    /// Whether a pointer argument is the null pointer — a total test, unlike
+    /// `NativeCall.managedPointerOfPointerArgument`, which insists the non-null
+    /// case resolve to storage PawPrint can address.
+    ///
+    /// Entry points whose C counterpart returns an error *without dereferencing
+    /// the buffer* need exactly this: a guest may legally hand such a call an
+    /// unresolvable bit pattern (`(byte*)123`), the real shim never touches it,
+    /// and so PawPrint must decide the error before it tries to resolve the
+    /// pointer to a cell.
+    let private isNullPointerArgument (arg : CliType) : bool =
+        match CliType.unwrapPrimitiveLikeDeep arg with
+        | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null)
+        | CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L)
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null))
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) -> true
+        | _ -> false
+
+    /// Classify a buffer-pointer argument as storage PawPrint can address, or
+    /// as an address no kernel could have transferred bytes through.
+    ///
+    /// `None` covers both the null pointer and a raw unmapped bit pattern such
+    /// as `(byte*)123`. Real `write(2)` and `getcwd(3)` alike return `EFAULT`
+    /// for either, having performed no I/O, so an entry point that is about to
+    /// dereference its buffer collapses both to that errno rather than aborting
+    /// the interpreter — see `Errno.EFAULT`. A guest reaches this only by
+    /// hand-rolling a P/Invoke; the BCL's own wrappers null-check upstream.
+    ///
+    /// Note this is a question about *dereferenceability*, so callers that need
+    /// to tell null from unmapped (because their C counterpart treats the two
+    /// differently) must ask `isNullPointerArgument` first.
+    let private dereferenceablePointerArgument
+        (operation : string)
+        (argName : string)
+        (arg : CliType)
+        : ManagedPointerSource option
+        =
+        // `ManagedPointerSource.Null` is non-dereferenceable too: it can arrive
+        // wrapped in `CliRuntimePointer.Managed` when the guest passes e.g.
+        // `IntPtr.Zero` after a managed conversion, as well as via the
+        // verbatim-0 path.
+        let classifyManaged (ptr : ManagedPointerSource) : ManagedPointerSource option =
+            match ptr with
+            | ManagedPointerSource.Null -> None
+            | _ -> Some ptr
+
+        match CliType.unwrapPrimitiveLikeDeep arg with
+        | CliType.RuntimePointer (CliRuntimePointer.Managed ptr) -> classifyManaged ptr
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ptr)) -> classifyManaged ptr
+        // 0L is null; non-zero is a raw unmapped address. Either way the kernel
+        // cannot transfer bytes through it.
+        | CliType.RuntimePointer (CliRuntimePointer.Verbatim _) -> None
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim _)) -> None
+        | other ->
+            failwith
+                $"%s{operation}: expected %s{argName} to be a managed pointer, raw verbatim address, or null literal, got %O{other} (this is an interpreter bug)"
+
+    /// Write `bytes` through a caller-supplied `byte*`, one cell at a time.
+    /// The simulated address space is a graph of typed cells rather than a flat
+    /// byte array, so "memcpy into the caller's buffer" is necessarily this
+    /// per-byte walk; `ManagedPointerByteView.addByteOffset` is what resolves
+    /// each offset back to a cell, whatever storage the pointer actually names
+    /// (a `localloc` block, a pinned `byte[]`, native heap).
+    ///
+    /// `buffer` must not be null and must have room for every byte: both are
+    /// the caller's business, because what a too-small or null buffer *means*
+    /// differs per entry point (ERANGE here, EFAULT elsewhere).
+    let private writeBytesThrough
+        (ctx : NativeCallContext)
+        (operation : string)
+        (buffer : ManagedPointerSource)
+        (bytes : ImmutableArray<byte>)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        let byteConcreteType =
+            NativeCall.requiredByteConcreteType operation ctx.BaseClassTypes state
+
+        let mutable state = state
+
+        for i = 0 to bytes.Length - 1 do
+            let dest =
+                ManagedPointerByteView.addByteOffset ctx.BaseClassTypes state byteConcreteType i buffer
+
+            state <-
+                IlMachineState.writeManagedByrefBytesOrTypedCell
+                    ctx.BaseClassTypes
+                    state
+                    dest
+                    (CliType.Numeric (CliNumericType.UInt8 bytes.[i]))
+
+        state
+
     /// Shared body of `SystemNative_GetNonCryptographicallySecureRandomBytes`
     /// and `SystemNative_GetCryptographicallySecureRandomBytes`. The two entry
     /// points declare the identical `(byte* buffer, int32 bufferLength)`
@@ -163,23 +255,7 @@ module NativeSystemNative =
             | _ ->
                 let bytes, newPrngState = NonCryptoRandom.drawBytes length prngState
 
-                let byteConcreteType =
-                    NativeCall.requiredByteConcreteType operation ctx.BaseClassTypes state
-
-                let mutable state = state
-
-                for i = 0 to length - 1 do
-                    let dest =
-                        ManagedPointerByteView.addByteOffset ctx.BaseClassTypes state byteConcreteType i buffer
-
-                    state <-
-                        IlMachineState.writeManagedByrefBytesOrTypedCell
-                            ctx.BaseClassTypes
-                            state
-                            dest
-                            (CliType.Numeric (CliNumericType.UInt8 bytes.[i]))
-
-                state, newPrngState
+                writeBytesThrough ctx operation buffer (ImmutableArray.CreateRange bytes) state, newPrngState
 
     let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
@@ -513,6 +589,109 @@ module NativeSystemNative =
             |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
+        | Some "SystemNative_GetCwd",
+          [ ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePointer _) ->
+            // `char* SystemNative_GetCwd(char* buffer, int32_t bufferSize)`
+            // (pal_process.c:1302) guards a negative size and otherwise
+            // delegates straight to `getcwd(3)`:
+            //
+            //   bufferSize < 0                      -> errno EINVAL, NULL
+            //   bufferSize == 0 (non-NULL buffer)   -> errno EINVAL, NULL
+            //   bufferSize < strlen(cwd) + 1        -> errno ERANGE, NULL
+            //   otherwise      -> write the NUL-terminated path, return buffer
+            //
+            // The ERANGE case is used in actual domain logic:
+            // CoreLib's `Interop.Sys.GetCwd()` tries a 256-byte `localloc`
+            // first, and `GetCwdHelper` reads the errno back (as the PAL
+            // `Interop.Error.ERANGE`) to decide whether to retry with
+            // ArrayPool buffers at doubling sizes rather than throw. Getting
+            // this wrong turns a long cwd into an IOException.
+            //
+            // The return value is the caller's own `buffer` on success, which
+            // is what `getcwd` promises; note CoreLib only tests it against
+            // NULL and then decodes `arg0`, so faithfulness here is for guests
+            // that hand-roll the P/Invoke.
+            //
+            // PawPrint answers from `Kernel.CurrentDirectory` rather than the
+            // host's `getcwd(3)`; see `EmulatedKernel.CurrentDirectory` for
+            // why a host read would make a replay depend on where it was
+            // recorded.
+            let operation = "SystemNative_GetCwd"
+
+            let bufferArgument = instruction.Arguments.[0]
+            let bufferSize = NativeCall.int32Argument operation instruction.Arguments.[1]
+
+            // Without the terminator: `getcwd` needs room for the path *and*
+            // its NUL, which is exactly why a buffer of `path.Length` is one
+            // byte short rather than an exact fit.
+            let path = AbsoluteUnixPath.toUtf8 state.Kernel.CurrentDirectory
+
+            /// Set errno and hand the guest a NULL `char*`, as the C does on
+            /// every failure path.
+            let fail (errno : int) : NativeHandlerResult option =
+                state.MapKernel (fun kernel ->
+                    { kernel with
+                        LastSystemError = errno
+                    }
+                )
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ManagedPointerSource.Null) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            // Every failure below is decided *without* resolving `buffer` to
+            // storage, because the C decides them without dereferencing it: the
+            // negative-size guard runs before `getcwd` is even called, and
+            // `getcwd` itself validates the size and compares it against the
+            // path length before it writes a byte. A guest that hand-rolls this
+            // P/Invoke may therefore legally pass a bit pattern PawPrint cannot
+            // resolve — `GetCwd((byte*)123, 0)` returns EINVAL on the real
+            // runtime — so the pointer is only decoded on the success path,
+            // which is the one place it is actually dereferenced.
+            if bufferSize < 0 then
+                // The shim's own guard. Note it *also* `assert`s this, so a
+                // checked native build would abort instead; EINVAL is what a
+                // guest running against a retail runtime can observe, and it
+                // is the only one of the two behaviours we can reproduce.
+                fail Errno.EINVAL
+            elif isNullPointerArgument bufferArgument then
+                // `getcwd(NULL, size)` is a glibc/BSD extension that mallocs
+                // the result, and PawPrint does not model it: CoreLib's
+                // `Interop.Sys.GetCwd` always supplies a `localloc` block or a
+                // pinned `byte[]`, so a null here means a guest hand-rolled the
+                // P/Invoke and is relying on the allocating form. Tested before
+                // the zero-size case below, which would otherwise report EINVAL
+                // for `getcwd(NULL, 0)` — a call the real runtime *succeeds*.
+                failwith
+                    $"%s{operation}: refusing to honour the allocating `getcwd(NULL, %d{bufferSize})` extension (PawPrint models only the caller-supplied-buffer form, which is the only one CoreLib uses)"
+            elif bufferSize = 0 then
+                // POSIX: size 0 with a non-NULL buffer is EINVAL, *not*
+                // ERANGE — so a guest must not treat it as "grow and retry".
+                fail Errno.EINVAL
+            elif bufferSize < path.Length + 1 then
+                fail Errno.ERANGE
+            else
+
+            // The buffer is genuinely dereferenced from here on, so this is
+            // where it must resolve to storage. A pointer that does not is an
+            // unmapped address (null was already handled above), which real
+            // `getcwd` reports as EFAULT after writing nothing — note that the
+            // size checks above come first, so `getcwd((byte*)123, 1)` is
+            // ERANGE rather than EFAULT, as on the real kernel.
+            match dereferenceablePointerArgument operation "buffer" bufferArgument with
+            | None -> fail Errno.EFAULT
+            | Some buffer ->
+
+            // Success. errno is left untouched, per Unix convention (and
+            // CoreLib has already zeroed it via `Marshal.SetLastSystemError 0`
+            // immediately before the call).
+            let terminated = path.Add 0uy
+
+            writeBytesThrough ctx operation buffer terminated state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer buffer) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
         | Some "SystemNative_SetErrNo",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Void ->
@@ -788,33 +967,7 @@ module NativeSystemNative =
                                 // upstream) observes the same syscall
                                 // failure it would on the host.
                                 let dereferenceableBuffer : ManagedPointerSource option =
-                                    // `ManagedPointerSource.Null` is *also*
-                                    // non-dereferenceable — it can arrive
-                                    // wrapped in `CliRuntimePointer.Managed`
-                                    // when the guest passes e.g.
-                                    // `IntPtr.Zero` after a managed
-                                    // conversion, in addition to the
-                                    // verbatim-0 path. Collapse both kinds
-                                    // of null to EFAULT before `readBuffer`
-                                    // is asked to project from them.
-                                    let classifyManaged (ptr : ManagedPointerSource) =
-                                        match ptr with
-                                        | ManagedPointerSource.Null -> None
-                                        | _ -> Some ptr
-
-                                    match CliType.unwrapPrimitiveLikeDeep instruction.Arguments.[1] with
-                                    | CliType.RuntimePointer (CliRuntimePointer.Managed ptr) -> classifyManaged ptr
-                                    | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ptr)) ->
-                                        classifyManaged ptr
-                                    | CliType.RuntimePointer (CliRuntimePointer.Verbatim _) ->
-                                        // 0L is null; non-zero is a raw
-                                        // unmapped address. Either way the
-                                        // kernel cannot read from it.
-                                        None
-                                    | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim _)) -> None
-                                    | other ->
-                                        failwith
-                                            $"%s{operation}: expected buffer to be a managed pointer, raw verbatim address, or null literal, got %O{other} (this is an interpreter bug)"
+                                    dereferenceablePointerArgument operation "buffer" instruction.Arguments.[1]
 
                                 match dereferenceableBuffer with
                                 | None ->

@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <Compile Include="LoggerFactory.fs" />
+    <Compile Include="TestGcHeapHardLimit.fs" />
     <Compile Include="Assembly.fs" />
     <Compile Include="Roslyn.fs" />
     <Compile Include="TestAssemblyReadCache.fs" />
@@ -39,6 +40,7 @@
     <Compile Include="TestNullaryIlOp.fs" />
     <Compile Include="TestStackMemoryPool.fs" />
     <Compile Include="TestNativeMemoryPool.fs" />
+    <Compile Include="TestAbsoluteUnixPath.fs" />
     <Compile Include="TestSwitchIlOp.fs" />
     <Compile Include="TestUnaryConstIlOp.fs" />
     <Compile Include="TestUnaryMetadataIlOp.fs" />
@@ -115,6 +117,29 @@
     <Compile Include="TestRaces.fs" />
     <Compile Include="TestConcurrencyBugs.fs" />
   </ItemGroup>
+  <ItemGroup>
+    <!--
+      Bound the test host's GC heap to half of physical memory.
+
+      Unconstrained, this suite peaks around 21.8 GB RSS in the vstest test host: the live set is
+      small (the whole suite passes under an 8 GB cap) but the interpreter's allocation rate is high
+      enough that a Workstation GC with no ceiling just keeps expanding. GitHub-hosted runners are
+      4 vCPU / 16 GB, so the test host runs with no headroom there and is occasionally SIGKILLed by
+      the OOM killer mid-run — which surfaces as "Test host process crashed" with no stderr at all
+      and no indication of which test, or even that memory was the problem. Half of 16 GB is the
+      8 GB that was measured to be sufficient; capping also converts any future genuine blow-up from
+      a silent kill into an OutOfMemoryException with a stack trace.
+
+      This is a percentage rather than an absolute so it scales with the machine, and it lives in the
+      project rather than in CI so `dotnet test`, `nix build`, and local runs all share the ceiling.
+
+      Note the value is decimal: runtimeconfig properties are parsed with base 0
+      (coreclr/utilcode/configuration.cpp), unlike the DOTNET_GCHeapHardLimitPercent environment
+      variable, which coreclr/vm/gcenv.ee.cpp parses as hex.
+    -->
+    <RuntimeHostConfigurationOption Include="System.GC.HeapHardLimitPercent" Value="50" />
+  </ItemGroup>
+
   <ItemGroup>
     <EmbeddedResource Include="sourcesPure\*.cs" />
     <EmbeddedResource Include="sourcesImpure\*.cs" />

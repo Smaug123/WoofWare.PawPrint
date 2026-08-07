@@ -45,10 +45,11 @@ public static class MathPow
 
         // Roots whose exact value is representable, so every correct implementation returns
         // them bit-for-bit. (The stronger statement -- that x^0.5 equals Math.Sqrt(x) for
-        // *every* x, which holds because IEEE 754 mandates a correctly rounded sqrt -- is
-        // asserted as a property in TestDeterministicMath.fs instead. It cannot be checked
-        // from here: Math.Sqrt is itself an unimplemented JIT intrinsic, and implementing it
-        // is a separate change.)
+        // *every* x -- is asserted as a property in TestDeterministicMath.fs instead. It
+        // cannot be checked from here, because it is a claim about PawPrint rather than about
+        // both runtimes: IEEE 754 mandates a correctly rounded sqrt, so both agree on the
+        // right-hand side, but nothing obliges the *host's* pow to hit it. See MathSqrt.cs
+        // for the cases that both runtimes do owe exactly.)
         if (Math.Pow(9.0, 0.5) != 3.0) return 20;
         if (Math.Pow(2.25, 0.5) != 1.5) return 21;
         if (Math.Pow(6.25, 0.5) != 2.5) return 22;

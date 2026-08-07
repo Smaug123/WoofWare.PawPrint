@@ -13,22 +13,22 @@ using System.Threading.Tasks;
 // resumed through an awaited Task.Yield), so the multiple-wait path stays covered even though
 // the other files stick to one wait apiece.
 //
-// Why twelve: the budget is still bounded above, and this is deliberately sized an order of
-// magnitude clear of the ceiling rather than sitting on top of it, as previous numbers did.
-// That ceiling used to be a handful of waits, because the pool's hill-climbing controller
-// reaches the transcendental `Math` intrinsics -- `[Intrinsic]` + `InternalCall`, with no IL
-// body to fall back on -- as soon as it has adjusted its thread count a few times: first
-// `Math.Pow` in the gain calculation (PortableThreadPool.HillClimbing.cs:301, issue #755,
-// implemented in #763) and then `Math.Cos` in `GetWaveComponent` (line 448, implemented on
-// this branch).
+// Why only twelve, when there is no longer a ceiling to stay clear of: the budget used to be
+// a handful of waits, because the pool's hill-climbing controller reaches the `Math`
+// intrinsics -- `[Intrinsic]` + `InternalCall`, with no IL body to fall back on -- as soon as
+// it has adjusted its thread count a few times. `Math.Pow` in the gain calculation
+// (PortableThreadPool.HillClimbing.cs:301, issue #755, implemented in #763), then `Math.Cos`
+// in `GetWaveComponent` (line 448, implemented in #779), then `Math.Sin` nine lines below it
+// (line 457), and then `Math.Sqrt` by way of the magnitude the controller takes of those wave
+// components -- its own private Complex.Abs is a bare Math.Sqrt
+// (PortableThreadPool.HillClimbing.Complex.cs:35), implemented on this branch.
 //
-// Measured on this branch, with exactly the loop below: 160 blocking pool waits (80
-// iterations) pass and 240 (120 iterations) fail. The failure is `Math.Sin`, nine lines
-// further down that same `GetWaveComponent` (line 457) -- so this is still a
-// missing-primitive boundary rather than a correctness bug, and implementing it will move the
-// name in the failure without moving the number. Note that where exactly the boundary falls
-// depends on the shape of the loop body and not only on the number of waits, which is why
-// this file no longer tries to sit exactly on it.
+// With that last one in, the ceiling is gone: measured on this branch with exactly the loop
+// below, 2400 blocking pool waits (1200 iterations) pass, where 240 failed before it. The
+// controller no longer reaches any unimplemented primitive, so what bounds this file now is
+// only how long the suite is willing to spend -- 2400 waits take about eight minutes under
+// the interpreter, and twelve take two seconds. Twelve is well past the two that were needed
+// to reach the heuristic in the first place, which is what this case exists to pin.
 //
 // Every assertion is on a returned value, never on which worker thread ran something, nor on
 // timing, nor on ordering between independent tasks -- all of which are guaranteed under both

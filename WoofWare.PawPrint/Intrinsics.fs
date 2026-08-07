@@ -835,11 +835,47 @@ module Intrinsics =
                     |> IlMachineState.pushToEvalStack currentValue currentThread
                     |> IlMachineState.advanceProgramCounter currentThread
                     |> IntrinsicResult.Completed
+            | [ ConcreteByref locationType ; valueType ; comparandType ], MethodReturnType.Returns returnType when
+                locationType = valueType
+                && locationType = comparandType
+                && locationType = returnType
+                ->
+                // The correctly-shaped overloads the arms above did not claim: everything whose
+                // location/value/comparand/return are one and the same type but which is neither
+                // a scalar-integral or native-int primitive nor a reference type. That leaves
+                // enums, `Single`/`Double`, and unsupported value types; only the enum case is
+                // implemented here.
+                //
+                // `CompareExchange<TEnum>`'s shipped managed body bitcasts to the unsigned
+                // integer of the same size and calls that overload (Interlocked.cs:507-539), but
+                // `[Intrinsic]` means the JIT never runs that IL, and running it here would go
+                // through `Unsafe.BitCast`/`Unsafe.As`. We don't need to: an enum's eval-stack
+                // form *is* its underlying integer (`PrimitiveLikeKind.EnumLike`), and
+                // `readManagedByref`/`toCliTypeCoerced` peel and rewrap the `value__` slot around
+                // it, so the scalar-integer path already compares and writes at the underlying
+                // width.
+                //
+                // `isEnumValueType` asks CoreCLR's question — is the immediate base
+                // `System.Enum`? — rather than inspecting the storage's structural shape, because
+                // the contract being implemented is about `T`, not about what happens to be in
+                // the location. Its returned state carries any concretization the base-type walk
+                // performed, so it is threaded on rather than discarded.
+                let state, isEnum =
+                    IlMachineState.isEnumValueType loggerFactory baseClassTypes state locationType
+
+                if isEnum then
+                    executeScalarInteger "Interlocked.CompareExchange<TEnum>" state
+                else
+                    // `Single`/`Double` are not yet intrinsified: their shipped IL bodies
+                    // reinterpret-cast to the integer overloads, so falling through would either
+                    // re-enter this intrinsic path or lose the bit-level shape of the
+                    // floating-point value. A `T` that is none of the supported kinds should
+                    // instead raise `NotSupportedException` (Interlocked.cs:502-505). Both want
+                    // their own arm; until then, failing loudly beats mistranslating either.
+                    IntrinsicResult.Unrecognised
             | _ ->
-                // The float/double overloads are not yet intrinsified. Their shipped IL bodies
-                // reinterpret-cast to integer overloads, so falling through would either re-enter
-                // this intrinsic path or lose the bit-level shape of the floating-point value.
-                // When a caller needs one of these, add a dedicated intrinsic arm.
+                // A signature shape this intrinsic does not recognise at all — the four types are
+                // not all the same, or the parameter count is wrong.
                 IntrinsicResult.Unrecognised
         | "System.Private.CoreLib", "Interlocked", "Exchange" ->
             // Same intrinsic-boundary motivation as CompareExchange: the shipped CoreLib
@@ -956,9 +992,31 @@ module Intrinsics =
                     |> IlMachineState.pushToEvalStack currentValue currentThread
                     |> IlMachineState.advanceProgramCounter currentThread
                     |> IntrinsicResult.Completed
+            | [ ConcreteByref locationType ; valueType ], MethodReturnType.Returns returnType when
+                locationType = valueType && locationType = returnType
+                ->
+                // The enum instantiation of `Exchange<T>`, exactly mirroring the `CompareExchange`
+                // arm above: same `[Intrinsic]`-so-the-IL-never-runs argument, same
+                // `Unsafe.BitCast`-to-underlying-integer managed body we decline to execute
+                // (Interlocked.cs:257-286), and same reason the scalar-integer path is already
+                // right — an enum's eval-stack form is its underlying integer
+                // (`PrimitiveLikeKind.EnumLike`). See that arm for the full rationale, including
+                // why the nominal `isEnumValueType` question is the one being asked and why its
+                // returned state is threaded on.
+                let state, isEnum =
+                    IlMachineState.isEnumValueType loggerFactory baseClassTypes state locationType
+
+                if isEnum then
+                    executeScalarIntegerExchange "Interlocked.Exchange<TEnum>" state
+                else
+                    // `Single`/`Double`, and the `T` that should raise `NotSupportedException`
+                    // (Interlocked.cs:252-255). Both want their own arm, matching the
+                    // CompareExchange precedent above; until then, failing loudly beats
+                    // mistranslating either.
+                    IntrinsicResult.Unrecognised
             | _ ->
-                // The float/double overloads are not yet intrinsified, matching the
-                // CompareExchange precedent above. Add a dedicated arm when first needed.
+                // A signature shape this intrinsic does not recognise at all — the three types are
+                // not all the same, or the parameter count is wrong.
                 IntrinsicResult.Unrecognised
         | "System.Private.CoreLib", "Thread", "FastPollGC" ->
             // [Intrinsic] internal static void Thread.FastPollGC() => Thread.FastPollGC();
@@ -1264,6 +1322,75 @@ module Intrinsics =
                 | _ -> failwith $"Math.Cos: unexpected eval stack value: %O{argument}"
 
             let result = DeterministicMath.cos argument
+
+            state
+            |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Float64 result)) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> IntrinsicResult.Completed
+        | "System.Private.CoreLib", "Math", "Sin" when intrinsicKey.DeclaringTypeFullName = "System.Math" ->
+            // The twin of `Math.Cos` above, and the same shape: `[Intrinsic]` +
+            // `MethodImplOptions.InternalCall` with no IL body, lowered by the JIT to the
+            // platform C library's `sin`.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/coreclr/System.Private.CoreLib/src/System/Math.CoreCLR.cs#L92-L93
+            //
+            // Note that `Math.SinCos` is *not* this method: it has an IL body of its own and
+            // bottoms out in a separate `SinCos(double, double*, double*)` InternalCall, which
+            // is still unimplemented. The hill-climbing controller below does not use it.
+            //
+            // Reached from ordinary guest code, and from `GetWaveComponent`
+            // (PortableThreadPool.HillClimbing.cs:457), nine lines after the `Math.Cos` call
+            // that the same controller makes.
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteDouble state.ConcreteTypes ], MethodReturnType.Returns (ConcreteDouble state.ConcreteTypes) ->
+                ()
+            | _ -> failwith $"Math.Sin: unexpected signature %s{formatMethodKey intrinsicKey}"
+
+            let argument, state = IlMachineState.popEvalStack currentThread state
+
+            let argument =
+                match argument with
+                | EvalStackValue.Float f -> f
+                | _ -> failwith $"Math.Sin: unexpected eval stack value: %O{argument}"
+
+            let result = DeterministicMath.sin argument
+
+            state
+            |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Float64 result)) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> IntrinsicResult.Completed
+        | "System.Private.CoreLib", "Math", "Sqrt" when intrinsicKey.DeclaringTypeFullName = "System.Math" ->
+            // Declared the same way as the three above -- `[Intrinsic]` +
+            // `MethodImplOptions.InternalCall`, no IL body -- so it likewise cannot be
+            // allowlisted in `safeIntrinsics`.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/coreclr/System.Private.CoreLib/src/System/Math.CoreCLR.cs#L112-L114
+            //
+            // The reason for computing it in-tree is different from theirs, though. The JIT
+            // lowers this one to a hardware square-root instruction rather than to a libm call,
+            // and IEEE 754 clause 5.4.1 *requires* squareRoot to be correctly rounded -- so
+            // unlike `pow`, `sin` and `cos`, the host's answer does not vary between machines
+            // and forwarding to it would not have cost determinism. `DeterministicMath.sqrt`
+            // exists so that the guarantee is this runtime's own rather than a property of the
+            // host we happen to be running on, and so that the tests have an exact oracle.
+            // `TestDeterministicMath` asserts the two agree bit-for-bit on every finite
+            // argument, which is an assertion the other three cannot make.
+            //
+            // Reached from ordinary guest code, and from `PortableThreadPool`'s hill-climbing
+            // controller, which takes the magnitude of the wave components that its `Math.Sin`
+            // and `Math.Cos` calls produce: its own private `Complex.Abs`
+            // (PortableThreadPool.HillClimbing.Complex.cs:35) is a bare `Math.Sqrt`.
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteDouble state.ConcreteTypes ], MethodReturnType.Returns (ConcreteDouble state.ConcreteTypes) ->
+                ()
+            | _ -> failwith $"Math.Sqrt: unexpected signature %s{formatMethodKey intrinsicKey}"
+
+            let argument, state = IlMachineState.popEvalStack currentThread state
+
+            let argument =
+                match argument with
+                | EvalStackValue.Float f -> f
+                | _ -> failwith $"Math.Sqrt: unexpected eval stack value: %O{argument}"
+
+            let result = DeterministicMath.sqrt argument
 
             state
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Float64 result)) currentThread
