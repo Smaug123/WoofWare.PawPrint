@@ -95,6 +95,25 @@ module NullaryIlOp =
             | ConcreteTypeHandle.OneDimArrayZero _
             | ConcreteTypeHandle.Array _ -> 0L
 
+    /// Apply a bitwise operation to the low tag region of a GC handle, if the
+    /// model can state the answer. See `TaggedPointerBits`: PawPrint does not
+    /// model a handle's numeric address, so only operations that either preserve
+    /// the whole (unknown) handle or reduce to the known tag bits are answerable.
+    let private gcHandleTagOp
+        (operation : string)
+        (decide : int -> int64 -> int64 -> TaggedPointerBitsResult)
+        (handle : GcHandleAddress)
+        (tag : int64)
+        (operand : int64)
+        : NativeIntSource
+        =
+        match decide TaggedPointerBits.gcHandleTagWidthBits tag operand with
+        | TaggedPointerBitsResult.Retagged tag -> NativeIntSource.gcHandlePtrTagged handle tag
+        | TaggedPointerBitsResult.TagBitsOnly bits -> NativeIntSource.Verbatim bits
+        | TaggedPointerBitsResult.NotStatable ->
+            failwith
+                $"%s{operation}: refusing to apply 0x%x{operand} to GC handle %O{handle}; the result would depend on the handle's address, which PawPrint does not model"
+
     let private andNativeIntAddressBits
         (state : IlMachineState)
         (source : NativeIntSource)
@@ -104,6 +123,9 @@ module NullaryIlOp =
         match source with
         | NativeIntSource.Verbatim bits -> NativeIntSource.Verbatim (bits &&& mask) |> EvalStackValue.NativeInt
         | NativeIntSource.ManagedPointer ptr -> andManagedPointerAddressBits state ptr mask
+        | NativeIntSource.GcHandlePtr (handle, tag) ->
+            gcHandleTagOp "And" TaggedPointerBits.bitAnd handle tag mask
+            |> EvalStackValue.NativeInt
         | NativeIntSource.TypeHandlePtr target ->
             NativeIntSource.Verbatim (typeHandleLowAddressBits target &&& mask)
             |> EvalStackValue.NativeInt
@@ -127,6 +149,13 @@ module NullaryIlOp =
         =
         match i1, i2 with
         | NativeIntSource.Verbatim a, NativeIntSource.Verbatim b -> NativeIntSource.Verbatim (a ^^^ b), counters
+        // A GC handle's tag region is exactly representable, so flipping bits
+        // inside it has an exact answer. Without these arms the pair would fall
+        // through to hash synthesis below, which would *silently* replace the
+        // handle with opaque bits.
+        | NativeIntSource.GcHandlePtr (handle, tag), NativeIntSource.Verbatim operand
+        | NativeIntSource.Verbatim operand, NativeIntSource.GcHandlePtr (handle, tag) ->
+            gcHandleTagOp "Xor" TaggedPointerBits.bitXor handle tag operand, counters
         | _ ->
             let a, counters = PointerHashSynthesis.materialiseHashBits "Xor" i1 counters
             let b, counters = PointerHashSynthesis.materialiseHashBits "Xor" i2 counters
@@ -346,7 +375,8 @@ module NullaryIlOp =
                 failwith $"Neg: refusing to negate RuntimeMethodHandle pointer %d{handle}"
             | NativeIntSource.FieldHandlePtr handle ->
                 failwith $"Neg: refusing to negate RuntimeFieldHandle pointer %d{handle}"
-            | NativeIntSource.GcHandlePtr handle -> failwith $"Neg: refusing to negate GC handle pointer %O{handle}"
+            | NativeIntSource.GcHandlePtr (handle, _) ->
+                failwith $"Neg: refusing to negate GC handle pointer %O{handle}"
             | NativeIntSource.AssemblyHandle assemblyName ->
                 failwith $"Neg: refusing to negate assembly handle %s{assemblyName}"
             | NativeIntSource.ModuleHandle moduleName ->
@@ -700,7 +730,7 @@ module NullaryIlOp =
                 failwith $"Conv_ovf_u: refusing to convert PerInstInfo pointer %O{handle} to unsigned native int"
             | NativeIntSource.PerInstDictPtr handle ->
                 failwith $"Conv_ovf_u: refusing to convert PerInstDict pointer %O{handle} to unsigned native int"
-            | NativeIntSource.GcHandlePtr handle ->
+            | NativeIntSource.GcHandlePtr (handle, _) ->
                 failwith $"Conv_ovf_u: refusing to convert GC handle pointer %O{handle} to unsigned native int"
             | NativeIntSource.EventPipeProviderPtr id ->
                 failwith $"Conv_ovf_u: refusing to convert EventPipe provider handle #%d{id} to unsigned native int"
@@ -788,7 +818,7 @@ module NullaryIlOp =
                 failwith $"Conv_ovf_i: refusing to convert PerInstInfo pointer %O{handle} to signed native int"
             | NativeIntSource.PerInstDictPtr handle ->
                 failwith $"Conv_ovf_i: refusing to convert PerInstDict pointer %O{handle} to signed native int"
-            | NativeIntSource.GcHandlePtr handle ->
+            | NativeIntSource.GcHandlePtr (handle, _) ->
                 failwith $"Conv_ovf_i: refusing to convert GC handle pointer %O{handle} to signed native int"
             | NativeIntSource.EventPipeProviderPtr id ->
                 failwith $"Conv_ovf_i: refusing to convert EventPipe provider handle #%d{id} to signed native int"
@@ -1781,6 +1811,22 @@ module NullaryIlOp =
             let result, state =
                 match v1, v2 with
                 | EvalStackValue.Int32 v1, EvalStackValue.Int32 v2 -> v1 ||| v2 |> EvalStackValue.Int32, state
+                // Managed code tags GC handles by OR-ing bits into the low,
+                // known-clear region: `WeakReference.Create` stores
+                // `handle | TracksResurrectionBit`, and `GCHandle..ctor` marks a
+                // pinned handle with `handle |= 1`.
+                | EvalStackValue.Int32 operand, EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr (handle, tag))
+                | EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr (handle, tag)), EvalStackValue.Int32 operand ->
+                    gcHandleTagOp "Or" TaggedPointerBits.bitOr handle tag (int64<int32> operand)
+                    |> EvalStackValue.NativeInt,
+                    state
+                | EvalStackValue.NativeInt (NativeIntSource.Verbatim operand),
+                  EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr (handle, tag))
+                | EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr (handle, tag)),
+                  EvalStackValue.NativeInt (NativeIntSource.Verbatim operand) ->
+                    gcHandleTagOp "Or" TaggedPointerBits.bitOr handle tag operand
+                    |> EvalStackValue.NativeInt,
+                    state
                 | EvalStackValue.Int32 v1, EvalStackValue.NativeInt (NativeIntSource.Verbatim v2) ->
                     int64<int32> v1 ||| v2 |> NativeIntSource.Verbatim |> EvalStackValue.NativeInt, state
                 | EvalStackValue.Int32 _, EvalStackValue.NativeInt _ ->
@@ -2621,8 +2667,18 @@ module NullaryIlOp =
                     // routing through a byte reconstruction that would
                     // silently do the wrong thing.
                     IlMachineState.readManagedByref corelib state src
-                | EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr handle) ->
+                // Release CoreLib's `GCHandle.InternalGet` is literally
+                // `*(object*)handle` (GCHandle.CoreCLR.cs), so this is the
+                // dereference of the handle table slot.
+                | EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr (handle, 0L)) ->
                     GcHandleRegistry.target handle state.GcHandles |> CliType.ObjectRef
+                | EvalStackValue.NativeInt (NativeIntSource.GcHandlePtr (handle, tag)) ->
+                    // Managed code always strips its tag bits before dereferencing
+                    // (`WeakReference.Target` does `_taggedHandle & ~TracksResurrectionBit`
+                    // first). Dereferencing a tagged handle would be a misaligned
+                    // read in reality, so it must not quietly succeed here.
+                    failwith
+                        $"Ldind_ref: refusing to dereference GC handle %O{handle} while it carries tag bits 0x%x{tag}; managed code must mask them off first"
                 | EvalStackValue.NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
                 | a -> failwith $"TODO: Ldind_ref on unsupported eval stack value {a}"
 

@@ -66,11 +66,21 @@ For distinct storage containers there is no honest byte distance. `NativeIntSour
 
 Low address bits are only exposed for narrow cases where managed code masks alignment bits and the model can state a stable answer. Localloc and PE byte ranges can provide synthetic low bits directly; array elements and string characters can provide offsets from their container starts when their stride is known. Arbitrary byrefs and object fields cannot.
 
+## Tag Bits On Opaque Handles
+
+Managed code sometimes stores its own bits in a pointer's low, known-clear bits and strips them off again later. `System.WeakReference` keeps `handle | TracksResurrectionBit` in an `nint` field and masks the tag off on every read; `GCHandle` marks pinned handles with bit 0.
+
+PawPrint answers those operations without inventing an address, by carrying the tag alongside the handle's identity: `NativeIntSource.GcHandlePtr` is a `GcHandleAddress` *plus* a tag. The value is modelled as `base ||| tag`, where `base` is unknown and non-zero but has its low bits clear by the runtime's own alignment guarantee, and `tag` is known.
+
+`TaggedPointerBits` decides what such a model can say. A bitwise operation is answerable in exactly two shapes — the whole unknown base survives (so the result is the same handle with a new tag), or the whole unknown base is forced to a constant (so the result is a plain integer and no longer a pointer) — and is refused otherwise. Identity stays in `GcHandleAddress`; the tag is a view over it, so `PointerHashSynthesis` keys on the address alone and folds the tag into the low bits it already leaves free.
+
+Consumers that dereference or free a handle require the tag to be zero. Real managed code always masks first, and a tagged dereference is a misaligned read.
+
 ## Extension Rules
 
 When extending this area, keep the model honest:
 
-- Represent identity as structured storage plus offset, not as fabricated host addresses.
+- Represent identity as structured storage plus offset, not as fabricated host addresses. Where managed code imposes a *view* on an identity (tag bits on a handle), carry the view beside the identity rather than collapsing both into a bit pattern.
 - Keep object references out of `ManagedPointerSource`.
 - Add roots or projections when the storage relationship is real; do not coerce one identity into another just to reuse a lookup.
 - Normalise byte cursors before structural equality or `ceq`-style byref comparison.
