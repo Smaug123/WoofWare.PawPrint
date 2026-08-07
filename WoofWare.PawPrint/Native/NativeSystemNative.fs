@@ -119,6 +119,45 @@ module NativeSystemNative =
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) -> true
         | _ -> false
 
+    /// Classify a buffer-pointer argument as storage PawPrint can address, or
+    /// as an address no kernel could have transferred bytes through.
+    ///
+    /// `None` covers both the null pointer and a raw unmapped bit pattern such
+    /// as `(byte*)123`. Real `write(2)` and `getcwd(3)` alike return `EFAULT`
+    /// for either, having performed no I/O, so an entry point that is about to
+    /// dereference its buffer collapses both to that errno rather than aborting
+    /// the interpreter — see `Errno.EFAULT`. A guest reaches this only by
+    /// hand-rolling a P/Invoke; the BCL's own wrappers null-check upstream.
+    ///
+    /// Note this is a question about *dereferenceability*, so callers that need
+    /// to tell null from unmapped (because their C counterpart treats the two
+    /// differently) must ask `isNullPointerArgument` first.
+    let private dereferenceablePointerArgument
+        (operation : string)
+        (argName : string)
+        (arg : CliType)
+        : ManagedPointerSource option
+        =
+        // `ManagedPointerSource.Null` is non-dereferenceable too: it can arrive
+        // wrapped in `CliRuntimePointer.Managed` when the guest passes e.g.
+        // `IntPtr.Zero` after a managed conversion, as well as via the
+        // verbatim-0 path.
+        let classifyManaged (ptr : ManagedPointerSource) : ManagedPointerSource option =
+            match ptr with
+            | ManagedPointerSource.Null -> None
+            | _ -> Some ptr
+
+        match CliType.unwrapPrimitiveLikeDeep arg with
+        | CliType.RuntimePointer (CliRuntimePointer.Managed ptr) -> classifyManaged ptr
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ptr)) -> classifyManaged ptr
+        // 0L is null; non-zero is a raw unmapped address. Either way the kernel
+        // cannot transfer bytes through it.
+        | CliType.RuntimePointer (CliRuntimePointer.Verbatim _) -> None
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim _)) -> None
+        | other ->
+            failwith
+                $"%s{operation}: expected %s{argName} to be a managed pointer, raw verbatim address, or null literal, got %O{other} (this is an interpreter bug)"
+
     /// Write `bytes` through a caller-supplied `byte*`, one cell at a time.
     /// The simulated address space is a graph of typed cells rather than a flat
     /// byte array, so "memcpy into the caller's buffer" is necessarily this
@@ -634,13 +673,19 @@ module NativeSystemNative =
                 fail Errno.ERANGE
             else
 
-            // Success, and only now is the buffer actually written through, so
-            // only now must it resolve to storage. errno is left untouched, per
-            // Unix convention (and CoreLib has already zeroed it via
-            // `Marshal.SetLastSystemError 0` immediately before the call).
-            let buffer =
-                NativeCall.managedPointerOfPointerArgument operation "buffer" bufferArgument
+            // The buffer is genuinely dereferenced from here on, so this is
+            // where it must resolve to storage. A pointer that does not is an
+            // unmapped address (null was already handled above), which real
+            // `getcwd` reports as EFAULT after writing nothing — note that the
+            // size checks above come first, so `getcwd((byte*)123, 1)` is
+            // ERANGE rather than EFAULT, as on the real kernel.
+            match dereferenceablePointerArgument operation "buffer" bufferArgument with
+            | None -> fail Errno.EFAULT
+            | Some buffer ->
 
+            // Success. errno is left untouched, per Unix convention (and
+            // CoreLib has already zeroed it via `Marshal.SetLastSystemError 0`
+            // immediately before the call).
             let terminated = path.Add 0uy
 
             writeBytesThrough ctx operation buffer terminated state
@@ -922,33 +967,7 @@ module NativeSystemNative =
                                 // upstream) observes the same syscall
                                 // failure it would on the host.
                                 let dereferenceableBuffer : ManagedPointerSource option =
-                                    // `ManagedPointerSource.Null` is *also*
-                                    // non-dereferenceable — it can arrive
-                                    // wrapped in `CliRuntimePointer.Managed`
-                                    // when the guest passes e.g.
-                                    // `IntPtr.Zero` after a managed
-                                    // conversion, in addition to the
-                                    // verbatim-0 path. Collapse both kinds
-                                    // of null to EFAULT before `readBuffer`
-                                    // is asked to project from them.
-                                    let classifyManaged (ptr : ManagedPointerSource) =
-                                        match ptr with
-                                        | ManagedPointerSource.Null -> None
-                                        | _ -> Some ptr
-
-                                    match CliType.unwrapPrimitiveLikeDeep instruction.Arguments.[1] with
-                                    | CliType.RuntimePointer (CliRuntimePointer.Managed ptr) -> classifyManaged ptr
-                                    | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ptr)) ->
-                                        classifyManaged ptr
-                                    | CliType.RuntimePointer (CliRuntimePointer.Verbatim _) ->
-                                        // 0L is null; non-zero is a raw
-                                        // unmapped address. Either way the
-                                        // kernel cannot read from it.
-                                        None
-                                    | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim _)) -> None
-                                    | other ->
-                                        failwith
-                                            $"%s{operation}: expected buffer to be a managed pointer, raw verbatim address, or null literal, got %O{other} (this is an interpreter bug)"
+                                    dereferenceablePointerArgument operation "buffer" instruction.Arguments.[1]
 
                                 match dereferenceableBuffer with
                                 | None ->

@@ -1,19 +1,23 @@
 using System;
 using System.Runtime.InteropServices;
 
-// SystemNative_GetCwd must decide its error returns *without* dereferencing the
-// caller's buffer, which is what the C does: the negative-size guard runs before
-// getcwd(3) is called at all, and getcwd validates the size and compares it
-// against the path length before writing a byte. So every call below hands it a
-// pointer that addresses nothing, and must still get the documented errno back.
+// SystemNative_GetCwd must report its failures to the guest rather than abort
+// the interpreter, for every buffer pointer that addresses nothing.
+//
+// Three of the calls below are decided *without* dereferencing the buffer at
+// all, which is what the C does: the negative-size guard runs before getcwd(3)
+// is called, and getcwd validates the size and compares it against the path
+// length before writing a byte. The last one does get as far as writing, and
+// faults — EFAULT — as SystemNative_Write already models for the same shape of
+// pointer.
 //
 // Impure rather than pure for safety, not for determinism: the differential
-// harness runs pure guests in-process on the real CLR, and while these exact
-// calls do return errors there without touching the pointer, a regression that
-// made one of them *write* would corrupt the test host rather than fail a test.
-// Under PawPrint the pointer is never resolved to storage on these paths, which
-// is precisely the property being pinned. The cross-runtime half of the
-// contract lives in the pure sibling SystemNativeGetCwd.cs.
+// harness runs pure guests in-process on the real CLR, where the last call
+// deliberately asks the kernel to write to an unmapped address. That is exactly
+// the case a real kernel refuses with EFAULT, but it is not something to hand a
+// process whose crash would take the test host with it. Under PawPrint no write
+// can escape the simulated address space at all. The cross-runtime half of this
+// entry point's contract lives in the pure sibling SystemNativeGetCwd.cs.
 public class TestGetCwdNoDereferenceErrors
 {
     [DllImport("libSystem.Native", EntryPoint = "SystemNative_GetCwd", SetLastError = true)]
@@ -21,6 +25,7 @@ public class TestGetCwdNoDereferenceErrors
 
     const int ERANGE = 34;
     const int EINVAL = 22;
+    const int EFAULT = 14;
 
     // Not a valid address, and deliberately not one PawPrint could resolve to a
     // cell even in principle: a bare integer with no managed provenance.
@@ -44,6 +49,16 @@ public class TestGetCwdNoDereferenceErrors
         Marshal.SetLastSystemError(0);
         if (GetCwd(Bogus, 1) != null) return 5;
         if (Marshal.GetLastSystemError() != ERANGE) return 6;
+
+        // Big enough that the size checks all pass, so the kernel really does
+        // try to write — and faults, because the address is not mapped. Note
+        // this is *after* the ERANGE case above: the size is checked before the
+        // buffer is touched, so a too-small unmapped buffer is ERANGE, not
+        // EFAULT. Both must be reported to the guest rather than aborting the
+        // interpreter, exactly as SystemNative_Write already does.
+        Marshal.SetLastSystemError(0);
+        if (GetCwd(Bogus, 8192) != null) return 7;
+        if (Marshal.GetLastSystemError() != EFAULT) return 8;
 
         return 0;
     }
