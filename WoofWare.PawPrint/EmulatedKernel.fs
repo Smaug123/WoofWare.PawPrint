@@ -631,9 +631,7 @@ type EmulatedKernel =
         OptimalMaxSpinWaitsPerSpinIteration : int
         /// Unix-shaped platform identity the simulated process reports, as
         /// observed through `SystemNative_GetUnixRelease` (and hence
-        /// `Environment.OSVersion` on a Unix CoreLib). Deliberately kernel
-        /// state rather than a host `uname(2)` read; see
-        /// `SimulatedUnixPlatform` for why.
+        /// `Environment.OSVersion` on a Unix CoreLib).
         ///
         /// Unlike `ProcessorCount`, CoreLib does *not* latch this during
         /// static initialisation — `Environment.OSVersion` is a lazily
@@ -646,20 +644,6 @@ type EmulatedKernel =
         /// through `SystemNative_GetCwd` — and hence through
         /// `Environment.CurrentDirectory` and every relative
         /// `Path.GetFullPath` on a Unix CoreLib.
-        ///
-        /// Deliberately kernel state rather than a host
-        /// `Directory.GetCurrentDirectory()` read, for the same reason as
-        /// `ProcessorCount` and `UnixPlatform`: the cwd is a per-machine,
-        /// per-invocation fact, and a guest that resolves a relative path
-        /// against it bakes the recording machine's directory layout into
-        /// every path it subsequently opens, logs, or branches on. Reading the
-        /// host here would make a replay depend on *where* it was recorded.
-        ///
-        /// Typed as `AbsoluteUnixPath` rather than `string` so that consumers
-        /// receive a proof, not a promise: `getcwd(3)` only ever yields a
-        /// rooted, separator-normalised, fully-resolved path, and the
-        /// `SystemNative_GetCwd` handler relies on that when it computes the
-        /// UTF-8 byte length its ERANGE decision turns on.
         ///
         /// Like `UnixPlatform`, CoreLib does *not* latch this during static
         /// initialisation (`Interop.Sys.GetCwd()` is called afresh on every
@@ -833,16 +817,6 @@ module EmulatedKernel =
         }
 
     /// Set the simulated process's current working directory.
-    ///
-    /// `AbsoluteUnixPath` carries its own invariant, so there is nothing to
-    /// validate about the path's *shape* here — that check happened once, where
-    /// the host's string entered `AbsoluteUnixPath.parse`. What `assertValid`
-    /// catches is the one value that reaches this type without a constructor:
-    /// `Unchecked.defaultof` (or C# `default`), whose payload is null. This is
-    /// the boundary a host-supplied path crosses into kernel state, so it is
-    /// where that assertion belongs — without it the failure would surface as
-    /// a null-reference deep inside the first `SystemNative_GetCwd`, long after
-    /// the mis-set knob.
     let withCurrentDirectory (dir : AbsoluteUnixPath) (kernel : EmulatedKernel) : EmulatedKernel =
         { kernel with
             CurrentDirectory = AbsoluteUnixPath.assertValid "EmulatedKernel.CurrentDirectory" dir
