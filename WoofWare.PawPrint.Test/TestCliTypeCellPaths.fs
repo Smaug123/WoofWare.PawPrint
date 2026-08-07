@@ -272,6 +272,39 @@ module TestCliTypeCellPaths =
         CliType.CellPathsExactlyCovering 0 8 (CliType.ObjectRef None) |> shouldEqual []
 
     // ----------------------------------------------------------------------------------------
+    // Reading and writing through a path
+    // ----------------------------------------------------------------------------------------
+
+    [<Test>]
+    let ``getting and setting a depth-2 cell touches only that cell`` () : unit =
+        let value = buffer ()
+        let path = [ FieldId.named "_item[1]" ; FieldId.named "Tag" ]
+
+        CliType.getCellAtPath path value
+        |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 0uy))
+
+        let updated =
+            CliType.withCellAtPathSet path (CliType.Numeric (CliNumericType.UInt8 9uy)) value
+
+        CliType.getCellAtPath path updated
+        |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 9uy))
+
+        // The sibling slot, and the sibling field within the same slot, are untouched.
+        CliType.getCellAtPath [ FieldId.named "_item" ] updated
+        |> shouldEqual (CliType.getCellAtPath [ FieldId.named "_item" ] value)
+
+        CliType.getCellAtPath [ FieldId.named "_item[1]" ; FieldId.named "Payload" ] updated
+        |> shouldEqual (CliType.ObjectRef None)
+
+    [<Test>]
+    let ``an empty path is the value itself`` () : unit =
+        let value = buffer ()
+        CliType.getCellAtPath [] value |> shouldEqual value
+
+        let replacement = elem ()
+        CliType.withCellAtPathSet [] replacement value |> shouldEqual replacement
+
+    // ----------------------------------------------------------------------------------------
     // Properties
     // ----------------------------------------------------------------------------------------
 
@@ -437,6 +470,85 @@ module TestCliTypeCellPaths =
                         let viaBytes = CliType.ofBytesLike cell (CliType.BytesAt abs size value)
                         CliType.ToBytes viaBytes = CliType.ToBytes cell
                     )
+            )
+
+        Check.One (config, Prop.forAll (Arb.fromGen shapeGen) property)
+
+    /// The *leaves* of a value — the cells that hold data rather than further cells. These carry
+    /// the observable content; an enclosing value type is bookkeeping around them.
+    let private leavesOf (value : CliType) : (FieldId list * CliType) list =
+        enumerateCells [] 0 value
+        |> List.choose (fun (path, _, contents) ->
+            match contents with
+            | CliType.ValueType _ -> None
+            | leaf -> Some (path, leaf)
+        )
+
+    /// Setting a cell to what it already holds leaves every leaf reading back as it did.
+    ///
+    /// Deliberately stated over leaves rather than over the whole value, for two reasons that both
+    /// bite: `withFieldSetById` stamps a write timestamp on the field it touches, so even a
+    /// semantically-null write yields a structurally different value; and writing a nested cell
+    /// necessarily rebuilds every value that *contains* it, so ancestors differ by construction.
+    /// Neither is observable to a guest. Over-reporting a change is safe for the write path — it
+    /// costs one redundant store — so the law worth pinning is about content, not representation.
+    [<Test>]
+    let ``setting a cell to its current contents preserves every leaf`` () : unit =
+        let property (shape : Shape) : bool =
+            let value, _ = buildShape "r" (Shape.Struct [ shape ])
+            let before = leavesOf value
+
+            enumerateCells [] 0 value
+            |> List.forall (fun (path, _, contents) ->
+                CliType.getCellAtPath path value = contents
+                && leavesOf (CliType.withCellAtPathSet path contents value) = before
+            )
+
+        Check.One (config, Prop.forAll (Arb.fromGen shapeGen) property)
+
+    /// Writing a cell changes that cell and leaves every other cell alone — the property the write
+    /// path depends on when it elides a reinterpret onto a named cell.
+    [<Test>]
+    let ``writing a cell disturbs no other cell`` () : unit =
+        let property (shape : Shape) : bool =
+            let value, _ = buildShape "r" (Shape.Struct [ shape ])
+            let cells = enumerateCells [] 0 value
+
+            cells
+            |> List.forall (fun (path, _, contents) ->
+                // A value distinguishable from the zero the tree was built with.
+                let replacement =
+                    match contents with
+                    | CliType.Numeric (CliNumericType.UInt8 _) -> Some (CliType.Numeric (CliNumericType.UInt8 3uy))
+                    | CliType.Numeric (CliNumericType.UInt16 _) -> Some (CliType.Numeric (CliNumericType.UInt16 3us))
+                    | CliType.Numeric (CliNumericType.Int32 _) -> Some (CliType.Numeric (CliNumericType.Int32 3))
+                    | CliType.Numeric (CliNumericType.Int64 _) ->
+                        Some (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 3L)))
+                    | _ -> None
+
+                match replacement with
+                | None -> true
+                | Some replacement ->
+
+                let updated = CliType.withCellAtPathSet path replacement value
+
+                CliType.getCellAtPath path updated = replacement
+                && cells
+                   |> List.forall (fun (otherPath, _, otherContents) ->
+                       // Cells on the path to the written one legitimately change (they contain it);
+                       // everything else must not.
+                       let isAncestorOrSelf =
+                           List.length otherPath <= List.length path
+                           && List.truncate (List.length otherPath) path = otherPath
+
+                       let isDescendant =
+                           List.length otherPath > List.length path
+                           && List.truncate (List.length path) otherPath = path
+
+                       isAncestorOrSelf
+                       || isDescendant
+                       || CliType.getCellAtPath otherPath updated = otherContents
+                   )
             )
 
         Check.One (config, Prop.forAll (Arb.fromGen shapeGen) property)

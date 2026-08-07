@@ -3015,6 +3015,22 @@ module CliType =
         | CliType.RuntimePointer cliRuntimePointer -> failwith "todo"
         | CliType.ValueType cvt -> CliValueType.DereferenceFieldById field cvt
 
+    /// Read the cell a `CellPathsExactlyCovering` path names. An empty path is the value itself.
+    let rec getCellAtPath (path : FieldId list) (value : CliType) : CliType =
+        match path with
+        | [] -> value
+        | field :: rest -> getCellAtPath rest (getFieldById field value)
+
+    /// Replace the cell a `CellPathsExactlyCovering` path names, rebuilding each enclosing value on
+    /// the way back out so that nothing outside the cell's own extent is disturbed. An empty path
+    /// replaces the value itself.
+    let rec withCellAtPathSet (path : FieldId list) (cell : CliType) (value : CliType) : CliType =
+        match path with
+        | [] -> cell
+        | field :: rest ->
+            let child = getFieldById field value
+            withFieldSetById field (withCellAtPathSet rest cell child) value
+
     /// Returns the offset and size.
     let getFieldLayout (field : string) (value : CliType) : int * int =
         match value with
