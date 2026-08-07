@@ -73,27 +73,35 @@ module NullaryIlOp =
         | Some bits -> NativeIntSource.Verbatim (bits &&& mask) |> EvalStackValue.NativeInt
         | None -> failwith $"And: refusing to convert managed pointer %O{ptr} to integer bits"
 
-    let private typeHandleLowAddressBits (target : RuntimeTypeHandleTarget) : int64 =
-        match target with
-        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> 0L
-        // Generic parameters in CoreCLR are TypeVarTypeDesc, a TypeDesc subclass, so the
-        // tagged-pointer encoding sets the second-lowest bit. Reflection paths such as
-        // `RuntimeType.get_IsInterface` rely on `TypeHandle.IsTypeDesc` to short-circuit
-        // before dereferencing a non-existent MethodTable; honour that contract.
-        | RuntimeTypeHandleTarget.GenericParameter _
-        | RuntimeTypeHandleTarget.MethodGenericParameter _ -> 2L
-        | RuntimeTypeHandleTarget.Closed typeHandle ->
-            match typeHandle with
-            | ConcreteTypeHandle.Byref _
-            | ConcreteTypeHandle.Pointer _
-            | ConcreteTypeHandle.FunctionPointer _ ->
-                // CoreCLR tags TypeDesc handles by setting the second-lowest bit.
-                // PawPrint has no real address, but matching that low-bit contract
-                // lets managed CoreLib code run `TypeHandle.IsTypeDesc`.
-                2L
-            | ConcreteTypeHandle.Concrete _
-            | ConcreteTypeHandle.OneDimArrayZero _
-            | ConcreteTypeHandle.Array _ -> 0L
+    /// Mask a type-handle-shaped pointer, if the model can state the answer.
+    /// PawPrint models no address for a `MethodTable*` or a `TypeDesc*`, so the
+    /// value is `base ||| tag` with `base` unknown and `tag` given by
+    /// `TypeHandleTag`; see `TaggedPointerBits` for the decision procedure and
+    /// docs/plans/2026-08-06-typehandle-tag-bits.md for the CoreLib IL involved.
+    ///
+    /// Unlike a GC handle's tag, this tag is a function of the target, so
+    /// `Retagged` is only representable when the tag comes back unchanged. The
+    /// case that does change it is CoreCLR's
+    /// `TypeHandle.AsTypeDesc` (`handle & ~2`), whose result is the target's
+    /// `TypeDesc*` — a distinct identity that PawPrint has no case for.
+    let private typeHandleMask
+        (source : NativeIntSource)
+        (target : RuntimeTypeHandleTarget)
+        (tag : int64)
+        (mask : int64)
+        : NativeIntSource
+        =
+        match TaggedPointerBits.bitAnd TypeHandleTag.widthBits tag mask with
+        | TaggedPointerBitsResult.TagBitsOnly bits -> NativeIntSource.Verbatim bits
+        // The whole unknown base survives and the tag is unchanged, so the result
+        // is bit-identical to the input.
+        | TaggedPointerBitsResult.Retagged newTag when newTag = tag -> source
+        | TaggedPointerBitsResult.Retagged newTag ->
+            failwith
+                $"And: refusing to apply 0x%x{mask} to %O{source}; it would change the handle's tag from 0x%x{tag} to 0x%x{newTag}, making the result the TypeDesc pointer for %O{target}, which PawPrint does not represent"
+        | TaggedPointerBitsResult.NotStatable ->
+            failwith
+                $"And: refusing to apply 0x%x{mask} to %O{source}; the result would depend on the pointer's address, which PawPrint does not model"
 
     /// Apply a bitwise operation to the low tag region of a GC handle, if the
     /// model can state the answer. See `TaggedPointerBits`: PawPrint does not
@@ -127,9 +135,12 @@ module NullaryIlOp =
             gcHandleTagOp "And" TaggedPointerBits.bitAnd handle tag mask
             |> EvalStackValue.NativeInt
         | NativeIntSource.TypeHandlePtr target ->
-            NativeIntSource.Verbatim (typeHandleLowAddressBits target &&& mask)
+            typeHandleMask source target (TypeHandleTag.forTarget target) mask
             |> EvalStackValue.NativeInt
-        | NativeIntSource.MethodTablePtr _ -> NativeIntSource.Verbatim (0L &&& mask) |> EvalStackValue.NativeInt
+        // A `MethodTable*` is the untagged half of the same encoding: no tag bits,
+        // but the alignment that makes the tag region available in the first place
+        // still holds, so masking to that region is honestly zero.
+        | NativeIntSource.MethodTablePtr target -> typeHandleMask source target 0L mask |> EvalStackValue.NativeInt
         | other -> failwith $"can't do binary operation on non-verbatim native int %O{other}"
 
     /// XOR of two `NativeIntSource` values in the native-int slot. Mirrors

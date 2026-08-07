@@ -892,3 +892,89 @@ module TestNullaryIlOp =
 
         NativeCall.gcHandleAddressOfEvalStackValue "test" (taggedHandle 0L)
         |> shouldEqual gcHandleUnderTest
+
+    // --- Bitwise operations on tagged type handles ---
+    //
+    // CoreCLR's `TypeHandle` is a tagged pointer: bit 1 is set exactly when the
+    // handle wraps a `TypeDesc` rather than a `MethodTable`. The managed
+    // `TypeHandle` struct in src/coreclr/System.Private.CoreLib reads that tag
+    // (`IsTypeDesc` is `(nint)m_asTAddr & 2`) and strips it
+    // (`AsTypeDesc` is `(nint)m_asTAddr & ~2`). PawPrint models no address for
+    // either pointer kind, so the same decision procedure that answers GC-handle
+    // masks answers these; see docs/plans/2026-08-06-typehandle-tag-bits.md.
+
+    /// A MethodTable-shaped target: `IsTypeDesc` is false, so its tag is 0.
+    let private methodTableTarget : RuntimeTypeHandleTarget =
+        RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete 1)
+
+    /// A TypeDesc-shaped target (`int*`): `IsTypeDesc` is true, so its tag is 2.
+    let private typeDescTarget : RuntimeTypeHandleTarget =
+        RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Pointer (ConcreteTypeHandle.Concrete 1))
+
+    let private typeHandle (target : RuntimeTypeHandleTarget) : EvalStackValue =
+        EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr target)
+
+    let private methodTable (target : RuntimeTypeHandleTarget) : EvalStackValue =
+        EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr target)
+
+    [<Test>]
+    let ``And reads a type handle's TypeDesc tag bit`` () : unit =
+        // `TypeHandle.IsTypeDesc`: `((nint)m_asTAddr & 2) != 0`. The mask forces
+        // the whole unmodelled base to zero, so the tag alone is the answer.
+        runBinary NullaryIlOp.And (typeHandle typeDescTarget) (nativeConst 2L)
+        |> shouldEqual (nativeConst 2L)
+
+        runBinary NullaryIlOp.And (typeHandle methodTableTarget) (nativeConst 2L)
+        |> shouldEqual (nativeConst 0L)
+
+        // A MethodTable pointer is untagged but aligned, so masking to the tag
+        // region is honestly zero.
+        runBinary NullaryIlOp.And (methodTable methodTableTarget) (nativeConst 3L)
+        |> shouldEqual (nativeConst 0L)
+
+    [<Test>]
+    let ``And with a base-preserving mask leaves a type handle intact`` () : unit =
+        // The whole unknown base survives and the tag is unchanged, so the value
+        // is bit-identical to the input. Answering `0` here (as PawPrint did
+        // before) silently replaces a pointer with null.
+        runBinary NullaryIlOp.And (typeHandle methodTableTarget) (nativeConst ~~~2L)
+        |> shouldEqual (typeHandle methodTableTarget)
+
+        runBinary NullaryIlOp.And (typeHandle methodTableTarget) (nativeConst -1L)
+        |> shouldEqual (typeHandle methodTableTarget)
+
+        runBinary NullaryIlOp.And (methodTable methodTableTarget) (nativeConst -1L)
+        |> shouldEqual (methodTable methodTableTarget)
+
+        runBinary NullaryIlOp.And (methodTable methodTableTarget) (nativeConst ~~~3L)
+        |> shouldEqual (methodTable methodTableTarget)
+
+    [<Test>]
+    let ``And that would strip a type handle's tag is refused loudly`` () : unit =
+        // `TypeHandle.AsTypeDesc`: `(TypeDesc*)((nint)m_asTAddr & ~2)`. The base
+        // survives but the tag changes, so the result is the target's TypeDesc
+        // pointer — a different identity, which PawPrint does not yet represent.
+        // Reachable from the public `RuntimeTypeHandle.FromIntPtr`.
+        let exn =
+            Assert.Throws (fun () ->
+                runBinary NullaryIlOp.And (typeHandle typeDescTarget) (nativeConst ~~~2L)
+                |> ignore<EvalStackValue>
+            )
+
+        exn.Message |> shouldContainText "TypeDesc pointer"
+
+    [<Test>]
+    let ``And on a type handle with a mask spanning the address is refused loudly`` () : unit =
+        // These ask about bits of the pointer's address, which PawPrint does not
+        // model. Answering would mean inventing them.
+        let shouldRefuse (value : EvalStackValue) (operand : EvalStackValue) : unit =
+            let exn =
+                Assert.Throws (fun () -> runBinary NullaryIlOp.And value operand |> ignore<EvalStackValue>)
+
+            exn.Message |> shouldContainText "which PawPrint does not model"
+
+        shouldRefuse (typeHandle typeDescTarget) (nativeConst 4L)
+        shouldRefuse (typeHandle methodTableTarget) (nativeConst 4L)
+        shouldRefuse (typeHandle methodTableTarget) (EvalStackValue.Int32 4)
+        shouldRefuse (methodTable methodTableTarget) (nativeConst 4L)
+        shouldRefuse (methodTable methodTableTarget) (nativeConst ~~~4L)

@@ -76,6 +76,10 @@ PawPrint answers those operations without inventing an address, by carrying the 
 
 Consumers that dereference or free a handle require the tag to be zero. Real managed code always masks first, and a tagged dereference is a misaligned read.
 
+The same model covers CoreCLR's `TypeHandle`, which wraps either a `MethodTable*` or a `TypeDesc*` and sets bit 1 in the latter case. `TypeHandleTag` is the single home for that rule, shared by the `and` arms in `NullaryIlOp` and the synthesised low bits in `PointerHashSynthesis`; the two must agree, because a tag is observable both by masking it directly and by comparing synthesised bits.
+
+One difference matters. A GC handle's tag is *independent state* that managed code sets and clears at will, so any tag in the region is representable. A type handle's tag is a *function of its target* — `IsTypeDesc` is determined by what the handle points at — so a handle whose tag differs from its target's is not the same handle retagged, but a different kind of pointer. `TypeHandle.AsTypeDesc` (`handle & ~2`) is exactly that case: its result is the target's `TypeDesc*`. PawPrint refuses it rather than answering, because silently returning the masked tag bits would replace a pointer with a small integer, usually null.
+
 ## Extension Rules
 
 When extending this area, keep the model honest:
