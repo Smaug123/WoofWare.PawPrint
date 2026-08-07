@@ -220,7 +220,17 @@ module AppProgram =
                     out.Flush ()
                     err.Flush ()
 
-            match Program.run loggerFactory (Some dllPath) fileStream dotnetRuntimes kernelConfig pctSeed args with
+            match
+                Program.run
+                    loggerFactory
+                    (Some dllPath)
+                    fileStream
+                    { HostConfig.Default dotnetRuntimes with
+                        Kernel = kernelConfig
+                        PctSeed = pctSeed
+                        Argv = args
+                    }
+            with
             | RunOutcome.NormalExit (state, thread)
             | RunOutcome.ProcessExit (state, thread) ->
                 drainStandardStreams state

@@ -284,7 +284,13 @@ module TestSchedulerPct =
 
         use peImage = new MemoryStream (image)
 
-        Program.run loggerFactory (Some sourceName) peImage dotnetRuntimes KernelConfig.Default seed []
+        Program.run
+            loggerFactory
+            (Some sourceName)
+            peImage
+            { HostConfig.Default dotnetRuntimes with
+                PctSeed = seed
+            }
 
     /// Project a RunOutcome to its salient bit: the terminating thread's
     /// top-of-stack int32 if the run finished normally, or a tag describing

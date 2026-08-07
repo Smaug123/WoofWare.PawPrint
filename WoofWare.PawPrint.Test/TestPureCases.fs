@@ -88,7 +88,13 @@ module TestPureCases =
 
         try
             let pawPrintResult =
-                Program.run loggerFactory (Some sourceName) peImage dotnetRuntimes kernelConfig None []
+                Program.run
+                    loggerFactory
+                    (Some sourceName)
+                    peImage
+                    { HostConfig.Default dotnetRuntimes with
+                        Kernel = kernelConfig
+                    }
 
             assertResult image pawPrintResult
         with _ ->

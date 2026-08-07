@@ -88,7 +88,7 @@ module TestVariableSizeNewobj =
         use peImage = new MemoryStream (image)
 
         try
-            match Program.run loggerFactory (Some sourceName) peImage dotnetRuntimes KernelConfig.Default None [] with
+            match Program.run loggerFactory (Some sourceName) peImage (HostConfig.Default dotnetRuntimes) with
             | RunOutcome.NormalExit (state, terminatingThread) ->
                 match state.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
                 | EvalStackValue.Int32 (Int32Source.Verbatim 0) :: _ -> ()

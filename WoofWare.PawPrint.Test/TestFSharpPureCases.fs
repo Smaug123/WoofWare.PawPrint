@@ -168,10 +168,9 @@ module TestFSharpPureCases =
                     loggerFactory
                     (Some dllPath)
                     peImage
-                    dotnetRuntimes
-                    KernelConfig.Default
-                    None
-                    [ testCaseName ]
+                    { HostConfig.Default dotnetRuntimes with
+                        Argv = [ testCaseName ]
+                    }
 
             match realResult, pawPrintResult with
             | RealRuntimeResult.NormalExit exitCode, RunOutcome.NormalExit (terminalState, terminatingThread) ->

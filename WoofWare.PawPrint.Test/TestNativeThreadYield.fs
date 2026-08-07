@@ -38,16 +38,7 @@ public static class Entry
 
         use peImage = new MemoryStream (image)
 
-        match
-            Program.prepare
-                loggerFactory
-                (Some "ThreadYieldTest.cs")
-                peImage
-                dotnetRuntimes
-                KernelConfig.Default
-                None
-                []
-        with
+        match Program.prepare loggerFactory (Some "ThreadYieldTest.cs") peImage (HostConfig.Default dotnetRuntimes) with
         | Program.ProgramStartResult.Ready prepared -> prepared
         | Program.ProgramStartResult.CompletedBeforeMain outcome ->
             failwith $"expected program to be ready before Main, got %O{outcome}"

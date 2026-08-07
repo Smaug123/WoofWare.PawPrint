@@ -54,6 +54,7 @@
     <Compile Include="Signal.fs" />
     <Compile Include="SignalState.fs" />
     <Compile Include="EmulatedKernel.fs" />
+    <Compile Include="HostConfig.fs" />
     <Compile Include="IlMachineStateModel.fs" />
     <Compile Include="IlMachineTypeResolution.fs" />
     <Compile Include="IlMachineThreadState.fs" />
