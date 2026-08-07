@@ -737,12 +737,6 @@ module internal IntrinsicHelpers =
         : ManagedPointerSource * ManagedPointerSource * int * IlMachineState
         =
         match wasConstructing with
-        | ConstructionState.ConstructingVariableSize ->
-            // `Span<T>`/`ReadOnlySpan<T>` are fixed-size value types, so `newobj` on them
-            // always takes the fixed-size path. Reaching here would mean `executeNewobj`
-            // classified a ref-like struct as CORINFO_FLG_VAROBJSIZE.
-            failwith
-                "Span pointer constructor was entered under the variable-size (CORINFO_FLG_VAROBJSIZE) newobj convention, but Span<T> has a fixed instance size"
         | ConstructionState.Constructing _ ->
             let thisArg, state = IlMachineState.popEvalStack currentThread state
             let lengthArg, state = IlMachineState.popEvalStack currentThread state
@@ -891,11 +885,6 @@ module internal IntrinsicHelpers =
         let state =
             match wasConstructing with
             | ConstructionState.NotConstructing -> state
-            | ConstructionState.ConstructingVariableSize ->
-                // Already rejected by `popPointerBackedSpanConstructorArgs` above; restated
-                // here so this match stays exhaustive without a silent fallthrough.
-                failwith
-                    "Span pointer constructor was entered under the variable-size (CORINFO_FLG_VAROBJSIZE) newobj convention, but Span<T> has a fixed instance size"
             | ConstructionState.Constructing constructing ->
                 let constructed = state.ManagedHeap.NonArrayObjects.[constructing]
 

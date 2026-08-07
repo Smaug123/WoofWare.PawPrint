@@ -63,9 +63,6 @@ module IlMachineState =
 
     let mapFrame = IlMachineThreadState.mapFrame
 
-    let withSuppliedConstructedObject =
-        IlMachineThreadState.withSuppliedConstructedObject
-
     let markActiveFrameWrapInTargetInvocation =
         IlMachineThreadState.markActiveFrameWrapInTargetInvocation
 
