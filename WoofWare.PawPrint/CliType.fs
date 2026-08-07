@@ -427,37 +427,59 @@ type CliType =
         // only cost of a false "changed" is one redundant write of an identical value.
         | _ -> before <> after
 
-    /// If `value` is a value type holding exactly one field, laid out at offset 0 and spanning
-    /// the whole value, return that field's id and its contents. Otherwise `None`.
+    /// If the byte range `[offset, offset + size)` of `value` is exactly one field's extent, and no
+    /// other field overlaps that range, return that field's id and its contents. Otherwise `None`.
     ///
-    /// Such a value type is *transparent*: it has no representation of its own beyond the field's,
-    /// so a byref that reinterprets it as the field's type addresses precisely the field's cell.
-    /// That is what makes eliding the reinterpret sound, and it is the only shape for which it is:
-    /// a struct with a second field, or with padding around the one it has, genuinely differs from
-    /// its field and must keep going through the byte-view path.
+    /// This is what makes eliding a reinterpret sound: the byref addresses precisely that field's
+    /// cell, so reading it returns the field and writing it disturbs nothing else. Both conditions
+    /// are load-bearing, and only the second is about explicit layout:
+    ///
+    ///   * a range that is *part* of a field, or that spans two, has no single cell to name;
+    ///   * a range that exactly covers one field but is *aliased* by another (an 8-byte field at 0
+    ///     and a 4-byte field at 4, under explicit layout) would leave the alias stale on write, so
+    ///     it must keep going through the byte-view path. Two fields declared at the same offset
+    ///     are each the other's overlapping sibling, so that shape is refused too.
     ///
     /// This is deliberately a *structural* query and does not look at what the field contains, so
     /// callers must apply their own compatibility rule to the returned contents. It also walks
     /// fields rather than bytes, so — like `WithZeroedRangeIfChanged` — it stays defined on storage
     /// that has no byte rendering at all, which is exactly the reference-containing case its
-    /// callers need.
-    static member TrySingleWholeValueField (value : CliType) : (FieldId * CliType) option =
+    /// callers need. Raw-bytes storage has no fields, so it never answers.
+    static member TryFieldExactlyCovering (offset : int) (size : int) (value : CliType) : (FieldId * CliType) option =
+        if size <= 0 then
+            None
+        else
+
         match value with
         | CliType.ValueType vt ->
-            // Every field must be inspected, not just those starting at offset 0. Under explicit
-            // layout a second field can begin *later* and still alias the first — an 8-byte field
-            // at 0 and a 4-byte field at 4, in an 8-byte struct — and eliding to the first would
-            // leave that sibling stale on write. Requiring the whole struct to be one field rules
-            // that out; raw-bytes storage returns `[]` and so is never transparent.
-            match CliValueType.TryAllFields vt with
-            | [ f ] when
-                f.Offset = 0
-                && f.Size = CliType.SizeOf(f.Contents).Size
-                && CliType.SizeOf(value).Size = f.Size
-                ->
-                Some (f.Id, f.Contents)
+            let fields = CliValueType.TryAllFields vt
+
+            let covering =
+                fields
+                |> List.filter (fun f -> f.Offset = offset && f.Size = size && f.Size = CliType.SizeOf(f.Contents).Size)
+
+            match covering with
+            | [ f ] ->
+                let aliased =
+                    fields
+                    |> List.exists (fun g ->
+                        not (FieldId.exactlyEqual g.Id f.Id)
+                        && g.Offset < offset + size
+                        && offset < g.Offset + g.Size
+                    )
+
+                if aliased then None else Some (f.Id, f.Contents)
             | _ -> None
         | _ -> None
+
+    /// If `value` is a value type holding exactly one field, laid out at offset 0 and spanning
+    /// the whole value, return that field's id and its contents. Otherwise `None`.
+    ///
+    /// Such a value type is *transparent*: it has no representation of its own beyond the field's.
+    /// That is `TryFieldExactlyCovering` over the whole value, which additionally rules out padding
+    /// around the field (the covering field's size must equal the value's).
+    static member TrySingleWholeValueField (value : CliType) : (FieldId * CliType) option =
+        CliType.TryFieldExactlyCovering 0 (CliType.SizeOf(value).Size) value
 
     /// Zero the byte range `[offset, offset + count)` of `value`, returning `None` if that would
     /// leave it unchanged.
