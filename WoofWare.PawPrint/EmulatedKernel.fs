@@ -1055,8 +1055,9 @@ module EmulatedKernel =
     /// allocation shift which core every subsequently created *guest* thread
     /// lands on — an interpreter detail leaking into guest-observable state.
     /// The caller therefore threads a separate cursor
-    /// (`IlMachineState.NextGuestThreadOrdinal`) that only guest-visible thread
-    /// creation advances.
+    /// (`IlMachineState.NextCpuRotation`) that only guest-visible thread
+    /// creation advances. (`osThreadId`, below, makes the opposite choice for
+    /// the opposite reason; see there.)
     let cpuForRotation (rotation : int) (kernel : EmulatedKernel) : CpuId =
         if rotation < 0 then
             failwith
@@ -1076,49 +1077,49 @@ module EmulatedKernel =
 
         CpuId (rotation % count)
 
-    /// The largest thread ordinal either `osThreadId` producer accepts.
+    /// OS thread id policy: the id `thread` reports to the guest through
+    /// `SystemNative_TryGetUInt32OSThreadId` and `SystemNative_GetUInt64OSThreadId`.
     ///
-    /// `Int32.MaxValue` is excluded, not merely `Int32.MaxValue + 1`: the guest
-    /// producer computes `2*ordinal + 1`, which at `ordinal = Int32.MaxValue`
-    /// is exactly `0xFFFF_FFFF` — the `TryGetUInt32OSThreadId` "this platform
-    /// cannot determine a thread id" sentinel. Excluding it makes both sentinel
-    /// values (`0` and `0xFFFF_FFFF`) unreachable by construction rather than
-    /// by discipline. `IlMachineState`'s cursors are `int`s that would have
-    /// overflowed long before a run created two billion threads, so this is a
-    /// tripwire rather than a limit anyone can hit.
-    let private maxOsThreadOrdinal : int = System.Int32.MaxValue - 1
+    /// The sole producer, and a function of the thread's `ThreadId` — the
+    /// interpreter's own allocation counter. Uniqueness across live threads is
+    /// the only property anything needs, and `ThreadId`s are already unique and
+    /// never reused, so it comes for free; every thread PawPrint creates has
+    /// one, guest-visible and interpreter-internal alike, so there is no second
+    /// namespace to stay disjoint from.
+    ///
+    /// Deliberately unlike `cpuForRotation`, which must *not* key off
+    /// `ThreadId`. The difference is what the guest can do with the number. A
+    /// `CpuId` is drawn from a small cyclic range and is compared against other
+    /// threads' (two threads sharing a core is a meaningful, observable fact),
+    /// so letting an interpreter-internal allocation shift the rotation would
+    /// change guest-observable behaviour. A thread id is opaque: no BCL code
+    /// does anything with it but test it for equality — `System.Threading.Lock`
+    /// uses it as an owner identity — so *which* number a thread gets is not
+    /// observable, only whether two threads share one. Real Linux agrees: its
+    /// signal-handling thread is an ordinary `pthread_create` and consumes a
+    /// tid like any other, shifting every tid minted after it.
+    ///
+    /// The `+ 1` dodges `0`, which CoreLib's
+    /// `Lock.ThreadId.InitializeForCurrentThread` (Lock.NonNativeAot.cs) maps
+    /// to `0xFFFF_FFFF` by decrement — so every thread that minted `0` would
+    /// end up sharing one id. The other sentinel, the `(uint32)-1` that
+    /// `TryGetUInt32OSThreadId` returns to mean "this platform cannot determine
+    /// a thread id", is unreachable by construction: `ThreadId` wraps an `int`,
+    /// and `Int32.MaxValue + 1` is less than half of `0xFFFF_FFFF`.
+    ///
+    /// A negative `ThreadId` is rejected rather than wrapped, because `-1`
+    /// would mint exactly the `0` this function exists to avoid. No allocator
+    /// produces one (`NextThreadId` counts up from `0`), but `FrameId -1` is an
+    /// established sentinel in this codebase, so a `ThreadId -1` is a mistake
+    /// someone could plausibly make.
+    let osThreadId (thread : ThreadId) : OsThreadId =
+        let (ThreadId.ThreadId i) = thread
 
-    /// OS thread id policy for guest-visible threads: the id the `ordinal`-th
-    /// such thread reports through `SystemNative_TryGetUInt32OSThreadId` and
-    /// `SystemNative_GetUInt64OSThreadId`.
-    ///
-    /// `ordinal` is `IlMachineState.NextGuestThreadOrdinal`, the same cursor
-    /// `cpuForRotation` consumes, and deliberately *not* the thread's
-    /// `ThreadId`, which is PawPrint-internal rather than guest-visible.
-    ///
-    /// Ids are **odd**, so that they never collide with PawPrint's minted
-    /// `OsThreadId`s for synthetic threads.
-    let osThreadIdForGuest (ordinal : int) : OsThreadId =
-        if ordinal < 0 || ordinal > maxOsThreadOrdinal then
+        if i < 0 then
             failwith
-                $"guest thread ordinal must be in [0, %d{maxOsThreadOrdinal}] to mint an OS thread id that is neither 0 nor the (uint32)-1 sentinel; got %d{ordinal}"
+                $"thread id must be non-negative to mint an OS thread id (a negative id would wrap onto the fatal 0, which CoreLib maps to the (uint32)-1 sentinel); got %d{i}"
 
-        OsThreadId (2u * uint32 ordinal + 1u)
-
-    /// OS thread id policy for PawPrint-internal auxiliary threads — currently
-    /// just the signal dispatcher minted by `IlMachineState.allocateParkedThread`.
-    ///
-    /// Such a thread needs a real, distinct id even though no guest can name
-    /// it, because it *runs* guest code: `SignalDispatch` wakes it onto a
-    /// managed signal handler, and that handler may take a `System.Threading.Lock`.
-    ///
-    /// Ids are **even**, so that they never collide with guest-visible threads.
-    let osThreadIdForInternal (i : int) : OsThreadId =
-        if i < 0 || i > maxOsThreadOrdinal then
-            failwith
-                $"internal thread ordinal must be in [0, %d{maxOsThreadOrdinal}] to mint an OS thread id that is not 0; got %d{i}"
-
-        OsThreadId (2u * uint32 i + 2u)
+        OsThreadId (uint32 i + 1u)
 
     /// Overlay the supplied environment variables on top of the kernel's
     /// existing `Environment` map. Used by `Program.run` / the CLI to layer

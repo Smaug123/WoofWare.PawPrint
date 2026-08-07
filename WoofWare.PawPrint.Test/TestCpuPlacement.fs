@@ -30,7 +30,7 @@ module TestCpuPlacement =
     let private countFrom (seed : int) : int = 1 + (abs (seed % 64))
 
     /// Non-negative rotation cursor, i.e. exactly the values
-    /// `IlMachineState.NextGuestThreadOrdinal` can hold.
+    /// `IlMachineState.NextCpuRotation` can hold.
     let private rotationFrom (seed : int) : int = abs (seed % 100_000)
 
     let private kernelWith (count : int) : EmulatedKernel =
@@ -165,7 +165,7 @@ module TestCpuPlacement =
     //
     // The properties above cover the pure placement function. These cover the
     // wiring: which thread-creation entry points advance
-    // `IlMachineState.NextGuestThreadOrdinal`, and by how much. That is the part of
+    // `IlMachineState.NextCpuRotation`, and by how much. That is the part of
     // this feature most likely to be got wrong by a later change, and pinning
     // it here gives a far clearer failure than a numbered return code from the
     // end-to-end `SchedGetCpuPlacement.cs`.
@@ -186,7 +186,7 @@ module TestCpuPlacement =
 
     [<Test>]
     let ``a fresh machine starts its rotation at zero`` () =
-        (machineWith 4).NextGuestThreadOrdinal |> shouldEqual 0
+        (machineWith 4).NextCpuRotation |> shouldEqual 0
 
     [<Test>]
     let ``allocateUnstartedThread advances the rotation by exactly one`` () =
@@ -197,13 +197,13 @@ module TestCpuPlacement =
         let state, first =
             IlMachineState.allocateUnstartedThread (ManagedHeapAddress 1) state
 
-        state.NextGuestThreadOrdinal |> shouldEqual 1
+        state.NextCpuRotation |> shouldEqual 1
         cpuOf first state |> shouldEqual (CpuId 0)
 
         let state, second =
             IlMachineState.allocateUnstartedThread (ManagedHeapAddress 2) state
 
-        state.NextGuestThreadOrdinal |> shouldEqual 2
+        state.NextCpuRotation |> shouldEqual 2
         cpuOf second state |> shouldEqual (CpuId 1)
 
     [<Test>]
@@ -216,7 +216,7 @@ module TestCpuPlacement =
 
         let state, parked = IlMachineState.allocateParkedThread state
 
-        state.NextGuestThreadOrdinal |> shouldEqual 0
+        state.NextCpuRotation |> shouldEqual 0
         cpuOf parked state |> shouldEqual (CpuId 0)
 
     [<Test>]

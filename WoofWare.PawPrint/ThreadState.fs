@@ -288,17 +288,15 @@ type ThreadState =
         /// a thread from `IlMachineState.ThreadState`, and a recycled id would
         /// let a stale `Lock._owningThreadId` be mistaken for a live owner.
         ///
-        /// A stored field rather than a projection of `ThreadId` for the same
-        /// reason `IlMachineState.NextGuestThreadOrdinal` exists separately
-        /// from `NextThreadId`: interpreter-internal threads consume `ThreadId`s
-        /// too, so deriving from `ThreadId` would let an internal allocation
-        /// (the signal dispatcher, minted lazily on the guest's first
-        /// `SystemNative_InitializeTerminalAndSignalHandling`) shift the id of
-        /// every guest thread created afterwards. Guest threads therefore mint
-        /// from the guest ordinal and internal threads from a disjoint range;
-        /// the two domains differ, so no function of `ThreadId` alone can
-        /// answer this question and the value must be carried per-thread. See
-        /// `OsThreadId` for the disjointness scheme.
+        /// Stored rather than recomputed at each read, even though
+        /// `EmulatedKernel.osThreadId` currently derives it from the thread's
+        /// `ThreadId` and so could answer every query without this field. The
+        /// field is what makes the id a *per-thread fact* rather than a
+        /// coincidence of the minting formula: `Cpu` next door is already one,
+        /// the test stubs that build a `ThreadState` directly can state an id
+        /// without reproducing the formula, and a future scheme that stopped
+        /// being a function of `ThreadId` — modelled tid recycling, say, or an
+        /// id a guest can influence — would need no change here.
         ///
         /// A total field rather than a `Map<ThreadId, OsThreadId>` on
         /// `EmulatedKernel` for the same reason `Cpu` is: there is no truthful
@@ -379,11 +377,11 @@ type ThreadState =
     /// `cpu` and `osThreadId` are the simulated logical processor to pin the
     /// new thread to, and the OS thread id it will report. They are parameters
     /// rather than defaults so that callers must consult the kernel's policies
-    /// (`EmulatedKernel.cpuForRotation` and `EmulatedKernel.osThreadIdForGuest`
-    /// / `osThreadIdForInternal`), which `ThreadState` cannot reach itself —
-    /// `EmulatedKernel` is compiled after this file. For `osThreadId` there is
-    /// the additional reason that a default would be a *shared* id, and
-    /// aliasing thread ids silently breaks `System.Threading.Lock`.
+    /// (`EmulatedKernel.cpuForRotation` and `EmulatedKernel.osThreadId`), which
+    /// `ThreadState` cannot reach itself — `EmulatedKernel` is compiled after
+    /// this file. For `osThreadId` there is the additional reason that a
+    /// default would be a *shared* id, and aliasing thread ids silently breaks
+    /// `System.Threading.Lock`.
     static member New (cpu : CpuId) (osThreadId : OsThreadId) (methodState : MethodState) =
         {
             ActiveMethodState = FrameId 0

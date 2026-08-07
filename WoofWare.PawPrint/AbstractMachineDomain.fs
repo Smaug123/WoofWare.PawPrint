@@ -51,17 +51,18 @@ type CpuId =
 ///
 /// Nothing cares about specific numbers, only uniqueness.
 /// (`System.Threading.Lock` uses this value as its owner identity, for both
-/// mutual exclusion and recursive re-entry detection.)
-/// There are exactly two producers, and they mint into disjoint halves of
-/// the range so that uniqueness holds between them:
-/// `EmulatedKernel.osThreadIdForGuest` mints odd ids for guest-visible
-/// threads, and `EmulatedKernel.osThreadIdForInternal` mints even ids for
-/// PawPrint-internal auxiliary threads.
+/// mutual exclusion and recursive re-entry detection.) There is exactly one
+/// producer, `EmulatedKernel.osThreadId`, which derives the id from the
+/// thread's `ThreadId`; uniqueness is therefore inherited from `ThreadId`
+/// rather than being an invariant this type has to defend.
 ///
-/// This is *not* the `ThreadId` concept: `ThreadId` is PawPrint's
-/// interpreter-private allocation counter, which internal threads also consume,
-/// and deriving a guest-visible id from it directly would let an
-/// interpreter-internal allocation shift guest-visible thread IDs.
+/// Still a distinct type from `ThreadId`, though currently in bijection with
+/// it, because the two answer different questions and are confusable at
+/// exactly the boundary where confusing them is expensive. A `ThreadId` is
+/// interpreter-private: it keys `IlMachineState.ThreadState` and the scheduler
+/// picks by it. An `OsThreadId` is a value the *guest* reads and stores —
+/// notably in `Lock._owningThreadId`, where a wrong-but-plausible number is
+/// silently mistaken for an owner rather than crashing.
 type OsThreadId =
     | OsThreadId of uint32
 
