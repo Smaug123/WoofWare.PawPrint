@@ -33,6 +33,8 @@ module NativeQCall =
             "RuntimeTypeHandle_GetDeclaringTypeHandleForGenericVariable",
             NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_GetDeclaringTypeHandleForGenericVariable"
             "RuntimeTypeHandle_GetFields", NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_GetFields"
+            "RuntimeTypeHandle_GetGenericTypeDefinition",
+            NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_GetGenericTypeDefinition"
             "RuntimeTypeHandle_GetInstantiation", NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_GetInstantiation"
             "RuntimeTypeHandle_GetInterfaces", NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_GetInterfaces"
             "RuntimeTypeHandle_Instantiate", NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_Instantiate"
