@@ -15,9 +15,11 @@ module HostRuntimeConfig =
     /// SDK emits beside it, as `hostpolicy` does.
     ///
     /// A missing file yields no properties: PawPrint is routinely pointed at a bare dll, and
-    /// that is not an error. A file that is present but malformed *is* an error, and throws —
-    /// silently treating it as empty would drop the guest's feature switches and leave it
-    /// running with quietly different behaviour.
+    /// `runtime_config_t::ensure_parsed` likewise treats "not existing" as success. A file
+    /// that is present but invalid *is* an error, and throws — silently treating it as empty
+    /// would drop the guest's feature switches and leave it running with quietly different
+    /// behaviour. This present/absent split is exactly why `RuntimeConfig.parse` rejects a
+    /// document with no `runtimeOptions` while this function tolerates no document at all.
     let forAssembly (dllPath : string) : AppContextProperties =
         let configPath = RuntimeConfig.pathForAssembly dllPath
 

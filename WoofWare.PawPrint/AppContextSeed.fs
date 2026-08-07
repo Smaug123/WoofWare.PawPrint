@@ -32,10 +32,12 @@ module AppContextSeed =
     /// pointer to its first code unit — a `char*` as CoreLib's `Setup` will consume it.
     ///
     /// A .NET string is already UTF-16, so each `char` becomes one 2-byte cell verbatim;
-    /// no encoding decision arises. An embedded NUL is written out in full and then
-    /// truncates the guest's view at `wcslen`, which is also what happens on a real host
-    /// (there the truncation happens earlier, when hostpolicy assigns a `char_t*` into a
-    /// `pal::string_t`, but the string the guest ends up seeing is the same prefix).
+    /// no encoding decision arises. Interior NULs do not arise either: `AppContextProperties`
+    /// guarantees they have been truncated already, at the same point hostpolicy truncates
+    /// them (assigning a `char_t*` into a `pal::string_t`). That matters for *names* rather
+    /// than values — truncating late would let two names that a real host merges into one
+    /// property arrive here as two, and `Setup`'s `Dictionary.Add` would throw on the
+    /// duplicate.
     let private allocateWideString (s : string) (state : IlMachineState) : ManagedPointerSource * IlMachineState =
         let ptr, state =
             IlMachineState.allocateNativeMemory MemoryBlockInitialization.ZeroInitialized ((s.Length + 1) * 2) state

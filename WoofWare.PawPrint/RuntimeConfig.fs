@@ -17,6 +17,11 @@ open System.Text.Json
 /// `AppContextProperties.ofMap` (for a host that knows its own mind, chiefly tests). The
 /// representation is private so that the only way to get one from a config file is through
 /// the parser.
+///
+/// Invariant: no name or value contains an interior NUL. hostpolicy stores both in a
+/// `pal::string_t` assigned from a `char_t*`, which truncates there, so a NUL is not a
+/// character a property can contain — and the difference is observable, because two names
+/// that differ only after a NUL are *one* property to a real host.
 type AppContextProperties =
     private
         {
@@ -44,9 +49,39 @@ module AppContextProperties =
             Values = Map.empty
         }
 
+    /// Truncate at the first NUL, as hostpolicy's `pal::string_t` assignment from a
+    /// `char_t*` does.
+    let internal truncateAtNul (s : string) : string =
+        match s.IndexOf '\000' with
+        | -1 -> s
+        | i -> s.Substring (0, i)
+
+    /// Build a property set directly, applying the same NUL truncation a real host would.
+    ///
+    /// Two names that collide only after truncation are rejected rather than silently
+    /// merged: from a `Map` there is no document order to say which should win, so the
+    /// caller's intent is genuinely ambiguous. `RuntimeConfig.parse` does not go through
+    /// here — it has document order, and resolves such a collision last-wins.
     let ofMap (values : Map<string, string>) : AppContextProperties =
+        let truncated =
+            values
+            |> Map.toList
+            |> List.map (fun (k, v) -> truncateAtNul k, truncateAtNul v)
+
+        let distinctNames = truncated |> List.map fst |> List.distinct
+
+        if distinctNames.Length <> truncated.Length then
+            let collisions =
+                truncated
+                |> List.countBy fst
+                |> List.filter (fun (_, n) -> n > 1)
+                |> List.map fst
+
+            failwith
+                $"AppContextProperties.ofMap: names %A{collisions} are distinct only after an interior NUL, which a real host truncates at, so they would be a single AppContext property. Supply one value per truncated name."
+
         {
-            Values = values
+            Values = Map.ofList truncated
         }
 
     let toMap (properties : AppContextProperties) : Map<string, string> = properties.Values
@@ -76,9 +111,8 @@ module RuntimeConfig =
         match value.ValueKind with
         | JsonValueKind.String ->
             // `GetString()` decodes the escapes, so the guest sees the value, not its JSON
-            // spelling. A value containing a NUL is kept whole here; it gets truncated later,
-            // when it is written into a NUL-terminated `char*` — which is exactly where a real
-            // host truncates it too.
+            // spelling. The caller truncates at the first NUL, matching where hostpolicy
+            // assigns this `char_t*` into a `pal::string_t`.
             match value.GetString () with
             | null ->
                 // Unreachable: `GetString` only returns null for JsonValueKind.Null.
@@ -117,16 +151,32 @@ module RuntimeConfig =
         | JsonValueKind.Object -> refusal "object" """e.g. {"a": 1} becomes {"a":1}"""
         | kind -> Error $"runtimeconfig.json property '%s{name}' has unexpected JSON kind %O{kind}"
 
+    /// The *first* member of `obj` with this name.
+    ///
+    /// First, not last, because that is what rapidjson's `FindMember` returns, and duplicate
+    /// members are legal JSON that neither parser rejects. `JsonElement.TryGetProperty`
+    /// returns the *last*, so using it here would silently disagree with a real host about
+    /// which `runtimeOptions` block is in force.
+    let private tryFindFirstMember (name : string) (obj : JsonElement) : JsonElement option =
+        obj.EnumerateObject ()
+        |> Seq.tryPick (fun property -> if property.Name = name then Some property.Value else None)
+
     /// Read the AppContext properties out of the contents of a `runtimeconfig.json`.
     ///
     /// Pure: the caller supplies the text, because a library that read the host filesystem
     /// would make a replay depend on the machine that produced it (and the test harness
     /// compiles its guests straight to a `MemoryStream`, so there is no file to read).
     ///
-    /// A document with no `runtimeOptions`, or no `configProperties`, has no properties —
-    /// that is an ordinary config, not an error. Malformed JSON, a section of the wrong
-    /// shape, or a value whose hostpolicy rendering we do not reproduce, are all errors:
-    /// a misconfigured file should be loud, not silently equivalent to an empty one.
+    /// Mirrors `runtime_config_t::ensure_parsed`/`parse_opts`. A file that exists but has no
+    /// `runtimeOptions` is *invalid* there (`ensure_parsed` falls through to `return false`),
+    /// so it is an error here too; a *missing* file is not an error, but that is the caller's
+    /// distinction to make and `HostRuntimeConfig` makes it. `"runtimeOptions": null` is
+    /// explicitly accepted as "no options". Absent `configProperties` simply means no
+    /// properties.
+    ///
+    /// Malformed JSON, a section of the wrong shape, and a value whose hostpolicy rendering
+    /// we do not reproduce are all errors: a misconfigured file should be loud, not silently
+    /// equivalent to an empty one.
     let parse (contents : string) : Result<AppContextProperties, string> =
         let options =
             JsonDocumentOptions (
@@ -152,31 +202,56 @@ module RuntimeConfig =
             Error $"runtimeconfig.json must have a JSON object at its root, but found %O{doc.RootElement.ValueKind}"
         else
 
-        match doc.RootElement.TryGetProperty "runtimeOptions" with
-        | false, _ -> Ok AppContextProperties.empty
-        | true, runtimeOptions ->
+        match tryFindFirstMember "runtimeOptions" doc.RootElement with
+        | None ->
+            Error
+                "runtimeconfig.json has no 'runtimeOptions' section, which a real host treats as an invalid configuration (runtime_config.cpp, ensure_parsed). An absent runtimeconfig.json is fine; a present one must have the section."
+        | Some runtimeOptions ->
 
-        if runtimeOptions.ValueKind <> JsonValueKind.Object then
-            Error $"runtimeconfig.json 'runtimeOptions' must be an object, but found %O{runtimeOptions.ValueKind}"
+        // `parse_opts` returns success immediately for a null value, so an explicit
+        // `"runtimeOptions": null` is a valid config that supplies nothing.
+        if runtimeOptions.ValueKind = JsonValueKind.Null then
+            Ok AppContextProperties.empty
+        else if runtimeOptions.ValueKind <> JsonValueKind.Object then
+            Error
+                $"runtimeconfig.json 'runtimeOptions' must be an object or null, but found %O{runtimeOptions.ValueKind}"
         else
 
-        match runtimeOptions.TryGetProperty "configProperties" with
-        | false, _ -> Ok AppContextProperties.empty
-        | true, configProperties ->
+        match tryFindFirstMember "configProperties" runtimeOptions with
+        | None -> Ok AppContextProperties.empty
+        | Some configProperties ->
 
         if configProperties.ValueKind <> JsonValueKind.Object then
+            // hostpolicy calls `GetObject()` on this without checking, which is undefined
+            // behaviour for any other kind. There is no behaviour to match, so refuse.
             Error
                 $"runtimeconfig.json 'runtimeOptions.configProperties' must be an object, but found %O{configProperties.ValueKind}"
         else
 
-        // Duplicate names are preserved by the JSON reader and folded in document order, so
-        // the last occurrence wins — matching hostpolicy's `m_properties[name] = …`.
-        (Ok Map.empty, configProperties.EnumerateObject ())
-        ||> Seq.fold (fun acc property ->
+        // Resolve duplicates *before* rendering, in two passes, because hostpolicy's loop
+        // body is `m_properties[name] = render(value)`: it renders every occurrence but only
+        // the last survives. A single fold that rendered as it went would reject a file whose
+        // *effective* value is perfectly renderable, e.g. `"P": 1.5, "P": "final"`.
+        //
+        // The name is truncated at its first NUL before being used as a key, because that is
+        // where hostpolicy's `pal::string_t` assignment truncates — so two names differing
+        // only after a NUL really are one property, and the later wins rather than colliding.
+        let effective =
+            (Map.empty, configProperties.EnumerateObject ())
+            ||> Seq.fold (fun acc property ->
+                Map.add (AppContextProperties.truncateAtNul property.Name) property.Value acc
+            )
+
+        (Ok Map.empty, Map.toSeq effective)
+        ||> Seq.fold (fun acc (name, value) ->
             match acc with
             | Error _ -> acc
             | Ok acc ->
-                renderValue property.Name property.Value
-                |> Result.map (fun rendered -> Map.add property.Name rendered acc)
+                renderValue name value
+                |> Result.map (fun rendered -> Map.add name (AppContextProperties.truncateAtNul rendered) acc)
         )
-        |> Result.map AppContextProperties.ofMap
+        |> Result.map (fun values ->
+            // Already truncated and deduplicated above, so `ofMap`'s collision check cannot
+            // fire here; going through it keeps the invariant in one place.
+            AppContextProperties.ofMap values
+        )

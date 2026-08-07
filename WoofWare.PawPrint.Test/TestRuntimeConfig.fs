@@ -136,15 +136,43 @@ module TestRuntimeConfig =
     // ------------------------------------------------------------------
 
     [<Test>]
-    let ``absent sections yield no properties`` () =
+    let ``absent configProperties yields no properties`` () =
         // hostpolicy's `FindMember` simply misses, which is not an error: a
         // runtimeconfig.json with no configProperties is completely normal.
         parseOk """{ "runtimeOptions": { "tfm": "net10.0" } }"""
         |> shouldEqual Map.empty
 
         parseOk """{ "runtimeOptions": {} }""" |> shouldEqual Map.empty
-        parseOk """{}""" |> shouldEqual Map.empty
         parseOk (document "{}") |> shouldEqual Map.empty
+
+    [<Test>]
+    let ``a present document with no runtimeOptions is invalid`` () =
+        // `ensure_parsed` returns false when the document has no `runtimeOptions` member, so
+        // a real host rejects the config outright. Only an *absent* file is benign, and that
+        // distinction belongs to the caller — `HostRuntimeConfig` makes it.
+        parseError """{}""" |> shouldContainText "runtimeOptions"
+        parseError """{ "notRuntimeOptions": {} }""" |> ignore
+
+    [<Test>]
+    let ``an explicitly null runtimeOptions supplies nothing`` () =
+        // `parse_opts` short-circuits to success on a null value, so this is a valid config
+        // rather than a wrong-shape error.
+        parseOk """{ "runtimeOptions": null }""" |> shouldEqual Map.empty
+
+    [<Test>]
+    let ``duplicate sections take the first occurrence`` () =
+        // rapidjson's `FindMember` returns the first match. `JsonElement.TryGetProperty`
+        // returns the *last*, so this is exactly where a naive reader silently disagrees with
+        // the host about which block is in force.
+        parseOk
+            """{ "runtimeOptions": { "configProperties": { "P": "first" } },
+                 "runtimeOptions": { "configProperties": { "P": "second" } } }"""
+        |> shouldEqual (Map.ofList [ "P", "first" ])
+
+        parseOk
+            """{ "runtimeOptions": { "configProperties": { "P": "first" },
+                                     "configProperties": { "P": "second" } } }"""
+        |> shouldEqual (Map.ofList [ "P", "first" ])
 
     [<Test>]
     let ``sibling runtimeOptions keys are ignored`` () =
@@ -157,6 +185,31 @@ module TestRuntimeConfig =
         // means the later one wins.
         parseOk (document """{ "P": "first", "P": "second" }""")
         |> shouldEqual (Map.ofList [ "P", "second" ])
+
+    [<Test>]
+    let ``a shadowed unrenderable value does not condemn the file`` () =
+        // hostpolicy renders every occurrence but keeps only the last, so the *effective*
+        // value here is a plain string and the config is fine. Rejecting on the shadowed
+        // `1.5` would refuse a file a real host runs happily.
+        parseOk (document """{ "P": 1.5, "P": "final" }""")
+        |> shouldEqual (Map.ofList [ "P", "final" ])
+
+        // ... and the converse still fails: it is the *last* value that has to be renderable.
+        parseError (document """{ "P": "fine", "P": 1.5 }""")
+        |> shouldContainText "non-integer numeric"
+
+    [<Test>]
+    let ``names and values are truncated at an interior NUL`` () =
+        // Both go into a `pal::string_t` assigned from a `char_t*`, which stops at the NUL.
+        // For values this is invisible either way (the guest's `new string(char*)` would stop
+        // there too), but for *names* it decides identity: these two are one property to a
+        // real host, and the later value wins. Were they kept distinct, both would reach
+        // `AppContext.Setup` and its `Dictionary.Add` would throw on the duplicate key.
+        parseOk (document "{ \"A\\u0000X\": \"one\", \"A\\u0000Y\": \"two\" }")
+        |> shouldEqual (Map.ofList [ "A", "two" ])
+
+        parseOk (document "{ \"P\": \"keep\\u0000drop\" }")
+        |> shouldEqual (Map.ofList [ "P", "keep" ])
 
     [<Test>]
     let ``comments are permitted`` () =
@@ -180,12 +233,14 @@ module TestRuntimeConfig =
 
     [<Test>]
     let ``sections of the wrong shape are refused`` () =
-        // hostpolicy calls `GetObject()` on these without checking, which is undefined
-        // behaviour on a non-object. There is no behaviour to match, so we refuse.
+        // `parse_opts` returns false for a non-object, non-null `runtimeOptions`, and calls
+        // `GetObject()` on `configProperties` without checking — undefined behaviour on any
+        // other kind, so there is no behaviour to match and we refuse.
         parseError """{ "runtimeOptions": [] }""" |> ignore
         parseError """{ "runtimeOptions": "no" }""" |> ignore
         parseError """{ "runtimeOptions": { "configProperties": [] } }""" |> ignore
         parseError """{ "runtimeOptions": { "configProperties": "no" } }""" |> ignore
+        parseError """{ "runtimeOptions": { "configProperties": null } }""" |> ignore
         parseError """[]""" |> ignore
 
     // ------------------------------------------------------------------
@@ -216,17 +271,34 @@ module TestRuntimeConfig =
         }
 
     [<Test>]
-    let ``string values survive verbatim`` () =
+    let ``string values survive verbatim up to NUL truncation`` () =
+        // The whole rule for string values in one property: what a guest sees is the JSON
+        // string *decoded* (so every escape the serialiser chose has to be undone) and then
+        // cut at its first NUL, with names cut the same way and later entries winning the
+        // resulting collisions.
+        //
+        // NULs stay in the generator's alphabet rather than being filtered out. Truncation is
+        // the specified behaviour, not an inconvenience, and a generator that dodged it would
+        // stop the property from saying anything about the case where it bites.
+        let expected (entries : (string * string) list) : Map<string, string> =
+            // Deliberately restated with `Split` rather than the implementation's
+            // `IndexOf`/`Substring`, so this is a second opinion and not a transcription.
+            let cut (s : string) = s.Split('\000').[0]
+
+            (Map.empty, entries)
+            ||> List.fold (fun acc (k, v) -> Map.add (cut k) (cut v) acc)
+
         let property (kvs : (string * string) list) : bool =
-            let kvs = Map.ofList kvs
+            // `Map.toList` is ordered by the *untruncated* key, and that order is the
+            // document order we then emit, so last-wins is well defined on both sides.
+            let entries = Map.ofList kvs |> Map.toList
 
             let body =
-                kvs
-                |> Map.toList
+                entries
                 |> List.map (fun (k, v) -> $"{JsonSerializer.Serialize k}: {JsonSerializer.Serialize v}")
                 |> String.concat ", "
 
-            parseOk (document $"{{ {body} }}") = kvs
+            parseOk (document $"{{ {body} }}") = expected entries
 
         let gen = Gen.zip jsonStringGen jsonStringGen |> Gen.listOf
 
@@ -247,6 +319,29 @@ module TestRuntimeConfig =
             parseOk (document $"""{{ "P": {u} }}""") = Map.ofList [ "P", string<uint64> u ]
 
         Check.One (config, Prop.forAll (ArbMap.defaults |> ArbMap.arbitrary<uint64>) property)
+
+    // ------------------------------------------------------------------
+    // Direct construction.
+    // ------------------------------------------------------------------
+
+    [<Test>]
+    let ``ofMap applies the same NUL truncation`` () =
+        AppContextProperties.ofMap (Map.ofList [ "A\000X", "v\000w" ])
+        |> AppContextProperties.toMap
+        |> shouldEqual (Map.ofList [ "A", "v" ])
+
+    [<Test>]
+    let ``ofMap rejects names that collide only after truncation`` () =
+        // A `Map` has no document order, so there is no principled way to pick a winner;
+        // silently dropping one would hand the caller a property set that is not the one they
+        // asked for.
+        let exn =
+            Assert.Throws<exn> (fun () ->
+                AppContextProperties.ofMap (Map.ofList [ "A\000X", "one" ; "A\000Y", "two" ])
+                |> ignore
+            )
+
+        exn.Message |> shouldContainText "NUL"
 
     // ------------------------------------------------------------------
     // Path derivation.
