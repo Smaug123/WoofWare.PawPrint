@@ -7,11 +7,13 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
 
-/// `CliType.TrySingleWholeValueField` decides whether a value type is *transparent*: whether it
-/// holds exactly one field, at offset 0, spanning the whole value. Byref reinterpret elision is
-/// justified by that answer, so these tests pin both directions — in particular that shapes which
-/// merely *contain* a reference at offset 0 are rejected, since eliding those would silently drop
-/// the rest of the struct.
+/// `CliType.TryFieldExactlyCovering` decides whether a byte range of a value is exactly one field's
+/// extent, undisturbed by any sibling; `CliType.TrySingleWholeValueField` is that question asked of
+/// the whole value, i.e. "is this type *transparent* — does it hold exactly one field, at offset 0,
+/// spanning it?". Byref reinterpret elision is justified by those answers, so these tests pin both
+/// directions — in particular that a range which merely *contains* part of a reference, or which is
+/// aliased by an overlapping sibling, is rejected, since eliding those would silently drop or
+/// strand storage.
 [<TestFixture>]
 module TestCliTypeSingleWholeField =
 
@@ -252,4 +254,135 @@ module TestCliTypeSingleWholeField =
 
         property
         |> Prop.forAll (Arb.fromGen (Gen.choose (0, 4)))
+        |> Check.QuickThrowOnFailure
+
+    // ------------------------------------------------------------------------------------------
+    // `TryFieldExactlyCovering` is the generalisation `TrySingleWholeValueField` is defined in
+    // terms of: instead of "the whole value is one field", it asks "this byte range is exactly one
+    // field, undisturbed by siblings". That is what lets a byref reinterpret address a field
+    // *past* the first, where the range is one cell rather than the whole aggregate.
+    // ------------------------------------------------------------------------------------------
+
+    /// A struct of two reference fields, as `ReinterpretByrefAtNonZeroOffset.cs` uses. Each field
+    /// must be individually addressable, and each must hand back its own cell rather than its
+    /// neighbour's.
+    [<Test>]
+    let ``each cell of a two-field reference layout is exactly covered`` () : unit =
+        let value =
+            ofFields
+                [
+                    cliField "a" (CliType.ObjectRef None) None objectHandle
+                    cliField "b" (CliType.ObjectRef None) None objectHandle
+                ]
+
+        CliType.SizeOf(value).Size |> shouldEqual 16
+
+        CliType.TryFieldExactlyCovering 0 8 value
+        |> shouldEqual (Some (FieldId.named "a", CliType.ObjectRef None))
+
+        CliType.TryFieldExactlyCovering 8 8 value
+        |> shouldEqual (Some (FieldId.named "b", CliType.ObjectRef None))
+
+    /// A neighbouring field that merely *abuts* the range must not block it — otherwise no field
+    /// past the first could ever elide. This is the boundary case of the overlap test.
+    [<Test>]
+    let ``an adjacent sibling does not block an exact cover`` () : unit =
+        let value =
+            ofFieldsSized
+                8
+                [
+                    cliField "Lo" (CliType.Numeric (CliNumericType.Int32 0)) (Some 0) int32Handle
+                    cliField "Hi" (CliType.ObjectRef None) (Some 4) objectHandle
+                ]
+
+        CliType.TryFieldExactlyCovering 4 8 value
+        |> shouldEqual (Some (FieldId.named "Hi", CliType.ObjectRef None))
+
+    /// An *overlapping* sibling does block it: writing through the covering field would leave the
+    /// alias stale, so the caller must fall back to the byte view.
+    [<Test>]
+    let ``an overlapping sibling blocks an exact cover`` () : unit =
+        let value =
+            ofFieldsSized
+                12
+                [
+                    cliField
+                        "AsLong"
+                        (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L)))
+                        (Some 4)
+                        int64Handle
+                    cliField "Upper" (CliType.Numeric (CliNumericType.Int32 0)) (Some 8) int32Handle
+                ]
+
+        CliType.TryFieldExactlyCovering 4 8 value |> shouldEqual None
+
+    /// Two fields declared at the identical offset with the identical width — a legal
+    /// explicit-layout union of two references. Each is the other's overlapping sibling, so neither
+    /// may be handed back; "exactly one field starts here" alone would have admitted one of them.
+    [<Test>]
+    let ``a union of two identical-width fields blocks an exact cover`` () : unit =
+        let value =
+            ofFieldsSized
+                8
+                [
+                    cliField "AsObject" (CliType.ObjectRef None) (Some 0) objectHandle
+                    cliField "AlsoObject" (CliType.ObjectRef None) (Some 0) objectHandle
+                ]
+
+        CliType.TryFieldExactlyCovering 0 8 value |> shouldEqual None
+
+    /// A range that is only *part* of a field, or that spans two of them, has no single cell to
+    /// name.
+    [<Test>]
+    let ``a partial or straddling range is never exactly covered`` () : unit =
+        let value =
+            ofFields
+                [
+                    cliField "A" (CliType.Numeric (CliNumericType.Int32 0)) None int32Handle
+                    cliField "B" (CliType.Numeric (CliNumericType.Int32 0)) None int32Handle
+                ]
+
+        // Half of `A`.
+        CliType.TryFieldExactlyCovering 0 2 value |> shouldEqual None
+        // Straddling `A` and `B`.
+        CliType.TryFieldExactlyCovering 2 4 value |> shouldEqual None
+        // Both of them at once.
+        CliType.TryFieldExactlyCovering 0 8 value |> shouldEqual None
+        // Off the end.
+        CliType.TryFieldExactlyCovering 8 4 value |> shouldEqual None
+        // Degenerate widths.
+        CliType.TryFieldExactlyCovering 0 0 value |> shouldEqual None
+        CliType.TryFieldExactlyCovering 0 -4 value |> shouldEqual None
+
+    /// The property the inline-array elision rests on: in a sequential run of `n` identical
+    /// pointer-width slots, the range `[8k, 8k+8)` is exactly slot `k` for every `k`, and nothing
+    /// misaligned with a slot boundary is ever covered.
+    [<Test>]
+    let ``every slot of a uniform sequential run is exactly covered, and nothing else is`` () : unit =
+        let property (n : int) : bool =
+            let names = List.init n (fun k -> if k = 0 then "_item" else $"_item[%d{k}]")
+
+            let value =
+                names
+                |> List.map (fun name -> cliField name (CliType.ObjectRef None) None objectHandle)
+                |> ofFields
+
+            let slotsCovered =
+                names
+                |> List.mapi (fun k name ->
+                    CliType.TryFieldExactlyCovering (8 * k) 8 value = Some (FieldId.named name, CliType.ObjectRef None)
+                )
+                |> List.forall id
+
+            let misalignedRejected =
+                [ 0 .. (8 * n) - 1 ]
+                |> List.forall (fun offset -> offset % 8 = 0 || (CliType.TryFieldExactlyCovering offset 8 value).IsNone)
+
+            // A range wider than one slot spans two, so it is never a single cell.
+            let widerRejected = n < 2 || (CliType.TryFieldExactlyCovering 0 16 value).IsNone
+
+            slotsCovered && misalignedRejected && widerRejected
+
+        property
+        |> Prop.forAll (Arb.fromGen (Gen.choose (1, 8)))
         |> Check.QuickThrowOnFailure

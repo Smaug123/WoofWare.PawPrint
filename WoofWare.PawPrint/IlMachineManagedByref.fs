@@ -1029,17 +1029,25 @@ module IlMachineManagedByref =
         | CliType.ObjectRef _, CliType.ObjectRef _ -> true
         | _ -> false
 
-    /// The no-trailing-`Field` sibling of `classifyTransparentWrapper`: the byref reinterprets
-    /// transparent single-field storage directly as the field's *own* type, so there is no field
-    /// projection to navigate. `[InlineArray(N)] struct { T _item; }` produces exactly this —
-    /// indexing element 0 is `Unsafe.As<TBuffer, T>(ref buffer)`.
+    /// The no-trailing-`Field` sibling of `classifyTransparentWrapper`: the byref reinterprets the
+    /// storage directly as some other type at a byte offset, so there is no field projection to
+    /// navigate. `[InlineArray(N)] struct { T _item; }` produces exactly this — indexing element
+    /// `k` is `Unsafe.Add(ref Unsafe.As<TBuffer, T>(ref buffer), k)`, i.e.
+    /// `[ReinterpretAs T; ByteOffset k * sizeof(T)]`.
     ///
-    /// Returns the storage-side `FieldId` to read or write through. `CliType.TrySingleWholeValueField`
-    /// supplies the structural half (exactly one field, at offset 0, spanning the whole value, so
-    /// nothing else in the storage could be disturbed); `isLayoutCompatibleForElision` supplies the
-    /// compatibility half, which is the same gate the `Field`-projected classifier applies.
-    let private tryElideTransparentWrapperTo (storage : CliType) (targetTemplate : CliType) : FieldId option =
-        match CliType.TrySingleWholeValueField storage with
+    /// Returns the storage-side `FieldId` to read or write through. `CliType.TryFieldExactlyCovering`
+    /// supplies the structural half (the reinterpreted range is exactly one field's extent, and no
+    /// sibling overlaps it, so nothing else in the storage could be disturbed);
+    /// `isLayoutCompatibleForElision` supplies the compatibility half, which is the same gate the
+    /// `Field`-projected classifier applies. That gate is still object-reference identity only, so
+    /// this fires precisely where the bytewise path cannot serve the access at all.
+    let private tryElideStorageFieldAt
+        (byteOffset : int)
+        (storage : CliType)
+        (targetTemplate : CliType)
+        : FieldId option
+        =
+        match CliType.TryFieldExactlyCovering byteOffset (CliType.sizeOf targetTemplate) storage with
         | Some (id, contents) when isLayoutCompatibleForElision contents targetTemplate -> Some id
         | _ -> None
 
@@ -1192,24 +1200,27 @@ module IlMachineManagedByref =
                         None
                     else
                         match peelTrailingByteView (Some baseClassTypes) state projs with
-                        | ValueSome (structuralPrefix, 0) ->
+                        | ValueSome (structuralPrefix, byteOffset) ->
                             let cell = readProjectedValue (readRootValue state root) structuralPrefix
 
                             match cell, targetTemplate with
-                            | CliType.ObjectRef _, CliType.ObjectRef _ -> Some cell
+                            | CliType.ObjectRef _, CliType.ObjectRef _ ->
+                                // A whole-cell view of a reference is the reference; a *mid-cell*
+                                // one has no defined meaning, so only offset 0 elides here.
+                                if byteOffset = 0 then Some cell else None
                             | CliType.ValueType _, CliType.ObjectRef _ ->
                                 // The storage is a value type but the target is a bare
-                                // reference: `Unsafe.As<TBuffer, T>(ref buffer)` where
-                                // `TBuffer` is a transparent single-field wrapper of a `T`
-                                // reference, as `[InlineArray(N)]` over a reference element
-                                // generates. The wrapper has no representation beyond its
-                                // field, so the byref addresses precisely that field's cell
-                                // and we can hand it back. Storage that merely *contains* a
-                                // reference at offset 0 is rejected by
-                                // `TrySingleWholeValueField` and still routes bytewise, where
-                                // it fails loudly rather than silently dropping the rest of
-                                // the struct.
-                                tryElideTransparentWrapperTo cell targetTemplate
+                                // reference: `Unsafe.As<TBuffer, T>(ref buffer)`, optionally
+                                // walked forward by `Unsafe.Add`, where the byte range picked
+                                // out is exactly one reference-typed cell of `TBuffer` — as
+                                // `[InlineArray(N)]` over a reference element generates for
+                                // every slot. The byref addresses precisely that cell, so we
+                                // can hand it back. Storage where the range merely *straddles*
+                                // a reference, or is aliased by a sibling, is rejected by
+                                // `TryFieldExactlyCovering` and still routes bytewise, where it
+                                // fails loudly rather than silently dropping the rest of the
+                                // struct.
+                                tryElideStorageFieldAt byteOffset cell targetTemplate
                                 |> Option.map (fun id -> CliType.getFieldById id cell)
                             | _ -> None
                         | _ -> None
@@ -1287,7 +1298,7 @@ module IlMachineManagedByref =
                     // (the `Unsafe.As<TaskAwaiter<T>, TaskAwaiter>` motif).
                     // The same size/single-offset-0-field gates apply
                     // symmetrically on the storage side.
-                    match tryElideTransparentWrapperTo storageValue f.Contents with
+                    match tryElideStorageFieldAt 0 storageValue f.Contents with
                     | Some innerId -> TransparentWrapperOutcome.ElideAsStorageInnerField innerId
                     | None -> TransparentWrapperOutcome.NotTransparent
             | _ -> TransparentWrapperOutcome.NotTransparent
@@ -2294,20 +2305,31 @@ module IlMachineManagedByref =
                         failwith
                             $"%s{operation}: assigning non-object value %s{describeCliStorage state other} to object-reference inner field %O{innerId} of nested single-instance-field wrapper"
                 | TransparentWrapperOutcome.NotTransparent -> ValueNone
-            | [], 0 ->
-                // No trailing `Field`: the byref reinterprets the storage directly as some
-                // other type. When the storage is a transparent single-field wrapper and the
-                // target is that field's own reference type, the write lands squarely on the
-                // field — the `[InlineArray(N)]`-over-a-reference-element write, mirroring the
-                // read-side elision in `readManagedByref`.
-                //
-                // This is *not* the array-element zero-fill that `writeArrayBytes` handles via
-                // `CliType.WithZeroedRangeIfChanged`: the value written here is an arbitrary
-                // reference rather than a zero, so there is nothing to decompose — the field is
-                // simply replaced.
+            // No trailing `Field`: the byref reinterprets the storage directly as some other
+            // type, possibly walked forward by `Unsafe.Add`. When the byte range it picks out is
+            // exactly one reference-typed cell of the storage, the write lands squarely on that
+            // cell — the `[InlineArray(N)]`-over-a-reference-element write, at slot 0 for the
+            // bare shape and at slot `n / sizeof(T)` for the `ByteOffset` one — mirroring the
+            // read-side elision in `readManagedByref`.
+            //
+            // The two cursors add: `byteOffset` is the prefix cursor into `storageValue` taken
+            // before the reinterpret, and a trailing `ByteOffset n` moves the reinterpreted view
+            // on by a further `n` bytes. Both index the same storage, which is exactly what
+            // `peelTrailingByteView`'s forward walk computes for the byte path.
+            //
+            // This is *not* the array-element zero-fill that `writeArrayBytes` handles via
+            // `CliType.WithZeroedRangeIfChanged`: the value written here is an arbitrary
+            // reference rather than a zero, so there is nothing to decompose — the field is
+            // simply replaced.
+            | ([] | [ ByrefProjection.ByteOffset _ ]), _ ->
+                let trailingOffset =
+                    match reinterpretProjs with
+                    | [ ByrefProjection.ByteOffset n ] -> n
+                    | _ -> 0
+
                 let targetTemplate = zeroForConcreteType baseClassTypes state reinterpretTy
 
-                match tryElideTransparentWrapperTo storageValue targetTemplate with
+                match tryElideStorageFieldAt (byteOffset + trailingOffset) storageValue targetTemplate with
                 | Some innerId ->
                     match newValue with
                     | CliType.ObjectRef _ ->
@@ -2452,9 +2474,11 @@ module IlMachineManagedByref =
             // when no typed cell covers the root offset, so we must not
             // probe those roots here.
             //
-            // The same argument applies unchanged to the no-`Field` shape
-            // `[ReinterpretAs T]` over transparent single-field storage — the
-            // `[InlineArray(N)]`-over-a-reference-element write. There the
+            // The same argument applies unchanged to the no-`Field` shapes
+            // `[ReinterpretAs T]` and `[ReinterpretAs T; ByteOffset n]` over
+            // storage whose byte range `n` is exactly one reference cell — the
+            // `[InlineArray(N)]`-over-a-reference-element write, at slot 0 and
+            // at every later slot respectively. There the
             // storage is a `ValueType` wrapper and the payload an `ObjectRef`,
             // so the precise-write helpers reject the cross-constructor write
             // and the byte-scatter fallback again reaches `CliType.ToBytes` on
@@ -2479,7 +2503,14 @@ module IlMachineManagedByref =
                     let storageValue = readRootValue state root
                     let targetTemplate = zeroForConcreteType bct state reinterpretTy
 
-                    tryElideTransparentWrapperTo storageValue targetTemplate |> Option.isSome
+                    tryElideStorageFieldAt 0 storageValue targetTemplate |> Option.isSome
+                | Some bct,
+                  (ByrefRoot.HeapValue _ | ByrefRoot.HeapObjectField _ | ByrefRoot.ArrayElement _),
+                  [ ByrefProjection.ReinterpretAs reinterpretTy ; ByrefProjection.ByteOffset byteOffset ] ->
+                    let storageValue = readRootValue state root
+                    let targetTemplate = zeroForConcreteType bct state reinterpretTy
+
+                    tryElideStorageFieldAt byteOffset storageValue targetTemplate |> Option.isSome
                 | _ -> false
 
             match peeled, valueIsByteRenderable with
