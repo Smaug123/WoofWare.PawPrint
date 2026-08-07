@@ -25,6 +25,7 @@
     <Compile Include="Corelib.fs" />
     <Compile Include="TaggedPointerBits.fs" />
     <Compile Include="AbstractMachineDomain.fs" />
+    <Compile Include="StaticOwner.fs" />
     <Compile Include="SchedulerState.fs" />
     <Compile Include="FieldId.fs" />
     <Compile Include="ManagedPointerSource.fs" />

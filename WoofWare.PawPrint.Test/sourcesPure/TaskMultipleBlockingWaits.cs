@@ -9,19 +9,23 @@ using System.Threading.Tasks;
 // `Task.Run(...).Result` calls in a row are sufficient to reach the heuristic; no Yield or
 // ContinueWith is needed.
 //
-// This case does three, mixing the shapes that reach it (plain Task.Run, and a continuation
+// This case does two, mixing the shapes that reach it (plain Task.Run, and a continuation
 // resumed through an awaited Task.Yield), so the multiple-wait path stays covered even though
 // the other files stick to one wait apiece.
 //
-// Why exactly three: the budget is currently bounded above. Measured on this branch, three
-// blocking pool waits pass and the *fourth* reaches a further unimplemented primitive. That
-// primitive used to be `SystemNative_GetTimestamp` (issue #726); since that landed in #735 the
-// fourth wait instead gets as far as the pool's hill-climbing controller adjusting its thread
-// count, which calls `Math.Pow` (PortableThreadPool.HillClimbing.cs:301) -- an unimplemented JIT
-// intrinsic, filed as issue #755. The boundary is sharp and reproducible: 3x
-// `Task.Run(...).Result` passes; 4x, 6x, 8x, 10x all fail, as does 3x plus an awaited
-// `Task.Yield()`. So this number is deliberately sized to the current frontier, not chosen
-// arbitrarily; raise it once #755 lands.
+// Why exactly two: the budget is bounded above, and the bound is sized to the current frontier
+// rather than chosen arbitrarily. The wait that exceeds it reaches the pool's hill-climbing
+// controller adjusting its thread count, which calls `Math.Pow`
+// (PortableThreadPool.HillClimbing.cs:301) -- an unimplemented JIT intrinsic, filed as issue
+// #755. Raise this number once #755 lands.
+//
+// The budget used to be three. It dropped to two when `[ThreadStatic]` fields gained real
+// per-thread storage: the pool is built on thread-static per-worker state
+// (`ThreadPoolWorkQueue.t_tl`, `PortableThreadPool.t_isWorkerThread`, `Task.t_currentTask`,
+// `ThreadInt64PersistentCounter.t_nodes`), so while every worker shared one set of slots
+// PawPrint was not executing the controller's real accounting at all. Getting to `Math.Pow` in
+// fewer waits means more of the pool now runs, not less -- the frontier moved because the code
+// behind it became reachable. The boundary remains sharp and reproducible: 2 waits pass, 3 fail.
 //
 // Every assertion is on a returned value, never on which worker thread ran something, nor on
 // timing, nor on ordering between independent tasks -- all of which are guaranteed under both
@@ -42,12 +46,7 @@ public static class TaskMultipleBlockingWaits
             return 1;
         }
 
-        if (Task.Run (() => 42).Result != 42)
-        {
-            return 2;
-        }
-
-        // A third wait, of a different shape: a pool-scheduled continuation resumed through an
+        // A second wait, of a different shape: a pool-scheduled continuation resumed through an
         // awaited Task.Yield rather than a Task.Run body.
         if (YieldThenAddAsync (10).Result != 11)
         {
