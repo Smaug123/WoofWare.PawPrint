@@ -16,6 +16,7 @@
     <Compile Include="TestCustomAttribValueLowering.fs" />
     <Compile Include="TestAttributeFormatting.fs" />
     <Compile Include="TestIlDumpRendering.fs" />
+    <Compile Include="TestTypeDefnRendering.fs" />
     <Compile Include="TestFriendAssemblies.fs" />
     <Compile Include="TestAccessCheck.fs" />
     <Compile Include="RealRuntime.fs" />
