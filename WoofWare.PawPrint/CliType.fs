@@ -2445,6 +2445,115 @@ and CliValueType =
 
         valueTypeOfBytesLike template bytes
 
+/// `[InlineArray(N)]` makes a value type N repeats of its single declared instance field. CoreCLR
+/// keeps exactly one `FieldDesc` and instead multiplies the type's instance size by N *after*
+/// laying the one field out (`MethodTableBuilder::PlaceInstanceFields`, methodtablebuilder.cpp:8612
+/// for the auto-layout route, :8663 for sequential, :8696 for explicit).
+///
+/// PawPrint's value storage is field-cell based rather than a byte block, so the N-1 implicit
+/// repeats need cells of their own. Expanding the declared field into N identical `CliField`s makes
+/// the ordinary layout algorithms produce CoreCLR's answer: because every copy is identical, laying
+/// N of them out in sequence and rounding the total is the same thing as laying one out, rounding
+/// it, and multiplying by N.
+[<RequireQualifiedAccess>]
+module InlineArrayStorage =
+    /// The repeat count that actually governs a type's storage, given the count its metadata
+    /// declares and whether the type is a value type.
+    ///
+    /// `[InlineArray(N)]` means nothing on a reference type. CoreCLR reads the attribute only
+    /// inside the `IsValueClass()` branch of `MethodTableBuilder::PlaceInstanceFields`
+    /// (methodtablebuilder.cpp:1738), so a class carrying it loads with its declared fields and none
+    /// of the inline-array rules — not the "exactly one instance field" rule, and not the repeat.
+    /// C# cannot emit that (the attribute is `AttributeTargets.Struct`), but hand-written IL can,
+    /// and honouring it would either give such a class synthetic storage or make us reject a type
+    /// CoreCLR accepts.
+    ///
+    /// `TypeInfo.InlineArrayLength` deliberately stays a faithful record of what the metadata says;
+    /// deciding when that record is inert is this function's job.
+    let effectiveLength (isValueType : bool) (declared : int option) : int option =
+        if isValueType then declared else None
+
+    /// Expand a value type's declared instance fields into its *storage slots*.
+    ///
+    /// `None` (the overwhelmingly common case) is the identity. `Some n` reproduces every condition
+    /// CoreCLR checks alongside the repeat count, all of which raise `TypeLoadException` there:
+    /// exactly one declared instance field (`IDS_CLASSLOAD_INLINE_ARRAY_FIELD_COUNT`,
+    /// methodtablebuilder.cpp:1751), no explicit field offset (`..._EXPLICIT`, :1767), and no
+    /// declared `ClassSize` (`..._EXPLICIT_SIZE`, :1773). The last is a distinct condition from the
+    /// second — `[StructLayout(Sequential, Size = X)]` sets `ClassSize` without making the layout
+    /// explicit — and it matters here even though `Layout.Custom`'s size is only ever a floor:
+    /// running a type CoreCLR refuses to load means guessing at semantics the guest never asked
+    /// for, so we fail loudly, as with the other two. Only hand-crafted IL can reach any of them.
+    ///
+    /// Slot 0 is returned unchanged — it *is* the declared field, at offset 0, exactly as CoreCLR's
+    /// single `FieldDesc` is. Slots 1 and up get a distinct identity and a distinct storage name;
+    /// see `FieldId.InlineArrayElement`.
+    let expand
+        (describeType : unit -> string)
+        (layout : Layout)
+        (inlineArrayLength : int option)
+        (fields : CliField list)
+        : CliField list
+        =
+        match inlineArrayLength with
+        | None -> fields
+        | Some repeat ->
+
+        if repeat <= 0 then
+            failwith
+                $"[InlineArray(%d{repeat})] on %s{describeType ()}: the repeat count must be positive (CoreCLR's IDS_CLASSLOAD_INLINE_ARRAY_LENGTH)"
+
+        match layout with
+        | Layout.Custom (size = size) when size > 0 ->
+            failwith
+                $"[InlineArray(%d{repeat})] on %s{describeType ()}: the type declares an explicit size of %d{size} bytes, but an inline array may not declare one (CoreCLR's IDS_CLASSLOAD_INLINE_ARRAY_EXPLICIT_SIZE)"
+        | Layout.Custom _
+        | Layout.Default -> ()
+
+        match fields with
+        | [ single ] ->
+            if single.Offset.IsSome then
+                failwith
+                    $"[InlineArray(%d{repeat})] on %s{describeType ()}: field %s{single.Name} carries an explicit offset, but an inline array may not use explicit layout (CoreCLR's IDS_CLASSLOAD_INLINE_ARRAY_EXPLICIT)"
+
+            // CoreCLR rejects the type when the multiplied instance size overflows a field offset
+            // (`extendedSize > FIELD_OFFSET_LAST_REAL_OFFSET`, methodtablebuilder.cpp:8616 and
+            // :8669; the limit is `(1 <<< 27) - 8`, field.h:16 and :27). Check it here, *before*
+            // materialising the slots: `[InlineArray(1_000_000_000)]` would otherwise ask for a
+            // billion `CliField` records and take the interpreter down with an OOM — a silent kill
+            // in place of the loud type-load rejection the guest should have seen.
+            //
+            // The product is computed from the element's own size rather than from the padded slot
+            // size the layout will actually use, so it can only ever under-estimate; that makes
+            // this strictly more permissive than CoreCLR, which is the safe direction. It is
+            // computed in `int64` because the `int` product is exactly what would overflow.
+            let elementSize = int64 (CliType.SizeOf single.Contents).Size
+            let extendedSize = int64 repeat * elementSize
+
+            if extendedSize > FIELD_OFFSET_LAST_REAL_OFFSET then
+                failwith
+                    $"[InlineArray(%d{repeat})] on %s{describeType ()}: %d{repeat} slots of %d{elementSize} bytes is %d{extendedSize} bytes, which exceeds the %d{FIELD_OFFSET_LAST_REAL_OFFSET}-byte limit on a field offset (CoreCLR's IDS_CLASSLOAD_FIELDTOOLARGE)"
+
+            match single.Id with
+            | FieldId.Metadata (declaringType, fieldHandle, name) ->
+                List.init
+                    repeat
+                    (fun index ->
+                        if index = 0 then
+                            single
+                        else
+                            { single with
+                                Id = FieldId.inlineArrayElement declaringType fieldHandle name index
+                                Name = FieldId.inlineArrayElementName name index
+                            }
+                    )
+            | other ->
+                failwith
+                    $"[InlineArray(%d{repeat})] on %s{describeType ()}: its single instance field has non-metadata identity %O{other}, so its storage repeats cannot be identified"
+        | fields ->
+            failwith
+                $"[InlineArray(%d{repeat})] on %s{describeType ()}: declares %d{List.length fields} instance fields, but an inline array must declare exactly one (CoreCLR's IDS_CLASSLOAD_INLINE_ARRAY_FIELD_COUNT)"
+
 [<RequireQualifiedAccess>]
 module CliType =
     /// If `ty` is a primitive-like wrapper (IntPtr, RuntimeTypeHandle, an enum, ...) at rest,
@@ -2740,6 +2849,10 @@ module CliType =
                         MarshallingDescriptor = field.MarshallingDescriptor
                     }
                 )
+                |> InlineArrayStorage.expand
+                    (fun () -> $"%s{typeDef.Namespace}.%s{typeDef.Name}")
+                    typeDef.Layout
+                    (InlineArrayStorage.effectiveLength isValueType typeDef.InlineArrayLength)
                 |> CliValueType.OfFields
                     corelib
                     currentConcreteTypes

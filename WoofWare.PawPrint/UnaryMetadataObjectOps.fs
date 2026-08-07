@@ -569,6 +569,20 @@ module internal UnaryMetadataObjectOps =
                                     )
 
                                 List.rev fieldValues
+                                // Not reachable for an inline array — an N>1 inline array is never
+                                // primitive-like, so it always arrives here as
+                                // `UserDefinedValueType` and takes the branch above — but routed
+                                // through the expansion anyway so the invariant is enforced by the
+                                // one shared helper rather than assumed at each site.
+                                |> InlineArrayStorage.expand
+                                    (fun () -> $"%s{underlyingDefn.Namespace}.%s{underlyingDefn.Name}")
+                                    underlyingDefn.Layout
+                                    (InlineArrayStorage.effectiveLength
+                                        (DumpedAssembly.isValueType
+                                            baseClassTypes
+                                            state._LoadedAssemblies
+                                            underlyingDefn)
+                                        underlyingDefn.InlineArrayLength)
                                 |> CliValueType.OfFields
                                     baseClassTypes
                                     state.ConcreteTypes
@@ -629,6 +643,14 @@ module internal UnaryMetadataObjectOps =
 
                         let cvt =
                             List.rev fieldValues
+                            // As above: unreachable for an inline array, but routed through the
+                            // shared expansion rather than relying on that being true here.
+                            |> InlineArrayStorage.expand
+                                (fun () -> $"%s{defn.Namespace}.%s{defn.Name}")
+                                defn.Layout
+                                (InlineArrayStorage.effectiveLength
+                                    (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies defn)
+                                    defn.InlineArrayLength)
                             |> CliValueType.OfFields
                                 baseClassTypes
                                 state.ConcreteTypes

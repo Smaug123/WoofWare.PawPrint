@@ -6,13 +6,15 @@ using System.Runtime.CompilerServices;
 //
 // Indexing past the first element lowers to `Unsafe.Add(ref Unsafe.As<TBuffer, TElement>(ref
 // buffer), 1)`, i.e. `[ReinterpretAs TElement; ByteOffset <one element width>]` — 4 here, for
-// `int`. PawPrint does not model `InlineArrayAttribute`, so the struct's storage is just its one
-// declared field; there is no second slot for that offset to land in, and the repeat count `N`
-// lives only in the attribute. The failure is accordingly
-//   "byte-view write at offset 4 for 4 bytes does not fit in single primitive cell of size 4".
+// `int`. That offset only has somewhere to land once the struct's storage is N slots rather than
+// its one declared field, which is what `InlineArrayStorage.expand` gives it; before that this
+// failed with "byte-view write at offset 4 for 4 bytes does not fit in single primitive cell of
+// size 4".
 //
 // A primitive element is used deliberately: it removes the reference-typed-storage question
 // entirely, so this isolates "inline arrays have N slots" from "byte views over references".
+// `InlineArrayReferenceSecondSlot.cs` is the same index over a reference element, which needs
+// both.
 [InlineArray(2)]
 public struct ScratchBufferInt
 {
