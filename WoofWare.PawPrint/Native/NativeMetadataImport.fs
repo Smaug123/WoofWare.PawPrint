@@ -539,7 +539,7 @@ module NativeMetadataImport =
                     (CliType.RuntimePointer (CliRuntimePointer.Managed namespacePtr))
 
             let state =
-                IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread state
+                IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread state
 
             NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib",
@@ -571,7 +571,7 @@ module NativeMetadataImport =
                 writeInt32AtPointer ctx.BaseClassTypes state attributesOut (int32 field.Attributes)
 
             let state =
-                IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread state
+                IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread state
 
             NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib",
@@ -630,7 +630,7 @@ module NativeMetadataImport =
                 IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state signatureOut constArrayValue
 
             let state =
-                IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread state
+                IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread state
 
             NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib",
@@ -683,7 +683,7 @@ module NativeMetadataImport =
                 IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state signatureOut constArrayValue
 
             let state =
-                IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread state
+                IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread state
 
             NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib",
@@ -734,7 +734,7 @@ module NativeMetadataImport =
                 IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state signatureOut constArrayValue
 
             let state =
-                IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread state
+                IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread state
 
             NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib",
@@ -874,7 +874,7 @@ module NativeMetadataImport =
             let state = writeInt32AtPointer ctx.BaseClassTypes state parentOut parentToken
 
             let state =
-                IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread state
+                IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread state
 
             NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib",
@@ -910,7 +910,7 @@ module NativeMetadataImport =
             let state = writeInt32AtPointer ctx.BaseClassTypes state attributesOut flags
 
             let state =
-                IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread state
+                IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread state
 
             NativeHandlerResult.completed state |> Some
         | _ -> None

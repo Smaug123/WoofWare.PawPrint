@@ -242,7 +242,10 @@ module Scheduler =
                     $"Scheduler.fireJoinTimeout: thread %O{thread} is not parked in BlockedOnJoin with a finite deadline (status: %O{other}); the scheduler observed a join deadline against a thread the join machinery does not know about."
 
         let _, state = IlMachineState.popEvalStack thread state
-        let state = IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) thread state
+
+        let state =
+            IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) thread state
+
         setThreadStatus thread ThreadStatus.Runnable state
 
     /// Park `blocked` in `BlockedOnSleep`, transitioning out of `Runnable`.

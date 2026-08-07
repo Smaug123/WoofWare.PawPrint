@@ -701,3 +701,62 @@ type CliRuntimePointer =
     /// helpers like `NativeIntSource.isZero`/`isNonnegative` and conv ops only
     /// match the `NativeIntSource` form.
     | GcHandlePtr of handle : GcHandleAddress * tag : int64
+
+/// The provenance of a value in an int32 evaluation-stack slot.
+///
+/// Almost every int32 on the stack is an ordinary number. The exception is a
+/// byref that `conv.i4` / `conv.u4` truncated: CoreLib asks whether a pointer is
+/// aligned by narrowing it and masking — `SpanHelpers.IndexOfNullCharacter`, which
+/// `String.wcslen` and hence `new string(char*)` runs first, opens with
+/// `((int)searchSpace & 1) != 0`. The mask is answerable (see `TaggedPointerBits`,
+/// and `ManagedPointerSource.tryContainerAlignmentBits` for the guarantee it rests
+/// on), but only if the byref survives the narrowing, and PawPrint must not invent
+/// the address bits an `int32` would need (see
+/// `docs/developer/pointers-and-byte-representations.md`).
+///
+/// This DU is why the int32 stack slot carries provenance at all. Making it a case
+/// *here*, rather than smuggling the narrowed pointer into the wider native-int
+/// slot, is what makes the compiler visit every site that consumes an int32: none
+/// of them can treat a narrowed byref as a number by accident, because none of them
+/// can get at a number without saying what to do when there isn't one.
+[<RequireQualifiedAccess>]
+type Int32Source =
+    | Verbatim of int32
+    /// A byref that `conv.i4` / `conv.u4` truncated to 32 bits, whose address
+    /// PawPrint does not model. Only `and` against a mask can say anything about
+    /// it; everything else must refuse.
+    ///
+    /// Always construct via `Int32Source.narrowManagedPointer`, which sends byrefs
+    /// with an exactly-known bit pattern (`Null`, and the `NativeIntPlaceholder`
+    /// produced by `Unsafe.AsRef<T>((void*)bits)`) to `Verbatim` instead: those are
+    /// values, not addresses, and truncating them is ordinary truncation.
+    | NarrowedManagedPointer of source : ManagedPointerSource
+
+    override this.ToString () : string =
+        match this with
+        | Int32Source.Verbatim i -> $"%i{i}"
+        | Int32Source.NarrowedManagedPointer ptr -> $"<managed pointer %O{ptr}, truncated to 32 bits>"
+
+[<RequireQualifiedAccess>]
+module Int32Source =
+
+    /// Smart constructor for `Int32Source.NarrowedManagedPointer`: the result of
+    /// `conv.i4` / `conv.u4` on a byref. `truncate` is the conversion's own
+    /// narrowing, applied to byrefs whose bit pattern is exactly known.
+    let narrowManagedPointer (truncate : int64 -> int32) (src : ManagedPointerSource) : Int32Source =
+        match ManagedPointerSource.tryBitPatternBits src with
+        | ValueSome bits -> Int32Source.Verbatim (truncate bits)
+        | ValueNone -> Int32Source.NarrowedManagedPointer src
+
+    /// The numeric value of an int32 stack slot.
+    ///
+    /// A narrowed byref has no numeric value PawPrint can state: `conv.i4` kept the
+    /// low half of an address that was never modelled. `operation` names the
+    /// consumer, so a guest that reaches one says exactly which opcode or helper
+    /// wanted a number it cannot have.
+    let value (operation : string) (src : Int32Source) : int32 =
+        match src with
+        | Int32Source.Verbatim i -> i
+        | Int32Source.NarrowedManagedPointer ptr ->
+            failwith
+                $"%s{operation}: refusing to use managed pointer %O{ptr}, truncated to 32 bits, as a number; its value depends on the container's address, which PawPrint does not model"

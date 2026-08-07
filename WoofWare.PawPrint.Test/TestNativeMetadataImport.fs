@@ -752,7 +752,7 @@ public class TypesWithMembers
         let returnValue, instanceAttributes, state =
             invokeGetFieldDefProps fixture fixture.InstanceField fixture.State
 
-        returnValue |> shouldEqual (EvalStackValue.Int32 0)
+        returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
 
         instanceAttributes
         |> shouldEqual (int32 System.Reflection.FieldAttributes.Public)
@@ -760,7 +760,7 @@ public class TypesWithMembers
         let returnValue, staticAttributes, state =
             invokeGetFieldDefProps fixture fixture.StaticField state
 
-        returnValue |> shouldEqual (EvalStackValue.Int32 0)
+        returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
 
         staticAttributes
         |> shouldEqual (
@@ -773,7 +773,7 @@ public class TypesWithMembers
         let returnValue, literalAttributes, _ =
             invokeGetFieldDefProps fixture fixture.LiteralField state
 
-        returnValue |> shouldEqual (EvalStackValue.Int32 0)
+        returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
 
         literalAttributes
         |> shouldEqual (
@@ -921,7 +921,7 @@ public class TypesWithMembers
         let returnValue, parent, _ =
             invokeGetParentToken fixture (typeDefToken fixture.TargetType.TypeDefHandle) fixture.State
 
-        returnValue |> shouldEqual (EvalStackValue.Int32 0)
+        returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
         // mdTypeDefNil = TypeDef table | row 0 = 0x02000000
         parent |> shouldEqual 0x02000000
 
@@ -932,7 +932,7 @@ public class TypesWithMembers
         let returnValue, parent, _ =
             invokeGetParentToken fixture (typeDefToken fixture.InnerType.TypeDefHandle) fixture.State
 
-        returnValue |> shouldEqual (EvalStackValue.Int32 0)
+        returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
         parent |> shouldEqual (typeDefToken fixture.OuterType.TypeDefHandle)
 
     [<Test>]
@@ -947,7 +947,7 @@ public class TypesWithMembers
         let returnValue, parent, _ =
             invokeGetParentToken fixture (methodDefToken methodHandle) fixture.State
 
-        returnValue |> shouldEqual (EvalStackValue.Int32 0)
+        returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
         parent |> shouldEqual (typeDefToken fixture.TargetType.TypeDefHandle)
 
     [<Test>]
@@ -957,7 +957,7 @@ public class TypesWithMembers
         let returnValue, parent, _ =
             invokeGetParentToken fixture (fieldDefToken fixture.InstanceField.Handle) fixture.State
 
-        returnValue |> shouldEqual (EvalStackValue.Int32 0)
+        returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
         parent |> shouldEqual (typeDefToken fixture.TargetType.TypeDefHandle)
 
     [<Test>]
@@ -969,7 +969,7 @@ public class TypesWithMembers
 
         let returnValue, parent, _ = invokeGetParentToken fixture attrToken fixture.State
 
-        returnValue |> shouldEqual (EvalStackValue.Int32 0)
+        returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
         parent |> shouldEqual (typeDefToken fixture.ParameterlessAttrType.TypeDefHandle)
 
     [<Test>]
@@ -982,7 +982,7 @@ public class TypesWithMembers
         let returnValue, parent, _ =
             invokeGetParentToken fixture (genericParamToken genericParamHandle) fixture.State
 
-        returnValue |> shouldEqual (EvalStackValue.Int32 0)
+        returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
         parent |> shouldEqual (typeDefToken fixture.GenericType.TypeDefHandle)
 
     [<Test>]
@@ -996,7 +996,7 @@ public class TypesWithMembers
         let returnValue, parent, _ =
             invokeGetParentToken fixture (genericParamToken genericParamHandle) fixture.State
 
-        returnValue |> shouldEqual (EvalStackValue.Int32 0)
+        returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
         parent |> shouldEqual (methodDefToken methodHandle)
 
     [<Test>]
@@ -1009,7 +1009,7 @@ public class TypesWithMembers
         let returnValue, parent, _ =
             invokeGetParentToken fixture (parameterToken paramHandle) fixture.State
 
-        returnValue |> shouldEqual (EvalStackValue.Int32 0)
+        returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
         parent |> shouldEqual (methodDefToken methodHandle)
 
     [<Test>]
@@ -1022,7 +1022,7 @@ public class TypesWithMembers
         let returnValue, parent, _ =
             invokeGetParentToken fixture (eventToken eventHandle) fixture.State
 
-        returnValue |> shouldEqual (EvalStackValue.Int32 0)
+        returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
         parent |> shouldEqual (typeDefToken fixture.MembersType.TypeDefHandle)
 
     [<Test>]
@@ -1035,7 +1035,7 @@ public class TypesWithMembers
         let returnValue, parent, _ =
             invokeGetParentToken fixture (propertyToken propertyHandle) fixture.State
 
-        returnValue |> shouldEqual (EvalStackValue.Int32 0)
+        returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
         parent |> shouldEqual (typeDefToken fixture.MembersType.TypeDefHandle)
 
     [<Test>]
@@ -1048,7 +1048,7 @@ public class TypesWithMembers
         let returnValue, ctorToken, (length, bytes), _ =
             invokeGetCustomAttributeProps fixture attrToken fixture.State
 
-        returnValue |> shouldEqual (EvalStackValue.Int32 0)
+        returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
         ctorToken |> shouldEqual (MetadataToken.toInt expected.Constructor)
         length |> shouldEqual expected.Value.Length
 
@@ -1065,7 +1065,7 @@ public class TypesWithMembers
         let returnValue, ctorToken, (length, bytes), _ =
             invokeGetCustomAttributeProps fixture attrToken fixture.State
 
-        returnValue |> shouldEqual (EvalStackValue.Int32 0)
+        returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
         ctorToken |> shouldEqual (MetadataToken.toInt expected.Constructor)
         length |> shouldEqual expected.Value.Length
 
@@ -1155,7 +1155,7 @@ public class TypesWithMembers
         let returnValue, (length, bytes), _ =
             invokeGetMemberRefProps fixture ctorToken fixture.State
 
-        returnValue |> shouldEqual (EvalStackValue.Int32 0)
+        returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
         // HASTHIS | DEFAULT (0x20), zero parameters, ELEMENT_TYPE_VOID (0x01) return.
         bytes |> shouldEqual [| 0x20uy ; 0x00uy ; 0x01uy |]
         length |> shouldEqual bytes.Length
@@ -1172,7 +1172,7 @@ public class TypesWithMembers
         let returnValue, (length, bytes), _ =
             invokeGetMemberRefProps fixture ctorToken fixture.State
 
-        returnValue |> shouldEqual (EvalStackValue.Int32 0)
+        returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
         // HASTHIS | DEFAULT (0x20), one parameter, ELEMENT_TYPE_VOID (0x01) return,
         // ELEMENT_TYPE_STRING (0x0e) parameter.
         bytes |> shouldEqual [| 0x20uy ; 0x01uy ; 0x01uy ; 0x0Euy |]
@@ -1195,7 +1195,7 @@ public class TypesWithMembers
         let returnValue, (length, bytes), _ =
             invokeGetMemberRefProps fixture (memberRefToken handle) fixture.State
 
-        returnValue |> shouldEqual (EvalStackValue.Int32 0)
+        returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
         // FIELD (0x06), ELEMENT_TYPE_STRING (0x0e).
         bytes |> shouldEqual [| 0x06uy ; 0x0Euy |]
         length |> shouldEqual bytes.Length
@@ -1219,7 +1219,7 @@ public class TypesWithMembers
 
             state <- nextState
 
-            returnValue |> shouldEqual (EvalStackValue.Int32 0)
+            returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
             length |> shouldEqual bytes.Length
             bytes.Length > 0 |> shouldEqual true
 

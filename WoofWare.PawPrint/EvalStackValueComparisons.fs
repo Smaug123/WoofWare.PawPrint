@@ -25,6 +25,11 @@ module EvalStackValueComparisons =
         let var2 = unwrapPlaceholderForBitComparison var2
 
         match var1, var2 with
+        // A byref that `conv.i4` truncated has no numeric value to order: only a
+        // mask can say anything about it (see `Int32Source`).
+        | EvalStackValue.Int32 (Int32Source.NarrowedManagedPointer _), _
+        | _, EvalStackValue.Int32 (Int32Source.NarrowedManagedPointer _) ->
+            failwith $"Clt instruction invalid for ordering a truncated managed pointer, %O{var1} vs %O{var2}"
         | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> Int64Source.compareSigned var1 var2 < 0
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> var1 < var2
         | EvalStackValue.NullObjectRef, _
@@ -38,13 +43,16 @@ module EvalStackValueComparisons =
         | other, EvalStackValue.Float i -> failwith $"invalid comparison, %O{other} vs float %f{i}"
         | EvalStackValue.Int64 i, other -> failwith $"invalid comparison, int64 %O{i} vs %O{other}"
         | other, EvalStackValue.Int64 i -> failwith $"invalid comparison, %O{other} vs int64 %O{i}"
-        | EvalStackValue.Int32 var1, EvalStackValue.Int32 var2 -> var1 < var2
-        | EvalStackValue.Int32 var1, EvalStackValue.NativeInt var2 ->
+        | EvalStackValue.Int32 (Int32Source.Verbatim var1), EvalStackValue.Int32 (Int32Source.Verbatim var2) ->
+            var1 < var2
+        | EvalStackValue.Int32 (Int32Source.Verbatim var1), EvalStackValue.NativeInt var2 ->
             failwith "TODO: Clt Int32 vs NativeInt comparison unimplemented"
-        | EvalStackValue.Int32 i, other -> failwith $"invalid comparison, int32 %i{i} vs %O{other}"
-        | EvalStackValue.NativeInt var1, EvalStackValue.Int32 var2 ->
+        | EvalStackValue.Int32 (Int32Source.Verbatim i), other ->
+            failwith $"invalid comparison, int32 %i{i} vs %O{other}"
+        | EvalStackValue.NativeInt var1, EvalStackValue.Int32 (Int32Source.Verbatim var2) ->
             failwith "TODO: Clt NativeInt vs Int32 comparison unimplemented"
-        | other, EvalStackValue.Int32 var2 -> failwith $"invalid comparison, {other} vs int32 {var2}"
+        | other, EvalStackValue.Int32 (Int32Source.Verbatim var2) ->
+            failwith $"invalid comparison, {other} vs int32 {var2}"
         | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 -> NativeIntSource.isLess var1 var2
         | EvalStackValue.NativeInt var1, other -> failwith $"invalid comparison, nativeint {var1} vs %O{other}"
         | EvalStackValue.ManagedPointer managedPointerSource, NativeInt int64 ->
@@ -65,6 +73,11 @@ module EvalStackValueComparisons =
         let var2 = unwrapPlaceholderForBitComparison var2
 
         match var1, var2 with
+        // A byref that `conv.i4` truncated has no numeric value to order: only a
+        // mask can say anything about it (see `Int32Source`).
+        | EvalStackValue.Int32 (Int32Source.NarrowedManagedPointer _), _
+        | _, EvalStackValue.Int32 (Int32Source.NarrowedManagedPointer _) ->
+            failwith $"Cgt instruction invalid for ordering a truncated managed pointer, %O{var1} vs %O{var2}"
         | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> Int64Source.compareSigned var1 var2 > 0
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> var1 > var2
         | EvalStackValue.NullObjectRef, _
@@ -78,13 +91,16 @@ module EvalStackValueComparisons =
         | other, EvalStackValue.Float i -> failwith $"invalid comparison, %O{other} vs float %f{i}"
         | EvalStackValue.Int64 i, other -> failwith $"invalid comparison, int64 %O{i} vs %O{other}"
         | other, EvalStackValue.Int64 i -> failwith $"invalid comparison, %O{other} vs int64 %O{i}"
-        | EvalStackValue.Int32 var1, EvalStackValue.Int32 var2 -> var1 > var2
-        | EvalStackValue.Int32 var1, EvalStackValue.NativeInt var2 ->
+        | EvalStackValue.Int32 (Int32Source.Verbatim var1), EvalStackValue.Int32 (Int32Source.Verbatim var2) ->
+            var1 > var2
+        | EvalStackValue.Int32 (Int32Source.Verbatim var1), EvalStackValue.NativeInt var2 ->
             failwith "TODO: Cgt Int32 vs NativeInt comparison unimplemented"
-        | EvalStackValue.Int32 i, other -> failwith $"invalid comparison, int32 %i{i} vs %O{other}"
-        | EvalStackValue.NativeInt var1, EvalStackValue.Int32 var2 ->
+        | EvalStackValue.Int32 (Int32Source.Verbatim i), other ->
+            failwith $"invalid comparison, int32 %i{i} vs %O{other}"
+        | EvalStackValue.NativeInt var1, EvalStackValue.Int32 (Int32Source.Verbatim var2) ->
             failwith "TODO: Cgt NativeInt vs Int32 comparison unimplemented"
-        | other, EvalStackValue.Int32 var2 -> failwith $"invalid comparison, {other} vs int32 {var2}"
+        | other, EvalStackValue.Int32 (Int32Source.Verbatim var2) ->
+            failwith $"invalid comparison, {other} vs int32 {var2}"
         | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 -> NativeIntSource.isLess var2 var1
         | EvalStackValue.NativeInt var1, other -> failwith $"invalid comparison, nativeint {var1} vs %O{other}"
         | EvalStackValue.ManagedPointer managedPointerSource, NativeInt int64 ->
@@ -130,8 +146,9 @@ module EvalStackValueComparisons =
         // mixed combination uniformly.
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)), _ -> cgtUn (EvalStackValue.NativeInt src) var2
         | _, EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) -> cgtUn var1 (EvalStackValue.NativeInt src)
-        | EvalStackValue.Int32 var1, EvalStackValue.Int32 var2 -> uint32 var1 > uint32 var2
-        | EvalStackValue.Int32 var1, EvalStackValue.NativeInt var2 ->
+        | EvalStackValue.Int32 (Int32Source.Verbatim var1), EvalStackValue.Int32 (Int32Source.Verbatim var2) ->
+            uint32 var1 > uint32 var2
+        | EvalStackValue.Int32 (Int32Source.Verbatim var1), EvalStackValue.NativeInt var2 ->
             failwith "TODO: comparison of unsigned int32 with nativeint"
         | EvalStackValue.Int32 _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
         | EvalStackValue.Int64 (Int64Source.Verbatim var1), EvalStackValue.Int64 (Int64Source.Verbatim var2) ->
@@ -213,8 +230,8 @@ module EvalStackValueComparisons =
             | _ -> failwith $"TODO: cgt.un on non-Verbatim nativeints: %O{var1} vs %O{var2}"
         | EvalStackValue.NativeInt _, EvalStackValue.ManagedPointer var2 ->
             cgtUn var1 (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var2))
-        | EvalStackValue.NativeInt var1, EvalStackValue.Int32 var2 ->
-            failwith "TODO: comparison of unsigned nativeint with int32"
+        | EvalStackValue.NativeInt _, EvalStackValue.Int32 _ ->
+            failwith $"TODO: cgt.un comparing a native int with an int32: %O{var1} vs %O{var2}"
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> not (var1 <= var2)
         | EvalStackValue.Float _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
         | EvalStackValue.ManagedPointer var1, EvalStackValue.NativeInt _ ->
@@ -243,8 +260,9 @@ module EvalStackValueComparisons =
         // comparison under the 64-bit assumption.
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)), _ -> cltUn (EvalStackValue.NativeInt src) var2
         | _, EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) -> cltUn var1 (EvalStackValue.NativeInt src)
-        | EvalStackValue.Int32 var1, EvalStackValue.Int32 var2 -> uint32 var1 < uint32 var2
-        | EvalStackValue.Int32 var1, EvalStackValue.NativeInt var2 ->
+        | EvalStackValue.Int32 (Int32Source.Verbatim var1), EvalStackValue.Int32 (Int32Source.Verbatim var2) ->
+            uint32 var1 < uint32 var2
+        | EvalStackValue.Int32 (Int32Source.Verbatim var1), EvalStackValue.NativeInt var2 ->
             failwith "TODO: comparison of unsigned int32 with nativeint"
         | EvalStackValue.Int32 _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
         | EvalStackValue.Int64 (Int64Source.Verbatim var1), EvalStackValue.Int64 (Int64Source.Verbatim var2) ->
@@ -308,8 +326,8 @@ module EvalStackValueComparisons =
             | _, _ -> failwith $"TODO: clt.un on non-Verbatim nativeints: %O{var1} vs %O{var2}"
         | EvalStackValue.NativeInt _, EvalStackValue.ManagedPointer var2 ->
             cltUn var1 (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var2))
-        | EvalStackValue.NativeInt var1, EvalStackValue.Int32 var2 ->
-            failwith "TODO: comparison of unsigned nativeint with int32"
+        | EvalStackValue.NativeInt _, EvalStackValue.Int32 _ ->
+            failwith $"TODO: clt.un comparing a native int with an int32: %O{var1} vs %O{var2}"
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> not (var1 >= var2)
         | EvalStackValue.Float _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
         | EvalStackValue.ManagedPointer var1, EvalStackValue.NativeInt _ ->
@@ -355,8 +373,10 @@ module EvalStackValueComparisons =
             failwith $"ceq is not specified for UserDefinedValueType: %O{var1} vs %O{v}"
         | u, EvalStackValue.UserDefinedValueType var2 ->
             failwith $"ceq is not specified for UserDefinedValueType: %O{u} vs %O{var2}"
-        | EvalStackValue.Int32 var1, EvalStackValue.Int32 var2 -> var1 = var2
-        | EvalStackValue.Int32 var1, EvalStackValue.NativeInt var2 -> failwith "TODO: int32 CEQ nativeint"
+        | EvalStackValue.Int32 (Int32Source.Verbatim var1), EvalStackValue.Int32 (Int32Source.Verbatim var2) ->
+            var1 = var2
+        | EvalStackValue.Int32 (Int32Source.Verbatim var1), EvalStackValue.NativeInt var2 ->
+            failwith "TODO: int32 CEQ nativeint"
         | EvalStackValue.Int32 _, _ -> failwith $"bad ceq: Int32 vs {var2}"
         // WidenedNativeInt × WidenedNativeInt: route both sides through the
         // NativeInt arms so pointer-identity (TypeHandlePtr, MethodTablePtr,
@@ -423,7 +443,8 @@ module EvalStackValueComparisons =
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> var1 = var2
         | EvalStackValue.Float _, _ -> failwith $"bad ceq: Float vs {var2}"
         | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 -> NativeIntSource.equalsForCli var1 var2
-        | EvalStackValue.NativeInt var1, EvalStackValue.Int32 var2 -> failwith $"TODO (CEQ): nativeint vs int32"
+        | EvalStackValue.NativeInt var1, EvalStackValue.Int32 (Int32Source.Verbatim var2) ->
+            failwith $"TODO (CEQ): nativeint vs int32"
         | EvalStackValue.NativeInt var1, EvalStackValue.ManagedPointer var2 ->
             ceq (EvalStackValue.NativeInt var1) (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var2))
         | EvalStackValue.NativeInt _, _ -> failwith $"bad ceq: NativeInt vs {var2}"

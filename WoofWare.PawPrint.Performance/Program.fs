@@ -165,7 +165,7 @@ type StackHeavyProgramBenchmarks () =
         | RunOutcome.NormalExit (terminalState, terminatingThread)
         | RunOutcome.ProcessExit (terminalState, terminatingThread) ->
             match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-            | EvalStackValue.Int32 exitCode :: _ -> exitCode
+            | EvalStackValue.Int32 (Int32Source.Verbatim exitCode) :: _ -> exitCode
             | [] -> failwith "Expected PawPrint run to leave an int exit code, but the stack was empty"
             | head :: _ -> failwith $"Expected PawPrint run to leave an int exit code, but got %O{head}"
         | RunOutcome.FailFast (_, _, message) ->

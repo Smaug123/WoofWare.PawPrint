@@ -611,7 +611,8 @@ module TestEvalStack =
 
     [<Test>]
     let ``cle and cge on Int × Int agree with the obvious arithmetic`` () : unit =
-        let i32 (v : int32) = EvalStackValue.Int32 v
+        let i32 (v : int32) =
+            EvalStackValue.Int32 (Int32Source.Verbatim v)
 
         let i64 (v : int64) =
             EvalStackValue.Int64 (Int64Source.Verbatim v)
@@ -636,7 +637,7 @@ module TestEvalStack =
         // non-Float×Float to `not cgt`, so the Float × Int case re-uses cgt's existing
         // "invalid comparison" failwith.
         let f = EvalStackValue.Float 1.0
-        let i = EvalStackValue.Int32 1
+        let i = EvalStackValue.Int32 (Int32Source.Verbatim 1)
         let n = EvalStackValue.NativeInt (NativeIntSource.Verbatim 1L)
 
         let exFI =

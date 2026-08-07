@@ -7,7 +7,7 @@ open System.Collections.Immutable
 module internal SwitchIlOp =
     let private switchIndex (value : EvalStackValue) : int32 =
         match value with
-        | EvalStackValue.Int32 index -> index
+        | EvalStackValue.Int32 (Int32Source.Verbatim index) -> index
         | other -> failwith $"switch expected an Int32 index on the eval stack, got %O{other}"
 
     let execute

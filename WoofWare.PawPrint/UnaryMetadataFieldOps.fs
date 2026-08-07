@@ -344,7 +344,7 @@ module internal UnaryMetadataFieldOps =
 
         let state =
             match currentObj with
-            | EvalStackValue.Int32 i -> failwith "todo: int32"
+            | EvalStackValue.Int32 i -> failwith $"todo: Ldfld on an int32 object reference (%O{i})"
             | EvalStackValue.Int64 int64 -> failwith "todo: int64"
             | EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr methodTableFor) ->
                 match

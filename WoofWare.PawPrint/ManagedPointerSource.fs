@@ -508,6 +508,64 @@ module ManagedPointerSource =
             loop 0 projs
         | ManagedPointerSource.Byref _ -> None
 
+    /// How many low bits of a byref's *container start* address the real runtime
+    /// guarantees to be zero, for the roots whose container alignment PawPrint is
+    /// willing to claim. `None` means "no claim": nothing may be said about that
+    /// byref's low address bits.
+    ///
+    /// This is the alignment half of the byref model — a container whose address is
+    /// unknown, plus a known in-container byte offset (`tryStableAddressBits` and
+    /// its array/string counterpart in `NullaryIlOp`). Together they let
+    /// `TaggedPointerBits.bitAndOffsetFromAlignedBase` answer the alignment masks
+    /// managed code writes, without inventing an address. Every number below is a
+    /// guarantee the runtime makes, not an observation of a particular run, and
+    /// each is deliberately conservative: claiming *fewer* bits only ever refuses
+    /// more questions.
+    ///
+    /// All of these assume the 64-bit object layout, which is the only one PawPrint
+    /// models (`NativeIntSource` is 64-bit throughout).
+    let tryContainerAlignmentBits (src : ManagedPointerSource) : int option =
+        match src with
+        // Not "unknown base plus offset": these have exact, fully-known bit
+        // patterns, and callers must use those rather than an alignment claim.
+        | ManagedPointerSource.Null
+        | ManagedPointerSource.NativeIntPlaceholder _ -> None
+        // The GC allocates objects 8-byte aligned on 64-bit, and an SZARRAY's
+        // element data begins after a 16-byte header (`MethodTable*` plus a 4-byte
+        // component count and 4 bytes of padding). Multi-dimensional arrays add two
+        // `int`s of bounds per rank, i.e. a further multiple of 8. So array data
+        // starts 8-byte aligned in every case.
+        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement _, _) -> Some 3
+        // A string's character data begins at object + 12 (`MethodTable*` plus a
+        // 4-byte length), so from an 8-byte-aligned object it is 4-byte aligned —
+        // and no better. This is the one container where the obvious 8-byte guess
+        // would be wrong.
+        | ManagedPointerSource.Byref (ByrefRoot.StringCharAt _, _) -> Some 2
+        // The stack pointer is kept 16-byte aligned on both x64 and arm64, and the
+        // JIT rounds a `localloc` up to the stack alignment, so a localloc block
+        // starts at least 8-byte aligned.
+        | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte _, _) -> Some 3
+        // `NativeMemory.Alloc` / `Marshal.AllocHGlobal` bottom out in `malloc`,
+        // which returns storage aligned for any fundamental type — 16 bytes on
+        // 64-bit targets.
+        | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte _, _) -> Some 3
+        // A PE image is mapped at a page-aligned base and its sections at their
+        // RVAs, so the low bits of an RVA are the low bits of the mapped address —
+        // but only for the variants whose RVA means that. `FieldSignatureBlob` lives
+        // in the metadata `#Blob` heap at an offset PawPrint does not track, and
+        // fixes `RelativeVirtualAddress` at 0 as a placeholder, so its "low bits"
+        // are the byte cursor alone and belong to no address at all.
+        | ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange, _) ->
+            match peByteRange.Source with
+            | PeByteRangePointerSource.FieldRva _
+            | PeByteRangePointerSource.ManagedResource _ -> Some 3
+            | PeByteRangePointerSource.FieldSignatureBlob _ -> None
+        // Object fields, static fields, stack slots and the synthetic roots have no
+        // stable in-container offset either (see `tryStableAddressBits` and
+        // `NullaryIlOp.tryManagedPointerAddressBits`), so there is nothing to pair
+        // an alignment claim with.
+        | ManagedPointerSource.Byref _ -> None
+
     let appendProjection (projection : ByrefProjection) (src : ManagedPointerSource) : ManagedPointerSource =
         match src with
         | ManagedPointerSource.Null -> failwith "cannot project from null managed pointer"

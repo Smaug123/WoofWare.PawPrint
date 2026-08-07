@@ -296,7 +296,7 @@ module TestSchedulerPct =
         | RunOutcome.NormalExit (state, thread)
         | RunOutcome.ProcessExit (state, thread) ->
             match state.ThreadState.[thread].MethodState.EvaluationStack.Values with
-            | EvalStackValue.Int32 i :: _ -> $"exit %d{i}"
+            | EvalStackValue.Int32 (Int32Source.Verbatim i) :: _ -> $"exit %d{i}"
             | other -> $"exit other (%A{other})"
         | RunOutcome.FailFast (_, _, message) ->
             let msg = message |> Option.defaultValue "<none>"

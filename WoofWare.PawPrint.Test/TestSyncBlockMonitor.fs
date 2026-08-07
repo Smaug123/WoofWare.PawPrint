@@ -1212,7 +1212,11 @@ module TestSyncBlockMonitor =
         : IlMachineState
         =
         let state = forceHeld thread depth addr state
-        let state = state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) thread
+
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 1)) thread
+
         SyncBlockMonitor.wait thread addr (Some deadlineMs) state
 
     let private parkInTimedWait
@@ -1237,7 +1241,9 @@ module TestSyncBlockMonitor =
         let block = syncBlockOf addr state
         block.Lock |> shouldEqual SyncBlockLock.Free
         block.WaitQueue |> shouldEqual [ t0, 5 ]
-        topOfStack t0 state |> shouldEqual (EvalStackValue.Int32 1)
+
+        topOfStack t0 state
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 1))
 
         let state = SyncBlockMonitor.fireWaitTimeout t0 addr state
 
@@ -1255,7 +1261,8 @@ module TestSyncBlockMonitor =
         block.WaitQueue |> shouldEqual []
         statusOf t0 state |> shouldEqual ThreadStatus.Runnable
         // Monitor.Wait returns false (Int32 0) = timed out.
-        topOfStack t0 state |> shouldEqual (EvalStackValue.Int32 0)
+        topOfStack t0 state
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
 
     [<Test>]
     let ``fireTimeout on held SyncBlock parks at AcquireQueue tail with Some depth and rewrites Int32 1 to Int32 0``
@@ -1287,7 +1294,9 @@ module TestSyncBlockMonitor =
         |> shouldEqual (ThreadStatus.BlockedOnSyncBlockAcquire (addr, None))
 
         statusOf t1 state |> shouldEqual ThreadStatus.Runnable
-        topOfStack t0 state |> shouldEqual (EvalStackValue.Int32 0)
+
+        topOfStack t0 state
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
 
     [<Test>]
     let ``fireTimeout fails loud when the thread is not in WaitQueue`` () : unit =
@@ -1333,7 +1342,10 @@ module TestSyncBlockMonitor =
 
         // t2 calls Wait(deadline): pushes optimistic 1 then parks; ownership
         // transfers to t0 (FIFO head of AcquireQueue) at fresh depth 1.
-        let state = state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) t2
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 1)) t2
+
         let state = SyncBlockMonitor.wait t2 addr (Some 5L) state
 
         let block = syncBlockOf addr state
@@ -1362,7 +1374,8 @@ module TestSyncBlockMonitor =
         statusOf t2 state
         |> shouldEqual (ThreadStatus.BlockedOnSyncBlockAcquire (addr, None))
 
-        topOfStack t2 state |> shouldEqual (EvalStackValue.Int32 0)
+        topOfStack t2 state
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
 
     [<Test>]
     let ``fireTimeout in WaitQueue head-first order preserves FIFO across same-tick expiries`` () : unit =
@@ -1400,8 +1413,11 @@ module TestSyncBlockMonitor =
         statusOf t1 state
         |> shouldEqual (ThreadStatus.BlockedOnSyncBlockAcquire (addr, None))
 
-        topOfStack t2 state |> shouldEqual (EvalStackValue.Int32 0)
-        topOfStack t1 state |> shouldEqual (EvalStackValue.Int32 0)
+        topOfStack t2 state
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+
+        topOfStack t1 state
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
 
     [<Test>]
     let ``fireTimeout in ThreadId order (not WaitQueue order) reverses FIFO — guards against scheduler bug`` () : unit =
@@ -1460,12 +1476,17 @@ module TestSyncBlockMonitor =
         let addr, state = allocateHeapObject state
         let state = state |> parkInTimedWait t0 addr 100L
         // t1 is Runnable with a sentinel value on its stack.
-        let state = state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 42) t1
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 42)) t1
 
         let state = SyncBlockMonitor.fireWaitTimeout t0 addr state
 
-        topOfStack t0 state |> shouldEqual (EvalStackValue.Int32 0)
-        topOfStack t1 state |> shouldEqual (EvalStackValue.Int32 42)
+        topOfStack t0 state
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+
+        topOfStack t1 state
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 42))
 
     // -------------------------------------------------------------------
     // fireAcquireTimeout — Monitor.TryEnter(obj, ms) slowpath deadlines
@@ -1503,7 +1524,7 @@ module TestSyncBlockMonitor =
                 Lock = SyncBlockLock.Held locked
                 WaitQueue = block.WaitQueue
             }
-        |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) acquirer
+        |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 1)) acquirer
         |> Scheduler.setThreadStatus acquirer (ThreadStatus.BlockedOnSyncBlockAcquire (addr, Some deadlineMs))
 
     [<Test>]
@@ -1529,7 +1550,8 @@ module TestSyncBlockMonitor =
             l.AcquireQueue |> shouldEqual [ (t1, None) ]
         | SyncBlockLock.Free -> failwith "expected Held before fire"
 
-        topOfStack t1 state |> shouldEqual (EvalStackValue.Int32 1)
+        topOfStack t1 state
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 1))
 
         let state = SyncBlockMonitor.fireAcquireTimeout t1 addr state
 
@@ -1548,7 +1570,8 @@ module TestSyncBlockMonitor =
         statusOf t1 state |> shouldEqual ThreadStatus.Runnable
         statusOf t0 state |> shouldEqual ThreadStatus.Runnable
         // TryEnter_Slowpath observes Int32 0 ⇒ BCL returns false.
-        topOfStack t1 state |> shouldEqual (EvalStackValue.Int32 0)
+        topOfStack t1 state
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
 
     [<Test>]
     let ``fireAcquireTimeout preserves FIFO among other queued acquirers`` () : unit =
@@ -1595,7 +1618,8 @@ module TestSyncBlockMonitor =
         statusOf t2 state
         |> shouldEqual (ThreadStatus.BlockedOnSyncBlockAcquire (addr, None))
 
-        topOfStack t1 state |> shouldEqual (EvalStackValue.Int32 0)
+        topOfStack t1 state
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
 
     [<Test>]
     let ``fireAcquireTimeout fails loud when the thread is not in AcquireQueue`` () : unit =
@@ -1633,9 +1657,14 @@ module TestSyncBlockMonitor =
         let addr, state = allocateHeapObject state
         let state = state |> parkInTimedAcquire t0 t1 addr 100L
         // t0 has its own sentinel value on its stack.
-        let state = state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 42) t0
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 42)) t0
 
         let state = SyncBlockMonitor.fireAcquireTimeout t1 addr state
 
-        topOfStack t1 state |> shouldEqual (EvalStackValue.Int32 0)
-        topOfStack t0 state |> shouldEqual (EvalStackValue.Int32 42)
+        topOfStack t1 state
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+
+        topOfStack t0 state
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 42))

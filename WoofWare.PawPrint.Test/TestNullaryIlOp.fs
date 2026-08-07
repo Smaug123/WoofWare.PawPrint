@@ -278,7 +278,9 @@ module TestNullaryIlOp =
 
     let private negCaseValues (case : NegCase) : EvalStackValue * EvalStackValue =
         match case with
-        | NegCase.Int32Value value -> EvalStackValue.Int32 value, EvalStackValue.Int32 (expectedNegInt32 value)
+        | NegCase.Int32Value value ->
+            EvalStackValue.Int32 (Int32Source.Verbatim value),
+            EvalStackValue.Int32 (Int32Source.Verbatim (expectedNegInt32 value))
         | NegCase.Int64Value value ->
             EvalStackValue.Int64 (Int64Source.Verbatim value),
             EvalStackValue.Int64 (Int64Source.Verbatim (expectedNegInt64 value))
@@ -388,9 +390,11 @@ module TestNullaryIlOp =
             let expected = uint32 case.Numerator / uint32 case.Denominator |> int32<uint32>
 
             match
-                NullaryIlOp.divUnValues (EvalStackValue.Int32 case.Numerator) (EvalStackValue.Int32 case.Denominator)
+                NullaryIlOp.divUnValues
+                    (EvalStackValue.Int32 (Int32Source.Verbatim case.Numerator))
+                    (EvalStackValue.Int32 (Int32Source.Verbatim case.Denominator))
             with
-            | EvalStackValue.Int32 actual -> actual |> shouldEqual expected
+            | EvalStackValue.Int32 (Int32Source.Verbatim actual) -> actual |> shouldEqual expected
             | other -> failwith $"Expected Int32 Div_un result, got %O{other}"
 
         Check.One (config, Prop.forAll (Arb.fromGen genInt32DivUnCase) property)
@@ -443,7 +447,7 @@ module TestNullaryIlOp =
         let _, loggerFactory = LoggerFactory.makeTest ()
         use _loggerFactoryResource = loggerFactory
 
-        let input = EvalStackValue.Int32 42
+        let input = EvalStackValue.Int32 (Int32Source.Verbatim 42)
         let state, thread = stateWithNullary loggerFactory NullaryIlOp.Tail input
 
         match NullaryIlOp.execute loggerFactory baseClassTypes state thread NullaryIlOp.Tail with
@@ -504,7 +508,7 @@ module TestNullaryIlOp =
 
     let private convOvfICaseInput (case : ConvOvfICase) : EvalStackValue =
         match case with
-        | ConvOvfICase.Int32Value value -> EvalStackValue.Int32 value
+        | ConvOvfICase.Int32Value value -> EvalStackValue.Int32 (Int32Source.Verbatim value)
         | ConvOvfICase.Int64Value value -> EvalStackValue.Int64 (Int64Source.Verbatim value)
         | ConvOvfICase.NativeIntVerbatim value -> EvalStackValue.NativeInt (NativeIntSource.Verbatim value)
         | ConvOvfICase.FloatValue value -> EvalStackValue.Float value
@@ -830,13 +834,13 @@ module TestNullaryIlOp =
     let ``an int32 operand is sign-extended before it reaches the tag region`` () : unit =
         // An `int32` mask on the stack alongside a native int: `-2` must not be
         // read as `0x00000000FFFFFFFE`, which would clear the handle's high bits.
-        runBinary NullaryIlOp.And (taggedHandle 3L) (EvalStackValue.Int32 -2)
+        runBinary NullaryIlOp.And (taggedHandle 3L) (EvalStackValue.Int32 (Int32Source.Verbatim -2))
         |> shouldEqual (taggedHandle 2L)
 
-        runBinary NullaryIlOp.And (EvalStackValue.Int32 -2) (taggedHandle 3L)
+        runBinary NullaryIlOp.And (EvalStackValue.Int32 (Int32Source.Verbatim -2)) (taggedHandle 3L)
         |> shouldEqual (taggedHandle 2L)
 
-        runBinary NullaryIlOp.Or (EvalStackValue.Int32 1) (taggedHandle 0L)
+        runBinary NullaryIlOp.Or (EvalStackValue.Int32 (Int32Source.Verbatim 1)) (taggedHandle 0L)
         |> shouldEqual (taggedHandle 1L)
 
     [<Test>]
@@ -858,9 +862,9 @@ module TestNullaryIlOp =
             exn.Message |> shouldContainText "which PawPrint does not model"
 
         shouldRefuse NullaryIlOp.And (nativeConst 4L)
-        shouldRefuse NullaryIlOp.And (EvalStackValue.Int32 4)
+        shouldRefuse NullaryIlOp.And (EvalStackValue.Int32 (Int32Source.Verbatim 4))
         shouldRefuse NullaryIlOp.Or (nativeConst 8L)
-        shouldRefuse NullaryIlOp.Or (EvalStackValue.Int32 8)
+        shouldRefuse NullaryIlOp.Or (EvalStackValue.Int32 (Int32Source.Verbatim 8))
         shouldRefuse NullaryIlOp.Xor (nativeConst 4L)
 
     [<Test>]
@@ -1008,6 +1012,277 @@ module TestNullaryIlOp =
 
         shouldRefuse (typeHandle typeDescTarget) (nativeConst 4L)
         shouldRefuse (typeHandle methodTableTarget) (nativeConst 4L)
-        shouldRefuse (typeHandle methodTableTarget) (EvalStackValue.Int32 4)
+        shouldRefuse (typeHandle methodTableTarget) (EvalStackValue.Int32 (Int32Source.Verbatim 4))
         shouldRefuse (methodTable methodTableTarget) (nativeConst 4L)
         shouldRefuse (methodTable methodTableTarget) (nativeConst ~~~4L)
+
+    // --- Narrowing a byref with conv.i4 / conv.u4 ---
+    //
+    // `SpanHelpers.IndexOfNullCharacter` opens with `((int)searchSpace & 1) != 0`,
+    // so a byref has to survive `conv.i4` for the mask to be answerable. See
+    // `Int32Source.NarrowedManagedPointer` for why the int32 stack slot carries
+    // provenance at all, and `PointerAlignmentMask.cs` for the masks that are
+    // answerable. These pin the *boundaries* of that answer, which an end-to-end
+    // test cannot reach because each one throws.
+
+    /// A byref into a native-heap block. `NativeMemoryByte` is the one root whose
+    /// offset comes from `tryStableAddressBits` alone, so these tests need no heap.
+    let private nativeBlockByref (byteOffset : int) : ManagedPointerSource =
+        ManagedPointerSource.Byref (
+            ByrefRoot.NativeMemoryByte (NativeMemoryBlockId.NativeMemoryBlockId 0, byteOffset),
+            []
+        )
+
+    let private narrowed (byteOffset : int) : EvalStackValue =
+        EvalStackValue.Int32 (Int32Source.NarrowedManagedPointer (nativeBlockByref byteOffset))
+
+    let private runUnary (op : NullaryIlOp) (value : EvalStackValue) : EvalStackValue =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let state, thread = stateWithNullary loggerFactory op value
+
+        match NullaryIlOp.execute loggerFactory baseClassTypes state thread op with
+        | ExecutionResult.Stepped (state, whatWeDid, _) ->
+            whatWeDid |> shouldEqual WhatWeDid.Executed
+
+            match state.ThreadState.[thread].MethodState.EvaluationStack.Values with
+            | [ actual ] -> actual
+            | other -> failwith $"Expected %O{op} to leave one stack value, got %O{other}"
+        | other -> failwith $"Expected %O{op} to step, got %O{other}"
+
+    [<Test>]
+    let ``Conv_I4 keeps a byref alive instead of refusing`` () : unit =
+        runUnary NullaryIlOp.Conv_I4 (EvalStackValue.ManagedPointer (nativeBlockByref 6))
+        |> shouldEqual (narrowed 6)
+
+        // Reaching `conv.i4` through the native-int slot (as it does after a
+        // `conv.u`) must produce the same thing.
+        runUnary NullaryIlOp.Conv_I4 (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer (nativeBlockByref 6)))
+        |> shouldEqual (narrowed 6)
+
+        runUnary NullaryIlOp.Conv_U4 (EvalStackValue.ManagedPointer (nativeBlockByref 6))
+        |> shouldEqual (narrowed 6)
+
+    [<Test>]
+    let ``a byref with an exactly-known bit pattern narrows to an ordinary int32`` () : unit =
+        // `Null` and the `Unsafe.AsRef<T>((void*)bits)` placeholder are values, not
+        // unknown addresses. They must not become NarrowedManagedPointer, and they
+        // must land on the int32 stack kind `conv.i4` is specified to push — a
+        // native int there would break the int32 comparisons and stores that
+        // legitimately follow.
+        let placeholder (bits : int64) : EvalStackValue =
+            EvalStackValue.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits)
+
+        for op in [ NullaryIlOp.Conv_I4 ; NullaryIlOp.Conv_U4 ] do
+            runUnary op (EvalStackValue.ManagedPointer ManagedPointerSource.Null)
+            |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+
+            runUnary op (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null))
+            |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+
+            // The placeholder's high word is discarded.
+            runUnary op (placeholder 0x1_0000_0004L)
+            |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 4))
+
+            // Bit 31 set: both conversions keep the same 32 bits, and neither may
+            // sign-extend them back up into a native int.
+            runUnary op (placeholder 0x8000_0000L)
+            |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim Int32.MinValue))
+
+    [<Test>]
+    let ``a mask inside the container's alignment yields an int32`` () : unit =
+        // `malloc` storage is at least 8-byte aligned, so the low three bits of
+        // `block + 6` are exactly 6. The result is an int32 because the guest is
+        // about to compare it against an `int` literal.
+        runBinary NullaryIlOp.And (narrowed 6) (EvalStackValue.Int32 (Int32Source.Verbatim 1))
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+
+        runBinary NullaryIlOp.And (narrowed 6) (EvalStackValue.Int32 (Int32Source.Verbatim 7))
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 6))
+
+        runBinary NullaryIlOp.And (EvalStackValue.Int32 (Int32Source.Verbatim 3)) (narrowed 6)
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 2))
+
+    [<Test>]
+    let ``an all-ones mask leaves the narrowed byref untouched`` () : unit =
+        runBinary NullaryIlOp.And (narrowed 6) (EvalStackValue.Int32 (Int32Source.Verbatim -1))
+        |> shouldEqual (narrowed 6)
+
+    [<Test>]
+    let ``a mask reaching past the guaranteed alignment is refused`` () : unit =
+        // `malloc` promises 8-byte alignment and no more, so bit 3 is a question
+        // about the block's address.
+        let exn =
+            Assert.Throws (fun () ->
+                runBinary NullaryIlOp.And (narrowed 6) (EvalStackValue.Int32 (Int32Source.Verbatim 15))
+                |> ignore<EvalStackValue>
+            )
+
+        exn.Message |> shouldContainText "guaranteed 3-bit alignment"
+
+    [<Test>]
+    let ``aligning a narrowed byref down is refused rather than approximated`` () : unit =
+        // `p & ~7` keeps every address bit but clears the offset's low bits, so the
+        // answer is a different location in the same container. PawPrint has no way
+        // to express that yet, and must not silently return the original pointer.
+        let exn =
+            Assert.Throws (fun () ->
+                runBinary NullaryIlOp.And (narrowed 6) (EvalStackValue.Int32 (Int32Source.Verbatim -8))
+                |> ignore<EvalStackValue>
+            )
+
+        exn.Message |> shouldContainText "the same container at a lower offset"
+
+    [<Test>]
+    let ``a byref whose container has no alignment claim answers only the address-independent masks`` () : unit =
+        // Object fields expose no stable low bits, so the tag region is empty. That
+        // still leaves `p & 0` and `p & -1` answerable for *any* address, and a
+        // decision procedure that refused them would be refusing something it could
+        // have answered.
+        let fieldByref =
+            ManagedPointerSource.Byref (ByrefRoot.HeapValue (ManagedHeapAddress.ManagedHeapAddress 1), [])
+
+        let narrowedField =
+            EvalStackValue.Int32 (Int32Source.NarrowedManagedPointer fieldByref)
+
+        runBinary NullaryIlOp.And narrowedField (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+
+        runBinary NullaryIlOp.And narrowedField (EvalStackValue.Int32 (Int32Source.Verbatim -1))
+        |> shouldEqual narrowedField
+
+        // Every other mask is a question about the address.
+        for mask in [ 1 ; 3 ; 7 ; -2 ] do
+            let exn =
+                Assert.Throws (fun () ->
+                    runBinary NullaryIlOp.And narrowedField (EvalStackValue.Int32 (Int32Source.Verbatim mask))
+                    |> ignore<EvalStackValue>
+                )
+
+            exn.Message |> shouldContainText "claims no alignment"
+
+    let private peByteRangeByref (source : PeByteRangePointerSource) (rva : int) : ManagedPointerSource =
+        ManagedPointerSource.Byref (
+            ByrefRoot.PeByteRange
+                {
+                    AssemblyFullName = "TestAssembly"
+                    Source = source
+                    RelativeVirtualAddress = rva
+                    Size = 16
+                },
+            []
+        )
+
+    [<Test>]
+    let ``a field signature blob makes no alignment claim`` () : unit =
+        // `FieldRva` and `ManagedResource` name real section offsets, and the image
+        // base is page-aligned, so their low bits are the mapped address's low bits.
+        let field =
+            ComparableFieldDefinitionHandle.Make (
+                System.Reflection.Metadata.Ecma335.MetadataTokens.FieldDefinitionHandle 1
+            )
+
+        ManagedPointerSource.tryContainerAlignmentBits (peByteRangeByref (PeByteRangePointerSource.FieldRva field) 6)
+        |> shouldEqual (Some 3)
+
+        ManagedPointerSource.tryContainerAlignmentBits (
+            peByteRangeByref (PeByteRangePointerSource.ManagedResource "r") 6
+        )
+        |> shouldEqual (Some 3)
+
+        // A signature blob lives in the metadata `#Blob` heap, and fixes its RVA at
+        // 0 as a placeholder. Claiming alignment there would turn the byte cursor
+        // into fabricated address bits.
+        let blob = peByteRangeByref (PeByteRangePointerSource.FieldSignatureBlob field) 0
+
+        ManagedPointerSource.tryContainerAlignmentBits blob |> shouldEqual None
+
+        let exn =
+            Assert.Throws (fun () ->
+                runBinary
+                    NullaryIlOp.And
+                    (EvalStackValue.Int32 (Int32Source.NarrowedManagedPointer blob))
+                    (EvalStackValue.Int32 (Int32Source.Verbatim 1))
+                |> ignore<EvalStackValue>
+            )
+
+        exn.Message |> shouldContainText "claims no alignment"
+
+    [<Test>]
+    let ``no int32 consumer silently takes a narrowed byref as a number`` () : unit =
+        // The reason `Int32Source` exists rather than a narrowed pointer living in
+        // the wider native-int slot: an int32 consumer must not be able to get at a
+        // number without saying what to do when there isn't one. Sweep the ordinary
+        // int32 opcodes and require each to refuse by name — a silent answer here
+        // would be a fabricated address bit escaping into arithmetic.
+        let unary =
+            [
+                NullaryIlOp.Neg
+                NullaryIlOp.Not
+                NullaryIlOp.Conv_I1
+                NullaryIlOp.Conv_I2
+                NullaryIlOp.Conv_I8
+                NullaryIlOp.Conv_U1
+                NullaryIlOp.Conv_U2
+                NullaryIlOp.Conv_U8
+                NullaryIlOp.Conv_R4
+                NullaryIlOp.Conv_R8
+                NullaryIlOp.Conv_ovf_i
+                NullaryIlOp.Conv_ovf_u
+            ]
+
+        for op in unary do
+            let result =
+                try
+                    Ok (runUnary op (narrowed 6))
+                with e ->
+                    Error e.Message
+
+            match result with
+            | Ok value -> failwith $"%O{op} accepted a truncated byref as a number: got %O{value}"
+            | Error message -> message |> shouldContainText "truncated to 32 bits"
+
+        // Binary arithmetic and ordering likewise.
+        let binary =
+            [
+                NullaryIlOp.Add
+                NullaryIlOp.Sub
+                NullaryIlOp.Mul
+                NullaryIlOp.Or
+                NullaryIlOp.Xor
+                NullaryIlOp.Clt
+                NullaryIlOp.Cgt
+            ]
+
+        for op in binary do
+            let result =
+                try
+                    Ok (runBinary op (narrowed 6) (EvalStackValue.Int32 (Int32Source.Verbatim 1)))
+                with e ->
+                    Error e.Message
+
+            match result with
+            | Ok value -> failwith $"%O{op} accepted a truncated byref as a number: got %O{value}"
+            | Error message -> message |> shouldContainText "truncated to 32 bits"
+
+    [<Test>]
+    let ``widening a narrowed byref back to pointer width is refused`` () : unit =
+        // The discarded high bits are gone; recovering the byref here would hand the
+        // guest a pointer that the real truncation would have destroyed.
+        for op in
+            [
+                NullaryIlOp.Conv_U
+                NullaryIlOp.Conv_I
+                NullaryIlOp.Conv_I8
+                NullaryIlOp.Conv_U8
+            ] do
+            let result =
+                try
+                    Ok (runUnary op (narrowed 6))
+                with e ->
+                    Error e.Message
+
+            match result with
+            | Ok value -> failwith $"%O{op} widened a truncated byref instead of refusing: got %O{value}"
+            | Error message -> message |> shouldContainText "truncat"

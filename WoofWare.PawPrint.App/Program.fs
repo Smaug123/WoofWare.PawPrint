@@ -175,7 +175,7 @@ module AppProgram =
                 // there (or the stack is empty) we fail loud rather than silently
                 // reporting 0 — shell callers depend on the exit code being meaningful.
                 match state.ThreadState.[thread].MethodState.EvaluationStack.Values with
-                | EvalStackValue.Int32 i :: _ -> i
+                | EvalStackValue.Int32 (Int32Source.Verbatim i) :: _ -> i
                 | [] -> failwith "Exiting thread returned void; expected an int32 exit code"
                 | other :: _ -> failwith $"Exiting thread had unexpected eval-stack top %O{other}; expected int32"
 
