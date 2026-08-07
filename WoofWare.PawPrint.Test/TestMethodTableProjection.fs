@@ -3039,7 +3039,15 @@ public unsafe struct PointerWrapper
         |> shouldEqual (CliType.Numeric (CliNumericType.Int64 int64Source))
 
     [<Test>]
-    let ``Stind_I through projected local-memory byte view reports provenance preservation failure`` () : unit =
+    let ``Stind_I through projected local-memory byte view preserves provenance`` () : unit =
+        // A byte-view projection over local memory (`[ReinterpretAs byte]` —
+        // what a `Span<T>` element indexer or `GetPinnableReference` over a
+        // stackalloc buffer produces) is a whole-cell store when the
+        // destination range covers no other cell, exactly as the bare-root
+        // shape is. `writeManagedByrefBytesOrTypedCell` has always serviced
+        // this; `writeIndirectPrimitiveStore` used to reject it one layer
+        // above, which blocked `WaitHandle.ObtainSafeWaitHandles` (and hence
+        // every `WaitHandle.WaitAny` / `WaitAll`) from storing its handles.
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let state, thread =
@@ -3047,6 +3055,48 @@ public unsafe struct PointerWrapper
 
         let ptr, state =
             IlMachineState.allocateStackMemory thread MemoryBlockInitialization.ZeroInitialized 8 state
+
+        let projectedPtr =
+            ptr
+            |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs (concreteTypeFor bct.Byte))
+
+        let handle = NativeIntSource.FieldHandlePtr 1234L
+
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer projectedPtr) thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt handle) thread
+
+        let stateAfter =
+            match NullaryIlOp.execute loggerFactory bct state thread NullaryIlOp.Stind_I with
+            | ExecutionResult.Stepped (state, WhatWeDid.Executed, _) -> state
+            | other -> failwith $"Expected Stind_I to step, got %O{other}"
+
+        // The tag survives: a byte scatter could not have represented it at all.
+        IlMachineState.readManagedByref bct stateAfter ptr
+        |> shouldEqual (CliType.Numeric (CliNumericType.NativeInt handle))
+
+    [<Test>]
+    let ``Stind_I through projected local-memory byte view rejects a store that would evict a differently-sized cell``
+        ()
+        : unit
+        =
+        // The permissive path above is gated on the destination range being
+        // equivalent to a byte scatter. An 8-byte store landing exactly on an
+        // existing 4-byte cell is not: honouring it as a whole-cell store
+        // would silently discard the second half of the destination. The
+        // provenance-bearing payload has no bytes to scatter instead, so the
+        // only correct outcome is a loud failure.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread =
+            stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Stind_I)
+
+        let ptr, state =
+            IlMachineState.allocateStackMemory thread MemoryBlockInitialization.ZeroInitialized 8 state
+
+        let state =
+            IlMachineState.writeManagedByref state ptr (CliType.Numeric (CliNumericType.Int32 0x11223344))
 
         let projectedPtr =
             ptr
@@ -3064,6 +3114,447 @@ public unsafe struct PointerWrapper
 
         ex.Message |> shouldContainText "primitive indirect store"
         ex.Message |> shouldContainText "cannot preserve new value's native int"
+
+    [<Test>]
+    let ``Stind_I through projected local-memory byte view tests safety at the flattened offset`` () : unit =
+        // The byte-view offset is load-bearing, not decoration: the
+        // safety test must be asked about the range the write will actually
+        // touch. Here the projection displaces the destination to bytes
+        // 4..11, which straddles a cell at offset 8 — an implementation that
+        // flattened to the *root* offset (0) would see bytes 0..7, find them
+        // clear, and wrongly permit a store that evicts the cell at 8.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread =
+            stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Stind_I)
+
+        let frame = state.ThreadState.[thread].ActiveMethodState
+
+        let ptr, state =
+            IlMachineState.allocateStackMemory thread MemoryBlockInitialization.ZeroInitialized 16 state
+
+        let block =
+            match ptr with
+            | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (_, _, block, 0), []) -> block
+            | other -> failwith $"Expected local-memory root pointer, got %O{other}"
+
+        let occupiedPtr =
+            ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, 8), [])
+
+        let state =
+            IlMachineState.writeManagedByref state occupiedPtr (CliType.Numeric (CliNumericType.Int32 0x55667788))
+
+        let projectedPtr =
+            ptr
+            |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs (concreteTypeFor bct.Byte))
+            |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset 4)
+
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer projectedPtr) thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.FieldHandlePtr 1234L)) thread
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () ->
+                NullaryIlOp.execute loggerFactory bct state thread NullaryIlOp.Stind_I |> ignore
+            )
+
+        ex.Message |> shouldContainText "primitive indirect store"
+        ex.Message |> shouldContainText "cannot preserve new value's native int"
+
+    [<Test>]
+    let ``Stind_I of a plain value over a tagged cell through a bare local-memory byref`` () : unit =
+        // Control for the projected case below: overwriting a tagged cell with
+        // an untagged same-width value through a *bare* byref already works,
+        // because the bare-root arm takes the typed-cell path unconditionally.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread =
+            stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Stind_I)
+
+        let ptr, state =
+            IlMachineState.allocateStackMemory thread MemoryBlockInitialization.ZeroInitialized 8 state
+
+        let state =
+            IlMachineState.writeManagedByref
+                state
+                ptr
+                (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr 1234L)))
+
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L)) thread
+
+        let stateAfter =
+            match NullaryIlOp.execute loggerFactory bct state thread NullaryIlOp.Stind_I with
+            | ExecutionResult.Stepped (state, WhatWeDid.Executed, _) -> state
+            | other -> failwith $"Expected Stind_I to step, got %O{other}"
+
+        IlMachineState.readManagedByref bct stateAfter ptr
+        |> shouldEqual (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
+
+    [<Test>]
+    let ``Stind_I of a plain value over a tagged cell through a projected local-memory byte view`` () : unit =
+        // `stack[1] = handle; stack[1] = IntPtr.Zero;` — the second store is
+        // byte-addressable, so it does not take the provenance branch, but its
+        // *destination* is a tagged cell that cannot be byte-scattered over.
+        // Exact-width whole-cell replacement is the only representable
+        // outcome, and is what the bare-root control above already does.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread =
+            stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Stind_I)
+
+        let ptr, state =
+            IlMachineState.allocateStackMemory thread MemoryBlockInitialization.ZeroInitialized 8 state
+
+        let state =
+            IlMachineState.writeManagedByref
+                state
+                ptr
+                (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr 1234L)))
+
+        let projectedPtr =
+            ptr
+            |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs (concreteTypeFor bct.Byte))
+
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer projectedPtr) thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L)) thread
+
+        let stateAfter =
+            match NullaryIlOp.execute loggerFactory bct state thread NullaryIlOp.Stind_I with
+            | ExecutionResult.Stepped (state, WhatWeDid.Executed, _) -> state
+            | other -> failwith $"Expected Stind_I to step, got %O{other}"
+
+        IlMachineState.readManagedByref bct stateAfter ptr
+        |> shouldEqual (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
+
+    [<Test>]
+    let ``Stind_I of a plain value over a tagged cell through a projected native-memory byte view`` () : unit =
+        // Symmetric with the local-memory case: both roots must accept the
+        // overwrite, or the guest gets an arbitrary trap depending on which
+        // allocator produced its buffer.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread =
+            stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Stind_I)
+
+        let ptr, state =
+            IlMachineState.allocateNativeMemory MemoryBlockInitialization.ZeroInitialized 8 state
+
+        let state =
+            IlMachineState.writeManagedByref
+                state
+                ptr
+                (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr 4321L)))
+
+        let projectedPtr =
+            ptr
+            |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs (concreteTypeFor bct.Byte))
+
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer projectedPtr) thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L)) thread
+
+        let stateAfter =
+            match NullaryIlOp.execute loggerFactory bct state thread NullaryIlOp.Stind_I with
+            | ExecutionResult.Stepped (state, WhatWeDid.Executed, _) -> state
+            | other -> failwith $"Expected Stind_I to step, got %O{other}"
+
+        IlMachineState.readManagedByref bct stateAfter ptr
+        |> shouldEqual (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
+
+    [<Test>]
+    let ``Stind_I1 of a plain value into a tagged cell through a projected local-memory byte view is rejected``
+        ()
+        : unit
+        =
+        // The counterpart to the test above: a *partial*-width store into a
+        // tagged cell has no representable outcome at all. Whole-cell
+        // replacement would fabricate the seven bytes it does not write, and
+        // byte scatter cannot render the tag. It must stay a loud failure —
+        // this is what stops the exact-width relaxation from degenerating into
+        // "any byte-addressable store may evict any cell".
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread =
+            stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Stind_I1)
+
+        let ptr, state =
+            IlMachineState.allocateStackMemory thread MemoryBlockInitialization.ZeroInitialized 8 state
+
+        let state =
+            IlMachineState.writeManagedByref
+                state
+                ptr
+                (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr 1234L)))
+
+        let projectedPtr =
+            ptr
+            |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs (concreteTypeFor bct.Byte))
+
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer projectedPtr) thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0xFF) thread
+
+        Assert.Throws<System.Exception> (fun () ->
+            NullaryIlOp.execute loggerFactory bct state thread NullaryIlOp.Stind_I1
+            |> ignore
+        )
+        |> ignore
+
+    [<Test>]
+    let ``Stind_I of a plain value over a tagged struct-wrapper cell through a projected byte view is rejected``
+        ()
+        : unit
+        =
+        // The exact-width relaxation that lets an untagged value overwrite a
+        // tagged cell is gated on the *shape* matching too. A value type
+        // wrapping a tagged pointer is also non-byte-addressable and also
+        // exactly covers the destination, but replacing it with a bare numeric
+        // cell would leave a later `ldobj` of the wrapper type unable to read
+        // what was written. That must stay a loud failure rather than become a
+        // silent shape change.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread =
+            stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Stind_I)
+
+        // A user-shaped struct, not `System.IntPtr` itself: the latter is
+        // primitive-like and unwraps to the very numeric shape being written,
+        // so replacing it genuinely is shape-preserving.
+        let wrapper = runtimePointerValueType state
+
+
+        let ptr, state =
+            IlMachineState.allocateStackMemory thread MemoryBlockInitialization.ZeroInitialized 8 state
+
+        let state = IlMachineState.writeManagedByref state ptr (CliType.ValueType wrapper)
+
+        let projectedPtr =
+            ptr
+            |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs (concreteTypeFor bct.Byte))
+
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer projectedPtr) thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L)) thread
+
+        Assert.Throws<System.Exception> (fun () ->
+            NullaryIlOp.execute loggerFactory bct state thread NullaryIlOp.Stind_I |> ignore
+        )
+        |> ignore
+
+    [<Test>]
+    let ``Stind_I8 of a differently-shaped primitive over a tagged cell is accepted`` () : unit =
+        // `*p = handle; *(long*)p = 0L;` — the destination is a tagged cell, so
+        // byte scatter cannot render over it, but a primitive cell has no
+        // composite layout to lose: a same-width scalar simply takes its place.
+        // This is the documented restamp, and it must not be caught by the
+        // guard that protects struct cells.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread =
+            stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Stind_I8)
+
+        let ptr, state =
+            IlMachineState.allocateStackMemory thread MemoryBlockInitialization.ZeroInitialized 8 state
+
+        let state =
+            IlMachineState.writeManagedByref
+                state
+                ptr
+                (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr 1234L)))
+
+        let projectedPtr =
+            ptr
+            |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs (concreteTypeFor bct.Byte))
+
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer projectedPtr) thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int64 (Int64Source.Verbatim 0L)) thread
+
+        let stateAfter =
+            match NullaryIlOp.execute loggerFactory bct state thread NullaryIlOp.Stind_I8 with
+            | ExecutionResult.Stepped (state, WhatWeDid.Executed, _) -> state
+            | other -> failwith $"Expected Stind_I8 to step, got %O{other}"
+
+        IlMachineState.readManagedByref bct stateAfter ptr
+        |> shouldEqual (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L)))
+
+    [<Test>]
+    let ``Stind_I of a tagged value over a byte-addressable struct cell is rejected`` () : unit =
+        // The mirror of the tagged-struct case: here the *cell* renders as
+        // bytes but the incoming value does not, so byte scatter is still
+        // unavailable and whole-cell replacement is the only spelling left. It
+        // would discard the struct's layout, leaving a later `ldobj` of the
+        // wrapper unable to read the slot — so it must fail loud. Which side
+        // lacks a byte rendering does not change the answer.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread =
+            stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Stind_I)
+
+        let intPtrHandle = handleFor bct.IntPtr
+
+        let plainWrapper =
+            [
+                {
+                    Id = FieldId.named "Plain"
+                    Name = "Plain"
+                    Contents = CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 7L))
+                    Offset = Some 0
+                    Type = intPtrHandle
+                    MarshallingDescriptor = None
+                }
+            ]
+            |> CliValueType.OfFields
+                bct
+                state.ConcreteTypes
+                (handleFor bct.TypedReference)
+                (Layout.Custom (size = 8, packingSize = 0))
+                CharSet.Ansi
+
+        let ptr, state =
+            IlMachineState.allocateStackMemory thread MemoryBlockInitialization.ZeroInitialized 8 state
+
+        let state =
+            IlMachineState.writeManagedByref state ptr (CliType.ValueType plainWrapper)
+
+        let projectedPtr =
+            ptr
+            |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs (concreteTypeFor bct.Byte))
+
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer projectedPtr) thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.FieldHandlePtr 99L)) thread
+
+        Assert.Throws<System.Exception> (fun () ->
+            NullaryIlOp.execute loggerFactory bct state thread NullaryIlOp.Stind_I |> ignore
+        )
+        |> ignore
+
+    [<Test>]
+    let ``Stobj of the same struct type over a tagged struct-wrapper cell is accepted on both byref shapes`` () : unit =
+        // The shape rule rejects a *change* of shape, not repetition. Storing
+        // another instance of the same declared struct preserves everything a
+        // later `ldobj` needs, and must keep working over a cell that carries
+        // provenance — byte scatter is not available as a fallback there, so
+        // rejecting it would turn an ordinary reassignment into a hard failure.
+        let assertAccepted (projected : bool) : unit =
+            let _, loggerFactory = LoggerFactory.makeTest ()
+
+            let state, thread =
+                stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Nop)
+
+            let wrapper = runtimePointerValueType state
+
+            let ptr, state =
+                IlMachineState.allocateStackMemory thread MemoryBlockInitialization.ZeroInitialized 8 state
+
+            let state = IlMachineState.writeManagedByref state ptr (CliType.ValueType wrapper)
+
+            let destPtr =
+                if projected then
+                    ptr
+                    |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs (concreteTypeFor bct.Byte))
+                else
+                    ptr
+
+            let replacement = runtimePointerValueType state
+
+            let stateAfter =
+                IlMachineState.writeManagedByrefBytesOrTypedCell bct state destPtr (CliType.ValueType replacement)
+
+            IlMachineState.readManagedByref bct stateAfter ptr
+            |> shouldEqual (CliType.ValueType replacement)
+
+        assertAccepted false
+        assertAccepted true
+
+    [<Test>]
+    let ``Stind_I of a tagged value over a struct-wrapper cell is rejected on both byref shapes`` () : unit =
+        // The shape rule is a property of whole-cell replacement, not of the
+        // byref shape that reaches it: a store that would restamp a structured
+        // non-byte-addressable cell as a bare numeric one is unrepresentable
+        // whichever spelling the guest used to address it. Both the bare root
+        // and the projected byte view must refuse — the bare root reached this
+        // via a range-only safety test until the shape condition was added.
+        let assertRejected (projected : bool) : unit =
+            let _, loggerFactory = LoggerFactory.makeTest ()
+
+            let state, thread =
+                stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Stind_I)
+
+            let wrapper = runtimePointerValueType state
+
+            let ptr, state =
+                IlMachineState.allocateStackMemory thread MemoryBlockInitialization.ZeroInitialized 8 state
+
+            let state = IlMachineState.writeManagedByref state ptr (CliType.ValueType wrapper)
+
+            let destPtr =
+                if projected then
+                    ptr
+                    |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs (concreteTypeFor bct.Byte))
+                else
+                    ptr
+
+            let state =
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer destPtr) thread
+                |> IlMachineState.pushToEvalStack'
+                    (EvalStackValue.NativeInt (NativeIntSource.FieldHandlePtr 888L))
+                    thread
+
+            Assert.Throws<System.Exception> (fun () ->
+                NullaryIlOp.execute loggerFactory bct state thread NullaryIlOp.Stind_I |> ignore
+            )
+            |> ignore
+
+        assertRejected false
+        assertRejected true
+
+    [<Test>]
+    let ``Stind_I through projected native-memory byte view preserves provenance`` () : unit =
+        // Mirror of the local-memory case over a `NativeMemoryByte` root
+        // (`NativeMemory.Alloc` + a `Span<IntPtr>` view). The two roots are
+        // fixed symmetrically because the shapes are indistinguishable from
+        // the guest's point of view; leaving one half rejecting would be an
+        // arbitrary trap.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread =
+            stateWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Stind_I)
+
+        let ptr, state =
+            IlMachineState.allocateNativeMemory MemoryBlockInitialization.ZeroInitialized 8 state
+
+        let projectedPtr =
+            ptr
+            |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs (concreteTypeFor bct.Byte))
+
+        let handle = NativeIntSource.FieldHandlePtr 4321L
+
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer projectedPtr) thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt handle) thread
+
+        let stateAfter =
+            match NullaryIlOp.execute loggerFactory bct state thread NullaryIlOp.Stind_I with
+            | ExecutionResult.Stepped (state, WhatWeDid.Executed, _) -> state
+            | other -> failwith $"Expected Stind_I to step, got %O{other}"
+
+        IlMachineState.readManagedByref bct stateAfter ptr
+        |> shouldEqual (CliType.Numeric (CliNumericType.NativeInt handle))
 
     [<Test>]
     let ``Stind_ref treats native-int-wrapped null managed pointer as managed null reference`` () : unit =
