@@ -992,9 +992,31 @@ module Intrinsics =
                     |> IlMachineState.pushToEvalStack currentValue currentThread
                     |> IlMachineState.advanceProgramCounter currentThread
                     |> IntrinsicResult.Completed
+            | [ ConcreteByref locationType ; valueType ], MethodReturnType.Returns returnType when
+                locationType = valueType && locationType = returnType
+                ->
+                // The enum instantiation of `Exchange<T>`, exactly mirroring the `CompareExchange`
+                // arm above: same `[Intrinsic]`-so-the-IL-never-runs argument, same
+                // `Unsafe.BitCast`-to-underlying-integer managed body we decline to execute
+                // (Interlocked.cs:257-286), and same reason the scalar-integer path is already
+                // right — an enum's eval-stack form is its underlying integer
+                // (`PrimitiveLikeKind.EnumLike`). See that arm for the full rationale, including
+                // why the nominal `isEnumValueType` question is the one being asked and why its
+                // returned state is threaded on.
+                let state, isEnum =
+                    IlMachineState.isEnumValueType loggerFactory baseClassTypes state locationType
+
+                if isEnum then
+                    executeScalarIntegerExchange "Interlocked.Exchange<TEnum>" state
+                else
+                    // `Single`/`Double`, and the `T` that should raise `NotSupportedException`
+                    // (Interlocked.cs:252-255). Both want their own arm, matching the
+                    // CompareExchange precedent above; until then, failing loudly beats
+                    // mistranslating either.
+                    IntrinsicResult.Unrecognised
             | _ ->
-                // The float/double overloads are not yet intrinsified, matching the
-                // CompareExchange precedent above. Add a dedicated arm when first needed.
+                // A signature shape this intrinsic does not recognise at all — the three types are
+                // not all the same, or the parameter count is wrong.
                 IntrinsicResult.Unrecognised
         | "System.Private.CoreLib", "Thread", "FastPollGC" ->
             // [Intrinsic] internal static void Thread.FastPollGC() => Thread.FastPollGC();
