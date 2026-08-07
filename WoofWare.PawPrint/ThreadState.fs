@@ -131,8 +131,8 @@ type ThreadStatus =
     /// the head of the queue back to `Runnable`; the IL `WaitOne` call site
     /// has already advanced past itself, so when the scheduler picks the woken
     /// thread it resumes with `WAIT_OBJECT_0` already on the evaluation stack.
-    /// Single-handle blocking only; multi-handle wait will need a separate
-    /// variant carrying a list plus a wait-all/wait-any flag.
+    /// Single-handle blocking only; `BlockedOnWaitHandles` is the multi-handle
+    /// counterpart.
     ///
     /// `deadlineMs = None` is an infinite wait (Win32 `INFINITE` / managed
     /// `Timeout.Infinite`); `Some ms` is a finite timeout, expressed as the
@@ -146,6 +146,37 @@ type ThreadStatus =
     /// map) makes the invariant "no deadline once Runnable again" structural
     /// — a wake naturally forgets it.
     | BlockedOnWaitHandle of handle : WaitHandleId * deadlineMs : int64 option
+    /// This thread called `WaitHandle.WaitAny` / `WaitAll` (via the
+    /// `WaitHandle_WaitMultipleIgnoringSyncContext` QCall) and could not be
+    /// satisfied immediately, so it is parked at the FIFO tail of *every* named
+    /// handle's `WaitQueue` (once per distinct handle — `handles` may repeat an
+    /// entry for a wait-any, and the index reported to the guest is recovered
+    /// from this list rather than from queue membership).
+    ///
+    /// `waitAll = false` (wait-any) is satisfied by any one handle becoming
+    /// acquirable. `waitAll = true` requires every handle to be simultaneously
+    /// acquirable, and acquires them atomically; duplicate handles are
+    /// rejected for that mode (with a guest `DuplicateWaitObjectException`,
+    /// as CoreCLR raises), so `handles` is distinct whenever `waitAll` is
+    /// set.
+    ///
+    /// Unlike the single-handle case, the value the guest sees is not known at
+    /// park time — a wait-any returns `WAIT_OBJECT_0 + index` for whichever
+    /// handle satisfied it. The waker therefore rewrites the optimistic
+    /// `WAIT_OBJECT_0` slot pushed at park time, exactly as the timeout path
+    /// does. A multi-wait is the only waiter kind whose *signal* wake rewrites
+    /// the slot; a single-handle wake still leaves it untouched.
+    ///
+    /// A parked multi-waiter that is not currently satisfiable stays queued
+    /// while the handles it is queued on become signalled and are handed to
+    /// other waiters — see the weakened queue invariants documented on
+    /// `SemaphoreState` / `MutexState` / `EventState`.
+    ///
+    /// `deadlineMs` has the same meaning as on `BlockedOnWaitHandle`: `None`
+    /// for `INFINITE`, `Some ms` for an absolute virtual-clock deadline, at
+    /// which `WaitHandle.fireMultipleTimeout` dequeues the thread from every
+    /// handle it is registered on and rewrites its slot to `WAIT_TIMEOUT`.
+    | BlockedOnWaitHandles of handles : WaitHandleId list * waitAll : bool * deadlineMs : int64 option
     /// This thread called `Thread.Sleep` (routed via the `ThreadNative_Sleep`
     /// QCall) and is parked against the virtual clock with no associated
     /// wait-queue or signalling primitive. There is no per-primitive FIFO
@@ -228,6 +259,7 @@ module ThreadStatus =
         | ThreadStatus.BlockedOnSyncBlockAcquire _ -> false
         | ThreadStatus.BlockedOnSyncBlockWait _ -> false
         | ThreadStatus.BlockedOnWaitHandle _ -> false
+        | ThreadStatus.BlockedOnWaitHandles _ -> false
         | ThreadStatus.BlockedOnSleep _ -> false
 
 type ThreadState =

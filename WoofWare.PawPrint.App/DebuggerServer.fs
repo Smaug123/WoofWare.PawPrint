@@ -134,6 +134,22 @@ module DebuggerServer =
             | Some ms -> writer.WriteNumber ("deadlineMs", ms)
 
             writer.WriteEndObject ()
+        | ThreadStatus.BlockedOnWaitHandles (handles, waitAll, deadlineMs) ->
+            writer.WriteStartObject ()
+            writer.WriteString ("kind", "blockedOnWaitHandles")
+            writer.WriteBoolean ("waitAll", waitAll)
+            writer.WriteStartArray "handles"
+
+            for WaitHandleId handle in handles do
+                writer.WriteNumberValue handle
+
+            writer.WriteEndArray ()
+
+            match deadlineMs with
+            | None -> ()
+            | Some ms -> writer.WriteNumber ("deadlineMs", ms)
+
+            writer.WriteEndObject ()
         | ThreadStatus.BlockedOnSleep deadlineMs ->
             writer.WriteStartObject ()
             writer.WriteString ("kind", "blockedOnSleep")

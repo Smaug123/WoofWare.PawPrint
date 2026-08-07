@@ -104,6 +104,12 @@ module Program =
         /// `Scheduler.fireSleepTimeout` reads state directly from the
         /// thread's status and flips it back to `Runnable`.
         | SleepTimeout
+        /// `WaitHandle.WaitAny` / `WaitAll` with a positive finite timeout.
+        /// Carries no payload because the waiter sits on *several* queues at
+        /// once, so no single primitive identifies it;
+        /// `WaitHandle.fireMultipleTimeout` reads the handle list from the
+        /// thread's status and dequeues it from every one of them.
+        | WaitHandlesTimeout
 
     /// Project a thread status into its finite-timeout deadline against
     /// the virtual clock, if any. Threads with no deadline (Runnable,
@@ -122,6 +128,8 @@ module Program =
             Some (FiredDeadline.SyncBlockAcquire lockObject, deadline)
         | ThreadStatus.BlockedOnJoin (_, Some deadline) -> Some (FiredDeadline.JoinTimeout, deadline)
         | ThreadStatus.BlockedOnSleep (Some deadline) -> Some (FiredDeadline.SleepTimeout, deadline)
+        | ThreadStatus.BlockedOnWaitHandles (_, _, Some deadline) -> Some (FiredDeadline.WaitHandlesTimeout, deadline)
+        | ThreadStatus.BlockedOnWaitHandles (_, _, None)
         | ThreadStatus.BlockedOnWaitHandle (_, None)
         | ThreadStatus.BlockedOnMonitorWait (_, None)
         | ThreadStatus.BlockedOnSyncBlockWait (_, None)
@@ -246,6 +254,9 @@ module Program =
             | FiredDeadline.SleepTimeout ->
                 let (ThreadId t) = tid
                 5, t, 0
+            | FiredDeadline.WaitHandlesTimeout ->
+                let (ThreadId t) = tid
+                6, t, 0
 
         let expired = expired |> List.sortBy sortKey
 
@@ -254,6 +265,7 @@ module Program =
             (fun s (tid, kind) ->
                 match kind with
                 | FiredDeadline.WaitHandle handleId -> WaitHandle.fireTimeout tid handleId s
+                | FiredDeadline.WaitHandlesTimeout -> WaitHandle.fireMultipleTimeout tid s
                 | FiredDeadline.MonitorWait monitorId -> LowLevelMonitor.fireTimeout tid monitorId s
                 | FiredDeadline.SyncBlockWait addr -> SyncBlockMonitor.fireWaitTimeout tid addr s
                 | FiredDeadline.SyncBlockAcquire addr -> SyncBlockMonitor.fireAcquireTimeout tid addr s

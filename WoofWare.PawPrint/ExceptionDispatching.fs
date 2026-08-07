@@ -838,6 +838,8 @@ module ExceptionDispatching =
             ExceptionHResults.lookup "System.ArgumentNullException"
         elif id = baseClassTypes.NotSupportedException.Identity then
             ExceptionHResults.lookup "System.NotSupportedException"
+        elif id = baseClassTypes.DuplicateWaitObjectException.Identity then
+            ExceptionHResults.lookup "System.DuplicateWaitObjectException"
         else
             ExceptionHResults.corEException
 

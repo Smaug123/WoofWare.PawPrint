@@ -57,6 +57,90 @@ module TestWaitHandle =
             ThreadState = threadMap
         }
 
+    let private baseClassTypes : BaseClassTypes<DumpedAssembly> =
+        Corelib.getBaseTypes corelib
+
+    /// Threads with a *real* frame, so their evaluation stack exists.
+    ///
+    /// The frameless `stubThreadState` above is deliberate for the
+    /// single-handle tests: those transitions only touch `Status` and the
+    /// handle registry, so a frame dereference would be a bug and the sentinel
+    /// `FrameId -1` catches it. Multi-handle waits genuinely need the stack —
+    /// a wait-any's return value is not known until the wake, so the waker has
+    /// to rewrite the slot pushed at park time — and these tests assert on
+    /// exactly that value.
+    let private withFramedThreads (threads : ThreadId list) (state : IlMachineState) : IlMachineState =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        // Any concrete method with a body will do; nothing reads its
+        // instructions, only its frame's evaluation stack.
+        let objectToString =
+            baseClassTypes.Object.Methods
+            |> List.find (fun method -> method.Name = "ToString" && method.Parameters.IsEmpty)
+
+        let state, signature =
+            TypeMethodSignature.map
+                state
+                (fun state ty ->
+                    IlMachineState.concretizeType
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        corelib.Name
+                        ImmutableArray.Empty
+                        ImmutableArray.Empty
+                        ty
+                )
+                objectToString.Signature
+
+        let method =
+            objectToString
+            |> MethodInfo.mapTypeGenerics (fun _ -> failwith "System.Object::ToString is not type-generic")
+            |> MethodInfo.mapMethodGenerics (fun _ _ -> failwith "System.Object::ToString is not method-generic")
+            |> MethodInfo.setMethodVars (MethodBody.Il (MethodInstructions.onlyRet ())) signature
+
+        let threadMap =
+            threads
+            |> List.map (fun tid ->
+                let methodState =
+                    match
+                        MethodState.Empty
+                            state.ConcreteTypes
+                            baseClassTypes
+                            state._LoadedAssemblies
+                            corelib
+                            method
+                            ImmutableArray.Empty
+                            (ImmutableArray.Create (CliType.ObjectRef None))
+                            None
+                    with
+                    | Ok methodState -> methodState
+                    | Error missing -> failwith $"Unexpected missing assembly references creating frame: %O{missing}"
+
+                // Distinct OS thread ids, minted by the same policy the real
+                // allocation sites use: these stand in for guest threads, and
+                // no two threads may share an id.
+                tid, ThreadState.New (CpuId 0) (EmulatedKernel.osThreadId tid) methodState
+            )
+            |> Map.ofList
+
+        { state with
+            ThreadState = threadMap
+        }
+
+    /// The single value on `thread`'s evaluation stack — the wait result the
+    /// guest will observe when the scheduler next picks it up.
+    let private waitResultOf (thread : ThreadId) (state : IlMachineState) : int =
+        let value, _ = IlMachineState.popEvalStack thread state
+
+        match value with
+        | EvalStackValue.Int32 result -> result
+        | other -> failwith $"expected an Int32 wait result on thread %O{thread}'s eval stack, got %O{other}"
+
+    let private evalStackDepth (thread : ThreadId) (state : IlMachineState) : int =
+        let threadState = state.ThreadState.[thread]
+        threadState.MethodStates.[threadState.ActiveMethodState].EvaluationStack.Values.Length
+
     let private statusOf (thread : ThreadId) (state : IlMachineState) : ThreadStatus = state.ThreadState.[thread].Status
 
     let private semaphoreOf (id : WaitHandleId) (state : IlMachineState) : SemaphoreState =
@@ -1722,5 +1806,523 @@ module TestWaitHandle =
 
             let e = runEventScript EventResetMode.Auto false threadCount script
             not e.Signaled || e.WaitQueue = []
+
+        Check.One (config, property)
+
+    // -------------------------------------------------------------------
+    // waitMultiple / tryWaitMultiple — the WaitAny / WaitAll state machine
+    // -------------------------------------------------------------------
+
+    let private multiAcquired (outcome : WaitHandle.MultiWaitOutcome) : int * bool * IlMachineState =
+        match outcome with
+        | WaitHandle.MultiWaitOutcome.Acquired (index, abandoned, state) -> index, abandoned, state
+        | WaitHandle.MultiWaitOutcome.Blocked _ -> failwith "expected Acquired but got Blocked"
+        | WaitHandle.MultiWaitOutcome.Failed _ -> failwith "expected Acquired but got Failed"
+
+    let private multiBlocked (outcome : WaitHandle.MultiWaitOutcome) : IlMachineState =
+        match outcome with
+        | WaitHandle.MultiWaitOutcome.Blocked state -> state
+        | WaitHandle.MultiWaitOutcome.Acquired _ -> failwith "expected Blocked but got Acquired"
+        | WaitHandle.MultiWaitOutcome.Failed _ -> failwith "expected Blocked but got Failed"
+
+    /// Every handle in the state, paired with the threads currently queued on
+    /// it. The oracle below is stated over this projection.
+    let private queues (state : IlMachineState) : (WaitHandleId * ThreadId list) list =
+        state.Kernel.WaitHandles
+        |> Map.toList
+        |> List.map (fun (id, handle) ->
+            let queue =
+                match handle with
+                | WaitHandleState.Semaphore s -> s.WaitQueue
+                | WaitHandleState.Mutex m -> m.WaitQueue
+                | WaitHandleState.Event e -> e.WaitQueue
+
+            id, queue
+        )
+
+    let private isAcquirableBy (thread : ThreadId) (id : WaitHandleId) (state : IlMachineState) : bool =
+        match Map.find id state.Kernel.WaitHandles with
+        | WaitHandleState.Semaphore s -> s.Count > 0
+        | WaitHandleState.Mutex m ->
+            match m.Ownership with
+            | MutexOwnership.Free _ -> true
+            | MutexOwnership.Held (owner, _) -> owner = thread
+        | WaitHandleState.Event e -> e.Signaled
+
+    /// The weakened queue invariant that multi-handle wait introduces, stated
+    /// as an oracle rather than prose.
+    ///
+    /// The strong invariant PawPrint used to hold — a signalled handle has an
+    /// empty queue — is false once a wait-all waiter can be parked on a handle
+    /// it cannot yet use. What survives is: every thread still queued on a
+    /// handle that it could otherwise take is a wait-all waiter that is
+    /// verifiably unacquirable on at least one of its other handles. Anything
+    /// else queued behind an available resource is a lost wakeup.
+    let private noLostWakeups (state : IlMachineState) : bool =
+        queues state
+        |> List.forall (fun (id, queue) ->
+            queue
+            |> List.forall (fun thread ->
+                if not (isAcquirableBy thread id state) then
+                    // Nothing to give: staying parked is correct.
+                    true
+                else
+                    match state.ThreadState.[thread].Status with
+                    | ThreadStatus.BlockedOnWaitHandles (handles, true, _) ->
+                        handles
+                        |> List.exists (fun other -> other <> id && not (isAcquirableBy thread other state))
+                    | _ -> false
+            )
+        )
+
+    /// No thread is ever both `Runnable` and sitting in some handle's queue.
+    let private noRunnableThreadIsQueued (state : IlMachineState) : bool =
+        queues state
+        |> List.forall (fun (_, queue) ->
+            queue
+            |> List.forall (fun thread ->
+                match state.ThreadState.[thread].Status with
+                | ThreadStatus.BlockedOnWaitHandle _
+                | ThreadStatus.BlockedOnWaitHandles _ -> true
+                | _ -> false
+            )
+        )
+
+    [<Test>]
+    let ``waitMultiple wait-any reports the smallest signalled index`` () : unit =
+        let state = baseState () |> withFramedThreads [ t0 ]
+        let a, state = WaitHandle.createEvent false EventResetMode.Manual state
+        let b, state = WaitHandle.createEvent true EventResetMode.Manual state
+        let c, state = WaitHandle.createEvent true EventResetMode.Manual state
+
+        let index, abandoned, state =
+            WaitHandle.waitMultiple t0 [ a ; b ; c ] false None state |> multiAcquired
+
+        index |> shouldEqual 1
+        abandoned |> shouldEqual false
+        // The fast path stays Runnable and touches no queue.
+        statusOf t0 state |> shouldEqual ThreadStatus.Runnable
+        queues state |> List.forall (fun (_, q) -> q = []) |> shouldEqual true
+
+    [<Test>]
+    let ``waitMultiple wait-any consumes only the handle that satisfied it`` () : unit =
+        let state = baseState () |> withFramedThreads [ t0 ]
+        let a, state = WaitHandle.createSemaphore 0 4 state
+        let b, state = WaitHandle.createSemaphore 3 4 state
+        let c, state = WaitHandle.createSemaphore 2 4 state
+
+        let index, _, state =
+            WaitHandle.waitMultiple t0 [ a ; b ; c ] false None state |> multiAcquired
+
+        index |> shouldEqual 1
+        (semaphoreOf a state).Count |> shouldEqual 0
+        (semaphoreOf b state).Count |> shouldEqual 2
+        // Untouched: the scan stopped at the first acquirable handle.
+        (semaphoreOf c state).Count |> shouldEqual 2
+
+    [<Test>]
+    let ``waitMultiple wait-any resolves a duplicated handle to its first index`` () : unit =
+        let state = baseState () |> withFramedThreads [ t0 ]
+        let a, state = WaitHandle.createEvent false EventResetMode.Manual state
+        let b, state = WaitHandle.createEvent true EventResetMode.Manual state
+
+        let index, _, _ =
+            WaitHandle.waitMultiple t0 [ a ; b ; b ] false None state |> multiAcquired
+
+        index |> shouldEqual 1
+
+    [<Test>]
+    let ``waitMultiple wait-all is atomic: a partial match consumes nothing`` () : unit =
+        let state = baseState () |> withFramedThreads [ t0 ]
+        let a, state = WaitHandle.createSemaphore 1 1 state
+        let b, state = WaitHandle.createSemaphore 1 1 state
+        let c, state = WaitHandle.createSemaphore 0 1 state
+
+        let blockedState =
+            WaitHandle.waitMultiple t0 [ a ; b ; c ] true None state |> multiBlocked
+
+        // Not one unit was taken, even though two of the three were available.
+        (semaphoreOf a blockedState).Count |> shouldEqual 1
+        (semaphoreOf b blockedState).Count |> shouldEqual 1
+        (semaphoreOf c blockedState).Count |> shouldEqual 0
+
+        statusOf t0 blockedState
+        |> shouldEqual (ThreadStatus.BlockedOnWaitHandles ([ a ; b ; c ], true, None))
+
+        // Parked on every named handle, so any of them can wake it.
+        queues blockedState
+        |> List.forall (fun (_, q) -> q = [ t0 ])
+        |> shouldEqual true
+
+    [<Test>]
+    let ``waitMultiple wait-all consumes every handle when all are available`` () : unit =
+        let state = baseState () |> withFramedThreads [ t0 ]
+        let a, state = WaitHandle.createSemaphore 1 1 state
+        let b, state = WaitHandle.createSemaphore 2 2 state
+        let c, state = WaitHandle.createEvent true EventResetMode.Auto state
+
+        let _, abandoned, state =
+            WaitHandle.waitMultiple t0 [ a ; b ; c ] true None state |> multiAcquired
+
+        abandoned |> shouldEqual false
+        (semaphoreOf a state).Count |> shouldEqual 0
+        (semaphoreOf b state).Count |> shouldEqual 1
+        // Auto events are consumed by acquiring.
+        (eventOf c state).Signaled |> shouldEqual false
+
+    [<Test>]
+    let ``waitMultiple wait-all rejects duplicate handles`` () : unit =
+        // The native handler turns `Failed` into a guest
+        // `DuplicateWaitObjectException`, matching what CoreCLR's
+        // `Thread::DoAppropriateWait` does with the PAL's rejection. What
+        // matters here is that the state machine refuses *and changes
+        // nothing*: an auto-event consumed on the way to the rejection, or a
+        // half-acquired semaphore, would be invisible to the guest until much
+        // later.
+        let state = baseState () |> withFramedThreads [ t0 ]
+        let a, state = WaitHandle.createEvent true EventResetMode.Auto state
+        let b, state = WaitHandle.createSemaphore 1 1 state
+
+        match WaitHandle.waitMultiple t0 [ a ; b ; a ] true None state with
+        | WaitHandle.MultiWaitOutcome.Failed failedState ->
+            statusOf t0 failedState |> shouldEqual ThreadStatus.Runnable
+            (eventOf a failedState).Signaled |> shouldEqual true
+            (semaphoreOf b failedState).Count |> shouldEqual 1
+            queues failedState |> List.forall (fun (_, q) -> q = []) |> shouldEqual true
+        | other -> failwith $"expected Failed for a duplicated wait-all handle, got %O{other}"
+
+        match WaitHandle.tryWaitMultiple t0 [ a ; b ; a ] true state with
+        | WaitHandle.MultiTryWaitOutcome.Failed _ -> ()
+        | other -> failwith $"expected Failed on the zero-timeout path too, got %O{other}"
+
+        // The same array is legal for a wait-any.
+        match WaitHandle.waitMultiple t0 [ a ; b ; a ] false None state with
+        | WaitHandle.MultiWaitOutcome.Acquired (index, _, _) -> index |> shouldEqual 0
+        | other -> failwith $"expected a duplicated wait-any to be Acquired, got %O{other}"
+
+    [<Test>]
+    let ``a stale handle is diagnosed as such even when it is also duplicated`` () : unit =
+        // Handle resolution has to happen before the duplicate scan, as it
+        // does in the PAL. Otherwise a use-after-free that happens to name the
+        // same dead handle twice gets reported as
+        // DuplicateWaitObjectException — a confident, wrong diagnosis of a
+        // real bug, which is worse than the loud failure `lookup` exists to
+        // produce.
+        let state = baseState () |> withFramedThreads [ t0 ]
+        let a, state = WaitHandle.createEvent true EventResetMode.Manual state
+        let state = WaitHandle.close a state
+
+        let assertStale (run : unit -> unit) : unit =
+            let ex = Assert.Throws<System.Exception> (fun () -> run ())
+            ex.Message |> shouldContainText "not registered"
+
+        assertStale (fun () -> WaitHandle.waitMultiple t0 [ a ; a ] true None state |> ignore)
+        assertStale (fun () -> WaitHandle.tryWaitMultiple t0 [ a ; a ] true state |> ignore)
+        // ... and for a wait-any, where duplicates are legal anyway.
+        assertStale (fun () -> WaitHandle.waitMultiple t0 [ a ; a ] false None state |> ignore)
+
+    [<Test>]
+    let ``tryWaitMultiple never enqueues`` () : unit =
+        let state = baseState () |> withFramedThreads [ t0 ]
+        let a, state = WaitHandle.createSemaphore 0 1 state
+        let b, state = WaitHandle.createEvent false EventResetMode.Manual state
+
+        for waitAll in [ true ; false ] do
+            match WaitHandle.tryWaitMultiple t0 [ a ; b ] waitAll state with
+            | WaitHandle.MultiTryWaitOutcome.TimedOut timedOutState ->
+                statusOf t0 timedOutState |> shouldEqual ThreadStatus.Runnable
+                queues timedOutState |> List.forall (fun (_, q) -> q = []) |> shouldEqual true
+            | other -> failwith $"expected TimedOut (waitAll = %b{waitAll}), got %O{other}"
+
+    [<Test>]
+    let ``a signal wake rewrites the parked wait-any result to its index`` () : unit =
+        let state = baseState () |> withFramedThreads [ t0 ]
+        let a, state = WaitHandle.createEvent false EventResetMode.Manual state
+        let b, state = WaitHandle.createEvent false EventResetMode.Manual state
+
+        let state = WaitHandle.waitMultiple t0 [ a ; b ] false None state |> multiBlocked
+
+        // The interpreter's park-time push: optimistic, and wrong for index 1.
+        let state =
+            IlMachineState.pushToEvalStack' (EvalStackValue.Int32 WaitHandle.waitObjectZero) t0 state
+
+        let depthAtPark = evalStackDepth t0 state
+
+        let state = WaitHandle.setEvent b state
+
+        statusOf t0 state |> shouldEqual ThreadStatus.Runnable
+        waitResultOf t0 state |> shouldEqual (WaitHandle.waitObjectZero + 1)
+        // The rewrite must not change how deep the stack is.
+        evalStackDepth t0 state |> shouldEqual depthAtPark
+        // Dequeued from both handles, not just the one that signalled.
+        queues state |> List.forall (fun (_, q) -> q = []) |> shouldEqual true
+
+    [<Test>]
+    let ``a signal wake reports a bare success for a parked wait-all`` () : unit =
+        let state = baseState () |> withFramedThreads [ t0 ]
+        let a, state = WaitHandle.createEvent false EventResetMode.Manual state
+        let b, state = WaitHandle.createEvent false EventResetMode.Manual state
+
+        let state = WaitHandle.waitMultiple t0 [ a ; b ] true None state |> multiBlocked
+
+        let state =
+            IlMachineState.pushToEvalStack' (EvalStackValue.Int32 WaitHandle.waitObjectZero) t0 state
+
+        // The first signal cannot satisfy the wait-all, so the waiter stays put
+        // — and the event stays signalled with a non-empty queue, which is the
+        // weakened invariant.
+        let state = WaitHandle.setEvent a state
+
+        statusOf t0 state
+        |> shouldEqual (ThreadStatus.BlockedOnWaitHandles ([ a ; b ], true, None))
+
+        (eventOf a state).Signaled |> shouldEqual true
+        (eventOf a state).WaitQueue |> shouldEqual [ t0 ]
+        noLostWakeups state |> shouldEqual true
+
+        let state = WaitHandle.setEvent b state
+        statusOf t0 state |> shouldEqual ThreadStatus.Runnable
+        // Wait-all reports no index: the OS cannot say which handle it was.
+        waitResultOf t0 state |> shouldEqual WaitHandle.waitObjectZero
+        queues state |> List.forall (fun (_, q) -> q = []) |> shouldEqual true
+
+    [<Test>]
+    let ``an unsatisfiable wait-all waiter is skipped, not blocking the queue`` () : unit =
+        // t0 waits on {a, b} but b is empty, so releasing `a` cannot satisfy
+        // it. t1 waits on `a` alone, behind t0 in the queue. The release must
+        // hand the unit to t1 rather than stall behind t0 — which is what the
+        // PAL does, and what stops one wait-all from wedging a shared handle.
+        let state = baseState () |> withFramedThreads [ t0 ; t1 ]
+        let a, state = WaitHandle.createSemaphore 0 4 state
+        let b, state = WaitHandle.createSemaphore 0 4 state
+
+        let state = WaitHandle.waitMultiple t0 [ a ; b ] true None state |> multiBlocked
+
+        let state =
+            IlMachineState.pushToEvalStack' (EvalStackValue.Int32 WaitHandle.waitObjectZero) t0 state
+
+        let state = WaitHandle.waitOne t1 a None state |> blocked
+        (semaphoreOf a state).WaitQueue |> shouldEqual [ t0 ; t1 ]
+
+        let outcome, state = WaitHandle.releaseSemaphore a 1 state
+        outcome |> shouldEqual (Ok 0)
+
+        statusOf t1 state |> shouldEqual ThreadStatus.Runnable
+
+        statusOf t0 state
+        |> shouldEqual (ThreadStatus.BlockedOnWaitHandles ([ a ; b ], true, None))
+
+        (semaphoreOf a state).Count |> shouldEqual 0
+        (semaphoreOf a state).WaitQueue |> shouldEqual [ t0 ]
+        noLostWakeups state |> shouldEqual true
+
+    [<Test>]
+    let ``a fresh wait acquires ahead of a parked unsatisfiable wait-all waiter`` () : unit =
+        // The documented consequence of skip-don't-block: the fast paths do
+        // not consult WaitQueue, so a newly-arriving single waiter takes the
+        // unit that the parked wait-all waiter cannot yet use. This matches
+        // Win32; pinning it stops a well-meaning "fix" from adding a queue
+        // check to the fast path.
+        let state = baseState () |> withFramedThreads [ t0 ; t1 ]
+        let a, state = WaitHandle.createSemaphore 0 4 state
+        let b, state = WaitHandle.createSemaphore 0 4 state
+
+        let state = WaitHandle.waitMultiple t0 [ a ; b ] true None state |> multiBlocked
+
+        let state =
+            IlMachineState.pushToEvalStack' (EvalStackValue.Int32 WaitHandle.waitObjectZero) t0 state
+
+        // Nobody is woken: t0 is the only waiter and it is unsatisfiable, so
+        // the unit stays in Count.
+        let _, state = WaitHandle.releaseSemaphore a 1 state
+        (semaphoreOf a state).Count |> shouldEqual 1
+        (semaphoreOf a state).WaitQueue |> shouldEqual [ t0 ]
+
+        // t1 arrives afterwards and takes it on the fast path.
+        let state = WaitHandle.waitOne t1 a None state |> acquired
+        statusOf t1 state |> shouldEqual ThreadStatus.Runnable
+        (semaphoreOf a state).Count |> shouldEqual 0
+
+        statusOf t0 state
+        |> shouldEqual (ThreadStatus.BlockedOnWaitHandles ([ a ; b ], true, None))
+
+        noLostWakeups state |> shouldEqual true
+
+    [<Test>]
+    let ``a satisfiable wait-all waiter is granted atomically by the last release`` () : unit =
+        let state = baseState () |> withFramedThreads [ t0 ]
+        let a, state = WaitHandle.createSemaphore 0 4 state
+        let b, state = WaitHandle.createSemaphore 0 4 state
+
+        let state = WaitHandle.waitMultiple t0 [ a ; b ] true None state |> multiBlocked
+
+        let state =
+            IlMachineState.pushToEvalStack' (EvalStackValue.Int32 WaitHandle.waitObjectZero) t0 state
+
+        let _, state = WaitHandle.releaseSemaphore a 1 state
+
+        statusOf t0 state
+        |> shouldEqual (ThreadStatus.BlockedOnWaitHandles ([ a ; b ], true, None))
+
+        let _, state = WaitHandle.releaseSemaphore b 1 state
+
+        statusOf t0 state |> shouldEqual ThreadStatus.Runnable
+        // Both units consumed by the single grant.
+        (semaphoreOf a state).Count |> shouldEqual 0
+        (semaphoreOf b state).Count |> shouldEqual 0
+        waitResultOf t0 state |> shouldEqual WaitHandle.waitObjectZero
+        queues state |> List.forall (fun (_, q) -> q = []) |> shouldEqual true
+
+    [<Test>]
+    let ``fireMultipleTimeout dequeues from every handle and reports WAIT_TIMEOUT`` () : unit =
+        let state = baseState () |> withFramedThreads [ t0 ]
+        let a, state = WaitHandle.createSemaphore 0 1 state
+        let b, state = WaitHandle.createEvent false EventResetMode.Manual state
+
+        let state =
+            WaitHandle.waitMultiple t0 [ a ; b ] false (Some 100L) state |> multiBlocked
+
+        let state =
+            IlMachineState.pushToEvalStack' (EvalStackValue.Int32 WaitHandle.waitObjectZero) t0 state
+
+        let depthAtPark = evalStackDepth t0 state
+        let state = WaitHandle.fireMultipleTimeout t0 state
+
+        statusOf t0 state |> shouldEqual ThreadStatus.Runnable
+        waitResultOf t0 state |> shouldEqual WaitHandle.waitTimeout
+        evalStackDepth t0 state |> shouldEqual depthAtPark
+        queues state |> List.forall (fun (_, q) -> q = []) |> shouldEqual true
+
+    /// One step of the randomised multi-primitive script below.
+    [<RequireQualifiedAccess>]
+    type private MultiOp =
+        | WaitAny of thread : int * handles : int list
+        | WaitAll of thread : int * handles : int list
+        | WaitOne of thread : int * handle : int
+        | Release of handle : int
+        | SetEvent of handle : int
+        | ResetEvent of handle : int
+
+    [<Test>]
+    let ``Property: no lost wakeups across randomised mixed single and multi waits`` () : unit =
+        // The generalisation of the single-semaphore conservation oracle to a
+        // mixed population: several handles of two kinds, threads issuing
+        // single-handle waits, wait-anys and wait-alls, interleaved with
+        // releases and signals.
+        //
+        // The oracle is the weakened queue invariant itself. After every step,
+        // any thread still parked on a handle it could take must be a wait-all
+        // waiter demonstrably blocked on one of its other handles. A release
+        // that failed to walk past an unsatisfiable wait-all, a wake that
+        // forgot to dequeue from the waiter's other queues, or a grant that
+        // left a woken thread queued would each break it.
+        let property (PositiveInt threadCountRaw) (NonNegativeInt seedRaw) : bool =
+            let threadCount = 1 + (threadCountRaw % 4)
+            let rng = System.Random seedRaw
+            let threads = [ 0 .. threadCount - 1 ] |> List.map ThreadId
+
+            let state = baseState () |> withFramedThreads threads
+            let semA, state = WaitHandle.createSemaphore 0 8 state
+            let semB, state = WaitHandle.createSemaphore 0 8 state
+            let evtA, state = WaitHandle.createEvent false EventResetMode.Auto state
+            let evtB, state = WaitHandle.createEvent false EventResetMode.Manual state
+            let handles = [| semA ; semB ; evtA ; evtB |]
+
+            let script =
+                [
+                    for _ in 1..40 do
+                        let thread = rng.Next threadCount
+
+                        match rng.Next 6 with
+                        | 0 ->
+                            // Wait-any over a random non-empty subset.
+                            let count = 1 + rng.Next 3
+                            let chosen = [ for _ in 1..count -> rng.Next handles.Length ]
+                            yield MultiOp.WaitAny (thread, chosen)
+                        | 1 ->
+                            // Wait-all needs distinct handles to be legal.
+                            let count = 1 + rng.Next 3
+
+                            let chosen =
+                                [ 0 .. handles.Length - 1 ]
+                                |> List.sortBy (fun _ -> rng.Next ())
+                                |> List.truncate count
+
+                            yield MultiOp.WaitAll (thread, chosen)
+                        | 2 -> yield MultiOp.WaitOne (thread, rng.Next handles.Length)
+                        | 3 -> yield MultiOp.Release (rng.Next 2)
+                        | 4 -> yield MultiOp.SetEvent (2 + rng.Next 2)
+                        | _ -> yield MultiOp.ResetEvent (2 + rng.Next 2)
+                ]
+
+            let isRunnable (thread : ThreadId) (state : IlMachineState) : bool =
+                match state.ThreadState.[thread].Status with
+                | ThreadStatus.Runnable -> true
+                | _ -> false
+
+            let parkPush (tid : ThreadId) (state : IlMachineState) : IlMachineState =
+                IlMachineState.pushToEvalStack' (EvalStackValue.Int32 WaitHandle.waitObjectZero) tid state
+
+            let step (state : IlMachineState) (op : MultiOp) : IlMachineState =
+                // Only a Runnable thread can issue a wait; a parked one is not
+                // executing IL. Skipping keeps the script well-formed rather
+                // than modelling an impossible interleaving.
+                let afterOp =
+                    match op with
+                    | MultiOp.WaitAny (thread, chosen) ->
+                        let tid = List.item thread threads
+
+                        if not (isRunnable tid state) then
+                            state
+                        else
+
+                        let chosenHandles = chosen |> List.map (fun i -> handles.[i])
+
+                        match WaitHandle.waitMultiple tid chosenHandles false None state with
+                        | WaitHandle.MultiWaitOutcome.Acquired (_, _, state) -> state
+                        | WaitHandle.MultiWaitOutcome.Blocked state -> parkPush tid state
+                        | WaitHandle.MultiWaitOutcome.Failed state -> state
+                    | MultiOp.WaitAll (thread, chosen) ->
+                        let tid = List.item thread threads
+
+                        if not (isRunnable tid state) then
+                            state
+                        else
+
+                        let chosenHandles = chosen |> List.map (fun i -> handles.[i])
+
+                        match WaitHandle.waitMultiple tid chosenHandles true None state with
+                        | WaitHandle.MultiWaitOutcome.Acquired (_, _, state) -> state
+                        | WaitHandle.MultiWaitOutcome.Blocked state -> parkPush tid state
+                        | WaitHandle.MultiWaitOutcome.Failed state -> state
+                    | MultiOp.WaitOne (thread, handle) ->
+                        let tid = List.item thread threads
+
+                        if not (isRunnable tid state) then
+                            state
+                        else
+
+                        match WaitHandle.waitOne tid handles.[handle] None state with
+                        | WaitHandle.WaitOutcome.Acquired state
+                        | WaitHandle.WaitOutcome.AcquiredAbandoned state -> state
+                        | WaitHandle.WaitOutcome.Blocked state -> parkPush tid state
+                    | MultiOp.Release handle ->
+                        // A release that would breach the maximum is refused
+                        // and leaves the state alone, which is fine here.
+                        let _, state = WaitHandle.releaseSemaphore handles.[handle] 1 state
+                        state
+                    | MultiOp.SetEvent handle -> WaitHandle.setEvent handles.[handle] state
+                    | MultiOp.ResetEvent handle -> WaitHandle.resetEvent handles.[handle] state
+
+                if not (noLostWakeups afterOp) then
+                    failwith $"lost wakeup after %O{op}: %A{queues afterOp}"
+
+                if not (noRunnableThreadIsQueued afterOp) then
+                    failwith $"a Runnable thread is still queued after %O{op}: %A{queues afterOp}"
+
+                afterOp
+
+            script |> List.fold step state |> ignore
+            true
 
         Check.One (config, property)

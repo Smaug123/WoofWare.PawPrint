@@ -136,9 +136,23 @@ type SyncBlockSpuriousWakeupStrategy =
 ///     `ReleaseSemaphore` refuses (with `ERROR_TOO_MANY_POSTS`) when an
 ///     increment would breach it.
 ///   - `WaitQueue` is the FIFO list of threads parked in
-///     `BlockedOnWaitHandle`. The head is woken first by a subsequent
-///     `Release`; FIFO order is load-bearing for the higher-level
-///     `LowLevelLifoSemaphore` fairness contract.
+///     `BlockedOnWaitHandle` or `BlockedOnWaitHandles`. The head-most
+///     *satisfiable* entry is woken first by a subsequent `Release`; FIFO
+///     order is load-bearing for the higher-level `LowLevelLifoSemaphore`
+///     fairness contract.
+///
+/// Queue invariant (weakened by multi-handle wait): `Count > 0` does *not*
+/// imply an empty `WaitQueue`. Every entry left in the queue after an
+/// operation is either a single-handle waiter that the current `Count` could
+/// not cover, or a wait-all multi-waiter that is verifiably unacquirable on
+/// at least one of its *other* handles. Skipping such an entry rather than
+/// blocking behind it is what the PAL does (`CSynchData`'s waiting-thread
+/// walk consults `IsRestOfWaitAllSatisfied` and `continue`s past a node it
+/// cannot satisfy, leaving it registered). One consequence is worth stating
+/// because it looks like a bug: a *fresh* `WaitOne` arriving afterwards takes
+/// the fast path and acquires ahead of that still-parked wait-all waiter. The
+/// fast paths deliberately do not consult `WaitQueue`; adding a queue check
+/// there would be a fidelity regression, not a fix.
 type SemaphoreState =
     {
         Count : int
@@ -172,14 +186,16 @@ type MutexOwnership =
 
 /// Deterministic model of a single Win32-shaped mutex kernel object, as
 /// minted by `PAL_CreateMutexW`. Carries ownership (per `MutexOwnership`)
-/// plus the FIFO wait queue of threads parked in `BlockedOnWaitHandle`
-/// because the mutex was held by another thread when they called
-/// `WaitOne`. The wait queue lives outside the ownership DU because it
-/// is orthogonal to who currently owns the mutex — a free mutex can
-/// have a non-empty queue (transient, between direct-handoff release
-/// and the woken thread being picked by the scheduler) although our
-/// release path immediately re-installs the woken thread as the new
-/// owner so this is in practice always empty when `Free`.
+/// plus the FIFO wait queue of threads parked in `BlockedOnWaitHandle` or
+/// `BlockedOnWaitHandles` because the mutex was held by another thread when
+/// they called `WaitOne`. The wait queue lives outside the ownership DU
+/// because it is orthogonal to who currently owns the mutex: a `Free` mutex
+/// can have a non-empty queue. That happens when the only queued entries are
+/// wait-all multi-waiters that are unacquirable on some *other* handle, so
+/// the release found nobody to hand ownership to — see the queue-invariant
+/// note on `SemaphoreState`. Absent multi-waiters the release path still
+/// immediately re-installs the woken thread as the new owner, so the queue is
+/// empty whenever the mutex is `Free`.
 ///
 /// Mutexes are re-entrant on `owner`: a second `WaitOne` from the
 /// owning thread succeeds on the fast path and bumps `recursionCount`.
@@ -207,16 +223,23 @@ type EventResetMode =
 /// Deterministic model of a single Win32-shaped event kernel object, as
 /// minted by `CreateEventExW`. `Mode` is set at create time and never
 /// changes. `Signaled` is the current signal state; `WaitQueue` is the
-/// FIFO list of threads parked in `BlockedOnWaitHandle` because the event
-/// was unsignalled when they called `WaitOne`.
+/// FIFO list of threads parked in `BlockedOnWaitHandle` or
+/// `BlockedOnWaitHandles` because the event was unsignalled when they called
+/// `WaitOne`.
 ///
-/// Invariant: `Signaled = true ⇒ WaitQueue = []`. The operations enforce
-/// it: `setEvent` on a `Manual` event with parked waiters wakes them all
-/// and sets `Signaled = true` (leaving the queue empty); `setEvent` on an
-/// `Auto` event either wakes the FIFO head (leaving `Signaled = false`) or
-/// — if no waiters — sets `Signaled = true`. `waitOne` on a signalled
-/// `Auto` event consumes the signal as part of acquiring, so a thread can
-/// never observe `Signaled = true` while there is a parked waiter.
+/// Invariant: `Signaled = true` implies every remaining `WaitQueue` entry is
+/// a wait-all multi-waiter that is verifiably unacquirable on at least one of
+/// its *other* handles. Absent multi-waiters that degenerates to the stronger
+/// `Signaled = true ⇒ WaitQueue = []`, which the operations enforce as
+/// before: `setEvent` on a `Manual` event wakes every satisfiable waiter and
+/// sets `Signaled = true`; `setEvent` on an `Auto` event either hands the
+/// signal to the head-most satisfiable waiter (leaving `Signaled = false`) or
+/// — if none is satisfiable — sets `Signaled = true`; `waitOne` on a
+/// signalled `Auto` event consumes the signal as part of acquiring.
+///
+/// See the queue-invariant note on `SemaphoreState` for why an unsatisfiable
+/// wait-all waiter is skipped rather than blocking the queue behind it, and
+/// why the fast paths must not start consulting `WaitQueue` to compensate.
 type EventState =
     {
         Mode : EventResetMode
