@@ -251,7 +251,9 @@ public static class Entry
         let returnValue, _ = IlMachineState.popEvalStack prepared.EntryThread stateAfter
 
         returnValue
-        |> shouldEqual (EvalStackValue.Int32 EmulatedKernel.defaultOptimalMaxSpinWaitsPerSpinIteration)
+        |> shouldEqual (
+            EvalStackValue.Int32 (Int32Source.Verbatim EmulatedKernel.defaultOptimalMaxSpinWaitsPerSpinIteration)
+        )
 
     [<Test>]
     let ``get_OptimalMaxSpinWaitsPerSpinIteration round-trips a host-configured kernel value`` () : unit =
@@ -294,4 +296,4 @@ public static class Entry
 
         let returnValue, _ = IlMachineState.popEvalStack prepared.EntryThread stateAfter
 
-        returnValue |> shouldEqual (EvalStackValue.Int32 3)
+        returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 3))

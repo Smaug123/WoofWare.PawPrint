@@ -765,8 +765,8 @@ public class GenericHolder<T>
         // Interop.BOOL.TRUE / FALSE — represented as Int32 1 / 0.
         let success =
             match returnValue with
-            | EvalStackValue.Int32 0 -> false
-            | EvalStackValue.Int32 1 -> true
+            | EvalStackValue.Int32 (Int32Source.Verbatim 0) -> false
+            | EvalStackValue.Int32 (Int32Source.Verbatim 1) -> true
             | other -> failwith $"Expected RuntimeTypeHandle_GetFields Interop.BOOL result, got %O{other}"
 
         let count = readInt32Pointer fixture.BaseClassTypes state countPtr
@@ -847,7 +847,8 @@ public class GenericHolder<T>
         let returnValue, _ =
             invokeRuntimeFieldHandleGetAttributes fixture fieldHandleInternal state
 
-        returnValue |> shouldEqual (EvalStackValue.Int32 (int fixture.Field.Attributes))
+        returnValue
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim (int fixture.Field.Attributes)))
 
     [<Test>]
     let ``RuntimeTypeHandle GetFields writes field handle ids into caller buffer`` () : unit =
@@ -972,7 +973,7 @@ public class GenericHolder<T>
             invokeRuntimeFieldHandleGetAttributes fixture otherFieldHandleInternal state
 
         returnValue
-        |> shouldEqual (EvalStackValue.Int32 (int fixture.OtherField.Attributes))
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim (int fixture.OtherField.Attributes)))
 
     [<Test>]
     let ``RuntimeTypeHandle GetFields returns fields declared on requested type`` () : unit =

@@ -277,7 +277,7 @@ module DebuggerServer =
 
     let private tryExitCode (state : IlMachineState) (thread : ThreadId) : int option =
         match state.ThreadState.[thread].MethodState.EvaluationStack.Values with
-        | EvalStackValue.Int32 i :: _ -> Some i
+        | EvalStackValue.Int32 (Int32Source.Verbatim i) :: _ -> Some i
         | _ -> None
 
     let private writeRunOutcome (writer : Utf8JsonWriter) (outcome : RunOutcome) : unit =

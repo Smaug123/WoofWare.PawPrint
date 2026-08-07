@@ -875,7 +875,7 @@ public unsafe struct PointerWrapper
         |> shouldEqual (IlOp.NumberOfBytes op)
 
         match IlMachineState.peekEvalStack thread state with
-        | Some (EvalStackValue.Int32 flags) -> flags
+        | Some (EvalStackValue.Int32 (Int32Source.Verbatim flags)) -> flags
         | other -> failwith $"Expected MethodTable::Flags on stack, got %O{other}"
 
     let private syntheticCrossStorageNativeIntSource () : NativeIntSource =
@@ -1056,7 +1056,9 @@ public unsafe struct PointerWrapper
         whatWeDid |> shouldEqual WhatWeDid.Executed
 
         IlMachineState.peekEvalStack thread state
-        |> shouldEqual (Some (EvalStackValue.Int32 (hasComponentSizeFlag ||| categoryArray ||| 4)))
+        |> shouldEqual (
+            Some (EvalStackValue.Int32 (Int32Source.Verbatim (hasComponentSizeFlag ||| categoryArray ||| 4)))
+        )
 
         state.ThreadState.[thread].MethodState.IlOpIndex
         |> shouldEqual (IlOp.NumberOfBytes op)
@@ -1471,7 +1473,7 @@ public unsafe struct PointerWrapper
         whatWeDid |> shouldEqual WhatWeDid.Executed
 
         IlMachineState.peekEvalStack thread state
-        |> shouldEqual (Some (EvalStackValue.Int32 0))
+        |> shouldEqual (Some (EvalStackValue.Int32 (Int32Source.Verbatim 0)))
 
         state.ThreadState.[thread].MethodState.IlOpIndex
         |> shouldEqual (IlOp.NumberOfBytes op)
@@ -1496,7 +1498,7 @@ public unsafe struct PointerWrapper
         whatWeDid |> shouldEqual WhatWeDid.Executed
 
         IlMachineState.peekEvalStack thread state
-        |> shouldEqual (Some (EvalStackValue.Int32 3))
+        |> shouldEqual (Some (EvalStackValue.Int32 (Int32Source.Verbatim 3)))
 
         state.ThreadState.[thread].MethodState.IlOpIndex
         |> shouldEqual (IlOp.NumberOfBytes op)
@@ -2574,7 +2576,7 @@ public unsafe struct PointerWrapper
         let state =
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) thread
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0xAA) thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0xAA)) thread
 
         let state =
             match NullaryIlOp.execute loggerFactory bct state thread NullaryIlOp.Stind_I1 with
@@ -2607,7 +2609,7 @@ public unsafe struct PointerWrapper
         let state =
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) thread
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0xAA) thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0xAA)) thread
 
         let state =
             match NullaryIlOp.execute loggerFactory bct state thread NullaryIlOp.Stind_I1 with
@@ -3302,7 +3304,7 @@ public unsafe struct PointerWrapper
         let state =
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer projectedPtr) thread
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0xFF) thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0xFF)) thread
 
         Assert.Throws<System.Exception> (fun () ->
             NullaryIlOp.execute loggerFactory bct state thread NullaryIlOp.Stind_I1

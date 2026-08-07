@@ -201,7 +201,7 @@ module TestSwitchIlOp =
                     Map.empty
                     |> Map.add thread (ThreadState.New (CpuId 0) (OsThreadId 1u) methodState)
             }
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 index) thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim index)) thread
 
         state, thread
 

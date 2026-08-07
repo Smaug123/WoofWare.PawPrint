@@ -418,14 +418,14 @@ module TestBinaryArithmetic =
     let ``add advances plain array byrefs by element offset`` () : unit =
         let state, arr = stateWithIntArray [ 10 ; 20 ; 30 ; 40 ]
 
-        execute ArithmeticOperation.add state (arrayPointer arr 1) (EvalStackValue.Int32 2)
+        execute ArithmeticOperation.add state (arrayPointer arr 1) (EvalStackValue.Int32 (Int32Source.Verbatim 2))
         |> expectArrayPointer arr 3
 
     [<Test>]
     let ``add supports integer offset on the left of an array byref`` () : unit =
         let state, arr = stateWithIntArray [ 10 ; 20 ; 30 ; 40 ]
 
-        execute ArithmeticOperation.add state (EvalStackValue.Int32 2) (arrayPointer arr 1)
+        execute ArithmeticOperation.add state (EvalStackValue.Int32 (Int32Source.Verbatim 2)) (arrayPointer arr 1)
         |> expectArrayPointer arr 3
 
     [<Test>]
@@ -443,17 +443,17 @@ module TestBinaryArithmetic =
     let ``array byref arithmetic permits one-past and negative offsets`` () : unit =
         let state, arr = stateWithIntArray [ 10 ; 20 ; 30 ]
 
-        execute ArithmeticOperation.add state (arrayPointer arr 2) (EvalStackValue.Int32 1)
+        execute ArithmeticOperation.add state (arrayPointer arr 2) (EvalStackValue.Int32 (Int32Source.Verbatim 1))
         |> expectArrayPointer arr 3
 
-        execute ArithmeticOperation.add state (arrayPointer arr 1) (EvalStackValue.Int32 -1)
+        execute ArithmeticOperation.add state (arrayPointer arr 1) (EvalStackValue.Int32 (Int32Source.Verbatim -1))
         |> expectArrayPointer arr 0
 
     [<Test>]
     let ``subtracting an integer from an array byref moves backwards`` () : unit =
         let state, arr = stateWithIntArray [ 10 ; 20 ; 30 ; 40 ]
 
-        execute ArithmeticOperation.sub state (arrayPointer arr 3) (EvalStackValue.Int32 2)
+        execute ArithmeticOperation.sub state (arrayPointer arr 3) (EvalStackValue.Int32 (Int32Source.Verbatim 2))
         |> expectArrayPointer arr 1
 
     /// Weighted towards the range boundaries, so `sub.ovf`'s trapping regime is
@@ -521,7 +521,12 @@ module TestBinaryArithmetic =
             let inRange =
                 exact >= bigint System.Int32.MinValue && exact <= bigint System.Int32.MaxValue
 
-            match trySubOvf state (EvalStackValue.Int32 a) (EvalStackValue.Int32 b) with
+            match
+                trySubOvf
+                    state
+                    (EvalStackValue.Int32 (Int32Source.Verbatim a))
+                    (EvalStackValue.Int32 (Int32Source.Verbatim b))
+            with
             | Some actual ->
                 computed <- computed + 1
 
@@ -529,10 +534,17 @@ module TestBinaryArithmetic =
                     failwith
                         $"sub.ovf %d{a} - %d{b} returned %O{actual}, but the exact difference %O{exact} is outside int32"
 
-                actual |> shouldEqual (EvalStackValue.Int32 (int32 exact))
+                actual
+                |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim (int32 exact)))
                 // In range, the checked and unchecked forms must agree.
                 actual
-                |> shouldEqual (execute ArithmeticOperation.sub state (EvalStackValue.Int32 a) (EvalStackValue.Int32 b))
+                |> shouldEqual (
+                    execute
+                        ArithmeticOperation.sub
+                        state
+                        (EvalStackValue.Int32 (Int32Source.Verbatim a))
+                        (EvalStackValue.Int32 (Int32Source.Verbatim b))
+                )
             | None ->
                 trapped <- trapped + 1
 
@@ -628,7 +640,7 @@ module TestBinaryArithmetic =
         let mutable nonZeroResults = 0
 
         let property (offset : int32) : unit =
-            let v = EvalStackValue.Int32 offset
+            let v = EvalStackValue.Int32 (Int32Source.Verbatim offset)
 
             let expect (expectedBits : int64) (actual : EvalStackValue) : unit =
                 actual
@@ -661,10 +673,14 @@ module TestBinaryArithmetic =
         let state = state ()
         let expected = placeholderPointer 2147483648L
 
-        execute ArithmeticOperation.sub state nullPointer (EvalStackValue.Int32 System.Int32.MinValue)
+        execute
+            ArithmeticOperation.sub
+            state
+            nullPointer
+            (EvalStackValue.Int32 (Int32Source.Verbatim System.Int32.MinValue))
         |> shouldEqual expected
 
-        trySubOvf state nullPointer (EvalStackValue.Int32 System.Int32.MinValue)
+        trySubOvf state nullPointer (EvalStackValue.Int32 (Int32Source.Verbatim System.Int32.MinValue))
         |> shouldEqual (Some expected)
 
     [<Test>]
@@ -700,7 +716,11 @@ module TestBinaryArithmetic =
                     placeholderPointer bits, state ()
 
             let viaOpcode =
-                execute ArithmeticOperation.add viaOpcodeState start (EvalStackValue.Int32 offset)
+                execute
+                    ArithmeticOperation.add
+                    viaOpcodeState
+                    start
+                    (EvalStackValue.Int32 (Int32Source.Verbatim offset))
 
             // Byte elements, so "offset by n elements" is "offset by n bytes"
             // and the two paths are directly comparable.
@@ -931,7 +951,7 @@ module TestBinaryArithmetic =
 
         let property (bits : int64, offset : int32) : unit =
             let ptr = placeholderPointer bits
-            let v = EvalStackValue.Int32 offset
+            let v = EvalStackValue.Int32 (Int32Source.Verbatim offset)
 
             if check ArithmeticOperation.addOvf ArithmeticOperation.add (bigint bits + bigint offset) ptr v then
                 addTrapped <- addTrapped + 1
@@ -960,14 +980,21 @@ module TestBinaryArithmetic =
         let state = state ()
         let expected = placeholderPointer 2147483649L
 
-        execute ArithmeticOperation.sub state (placeholderPointer 1L) (EvalStackValue.Int32 System.Int32.MinValue)
+        execute
+            ArithmeticOperation.sub
+            state
+            (placeholderPointer 1L)
+            (EvalStackValue.Int32 (Int32Source.Verbatim System.Int32.MinValue))
         |> shouldEqual expected
 
-        trySubOvf state (placeholderPointer 1L) (EvalStackValue.Int32 System.Int32.MinValue)
+        trySubOvf state (placeholderPointer 1L) (EvalStackValue.Int32 (Int32Source.Verbatim System.Int32.MinValue))
         |> shouldEqual (Some expected)
 
         // Still out of range when it genuinely overflows native int.
-        trySubOvf state (placeholderPointer System.Int64.MaxValue) (EvalStackValue.Int32 System.Int32.MinValue)
+        trySubOvf
+            state
+            (placeholderPointer System.Int64.MaxValue)
+            (EvalStackValue.Int32 (Int32Source.Verbatim System.Int32.MinValue))
         |> shouldEqual None
 
     [<Test>]
@@ -987,8 +1014,8 @@ module TestBinaryArithmetic =
 
         let cases : (EvalStackValue * EvalStackValue) list =
             [
-                arrayPointer arr1 3, EvalStackValue.Int32 2
-                arrayPointer arr1 1, EvalStackValue.Int32 -1
+                arrayPointer arr1 3, EvalStackValue.Int32 (Int32Source.Verbatim 2)
+                arrayPointer arr1 1, EvalStackValue.Int32 (Int32Source.Verbatim -1)
                 arrayPointer arr1 2, EvalStackValue.NativeInt (NativeIntSource.Verbatim 1L)
                 arrayPointer arr1 3, arrayPointer arr1 1
                 arrayPointer arr1 1, arrayPointer arr1 3
@@ -999,7 +1026,7 @@ module TestBinaryArithmetic =
                 placeholder 64L, placeholder 24L
                 placeholder 64L, nullPtr
                 nullPtr, placeholder 24L
-                EvalStackValue.Int32 7, nullPtr
+                EvalStackValue.Int32 (Int32Source.Verbatim 7), nullPtr
             ]
 
         // Shapes our pointer model declines to subtract at all (here: an array
@@ -1074,7 +1101,7 @@ module TestBinaryArithmetic =
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->
-                execute ArithmeticOperation.add state synthetic (EvalStackValue.Int32 1)
+                execute ArithmeticOperation.add state synthetic (EvalStackValue.Int32 (Int32Source.Verbatim 1))
                 |> ignore
             )
 
@@ -1154,10 +1181,10 @@ module TestBinaryArithmetic =
     let ``add advances native-memory byrefs by byte offset`` () : unit =
         let state = state ()
 
-        execute ArithmeticOperation.add state (nativeMemoryPointer 0 4) (EvalStackValue.Int32 6)
+        execute ArithmeticOperation.add state (nativeMemoryPointer 0 4) (EvalStackValue.Int32 (Int32Source.Verbatim 6))
         |> expectNativeMemoryPointer 0 10
 
-        execute ArithmeticOperation.add state (EvalStackValue.Int32 6) (nativeMemoryPointer 0 4)
+        execute ArithmeticOperation.add state (EvalStackValue.Int32 (Int32Source.Verbatim 6)) (nativeMemoryPointer 0 4)
         |> expectNativeMemoryPointer 0 10
 
     [<Test>]
@@ -1251,7 +1278,11 @@ module TestBinaryArithmetic =
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->
-                execute ArithmeticOperation.add state (arrayPointer arr System.Int32.MaxValue) (EvalStackValue.Int32 1)
+                execute
+                    ArithmeticOperation.add
+                    state
+                    (arrayPointer arr System.Int32.MaxValue)
+                    (EvalStackValue.Int32 (Int32Source.Verbatim 1))
                 |> ignore
             )
 
@@ -1275,19 +1306,31 @@ module TestBinaryArithmetic =
             let ptr = arrayPointer arr case.Index
 
             let afterFirst =
-                execute ArithmeticOperation.add state ptr (EvalStackValue.Int32 case.FirstStep)
+                execute ArithmeticOperation.add state ptr (EvalStackValue.Int32 (Int32Source.Verbatim case.FirstStep))
 
             afterFirst |> expectArrayPointer arr (case.Index + case.FirstStep)
 
             let afterBoth =
-                execute ArithmeticOperation.add state afterFirst (EvalStackValue.Int32 case.SecondStep)
+                execute
+                    ArithmeticOperation.add
+                    state
+                    afterFirst
+                    (EvalStackValue.Int32 (Int32Source.Verbatim case.SecondStep))
 
             let direct =
-                execute ArithmeticOperation.add state ptr (EvalStackValue.Int32 (case.FirstStep + case.SecondStep))
+                execute
+                    ArithmeticOperation.add
+                    state
+                    ptr
+                    (EvalStackValue.Int32 (Int32Source.Verbatim (case.FirstStep + case.SecondStep)))
 
             afterBoth |> shouldEqual direct
 
-            execute ArithmeticOperation.sub state afterFirst (EvalStackValue.Int32 case.FirstStep)
+            execute
+                ArithmeticOperation.sub
+                state
+                afterFirst
+                (EvalStackValue.Int32 (Int32Source.Verbatim case.FirstStep))
             |> shouldEqual ptr
 
             execute ArithmeticOperation.sub state afterFirst ptr
@@ -1603,7 +1646,7 @@ module TestBinaryArithmetic =
                     | other -> failwith $"unexpected: %O{other}"
 
                 let viaNativeInt =
-                    execute ArithmeticOperation.add state ptr (EvalStackValue.Int32 capacity)
+                    execute ArithmeticOperation.add state ptr (EvalStackValue.Int32 (Int32Source.Verbatim capacity))
 
                 EvalStackValueComparisons.ceq viaInt64 viaNativeInt
 

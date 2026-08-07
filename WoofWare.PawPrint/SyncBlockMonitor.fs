@@ -337,7 +337,7 @@ module SyncBlockMonitor =
         // Monitor_Wait handler to `Int32 0` (timed out). Pop-then-push
         // keeps the stack depth invariant across the wake.
         let _, state = IlMachineState.popEvalStack thread state
-        IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) thread state
+        IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) thread state
 
     /// Fire the finite-timeout wake for `thread` parked on `addr`'s
     /// `AcquireQueue` from a timed `Monitor.TryEnter(obj, ms)` slowpath
@@ -385,7 +385,7 @@ module SyncBlockMonitor =
         // TryEnter_Slowpath handler to `Int32 0` (timed out). Pop-then-push
         // keeps the stack depth invariant across the wake.
         let _, state = IlMachineState.popEvalStack thread state
-        IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) thread state
+        IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) thread state
 
     /// SplitMix64-style hash, deriving a per-(tick, addr, thread) coin flip
     /// in `[0.0, 1.0)`. Replayability comes from the function being a pure

@@ -125,7 +125,7 @@ module TestPureCases =
                         | [] -> failwith "expected program to return a value, but it returned void"
                         | head :: _ ->
                             match head with
-                            | EvalStackValue.Int32 i -> i
+                            | EvalStackValue.Int32 (Int32Source.Verbatim i) -> i
                             | ret -> failwith $"expected program to return an int, but it returned %O{ret}"
 
                     pawPrintExitCode |> shouldEqual exitCode
@@ -141,7 +141,7 @@ module TestPureCases =
                     let pawPrintExitCode =
                         match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
                         | [] -> None
-                        | EvalStackValue.Int32 i :: _ -> Some i
+                        | EvalStackValue.Int32 (Int32Source.Verbatim i) :: _ -> Some i
                         | _ -> None
 
                     failwith
@@ -225,7 +225,7 @@ class Program
                 match pawPrintResult with
                 | RunOutcome.NormalExit (terminalState, terminatingThread) ->
                     match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-                    | EvalStackValue.Int32 exitCode :: _ -> exitCode |> shouldEqual 0
+                    | EvalStackValue.Int32 (Int32Source.Verbatim exitCode) :: _ -> exitCode |> shouldEqual 0
                     | [] -> failwith "expected program to return an int, but it returned void"
                     | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
                 | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
@@ -290,7 +290,7 @@ class Program
                 match pawPrintResult with
                 | RunOutcome.NormalExit (terminalState, terminatingThread) ->
                     match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-                    | EvalStackValue.Int32 exitCode :: _ -> exitCode |> shouldEqual 0
+                    | EvalStackValue.Int32 (Int32Source.Verbatim exitCode) :: _ -> exitCode |> shouldEqual 0
                     | [] -> failwith "expected program to return an int, but it returned void"
                     | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
                 | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
@@ -349,7 +349,7 @@ class Program
                 match pawPrintResult with
                 | RunOutcome.NormalExit (terminalState, terminatingThread) ->
                     match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-                    | EvalStackValue.Int32 exitCode :: _ -> exitCode |> shouldEqual 0
+                    | EvalStackValue.Int32 (Int32Source.Verbatim exitCode) :: _ -> exitCode |> shouldEqual 0
                     | [] -> failwith "expected program to return an int, but it returned void"
                     | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
                 | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
@@ -395,7 +395,7 @@ class Program
                 match pawPrintResult with
                 | RunOutcome.NormalExit (terminalState, terminatingThread) ->
                     match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-                    | EvalStackValue.Int32 exitCode :: _ -> exitCode |> shouldEqual 0
+                    | EvalStackValue.Int32 (Int32Source.Verbatim exitCode) :: _ -> exitCode |> shouldEqual 0
                     | [] -> failwith "expected program to return an int, but it returned void"
                     | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
                 | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"

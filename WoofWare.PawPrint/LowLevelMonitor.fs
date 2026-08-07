@@ -472,7 +472,7 @@ module LowLevelMonitor =
         // TimedWait handler to `Int32 0` (timed out). Pop-then-push keeps
         // the stack depth invariant across the wake.
         let _, state = IlMachineState.popEvalStack thread state
-        IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) thread state
+        IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) thread state
 
     /// SplitMix64-style hash, used to derive a deterministic per-waiter
     /// coin flip in `[0.0, 1.0)` from `(seed, tick, monitorId, threadId)`.

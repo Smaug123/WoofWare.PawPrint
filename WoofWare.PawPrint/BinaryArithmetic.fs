@@ -940,13 +940,17 @@ module BinaryArithmetic =
 
         // see table at https://learn.microsoft.com/en-us/dotnet/api/system.reflection.emit.opcodes.add?view=net-9.0
         match val1, val2 with
-        | EvalStackValue.Int32 val1, EvalStackValue.Int32 val2 ->
-            op.Int32Int32 val1 val2 |> EvalStackValue.Int32 |> withState
-        | EvalStackValue.Int32 val1, EvalStackValue.NativeInt (NativeIntSource.ManagedPointer val2) ->
+        | EvalStackValue.Int32 (Int32Source.Verbatim val1), EvalStackValue.Int32 (Int32Source.Verbatim val2) ->
+            op.Int32Int32 val1 val2
+            |> Int32Source.Verbatim
+            |> EvalStackValue.Int32
+            |> withState
+        | EvalStackValue.Int32 (Int32Source.Verbatim val1),
+          EvalStackValue.NativeInt (NativeIntSource.ManagedPointer val2) ->
             op.Int64ManagedPtr baseClassTypes state (int64<int32> val1) val2
             |> managedPtrChoiceAsNativeInt
             |> withState
-        | EvalStackValue.Int32 val1, EvalStackValue.NativeInt val2 ->
+        | EvalStackValue.Int32 (Int32Source.Verbatim val1), EvalStackValue.NativeInt val2 ->
             let val2 =
                 match val2 with
                 | NativeIntSource.Verbatim n -> nativeint<int64> n
@@ -957,7 +961,7 @@ module BinaryArithmetic =
             |> NativeIntSource.Verbatim
             |> EvalStackValue.NativeInt
             |> withState
-        | EvalStackValue.Int32 val1, EvalStackValue.ManagedPointer val2 ->
+        | EvalStackValue.Int32 (Int32Source.Verbatim val1), EvalStackValue.ManagedPointer val2 ->
             match op.Int64ManagedPtr baseClassTypes state (int64<int32> val1) val2 with
             | Choice1Of2 v -> EvalStackValue.ManagedPointer v |> withState
             | Choice2Of2 i ->
@@ -968,8 +972,8 @@ module BinaryArithmetic =
                     failwith
                         $"managed pointer arithmetic (%s{op.Name}): int32 operand yielded out-of-range numeric result %d{i}"
 
-                EvalStackValue.Int32 (int32<int64> i) |> withState
-        | EvalStackValue.Int32 val1, EvalStackValue.ObjectRef val2 ->
+                EvalStackValue.Int32 (Int32Source.Verbatim (int32<int64> i)) |> withState
+        | EvalStackValue.Int32 (Int32Source.Verbatim val1), EvalStackValue.ObjectRef val2 ->
             failwith "" |> EvalStackValue.ObjectRef |> withState
         | EvalStackValue.Int32 _, EvalStackValue.NullObjectRef -> failwith ""
         | EvalStackValue.Int64 (Int64Source.Verbatim val1), EvalStackValue.Int64 (Int64Source.Verbatim val2) ->
@@ -1082,11 +1086,12 @@ module BinaryArithmetic =
                     }
 
                 op.Int64Int64 val1 val2 |> Int64Source.OpaqueHashBits |> EvalStackValue.Int64, state
-        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer val1), EvalStackValue.Int32 val2 ->
+        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer val1),
+          EvalStackValue.Int32 (Int32Source.Verbatim val2) ->
             op.ManagedPtrInt64 baseClassTypes state val1 (int64<int32> val2)
             |> managedPtrChoiceAsNativeInt
             |> withState
-        | EvalStackValue.NativeInt val1, EvalStackValue.Int32 val2 ->
+        | EvalStackValue.NativeInt val1, EvalStackValue.Int32 (Int32Source.Verbatim val2) ->
             let val1 =
                 match val1 with
                 | NativeIntSource.Verbatim n -> nativeint<int64> n
@@ -1161,11 +1166,11 @@ module BinaryArithmetic =
         | EvalStackValue.ObjectRef val1, EvalStackValue.NativeInt val2 ->
             failwith "" |> EvalStackValue.ObjectRef |> withState
         | EvalStackValue.NullObjectRef, EvalStackValue.NativeInt _ -> failwith ""
-        | EvalStackValue.ManagedPointer val1, EvalStackValue.Int32 val2 ->
+        | EvalStackValue.ManagedPointer val1, EvalStackValue.Int32 (Int32Source.Verbatim val2) ->
             match op.ManagedPtrInt64 baseClassTypes state val1 (int64<int32> val2) with
             | Choice1Of2 result -> EvalStackValue.ManagedPointer result |> withState
             | Choice2Of2 result -> EvalStackValue.NativeInt (NativeIntSource.Verbatim result) |> withState
-        | EvalStackValue.ObjectRef val1, EvalStackValue.Int32 val2 ->
+        | EvalStackValue.ObjectRef val1, EvalStackValue.Int32 (Int32Source.Verbatim val2) ->
             failwith "" |> EvalStackValue.ObjectRef |> withState
         | EvalStackValue.NullObjectRef, EvalStackValue.Int32 _ -> failwith ""
         | EvalStackValue.ManagedPointer val1, EvalStackValue.ManagedPointer val2 ->

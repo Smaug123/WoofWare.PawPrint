@@ -940,7 +940,9 @@ module TestLowLevelMonitor =
         =
         let state = LowLevelMonitor.acquire thread id state |> acquired
 
-        let state = state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) thread
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 1)) thread
 
         LowLevelMonitor.wait thread id (Some deadlineMs) state
 
@@ -957,7 +959,9 @@ module TestLowLevelMonitor =
 
         (monitorOf id state).Owner |> shouldEqual None
         (monitorOf id state).WaitQueue |> shouldEqual [ t0 ]
-        topOfStack t0 state |> shouldEqual (EvalStackValue.Int32 1)
+
+        topOfStack t0 state
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 1))
 
         let state = LowLevelMonitor.fireTimeout t0 id state
 
@@ -967,7 +971,8 @@ module TestLowLevelMonitor =
         m.WaitQueue |> shouldEqual []
         statusOf t0 state |> shouldEqual ThreadStatus.Runnable
         // TimedWait returns 0 = timed out.
-        topOfStack t0 state |> shouldEqual (EvalStackValue.Int32 0)
+        topOfStack t0 state
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
 
     [<Test>]
     let ``fireTimeout on held monitor parks at AcquireQueue tail and rewrites Int32 1 to Int32 0`` () : unit =
@@ -989,7 +994,8 @@ module TestLowLevelMonitor =
         // The rewrite happens regardless of which reacquire path is taken;
         // by the time t0 is selected by the scheduler past TimedWait's
         // call site it will observe `0` on top of stack.
-        topOfStack t0 state |> shouldEqual (EvalStackValue.Int32 0)
+        topOfStack t0 state
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
 
     [<Test>]
     let ``fireTimeout fails loud when the thread is not in WaitQueue`` () : unit =
@@ -1016,7 +1022,11 @@ module TestLowLevelMonitor =
         let id, state = LowLevelMonitor.create state
         let state = LowLevelMonitor.acquire t0 id state |> acquired
         let state = LowLevelMonitor.acquire t1 id state |> blocked
-        let state = state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) t2
+
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 1)) t2
+
         let state = LowLevelMonitor.acquire t2 id state |> blocked
         // Move t2 from AcquireQueue into WaitQueue via a wait-with-deadline:
         // it must currently own the monitor to call wait, so first hand
@@ -1048,7 +1058,9 @@ module TestLowLevelMonitor =
         m.AcquireQueue |> shouldEqual [ t1 ; t2 ]
         m.WaitQueue |> shouldEqual []
         statusOf t2 state |> shouldEqual (ThreadStatus.BlockedOnMonitorAcquire id)
-        topOfStack t2 state |> shouldEqual (EvalStackValue.Int32 0)
+
+        topOfStack t2 state
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
 
     [<Test>]
     let ``fireTimeout in WaitQueue head-first order preserves FIFO across same-tick expiries`` () : unit =
@@ -1079,8 +1091,12 @@ module TestLowLevelMonitor =
         m.WaitQueue |> shouldEqual []
         statusOf t2 state |> shouldEqual ThreadStatus.Runnable
         statusOf t1 state |> shouldEqual (ThreadStatus.BlockedOnMonitorAcquire id)
-        topOfStack t2 state |> shouldEqual (EvalStackValue.Int32 0)
-        topOfStack t1 state |> shouldEqual (EvalStackValue.Int32 0)
+
+        topOfStack t2 state
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+
+        topOfStack t1 state
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
 
     [<Test>]
     let ``fireTimeout in ThreadId order (not WaitQueue order) reverses FIFO — guards against scheduler bug`` () : unit =
@@ -1120,9 +1136,14 @@ module TestLowLevelMonitor =
         let id, state = LowLevelMonitor.create state
         let state = state |> parkInTimedWait t0 id 100L
         // t1 is Runnable with a sentinel value on its stack.
-        let state = state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 42) t1
+        let state =
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 42)) t1
 
         let state = LowLevelMonitor.fireTimeout t0 id state
 
-        topOfStack t0 state |> shouldEqual (EvalStackValue.Int32 0)
-        topOfStack t1 state |> shouldEqual (EvalStackValue.Int32 42)
+        topOfStack t0 state
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+
+        topOfStack t1 state
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 42))

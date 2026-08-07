@@ -442,3 +442,298 @@ module TestDeterministicMath =
             BitConverter.DoubleToUInt64Bits first = BitConverter.DoubleToUInt64Bits second
 
         Check.One (propertyConfig, Prop.forAll (Arb.fromGen (Gen.zip genFiniteDouble genFiniteDouble)) property)
+
+    [<Test>]
+    let ``pi agrees with its published decimal expansion`` () : unit =
+        // `DeterministicMath` computes pi from Machin's formula rather than transcribing it,
+        // so this is the one place the result is checked against an outside source. Sixty
+        // digits is far more than the double-precision answers need and is enough to catch
+        // any wrong arctangent coefficient, which would show up within the first few.
+        let digits =
+            (DeterministicMath.pi * BigInteger.Pow (BigInteger 10, 60))
+            >>> DeterministicMath.piBits
+
+        digits
+        |> shouldEqual (BigInteger.Parse "3141592653589793238462643383279502884197169399375105820974944")
+
+    /// Number of fractional bits the reference implementation below carries. Enough that
+    /// even the most cancellation-prone double leaves it several hundred significant bits:
+    /// an argument as large as 2^1024 consumes 1024 of these in the range reduction.
+    let private referenceBits : int = 1400
+
+    let private referenceScale : BigInteger = BigInteger.One <<< referenceBits
+
+    let private referenceMultiply (a : BigInteger) (b : BigInteger) : BigInteger = a * b / referenceScale
+
+    /// `atan(1/n)` at `referenceBits`, by its alternating series.
+    let private referenceAtanReciprocal (n : int) : BigInteger =
+        let nSquared = BigInteger (n * n)
+        let mutable term = referenceScale / BigInteger n
+        let mutable acc = BigInteger.Zero
+        let mutable k = 0
+
+        while not term.IsZero do
+            let contribution = term / BigInteger ((2 * k) + 1)
+            acc <- (if k % 2 = 0 then acc + contribution else acc - contribution)
+            term <- term / nSquared
+            k <- k + 1
+
+        acc
+
+    /// pi by *Euler's* formula, `pi/4 = atan(1/2) + atan(1/3)` — deliberately not the Machin
+    /// formula the implementation uses, so that the two are independent evidence rather than
+    /// the same arithmetic run twice.
+    let private referencePi : BigInteger =
+        BigInteger 4 * (referenceAtanReciprocal 2 + referenceAtanReciprocal 3)
+
+    let private referenceTwoPi : BigInteger = referencePi <<< 1
+
+    let private referenceOneOverTwoPi : BigInteger =
+        (BigInteger.One <<< (2 * referenceBits)) / referenceTwoPi
+
+    /// An independent cosine: reduce modulo 2 pi and evaluate the cosine series directly on
+    /// the result. The implementation instead reduces modulo pi/2 and picks one of four
+    /// quadrant formulae, so this reference shares neither the constant, nor the modulus,
+    /// nor the quadrant table with what it is checking — a sign error in any of those shows
+    /// up here as a gross disagreement rather than a last-bit one.
+    let private referenceCos (x : float) : float =
+        let mantissa, exponent = DeterministicMath.decompose (abs x)
+
+        let scaled = mantissa * referenceOneOverTwoPi
+
+        let turns =
+            if exponent >= 0 then
+                scaled <<< exponent
+            else
+                scaled >>> -exponent
+
+        let k = (turns + (BigInteger.One <<< (referenceBits - 1))) >>> referenceBits
+        let reduced = (mantissa <<< (exponent + referenceBits)) - (k * referenceTwoPi)
+
+        // The cosine series converges on the whole of [-pi, pi], which is what reducing
+        // modulo a full turn leaves; its intermediate terms peak around e^pi, so it loses
+        // about five bits to cancellation and keeps the rest.
+        let reducedSquared = referenceMultiply reduced reduced
+        let mutable term = referenceScale
+        let mutable acc = BigInteger.Zero
+        let mutable j = 0
+
+        while not term.IsZero do
+            acc <- acc + term
+            term <- -(referenceMultiply term reducedSquared) / BigInteger ((j + 1) * (j + 2))
+            j <- j + 2
+
+        DeterministicMath.roundToDouble acc -referenceBits
+
+    [<Test>]
+    let ``the two independently computed pis agree`` () : unit =
+        // Machin's formula against Euler's. They are computed to different precisions, so
+        // compare the top 1300 bits, which is well inside both.
+        let machin = DeterministicMath.pi <<< (referenceBits - DeterministicMath.piBits)
+
+        BigInteger.Abs (machin - referencePi) >>> (referenceBits - 1300)
+        |> shouldEqual BigInteger.Zero
+
+    [<Test>]
+    let ``cos matches an independently computed reference`` () : unit =
+        // The real specification of `cos`: bit-for-bit equality with a reference accurate to
+        // several hundred bits. Both are correctly rounded far beyond a double's 53 bits, so
+        // they can only differ if the true value lies within ~2^-190 of a midpoint, which no
+        // draw is expected to hit.
+        let property (x : float) : bool =
+            let actual = BitConverter.DoubleToUInt64Bits (DeterministicMath.cos x)
+            actual = BitConverter.DoubleToUInt64Bits (referenceCos x)
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genFiniteDouble) property)
+
+    [<Test>]
+    let ``cos agrees with the host libm to within one ulp`` () : unit =
+        // As with `pow`: a coarse sanity check rather than a specification, since the host's
+        // `cos` is not correctly rounded and PawPrint deliberately does not inherit it. On a
+        // sample of 1500 random doubles the two differed on 29, always by exactly one ulp,
+        // and on every one of those the exact value (computed to 1400 bits) was nearer to
+        // PawPrint's answer — 0.4996 ulp at worst, against 0.5004 to 0.6206 for the host.
+        let property (x : float) : bool =
+            ulpDistance (DeterministicMath.cos x) (Math.Cos x) <= 1.0
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genFiniteDouble) property)
+
+    [<Test>]
+    let ``cos is even`` () : unit =
+        // Not merely a property of the real cosine that a good approximation inherits: IEEE
+        // 754-2019 clause 9.2 requires it of the operation, for every rounding attribute and
+        // over the whole domain. So this must hold exactly rather than to within a rounding —
+        // which it does, because the reduction takes |x|.
+        let property (x : float) : bool =
+            let atX = BitConverter.DoubleToUInt64Bits (DeterministicMath.cos x)
+            atX = BitConverter.DoubleToUInt64Bits (DeterministicMath.cos -x)
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genFiniteDouble) property)
+
+    [<Test>]
+    let ``cos stays within the unit interval`` () : unit =
+        let property (x : float) : bool =
+            let result = DeterministicMath.cos x
+            result >= -1.0 && result <= 1.0
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genFiniteDouble) property)
+
+    [<Test>]
+    let ``cos is a pure function of its argument`` () : unit =
+        let property (x : float) : bool =
+            let first = BitConverter.DoubleToUInt64Bits (DeterministicMath.cos x)
+            first = BitConverter.DoubleToUInt64Bits (DeterministicMath.cos x)
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genFiniteDouble) property)
+
+    [<Test>]
+    let ``the quarter-turn reduction reconstructs its argument`` () : unit =
+        // `|x| = k pi/2 + r` is the whole content of the reduction, so assert exactly that,
+        // in `BigInteger` arithmetic at the reduction's own precision. `k` is only known
+        // modulo 4 from the outside, but that is enough to pin the residue: recomputing k
+        // from `(|x| - r) / (pi/2)` and checking its bottom two bits catches a reduction
+        // that lands on the wrong quadrant, which is the failure that would otherwise show
+        // up only as a sign or a swap of sine for cosine.
+        let property (x : float) : bool =
+            let quadrant, r = DeterministicMath.reduceModuloQuarterTurn x
+            let mantissa, exponent = DeterministicMath.decompose (abs x)
+            let xFixed = mantissa <<< (exponent + DeterministicMath.piBits)
+
+            // Scale `r` back up; it was truncated on the way down, so allow that back.
+            let rFull = r <<< (DeterministicMath.piBits - DeterministicMath.fractionBits)
+            let piOverTwo = DeterministicMath.pi >>> 1
+            let recoveredK = BigInteger.Divide (xFixed - rFull + (piOverTwo >>> 1), piOverTwo)
+
+            // |r| <= pi/4, plus the one place in the last of `fractionBits` that truncating
+            // it down to the working precision can add.
+            let bound =
+                (DeterministicMath.pi >>> 2)
+                + (BigInteger.One
+                   <<< (DeterministicMath.piBits - DeterministicMath.fractionBits + 1))
+
+            BigInteger.Abs rFull <= bound && int (recoveredK &&& BigInteger 3) = quadrant
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genFiniteDouble) property)
+
+    /// The number of significant bits a reduced argument retains: `r` is below 1, so its bit
+    /// length as a fixed-point value at `fractionBits` places is exactly that count.
+    let private reducedArgumentBits (x : float) : int =
+        let _, r = DeterministicMath.reduceModuloQuarterTurn x
+        int ((BigInteger.Abs r).GetBitLength ())
+
+    [<Test>]
+    let ``the reduction clears its precision floor by a wide margin`` () : unit =
+        // `cos` answers ±sin(r) in the odd quadrants, where the result is proportional to `r`
+        // itself, so the accuracy of the answer there is the accuracy of `r` — and `r` is a
+        // difference of two nearly equal quantities. `cos` asserts that at least 128
+        // significant bits survive; this measures how much room that assertion actually has.
+        //
+        // Kahan's witness for binary64 range reduction is the double nearest an odd multiple
+        // of pi/2 over the whole range. It survives with about 195 bits, so the assertion is
+        // roughly 67 bits away from firing on the worst input anyone has found.
+        let kahansWitness =
+            DeterministicMath.roundToDouble (BigInteger 6381956970095103L) 797
+
+        // Confirm it really is a hard case before drawing any conclusion from it passing.
+        let witnessBits = reducedArgumentBits kahansWitness
+        witnessBits |> shouldBeSmallerThan 200
+        witnessBits |> shouldBeGreaterThan 128
+
+        // And sweep the near-multiples of pi/2 that a program is actually likely to produce.
+        let sweptWorst =
+            seq { 1..20000 }
+            |> Seq.map (fun k -> float k * 1.5707963267948966)
+            |> Seq.filter (fun x ->
+                let quadrant, _ = DeterministicMath.reduceModuloQuarterTurn x
+                quadrant % 2 = 1
+            )
+            |> Seq.map reducedArgumentBits
+            |> Seq.min
+
+        sweptWorst |> shouldBeGreaterThan 128
+
+    /// The IEEE 754 / C99 `cos` special cases, as a table of (x, expected bits).
+    let private cosSpecialCases : (float * uint64) list =
+        let ofBits (bits : uint64) : float = BitConverter.UInt64BitsToDouble bits
+        let positiveNaN = 0x7FF8000000000000UL
+        let negativeNaN = 0xFFF8000000000000UL
+        let one = 0x3FF0000000000000UL
+
+        [
+            // cos(±0) is exactly 1, with no rounding involved.
+            0.0, one
+            -0.0, one
+            // So is cos(x) for any x small enough that 1 - x^2/2 rounds back to 1.
+            ofBits 0x3E10000000000000UL, one // 2^-30
+            // An infinite argument names no point on the circle: a domain error.
+            infinity, positiveNaN
+            -infinity, positiveNaN
+            // A NaN propagates with its sign and payload intact, as IEEE 754 clause 7.2
+            // recommends; `Double.NaN` is the *negative* quiet NaN.
+            nan, negativeNaN
+            ofBits 0x7FF8000000000123UL, 0x7FF8000000000123UL
+            ofBits 0xFFF8000000000123UL, 0xFFF8000000000123UL
+            // A *signalling* NaN comes back quieted, again keeping sign and payload.
+            ofBits 0x7FF0000000000123UL, 0x7FF8000000000123UL
+            ofBits 0xFFF0000000000123UL, 0xFFF8000000000123UL
+            ofBits 0x7FF0000000000001UL, 0x7FF8000000000001UL
+        ]
+
+    [<Test>]
+    let ``cos matches the IEEE 754 special cases`` () : unit =
+        cosSpecialCases
+        |> List.choose (fun (x, expected) ->
+            let actual = BitConverter.DoubleToUInt64Bits (DeterministicMath.cos x)
+
+            if actual = expected then
+                None
+            else
+                Some $"cos(%.17g{x}): expected bits %016x{expected}, got %016x{actual}"
+        )
+        |> reportFailures
+
+    /// The rows of `cosSpecialCases` on which the host is allowed to disagree, with the one
+    /// other answer it may give. Every row here is a NaN payload or sign, which IEEE 754
+    /// leaves to the implementation; the finite rows admit no alternative.
+    let private cosHostAlternatives : Map<uint64, uint64> =
+        let positiveNaN = 0x7FF8000000000000UL
+        let negativeNaN = 0xFFF8000000000000UL
+
+        [
+            // The payload of a *freshly generated* NaN is the hardware's: x86 produces the
+            // negative quiet NaN and Arm the positive one, and glibc reaches this case
+            // through an arithmetic operation on the infinity rather than by naming a bit
+            // pattern. macOS/Arm gives the positive one this table specifies.
+            BitConverter.DoubleToUInt64Bits infinity, negativeNaN
+            BitConverter.DoubleToUInt64Bits -infinity, negativeNaN
+            // macOS/Arm's `cos` clears the sign of a NaN argument rather than propagating it,
+            // where clause 7.2 recommends returning the input NaN quieted. Payload survives
+            // either way, so the alternative differs from the specified answer only in the
+            // sign bit.
+            0xFFF8000000000000UL, positiveNaN
+            0xFFF8000000000123UL, 0x7FF8000000000123UL
+            0xFFF0000000000123UL, 0x7FF8000000000123UL
+        ]
+        |> Map.ofList
+
+    [<Test>]
+    let ``the host agrees about the cos special cases`` () : unit =
+        cosSpecialCases
+        |> List.choose (fun (x, expected) ->
+            let host = BitConverter.DoubleToUInt64Bits (Math.Cos x)
+            let key = BitConverter.DoubleToUInt64Bits x
+
+            let permitted =
+                match Map.tryFind key cosHostAlternatives with
+                | None -> [ expected ]
+                | Some alternative -> [ expected ; alternative ]
+
+            if List.contains host permitted then
+                None
+            else
+
+            let permitted = permitted |> List.map (sprintf "%016x") |> String.concat " or "
+
+            Some $"host cos(%.17g{x}): expected bits {permitted}, got %016x{host}"
+        )
+        |> reportFailures

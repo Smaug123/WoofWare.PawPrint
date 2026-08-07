@@ -113,7 +113,7 @@ module NativeRuntimeHelpers =
                 identityHash "RuntimeHelpers.GetHashCode" (EvalStackValue.ofCliType instruction.Arguments.[0])
 
             let state =
-                IlMachineState.pushToEvalStack' (EvalStackValue.Int32 hash) ctx.Thread state
+                IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim hash)) ctx.Thread state
 
             NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib",
@@ -154,7 +154,7 @@ module NativeRuntimeHelpers =
                 identityHash "RuntimeHelpers.TryGetHashCode" (EvalStackValue.ofCliType instruction.Arguments.[0])
 
             let state =
-                IlMachineState.pushToEvalStack' (EvalStackValue.Int32 hash) ctx.Thread state
+                IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim hash)) ctx.Thread state
 
             NativeHandlerResult.completed state |> Some
         | _ -> None

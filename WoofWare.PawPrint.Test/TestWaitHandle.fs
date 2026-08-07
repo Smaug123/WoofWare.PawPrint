@@ -134,7 +134,7 @@ module TestWaitHandle =
         let value, _ = IlMachineState.popEvalStack thread state
 
         match value with
-        | EvalStackValue.Int32 result -> result
+        | EvalStackValue.Int32 (Int32Source.Verbatim result) -> result
         | other -> failwith $"expected an Int32 wait result on thread %O{thread}'s eval stack, got %O{other}"
 
     let private evalStackDepth (thread : ThreadId) (state : IlMachineState) : int =
@@ -2044,7 +2044,10 @@ module TestWaitHandle =
 
         // The interpreter's park-time push: optimistic, and wrong for index 1.
         let state =
-            IlMachineState.pushToEvalStack' (EvalStackValue.Int32 WaitHandle.waitObjectZero) t0 state
+            IlMachineState.pushToEvalStack'
+                (EvalStackValue.Int32 (Int32Source.Verbatim WaitHandle.waitObjectZero))
+                t0
+                state
 
         let depthAtPark = evalStackDepth t0 state
 
@@ -2066,7 +2069,10 @@ module TestWaitHandle =
         let state = WaitHandle.waitMultiple t0 [ a ; b ] true None state |> multiBlocked
 
         let state =
-            IlMachineState.pushToEvalStack' (EvalStackValue.Int32 WaitHandle.waitObjectZero) t0 state
+            IlMachineState.pushToEvalStack'
+                (EvalStackValue.Int32 (Int32Source.Verbatim WaitHandle.waitObjectZero))
+                t0
+                state
 
         // The first signal cannot satisfy the wait-all, so the waiter stays put
         // — and the event stays signalled with a non-empty queue, which is the
@@ -2099,7 +2105,10 @@ module TestWaitHandle =
         let state = WaitHandle.waitMultiple t0 [ a ; b ] true None state |> multiBlocked
 
         let state =
-            IlMachineState.pushToEvalStack' (EvalStackValue.Int32 WaitHandle.waitObjectZero) t0 state
+            IlMachineState.pushToEvalStack'
+                (EvalStackValue.Int32 (Int32Source.Verbatim WaitHandle.waitObjectZero))
+                t0
+                state
 
         let state = WaitHandle.waitOne t1 a None state |> blocked
         (semaphoreOf a state).WaitQueue |> shouldEqual [ t0 ; t1 ]
@@ -2130,7 +2139,10 @@ module TestWaitHandle =
         let state = WaitHandle.waitMultiple t0 [ a ; b ] true None state |> multiBlocked
 
         let state =
-            IlMachineState.pushToEvalStack' (EvalStackValue.Int32 WaitHandle.waitObjectZero) t0 state
+            IlMachineState.pushToEvalStack'
+                (EvalStackValue.Int32 (Int32Source.Verbatim WaitHandle.waitObjectZero))
+                t0
+                state
 
         // Nobody is woken: t0 is the only waiter and it is unsatisfiable, so
         // the unit stays in Count.
@@ -2157,7 +2169,10 @@ module TestWaitHandle =
         let state = WaitHandle.waitMultiple t0 [ a ; b ] true None state |> multiBlocked
 
         let state =
-            IlMachineState.pushToEvalStack' (EvalStackValue.Int32 WaitHandle.waitObjectZero) t0 state
+            IlMachineState.pushToEvalStack'
+                (EvalStackValue.Int32 (Int32Source.Verbatim WaitHandle.waitObjectZero))
+                t0
+                state
 
         let _, state = WaitHandle.releaseSemaphore a 1 state
 
@@ -2183,7 +2198,10 @@ module TestWaitHandle =
             WaitHandle.waitMultiple t0 [ a ; b ] false (Some 100L) state |> multiBlocked
 
         let state =
-            IlMachineState.pushToEvalStack' (EvalStackValue.Int32 WaitHandle.waitObjectZero) t0 state
+            IlMachineState.pushToEvalStack'
+                (EvalStackValue.Int32 (Int32Source.Verbatim WaitHandle.waitObjectZero))
+                t0
+                state
 
         let depthAtPark = evalStackDepth t0 state
         let state = WaitHandle.fireMultipleTimeout t0 state
@@ -2261,7 +2279,10 @@ module TestWaitHandle =
                 | _ -> false
 
             let parkPush (tid : ThreadId) (state : IlMachineState) : IlMachineState =
-                IlMachineState.pushToEvalStack' (EvalStackValue.Int32 WaitHandle.waitObjectZero) tid state
+                IlMachineState.pushToEvalStack'
+                    (EvalStackValue.Int32 (Int32Source.Verbatim WaitHandle.waitObjectZero))
+                    tid
+                    state
 
             let step (state : IlMachineState) (op : MultiOp) : IlMachineState =
                 // Only a Runnable thread can issue a wait; a parked one is not

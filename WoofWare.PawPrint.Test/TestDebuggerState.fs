@@ -24,7 +24,7 @@ module TestDebuggerState =
                 failwith $"PawPrint threw an unexpected guest exception: %O{exn.ExceptionObject}"
 
         match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-        | EvalStackValue.Int32 exitCode :: _ -> exitCode
+        | EvalStackValue.Int32 (Int32Source.Verbatim exitCode) :: _ -> exitCode
         | [] -> failwith "expected program to return an int, but it returned void"
         | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
 
