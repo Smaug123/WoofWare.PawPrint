@@ -33,8 +33,8 @@ let runGuest (dllPath : string) : int * ImmutableArray<OutputLogEntry> =
         DotnetRuntime.SelectForDll dllPath |> ImmutableArray.CreateRange
 
     // Everything the host supplies to configure the run. `HostConfig.Default` gives
-    // you the default kernel state, the round-robin scheduler, and no guest argv;
-    // override only what you care about.
+    // you the default kernel state, the round-robin scheduler, no guest argv, and no
+    // AppContext properties; override only what you care about.
     let hostConfig =
         { HostConfig.Default dotnetRuntimes with
             Kernel =
@@ -52,6 +52,16 @@ let runGuest (dllPath : string) : int * ImmutableArray<OutputLogEntry> =
             PctSeed = None
             // argv passed to the emulated program
             Argv = []
+            // Properties to seed `System.AppContext` with before any guest code runs,
+            // exactly as a real host does from `runtimeOptions.configProperties` in the
+            // app's `runtimeconfig.json`. This is how you set BCL feature switches, e.g.
+            // `"System.Diagnostics.Tracing.EventSource.IsSupported", "false"`.
+            //
+            // To take them from the guest's own runtimeconfig.json, as the CLI does:
+            //     RuntimeConfig.parse (File.ReadAllText (RuntimeConfig.pathForAssembly dllPath))
+            // `RuntimeConfig.parse` is pure — reading the file is the host's job, so that a
+            // replay never depends on the machine that produced it.
+            AppContext = AppContextProperties.empty
         }
 
     let terminalState, terminatingThread =

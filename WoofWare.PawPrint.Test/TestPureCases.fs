@@ -103,6 +103,15 @@ module TestPureCases =
             reraise ()
 
     let runTest (case : EndToEndTestCase) : unit =
+        if not (AppContextProperties.isEmpty case.AppContext) then
+            // The oracle below loads the guest in-process on the *host* runtime, whose
+            // AppContext was seeded by the real host before this test process started and
+            // cannot be reseeded. A case with properties would therefore be comparing a
+            // seeded PawPrint against an unseeded oracle — a PawPrint-only fact dressed up
+            // as a cross-runtime one. Those belong in `sourcesImpure`.
+            failwith
+                $"%s{case.FileName} sets AppContext properties (%O{case.AppContext}), but it is registered as a *pure* differential case. Move it to sourcesImpure."
+
         let source = Assembly.getEmbeddedResourceAsString case.FileName assy
 
         runPawPrintSource
@@ -612,6 +621,7 @@ class Program
             FileName = fileName
             ExpectedReturnCode = 0
             KernelConfig = KernelConfig.Default
+            AppContext = AppContextProperties.empty
             ExpectsUnhandledException = false
             AssertTerminalState = None
         }
@@ -626,6 +636,7 @@ class Program
             FileName = fileName
             ExpectedReturnCode = exitCode
             KernelConfig = KernelConfig.Default
+            AppContext = AppContextProperties.empty
             ExpectsUnhandledException = false
             AssertTerminalState = None
         }
@@ -637,6 +648,7 @@ class Program
             FileName = fileName
             ExpectedReturnCode = 0 // not checked; both runtimes are expected to throw
             KernelConfig = KernelConfig.Default
+            AppContext = AppContextProperties.empty
             ExpectsUnhandledException = true
             AssertTerminalState = None
         }
@@ -664,6 +676,7 @@ class Program
             FileName = fileName
             ExpectedReturnCode = 0
             KernelConfig = KernelConfig.Default
+            AppContext = AppContextProperties.empty
             ExpectsUnhandledException = false
             AssertTerminalState = None
         }
