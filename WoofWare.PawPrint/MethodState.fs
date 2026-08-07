@@ -600,23 +600,6 @@ type ConstructionState =
     /// passed its address as `this`, so the address is known up front. On return we push
     /// that address (or, for value types, the object's now-complete contents).
     | Constructing of ManagedHeapAddress
-    /// Variable-size object, i.e. one whose instance size depends on its constructor
-    /// arguments. CoreCLR flags these `CORINFO_FLG_VAROBJSIZE` (set whenever the
-    /// MethodTable `HasComponentSize`; see `jitinterface.cpp`), and both the JIT and the
-    /// CoreCLR interpreter special-case `newobj` on them: nothing is allocated up front
-    /// and *no `this` is passed* — the constructor allocates the object itself and
-    /// effectively returns it, despite a `void` signature. See `importer.cpp`
-    /// ("At present this can only be String", `newObjThisPtr = nullptr`) and
-    /// `interpreter/compiler.cpp` (`doCallInsteadOfNew = true`).
-    ///
-    /// Arrays are the CLI's other variable-size case, but they never reach here: array
-    /// `newobj` is diverted to the multi-dim allocation path in `executeNewobj`, and
-    /// szarrays go through `newarr`. So in practice this case means `System.String`.
-    ///
-    /// A frame in this state has not yet nominated its object. The constructor must call
-    /// `IlMachineState.withSuppliedConstructedObject`, which moves it to `Constructing`;
-    /// `returnStackFrame` fails loudly on a frame that returns still in this state.
-    | ConstructingVariableSize
 
 /// What `returnStackFrame` should do with the object a constructor frame was constructing,
 /// once that constructor returns.
@@ -853,9 +836,6 @@ and MethodState =
     /// `args` must be populated with entries of the right type.
     /// If `method` is an instance method, `args` must be of length 1+numParams.
     /// If `method` is static, `args` must be of length numParams.
-    /// The exception is a frame entered under the variable-size newobj convention
-    /// (`ConstructionState.ConstructingVariableSize`), which receives no `this` despite
-    /// the constructor being an instance method, and so takes numParams entries.
     static member Empty
         (concreteTypes : AllConcreteTypes)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -868,20 +848,7 @@ and MethodState =
         : Result<MethodState, WoofWare.PawPrint.AssemblyReference list>
         =
         do
-            // A frame entered under the variable-size (CORINFO_FLG_VAROBJSIZE) newobj
-            // convention gets no `this` slot even though the constructor is an instance
-            // method: CoreCLR calls it with a null this-pointer and the constructor
-            // allocates the object itself. See `ConstructionState.ConstructingVariableSize`.
-            let isVariableSizeCtorFrame =
-                match returnState with
-                | None -> false
-                | Some returnState ->
-                    match returnState.Constructing with
-                    | ConstructionState.ConstructingVariableSize -> true
-                    | ConstructionState.Constructing _
-                    | ConstructionState.NotConstructing -> false
-
-            let expectsThis = not method.IsStatic && not isVariableSizeCtorFrame
+            let expectsThis = not method.IsStatic
 
             let expected = MethodInfo.arity method + (if expectsThis then 1 else 0)
 
@@ -889,8 +856,6 @@ and MethodState =
                 let shape =
                     if method.IsStatic then
                         "Static method"
-                    elif isVariableSizeCtorFrame then
-                        "Variable-size constructor"
                     else
                         "Non-static method"
 

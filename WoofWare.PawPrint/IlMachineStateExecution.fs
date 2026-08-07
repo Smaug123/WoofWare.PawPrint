@@ -1974,9 +1974,7 @@ module IlMachineStateExecution =
                 CliType.ObjectRef None
 
         // Pop exactly the method's declared parameters, leaving no `this` slot in the
-        // resulting `Arguments` array. Shared by genuinely static methods and by
-        // variable-size constructors, which CoreCLR calls with no `this` at all (see
-        // `ConstructionState.ConstructingVariableSize`).
+        // resulting `Arguments` array.
         let popDeclaredParametersOnly () =
             let args = ImmutableArray.CreateBuilder (MethodInfo.arity methodToCall)
             let mutable currentState = activeMethodState
@@ -1996,12 +1994,6 @@ module IlMachineStateExecution =
             else
 
             match wasConstructing with
-            | ConstructionState.ConstructingVariableSize ->
-                // Variable-size constructor: `executeNewobj` pushed no `this`, so the eval
-                // stack holds only the declared arguments. The constructor's `Arguments`
-                // array is correspondingly `this`-less, and the object it allocates is
-                // handed back via `withSuppliedConstructedObject`.
-                popDeclaredParametersOnly ()
             | ConstructionState.Constructing _ ->
                 // Instance method: handle `this` pointer
                 let argCount = MethodInfo.arity methodToCall
