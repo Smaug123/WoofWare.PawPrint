@@ -54,7 +54,13 @@ module TestRaces =
         use _loggerFactoryResource = loggerFactory
         use peImage = new MemoryStream (image)
 
-        Program.run loggerFactory (Some sourceName) peImage dotnetRuntimes KernelConfig.Default seed []
+        Program.run
+            loggerFactory
+            (Some sourceName)
+            peImage
+            { HostConfig.Default dotnetRuntimes with
+                PctSeed = seed
+            }
         |> exitCodeOfOutcome sourceName seed
 
     /// Run `image` through the real .NET runtime once. Fails the test on
@@ -141,7 +147,15 @@ module TestRaces =
         use peImage = new MemoryStream (image)
         let logger = loggerFactory.CreateLogger "TestRaces"
 
-        match Program.prepare loggerFactory (Some sourceName) peImage dotnetRuntimes KernelConfig.Default seed [] with
+        match
+            Program.prepare
+                loggerFactory
+                (Some sourceName)
+                peImage
+                { HostConfig.Default dotnetRuntimes with
+                    PctSeed = seed
+                }
+        with
         | Program.ProgramStartResult.CompletedBeforeMain outcome ->
             failwith
                 $"%s{sourceName} (seed=%A{seed}) completed before Main ran (%A{outcome}); the race is between two threads inside Main"

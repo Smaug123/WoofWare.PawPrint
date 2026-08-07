@@ -3,14 +3,14 @@
 PawPrint is a single-threaded deterministic IL emulator.
 It advances one thread at a time, one IL instruction at a time.
 
-The default thread scheduler (passing `None` as the optional seed arg to `Program.run`) is a simple round-robin scheduler.
-Alternatively, by passing a seed `Some 3uL` to `Program.run`, you get a [Probabilistic Concurrency Testing](https://www.microsoft.com/en-us/research/wp-content/uploads/2016/02/asplos277-pct.pdf) (PCT) scheduler.
+The default thread scheduler (leaving `HostConfig.PctSeed` at its default of `None`) is a simple round-robin scheduler.
+Alternatively, by setting `PctSeed = Some 3uL` on the `HostConfig` you hand to `Program.run`, you get a [Probabilistic Concurrency Testing](https://www.microsoft.com/en-us/research/wp-content/uploads/2016/02/asplos277-pct.pdf) (PCT) scheduler.
 We'll discuss PCT only, because that's how you fuzz.
 
 ## How to do it
 
 See [How to run a program](./run-a-program.md) for instructions on running a program.
-The important thing you need to change to perform fuzzing is simply to supply `Some myFavouriteNumber` as the seed argument to `Program.run`; for example, `Some 0uL`.
+The important thing you need to change to perform fuzzing is simply to set `PctSeed = Some myFavouriteNumber` on the `HostConfig`; for example, `Some 0uL`.
 
 By calling `Program.run` many times with different seeds, you can observe different thread execution orders.
 Replaying a given seed is always deterministic.

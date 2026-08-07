@@ -580,13 +580,14 @@ module Program =
         (loggerFactory : ILoggerFactory)
         (originalPath : string option)
         (fileStream : Stream)
-        (dotnetRuntimeDirs : ImmutableArray<string>)
-        (kernelConfig : KernelConfig)
-        (pctSeed : uint64 option)
-        (argv : string list)
+        (hostConfig : HostConfig)
         : ProgramStartResult
         =
         let logger = loggerFactory.CreateLogger "Program"
+        let dotnetRuntimeDirs = hostConfig.DotnetRuntimeDirs
+        let kernelConfig = hostConfig.Kernel
+        let pctSeed = hostConfig.PctSeed
+        let argv = hostConfig.Argv
 
         let dumped = Assembly.read loggerFactory originalPath fileStream
 
@@ -904,14 +905,11 @@ module Program =
         (loggerFactory : ILoggerFactory)
         (originalPath : string option)
         (fileStream : Stream)
-        (dotnetRuntimeDirs : ImmutableArray<string>)
-        (kernelConfig : KernelConfig)
-        (pctSeed : uint64 option)
-        (argv : string list)
+        (hostConfig : HostConfig)
         : RunOutcome
         =
         let logger = loggerFactory.CreateLogger "Program"
 
-        match prepare loggerFactory originalPath fileStream dotnetRuntimeDirs kernelConfig pctSeed argv with
+        match prepare loggerFactory originalPath fileStream hostConfig with
         | ProgramStartResult.CompletedBeforeMain outcome -> outcome
         | ProgramStartResult.Ready prepared -> pumpPrepared loggerFactory logger prepared

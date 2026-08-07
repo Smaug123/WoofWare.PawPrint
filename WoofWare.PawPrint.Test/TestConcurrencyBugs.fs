@@ -190,7 +190,13 @@ module TestConcurrencyBugs =
         let logger = loggerFactory.CreateLogger "TestConcurrencyBugs"
 
         match
-            Program.prepare loggerFactory (Some sourceName) peImage dotnetRuntimes KernelConfig.Default (Some seed) []
+            Program.prepare
+                loggerFactory
+                (Some sourceName)
+                peImage
+                { HostConfig.Default dotnetRuntimes with
+                    PctSeed = (Some seed)
+                }
         with
         | Program.ProgramStartResult.CompletedBeforeMain outcome ->
             // A worker spawned during a static cctor terminated the process

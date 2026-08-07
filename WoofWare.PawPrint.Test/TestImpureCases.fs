@@ -400,7 +400,13 @@ module TestImpureCases =
         try
             let terminalState, terminatingThread =
                 match
-                    Program.run loggerFactory (Some case.FileName) peImage dotnetRuntimes case.KernelConfig None []
+                    Program.run
+                        loggerFactory
+                        (Some case.FileName)
+                        peImage
+                        { HostConfig.Default dotnetRuntimes with
+                            Kernel = case.KernelConfig
+                        }
                 with
                 | RunOutcome.GuestUnhandledException (_, _, exn) ->
                     failwith $"Guest threw unhandled exception: %O{exn.ExceptionObject}"
