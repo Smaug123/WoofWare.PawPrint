@@ -1469,7 +1469,8 @@ and CliValueType =
         | _ :: _ :: _ -> failwith $"Field '%O{field}' matched multiple storage slots exactly"
         | [] ->
             match field with
-            | FieldId.Metadata _ -> failwith $"Field '%O{field}' not found"
+            | FieldId.Metadata _
+            | FieldId.InlineArrayElement _ -> failwith $"Field '%O{field}' not found"
             | FieldId.Named name ->
                 let nameMatches = fields |> List.filter (fun f -> f.Name = name)
 
