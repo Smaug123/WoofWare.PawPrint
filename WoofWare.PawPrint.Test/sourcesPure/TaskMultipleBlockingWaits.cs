@@ -9,23 +9,26 @@ using System.Threading.Tasks;
 // `Task.Run(...).Result` calls in a row are sufficient to reach the heuristic; no Yield or
 // ContinueWith is needed.
 //
-// This case does two, mixing the shapes that reach it (plain Task.Run, and a continuation
+// This case does twelve, mixing the shapes that reach it (plain Task.Run, and a continuation
 // resumed through an awaited Task.Yield), so the multiple-wait path stays covered even though
 // the other files stick to one wait apiece.
 //
-// Why exactly two: the budget is bounded above, and the bound is sized to the current frontier
-// rather than chosen arbitrarily. The wait that exceeds it reaches the pool's hill-climbing
-// controller adjusting its thread count, which calls `Math.Pow`
-// (PortableThreadPool.HillClimbing.cs:301) -- an unimplemented JIT intrinsic, filed as issue
-// #755. Raise this number once #755 lands.
+// Why twelve: the budget is still bounded above, and this is deliberately sized an order of
+// magnitude clear of the ceiling rather than sitting on top of it, as previous numbers did.
+// That ceiling was two immediately before this branch, because the third wait reached
+// `Math.Pow` in the pool's hill-climbing controller (PortableThreadPool.HillClimbing.cs:301)
+// -- an unimplemented JIT intrinsic, issue #755. (It had been three until `[ThreadStatic]`
+// fields gained real per-thread storage in #777; the pool is built on thread-static per-worker
+// state, so that change made more of the controller's real accounting actually run, and
+// `Math.Pow` came up sooner.)
 //
-// The budget used to be three. It dropped to two when `[ThreadStatic]` fields gained real
-// per-thread storage: the pool is built on thread-static per-worker state
-// (`ThreadPoolWorkQueue.t_tl`, `PortableThreadPool.t_isWorkerThread`, `Task.t_currentTask`,
-// `ThreadInt64PersistentCounter.t_nodes`), so while every worker shared one set of slots
-// PawPrint was not executing the controller's real accounting at all. Getting to `Math.Pow` in
-// fewer waits means more of the pool now runs, not less -- the frontier moved because the code
-// behind it became reachable. The boundary remains sharp and reproducible: 2 waits pass, 3 fail.
+// With `Math.Pow` implemented the frontier moves a long way out. Measured on this branch after
+// rebasing onto #777, with exactly the loop below: 160 blocking pool waits (80 iterations) pass
+// and 240 (120 iterations) fail. The failure is again an unimplemented JIT intrinsic in the
+// same controller, `Math.Cos` -- so this is still a missing-primitive boundary, not a
+// correctness bug. Note that where exactly the boundary falls depends on the shape of the loop
+// body and not only on the number of waits, which is why this file no longer tries to sit
+// exactly on it.
 //
 // Every assertion is on a returned value, never on which worker thread ran something, nor on
 // timing, nor on ordering between independent tasks -- all of which are guaranteed under both
@@ -40,17 +43,20 @@ public static class TaskMultipleBlockingWaits
 
     public static int Main (string[] args)
     {
-        // Two plain pool-blocking waits: the minimal shape that reaches the heuristic at all.
-        if (Task.Run (() => 41).Result != 41)
+        for (int i = 0; i < 6; i++)
         {
-            return 1;
-        }
+            // A plain pool-blocking wait: the shape that reaches the heuristic at all.
+            if (Task.Run (() => 41 + i).Result != 41 + i)
+            {
+                return 1;
+            }
 
-        // A second wait, of a different shape: a pool-scheduled continuation resumed through an
-        // awaited Task.Yield rather than a Task.Run body.
-        if (YieldThenAddAsync (10).Result != 11)
-        {
-            return 3;
+            // A wait of a different shape: a pool-scheduled continuation resumed through an
+            // awaited Task.Yield rather than a Task.Run body.
+            if (YieldThenAddAsync (10 * i).Result != 10 * i + 1)
+            {
+                return 2;
+            }
         }
 
         return 0;

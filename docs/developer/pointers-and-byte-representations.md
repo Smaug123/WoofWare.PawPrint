@@ -76,6 +76,14 @@ PawPrint answers those operations without inventing an address, by carrying the 
 
 Consumers that dereference or free a handle require the tag to be zero. Real managed code always masks first, and a tagged dereference is a misaligned read.
 
+The same model covers CoreCLR's `TypeHandle`, which wraps either a `MethodTable*` or a `TypeDesc*` and sets bit 1 in the latter case. `TypeHandleTag` is the single home for that rule, shared by the `and` arms in `NullaryIlOp` and the synthesised low bits in `PointerHashSynthesis`; the two must agree, because a tag is observable both by masking it directly and by comparing synthesised bits.
+
+One difference matters. A GC handle's tag is *independent state* that managed code sets and clears at will, so any tag in the region is representable. A type handle's tag is a *function of its target* — `IsTypeDesc` is determined by what the handle points at — so a handle whose tag differs from its target's is not the same handle retagged, but a different kind of pointer. `TypeHandle.AsTypeDesc` (`handle & ~2`) is exactly that case, and `NativeIntSource.TypeDescPtr` is that other identity: the same base address with the tag clear. Masking a pointer that carries no tag to begin with (a `MethodTable*`, or a `TypeDesc*` already stripped) is the identity, so `AsTypeDesc` is idempotent as it is in reality.
+
+The two identities are deliberately *not* aliased. They share a canonical key in `PointerHashSynthesis`, so they agree on every bit above the tag region, and `lowBitsForSource` separates them by exactly bit 1 — which is how they differ in CoreCLR. `equalsForCli` therefore reports them unequal, so `TypeHandle.AreSameType` cannot conflate a handle with the TypeDesc inside it.
+
+Low bits are always computed from the *source*, never stored on the identity. That is what lets several views of one identity — a tagged and untagged GC handle, a type handle and its TypeDesc — share address bits while differing only in the tag region.
+
 ## Extension Rules
 
 When extending this area, keep the model honest:

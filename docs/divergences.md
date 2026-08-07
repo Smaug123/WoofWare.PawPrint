@@ -37,3 +37,24 @@ var c = new C();
 ```
 
 **Where this lives in code**: The eager triggers are `UnaryMetadataObjectOps.fs` (`newobj`) and the `Activator.CreateInstance<T>()` intrinsic in `IlMachineStateExecution.fs`. A trigger-aware central policy is sketched in the PR conversation that introduced the Activator intrinsic; nobody has implemented it yet.
+
+## Last-bit results of the transcendental `Math` functions
+
+**CoreCLR**: `Math.Pow` and its relatives are `[Intrinsic]` + `MethodImplOptions.InternalCall`, with no IL body; the JIT lowers each to a call into the host platform's C library. The answer is therefore whatever the machine's libm returns.
+
+**PawPrint**: Computes them in-tree, from integer arithmetic only, in `DeterministicMath.fs`. The result depends on nothing but the arguments.
+
+**Spec status**: Compliant, and strictly closer to the ideal than CoreCLR. IEEE 754 mandates correct rounding only for `+ - * /`, `sqrt` and `fma`; `pow` appears in clause 9.2 among the *recommended* operations, where correct rounding is recommended but not required, and C's Annex F does not require it either. Both implementations are therefore free to differ from each other in the last bit, and both do.
+
+**Why we chose this**: Forwarding to the host would make a recorded run replay differently on a machine with a different libm — silently, rarely, and only in the last bit, which is the worst failure mode this project has. It is not a theoretical concern: measured against macOS/Arm's libm over 200 000 random `(base, exponent)` pairs, 25 disagreed. In every one of those 25 PawPrint returned the correctly rounded value and the host did not (independently confirmed with an 80-digit `decimal` computation; the host's error ranged from 0.500004 to 0.5102 ulp). Mainstream libms deliberately budget about 0.5 + ε ulp rather than pay the cost of resolving the table maker's dilemma near midpoints, so this is expected behaviour on their part — but it is not behaviour a deterministic runtime can inherit.
+
+**Observable example**:
+
+```csharp
+// PawPrint returns the correctly rounded result; macOS/Arm's libm returns its neighbour.
+double d = Math.Pow(667.32139499267623, 24.249516112846091);
+```
+
+**A second, coarser divergence, in the same place**: hosts also disagree about `pow` given a *signalling* NaN operand in one of the two cases that override a NaN — `pow(x, ±0)` and `pow(+1, y)`. IEEE 754 clause 9.2.1 grants those overrides against a "quiet NaN" specifically, so a signalling NaN falls back to clause 7.2 and comes back quietened; glibc implements exactly that, and Apple's libm returns 1 regardless. PawPrint specifies glibc's answer, since it is both the standard reading and the behaviour of the linux-x64 host CI differentially tests against. A guest can see the difference only through `BitConverter`, since C# has no way to write a signalling NaN literal.
+
+**Where this lives in code**: `WoofWare.PawPrint/DeterministicMath.fs`, dispatched from the `Math.Pow` arm of `Intrinsics.fs`. Only `Pow` is implemented so far; `Sqrt`, `Log`, `Exp`, `Sin` and the rest of `Math.CoreCLR.cs` remain unimplemented and fail loudly, and should join this module rather than being forwarded to the host.

@@ -92,6 +92,7 @@ module private ByteAddressabilityClassifier =
         | NativeIntSource.ManagedPointer _
         | NativeIntSource.FunctionPointer _
         | NativeIntSource.TypeHandlePtr _
+        | NativeIntSource.TypeDescPtr _
         | NativeIntSource.MethodTablePtr _
         | NativeIntSource.MethodTableAuxiliaryDataPtr _
         | NativeIntSource.PerInstInfoPtr _

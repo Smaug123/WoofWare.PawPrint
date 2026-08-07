@@ -67,7 +67,7 @@ module internal CellAwareMemOps =
     /// Lazy resolution of the root's `CliType` template. Used by
     /// `tryProjectionByteOffset` only when a `Field` projection appears in
     /// the chain. Variants whose `Field`-projection layout cannot be
-    /// resolved (e.g. `PeByteRange`, `MethodTableExposedClassObject`) or
+    /// resolved (e.g. `PeByteRange`, `ExposedClassObject`) or
     /// where no typed cell starts at the root byte offset
     /// (`StackMemoryByte` / `NativeMemoryByte`) raise — the caller wraps
     /// in try/with and degrades to the coarse `SharedStorageKey` path.
@@ -107,8 +107,7 @@ module internal CellAwareMemOps =
                 failwith
                     $"rootTemplate: no typed cell starts at byte offset %d{byteOffset} of native memory block %O{block}"
         | ByrefRoot.PeByteRange _ -> failwith "rootTemplate: PeByteRange root has no Field-projectable template"
-        | ByrefRoot.MethodTableExposedClassObject _ ->
-            failwith "rootTemplate: MethodTableExposedClassObject is a single object reference"
+        | ByrefRoot.ExposedClassObject _ -> failwith "rootTemplate: ExposedClassObject is a single object reference"
 
     /// Fold a projection chain to a byte offset relative to the root's
     /// storage origin. Returns `None` for any chain whose offset can't be
@@ -179,7 +178,7 @@ module internal CellAwareMemOps =
         // The MethodTable auxiliary cell is a single object reference;
         // `Field` projections are nonsensical on it, and overlap reasoning
         // through it has no flat byte coordinate.
-        | ManagedPointerSource.Byref (ByrefRoot.MethodTableExposedClassObject _, _) -> None
+        | ManagedPointerSource.Byref (ByrefRoot.ExposedClassObject _, _) -> None
 
     /// Coarse storage discriminator used purely to decide whether two byrefs
     /// *could* share underlying storage when `byteLocation` cannot derive a
@@ -222,7 +221,7 @@ module internal CellAwareMemOps =
             SharedStorageKey.Flat (ByteStorageIdentity.StaticField (declaringType, field, owner))
         | ByrefRoot.HeapValue addr -> SharedStorageKey.HeapValue addr
         | ByrefRoot.HeapObjectField (addr, field) -> SharedStorageKey.HeapObjectField (addr, field)
-        | ByrefRoot.MethodTableExposedClassObject decl -> SharedStorageKey.RuntimeTypeAux decl
+        | ByrefRoot.ExposedClassObject decl -> SharedStorageKey.RuntimeTypeAux decl
 
     /// Storage discriminator of a byref. Returns `None` for non-byref pointers
     /// (`Null`, `NativeIntPlaceholder`) which cannot participate in shared
@@ -359,7 +358,7 @@ module internal CellAwareMemOps =
         | ByrefRoot.ArrayElement _
         | ByrefRoot.HeapValue _
         | ByrefRoot.HeapObjectField _
-        | ByrefRoot.MethodTableExposedClassObject _ -> true
+        | ByrefRoot.ExposedClassObject _ -> true
         | ByrefRoot.LocalVariable _
         | ByrefRoot.Argument _
         | ByrefRoot.StackMemoryByte _

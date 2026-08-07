@@ -45,6 +45,16 @@ module internal MethodTableProjection =
         && field.DeclaringType.Name = "MethodTableAuxiliaryData"
         && field.DeclaringType.Generics.IsEmpty
 
+    let private isTypeDescField
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (field : FieldInfo<'typeGeneric, 'fieldGeneric>)
+        : bool
+        =
+        field.DeclaringType.Assembly.FullName = baseClassTypes.Corelib.Name.FullName
+        && field.DeclaringType.Namespace = "System.Runtime.CompilerServices"
+        && field.DeclaringType.Name = "TypeDesc"
+        && field.DeclaringType.Generics.IsEmpty
+
     let private tryArrayElement (handle : ConcreteTypeHandle) : (ConcreteTypeHandle * int option) option =
         match handle with
         | ConcreteTypeHandle.OneDimArrayZero element -> Some (element, None)
@@ -1048,7 +1058,7 @@ module internal MethodTableProjection =
                         IlMachineRuntimeMetadata.getOrAllocateType loggerFactory baseClassTypes methodTableFor state
 
                     let ptr =
-                        ManagedPointerSource.Byref (ByrefRoot.MethodTableExposedClassObject methodTableFor, [])
+                        ManagedPointerSource.Byref (ByrefRoot.ExposedClassObject methodTableFor, [])
 
                     Some (ptr, state)
                 | RuntimeTypeHandleTarget.GenericParameter _
@@ -1056,7 +1066,38 @@ module internal MethodTableProjection =
                     // Generic-parameter handles are TypeDescs in CoreCLR; the BCL
                     // reads `h.AsTypeDesc()->ExposedClassObject` (a different field
                     // on a different runtime structure) rather than going through
-                    // MethodTableAuxiliaryData. Returning None makes the call site
-                    // fail loudly if a future path mistakenly reaches here.
+                    // MethodTableAuxiliaryData. `tryProjectTypeDescFieldAddress`
+                    // is that path. Returning None makes the call site fail loudly
+                    // if a future path mistakenly reaches here.
                     None
             | _ -> None
+
+    /// Address of a field on a `TypeDesc*`, the untagged form of a TypeDesc-shaped
+    /// type handle (see `NativeIntSource.TypeDescPtr`).
+    ///
+    /// Only `_exposedClassObject` is modelled. It caches the same canonical
+    /// `RuntimeType` that `MethodTableAuxiliaryData::ExposedClassObjectRaw` caches
+    /// for MethodTable-backed types, so both reach the same `ByrefRoot`:
+    /// CoreCLR splits the storage by type shape, but there is one cached
+    /// RuntimeType per target either way.
+    let tryProjectTypeDescFieldAddress
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (field : FieldInfo<'typeGeneric, 'fieldGeneric>)
+        (typeDescFor : RuntimeTypeHandleTarget)
+        (state : IlMachineState)
+        : (ManagedPointerSource * IlMachineState) option
+        =
+        if not (isTypeDescField baseClassTypes field) then
+            None
+        else
+
+        match field.Name with
+        | "_exposedClassObject" ->
+            // Pre-allocate the canonical RuntimeType so the read through the byref
+            // is a pure registry lookup, exactly as the MethodTable path does.
+            let _addr, state =
+                IlMachineRuntimeMetadata.getOrAllocateType loggerFactory baseClassTypes typeDescFor state
+
+            Some (ManagedPointerSource.Byref (ByrefRoot.ExposedClassObject typeDescFor, []), state)
+        | _ -> None
