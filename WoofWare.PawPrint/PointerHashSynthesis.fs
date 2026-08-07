@@ -98,7 +98,11 @@ module PointerHashSynthesis =
             )
         | NativeIntSource.MethodHandlePtr id -> CanonicalPointerKey.MethodHandle id
         | NativeIntSource.FieldHandlePtr id -> CanonicalPointerKey.FieldHandle id
-        | NativeIntSource.GcHandlePtr handle -> CanonicalPointerKey.GcHandle handle
+        // The canonical key is the handle's *identity*; its tag bits are a view
+        // the guest imposed, and are folded back in by `materialiseHashBits` so
+        // that two differently-tagged views of one handle differ exactly in their
+        // low bits, as they would in reality.
+        | NativeIntSource.GcHandlePtr (handle, _) -> CanonicalPointerKey.GcHandle handle
         | NativeIntSource.EventPipeProviderPtr id -> CanonicalPointerKey.EventPipeProvider id
         | NativeIntSource.EventPipeEventPtr id -> CanonicalPointerKey.EventPipeEvent id
         | NativeIntSource.LowLevelMonitorPtr id -> CanonicalPointerKey.LowLevelMonitor id
@@ -192,8 +196,18 @@ module PointerHashSynthesis =
         | _ ->
             let key = canonicalKey src
 
+            // Tag bits the guest has stuffed into a pointer's low bits are part of
+            // the value's bit pattern, but not part of its identity, so they are
+            // OR-ed onto the identity's assigned bits rather than keyed on. The
+            // counter scheme leaves the low 2 bits clear for exactly this, so the
+            // no-collision property is preserved.
+            let tagBits =
+                match src with
+                | NativeIntSource.GcHandlePtr (_, tag) -> Operators.uint64 tag
+                | _ -> 0UL
+
             match Map.tryFind key counters.Assigned with
-            | Some bits -> Operators.int64 bits, counters
+            | Some bits -> Operators.int64 (bits ||| tagBits), counters
             | None ->
                 let n = counters.NextCounter
                 let bits = ((n + 1UL) <<< 2) ||| lowBitsForKey key
@@ -204,4 +218,4 @@ module PointerHashSynthesis =
                         Assigned = Map.add key bits counters.Assigned
                     }
 
-                Operators.int64 bits, counters'
+                Operators.int64 (bits ||| tagBits), counters'

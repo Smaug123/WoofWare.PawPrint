@@ -55,7 +55,7 @@ module EvalStackValue =
             failwith $"%s{operation}: refusing to convert RuntimeFieldHandle pointer %d{handle} to an integer"
         | NativeIntSource.MethodHandlePtr handle ->
             failwith $"%s{operation}: refusing to convert RuntimeMethodHandle pointer %d{handle} to an integer"
-        | NativeIntSource.GcHandlePtr handle ->
+        | NativeIntSource.GcHandlePtr (handle, _) ->
             failwith $"%s{operation}: refusing to convert GC handle pointer %O{handle} to an integer"
         | NativeIntSource.EventPipeProviderPtr id ->
             failwith $"%s{operation}: refusing to convert EventPipe provider handle #%d{id} to an integer"
@@ -248,7 +248,7 @@ module EvalStackValue =
                 failwith $"Conv_U: refusing to convert PerInstInfo pointer %O{handle} to unsigned native int"
             | NativeIntSource.PerInstDictPtr handle ->
                 failwith $"Conv_U: refusing to convert PerInstDict pointer %O{handle} to unsigned native int"
-            | NativeIntSource.GcHandlePtr handle ->
+            | NativeIntSource.GcHandlePtr (handle, _) ->
                 failwith $"Conv_U: refusing to convert GC handle pointer %O{handle} to unsigned native int"
             | NativeIntSource.EventPipeProviderPtr id ->
                 failwith $"Conv_U: refusing to convert EventPipe provider handle #%d{id} to unsigned native int"
@@ -531,7 +531,8 @@ module EvalStackValue =
             | CliRuntimePointer.PerInstDictPtr handle ->
                 NativeIntSource.PerInstDictPtr handle |> EvalStackValue.NativeInt
             | CliRuntimePointer.Managed ptr -> ptr |> EvalStackValue.ManagedPointer
-            | CliRuntimePointer.GcHandlePtr addr -> NativeIntSource.GcHandlePtr addr |> EvalStackValue.NativeInt
+            | CliRuntimePointer.GcHandlePtr (addr, tag) ->
+                NativeIntSource.GcHandlePtr (addr, tag) |> EvalStackValue.NativeInt
         | CliType.ValueType vt ->
             // Primitive-like single-field wrappers (IntPtr, RuntimeTypeHandle, enums, ...) all get
             // flattened to their underlying primitive on the stack. ECMA III.1.8 treats enums as
@@ -571,7 +572,7 @@ module EvalStackValue =
                         failwith $"refusing to coerce PerInstInfo pointer %O{f} to int64"
                     | NativeIntSource.PerInstDictPtr f ->
                         failwith $"refusing to coerce PerInstDict pointer %O{f} to int64"
-                    | NativeIntSource.GcHandlePtr f -> failwith $"TODO: {f}"
+                    | NativeIntSource.GcHandlePtr (f, tag) -> failwith $"TODO: {f} (tag 0x%x{tag})"
                     | NativeIntSource.EventPipeProviderPtr id ->
                         failwith $"refusing to coerce EventPipe provider handle #%d{id} to int64"
                     | NativeIntSource.EventPipeEventPtr id ->
@@ -643,8 +644,8 @@ module EvalStackValue =
                             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.PerInstDictPtr handle))
                         | CliRuntimePointer.Managed src ->
                             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer src))
-                        | CliRuntimePointer.GcHandlePtr addr ->
-                            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.GcHandlePtr addr))
+                        | CliRuntimePointer.GcHandlePtr (addr, tag) ->
+                            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.GcHandlePtr (addr, tag)))
                     | _ -> failwith $"TODO: {popped}"
                 | _ -> failwith $"TODO: {popped}"
             | CliNumericType.NativeFloat f -> failwith "todo"
@@ -763,7 +764,8 @@ module EvalStackValue =
                     CliType.RuntimePointer (CliRuntimePointer.FieldRegistryHandle ptr)
                 | NativeIntSource.MethodHandlePtr ptr ->
                     CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle ptr)
-                | NativeIntSource.GcHandlePtr addr -> CliType.RuntimePointer (CliRuntimePointer.GcHandlePtr addr)
+                | NativeIntSource.GcHandlePtr (addr, tag) ->
+                    CliType.RuntimePointer (CliRuntimePointer.GcHandlePtr (addr, tag))
                 | NativeIntSource.EventPipeProviderPtr id ->
                     failwith
                         $"refusing to coerce EventPipe provider handle #%d{id} to runtime pointer: tracing handles are opaque, not addresses"
