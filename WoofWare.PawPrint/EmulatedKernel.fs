@@ -642,6 +642,32 @@ type EmulatedKernel =
         /// after startup, so that the value is fixed for the whole run and a
         /// guest cannot observe it changing under it.
         UnixPlatform : SimulatedUnixPlatform
+        /// The simulated process's current working directory, as observed
+        /// through `SystemNative_GetCwd` — and hence through
+        /// `Environment.CurrentDirectory` and every relative
+        /// `Path.GetFullPath` on a Unix CoreLib.
+        ///
+        /// Deliberately kernel state rather than a host
+        /// `Directory.GetCurrentDirectory()` read, for the same reason as
+        /// `ProcessorCount` and `UnixPlatform`: the cwd is a per-machine,
+        /// per-invocation fact, and a guest that resolves a relative path
+        /// against it bakes the recording machine's directory layout into
+        /// every path it subsequently opens, logs, or branches on. Reading the
+        /// host here would make a replay depend on *where* it was recorded.
+        ///
+        /// Typed as `AbsoluteUnixPath` rather than `string` so that consumers
+        /// receive a proof, not a promise: `getcwd(3)` only ever yields a
+        /// rooted, separator-normalised, fully-resolved path, and the
+        /// `SystemNative_GetCwd` handler relies on that when it computes the
+        /// UTF-8 byte length its ERANGE decision turns on.
+        ///
+        /// Like `UnixPlatform`, CoreLib does *not* latch this during static
+        /// initialisation (`Interop.Sys.GetCwd()` is called afresh on every
+        /// read), but hosts should still set it via `KernelConfig` rather than
+        /// by record-copy after startup: PawPrint models no `chdir(2)`, so
+        /// within a run the cwd is immutable and a guest must not be able to
+        /// observe it changing under it.
+        CurrentDirectory : AbsoluteUnixPath
         /// Pure data model of the simulated process's signal disposition,
         /// per-thread sigprocmasks, and pending-signal queue. Populated by
         /// future slices: nothing in the simulator dispatches signals yet,
@@ -756,6 +782,17 @@ module EmulatedKernel =
     /// a different identity via `KernelConfig.UnixPlatform`.
     let defaultUnixPlatform : SimulatedUnixPlatform = SimulatedUnixPlatform.LinuxX64
 
+    /// Current working directory a freshly-minted simulated process reports.
+    /// The root, because it is the one directory that exists on every Unix and
+    /// needs no name invented for it — and once PawPrint grows a simulated
+    /// filesystem, the one directory the default cwd is guaranteed to still
+    /// name. (`init` itself starts at `/`, so this is not even an unusual cwd
+    /// for a real process.) It is also the honest answer for a runtime that
+    /// deliberately declines to read the host's: PawPrint has not been told
+    /// where it is, so it claims nothing beyond the root. Hosts that want the
+    /// guest to see a particular directory set `KernelConfig.CurrentDirectory`.
+    let defaultCurrentDirectory : AbsoluteUnixPath = AbsoluteUnixPath.root
+
     let initial : EmulatedKernel =
         {
             LastPInvokeError = 0
@@ -779,6 +816,7 @@ module EmulatedKernel =
             ProcessorCount = defaultProcessorCount
             OptimalMaxSpinWaitsPerSpinIteration = defaultOptimalMaxSpinWaitsPerSpinIteration
             UnixPlatform = defaultUnixPlatform
+            CurrentDirectory = defaultCurrentDirectory
             Signals = SignalState.empty
         }
 
@@ -792,6 +830,16 @@ module EmulatedKernel =
 
         { kernel with
             UnixPlatform = platform
+        }
+
+    /// Set the simulated process's current working directory. No validation to
+    /// perform: `AbsoluteUnixPath` is unforgeable outside
+    /// `AbsoluteUnixPath.parse`, so every value that can reach here is already
+    /// a path `getcwd(3)` could have returned. That is the whole point of the
+    /// type — the check happens once, where the host's string enters.
+    let withCurrentDirectory (dir : AbsoluteUnixPath) (kernel : EmulatedKernel) : EmulatedKernel =
+        { kernel with
+            CurrentDirectory = dir
         }
 
     /// Set the logical-processor count the simulated process reports. Rejects
@@ -1210,11 +1258,19 @@ type KernelConfig =
         /// Unix platform identity the guest observes via
         /// `Environment.OSVersion` (on a Unix CoreLib).
         UnixPlatform : SimulatedUnixPlatform
+        /// Current working directory the guest observes via
+        /// `Environment.CurrentDirectory`, and against which it resolves every
+        /// relative `Path.GetFullPath`. Obtain one with
+        /// `AbsoluteUnixPath.parse`; see `EmulatedKernel.CurrentDirectory` for
+        /// why this is simulated kernel state rather than a host
+        /// `getcwd(3)` read, and note that whatever a host picks here becomes
+        /// part of that run's replay contract.
+        CurrentDirectory : AbsoluteUnixPath
     }
 
     /// Configuration a host gets if it expresses no preference: no environment
     /// overlay, the default single processor, a wall clock booting at the Unix
-    /// epoch, and the default Unix platform.
+    /// epoch, the default Unix platform, and the root as the current directory.
     static member Default : KernelConfig =
         {
             Environment = Map.empty
@@ -1222,6 +1278,7 @@ type KernelConfig =
             OptimalMaxSpinWaitsPerSpinIteration = EmulatedKernel.defaultOptimalMaxSpinWaitsPerSpinIteration
             WallClockEpochMs = 0L
             UnixPlatform = EmulatedKernel.defaultUnixPlatform
+            CurrentDirectory = EmulatedKernel.defaultCurrentDirectory
         }
 
 [<RequireQualifiedAccess>]
@@ -1237,3 +1294,4 @@ module KernelConfig =
         |> EmulatedKernel.withOptimalMaxSpinWaitsPerSpinIteration config.OptimalMaxSpinWaitsPerSpinIteration
         |> EmulatedKernel.withWallClockEpochMs config.WallClockEpochMs
         |> EmulatedKernel.withUnixPlatform config.UnixPlatform
+        |> EmulatedKernel.withCurrentDirectory config.CurrentDirectory
