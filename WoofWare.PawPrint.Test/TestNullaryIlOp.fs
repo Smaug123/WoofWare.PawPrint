@@ -1146,6 +1146,53 @@ module TestNullaryIlOp =
 
         exn.Message |> shouldContainText "claims no alignment"
 
+    let private peByteRangeByref (source : PeByteRangePointerSource) (rva : int) : ManagedPointerSource =
+        ManagedPointerSource.Byref (
+            ByrefRoot.PeByteRange
+                {
+                    AssemblyFullName = "TestAssembly"
+                    Source = source
+                    RelativeVirtualAddress = rva
+                    Size = 16
+                },
+            []
+        )
+
+    [<Test>]
+    let ``a field signature blob makes no alignment claim`` () : unit =
+        // `FieldRva` and `ManagedResource` name real section offsets, and the image
+        // base is page-aligned, so their low bits are the mapped address's low bits.
+        let field =
+            ComparableFieldDefinitionHandle.Make (
+                System.Reflection.Metadata.Ecma335.MetadataTokens.FieldDefinitionHandle 1
+            )
+
+        ManagedPointerSource.tryContainerAlignmentBits (peByteRangeByref (PeByteRangePointerSource.FieldRva field) 6)
+        |> shouldEqual (Some 3)
+
+        ManagedPointerSource.tryContainerAlignmentBits (
+            peByteRangeByref (PeByteRangePointerSource.ManagedResource "r") 6
+        )
+        |> shouldEqual (Some 3)
+
+        // A signature blob lives in the metadata `#Blob` heap, and fixes its RVA at
+        // 0 as a placeholder. Claiming alignment there would turn the byte cursor
+        // into fabricated address bits.
+        let blob = peByteRangeByref (PeByteRangePointerSource.FieldSignatureBlob field) 0
+
+        ManagedPointerSource.tryContainerAlignmentBits blob |> shouldEqual None
+
+        let exn =
+            Assert.Throws (fun () ->
+                runBinary
+                    NullaryIlOp.And
+                    (EvalStackValue.NativeInt (NativeIntSource.NarrowedManagedPointer (blob, 32)))
+                    (EvalStackValue.Int32 1)
+                |> ignore<EvalStackValue>
+            )
+
+        exn.Message |> shouldContainText "claims no alignment"
+
     [<Test>]
     let ``widening a narrowed byref back to pointer width is refused`` () : unit =
         // The discarded high bits are gone; recovering the byref here would hand the

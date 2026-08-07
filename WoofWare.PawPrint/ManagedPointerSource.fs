@@ -550,8 +550,16 @@ module ManagedPointerSource =
         // 64-bit targets.
         | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte _, _) -> Some 3
         // A PE image is mapped at a page-aligned base and its sections at their
-        // RVAs, so the low bits of an RVA are the low bits of the mapped address.
-        | ManagedPointerSource.Byref (ByrefRoot.PeByteRange _, _) -> Some 3
+        // RVAs, so the low bits of an RVA are the low bits of the mapped address —
+        // but only for the variants whose RVA means that. `FieldSignatureBlob` lives
+        // in the metadata `#Blob` heap at an offset PawPrint does not track, and
+        // fixes `RelativeVirtualAddress` at 0 as a placeholder, so its "low bits"
+        // are the byte cursor alone and belong to no address at all.
+        | ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange, _) ->
+            match peByteRange.Source with
+            | PeByteRangePointerSource.FieldRva _
+            | PeByteRangePointerSource.ManagedResource _ -> Some 3
+            | PeByteRangePointerSource.FieldSignatureBlob _ -> None
         // Object fields, static fields, stack slots and the synthetic roots have no
         // stable in-container offset either (see `tryStableAddressBits` and
         // `NullaryIlOp.tryManagedPointerAddressBits`), so there is nothing to pair
