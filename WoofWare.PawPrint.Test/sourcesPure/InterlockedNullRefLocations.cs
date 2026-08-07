@@ -5,8 +5,8 @@
 // NullReferenceException. This must be catchable guest state, not a runtime abort.
 //
 // One case per intrinsic shape in `Intrinsics.fs`: the Add/ExchangeAdd int32 and
-// int64 helpers, and the scalar / native-int / reference-type shapes of both
-// CompareExchange and Exchange.
+// int64 helpers, the scalar / native-int / reference-type shapes of both
+// CompareExchange and Exchange, and CompareExchange's enum shape.
 using System;
 using System.Runtime.CompilerServices;
 using System.Threading;
@@ -17,6 +17,12 @@ namespace InterlockedNullRefLocations
     {
         class Marker
         {
+        }
+
+        enum States
+        {
+            NotCanceled = 0,
+            Notifying = 1,
         }
 
         public static int Main(string[] args)
@@ -132,11 +138,21 @@ namespace InterlockedNullRefLocations
             {
             }
 
+            // CompareExchange, enum shape.
+            try
+            {
+                Interlocked.CompareExchange(ref Unsafe.NullRef<States>(), States.Notifying, States.NotCanceled);
+                return 12;
+            }
+            catch (NullReferenceException)
+            {
+            }
+
             // Exchange, scalar-integral shape.
             try
             {
                 Interlocked.Exchange(ref Unsafe.NullRef<int>(), 1);
-                return 12;
+                return 13;
             }
             catch (NullReferenceException)
             {
@@ -145,7 +161,7 @@ namespace InterlockedNullRefLocations
             try
             {
                 Interlocked.Exchange(ref Unsafe.NullRef<long>(), 1L);
-                return 13;
+                return 14;
             }
             catch (NullReferenceException)
             {
@@ -155,7 +171,7 @@ namespace InterlockedNullRefLocations
             try
             {
                 Interlocked.Exchange(ref Unsafe.NullRef<IntPtr>(), new IntPtr(1));
-                return 14;
+                return 15;
             }
             catch (NullReferenceException)
             {
@@ -166,7 +182,7 @@ namespace InterlockedNullRefLocations
             {
                 ref Marker location = ref Unsafe.NullRef<Marker>();
                 Interlocked.Exchange(ref location, marker);
-                return 15;
+                return 16;
             }
             catch (NullReferenceException)
             {
@@ -175,12 +191,16 @@ namespace InterlockedNullRefLocations
             // Execution continues normally afterwards: none of the aborted intrinsics
             // left wreckage on the eval stack.
             int live = 5;
-            if (Interlocked.Add(ref live, 3) != 8 || live != 8) return 16;
-            if (Interlocked.Exchange(ref live, 20) != 8 || live != 20) return 17;
-            if (Interlocked.CompareExchange(ref live, 30, 20) != 20 || live != 30) return 18;
+            if (Interlocked.Add(ref live, 3) != 8 || live != 8) return 17;
+            if (Interlocked.Exchange(ref live, 20) != 8 || live != 20) return 18;
+            if (Interlocked.CompareExchange(ref live, 30, 20) != 20 || live != 30) return 19;
+
+            States liveState = States.NotCanceled;
+            if (Interlocked.CompareExchange(ref liveState, States.Notifying, States.NotCanceled) != States.NotCanceled
+                || liveState != States.Notifying) return 20;
 
             Marker slot = null;
-            if (Interlocked.Exchange(ref slot, marker) != null || slot != marker) return 19;
+            if (Interlocked.Exchange(ref slot, marker) != null || slot != marker) return 21;
 
             return 0;
         }
