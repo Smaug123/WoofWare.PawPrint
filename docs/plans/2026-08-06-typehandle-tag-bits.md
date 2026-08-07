@@ -1,6 +1,6 @@
 # Tag Bits On Type Handles
 
-*Authorship: LLM. Status: plan, awaiting a decision on Option 1 vs Option 2.*
+*Authorship: LLM. Status: **done**. Option 1 landed as "Answer `and` on type handles honestly"; Option 2 (the `TypeDescPtr` identity) landed as the follow-up described in "Outcome" at the end of this document.*
 
 Follow-up to `2026-08-06-tagged-gc-handles.md`, which taught `and`/`or`/`xor` to answer honestly
 on a **GC handle**. The same class of bug exists on `NativeIntSource.TypeHandlePtr` and
@@ -224,3 +224,47 @@ the TypeDesc identity then has a clean, self-contained PR with the end-to-end re
 - **End-to-end**: the `RuntimeTypeHandle.FromIntPtr` repro above as a `sourcesPure` case. Under
   Option 1 it stays in `unimplemented`; under Option 2 it passes. Its assertions hold on real
   .NET either way.
+
+## Outcome
+
+Both options landed, as two stacked changes.
+
+**Option 1** routed the `TypeHandlePtr` / `MethodTablePtr` arms of
+`andNativeIntAddressBits` through `TaggedPointerBits` and hoisted the tag rule into
+`TypeHandleTag.forTarget`, shared with `PointerHashSynthesis`. `AsTypeDesc` was
+refused loudly rather than answered wrongly.
+
+**Option 2** added `NativeIntSource.TypeDescPtr` (and its `CliRuntimePointer`
+counterpart), so `AsTypeDesc` now produces that identity instead of refusing.
+Three things are worth recording:
+
+- The plan's assumption held: `ByrefRoot.MethodTableExposedClassObject`'s read
+  handler keys purely on the `RuntimeTypeHandleTarget`, so the TypeDesc branch
+  reuses the same cell. It is renamed `ByrefRoot.ExposedClassObject`, since it is
+  now reached by two different `ldflda`s —
+  `MethodTableAuxiliaryData::ExposedClassObjectRaw` and
+  `TypeDesc::_exposedClassObject`. Keeping one root matters: two roots would give
+  one logical location two identities and break byref equality between them.
+
+- `PointerHashSynthesis` needed a small refactor that the plan did not anticipate.
+  Low bits were previously baked into the *stored* counter value via
+  `lowBitsForKey`, which cannot express "same identity, tag cleared". They are now
+  computed per source (`lowBitsForSource`) and OR-ed on at the end, with the map
+  storing address bits alone. This unified the GC-handle tag and the type-handle
+  tag under one concept, and removed the `lowBitsForKey` guard that existed only
+  because a key-based function could not tell the two apart.
+
+- `RuntimeTypeHandle.MakeByRef` is an unimplemented QCall, so the end-to-end test
+  covers pointer and pointer-to-pointer TypeDescs rather than byref ones. That is
+  an unrelated gap, noted here so the coverage choice is not mistaken for an
+  oversight.
+
+Both `RuntimeTypeHandleFromIntPtr.cs` and the pre-existing
+`ArrayGetInterfacesPointerElement.cs` are un-parked and passing.
+
+### Still not done
+
+`or` and `xor` on type-handle-shaped pointers. `or` fails loudly and `xor` routes
+to hash synthesis under its documented lossy contract, so neither is *wrong* — but
+neither is exact either, and both could gain the same treatment if a caller ever
+needs it. Nothing does today.

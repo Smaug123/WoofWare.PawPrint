@@ -949,19 +949,50 @@ module TestNullaryIlOp =
         runBinary NullaryIlOp.And (methodTable methodTableTarget) (nativeConst ~~~3L)
         |> shouldEqual (methodTable methodTableTarget)
 
-    [<Test>]
-    let ``And that would strip a type handle's tag is refused loudly`` () : unit =
-        // `TypeHandle.AsTypeDesc`: `(TypeDesc*)((nint)m_asTAddr & ~2)`. The base
-        // survives but the tag changes, so the result is the target's TypeDesc
-        // pointer — a different identity, which PawPrint does not yet represent.
-        // Reachable from the public `RuntimeTypeHandle.FromIntPtr`.
-        let exn =
-            Assert.Throws (fun () ->
-                runBinary NullaryIlOp.And (typeHandle typeDescTarget) (nativeConst ~~~2L)
-                |> ignore<EvalStackValue>
-            )
+    let private typeDesc (target : RuntimeTypeHandleTarget) : EvalStackValue =
+        EvalStackValue.NativeInt (NativeIntSource.TypeDescPtr target)
 
-        exn.Message |> shouldContainText "TypeDesc pointer"
+    [<Test>]
+    let ``And strips a type handle's tag to its TypeDesc pointer`` () : unit =
+        // `TypeHandle.AsTypeDesc`: `(TypeDesc*)((nint)m_asTAddr & ~2)`. The base
+        // survives but the tag clears, so the result is a different identity —
+        // the target's TypeDesc pointer. Reachable from the public
+        // `RuntimeTypeHandle.FromIntPtr`.
+        runBinary NullaryIlOp.And (typeHandle typeDescTarget) (nativeConst ~~~2L)
+        |> shouldEqual (typeDesc typeDescTarget)
+
+        // A wider mask over the same region strips it just the same.
+        runBinary NullaryIlOp.And (typeHandle typeDescTarget) (nativeConst ~~~3L)
+        |> shouldEqual (typeDesc typeDescTarget)
+
+    [<Test>]
+    let ``a TypeDesc pointer is itself untagged`` () : unit =
+        // Having been stripped, it carries no tag: base-preserving masks are the
+        // identity and the tag region reads as zero. In particular `AsTypeDesc`
+        // is idempotent, and `IsTypeDesc` of the result is false, as in CoreCLR.
+        runBinary NullaryIlOp.And (typeDesc typeDescTarget) (nativeConst ~~~2L)
+        |> shouldEqual (typeDesc typeDescTarget)
+
+        runBinary NullaryIlOp.And (typeDesc typeDescTarget) (nativeConst -1L)
+        |> shouldEqual (typeDesc typeDescTarget)
+
+        runBinary NullaryIlOp.And (typeDesc typeDescTarget) (nativeConst 2L)
+        |> shouldEqual (nativeConst 0L)
+
+    [<Test>]
+    let ``a TypeDesc pointer is not the type handle it came from`` () : unit =
+        // In CoreCLR the two differ numerically by exactly the tag bit, so they
+        // must not compare equal — otherwise `AreSameType` would conflate a
+        // handle with the TypeDesc inside it.
+        NativeIntSource.equalsForCli
+            (NativeIntSource.TypeDescPtr typeDescTarget)
+            (NativeIntSource.TypeHandlePtr typeDescTarget)
+        |> shouldEqual false
+
+        NativeIntSource.equalsForCli
+            (NativeIntSource.TypeDescPtr typeDescTarget)
+            (NativeIntSource.TypeDescPtr typeDescTarget)
+        |> shouldEqual true
 
     [<Test>]
     let ``And on a type handle with a mask spanning the address is refused loudly`` () : unit =

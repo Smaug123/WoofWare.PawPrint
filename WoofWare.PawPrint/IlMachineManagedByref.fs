@@ -245,7 +245,7 @@ module IlMachineManagedByref =
                     $"Static field byref %O{field.Get} on concrete type %O{ty} in %O{owner} was read before the static slot was initialised"
         | ByrefRoot.StringCharAt (str, charIndex) ->
             ManagedHeap.getStringChar str charIndex state.ManagedHeap |> CliType.ofChar
-        | ByrefRoot.MethodTableExposedClassObject target ->
+        | ByrefRoot.ExposedClassObject target ->
             // Pre-allocation at byref construction (see
             // MethodTableProjection.tryProjectAuxiliaryDataFieldAddress) guarantees
             // the RuntimeType is registered before any read; a missing entry here
@@ -254,7 +254,7 @@ module IlMachineManagedByref =
             | Some addr -> CliType.ObjectRef (Some addr)
             | None ->
                 failwith
-                    $"interpreter bug: ExposedClassObjectRaw byref for type %O{target} reached read without prior RuntimeType registry allocation"
+                    $"interpreter bug: cached-RuntimeType byref for type %O{target} reached read without prior RuntimeType registry allocation"
 
     let private writeRootValue (state : IlMachineState) (root : ByrefRoot) (updated : CliType) : IlMachineState =
         // The ReferenceEquals checks in this function are allocation shortcuts for direct root
@@ -455,14 +455,14 @@ module IlMachineManagedByref =
                 { state with
                     ManagedHeap = ManagedHeap.setStringChar str charIndex updated state.ManagedHeap
                 }
-        | ByrefRoot.MethodTableExposedClassObject target ->
-            // Managed CoreLib only writes ExposedClassObjectRaw via the native
+        | ByrefRoot.ExposedClassObject target ->
+            // Managed CoreLib only writes this cache via the native
             // QCall path inside GetRuntimeTypeFromHandleSlow, which is not
             // implemented in WoofWare. Our fast read always returns a non-null
             // canonical RuntimeType, so the `?? GetRuntimeTypeFromHandleSlow(...)`
             // branch in the managed accessor never fires; reaching this write
             // means a code path is bypassing that contract.
-            failwith $"writes to ExposedClassObjectRaw cache for type %O{target} are not modelled (got %O{updated})"
+            failwith $"writes to the cached-RuntimeType cell for type %O{target} are not modelled (got %O{updated})"
 
     let private readProjectedValue (rootValue : CliType) (projs : ByrefProjection list) : CliType =
         projs

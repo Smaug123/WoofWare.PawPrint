@@ -94,6 +94,17 @@ type NativeIntSource =
     | ManagedPointer of ManagedPointerSource
     | FunctionPointer of MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
     | TypeHandlePtr of RuntimeTypeHandleTarget
+    /// `TypeDesc*` for a runtime type: the untagged half of a TypeDesc-shaped
+    /// `TypeHandlePtr`, produced by CoreCLR's `TypeHandle.AsTypeDesc`
+    /// (`handle & ~2`). It addresses the same base as the `TypeHandlePtr` it came
+    /// from — the two differ only in the tag bit — but is a distinct identity:
+    /// `IsTypeDesc` is false of it, and it is the pointer through which
+    /// `TypeDesc`'s own fields are read.
+    ///
+    /// Only TypeDesc-shaped targets (byref / pointer / function-pointer /
+    /// generic-parameter) have one; `TypeHandleTag.forTarget` is the classifier,
+    /// and producer sites must not mint this for a MethodTable-shaped target.
+    | TypeDescPtr of RuntimeTypeHandleTarget
     /// `MethodTable*` for a runtime type. The payload widens to
     /// `RuntimeTypeHandleTarget` so the open-generic typedef's canonical
     /// MethodTable (`OpenGenericTypeDefinition`) can be expressed alongside
@@ -188,6 +199,7 @@ type NativeIntSource =
         | NativeIntSource.FunctionPointer methodDefinition ->
             $"<pointer to {methodDefinition.Name} in {methodDefinition.DeclaringType.Assembly.Name}>"
         | NativeIntSource.TypeHandlePtr ptr -> $"<type ID %O{ptr}>"
+        | NativeIntSource.TypeDescPtr ptr -> $"<TypeDesc of %O{ptr}>"
         | NativeIntSource.MethodTablePtr ptr -> $"<method table for type %O{ptr}>"
         | NativeIntSource.MethodTableAuxiliaryDataPtr ptr -> $"<method table auxiliary data for type %O{ptr}>"
         | NativeIntSource.PerInstInfoPtr ptr -> $"<PerInstInfo for type %O{ptr}>"
@@ -215,6 +227,7 @@ type NativeIntSource =
             | NativeIntSource.FunctionPointer left, NativeIntSource.FunctionPointer right ->
                 MethodInfo.NominallyEqual left right
             | NativeIntSource.TypeHandlePtr left, NativeIntSource.TypeHandlePtr right -> left = right
+            | NativeIntSource.TypeDescPtr left, NativeIntSource.TypeDescPtr right -> left = right
             | NativeIntSource.MethodTablePtr left, NativeIntSource.MethodTablePtr right -> left = right
             | NativeIntSource.MethodTableAuxiliaryDataPtr left, NativeIntSource.MethodTableAuxiliaryDataPtr right ->
                 left = right
@@ -238,6 +251,7 @@ type NativeIntSource =
             | NativeIntSource.ManagedPointer _, _
             | NativeIntSource.FunctionPointer _, _
             | NativeIntSource.TypeHandlePtr _, _
+            | NativeIntSource.TypeDescPtr _, _
             | NativeIntSource.MethodTablePtr _, _
             | NativeIntSource.MethodTableAuxiliaryDataPtr _, _
             | NativeIntSource.PerInstInfoPtr _, _
@@ -269,6 +283,7 @@ type NativeIntSource =
                 methodDefinition.Generics
             )
         | NativeIntSource.TypeHandlePtr ptr -> HashCode.Combine (3, ptr)
+        | NativeIntSource.TypeDescPtr ptr -> HashCode.Combine (20, ptr)
         | NativeIntSource.MethodTablePtr ptr -> HashCode.Combine (4, ptr)
         | NativeIntSource.MethodTableAuxiliaryDataPtr ptr -> HashCode.Combine (5, ptr)
         | NativeIntSource.PerInstInfoPtr ptr -> HashCode.Combine (18, ptr)
@@ -363,6 +378,7 @@ module NativeIntSource =
         | NativeIntSource.FieldHandlePtr _
         | NativeIntSource.MethodHandlePtr _
         | NativeIntSource.TypeHandlePtr _
+        | NativeIntSource.TypeDescPtr _
         | NativeIntSource.MethodTablePtr _
         | NativeIntSource.MethodTableAuxiliaryDataPtr _
         | NativeIntSource.PerInstInfoPtr _
@@ -391,6 +407,7 @@ module NativeIntSource =
         | NativeIntSource.FieldHandlePtr _
         | NativeIntSource.MethodHandlePtr _
         | NativeIntSource.TypeHandlePtr _
+        | NativeIntSource.TypeDescPtr _
         | NativeIntSource.MethodTablePtr _
         | NativeIntSource.MethodTableAuxiliaryDataPtr _
         | NativeIntSource.PerInstInfoPtr _
@@ -439,6 +456,12 @@ module NativeIntSource =
         match a, b with
         | NativeIntSource.FunctionPointer f1, NativeIntSource.FunctionPointer f2 -> MethodInfo.NominallyEqual f1 f2
         | NativeIntSource.TypeHandlePtr f1, NativeIntSource.TypeHandlePtr f2 -> f1 = f2
+        // A `TypeDescPtr` is the same base address as the `TypeHandlePtr` it was
+        // masked from, but with the tag bit clear, so it must NOT alias one: in
+        // CoreCLR the two differ numerically by exactly that bit. It aliases
+        // nothing else either — only TypeDesc-shaped targets have one, and those
+        // have no MethodTable.
+        | NativeIntSource.TypeDescPtr f1, NativeIntSource.TypeDescPtr f2 -> f1 = f2
         | NativeIntSource.MethodTablePtr f1, NativeIntSource.MethodTablePtr f2 -> f1 = f2
         | NativeIntSource.MethodTableAuxiliaryDataPtr f1, NativeIntSource.MethodTableAuxiliaryDataPtr f2 -> f1 = f2
         | NativeIntSource.PerInstInfoPtr f1, NativeIntSource.PerInstInfoPtr f2 -> f1 = f2
@@ -484,6 +507,8 @@ module NativeIntSource =
         | NativeIntSource.FunctionPointer _, NativeIntSource.OpaqueHashBits _
         | NativeIntSource.OpaqueHashBits _, NativeIntSource.TypeHandlePtr _
         | NativeIntSource.TypeHandlePtr _, NativeIntSource.OpaqueHashBits _
+        | NativeIntSource.OpaqueHashBits _, NativeIntSource.TypeDescPtr _
+        | NativeIntSource.TypeDescPtr _, NativeIntSource.OpaqueHashBits _
         | NativeIntSource.OpaqueHashBits _, NativeIntSource.MethodTablePtr _
         | NativeIntSource.MethodTablePtr _, NativeIntSource.OpaqueHashBits _
         | NativeIntSource.OpaqueHashBits _, NativeIntSource.MethodTableAuxiliaryDataPtr _
@@ -578,6 +603,8 @@ module NativeIntSource =
         | _, NativeIntSource.FunctionPointer _
         | NativeIntSource.TypeHandlePtr _, _
         | _, NativeIntSource.TypeHandlePtr _
+        | NativeIntSource.TypeDescPtr _, _
+        | _, NativeIntSource.TypeDescPtr _
         | NativeIntSource.MethodTablePtr _, _
         | _, NativeIntSource.MethodTablePtr _
         | NativeIntSource.MethodTableAuxiliaryDataPtr _, _
@@ -650,6 +677,9 @@ module NativeIntSource =
 type CliRuntimePointer =
     | Verbatim of int64
     | TypeHandlePtr of RuntimeTypeHandleTarget
+    /// See `NativeIntSource.TypeDescPtr` for the contract; the
+    /// eval-stack-flattened counterpart is `NativeIntSource.TypeDescPtr`.
+    | TypeDescPtr of RuntimeTypeHandleTarget
     | FieldRegistryHandle of int64
     | MethodRegistryHandle of int64
     /// See `NativeIntSource.MethodTablePtr` for the contract; the

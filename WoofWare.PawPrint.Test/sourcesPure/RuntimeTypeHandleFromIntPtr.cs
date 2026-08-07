@@ -24,10 +24,14 @@ public class Program
         Type roundTrippedInt = Type.GetTypeFromHandle(RuntimeTypeHandle.FromIntPtr(rawInt));
         if (roundTrippedInt != typeof(int)) return 3;
 
-        // A byref type is TypeDesc-shaped too, by a different ConcreteTypeHandle case.
-        IntPtr rawByref = RuntimeTypeHandle.ToIntPtr(typeof(int).MakeByRefType().TypeHandle);
-        Type roundTrippedByref = Type.GetTypeFromHandle(RuntimeTypeHandle.FromIntPtr(rawByref));
-        if (roundTrippedByref != typeof(int).MakeByRefType()) return 4;
+        // A pointer-to-pointer is TypeDesc-shaped at both levels, so the element
+        // walk stays on the AsTypeDesc branch rather than crossing back to a
+        // MethodTable.
+        IntPtr rawPointerToPointer = RuntimeTypeHandle.ToIntPtr(typeof(int**).TypeHandle);
+        Type roundTrippedPointerToPointer =
+            Type.GetTypeFromHandle(RuntimeTypeHandle.FromIntPtr(rawPointerToPointer));
+        if (roundTrippedPointerToPointer != typeof(int**)) return 4;
+        if (roundTrippedPointerToPointer.Name != "Int32**") return 5;
 
         return 0;
     }

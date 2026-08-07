@@ -35,9 +35,13 @@ type CanonicalPointerKey =
     | MetadataImportHandle of string
 
 /// Counter-based assignment of synthesised bits to canonical pointer keys.
-/// The first time a key is materialised, it is assigned counter `n` and
-/// produces bit pattern `((n + 1) <<< 2) ||| lowBitsForKey(key)`. Subsequent
-/// materialisations of the same key return the previously-assigned bits.
+/// The first time a key is materialised, it is assigned counter `n` and stores
+/// address bits `(n + 1) <<< 2`. Subsequent materialisations of the same key
+/// return those same stored bits. Tag bits are NOT stored: they are a view over
+/// the identity, so `materialiseHashBits` OR-s them on per source, which is what
+/// lets two differently-tagged views of one identity (a `TypeHandlePtr` and the
+/// `TypeDescPtr` masked out of it; an untagged and a tagged GC handle) share
+/// address bits and differ only in the low region.
 ///
 /// Distinct keys get distinct bit patterns by construction (no collisions),
 /// and the assignment order is deterministic given a fixed program and
@@ -88,6 +92,12 @@ module PointerHashSynthesis =
             | ConcreteTypeHandle.Pointer _
             | ConcreteTypeHandle.FunctionPointer _ -> CanonicalPointerKey.TypeHandle target
         | NativeIntSource.TypeHandlePtr target -> CanonicalPointerKey.TypeHandle target
+        // A `TypeDescPtr` shares its base address with the `TypeHandlePtr` it was
+        // masked from — in CoreCLR they differ only in the tag bit — so it shares
+        // the identity too. `lowBitsForSource` is what separates their bit
+        // patterns. Only TypeDesc-shaped targets have a `TypeDescPtr`, and those
+        // never collapse to a `MethodTable` key.
+        | NativeIntSource.TypeDescPtr target -> CanonicalPointerKey.TypeHandle target
         | NativeIntSource.MethodTableAuxiliaryDataPtr target -> CanonicalPointerKey.MethodTableAuxiliaryData target
         | NativeIntSource.FunctionPointer methodInfo ->
             CanonicalPointerKey.FunctionPointer (
@@ -119,35 +129,27 @@ module PointerHashSynthesis =
             failwith
                 $"PointerHashSynthesis.canonicalKey: %O{src} is not a canonicalisable pointer shape; verbatim / managed-pointer / cross-array / already-synthesised values / PerInstInfo chain intermediates must be handled before reaching this function"
 
-    /// Low-bit pattern required for a canonical key. The type-handle tag rule
-    /// itself lives in `TypeHandleTag.forTarget`, which is shared with the `and`
-    /// arms in `NullaryIlOp`: the two must agree, because a handle's tag is
+    /// Tag bits a pointer carries in the low, known-clear region that
+    /// `canonicalKey` deliberately does not distinguish.
+    ///
+    /// Every low bit is a *view* over an identity, never part of the identity
+    /// itself, so it is computed from the source rather than from the key. Two
+    /// values sharing a key therefore get the same address bits and differ in
+    /// exactly their tags — which is what makes a `TypeHandlePtr` and the
+    /// `TypeDescPtr` masked out of it differ by precisely bit 1, as they do in
+    /// CoreCLR. A `MethodTable*` is aligned and untagged, and every other handle
+    /// kind is conventionally aligned, so both contribute nothing.
+    ///
+    /// The type-handle rule lives in `TypeHandleTag.forTarget`, shared with the
+    /// `and` arms in `NullaryIlOp`: the two must agree, because a tag is
     /// observable both by masking it directly and by comparing synthesised bits.
-    /// MethodTable* is aligned (low 2 bits clear), and other handle kinds are
-    /// conventionally aligned.
-    let private lowBitsForKey (key : CanonicalPointerKey) : uint64 =
-        match key with
-        | CanonicalPointerKey.MethodTable _ -> 0UL
-        | CanonicalPointerKey.TypeHandle target ->
-            match target with
-            | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as handle)
-            | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.OneDimArrayZero _ as handle)
-            | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Array _ as handle) ->
-                failwith
-                    $"PointerHashSynthesis.lowBitsForKey: TypeHandle(Closed(%O{handle})) should have been collapsed to MethodTable by canonicalKey; this is an interpreter bug"
-            | _ -> TypeHandleTag.forTarget target |> uint64
-        | CanonicalPointerKey.MethodTableAuxiliaryData _
-        | CanonicalPointerKey.FunctionPointer _
-        | CanonicalPointerKey.MethodHandle _
-        | CanonicalPointerKey.FieldHandle _
-        | CanonicalPointerKey.GcHandle _
-        | CanonicalPointerKey.EventPipeProvider _
-        | CanonicalPointerKey.EventPipeEvent _
-        | CanonicalPointerKey.LowLevelMonitor _
-        | CanonicalPointerKey.WaitHandle _
-        | CanonicalPointerKey.AssemblyHandle _
-        | CanonicalPointerKey.ModuleHandle _
-        | CanonicalPointerKey.MetadataImportHandle _ -> 0UL
+    let private lowBitsForSource (src : NativeIntSource) : uint64 =
+        match src with
+        | NativeIntSource.GcHandlePtr (_, tag) -> Operators.uint64 tag
+        | NativeIntSource.TypeHandlePtr target -> TypeHandleTag.forTarget target |> Operators.uint64
+        // `AsTypeDesc` has cleared the tag; that is the whole point of it.
+        | NativeIntSource.TypeDescPtr _ -> 0UL
+        | _ -> 0UL
 
     /// Synthesise deterministic 64-bit hash bits for a `NativeIntSource`.
     /// This is the single named site at which synthesised bits come into
@@ -190,21 +192,17 @@ module PointerHashSynthesis =
         | _ ->
             let key = canonicalKey src
 
-            // Tag bits the guest has stuffed into a pointer's low bits are part of
-            // the value's bit pattern, but not part of its identity, so they are
-            // OR-ed onto the identity's assigned bits rather than keyed on. The
+            // Low bits are a view over an identity, not part of it, so the map
+            // stores address bits alone and the tag is OR-ed on at the end. The
             // counter scheme leaves the low 2 bits clear for exactly this, so the
             // no-collision property is preserved.
-            let tagBits =
-                match src with
-                | NativeIntSource.GcHandlePtr (_, tag) -> Operators.uint64 tag
-                | _ -> 0UL
+            let tagBits = lowBitsForSource src
 
             match Map.tryFind key counters.Assigned with
             | Some bits -> Operators.int64 (bits ||| tagBits), counters
             | None ->
                 let n = counters.NextCounter
-                let bits = ((n + 1UL) <<< 2) ||| lowBitsForKey key
+                let bits = (n + 1UL) <<< 2
 
                 let counters' =
                     {
