@@ -55,6 +55,7 @@
     <Compile Include="Signal.fs" />
     <Compile Include="SignalState.fs" />
     <Compile Include="EmulatedKernel.fs" />
+    <Compile Include="RuntimeConfig.fs" />
     <Compile Include="HostConfig.fs" />
     <Compile Include="IlMachineStateModel.fs" />
     <Compile Include="IlMachineTypeResolution.fs" />
@@ -136,6 +137,7 @@
     <Compile Include="Native\NativeDispatch.fs" />
     <Compile Include="SignalDispatch.fs" />
     <Compile Include="AbstractMachine.fs" />
+    <Compile Include="AppContextSeed.fs" />
     <Compile Include="Program.fs" />
     <EmbeddedResource Include="version.json" />
   </ItemGroup>

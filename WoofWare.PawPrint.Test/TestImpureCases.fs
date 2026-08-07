@@ -28,6 +28,7 @@ module TestImpureCases =
                 { KernelConfig.Default with
                     CurrentDirectory = AbsoluteUnixPath.parseOrFail "test current directory" dir
                 }
+            AppContext = AppContextProperties.empty
             ExpectsUnhandledException = false
             AssertTerminalState =
                 Some (fun state ->
@@ -112,6 +113,36 @@ module TestImpureCases =
             // directory. `TestAbsoluteUnixPath` covers the UTF-8 encoding of
             // such a path directly in the meantime.
             currentDirectoryCase "/héllo/中文/🐶"
+
+            {
+                // The motivating case for host-seeded AppContext, parked for an unrelated
+                // reason. The seeding itself works: the guest reaches Main and
+                // `AppContext.TryGetSwitch` reports the switch as seeded `false`. What stops
+                // it is `EventSource`'s name/manifest handling, which compares two byrefs
+                // into the *same* string at different character offsets:
+                //
+                //   refusing to clt.un byrefs without a common root:
+                //     <char 0 of string <object #105>> vs <char 28 of string <object #105>>
+                //
+                // Two `ByrefRoot.StringCharAt` byrefs into one string object plainly do share
+                // a root, so `EvalStackValueComparisons.cltUn` is being needlessly
+                // conservative; teaching it to compare same-object string byrefs by offset is
+                // its own change, and belongs with the other byref-comparison work rather
+                // than bundled into AppContext seeding.
+                //
+                // Un-park when that lands. Until then `AppContextConfigProperties.cs` and
+                // `AppContextSeededBeforeCctor.cs` in `cases` cover the seeding mechanism
+                // itself, including boolean switch values read back through `TryGetSwitch`.
+                FileName = "EventSourceDisabled.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList [ "System.Diagnostics.Tracing.EventSource.IsSupported", "false" ]
+                    )
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
         ]
 
     let cases : EndToEndTestCase list =
@@ -125,6 +156,41 @@ module TestImpureCases =
             currentDirectoryCase "/"
             currentDirectoryCase "/home/pawprint/work"
             {
+                // Host-seeded AppContext properties, as `hostpolicy` installs them from
+                // `runtimeconfig.json`. Impure because the differential oracle loads the
+                // guest in-process on the host runtime, whose AppContext was seeded before
+                // this test process started and cannot be reseeded; "what the host put in
+                // AppContext" is therefore a PawPrint-only fact.
+                FileName = "AppContextConfigProperties.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "Test.String", "hello world"
+                                "Test.Astral", "p\U0001F436w"
+                                "Test.Empty", ""
+                                "Test.True", "true"
+                                "Test.False", "false"
+                            ]
+                    )
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // Seeding must precede the entry type's `.cctor` pump, not merely precede
+                // Main: BCL feature switches latch into `static readonly` fields on first
+                // read. The guest latches a seeded property the same way, so this fails if
+                // the seed ever moves later in `Program.prepare`.
+                FileName = "AppContextSeededBeforeCctor.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.ofMap (Map.ofList [ "Test.Latched", "latched" ])
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // `SystemNative_GetCwd` must classify its error returns before
                 // resolving the caller's buffer to storage, because the C
                 // decides them without dereferencing it. Impure because the
@@ -134,6 +200,7 @@ module TestImpureCases =
                 FileName = "GetCwdNoDereferenceErrors.cs"
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -153,6 +220,7 @@ module TestImpureCases =
                 FileName = "WriteLine.cs"
                 ExpectedReturnCode = 1
                 KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
                 ExpectsUnhandledException = false
                 AssertTerminalState =
                     Some (fun state ->
@@ -180,6 +248,7 @@ module TestImpureCases =
                     { KernelConfig.Default with
                         ProcessorCount = 4
                     }
+                AppContext = AppContextProperties.empty
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -192,6 +261,7 @@ module TestImpureCases =
                 FileName = "DateTimeUtcNowEpochDefault.cs"
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -212,6 +282,7 @@ module TestImpureCases =
                     { KernelConfig.Default with
                         ProcessorCount = 4
                     }
+                AppContext = AppContextProperties.empty
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -228,6 +299,7 @@ module TestImpureCases =
                 FileName = "StopwatchTimestampGranularity.cs"
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -244,6 +316,7 @@ module TestImpureCases =
                     { KernelConfig.Default with
                         WallClockEpochMs = 1_699_920_000_000L
                     }
+                AppContext = AppContextProperties.empty
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -261,6 +334,7 @@ module TestImpureCases =
                     { KernelConfig.Default with
                         Environment = Map.ofList [ "DOTNET_PROCESSOR_COUNT", "4" ]
                     }
+                AppContext = AppContextProperties.empty
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -274,6 +348,7 @@ module TestImpureCases =
                 FileName = "InstaQuit.cs"
                 ExpectedReturnCode = 1
                 KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -283,6 +358,7 @@ module TestImpureCases =
                 FileName = "ExitFromWorker.cs"
                 ExpectedReturnCode = 7
                 KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -301,6 +377,7 @@ module TestImpureCases =
                 FileName = "SystemNativeWriteSuccess.cs"
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
                 ExpectsUnhandledException = false
                 AssertTerminalState =
                     Some (fun state ->
@@ -333,6 +410,7 @@ module TestImpureCases =
                 FileName = "SystemNativeClose.cs"
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -347,6 +425,7 @@ module TestImpureCases =
                 FileName = "SystemNativeIsATty.cs"
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -360,6 +439,7 @@ module TestImpureCases =
                 FileName = "GCMemoryInfoAllZero.cs"
                 ExpectedReturnCode = 42
                 KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -378,6 +458,7 @@ module TestImpureCases =
                 FileName = "ThreadStaticByrefAcrossThreads.cs"
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
@@ -406,6 +487,7 @@ module TestImpureCases =
                         peImage
                         { HostConfig.Default dotnetRuntimes with
                             Kernel = case.KernelConfig
+                            AppContext = case.AppContext
                         }
                 with
                 | RunOutcome.GuestUnhandledException (_, _, exn) ->

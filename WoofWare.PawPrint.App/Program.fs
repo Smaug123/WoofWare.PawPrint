@@ -229,6 +229,7 @@ module AppProgram =
                         Kernel = kernelConfig
                         PctSeed = pctSeed
                         Argv = args
+                        AppContext = HostRuntimeConfig.forAssembly dllPath
                     }
             with
             | RunOutcome.NormalExit (state, thread)

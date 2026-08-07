@@ -7,7 +7,7 @@ WoofWare.PawPrint is an experimental .NET runtime implementation written in F#. 
 
 This is NOT a high-performance runtime - it's a very slow IL interpreter prioritizing determinism over speed.
 
-If you need to check upstream behaviour, the genuine .NET runtime's source is pinned in `flake.nix` (`dotnet-runtime-src`) and exposed inside the Nix devshell as `$DOTNET_RUNTIME_SRC`. The pin tracks the .NET 10 servicing version the devshell runs (kept honest by the `runtime-version-pin` flake check and the `TestEmulatedRuntime` drift test). To keep the closure small it is sparse-checked-out to the trees we read most — `src/coreclr`, `src/libraries/System.Private.CoreLib`, and `eng`; if you need another tree, add it to the `sparseCheckout` list in `flake.nix`. See the `.claude/commands/sync-dotnet-runtime.md` Claude command for how to bump the pin. (The old ad-hoc `../dotnet-runtime` sibling checkout is no longer used; `../dotnet`, without the `-runtime` suffix, is the .NET SDK source and is not what you want.)
+If you need to check upstream behaviour, the genuine .NET runtime's source is pinned in `flake.nix` (`dotnet-runtime-src`) and exposed inside the Nix devshell as `$DOTNET_RUNTIME_SRC`. The pin tracks the .NET 10 servicing version the devshell runs (kept honest by the `runtime-version-pin` flake check and the `TestEmulatedRuntime` drift test). To keep the closure small it is sparse-checked-out to the trees we read most — `src/coreclr`, `src/libraries/System.Private.CoreLib`, `src/native/corehost` (hostfxr/hostpolicy, which is what turns `runtimeconfig.json` into AppContext properties), `src/native/external/rapidjson` (the JSON writer corehost defers to), and `eng`; if you need another tree, add it to the `sparseCheckout` list in `flake.nix`. Note that a fixed-output derivation is keyed by its declared `hash`, so Nix will silently reuse the old store path unless you invalidate the hash as well as editing `sparseCheckout`. See the `.claude/commands/sync-dotnet-runtime.md` Claude command for how to bump the pin. (The old ad-hoc `../dotnet-runtime` sibling checkout is no longer used; `../dotnet`, without the `-runtime` suffix, is the .NET SDK source and is not what you want.)
 
 ## CoreLib flavour
 
@@ -53,6 +53,19 @@ nix develop -c dotnet run --project WoofWare.PawPrint.App/WoofWare.PawPrint.App.
 - `Corelib.fs`: Core library type definitions (String, Array, etc.)
 - `Native/` (dispatched by `Native/NativeDispatch.fs`) and `ExternImplementations/`: the boundary for runtime-provided or host-provided behavior; prefer extending this seam over special-casing host effects elsewhere in the interpreter
 - `EmulatedKernel.fs`: the simulated process's kernel-visible state (virtual clock, seeded PRNG, fd table, env vars, processor count). Values the real runtime would read from the host belong here as *data*, never as a host read: the library must not call `System.Environment`, `DateTime.Now`, `Guid.NewGuid` or similar, because a replay would then depend on the machine that produced it
+- `HostConfig.fs`: everything the host supplies to configure one run — where to find framework assemblies, the `KernelConfig` above, the scheduler seed, guest argv, and the AppContext properties. Distinct from `KernelConfig`: that is what the guest could learn by asking the OS, this is how the host launches the process at all
+
+### AppContext and `runtimeconfig.json`
+
+BCL feature switches (`System.Diagnostics.Tracing.EventSource.IsSupported`, `System.Globalization.Invariant`, …) are read through `AppContext.GetData`/`TryGetSwitch`. Nothing in managed code populates that store: on CoreCLR the VM calls `AppContext.Setup(char**, char**, int)` from `CorHost2::CreateAppDomainWithManager`, with arrays `hostpolicy` built from `runtimeOptions.configProperties`.
+
+PawPrint does the same in `AppContextSeed.fs`, called from `Program.prepare`. Three things are load-bearing:
+
+- **The library never reads the file.** `RuntimeConfig.parse` is pure `string -> Result<AppContextProperties, string>`; the filesystem read lives in the App (`HostRuntimeConfig.fs`). A library that read the host's disk would make a replay depend on the machine that produced it, and the test harness compiles guests straight to a `MemoryStream` where no sibling file exists.
+- **`Setup` runs CoreLib's own IL.** We synthesise only the two `char**` buffers, which is the host's job; the dictionary, the pointer walk and the `new string(char*)` calls are all CoreLib's. Do not be tempted to write `s_dataStore` directly or intercept the accessors.
+- **Seeding precedes the entry type's `.cctor` pump**, not merely `Main`, because switches latch into `static readonly` fields on first read. `sourcesImpure/AppContextSeededBeforeCctor.cs` pins this.
+
+Values that are reals, arrays or objects are *refused* rather than approximated: `hostpolicy` renders them with rapidjson's `Writer` (Grisu2 plus `dtoa.h`'s `Prettify`, so `1e2` becomes `100.0`), which PawPrint does not reproduce. Both files are in the pinned runtime source under `$DOTNET_RUNTIME_SRC/src/native/`.
 
 **WoofWare.PawPrint.Test**
 - Uses NUnit as the test framework
