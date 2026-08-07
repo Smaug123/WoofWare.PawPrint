@@ -486,7 +486,20 @@ module IlMachineRuntimeMetadata =
                 state, cliField :: fields
             )
 
-        let ownFields = List.rev ownFields
+        // An `[InlineArray(N)]` type's storage is N repeats of its one declared field; see
+        // `InlineArrayStorage.expand`. This site is reached for real by `newobj` on a struct with a
+        // constructor, which is exactly how CoreLib builds `TwoObjects` for `SR.Format`.
+        //
+        // Unlike the other expansion sites, this one also walks *reference* types — for which the
+        // attribute is inert; see `InlineArrayStorage.effectiveLength`.
+        let ownFields =
+            List.rev ownFields
+            |> InlineArrayStorage.expand
+                (fun () -> $"%s{typeInfo.Namespace}.%s{typeInfo.Name}")
+                typeInfo.Layout
+                (InlineArrayStorage.effectiveLength
+                    (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo)
+                    typeInfo.InlineArrayLength)
 
         // Recurse into base type
         let state, baseHandle =

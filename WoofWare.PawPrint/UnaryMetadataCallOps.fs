@@ -979,6 +979,15 @@ module internal UnaryMetadataCallOps =
                                     )
 
                                 List.rev fieldValues
+                                // Unreachable for an inline array (it is never primitive-like, so
+                                // it arrives as `UserDefinedValueType` and takes the branch above),
+                                // but routed through the shared expansion all the same.
+                                |> InlineArrayStorage.expand
+                                    (fun () -> $"%s{tDefn.Namespace}.%s{tDefn.Name}")
+                                    tDefn.Layout
+                                    (InlineArrayStorage.effectiveLength
+                                        (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies tDefn)
+                                        tDefn.InlineArrayLength)
                                 |> CliValueType.OfFields
                                     baseClassTypes
                                     state.ConcreteTypes
