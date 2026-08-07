@@ -374,6 +374,99 @@ module DeterministicMath =
 
         if signIsNegative then -result else result
 
+    /// The integer square root of a non-negative `n`: the greatest `r` with `r * r <= n`.
+    ///
+    /// Newton's iteration, run entirely in integers so that it is exact rather than
+    /// approximate. Starting at or above the answer, `x -> (x + n/x) / 2` decreases strictly
+    /// until it reaches `floor(sqrt n)` and never goes below it, so the first non-decrease is
+    /// the termination condition and the value before it is the answer. `2^ceil(b/2)` is such
+    /// a starting point: `n < 2^b` gives `sqrt n < 2^(b/2)`.
+    let internal integerSqrt (n : BigInteger) : BigInteger =
+        if n.Sign < 0 then
+            failwith $"DeterministicMath: integerSqrt of the negative value %O{n}"
+        elif n.IsZero then
+            // The iteration below would divide by its own zero starting point.
+            BigInteger.Zero
+        else
+
+        let mutable current = BigInteger.One <<< ((int (n.GetBitLength ()) + 1) / 2)
+        let mutable next = (current + (n / current)) >>> 1
+
+        while next < current do
+            current <- next
+            next <- (current + (n / current)) >>> 1
+
+        current
+
+    /// How far `sqrt` widens the mantissa before taking its integer square root. Two
+    /// constraints: it must be even, so that halving the exponent that comes with it stays
+    /// exact; and it must leave the root wider than the 54 significant bits a rounding
+    /// midpoint has, which is what the argument on `sqrt` below turns on. A mantissa of `L`
+    /// bits gives a root of `ceil((L + 128) / 2)`, so with `L` between 1 (the smallest
+    /// subnormal) and 54 (a normal after the parity adjustment) the root runs from 65 bits to
+    /// 91 — comfortably clear at both ends.
+    let private sqrtGuardBits : int = 128
+
+    /// The square root of `x`, with the semantics of IEEE 754's `squareRoot` operation —
+    /// which is what CoreCLR's `Math.Sqrt` inherits from the hardware instruction the JIT
+    /// emits for it.
+    ///
+    /// This function is the odd one out in this module, and deliberately so. `pow`, `sin` and
+    /// `cos` are clause 9.2 *recommended* operations that no mainstream libm rounds correctly,
+    /// so computing them here changes the answer in the last bit; `squareRoot` is a clause
+    /// 5.4.1 *required* operation, every platform implements it as a correctly rounded
+    /// hardware instruction, and so this implementation agrees with the host bit-for-bit on
+    /// every argument on which IEEE 754 fixes an answer at all. Computing it in-tree is
+    /// therefore not about changing the result but about not having to trust that the host
+    /// conforms — and about giving the tests an exact oracle, which the other three lack.
+    ///
+    /// Correct rounding here is a proof rather than an error budget. `integerSqrt` returns
+    /// `floor(sqrt scaled)` exactly, so the true root lies in `[root, root + 1)` and equals
+    /// `root` precisely when the remainder vanishes; `2 * root` with a sticky bit therefore
+    /// names a value on the same side of every 53-bit rounding boundary as the truth. It can
+    /// never sit *on* one: with the sticky bit set the value is odd and has at least 66 bits,
+    /// while a midpoint has at most 54, and without it the root is `2^(sqrtGuardBits / 2)`
+    /// times an integer of at most 27 bits and so is representable exactly. (Nor can the true
+    /// square root of a double ever be a midpoint: that would need a 54-bit odd square root,
+    /// whose square has 107 bits and is not a double.)
+    let sqrt (x : float) : float =
+        if Double.IsNaN x then
+            quieted x
+        elif x = 0.0 then
+            // Both zeros are their own square root; clause 5.4.1 gives squareRoot(-0) = -0,
+            // so this must come before the negative case below rather than after it.
+            x
+        elif Double.IsNegative x then
+            // Every other negative, including -infinity, is a domain error.
+            quietNaN
+        elif Double.IsPositiveInfinity x then
+            infinity
+        else
+
+        // x = mantissa * 2^exponent exactly, with mantissa > 0. Halving the exponent needs it
+        // to be even, so a spare factor of two moves into the mantissa when it is not.
+        let mantissa, exponent = decompose x
+
+        let mantissa, exponent =
+            if exponent % 2 = 0 then
+                mantissa, exponent
+            else
+                mantissa <<< 1, exponent - 1
+
+        let scaled = mantissa <<< sqrtGuardBits
+        let root = integerSqrt scaled
+
+        let sticky =
+            if root * root = scaled then
+                BigInteger.Zero
+            else
+                BigInteger.One
+
+        // sqrt(x) = sqrt(scaled) * 2^((exponent - sqrtGuardBits) / 2), and the bracketing
+        // value is (2 * root + sticky) / 2 -- hence the extra -1 on the exponent. Both terms
+        // of the subtraction are even, so the halving is exact.
+        roundToDouble ((root <<< 1) + sticky) (((exponent - sqrtGuardBits) / 2) - 1)
+
     /// Number of fractional bits carried by the value of pi used for trigonometric range
     /// reduction. This is not the accuracy of the answer, which `fractionBits` governs; it
     /// is the accuracy needed to *subtract* a multiple of pi/2 from an argument that may be

@@ -1358,6 +1358,44 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Float64 result)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
+        | "System.Private.CoreLib", "Math", "Sqrt" when intrinsicKey.DeclaringTypeFullName = "System.Math" ->
+            // Declared the same way as the three above -- `[Intrinsic]` +
+            // `MethodImplOptions.InternalCall`, no IL body -- so it likewise cannot be
+            // allowlisted in `safeIntrinsics`.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/coreclr/System.Private.CoreLib/src/System/Math.CoreCLR.cs#L112-L114
+            //
+            // The reason for computing it in-tree is different from theirs, though. The JIT
+            // lowers this one to a hardware square-root instruction rather than to a libm call,
+            // and IEEE 754 clause 5.4.1 *requires* squareRoot to be correctly rounded -- so
+            // unlike `pow`, `sin` and `cos`, the host's answer does not vary between machines
+            // and forwarding to it would not have cost determinism. `DeterministicMath.sqrt`
+            // exists so that the guarantee is this runtime's own rather than a property of the
+            // host we happen to be running on, and so that the tests have an exact oracle.
+            // `TestDeterministicMath` asserts the two agree bit-for-bit on every finite
+            // argument, which is an assertion the other three cannot make.
+            //
+            // Reached from ordinary guest code, and from `PortableThreadPool`'s hill-climbing
+            // controller, which takes the magnitude of the wave components that its `Math.Sin`
+            // and `Math.Cos` calls produce: its own private `Complex.Abs`
+            // (PortableThreadPool.HillClimbing.Complex.cs:35) is a bare `Math.Sqrt`.
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteDouble state.ConcreteTypes ], MethodReturnType.Returns (ConcreteDouble state.ConcreteTypes) ->
+                ()
+            | _ -> failwith $"Math.Sqrt: unexpected signature %s{formatMethodKey intrinsicKey}"
+
+            let argument, state = IlMachineState.popEvalStack currentThread state
+
+            let argument =
+                match argument with
+                | EvalStackValue.Float f -> f
+                | _ -> failwith $"Math.Sqrt: unexpected eval stack value: %O{argument}"
+
+            let result = DeterministicMath.sqrt argument
+
+            state
+            |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Float64 result)) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> IntrinsicResult.Completed
         | "System.Private.CoreLib", "String", "Equals" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteString state.ConcreteTypes ; ConcreteString state.ConcreteTypes ],
