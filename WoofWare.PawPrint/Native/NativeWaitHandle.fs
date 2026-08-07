@@ -540,14 +540,14 @@ module NativeWaitHandle =
 
                 state
                 |> withLastSystemError 0
-                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) ctx.Thread
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 1)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
 
             | Error (WaitHandle.ReleaseFailure.WouldExceedMaximum _) ->
                 state
                 |> withLastSystemError errorTooManyPosts
-                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
 
@@ -562,7 +562,7 @@ module NativeWaitHandle =
 
             state
             |> withLastSystemError 0
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) ctx.Thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 1)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
 
@@ -593,7 +593,7 @@ module NativeWaitHandle =
                     state
 
             state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 ret) ctx.Thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim ret)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
 
@@ -630,7 +630,7 @@ module NativeWaitHandle =
                     state
 
             state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 ret) ctx.Thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim ret)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
 
@@ -692,7 +692,7 @@ module NativeWaitHandle =
 
             let completeWith (state : IlMachineState) (ret : int) : NativeHandlerResult option =
                 state
-                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 ret) ctx.Thread
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim ret)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
 
@@ -788,13 +788,13 @@ module NativeWaitHandle =
             | Ok () ->
                 state
                 |> withLastSystemError 0
-                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) ctx.Thread
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 1)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
             | Error WaitHandle.ReleaseMutexFailure.NotOwner ->
                 state
                 |> withLastSystemError errorNotOwner
-                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
 
@@ -856,7 +856,7 @@ module NativeWaitHandle =
 
             state
             |> withLastSystemError 0
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) ctx.Thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 1)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
 
@@ -871,7 +871,7 @@ module NativeWaitHandle =
 
             state
             |> withLastSystemError 0
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) ctx.Thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 1)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
 

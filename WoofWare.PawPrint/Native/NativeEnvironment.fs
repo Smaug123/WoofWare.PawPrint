@@ -57,7 +57,9 @@ module NativeEnvironment =
 
             let state =
                 state
-                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 processorCount) ctx.Thread
+                |> IlMachineState.pushToEvalStack'
+                    (EvalStackValue.Int32 (Int32Source.Verbatim processorCount))
+                    ctx.Thread
 
             NativeHandlerResult.Completed (state, StepEffect.NoEffect) |> Some
         | "System.Private.CoreLib",
@@ -69,7 +71,9 @@ module NativeEnvironment =
             let state =
                 state
                 |> IlMachineState.pushToEvalStack'
-                    (EvalStackValue.Int32 (IlMachineState.getCurrentManagedThreadId ctx.Thread state))
+                    (EvalStackValue.Int32 (
+                        Int32Source.Verbatim (IlMachineState.getCurrentManagedThreadId ctx.Thread state)
+                    ))
                     ctx.Thread
 
             NativeHandlerResult.Completed (state, StepEffect.NoEffect) |> Some

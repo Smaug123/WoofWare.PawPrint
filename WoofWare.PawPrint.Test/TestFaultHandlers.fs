@@ -250,7 +250,8 @@ module TestFaultHandlers =
             | other -> failwith $"Expected fault handler, got %O{other}"
 
         let state =
-            state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 123) thread
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 123)) thread
 
         let methodState =
             { state.ThreadState.[thread].MethodState with
@@ -312,9 +313,36 @@ module TestFaultHandlers =
 
     [<Test>]
     let ``Endfilter treats any non-zero int32 as accept`` () : unit =
-        NullaryIlOp.endfilterAccepts (EvalStackValue.Int32 0) |> shouldEqual false
-        NullaryIlOp.endfilterAccepts (EvalStackValue.Int32 1) |> shouldEqual true
-        NullaryIlOp.endfilterAccepts (EvalStackValue.Int32 2) |> shouldEqual true
+        NullaryIlOp.endfilterAccepts (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+        |> shouldEqual false
+
+        NullaryIlOp.endfilterAccepts (EvalStackValue.Int32 (Int32Source.Verbatim 1))
+        |> shouldEqual true
+
+        NullaryIlOp.endfilterAccepts (EvalStackValue.Int32 (Int32Source.Verbatim 2))
+        |> shouldEqual true
+
+    [<Test>]
+    let ``Endfilter refuses a truncated managed pointer rather than accepting it`` () : unit =
+        // `conv.i4` on a byref keeps the pointer alive so an alignment mask can be
+        // asked of it; the low half of that address is unknown and may be zero. A
+        // "non-zero, so accept" answer here would run an exception handler the guest
+        // did not select — the kind of divergence that surfaces nowhere near its
+        // cause.
+        let narrowedByref =
+            EvalStackValue.Int32 (
+                Int32Source.NarrowedManagedPointer (
+                    ManagedPointerSource.Byref (
+                        ByrefRoot.NativeMemoryByte (NativeMemoryBlockId.NativeMemoryBlockId 0, 4),
+                        []
+                    )
+                )
+            )
+
+        let exn =
+            Assert.Throws (fun () -> NullaryIlOp.endfilterAccepts narrowedByref |> ignore<bool>)
+
+        exn.Message |> shouldContainText "truncated to 32 bits"
 
     [<Test>]
     let ``Exception continuation stack is last-in first-out`` () : unit =

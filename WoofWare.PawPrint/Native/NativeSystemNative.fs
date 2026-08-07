@@ -19,7 +19,7 @@ module NativeSystemNative =
 
     let private pushInt32 (value : int) (ctx : NativeCallContext) : NativeHandlerResult =
         ctx.State
-        |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 value) ctx.Thread
+        |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim value)) ctx.Thread
         |> NativeHandlerResult.completed
 
     /// Matches the parameter type that `Interop.Sys.GetPlatformSignalNumber`
@@ -636,7 +636,7 @@ module NativeSystemNative =
                     )
 
             state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 resultCode) ctx.Thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim resultCode)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_IsATty",
@@ -670,7 +670,7 @@ module NativeSystemNative =
                 )
 
             state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_Write",
@@ -840,7 +840,7 @@ module NativeSystemNative =
                                     bufferSize, StepEffect.WroteToFd (role, bytes), state
 
             state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 result) ctx.Thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim result)) ctx.Thread
             |> NativeHandlerResult.completedWith effect
             |> Some
         | Some "SystemNative_GetNonCryptographicallySecureRandomBytes",
@@ -893,7 +893,7 @@ module NativeSystemNative =
                 )
 
             state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_Free", [ ConcretePointer _ ], MethodReturnType.Void ->
@@ -962,7 +962,7 @@ module NativeSystemNative =
                     )
 
             state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) ctx.Thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 1)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_GetPlatformSignalNumber",
@@ -1028,7 +1028,7 @@ module NativeSystemNative =
                         LastSystemError = Errno.EINVAL
                     }
                 )
-                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
             | ValueSome signal ->
@@ -1037,7 +1037,7 @@ module NativeSystemNative =
                         Signals = SignalState.enable signal kernel.Signals
                     }
                 )
-                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) ctx.Thread
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 1)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
         | Some "SystemNative_SetPosixSignalHandler", [ ConcreteFunctionPointer _ ], MethodReturnType.Void ->

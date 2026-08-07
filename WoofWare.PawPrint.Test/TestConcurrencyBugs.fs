@@ -128,7 +128,7 @@ module TestConcurrencyBugs =
 
     let private extractExitCode (state : IlMachineState) (thread : ThreadId) : RunSummary =
         match state.ThreadState.[thread].MethodState.EvaluationStack.Values with
-        | EvalStackValue.Int32 code :: _ -> RunSummary.ExitCode code
+        | EvalStackValue.Int32 (Int32Source.Verbatim code) :: _ -> RunSummary.ExitCode code
         | [] -> RunSummary.NonIntReturn "void"
         | head :: _ -> RunSummary.NonIntReturn (sprintf "%O" head)
 

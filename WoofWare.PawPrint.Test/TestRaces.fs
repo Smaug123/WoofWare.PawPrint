@@ -33,7 +33,7 @@ module TestRaces =
         | RunOutcome.NormalExit (terminalState, terminatingThread)
         | RunOutcome.ProcessExit (terminalState, terminatingThread) ->
             match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-            | EvalStackValue.Int32 exitCode :: _ -> exitCode
+            | EvalStackValue.Int32 (Int32Source.Verbatim exitCode) :: _ -> exitCode
             | [] -> failwith $"%s{sourceName} (seed=%A{seed}) returned void; race tests expect Int32 exit codes"
             | ret :: _ ->
                 failwith $"%s{sourceName} (seed=%A{seed}) returned %O{ret}; race tests expect an Int32 on the stack"

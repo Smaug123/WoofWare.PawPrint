@@ -74,7 +74,7 @@ module CrossAssemblyHarness =
         | [] -> failwith "expected program to return an int, but it returned void"
         | head :: _ ->
             match head with
-            | EvalStackValue.Int32 i -> i
+            | EvalStackValue.Int32 (Int32Source.Verbatim i) -> i
             | ret -> failwith $"expected program to return an int, but it returned %O{ret}"
 
     let compileAssemblies (assemblies : CrossAssemblySpec list) : Map<string, byte[]> =

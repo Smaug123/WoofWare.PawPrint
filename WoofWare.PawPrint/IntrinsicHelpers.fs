@@ -584,7 +584,7 @@ module internal IntrinsicHelpers =
                         $"%s{operation}: byte count came from synthesised pointer-hash bits 0x%x{bits}; refusing to interpret hashed pointer provenance as byte count"
                 | Int64Source.Verbatim count -> checkedByteCount operation count
             | _ -> failwith "unexpectedly got negative byte count"
-        | EvalStackValue.Int32 count -> checkedByteCount operation (int64 count)
+        | EvalStackValue.Int32 (Int32Source.Verbatim count) -> checkedByteCount operation (int64 count)
         | other -> failwith $"%s{operation}: expected UIntPtr byte count, got %O{other}"
 
     let splitTrailingByteView (src : ManagedPointerSource) : (ByrefRoot * ByrefProjection list * int) voption =
@@ -755,7 +755,7 @@ module internal IntrinsicHelpers =
 
             let length =
                 match lengthArg with
-                | EvalStackValue.Int32 i -> i
+                | EvalStackValue.Int32 (Int32Source.Verbatim i) -> i
                 | other -> failwith $"Span pointer constructor expected int length, got %O{other}"
 
             let sourcePtr = managedPointerOfPointerArgument "Span pointer constructor" sourceArg
@@ -773,7 +773,7 @@ module internal IntrinsicHelpers =
 
             let length =
                 match lengthArg with
-                | EvalStackValue.Int32 i -> i
+                | EvalStackValue.Int32 (Int32Source.Verbatim i) -> i
                 | other -> failwith $"Span pointer constructor expected int length, got %O{other}"
 
             let sourcePtr = managedPointerOfPointerArgument "Span pointer constructor" sourceArg
@@ -878,7 +878,7 @@ module internal IntrinsicHelpers =
         let lengthValue =
             EvalStackValue.toCliTypeCoerced
                 (CliValueType.DereferenceFieldById lengthField span)
-                (EvalStackValue.Int32 length)
+                (EvalStackValue.Int32 (Int32Source.Verbatim length))
 
         let span =
             span
@@ -913,7 +913,7 @@ module internal IntrinsicHelpers =
 
     let int32OfEvalStackValue (operation : string) (value : EvalStackValue) : int =
         match value with
-        | EvalStackValue.Int32 i -> i
+        | EvalStackValue.Int32 (Int32Source.Verbatim i) -> i
         | EvalStackValue.UserDefinedValueType vt ->
             match (CliValueType.PrimitiveLikeField vt).Contents |> CliType.unwrapPrimitiveLikeDeep with
             | CliType.Numeric (CliNumericType.Int32 i) -> i

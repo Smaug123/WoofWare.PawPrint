@@ -246,7 +246,7 @@ module NativeEventSource =
             let resultInt = if enabled then 1 else 0
 
             state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 resultInt) ctx.Thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim resultInt)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
 

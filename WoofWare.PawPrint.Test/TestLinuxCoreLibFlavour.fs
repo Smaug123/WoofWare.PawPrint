@@ -108,7 +108,7 @@ module TestLinuxCoreLibFlavour =
 
     let private exitCode (terminalState : IlMachineState) (thread : ThreadId) : int =
         match terminalState.ThreadState.[thread].MethodState.EvaluationStack.Values with
-        | EvalStackValue.Int32 code :: _ -> code
+        | EvalStackValue.Int32 (Int32Source.Verbatim code) :: _ -> code
         | [] -> failwith "Guest returned void; expected an int32 exit code"
         | other :: _ -> failwith $"Guest left %O{other} on the eval stack; expected an int32 exit code"
 

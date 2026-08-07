@@ -165,7 +165,8 @@ module NativeMonitor =
             // at which point either the value is correct as-is (signal/spurious wake) or it
             // was rewritten to `Int32 0` by `SyncBlockMonitor.fireWaitTimeout` (deadline wake).
             let state =
-                state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) ctx.Thread
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 1)) ctx.Thread
 
             let state = SyncBlockMonitor.wait ctx.Thread addr deadlineMs state
 

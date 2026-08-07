@@ -63,7 +63,7 @@ module NativeEventPipe =
 
     let private pushInt32 (value : int32) (thread : ThreadId) (state : IlMachineState) : NativeHandlerResult =
         state
-        |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 value) thread
+        |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim value)) thread
         |> NativeHandlerResult.completed
 
     let private justStep (state : IlMachineState) : NativeHandlerResult = NativeHandlerResult.completed state
