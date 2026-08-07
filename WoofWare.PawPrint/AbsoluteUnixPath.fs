@@ -44,12 +44,21 @@ type AbsoluteUnixPathError =
 /// return, and hence the only shape PawPrint's simulated current directory is
 /// allowed to take.
 ///
-/// The case is private, so the only way to obtain one is `AbsoluteUnixPath.parse`
-/// (or the `root` constant). That is the point: consumers — the
-/// `SystemNative_GetCwd` handler, and whatever simulated filesystem comes
-/// later — receive a proof that the path is rooted, separator-normalised,
-/// resolved, and UTF-8 encodable, instead of a promise they would each have to
-/// re-check.
+/// The case is private, so the only way to *construct* one is
+/// `AbsoluteUnixPath.parse` (or the `root` constant). That is the point:
+/// consumers — the `SystemNative_GetCwd` handler, and whatever simulated
+/// filesystem comes later — receive a proof that the path is rooted,
+/// separator-normalised, resolved, and UTF-8 encodable, instead of a promise
+/// they would each have to re-check.
+///
+/// One hole `private` cannot close: `Unchecked.defaultof<AbsoluteUnixPath>`
+/// (and C#'s `default(AbsoluteUnixPath)`) bypasses every constructor and yields
+/// a value whose payload is null — this is a struct, but a reference-typed
+/// single-case union would have exactly the same hole. Nothing in PawPrint
+/// produces one, and no *interior* consumer should re-check; instead the
+/// boundaries that accept a path from outside the library assert the invariant
+/// once, via `AbsoluteUnixPath.assertValid`. That is the gospel's "when types
+/// can't express an invariant, assert it".
 [<Struct>]
 type AbsoluteUnixPath =
     private
@@ -170,6 +179,28 @@ module AbsoluteUnixPath =
             $"path ends with '%c{separator}'; only the root \"/\" may be separator-terminated"
         | AbsoluteUnixPathError.UnresolvedSegment (segment, index) ->
             $"path contains an unresolved \"%s{segment}\" segment at index %d{index}; getcwd returns fully-resolved paths"
+
+    /// Re-check the invariant of a value that may not have come from `parse`.
+    /// Returns it unchanged if it is sound, and fails loudly naming `context`
+    /// if it is not.
+    ///
+    /// Only for boundaries that accept an `AbsoluteUnixPath` from outside the
+    /// library — today, `EmulatedKernel.withCurrentDirectory`. The only value
+    /// this can reject is `Unchecked.defaultof` / C# `default` (see the type's
+    /// doc comment); catching it here turns a null-reference failure deep in
+    /// the first `SystemNative_GetCwd` into a configuration-time error that
+    /// says which knob was wrong. Interior consumers must *not* call this:
+    /// re-validating a proof everywhere is precisely what the type exists to
+    /// avoid.
+    let assertValid (context : string) (path : AbsoluteUnixPath) : AbsoluteUnixPath =
+        match path with
+        | AbsoluteUnixPath raw ->
+
+        match parse raw with
+        | Ok _ -> path
+        | Error error ->
+            failwith
+                $"%s{context}: %s{describe error}. An AbsoluteUnixPath that fails its own invariant can only have come from `Unchecked.defaultof` or C# `default`; construct one with AbsoluteUnixPath.parse instead."
 
     /// Parse, or fail loudly naming the configuration knob at fault. For
     /// boundaries whose caller has no way to recover from a bad path — a

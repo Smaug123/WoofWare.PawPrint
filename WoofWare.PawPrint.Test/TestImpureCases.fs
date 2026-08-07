@@ -125,6 +125,19 @@ module TestImpureCases =
             currentDirectoryCase "/"
             currentDirectoryCase "/home/pawprint/work"
             {
+                // `SystemNative_GetCwd` must classify its error returns before
+                // resolving the caller's buffer to storage, because the C
+                // decides them without dereferencing it. Impure because the
+                // guest passes a pointer that addresses nothing: safe under
+                // PawPrint by construction, but not something to hand the
+                // in-process real runtime in the differential harness.
+                FileName = "GetCwdNoDereferenceErrors.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // `Console.WriteLine("Hello, world!")` exercises the full
                 // BCL stdio stack end-to-end: `Console::get_Out` descends
                 // `ConsolePal::OpenStandardOutput → Interop.Sys.Dup`, then

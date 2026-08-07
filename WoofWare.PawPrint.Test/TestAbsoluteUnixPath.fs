@@ -211,6 +211,44 @@ module TestAbsoluteUnixPath =
         parseOk "/a/.b/..c" |> AbsoluteUnixPath.toString |> shouldEqual "/a/.b/..c"
 
     [<Test>]
+    let ``assertValid accepts every parsed path`` () : unit =
+        let property (candidate : string) : unit =
+            let path = parseOk candidate
+            AbsoluteUnixPath.assertValid "test" path |> shouldEqual path
+
+        Check.One (config, Prop.forAll (Arb.fromGen pathStringGen) property)
+
+    [<Test>]
+    let ``assertValid rejects the forged default value`` () : unit =
+        // `private` on the union case stops construction, but not
+        // `Unchecked.defaultof` — this is the one value that can carry a null
+        // payload into an AbsoluteUnixPath, and the reason `assertValid` exists.
+        let forged = Unchecked.defaultof<AbsoluteUnixPath>
+
+        let exn =
+            Assert.Throws<Exception> (fun () ->
+                AbsoluteUnixPath.assertValid "KernelConfig.CurrentDirectory" forged
+                |> ignore<AbsoluteUnixPath>
+            )
+
+        exn.Message |> shouldContainText "KernelConfig.CurrentDirectory"
+        exn.Message |> shouldContainText "Unchecked.defaultof"
+
+    [<Test>]
+    let ``The kernel rejects a forged current directory at configuration time`` () : unit =
+        // The boundary that matters: without this, a defaulted value would sail
+        // into kernel state and fail as a null reference inside the first
+        // SystemNative_GetCwd instead of naming the knob.
+        let exn =
+            Assert.Throws<Exception> (fun () ->
+                EmulatedKernel.initial
+                |> EmulatedKernel.withCurrentDirectory Unchecked.defaultof<AbsoluteUnixPath>
+                |> ignore<EmulatedKernel>
+            )
+
+        exn.Message |> shouldContainText "EmulatedKernel.CurrentDirectory"
+
+    [<Test>]
     let ``parseOrFail names the offending knob`` () : unit =
         let exn =
             Assert.Throws<Exception> (fun () ->

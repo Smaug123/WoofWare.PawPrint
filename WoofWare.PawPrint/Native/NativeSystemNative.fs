@@ -102,6 +102,23 @@ module NativeSystemNative =
         | CliType.Numeric (CliNumericType.Int32 count) -> checkedCount (int64 count)
         | other -> failwith $"%s{operation}: expected UIntPtr allocation size, got %O{other}"
 
+    /// Whether a pointer argument is the null pointer — a total test, unlike
+    /// `NativeCall.managedPointerOfPointerArgument`, which insists the non-null
+    /// case resolve to storage PawPrint can address.
+    ///
+    /// Entry points whose C counterpart returns an error *without dereferencing
+    /// the buffer* need exactly this: a guest may legally hand such a call an
+    /// unresolvable bit pattern (`(byte*)123`), the real shim never touches it,
+    /// and so PawPrint must decide the error before it tries to resolve the
+    /// pointer to a cell.
+    let private isNullPointerArgument (arg : CliType) : bool =
+        match CliType.unwrapPrimitiveLikeDeep arg with
+        | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null)
+        | CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L)
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null))
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) -> true
+        | _ -> false
+
     /// Write `bytes` through a caller-supplied `byte*`, one cell at a time.
     /// The simulated address space is a graph of typed cells rather than a flat
     /// byte array, so "memcpy into the caller's buffer" is necessarily this
@@ -564,9 +581,7 @@ module NativeSystemNative =
             // recorded.
             let operation = "SystemNative_GetCwd"
 
-            let buffer =
-                NativeCall.managedPointerOfPointerArgument operation "buffer" instruction.Arguments.[0]
-
+            let bufferArgument = instruction.Arguments.[0]
             let bufferSize = NativeCall.int32Argument operation instruction.Arguments.[1]
 
             // Without the terminator: `getcwd` needs room for the path *and*
@@ -586,26 +601,32 @@ module NativeSystemNative =
                 |> NativeHandlerResult.completed
                 |> Some
 
+            // Every failure below is decided *without* resolving `buffer` to
+            // storage, because the C decides them without dereferencing it: the
+            // negative-size guard runs before `getcwd` is even called, and
+            // `getcwd` itself validates the size and compares it against the
+            // path length before it writes a byte. A guest that hand-rolls this
+            // P/Invoke may therefore legally pass a bit pattern PawPrint cannot
+            // resolve — `GetCwd((byte*)123, 0)` returns EINVAL on the real
+            // runtime — so the pointer is only decoded on the success path,
+            // which is the one place it is actually dereferenced.
             if bufferSize < 0 then
                 // The shim's own guard. Note it *also* `assert`s this, so a
                 // checked native build would abort instead; EINVAL is what a
                 // guest running against a retail runtime can observe, and it
                 // is the only one of the two behaviours we can reproduce.
                 fail Errno.EINVAL
-            else
-
-            match buffer with
-            | ManagedPointerSource.Null ->
+            elif isNullPointerArgument bufferArgument then
                 // `getcwd(NULL, size)` is a glibc/BSD extension that mallocs
                 // the result, and PawPrint does not model it: CoreLib's
                 // `Interop.Sys.GetCwd` always supplies a `localloc` block or a
                 // pinned `byte[]`, so a null here means a guest hand-rolled the
-                // P/Invoke and is relying on the allocating form.
+                // P/Invoke and is relying on the allocating form. Tested before
+                // the zero-size case below, which would otherwise report EINVAL
+                // for `getcwd(NULL, 0)` — a call the real runtime *succeeds*.
                 failwith
                     $"%s{operation}: refusing to honour the allocating `getcwd(NULL, %d{bufferSize})` extension (PawPrint models only the caller-supplied-buffer form, which is the only one CoreLib uses)"
-            | _ ->
-
-            if bufferSize = 0 then
+            elif bufferSize = 0 then
                 // POSIX: size 0 with a non-NULL buffer is EINVAL, *not*
                 // ERANGE — so a guest must not treat it as "grow and retry".
                 fail Errno.EINVAL
@@ -613,9 +634,13 @@ module NativeSystemNative =
                 fail Errno.ERANGE
             else
 
-            // Success. errno is left untouched, per Unix convention (and
-            // CoreLib has already zeroed it via `Marshal.SetLastSystemError 0`
-            // immediately before the call).
+            // Success, and only now is the buffer actually written through, so
+            // only now must it resolve to storage. errno is left untouched, per
+            // Unix convention (and CoreLib has already zeroed it via
+            // `Marshal.SetLastSystemError 0` immediately before the call).
+            let buffer =
+                NativeCall.managedPointerOfPointerArgument operation "buffer" bufferArgument
+
             let terminated = path.Add 0uy
 
             writeBytesThrough ctx operation buffer terminated state

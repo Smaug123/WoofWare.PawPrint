@@ -832,14 +832,20 @@ module EmulatedKernel =
             UnixPlatform = platform
         }
 
-    /// Set the simulated process's current working directory. No validation to
-    /// perform: `AbsoluteUnixPath` is unforgeable outside
-    /// `AbsoluteUnixPath.parse`, so every value that can reach here is already
-    /// a path `getcwd(3)` could have returned. That is the whole point of the
-    /// type — the check happens once, where the host's string enters.
+    /// Set the simulated process's current working directory.
+    ///
+    /// `AbsoluteUnixPath` carries its own invariant, so there is nothing to
+    /// validate about the path's *shape* here — that check happened once, where
+    /// the host's string entered `AbsoluteUnixPath.parse`. What `assertValid`
+    /// catches is the one value that reaches this type without a constructor:
+    /// `Unchecked.defaultof` (or C# `default`), whose payload is null. This is
+    /// the boundary a host-supplied path crosses into kernel state, so it is
+    /// where that assertion belongs — without it the failure would surface as
+    /// a null-reference deep inside the first `SystemNative_GetCwd`, long after
+    /// the mis-set knob.
     let withCurrentDirectory (dir : AbsoluteUnixPath) (kernel : EmulatedKernel) : EmulatedKernel =
         { kernel with
-            CurrentDirectory = dir
+            CurrentDirectory = AbsoluteUnixPath.assertValid "EmulatedKernel.CurrentDirectory" dir
         }
 
     /// Set the logical-processor count the simulated process reports. Rejects
