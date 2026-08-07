@@ -90,7 +90,7 @@ module IlDumpRendering =
         let fieldLines =
             typeInfo.Fields
             |> List.filter (fun f -> matchesFilter filter.Member f.Name)
-            |> List.map (AttributeFormatting.fieldHeader qualified)
+            |> List.map (AttributeFormatting.fieldHeader assembly qualified)
 
         // Properties live only in the metadata reader: there is no domain type.
         let propertyLines =

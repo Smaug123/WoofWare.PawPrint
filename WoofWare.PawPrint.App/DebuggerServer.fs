@@ -644,6 +644,7 @@ module DebuggerServer =
     let private writeInstructionLine
         (writer : Utf8JsonWriter)
         (assembly : DumpedAssembly)
+        (scope : GenericScope)
         (activeIlOffset : int)
         (ilOp : IlOp, offset : int)
         : unit
@@ -651,7 +652,7 @@ module DebuggerServer =
         writer.WriteStartObject ()
         writer.WriteNumber ("offset", offset)
         writer.WriteString ("op", string ilOp)
-        writer.WriteString ("text", (IlFormatting.formatIlOp assembly ilOp offset).TrimStart ())
+        writer.WriteString ("text", (IlFormatting.formatIlOp assembly scope ilOp offset).TrimStart ())
         let active = offset = activeIlOffset
         writer.WriteBoolean ("active", active)
         writer.WriteEndObject ()
@@ -708,6 +709,14 @@ module DebuggerServer =
 
             let qualifiedTypeName = qualifiedTypeNameForMethod assembly frame.ExecutingMethod
 
+            // The executing method has been concretised, so its own generic parameters no longer
+            // carry their declared names; recover them from the metadata flavour of the same
+            // method. If it isn't in the index, the indices render positionally.
+            let scope =
+                match assembly.Methods.TryGetValue frame.ExecutingMethod.Handle with
+                | true, method -> GenericScope.ofMethod method
+                | false, _ -> GenericScope.unknown
+
             writer.WriteStartObject ()
             writer.WriteNumber ("thread", threadIdValue threadId)
             writer.WriteNumber ("frame", frameIdValue frameId)
@@ -725,7 +734,7 @@ module DebuggerServer =
                     writer
                     "instructions"
                     []
-                    (fun writer instruction -> writeInstructionLine writer assembly frame.IlOpIndex instruction)
+                    (fun writer instruction -> writeInstructionLine writer assembly scope frame.IlOpIndex instruction)
 
                 writer.WriteBoolean ("truncatedBefore", false)
                 writer.WriteBoolean ("truncatedAfter", false)
@@ -749,7 +758,7 @@ module DebuggerServer =
                     writer
                     "instructions"
                     instructionWindow
-                    (fun writer instruction -> writeInstructionLine writer assembly frame.IlOpIndex instruction)
+                    (fun writer instruction -> writeInstructionLine writer assembly scope frame.IlOpIndex instruction)
 
                 writer.WriteBoolean ("truncatedBefore", truncatedBefore)
                 writer.WriteBoolean ("truncatedAfter", truncatedAfter)

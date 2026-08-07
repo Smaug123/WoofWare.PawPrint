@@ -92,50 +92,18 @@ module AttributeFormatting =
 
         head + (tail |> stripGenericArity |> stripAttributeSuffix)
 
-    /// Format a TypeRef as <c>Namespace.Name</c>, walking the
-    /// <c>ResolutionScope</c> chain to prefix any outer types (separated by
-    /// <c>/</c>). The leading namespace is omitted for nested types.
-    let private formatTypeRef (assembly : DumpedAssembly) (tr : TypeRef) : string =
-        let rec qualify (r : TypeRef) : string =
-            match r.ResolutionScope with
-            | TypeRefResolutionScope.TypeRef parentHandle ->
-                match assembly.TypeRefs.TryGetValue parentHandle with
-                | true, parent -> sprintf "%s/%s" (qualify parent) r.Name
-                | false, _ -> r.Name
-            | _ ->
-                if String.IsNullOrEmpty r.Namespace then
-                    r.Name
-                else
-                    sprintf "%s.%s" r.Namespace r.Name
-
-        qualify tr
-
     /// <summary>
     /// Render the display name of an attribute type expressed as a
     /// <see cref="TypeDefn"/>: typically the signature of a
     /// <c>TypeSpecification</c> used as the parent of a constructor
-    /// <c>MemberReference</c>. Generic instantiations are rendered as
-    /// <c>Base&lt;arg, ...&gt;</c>. Falls back to the TypeDefn's default
-    /// <c>ToString</c> when the inner type cannot be resolved locally.
+    /// <c>MemberReference</c>.
     /// </summary>
-    let rec private renderAttributeTypeFromTypeDefn (assembly : DumpedAssembly) (td : TypeDefn) : string =
-        match td with
-        | TypeDefn.GenericInstantiation (generic, args) ->
-            let baseName = renderAttributeTypeFromTypeDefn assembly generic
-
-            let argsStr =
-                args |> Seq.map (renderAttributeTypeFromTypeDefn assembly) |> String.concat ", "
-
-            sprintf "%s<%s>" baseName argsStr
-        | TypeDefn.FromDefinition (identity, _) ->
-            if identity.AssemblyFullName = assembly.Name.FullName then
-                match assembly.TypeDefs.TryGetValue identity.TypeDefinition.Get with
-                | true, td -> IlFormatting.qualifyTypeName assembly.TypeDefs td
-                | false, _ -> sprintf "%O" td
-            else
-                sprintf "%O" td
-        | TypeDefn.FromReference (typeRef, _) -> formatTypeRef assembly typeRef
-        | _ -> sprintf "%O" td
+    /// <remarks>
+    /// An attribute application names a closed type, so nothing binds a generic parameter here:
+    /// any that survives into the blob is rendered positionally.
+    /// </remarks>
+    let private renderAttributeTypeFromTypeDefn (assembly : DumpedAssembly) (td : TypeDefn) : string =
+        IlFormatting.renderTypeDefnAsName assembly GenericScope.unknown td
 
     /// <summary>
     /// The display name of the attribute type, i.e. the type whose constructor
@@ -184,7 +152,9 @@ module AttributeFormatting =
                             |> stripAttributeSuffixOnLastSegment
                     | false, _ -> $"TypeSpec(%O{tsHandle})"
                 | _ ->
-                    IlFormatting.formatMetadataToken assembly m.Parent
+                    // An attribute's ctor parent names a closed type; nothing is in scope to
+                    // bind a generic parameter.
+                    IlFormatting.formatMetadataToken assembly GenericScope.unknown m.Parent
                     |> stripAttributeSuffixOnLastSegment
             | false, _ -> $"MemberRef(%O{handle})"
         | other -> sprintf "%O" other
@@ -368,23 +338,13 @@ module AttributeFormatting =
 
             sprintf "[%s%s%s]" name argsClause namedSuffix
 
-    /// Render the generic-parameter clause shown after a type or method name
-    /// (e.g. <c>&lt;T, U&gt;</c>). Returns <c>""</c> if there are no generics.
-    let private formatGenericsClause (generics : GenericParamFromMetadata seq) : string =
-        let names = generics |> Seq.map (fun (param, _) -> param.Name) |> List.ofSeq
-
-        if List.isEmpty names then
-            ""
-        else
-            sprintf "<%s>" (String.concat ", " names)
-
     /// <summary>
     /// Comment-prefixed header for a TypeDef in attribute-dump mode,
     /// including a <c>&lt;T, U&gt;</c> clause when the type is generic.
     /// </summary>
     let typeHeader (assembly : DumpedAssembly) (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>) : string =
         let qualified = IlFormatting.qualifyTypeName assembly.TypeDefs typeInfo
-        let generics = formatGenericsClause typeInfo.Generics
+        let generics = IlFormatting.formatGenericsClause typeInfo.Generics
         sprintf "// type %s%s" qualified generics
 
     /// <summary>
@@ -393,26 +353,26 @@ module AttributeFormatting =
     /// walk doesn't re-resolve it per method).
     /// </summary>
     let methodHeader
+        (assembly : DumpedAssembly)
         (qualifiedTypeName : string)
         (method : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
         : string
         =
         let staticStr = if method.IsStatic then "static " else ""
-        let generics = formatGenericsClause method.Generics
+        let generics = IlFormatting.formatGenericsClause method.Generics
+
+        // The method's own declaration binds the parameters its signature mentions.
+        let scope = GenericScope.ofMethod method
 
         let paramTypes =
             method.RawSignature.ParameterTypes
-            |> List.map (fun p -> sprintf "%O" p)
+            |> List.map (IlFormatting.renderTypeDefn assembly scope)
             |> String.concat ", "
 
-        sprintf
-            "// method %s::%s%s%s(%s) : %O"
-            qualifiedTypeName
-            staticStr
-            method.Name
-            generics
-            paramTypes
-            method.RawSignature.ReturnType
+        let returnType =
+            IlFormatting.renderMethodReturnType assembly scope method.RawSignature.ReturnType
+
+        sprintf "// method %s::%s%s%s(%s) : %s" qualifiedTypeName staticStr method.Name generics paramTypes returnType
 
     /// <summary>
     /// Comment-prefixed header for a FieldDef. Static-ness is rendered in the
@@ -420,7 +380,12 @@ module AttributeFormatting =
     /// <c>@ 0xNN</c> reports the field's offset for explicitly-laid-out types;
     /// fields whose offset the runtime chooses carry no such suffix.
     /// </summary>
-    let fieldHeader (qualifiedTypeName : string) (field : FieldInfo<GenericParamFromMetadata, TypeDefn>) : string =
+    let fieldHeader
+        (assembly : DumpedAssembly)
+        (qualifiedTypeName : string)
+        (field : FieldInfo<GenericParamFromMetadata, TypeDefn>)
+        : string
+        =
         let staticStr =
             if field.Attributes.HasFlag System.Reflection.FieldAttributes.Static then
                 "static "
@@ -432,7 +397,12 @@ module AttributeFormatting =
             | None -> ""
             | Some offset -> sprintf " @ 0x%X" offset
 
-        sprintf "// field %s::%s%s : %O%s" qualifiedTypeName staticStr field.Name field.Signature offsetStr
+        // A field's signature is written against its declaring type's parameters; a field
+        // declaration binds no method parameters.
+        let signature =
+            IlFormatting.renderTypeDefn assembly (GenericScope.ofDeclaringType field.DeclaringType) field.Signature
+
+        sprintf "// field %s::%s%s : %s%s" qualifiedTypeName staticStr field.Name signature offsetStr
 
     /// Comment-prefixed header for an EventDef.
     let eventHeader (qualifiedTypeName : string) (event : EventDefn) : string =

@@ -267,7 +267,7 @@ module TestAttributeFormatting =
 
         // The signature rendering is TypeDefn's business; assert only the prefix
         // this header controls.
-        AttributeFormatting.fieldHeader "System.String" empty
+        AttributeFormatting.fieldHeader corelib "System.String" empty
         |> fun h -> h.StartsWith "// field System.String::static Empty : " |> shouldEqual true
 
     [<Test>]
@@ -276,7 +276,7 @@ module TestAttributeFormatting =
 
         let length = str.Fields |> List.find (fun f -> f.Name = "_stringLength")
 
-        AttributeFormatting.fieldHeader "System.String" length
+        AttributeFormatting.fieldHeader corelib "System.String" length
         |> fun h -> h.StartsWith "// field System.String::_stringLength : " |> shouldEqual true
 
     [<Test>]
@@ -300,7 +300,7 @@ module TestAttributeFormatting =
         | None -> Assert.Inconclusive "corelib declares no explicitly-laid-out fields; nothing to exercise"
         | Some (qualified, field, offset) ->
 
-        let header = AttributeFormatting.fieldHeader qualified field
+        let header = AttributeFormatting.fieldHeader corelib qualified field
         header.EndsWith (sprintf " @ 0x%X" offset) |> shouldEqual true
 
     // ----- renderOwnerLines: skips empty owners ------------------------------
@@ -480,6 +480,137 @@ public class Target { }
 
         for n in names do
             n.Contains "<type defined in" |> shouldEqual false
+
+    [<Test>]
+    let ``attributeTypeName renders a generic attribute defined in another assembly`` () : unit =
+        // Everything the consumer names here is a TypeRef rather than a TypeDef: the
+        // attribute itself, and its type argument. An attribute display name is not an IL
+        // type rendering — it must not carry the `ref[...]` wrapper, both because that is
+        // the wrong register for a `[Attr]` line and because the trailing bracket stops the
+        // arity and "Attribute" suffix from being recognised as part of the last name
+        // segment, yielding `ref[Lib.MyGenericAttribute`1]<ref[Lib.ArgType]>`.
+        let library =
+            """
+using System;
+
+namespace Lib
+{
+    public class ArgType { }
+
+    [AttributeUsage(AttributeTargets.All)]
+    public class MyGenericAttribute<T> : Attribute { }
+}
+"""
+
+        let consumer =
+            """
+using Lib;
+
+[MyGeneric<ArgType>]
+public class Target { }
+"""
+
+        let libraryImage =
+            Roslyn.compileAssembly
+                "CrossAssemblyGenericAttributeLib"
+                Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+                []
+                [ library ]
+
+        let libraryReference =
+            Microsoft.CodeAnalysis.MetadataReference.CreateFromImage (ImmutableArray.CreateRange libraryImage)
+            :> Microsoft.CodeAnalysis.MetadataReference
+
+        let image =
+            Roslyn.compileAssembly
+                "CrossAssemblyGenericAttributeConsumer"
+                Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+                [ libraryReference ]
+                [ consumer ]
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use stream = new System.IO.MemoryStream (image)
+        let assembly = global.WoofWare.PawPrint.AssemblyApi.read loggerFactory None stream
+
+        let target = assembly.TypeDefs.Values |> Seq.find (fun td -> td.Name = "Target")
+
+        let names =
+            AttributeFormatting.attributesFor assembly (MetadataToken.TypeDefinition target.TypeDefHandle)
+            |> List.map (AttributeFormatting.attributeTypeName assembly)
+
+        let found =
+            names
+            |> List.exists (fun n -> n.EndsWith ("Lib.MyGeneric<Lib.ArgType>", System.StringComparison.Ordinal))
+
+        if not found then
+            failwithf "actual rendered names: %s" (names |> String.concat " ; ")
+
+        for n in names do
+            n.Contains "ref[" |> shouldEqual false
+
+    [<Test>]
+    let ``a referenced attribute argument stays bare underneath a wrapper`` () : unit =
+        // `[MyGeneric<ArgType[]>]` is valid C#, and puts an array between the attribute name
+        // rendering and the referenced leaf. The bare-name convention has to survive that:
+        // it is a property of how this renderer names types, not of the top-level shape.
+        let library =
+            """
+using System;
+
+namespace Lib
+{
+    public class ArgType { }
+
+    [AttributeUsage(AttributeTargets.All)]
+    public class MyGenericAttribute<T> : Attribute { }
+}
+"""
+
+        let consumer =
+            """
+using Lib;
+
+[MyGeneric<ArgType[]>]
+public class Target { }
+"""
+
+        let libraryImage =
+            Roslyn.compileAssembly
+                "WrappedCrossAssemblyGenericAttributeLib"
+                Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+                []
+                [ library ]
+
+        let libraryReference =
+            Microsoft.CodeAnalysis.MetadataReference.CreateFromImage (ImmutableArray.CreateRange libraryImage)
+            :> Microsoft.CodeAnalysis.MetadataReference
+
+        let image =
+            Roslyn.compileAssembly
+                "WrappedCrossAssemblyGenericAttributeConsumer"
+                Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+                [ libraryReference ]
+                [ consumer ]
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use stream = new System.IO.MemoryStream (image)
+        let assembly = global.WoofWare.PawPrint.AssemblyApi.read loggerFactory None stream
+
+        let target = assembly.TypeDefs.Values |> Seq.find (fun td -> td.Name = "Target")
+
+        let names =
+            AttributeFormatting.attributesFor assembly (MetadataToken.TypeDefinition target.TypeDefHandle)
+            |> List.map (AttributeFormatting.attributeTypeName assembly)
+
+        let found =
+            names
+            |> List.exists (fun n -> n.EndsWith ("Lib.MyGeneric<arr[Lib.ArgType]>", System.StringComparison.Ordinal))
+
+        if not found then
+            failwithf "actual rendered names: %s" (names |> String.concat " ; ")
+
+        for n in names do
+            n.Contains "ref[" |> shouldEqual false
 
     // ----- assembly- and module-scoped attributes ---------------------------
 

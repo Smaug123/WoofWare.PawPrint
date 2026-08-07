@@ -42,7 +42,7 @@ module Program =
             typeInfo.Methods
             |> List.filter (fun m -> memberNameMatches m.Name)
             |> List.map (fun m ->
-                let header = AttributeFormatting.methodHeader qualified m
+                let header = AttributeFormatting.methodHeader assembly qualified m
                 AttributeFormatting.renderOwnerLines assembly header (MetadataToken.MethodDef m.Handle)
             )
 
@@ -50,7 +50,7 @@ module Program =
             typeInfo.Fields
             |> List.filter (fun f -> memberNameMatches f.Name)
             |> List.map (fun f ->
-                let header = AttributeFormatting.fieldHeader qualified f
+                let header = AttributeFormatting.fieldHeader assembly qualified f
                 AttributeFormatting.renderOwnerLines assembly header (MetadataToken.FieldDefinition f.Handle)
             )
 
