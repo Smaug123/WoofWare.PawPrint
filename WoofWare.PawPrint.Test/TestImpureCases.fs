@@ -14,10 +14,129 @@ open WoofWare.PawPrint.Test
 module TestImpureCases =
     let assy = typeof<RunResult>.Assembly
 
-    let unimplemented : EndToEndTestCase list = []
+    /// Build one registration of `CurrentDirectoryConfigured.cs`. The guest
+    /// echoes the directory it observed to stdout, so the assertion is simply
+    /// that the bytes it printed are the UTF-8 of the path we configured —
+    /// which pins the whole chain (`KernelConfig.CurrentDirectory` ->
+    /// `withCurrentDirectory` -> `SystemNative_GetCwd` -> CoreLib's buffer
+    /// dance -> `Marshal.PtrToStringUTF8`) to an exact value, not a shape.
+    let private currentDirectoryCase (dir : string) : EndToEndTestCase =
+        {
+            FileName = "CurrentDirectoryConfigured.cs"
+            ExpectedReturnCode = 0
+            KernelConfig =
+                { KernelConfig.Default with
+                    CurrentDirectory = AbsoluteUnixPath.parseOrFail "test current directory" dir
+                }
+            ExpectsUnhandledException = false
+            AssertTerminalState =
+                Some (fun state ->
+                    OutputLogEntry.bytesFor FileDescriptorRole.StandardOutput state.Kernel.OutputLog
+                    |> Seq.toArray
+                    |> shouldEqual (Text.Encoding.UTF8.GetBytes dir)
+                )
+        }
+
+    /// A directory whose UTF-8 encoding exceeds the 256 bytes CoreLib's
+    /// `Interop.Sys.GetCwd()` stackallocs, so that the first `SystemNative_GetCwd`
+    /// must fail with ERANGE and the guest must take its ArrayPool
+    /// grow-and-retry branch. Several segments rather than one long name, so
+    /// that the separators have to survive the retry too.
+    let private longCurrentDirectory : string =
+        List.replicate 20 "0123456789abcdef"
+        |> List.fold (fun acc seg -> acc + "/" + seg) ""
+
+    /// A directory of only 121 UTF-16 characters but 264 UTF-8 bytes: under the
+    /// 256-byte stackalloc if you measure it in `string` length, over it if you
+    /// measure the bytes the kernel actually writes. ERANGE is a *byte* rule,
+    /// so this must still take the grow-and-retry branch; an implementation
+    /// that compared `bufferSize` against the character count would silently
+    /// overrun here rather than retry. `TestCurrentDirectoryEncodingSizes`
+    /// asserts those two counts, so this comment cannot rot into a lie.
+    let private multiByteCurrentDirectory : string =
+        // Per segment (including its leading separator): é×5 at 2 UTF-8 bytes,
+        // 中×3 at 3, 🐶×1 at 4 (and a surrogate pair, so 2 UTF-16 chars) = 24
+        // bytes and 11 chars. A mix, so the test cannot accidentally pass under
+        // a wrong-but-constant bytes-per-character assumption.
+        List.replicate 11 "é中éé中🐶ééé中" |> List.fold (fun acc seg -> acc + "/" + seg) ""
+
+    /// The two size claims the cases above rest on. Asserted rather than
+    /// trusted: if a future edit to either literal quietly drops one of them
+    /// under the 256-byte stackalloc, the corresponding case stops exercising
+    /// the grow-and-retry branch and would still pass, silently.
+    [<Test>]
+    let ``The long current-directory cases really do overflow CoreLib's stackalloc`` () : unit =
+        // `Interop.Sys.GetCwd()` stackallocs exactly this much before retrying.
+        let stackallocBytes = 256
+
+        Text.Encoding.UTF8.GetByteCount longCurrentDirectory
+        |> shouldBeGreaterThan stackallocBytes
+
+        Text.Encoding.UTF8.GetByteCount multiByteCurrentDirectory
+        |> shouldBeGreaterThan stackallocBytes
+
+        // ...and the multi-byte one must be *under* the limit by character
+        // count, or it is not testing anything the ASCII case doesn't.
+        multiByteCurrentDirectory.Length |> shouldBeSmallerThan stackallocBytes
+
+    let unimplemented : EndToEndTestCase list =
+        [
+            // Both of these have a current directory whose UTF-8 encoding
+            // overflows the 256 bytes `Interop.Sys.GetCwd()` stackallocs, so
+            // `SystemNative_GetCwd` correctly returns NULL with errno=ERANGE
+            // and the guest takes its ArrayPool grow-and-retry branch. It then
+            // stops one call later, at `Interop.Sys.GetLastErrorInfo()`: that
+            // converts the raw errno to the `Interop.Error` PAL enum through
+            // `SystemNative_ConvertErrorPlatformToPal`, which has no handler
+            // registered in `Native/NativeDispatch.fs`, so this reaches
+            // `NativeCall.failUnimplemented`.
+            //
+            // That entry point is the runtime's shared errno<->PAL translation
+            // (an 84-case table in `src/native/libs/Common/pal_error_common.h`)
+            // used by every `SystemNative_*` shim rather than anything specific
+            // to getcwd, so it wants its own change. Un-park both when it lands
+            // — nothing else here is missing, and the short-path siblings in
+            // `cases` below already prove the success path end to end.
+            currentDirectoryCase longCurrentDirectory
+            currentDirectoryCase multiByteCurrentDirectory
+
+            // A *short* non-ASCII directory, parked for an unrelated reason:
+            // it fits the stackalloc, so `SystemNative_GetCwd` succeeds and
+            // ERANGE never enters into it, but decoding the bytes back with
+            // `Marshal.PtrToStringUTF8` takes CoreLib's non-ASCII UTF-8 path,
+            // which stops at the unreviewed JIT intrinsic
+            // `System.Numerics.BitOperations.TrailingZeroCount(uint32)`
+            // (`IlMachineStateExecution.fs`, "TODO: implement JIT intrinsic").
+            // The ASCII siblings in `cases` cover the same handler; what is
+            // missing is an intrinsic, not anything about the current
+            // directory. `TestAbsoluteUnixPath` covers the UTF-8 encoding of
+            // such a path directly in the meantime.
+            currentDirectoryCase "/héllo/中文/🐶"
+        ]
 
     let cases : EndToEndTestCase list =
         [
+            // The default current directory is part of PawPrint's replay
+            // contract: a guest that resolves a relative path must get the same
+            // answer on every machine, so the default has to be a fixed value
+            // rather than the host's. Registered explicitly (rather than relying
+            // on the other cases) so that a change to `defaultCurrentDirectory`
+            // fails a test that says so.
+            currentDirectoryCase "/"
+            currentDirectoryCase "/home/pawprint/work"
+            {
+                // `SystemNative_GetCwd` must classify its error returns before
+                // resolving the caller's buffer to storage, because the C
+                // decides them without dereferencing it. Impure because the
+                // guest passes a pointer that addresses nothing: safe under
+                // PawPrint by construction, but not something to hand the
+                // in-process real runtime in the differential harness.
+                FileName = "GetCwdNoDereferenceErrors.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
             {
                 // `Console.WriteLine("Hello, world!")` exercises the full
                 // BCL stdio stack end-to-end: `Console::get_Out` descends
