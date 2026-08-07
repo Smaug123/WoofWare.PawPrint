@@ -836,8 +836,22 @@ module Program =
                         // we ourselves just wrote. Anything else means a cctor dragged in by
                         // that work misbehaved, and pressing on would run Main against a
                         // half-seeded AppContext.
-                        failwith
-                            $"Seeding AppContext terminated abnormally (%O{outcome}). Properties being seeded: %O{hostConfig.AppContext}"
+                        //
+                        // Describe the outcome by case rather than with `%O`: every
+                        // `RunOutcome` carries an `IlMachineState`, so structural formatting
+                        // would render the entire heap into the exception message.
+                        let described =
+                            match outcome with
+                            | RunOutcome.NormalExit _ -> "returned normally" // unreachable, matched above
+                            | RunOutcome.ProcessExit (_, thread) -> $"called Environment.Exit on %O{thread}"
+                            | RunOutcome.FailFast (_, thread, message) ->
+                                let message = message |> Option.defaultValue "<no message>"
+                                $"called Environment.FailFast on %O{thread}: %s{message}"
+                            | RunOutcome.SignalTerminated (_, signal) -> $"was terminated by signal %O{signal}"
+                            | RunOutcome.GuestUnhandledException (_, thread, exn) ->
+                                $"threw an unhandled exception on %O{thread}: %O{exn.ExceptionObject}"
+
+                        failwith $"Seeding AppContext %s{described}. Properties being seeded: %O{hostConfig.AppContext}"
 
                 let state, startupFrame = buildStartupFrame baseClassTypes state
 

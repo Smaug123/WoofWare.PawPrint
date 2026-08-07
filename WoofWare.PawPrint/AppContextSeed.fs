@@ -23,8 +23,10 @@ open Microsoft.Extensions.Logging
 [<RequireQualifiedAccess>]
 module AppContextSeed =
 
-    /// Bytes in a `char**` slot. `CliType.RuntimePointer` is 8 bytes wide, and `sizeof
-    /// ptr[char]` in the guest's IL agrees, so the two views of the array line up.
+    /// Bytes in a `char**` slot. A native-int cell is 8 bytes wide, and `sizeof ptr[char]`
+    /// in the guest's IL agrees, so the stride we write matches the stride `Setup` reads. A
+    /// disagreement would leave every entry but the first unreadable, which is what
+    /// `AppContextConfigProperties.cs` (five properties, all asserted) would catch.
     [<Literal>]
     let private PointerSize = 8
 
