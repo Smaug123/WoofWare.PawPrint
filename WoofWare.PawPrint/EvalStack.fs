@@ -4,7 +4,9 @@ namespace WoofWare.PawPrint
 
 /// See I.12.3.2.1 for definition
 type EvalStackValue =
-    | Int32 of int32
+    /// An int32 slot. The payload carries provenance because `conv.i4` / `conv.u4`
+    /// can put a truncated byref here; see `Int32Source`.
+    | Int32 of Int32Source
     | Int64 of Int64Source
     | NativeInt of NativeIntSource
     | Float of float
@@ -16,7 +18,7 @@ type EvalStackValue =
 
     override this.ToString () =
         match this with
-        | EvalStackValue.Int32 i -> $"Int32(%i{i})"
+        | EvalStackValue.Int32 i -> $"Int32(%O{i})"
         | EvalStackValue.Int64 i -> $"Int64(%O{i})"
         | EvalStackValue.NativeInt src -> $"NativeInt(%O{src})"
         | EvalStackValue.Float f -> $"Float(%f{f})"
@@ -39,11 +41,6 @@ module EvalStackValue =
             bits
         | NativeIntSource.ManagedPointer ptr ->
             failwith $"%s{operation}: refusing to convert managed pointer %O{ptr} to an integer"
-        | NativeIntSource.NarrowedManagedPointer (ptr, widthBits) ->
-            // The truncation already discarded bits PawPrint never had; producing an
-            // integer now would have to invent the ones it kept, too.
-            failwith
-                $"%s{operation}: refusing to convert managed pointer %O{ptr}, truncated to %i{widthBits} bits, to an integer"
         | NativeIntSource.FunctionPointer methodInfo ->
             failwith $"%s{operation}: refusing to convert function pointer %O{methodInfo} to an integer"
         | NativeIntSource.TypeHandlePtr typeHandle ->
@@ -208,7 +205,9 @@ module EvalStackValue =
         // for Int32, same bits for Int64/NativeInt); the F# `uint32`/`uint64`
         // conversions from signed already do this.
         match value with
-        | EvalStackValue.Int32 i -> Some (uint64 (uint32 i) |> UnsignedNativeIntSource.Verbatim)
+        | EvalStackValue.Int32 int32Source ->
+            let i = Int32Source.value "Conv_U" int32Source
+            Some (uint64 (uint32 i) |> UnsignedNativeIntSource.Verbatim)
         | EvalStackValue.Int64 (Int64Source.Verbatim i) -> Some (uint64 i |> UnsignedNativeIntSource.Verbatim)
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset i) ->
             Some (UnsignedNativeIntSource.FromSyntheticCrossArrayStorage i)
@@ -238,11 +237,6 @@ module EvalStackValue =
             | NativeIntSource.SyntheticCrossArrayOffset i ->
                 UnsignedNativeIntSource.FromSyntheticCrossArrayStorage i |> Some
             | NativeIntSource.ManagedPointer ptr -> UnsignedNativeIntSource.FromManagedPointer ptr |> Some
-            | NativeIntSource.NarrowedManagedPointer (ptr, widthBits) ->
-                // Widening back to native-int width would resurrect the bits the
-                // narrowing threw away, handing the guest a pointer it cannot have.
-                failwith
-                    $"Conv_U: refusing to widen managed pointer %O{ptr} back from %i{widthBits}-bit truncation to unsigned native int; the discarded high bits are not recoverable"
             | NativeIntSource.FunctionPointer methodInfo ->
                 failwith $"Conv_U: refusing to convert function pointer %O{methodInfo} to unsigned native int"
             | NativeIntSource.FieldHandlePtr handle ->
@@ -303,16 +297,9 @@ module EvalStackValue =
             // native-int width. The tag is preserved so the bits remain
             // distinguishable from real-pointer NativeInt sources.
             NativeIntSource.OpaqueHashBits bits |> Some
-        | EvalStackValue.Int32 i -> i |> convIFromInt32 |> NativeIntSource.Verbatim |> Some
-        | EvalStackValue.NativeInt (NativeIntSource.NarrowedManagedPointer (ptr, widthBits)) ->
-            // `(nint)(int)p` sign-extends bit 31 of an address PawPrint does not
-            // model, so the result is a different number from `p`. Passing the
-            // narrowed byref through unchanged would be sound (its low bits are
-            // unaffected, and every other use is already refused), but nothing needs
-            // it, and a silent identity here is the kind of thing that later gets
-            // mistaken for a recovered pointer.
-            failwith
-                $"Conv_I: refusing to widen managed pointer %O{ptr} back from %i{widthBits}-bit truncation to native int; the discarded high bits are not recoverable"
+        | EvalStackValue.Int32 int32Source ->
+            let i = Int32Source.value "Conv_I" int32Source
+            i |> convIFromInt32 |> NativeIntSource.Verbatim |> Some
         | EvalStackValue.NativeInt src -> Some src
         | EvalStackValue.Float f -> f |> convIFromFloat |> NativeIntSource.Verbatim |> Some
         | EvalStackValue.ManagedPointer ptr -> NativeIntSource.ManagedPointer ptr |> Some
@@ -322,7 +309,9 @@ module EvalStackValue =
 
     let convToInt8 (value : EvalStackValue) : int32 option =
         match value with
-        | EvalStackValue.Int32 i -> convI1FromInt32 i |> Some
+        | EvalStackValue.Int32 int32Source ->
+            let i = Int32Source.value "Conv_I1" int32Source
+            convI1FromInt32 i |> Some
         | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convI1FromInt64 i |> Some
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
@@ -337,7 +326,9 @@ module EvalStackValue =
 
     let convToInt16 (value : EvalStackValue) : int32 option =
         match value with
-        | EvalStackValue.Int32 i -> convI2FromInt32 i |> Some
+        | EvalStackValue.Int32 int32Source ->
+            let i = Int32Source.value "Conv_I2" int32Source
+            convI2FromInt32 i |> Some
         | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convI2FromInt64 i |> Some
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
@@ -350,35 +341,18 @@ module EvalStackValue =
         | EvalStackValue.ObjectRef _
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_I2" value
 
-    /// Width of the int32 that `conv.i4` / `conv.u4` produce. Named because it is
-    /// the `widthBits` recorded when a byref survives one of those conversions; see
-    /// `NativeIntSource.NarrowedManagedPointer`.
-    let private int32WidthBits : int = 32
-
     /// `conv.i4` / `conv.u4` on a byref, given that conversion's own truncation.
-    ///
-    /// A byref whose bit pattern is exactly known — `Null`, and the
-    /// `Unsafe.AsRef<T>((void*)bits)` placeholder — is an ordinary value, so it
-    /// truncates to an ordinary `int32`, on the int32 stack kind the opcode is
-    /// specified to push.
-    ///
-    /// An unknown address cannot: managed code narrows such a pointer only to mask
-    /// it (`SpanHelpers.IndexOfNullCharacter` opens with
-    /// `((int)searchSpace & 1) != 0`), so the byref has to survive the conversion
-    /// for the mask to be answerable, and filling in an `int32` would mean
-    /// fabricating an address. Those land in the native-int slot as a
-    /// `NarrowedManagedPointer`, which refuses everything except that mask.
+    /// See `Int32Source.narrowManagedPointer`.
     let private narrowByrefTo32 (truncate : int64 -> int32) (ptr : ManagedPointerSource) : EvalStackValue =
-        match ManagedPointerSource.tryBitPatternBits ptr with
-        | ValueSome bits -> truncate bits |> EvalStackValue.Int32
-        | ValueNone ->
-            NativeIntSource.narrowManagedPointer int32WidthBits ptr
-            |> EvalStackValue.NativeInt
+        Int32Source.narrowManagedPointer truncate ptr |> EvalStackValue.Int32
 
     let convToInt32 (value : EvalStackValue) : EvalStackValue =
         match value with
+        // Identity, narrowed byrefs included: re-truncating a value that is
+        // already 32 bits wide changes nothing.
         | EvalStackValue.Int32 i -> EvalStackValue.Int32 i
-        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convI4FromInt64 i |> EvalStackValue.Int32
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) ->
+            convI4FromInt64 i |> Int32Source.Verbatim |> EvalStackValue.Int32
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
             failwith $"TODO: Conv_I4 from widened native int %O{src} (truncating pointer-shaped int64 to int32)"
@@ -387,13 +361,14 @@ module EvalStackValue =
             // path: `CastCache.KeyToBucket` ends in `(int)((hash * c) >> shift)`
             // to produce an array index. The result has no provenance, but
             // an array index doesn't need one.
-            convI4FromInt64 bits |> EvalStackValue.Int32
+            convI4FromInt64 bits |> Int32Source.Verbatim |> EvalStackValue.Int32
         | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) -> narrowByrefTo32 convI4FromInt64 ptr
         | EvalStackValue.NativeInt src ->
             nativeIntBitsForIntegerConversion "Conv_I4" src
             |> convI4FromInt64
+            |> Int32Source.Verbatim
             |> EvalStackValue.Int32
-        | EvalStackValue.Float f -> convI4FromFloat f |> EvalStackValue.Int32
+        | EvalStackValue.Float f -> convI4FromFloat f |> Int32Source.Verbatim |> EvalStackValue.Int32
         | EvalStackValue.ManagedPointer ptr -> narrowByrefTo32 convI4FromInt64 ptr
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ObjectRef _
@@ -401,7 +376,9 @@ module EvalStackValue =
 
     let convToInt64 (value : EvalStackValue) : Int64Source option =
         match value with
-        | EvalStackValue.Int32 i -> Some (int64<int> i |> Int64Source.Verbatim)
+        | EvalStackValue.Int32 int32Source ->
+            let i = Int32Source.value "Conv_I8" int32Source
+            Some (int64<int> i |> Int64Source.Verbatim)
         | EvalStackValue.Int64 i -> Some i
         | EvalStackValue.NativeInt src ->
             // `widenedNativeInt` normalises the Verbatim/SyntheticCrossArrayOffset/Null
@@ -424,7 +401,9 @@ module EvalStackValue =
     /// Then truncates to int64.
     let convToUInt64 (value : EvalStackValue) : Int64Source option =
         match value with
-        | EvalStackValue.Int32 i -> Some (int64 (uint32 i) |> Int64Source.Verbatim)
+        | EvalStackValue.Int32 int32Source ->
+            let i = Int32Source.value "Conv_U8" int32Source
+            Some (int64 (uint32 i) |> Int64Source.Verbatim)
         | EvalStackValue.Int64 i -> Some i
         | EvalStackValue.NativeInt src -> Some (Int64Source.widenedNativeInt src false)
         | EvalStackValue.Float f -> convU8FromFloat f |> Int64Source.Verbatim |> Some
@@ -438,7 +417,9 @@ module EvalStackValue =
     /// Then truncates to int32.
     let convToUInt8 (value : EvalStackValue) : int32 option =
         match value with
-        | EvalStackValue.Int32 i -> convU1FromInt32 i |> Some
+        | EvalStackValue.Int32 int32Source ->
+            let i = Int32Source.value "Conv_U1" int32Source
+            convU1FromInt32 i |> Some
         | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convU1FromInt64 i |> Some
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
@@ -454,7 +435,9 @@ module EvalStackValue =
     /// Then truncates to int32.
     let convToUInt16 (value : EvalStackValue) : int32 option =
         match value with
-        | EvalStackValue.Int32 i -> convU2FromInt32 i |> Some
+        | EvalStackValue.Int32 int32Source ->
+            let i = Int32Source.value "Conv_U2" int32Source
+            convU2FromInt32 i |> Some
         | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convU2FromInt64 i |> Some
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
@@ -470,20 +453,27 @@ module EvalStackValue =
     /// Then truncates to int32.
     let convToUInt32 (value : EvalStackValue) : EvalStackValue =
         match value with
-        | EvalStackValue.Int32 i -> convU4FromInt32 i |> EvalStackValue.Int32
-        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convU4FromInt64 i |> EvalStackValue.Int32
+        // A narrowed byref is already 32 bits wide, and `conv.u4` only reinterprets
+        // those bits; it neither discards any nor makes the value knowable.
+        | EvalStackValue.Int32 (Int32Source.NarrowedManagedPointer _ as i) -> EvalStackValue.Int32 i
+        | EvalStackValue.Int32 (Int32Source.Verbatim i) ->
+            convU4FromInt32 i |> Int32Source.Verbatim |> EvalStackValue.Int32
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) ->
+            convU4FromInt64 i |> Int32Source.Verbatim |> EvalStackValue.Int32
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
             failwith $"TODO: Conv_U4 from widened native int %O{src} (truncating pointer-shaped int64 to uint32)"
-        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) -> convU4FromInt64 bits |> EvalStackValue.Int32
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) ->
+            convU4FromInt64 bits |> Int32Source.Verbatim |> EvalStackValue.Int32
         // Same rationale as `convToInt32`: the byref survives the narrowing so that
         // the mask managed code is about to apply stays answerable.
         | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) -> narrowByrefTo32 convU4FromInt64 ptr
         | EvalStackValue.NativeInt src ->
             nativeIntBitsForIntegerConversion "Conv_U4" src
             |> convU4FromInt64
+            |> Int32Source.Verbatim
             |> EvalStackValue.Int32
-        | EvalStackValue.Float f -> convU4FromFloat f |> EvalStackValue.Int32
+        | EvalStackValue.Float f -> convU4FromFloat f |> Int32Source.Verbatim |> EvalStackValue.Int32
         | EvalStackValue.ManagedPointer ptr -> narrowByrefTo32 convU4FromInt64 ptr
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ObjectRef _
@@ -491,7 +481,9 @@ module EvalStackValue =
 
     let convToFloat32 (value : EvalStackValue) : float option =
         match value with
-        | EvalStackValue.Int32 i -> convR4FromInt32 i |> Some
+        | EvalStackValue.Int32 int32Source ->
+            let i = Int32Source.value "Conv_R4" int32Source
+            convR4FromInt32 i |> Some
         | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convR4FromInt64 i |> Some
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) ->
             failwith "Refusing to convert byte offset to float"
@@ -513,7 +505,9 @@ module EvalStackValue =
 
     let convToFloat64 (value : EvalStackValue) : float option =
         match value with
-        | EvalStackValue.Int32 i -> convR8FromInt32 i |> Some
+        | EvalStackValue.Int32 int32Source ->
+            let i = Int32Source.value "Conv_R8" int32Source
+            convR8FromInt32 i |> Some
         | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convR8FromInt64 i |> Some
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) ->
             failwith "Refusing to convert byte offset to float"
@@ -532,7 +526,9 @@ module EvalStackValue =
 
     let convUnsignedToFloat (value : EvalStackValue) : float option =
         match value with
-        | EvalStackValue.Int32 i -> convRUnFromInt32 i |> Some
+        | EvalStackValue.Int32 int32Source ->
+            let i = Int32Source.value "Conv_R_un" int32Source
+            convRUnFromInt32 i |> Some
         | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convRUnFromInt64 i |> Some
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) ->
             failwith "Refusing to convert byte offset to float"
@@ -553,23 +549,23 @@ module EvalStackValue =
         match v with
         | CliType.Numeric numeric ->
             match numeric with
-            | CliNumericType.Int32 i -> EvalStackValue.Int32 i
+            | CliNumericType.Int32 i -> EvalStackValue.Int32 (Int32Source.Verbatim i)
             | CliNumericType.Int64 i -> EvalStackValue.Int64 i
             | CliNumericType.NativeInt i -> EvalStackValue.NativeInt i
             // Sign-extend types int8 and int16
             // Zero-extend unsigned int8/unsigned int16
-            | CliNumericType.Int8 b -> int32<int8> b |> EvalStackValue.Int32
-            | CliNumericType.UInt8 b -> int32<uint8> b |> EvalStackValue.Int32
-            | CliNumericType.Int16 s -> int32<int16> s |> EvalStackValue.Int32
-            | CliNumericType.UInt16 s -> int32<uint16> s |> EvalStackValue.Int32
+            | CliNumericType.Int8 b -> int32<int8> b |> Int32Source.Verbatim |> EvalStackValue.Int32
+            | CliNumericType.UInt8 b -> int32<uint8> b |> Int32Source.Verbatim |> EvalStackValue.Int32
+            | CliNumericType.Int16 s -> int32<int16> s |> Int32Source.Verbatim |> EvalStackValue.Int32
+            | CliNumericType.UInt16 s -> int32<uint16> s |> Int32Source.Verbatim |> EvalStackValue.Int32
             | CliNumericType.Float32 f -> EvalStackValue.Float (float<float32> f)
             | CliNumericType.Float64 f -> EvalStackValue.Float f
             | CliNumericType.NativeFloat f -> EvalStackValue.Float f
         | CliType.ObjectRef None -> EvalStackValue.NullObjectRef
         | CliType.ObjectRef (Some addr) -> EvalStackValue.ObjectRef addr
         // Zero-extend bool/char
-        | CliType.Bool b -> int32 b |> EvalStackValue.Int32
-        | CliType.Char (high, low) -> int32 high * 256 + int32 low |> EvalStackValue.Int32
+        | CliType.Bool b -> int32 b |> Int32Source.Verbatim |> EvalStackValue.Int32
+        | CliType.Char (high, low) -> int32 high * 256 + int32 low |> Int32Source.Verbatim |> EvalStackValue.Int32
         | CliType.RuntimePointer ptr ->
             match ptr with
             | CliRuntimePointer.Verbatim ptrInt -> NativeIntSource.Verbatim ptrInt |> EvalStackValue.NativeInt
@@ -610,7 +606,9 @@ module EvalStackValue =
             match numeric with
             | CliNumericType.Int32 _ ->
                 match popped with
-                | EvalStackValue.Int32 i -> CliType.Numeric (CliNumericType.Int32 i)
+                | EvalStackValue.Int32 int32Source ->
+                    let i = Int32Source.value "storing to an int32 location" int32Source
+                    CliType.Numeric (CliNumericType.Int32 i)
                 | EvalStackValue.UserDefinedValueType vt -> viewValueTypeAsPrimitive target vt
                 | i -> failwith $"TODO: %O{i}"
             | CliNumericType.Int64 _ ->
@@ -633,9 +631,6 @@ module EvalStackValue =
                         failwith $"refusing to coerce PerInstInfo pointer %O{f} to int64"
                     | NativeIntSource.PerInstDictPtr f ->
                         failwith $"refusing to coerce PerInstDict pointer %O{f} to int64"
-                    | NativeIntSource.NarrowedManagedPointer (ptr, widthBits) ->
-                        failwith
-                            $"refusing to coerce managed pointer %O{ptr}, truncated to %i{widthBits} bits, to int64: storing it would require inventing the container's address"
                     | NativeIntSource.GcHandlePtr (f, tag) -> failwith $"TODO: {f} (tag 0x%x{tag})"
                     | NativeIntSource.EventPipeProviderPtr id ->
                         failwith $"refusing to coerce EventPipe provider handle #%d{id} to int64"
@@ -717,22 +712,30 @@ module EvalStackValue =
             | CliNumericType.NativeFloat f -> failwith "todo"
             | CliNumericType.Int8 _ ->
                 match popped with
-                | EvalStackValue.Int32 i -> CliType.Numeric (CliNumericType.Int8 (i % 256 |> int8))
+                | EvalStackValue.Int32 int32Source ->
+                    let i = Int32Source.value "storing to an int8 location" int32Source
+                    CliType.Numeric (CliNumericType.Int8 (i % 256 |> int8))
                 | EvalStackValue.UserDefinedValueType vt -> viewValueTypeAsPrimitive target vt
                 | i -> failwith $"TODO: %O{i}"
             | CliNumericType.Int16 _ ->
                 match popped with
-                | EvalStackValue.Int32 popped -> CliType.Numeric (CliNumericType.Int16 (popped % 65536 |> int16<int>))
+                | EvalStackValue.Int32 int32Source ->
+                    let popped = Int32Source.value "storing to an int16 location" int32Source
+                    CliType.Numeric (CliNumericType.Int16 (popped % 65536 |> int16<int>))
                 | EvalStackValue.UserDefinedValueType vt -> viewValueTypeAsPrimitive target vt
                 | _ -> failwith $"TODO: {popped}"
             | CliNumericType.UInt8 _ ->
                 match popped with
-                | EvalStackValue.Int32 i -> CliType.Numeric (CliNumericType.UInt8 (i % 256 |> uint8))
+                | EvalStackValue.Int32 int32Source ->
+                    let i = Int32Source.value "storing to a uint8 location" int32Source
+                    CliType.Numeric (CliNumericType.UInt8 (i % 256 |> uint8))
                 | EvalStackValue.UserDefinedValueType vt -> viewValueTypeAsPrimitive target vt
                 | i -> failwith $"todo: {i} to uint8"
             | CliNumericType.UInt16 _ ->
                 match popped with
-                | EvalStackValue.Int32 popped -> CliType.Numeric (CliNumericType.UInt16 (uint16<int32> popped))
+                | EvalStackValue.Int32 int32Source ->
+                    let popped = Int32Source.value "storing to a uint16 location" int32Source
+                    CliType.Numeric (CliNumericType.UInt16 (uint16<int32> popped))
                 | EvalStackValue.UserDefinedValueType vt -> viewValueTypeAsPrimitive target vt
                 | i -> failwith $"todo: {i} to uint16"
             | CliNumericType.Float32 _ ->
@@ -769,9 +772,6 @@ module EvalStackValue =
                 | NativeIntSource.MethodHandlePtr _ ->
                     failwith "refusing to interpret method handle ID as an object ref"
                 | NativeIntSource.FieldHandlePtr _ -> failwith "refusing to interpret field handle ID as an object ref"
-                | NativeIntSource.NarrowedManagedPointer (ptr, widthBits) ->
-                    failwith
-                        $"refusing to interpret managed pointer %O{ptr}, truncated to %i{widthBits} bits, as an object ref"
                 | NativeIntSource.GcHandlePtr _ -> failwith "refusing to interpret GC handle ID as an object ref"
                 | NativeIntSource.EventPipeProviderPtr _ ->
                     failwith "refusing to interpret EventPipe provider handle as an object ref"
@@ -801,7 +801,8 @@ module EvalStackValue =
             | _ -> failwith $"TODO: {popped}"
         | CliType.Bool _ ->
             match popped with
-            | EvalStackValue.Int32 i ->
+            | EvalStackValue.Int32 int32Source ->
+                let i = Int32Source.value "storing to a bool location" int32Source
                 // Bools are zero-extended
                 CliType.Bool (i % 256 |> byte)
             | EvalStackValue.ManagedPointer src ->
@@ -818,12 +819,6 @@ module EvalStackValue =
                     failwith
                         "refusing to interpret synthetic cross-storage byte offset as a runtime pointer: the value is a deterministic sentinel, not a real address"
                 | NativeIntSource.ManagedPointer src -> src |> CliRuntimePointer.Managed |> CliType.RuntimePointer
-                | NativeIntSource.NarrowedManagedPointer (ptr, widthBits) ->
-                    // Recovering the byref here would silently undo the truncation,
-                    // making a pointer the guest cannot legitimately hold
-                    // dereferenceable again.
-                    failwith
-                        $"refusing to coerce managed pointer %O{ptr}, truncated to %i{widthBits} bits, back to a runtime pointer; the discarded high bits are not recoverable"
                 | NativeIntSource.FunctionPointer methodInfo ->
                     CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer methodInfo))
                 | NativeIntSource.TypeHandlePtr typeHandle ->
@@ -868,7 +863,8 @@ module EvalStackValue =
             | _ -> failwith $"TODO: %O{popped}"
         | CliType.Char _ ->
             match popped with
-            | EvalStackValue.Int32 i ->
+            | EvalStackValue.Int32 int32Source ->
+                let i = Int32Source.value "storing to a char location" int32Source
                 // Char is a 16-bit unsigned slot. The int32 on the stack may
                 // carry a sign-extended negative value (e.g. from coercing a
                 // negative Int16 through a `Unsafe.As<ushort, short>` write);

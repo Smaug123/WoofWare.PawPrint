@@ -50,7 +50,7 @@ module internal UnaryMetadataCallOps =
             let v, s' = IlMachineState.popEvalStack thread s
 
             match v with
-            | EvalStackValue.Int32 n ->
+            | EvalStackValue.Int32 (Int32Source.Verbatim n) ->
                 indices.[i] <- n
                 s <- s'
             | other ->

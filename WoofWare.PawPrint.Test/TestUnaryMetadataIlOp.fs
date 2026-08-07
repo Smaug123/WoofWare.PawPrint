@@ -234,7 +234,7 @@ module TestUnaryMetadataIlOp =
         let state =
             state
             |> IlMachineState.pushToEvalStack' EvalStackValue.NullObjectRef thread
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 42) thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 42)) thread
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->

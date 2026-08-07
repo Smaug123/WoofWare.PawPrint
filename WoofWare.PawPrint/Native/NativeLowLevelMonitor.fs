@@ -150,7 +150,8 @@ module NativeLowLevelMonitor =
             // is correct as-is (signal-wake) or it was rewritten to `0`
             // by `fireTimeout` (deadline-wake).
             let state =
-                state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) ctx.Thread
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 1)) ctx.Thread
 
             let state = LowLevelMonitor.wait ctx.Thread id deadlineMs state
             NativeHandlerResult.completed state |> Some

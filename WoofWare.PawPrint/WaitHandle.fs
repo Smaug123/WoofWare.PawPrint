@@ -474,7 +474,7 @@ module WaitHandle =
     /// by every timeout fire.
     let private rewriteWaitResult (thread : ThreadId) (value : int) (state : IlMachineState) : IlMachineState =
         let _, state = IlMachineState.popEvalStack thread state
-        IlMachineState.pushToEvalStack' (EvalStackValue.Int32 value) thread state
+        IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim value)) thread state
 
     /// Hand `id` (and, for a wait-all, every other handle it names) to
     /// `thread`, dequeue it from every handle it was registered on, publish

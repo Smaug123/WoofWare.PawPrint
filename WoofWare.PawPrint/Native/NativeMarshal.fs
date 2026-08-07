@@ -21,7 +21,9 @@ module NativeMarshal =
           [],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
             state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 state.Kernel.LastPInvokeError) ctx.Thread
+            |> IlMachineState.pushToEvalStack'
+                (EvalStackValue.Int32 (Int32Source.Verbatim state.Kernel.LastPInvokeError))
+                ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
         | "System.Private.CoreLib",
@@ -31,7 +33,9 @@ module NativeMarshal =
           [],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
             state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 state.Kernel.LastSystemError) ctx.Thread
+            |> IlMachineState.pushToEvalStack'
+                (EvalStackValue.Int32 (Int32Source.Verbatim state.Kernel.LastSystemError))
+                ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
         | "System.Private.CoreLib",
@@ -103,7 +107,7 @@ module NativeMarshal =
 
             let throwIfNotMarshalable =
                 match instruction.Arguments.[1] |> EvalStackValue.ofCliType with
-                | EvalStackValue.Int32 0 -> false
+                | EvalStackValue.Int32 (Int32Source.Verbatim 0) -> false
                 | EvalStackValue.Int32 _ -> true
                 | other -> failwith $"%s{operation}: expected throwIfNotMarshalable as Int32, got %O{other}"
 

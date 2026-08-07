@@ -208,10 +208,14 @@ module NativeRuntimeFieldHandle =
 
             let state =
                 match NativeCall.fieldHandleIdOfRuntimeFieldHandleInternal operation instruction.Arguments.[0] with
-                | None -> state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread
+                | None ->
+                    state
+                    |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
                 | Some fieldHandleId ->
                     match FieldHandleRegistry.resolveFieldFromId fieldHandleId state.FieldHandles with
-                    | None -> state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread
+                    | None ->
+                        state
+                        |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
                     | Some fieldHandle ->
                         let state, peByteRange =
                             getPeByteRangeForFieldHandle
@@ -222,7 +226,11 @@ module NativeRuntimeFieldHandle =
                                 state
 
                         match peByteRange with
-                        | None -> state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 0) ctx.Thread
+                        | None ->
+                            state
+                            |> IlMachineState.pushToEvalStack'
+                                (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+                                ctx.Thread
                         | Some peByteRange ->
                             let state, dataPtr =
                                 IlMachineState.peByteRangePointer ctx.LoggerFactory ctx.BaseClassTypes peByteRange state
@@ -241,7 +249,10 @@ module NativeRuntimeFieldHandle =
                                     sizeOut
                                     (NativeCall.cliUInt32 (uint32 peByteRange.Size))
 
-                            state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) ctx.Thread
+                            state
+                            |> IlMachineState.pushToEvalStack'
+                                (EvalStackValue.Int32 (Int32Source.Verbatim 1))
+                                ctx.Thread
 
             NativeHandlerResult.completed state |> Some
         | _ -> None

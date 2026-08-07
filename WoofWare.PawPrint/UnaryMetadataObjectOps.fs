@@ -155,7 +155,7 @@ module internal UnaryMetadataObjectOps =
             let v, s' = IlMachineState.popEvalStack thread s
 
             match v with
-            | EvalStackValue.Int32 n ->
+            | EvalStackValue.Int32 (Int32Source.Verbatim n) ->
                 lengths.[i] <- n
                 s <- s'
             | other ->

@@ -191,30 +191,6 @@ type NativeIntSource =
     /// via `Int64Source.widenedNativeInt`. See
     /// `docs/plans/2026-05-13-castcache-synthetic-hash-bits.md`.
     | OpaqueHashBits of int64
-    /// A byref that `conv.i4` / `conv.u4` has truncated to `widthBits` bits.
-    ///
-    /// CoreLib asks whether a pointer is aligned by narrowing it and masking:
-    /// `SpanHelpers.IndexOfNullCharacter` — which `String.wcslen`, and hence
-    /// `new string(char*)`, runs first — opens with `((int)searchSpace & 1) != 0`.
-    /// The mask is answerable (see `TaggedPointerBits`, and
-    /// `ManagedPointerSource.tryContainerAlignmentBits` for the guarantee it rests
-    /// on), but only if the byref survives the narrowing: a plain `int32` could not
-    /// carry it, and materialising address bits to fill one would be exactly the
-    /// fabrication `docs/developer/pointers-and-byte-representations.md` forbids.
-    ///
-    /// This case is therefore the value `conv.i4` pushes. It sits in the native-int
-    /// slot rather than the int32 slot it nominally belongs to, which is sound only
-    /// because *every* operation whose answer would depend on the slot's width is
-    /// refused: widening back (`conv.i`/`conv.u`/`conv.i8`), dereferencing,
-    /// arithmetic, comparison, and storing to a numeric location all fail loudly.
-    /// The single admitted operation is a bitwise mask that stays inside the
-    /// container's guaranteed alignment, whose answer is the same at either width.
-    /// So no guest program can observe the discrepancy.
-    ///
-    /// Always construct via `NativeIntSource.narrowManagedPointer`, which routes
-    /// byrefs with exactly-known bit patterns (`Null`, `NativeIntPlaceholder`) to
-    /// `Verbatim` instead; this case is only ever an *unknown* address.
-    | NarrowedManagedPointer of source : ManagedPointerSource * widthBits : int
 
     override this.ToString () : string =
         match this with
@@ -241,8 +217,6 @@ type NativeIntSource =
         | NativeIntSource.WaitHandlePtr id -> $"%O{id}"
         | NativeIntSource.SyntheticCrossArrayOffset _ -> "<synthetic cross-storage byte offset>"
         | NativeIntSource.OpaqueHashBits bits -> $"<opaque hash bits (native int) 0x%x{bits}>"
-        | NativeIntSource.NarrowedManagedPointer (ptr, widthBits) ->
-            $"<managed pointer {ptr}, truncated to %i{widthBits} bits>"
 
     override this.Equals (other : obj) : bool =
         match other with
@@ -273,9 +247,6 @@ type NativeIntSource =
             | NativeIntSource.SyntheticCrossArrayOffset left, NativeIntSource.SyntheticCrossArrayOffset right ->
                 left = right
             | NativeIntSource.OpaqueHashBits left, NativeIntSource.OpaqueHashBits right -> left = right
-            | NativeIntSource.NarrowedManagedPointer (leftPtr, leftWidth),
-              NativeIntSource.NarrowedManagedPointer (rightPtr, rightWidth) ->
-                leftPtr = rightPtr && leftWidth = rightWidth
             | NativeIntSource.Verbatim _, _
             | NativeIntSource.ManagedPointer _, _
             | NativeIntSource.FunctionPointer _, _
@@ -296,8 +267,7 @@ type NativeIntSource =
             | NativeIntSource.LowLevelMonitorPtr _, _
             | NativeIntSource.WaitHandlePtr _, _
             | NativeIntSource.SyntheticCrossArrayOffset _, _
-            | NativeIntSource.OpaqueHashBits _, _
-            | NativeIntSource.NarrowedManagedPointer _, _ -> false
+            | NativeIntSource.OpaqueHashBits _, _ -> false
         | _ -> false
 
     override this.GetHashCode () : int =
@@ -330,7 +300,6 @@ type NativeIntSource =
         | NativeIntSource.OpaqueHashBits bits -> HashCode.Combine (15, bits)
         | NativeIntSource.LowLevelMonitorPtr id -> HashCode.Combine (16, id)
         | NativeIntSource.WaitHandlePtr id -> HashCode.Combine (17, id)
-        | NativeIntSource.NarrowedManagedPointer (ptr, widthBits) -> HashCode.Combine (20, ptr, widthBits)
 
 /// CoreCLR's `TypeHandle` is a tagged pointer: it wraps either a `MethodTable*`
 /// or a `TypeDesc*`, and distinguishes them by setting bit 1 in the TypeDesc
@@ -402,28 +371,6 @@ module NativeIntSource =
 
         NativeIntSource.GcHandlePtr (handle, tag)
 
-    /// Smart constructor for `NativeIntSource.NarrowedManagedPointer`: what
-    /// `conv.i4` / `conv.u4` push for a byref whose address PawPrint does not model.
-    ///
-    /// A byref whose bit pattern is exactly known (`Null`, and the
-    /// `NativeIntPlaceholder` produced by `Unsafe.AsRef<T>((void*)bits)`) must not
-    /// reach here. Truncating a known value is ordinary truncation, it belongs on
-    /// the int32 stack kind the opcode is specified to push, and it has to happen
-    /// with the *conversion's* signedness — none of which this constructor can
-    /// supply. `EvalStackValue.convToInt32` / `convToUInt32` handle those.
-    let narrowManagedPointer (widthBits : int) (src : ManagedPointerSource) : NativeIntSource =
-        Debug.Assert (
-            widthBits > 0 && widthBits < 64,
-            $"narrowing width %i{widthBits} out of range; a narrowing must discard some bits but not all"
-        )
-
-        Debug.Assert (
-            (ManagedPointerSource.tryBitPatternBits src).IsNone,
-            $"byref %O{src} has an exactly-known bit pattern; narrowing it is ordinary truncation to an int32, not a NarrowedManagedPointer"
-        )
-
-        NativeIntSource.NarrowedManagedPointer (src, widthBits)
-
     let isZero (n : NativeIntSource) : bool =
         match n with
         | NativeIntSource.Verbatim i -> i = 0L
@@ -445,12 +392,6 @@ module NativeIntSource =
         | NativeIntSource.MetadataImportHandle _
         | NativeIntSource.ModuleHandle _ -> false
         | NativeIntSource.OpaqueHashBits bits -> bits = 0L
-        // The discarded high bits are exactly what decides this: a container whose
-        // address happens to be a multiple of 2^widthBits truncates to zero, and
-        // PawPrint does not model the address.
-        | NativeIntSource.NarrowedManagedPointer (ptr, widthBits) ->
-            failwith
-                $"refusing to decide whether managed pointer %O{ptr}, truncated to %i{widthBits} bits, is zero: that depends on the container's address, which PawPrint does not model"
         | NativeIntSource.FunctionPointer _ -> failwith "TODO"
         | NativeIntSource.ManagedPointer src ->
             match src with
@@ -481,11 +422,6 @@ module NativeIntSource =
         | NativeIntSource.ModuleHandle _ -> true
         | NativeIntSource.OpaqueHashBits bits -> bits >= 0L
         | NativeIntSource.ManagedPointer _ -> true
-        // `conv.i4` sign-extends its int32 result, so the sign is bit 31 of the
-        // container's address — a bit PawPrint does not model.
-        | NativeIntSource.NarrowedManagedPointer (ptr, widthBits) ->
-            failwith
-                $"refusing to decide the sign of managed pointer %O{ptr} truncated to %i{widthBits} bits: that depends on the container's address, which PawPrint does not model"
 
     /// CEQ semantics on `NativeIntSource` pairs: matches the
     /// `native int × native int` arm of ECMA Table III.4. Distinct from the
@@ -518,15 +454,6 @@ module NativeIntSource =
         let b = unwrapPlaceholder b
 
         match a, b with
-        // Two truncated byrefs are equal iff their full addresses agree in the low
-        // `widthBits`, which is only decidable when they share a container — and
-        // even then the answer would depend on bits above the guaranteed alignment.
-        // Real managed code masks a narrowed pointer and tests the mask; it does not
-        // compare one against anything.
-        | NativeIntSource.NarrowedManagedPointer _, _
-        | _, NativeIntSource.NarrowedManagedPointer _ ->
-            failwith
-                $"refusing to compare a truncated managed pointer for equality; that depends on the container's address, which PawPrint does not model: {a} vs {b}"
         | NativeIntSource.FunctionPointer f1, NativeIntSource.FunctionPointer f2 -> MethodInfo.NominallyEqual f1 f2
         | NativeIntSource.TypeHandlePtr f1, NativeIntSource.TypeHandlePtr f2 -> f1 = f2
         // A `TypeDescPtr` is the same base address as the `TypeHandlePtr` it was
@@ -774,3 +701,62 @@ type CliRuntimePointer =
     /// helpers like `NativeIntSource.isZero`/`isNonnegative` and conv ops only
     /// match the `NativeIntSource` form.
     | GcHandlePtr of handle : GcHandleAddress * tag : int64
+
+/// The provenance of a value in an int32 evaluation-stack slot.
+///
+/// Almost every int32 on the stack is an ordinary number. The exception is a
+/// byref that `conv.i4` / `conv.u4` truncated: CoreLib asks whether a pointer is
+/// aligned by narrowing it and masking — `SpanHelpers.IndexOfNullCharacter`, which
+/// `String.wcslen` and hence `new string(char*)` runs first, opens with
+/// `((int)searchSpace & 1) != 0`. The mask is answerable (see `TaggedPointerBits`,
+/// and `ManagedPointerSource.tryContainerAlignmentBits` for the guarantee it rests
+/// on), but only if the byref survives the narrowing, and PawPrint must not invent
+/// the address bits an `int32` would need (see
+/// `docs/developer/pointers-and-byte-representations.md`).
+///
+/// This DU is why the int32 stack slot carries provenance at all. Making it a case
+/// *here*, rather than smuggling the narrowed pointer into the wider native-int
+/// slot, is what makes the compiler visit every site that consumes an int32: none
+/// of them can treat a narrowed byref as a number by accident, because none of them
+/// can get at a number without saying what to do when there isn't one.
+[<RequireQualifiedAccess>]
+type Int32Source =
+    | Verbatim of int32
+    /// A byref that `conv.i4` / `conv.u4` truncated to 32 bits, whose address
+    /// PawPrint does not model. Only `and` against a mask can say anything about
+    /// it; everything else must refuse.
+    ///
+    /// Always construct via `Int32Source.narrowManagedPointer`, which sends byrefs
+    /// with an exactly-known bit pattern (`Null`, and the `NativeIntPlaceholder`
+    /// produced by `Unsafe.AsRef<T>((void*)bits)`) to `Verbatim` instead: those are
+    /// values, not addresses, and truncating them is ordinary truncation.
+    | NarrowedManagedPointer of source : ManagedPointerSource
+
+    override this.ToString () : string =
+        match this with
+        | Int32Source.Verbatim i -> $"%i{i}"
+        | Int32Source.NarrowedManagedPointer ptr -> $"<managed pointer %O{ptr}, truncated to 32 bits>"
+
+[<RequireQualifiedAccess>]
+module Int32Source =
+
+    /// Smart constructor for `Int32Source.NarrowedManagedPointer`: the result of
+    /// `conv.i4` / `conv.u4` on a byref. `truncate` is the conversion's own
+    /// narrowing, applied to byrefs whose bit pattern is exactly known.
+    let narrowManagedPointer (truncate : int64 -> int32) (src : ManagedPointerSource) : Int32Source =
+        match ManagedPointerSource.tryBitPatternBits src with
+        | ValueSome bits -> Int32Source.Verbatim (truncate bits)
+        | ValueNone -> Int32Source.NarrowedManagedPointer src
+
+    /// The numeric value of an int32 stack slot.
+    ///
+    /// A narrowed byref has no numeric value PawPrint can state: `conv.i4` kept the
+    /// low half of an address that was never modelled. `operation` names the
+    /// consumer, so a guest that reaches one says exactly which opcode or helper
+    /// wanted a number it cannot have.
+    let value (operation : string) (src : Int32Source) : int32 =
+        match src with
+        | Int32Source.Verbatim i -> i
+        | Int32Source.NarrowedManagedPointer ptr ->
+            failwith
+                $"%s{operation}: refusing to use managed pointer %O{ptr}, truncated to 32 bits, as a number; its value depends on the container's address, which PawPrint does not model"

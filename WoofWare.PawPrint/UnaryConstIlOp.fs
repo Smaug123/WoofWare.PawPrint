@@ -112,7 +112,9 @@ module internal UnaryConstIlOp =
 
             let isTrue =
                 match popped with
-                | EvalStackValue.Int32 i -> i <> 0
+                | EvalStackValue.Int32 int32Source ->
+                    let i = Int32Source.value "Brfalse_s" int32Source
+                    i <> 0
                 | EvalStackValue.Int64 i -> Int64Source.isZero i |> not
                 | EvalStackValue.NativeInt i -> NativeIntSource.isZero i |> not
                 | EvalStackValue.Float f -> failwith "TODO: Brfalse_s float semantics undocumented"
@@ -135,7 +137,9 @@ module internal UnaryConstIlOp =
 
             let isTrue =
                 match popped with
-                | EvalStackValue.Int32 i -> i <> 0
+                | EvalStackValue.Int32 int32Source ->
+                    let i = Int32Source.value "Brtrue_s" int32Source
+                    i <> 0
                 | EvalStackValue.Int64 i -> Int64Source.isZero i |> not
                 | EvalStackValue.NativeInt i -> NativeIntSource.isZero i |> not
                 | EvalStackValue.Float f -> failwith "TODO: Brtrue_s float semantics undocumented"
@@ -158,7 +162,9 @@ module internal UnaryConstIlOp =
 
             let isFalse =
                 match popped with
-                | EvalStackValue.Int32 i -> i = 0
+                | EvalStackValue.Int32 int32Source ->
+                    let i = Int32Source.value "Brfalse" int32Source
+                    i = 0
                 | EvalStackValue.Int64 i -> Int64Source.isZero i
                 | EvalStackValue.NativeInt i -> NativeIntSource.isZero i
                 | EvalStackValue.Float f -> failwith "TODO: Brfalse float semantics undocumented"
@@ -181,7 +187,9 @@ module internal UnaryConstIlOp =
 
             let isTrue =
                 match popped with
-                | EvalStackValue.Int32 i -> i <> 0
+                | EvalStackValue.Int32 int32Source ->
+                    let i = Int32Source.value "Brtrue" int32Source
+                    i <> 0
                 | EvalStackValue.Int64 i -> Int64Source.isZero i |> not
                 | EvalStackValue.NativeInt i -> NativeIntSource.isZero i |> not
                 | EvalStackValue.Float f -> failwith "TODO: Brtrue float semantics undocumented"

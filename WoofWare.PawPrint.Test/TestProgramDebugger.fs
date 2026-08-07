@@ -76,7 +76,7 @@ class Program
         | RunOutcome.NormalExit (state, thread)
         | RunOutcome.ProcessExit (state, thread) ->
             match state.ThreadState.[thread].MethodState.EvaluationStack.Values with
-            | EvalStackValue.Int32 i :: _ -> OutcomeSignature.ExitCode i
+            | EvalStackValue.Int32 (Int32Source.Verbatim i) :: _ -> OutcomeSignature.ExitCode i
             | other -> failwith $"Expected int32 exit stack, got %O{other}"
         | RunOutcome.FailFast (_, _, message) -> OutcomeSignature.FailFast message
         | RunOutcome.SignalTerminated (_, signal) -> OutcomeSignature.SignalTerminated signal

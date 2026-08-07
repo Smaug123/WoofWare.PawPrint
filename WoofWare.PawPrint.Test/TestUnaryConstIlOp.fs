@@ -127,8 +127,8 @@ module TestUnaryConstIlOp =
                     Map.empty
                     |> Map.add thread (ThreadState.New (CpuId 0) (OsThreadId 1u) methodState)
             }
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 value1) thread
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 value2) thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim value1)) thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim value2)) thread
 
         state, thread
 

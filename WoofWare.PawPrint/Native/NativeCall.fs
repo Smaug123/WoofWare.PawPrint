@@ -119,7 +119,7 @@ module NativeCall =
     let gcHandleKindOfEvalStackValue (operation : string) (arg : EvalStackValue) : GcHandleKind =
         let value =
             match arg with
-            | EvalStackValue.Int32 i -> i
+            | EvalStackValue.Int32 (Int32Source.Verbatim i) -> i
             | other -> failwith $"%s{operation}: expected GCHandleType enum as int32, got %O{other}"
 
         match value with

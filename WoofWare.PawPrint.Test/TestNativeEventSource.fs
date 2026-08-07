@@ -339,7 +339,7 @@ public static class Entry
             donorConcretizedMethod loggerFactory prepared.BaseClassTypes prepared.State
 
         dispatchIsEnabled loggerFactory prepared state donor
-        |> shouldEqual (EvalStackValue.Int32 0)
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
 
     [<Test>]
     let ``IsEventSourceLoggingEnabled: returns 1 when DOTNET_EnableEventLog=1`` () : unit =
@@ -353,7 +353,7 @@ public static class Entry
         let state = withEnvironment [ "DOTNET_EnableEventLog", "1" ] state
 
         dispatchIsEnabled loggerFactory prepared state donor
-        |> shouldEqual (EvalStackValue.Int32 1)
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 1))
 
     [<Test>]
     let ``IsEventSourceLoggingEnabled: returns 0 when DOTNET_EnableEventLog=0`` () : unit =
@@ -367,7 +367,7 @@ public static class Entry
         let state = withEnvironment [ "DOTNET_EnableEventLog", "0" ] state
 
         dispatchIsEnabled loggerFactory prepared state donor
-        |> shouldEqual (EvalStackValue.Int32 0)
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
 
     [<Test>]
     let ``IsEventSourceLoggingEnabled: hex 10 means 16 (nonzero, so TRUE)`` () : unit =
@@ -381,7 +381,7 @@ public static class Entry
         let state = withEnvironment [ "DOTNET_EnableEventLog", "10" ] state
 
         dispatchIsEnabled loggerFactory prepared state donor
-        |> shouldEqual (EvalStackValue.Int32 1)
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 1))
 
     [<Test>]
     let ``IsEventSourceLoggingEnabled: COMPlus_ fallback wires up`` () : unit =
@@ -395,7 +395,7 @@ public static class Entry
         let state = withEnvironment [ "COMPlus_EnableEventLog", "1" ] state
 
         dispatchIsEnabled loggerFactory prepared state donor
-        |> shouldEqual (EvalStackValue.Int32 1)
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 1))
 
     [<Test>]
     let ``IsEventSourceLoggingEnabled: DOTNET_EnableEventLog=-1 enables (wcstoul wraps to 0xFFFFFFFF)`` () : unit =
@@ -414,7 +414,7 @@ public static class Entry
         let state = withEnvironment [ "DOTNET_EnableEventLog", "-1" ] state
 
         dispatchIsEnabled loggerFactory prepared state donor
-        |> shouldEqual (EvalStackValue.Int32 1)
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 1))
 
     [<Test>]
     let ``IsEventSourceLoggingEnabled: DOTNET_EnableEventLog=1garbage enables (longest-prefix parse)`` () : unit =
@@ -432,7 +432,7 @@ public static class Entry
         let state = withEnvironment [ "DOTNET_EnableEventLog", "1garbage" ] state
 
         dispatchIsEnabled loggerFactory prepared state donor
-        |> shouldEqual (EvalStackValue.Int32 1)
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 1))
 
     [<Test>]
     let ``IsEventSourceLoggingEnabled: DOTNET_EnableEventLog=-100000001 enables (PAL_wcstoul 64-bit wrap)`` () : unit =
@@ -455,7 +455,7 @@ public static class Entry
         let state = withEnvironment [ "DOTNET_EnableEventLog", "-100000001" ] state
 
         dispatchIsEnabled loggerFactory prepared state donor
-        |> shouldEqual (EvalStackValue.Int32 1)
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 1))
 
     [<Test>]
     let ``IsEventSourceLoggingEnabled: malformed value with no parseable digits defaults to FALSE`` () : unit =
@@ -469,7 +469,7 @@ public static class Entry
         let state = withEnvironment [ "DOTNET_EnableEventLog", "garbage" ] state
 
         dispatchIsEnabled loggerFactory prepared state donor
-        |> shouldEqual (EvalStackValue.Int32 0)
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
 
     [<Test>]
     let ``LogEventSource: dispatch fires loud failwith (the gate that protects against silent event loss)`` () : unit =

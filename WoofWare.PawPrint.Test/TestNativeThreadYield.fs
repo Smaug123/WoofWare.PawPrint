@@ -146,4 +146,4 @@ public static class Entry
         // `YieldInternal() != Interop.BOOL.FALSE` evaluates to `false`. Returning TRUE here
         // would lie under the current `Scheduler.chooseNext` contract (no guarantee a
         // different thread will run before the yielder observes the return).
-        returnValue |> shouldEqual (EvalStackValue.Int32 0)
+        returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))

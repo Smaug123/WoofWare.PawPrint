@@ -92,7 +92,7 @@ module NativeThreading =
     /// slot to `Int32 0` so Join returns `false`. Both code paths
     /// (QCall: pushes `CliType.Numeric (Int32 1/0)`; InternalCall:
     /// pushes `CliType.ofBool true/false`) project to
-    /// `EvalStackValue.Int32 1/0`, so a single Int32-rewrite suffices
+    /// `EvalStackValue.Int32 (Int32Source.Verbatim 1)/0`, so a single Int32-rewrite suffices
     /// in `fireJoinTimeout`.
     let private executeJoinCore
         (ctx : NativeCallContext)

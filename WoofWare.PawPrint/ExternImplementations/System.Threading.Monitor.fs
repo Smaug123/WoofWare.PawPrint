@@ -161,7 +161,7 @@ module System_Threading_Monitor =
 
         let timeout =
             match timeoutVal with
-            | EvalStackValue.Int32 i -> i
+            | EvalStackValue.Int32 (Int32Source.Verbatim i) -> i
             | other -> failwith $"Monitor.TryEnter_FastPath_WithTimeout: expected int32 timeout, got %O{other}"
 
         let result, state =
@@ -258,7 +258,7 @@ module System_Threading_Monitor =
                     }
 
                 writeHeld addr block.WaitQueue locked state
-                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) currentThread
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 1)) currentThread
             | SyncBlockLock.Held locked ->
                 if locked.LockingThread = currentThread then
                     // Reentrant: bump depth and report acquired. Mirrors the fast-path
@@ -269,7 +269,7 @@ module System_Threading_Monitor =
                         }
 
                     writeHeld addr block.WaitQueue locked state
-                    |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) currentThread
+                    |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 1)) currentThread
                 elif timeout = 0 then
                     failwith
                         $"Monitor_TryEnter_Slowpath: unexpected timeout = 0 — the fast-path resolves Contention + ms=0 to `return false` without calling the slowpath; reaching here means the BCL wrapper was bypassed."
@@ -288,7 +288,7 @@ module System_Threading_Monitor =
                     let deadlineMs = state.Kernel.VirtualClockMs + int64 timeout
 
                     state
-                    |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 1) currentThread
+                    |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 1)) currentThread
                     |> parkOnAcquireQueue addr currentThread block locked (Some deadlineMs)
 
         state

@@ -23,7 +23,7 @@ module internal UnaryMetadataArrayOps =
 
         let len =
             match popped with
-            | EvalStackValue.Int32 v -> v
+            | EvalStackValue.Int32 (Int32Source.Verbatim v) -> v
             | popped -> failwith $"unexpectedly popped value %O{popped} to serve as array len"
 
         let typeGenerics = currentMethod.DeclaringType.Generics
@@ -144,7 +144,7 @@ module internal UnaryMetadataArrayOps =
 
         let index =
             match index with
-            | EvalStackValue.Int32 i -> i
+            | EvalStackValue.Int32 (Int32Source.Verbatim i) -> i
             | _ -> failwith $"TODO: {index}"
 
         let arrAddr =
@@ -242,7 +242,7 @@ module internal UnaryMetadataArrayOps =
 
         let index =
             match index with
-            | EvalStackValue.Int32 i -> i
+            | EvalStackValue.Int32 (Int32Source.Verbatim i) -> i
             | _ -> failwith $"Expected int32 index in Stelem, but got: {index}"
 
         let arr, state = IlMachineState.popEvalStack thread state
@@ -322,7 +322,7 @@ module internal UnaryMetadataArrayOps =
 
         let index =
             match index with
-            | EvalStackValue.Int32 i -> i
+            | EvalStackValue.Int32 (Int32Source.Verbatim i) -> i
             | _ -> failwith $"Expected int32 index in Stelem, but got: {index}"
 
         let arr, state = IlMachineState.popEvalStack thread state

@@ -250,7 +250,8 @@ module TestFaultHandlers =
             | other -> failwith $"Expected fault handler, got %O{other}"
 
         let state =
-            state |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 123) thread
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 123)) thread
 
         let methodState =
             { state.ThreadState.[thread].MethodState with
@@ -312,9 +313,14 @@ module TestFaultHandlers =
 
     [<Test>]
     let ``Endfilter treats any non-zero int32 as accept`` () : unit =
-        NullaryIlOp.endfilterAccepts (EvalStackValue.Int32 0) |> shouldEqual false
-        NullaryIlOp.endfilterAccepts (EvalStackValue.Int32 1) |> shouldEqual true
-        NullaryIlOp.endfilterAccepts (EvalStackValue.Int32 2) |> shouldEqual true
+        NullaryIlOp.endfilterAccepts (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+        |> shouldEqual false
+
+        NullaryIlOp.endfilterAccepts (EvalStackValue.Int32 (Int32Source.Verbatim 1))
+        |> shouldEqual true
+
+        NullaryIlOp.endfilterAccepts (EvalStackValue.Int32 (Int32Source.Verbatim 2))
+        |> shouldEqual true
 
     [<Test>]
     let ``Exception continuation stack is last-in first-out`` () : unit =

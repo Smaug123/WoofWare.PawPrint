@@ -396,7 +396,8 @@ module Intrinsics =
                     | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) -> EvalStackValue.ManagedPointer ptr
                     | EvalStackValue.NativeInt (NativeIntSource.Verbatim bits) ->
                         EvalStackValue.ManagedPointer (placeholderOf bits)
-                    | EvalStackValue.Int32 bits -> EvalStackValue.ManagedPointer (placeholderOf (int64 bits))
+                    | EvalStackValue.Int32 (Int32Source.Verbatim bits) ->
+                        EvalStackValue.ManagedPointer (placeholderOf (int64 bits))
                     | EvalStackValue.Int64 (Int64Source.Verbatim bits) ->
                         EvalStackValue.ManagedPointer (placeholderOf bits)
                     | EvalStackValue.NullObjectRef -> EvalStackValue.ManagedPointer ManagedPointerSource.Null
@@ -468,7 +469,7 @@ module Intrinsics =
 
                 let value =
                     match EvalStackValue.convToInt32 valueArg with
-                    | EvalStackValue.Int32 value -> value
+                    | EvalStackValue.Int32 (Int32Source.Verbatim value) -> value
                     | converted ->
                         failwith
                             $"%s{operation}: expected int32 value, got %O{valueArg} (which narrowed to %O{converted})"
@@ -480,7 +481,7 @@ module Intrinsics =
 
                     let current =
                         match EvalStackValue.ofCliType currentValue with
-                        | EvalStackValue.Int32 i -> i
+                        | EvalStackValue.Int32 (Int32Source.Verbatim i) -> i
                         | other -> failwith $"%s{operation}: expected int32 in target location, got %O{other}"
 
                     // From the docs:
@@ -495,12 +496,16 @@ module Intrinsics =
                             baseClassTypes
                             state
                             byrefSrc
-                            (EvalStackValue.toCliTypeCoerced currentValue (EvalStackValue.Int32 updated))
+                            (EvalStackValue.toCliTypeCoerced
+                                currentValue
+                                (EvalStackValue.Int32 (Int32Source.Verbatim updated)))
 
                     let result = if returnsOriginalValue then current else updated
 
                     state
-                    |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 result) currentThread
+                    |> IlMachineState.pushToEvalStack'
+                        (EvalStackValue.Int32 (Int32Source.Verbatim result))
+                        currentThread
                     |> IlMachineState.advanceProgramCounter currentThread
                     |> IntrinsicResult.Completed
 
@@ -578,7 +583,7 @@ module Intrinsics =
 
                 let value =
                     match EvalStackValue.convToInt32 valueArg with
-                    | EvalStackValue.Int32 value -> value
+                    | EvalStackValue.Int32 (Int32Source.Verbatim value) -> value
                     | converted ->
                         failwith
                             $"%s{operation}: expected int32 value, got %O{valueArg} (which narrowed to %O{converted})"
@@ -590,7 +595,7 @@ module Intrinsics =
 
                     let current =
                         match EvalStackValue.ofCliType currentValue with
-                        | EvalStackValue.Int32 i -> i
+                        | EvalStackValue.Int32 (Int32Source.Verbatim i) -> i
                         | other -> failwith $"%s{operation}: expected int32 in target location, got %O{other}"
 
                     let updated = if isOr then current ||| value else current &&& value
@@ -600,10 +605,14 @@ module Intrinsics =
                             baseClassTypes
                             state
                             byrefSrc
-                            (EvalStackValue.toCliTypeCoerced currentValue (EvalStackValue.Int32 updated))
+                            (EvalStackValue.toCliTypeCoerced
+                                currentValue
+                                (EvalStackValue.Int32 (Int32Source.Verbatim updated)))
 
                     state
-                    |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 current) currentThread
+                    |> IlMachineState.pushToEvalStack'
+                        (EvalStackValue.Int32 (Int32Source.Verbatim current))
+                        currentThread
                     |> IlMachineState.advanceProgramCounter currentThread
                     |> IntrinsicResult.Completed
 
@@ -734,7 +743,7 @@ module Intrinsics =
                         match v with
                         | EvalStackValue.NativeInt src -> src
                         | EvalStackValue.Int64 (Int64Source.Verbatim i) -> NativeIntSource.Verbatim i
-                        | EvalStackValue.Int32 i -> NativeIntSource.Verbatim (int64<int> i)
+                        | EvalStackValue.Int32 (Int32Source.Verbatim i) -> NativeIntSource.Verbatim (int64<int> i)
                         | EvalStackValue.ManagedPointer src -> NativeIntSource.ManagedPointer src
                         | EvalStackValue.NullObjectRef -> NativeIntSource.ManagedPointer ManagedPointerSource.Null
                         | other ->
@@ -754,7 +763,7 @@ module Intrinsics =
                         match EvalStackValue.ofCliType currentValue with
                         | EvalStackValue.NativeInt src -> src
                         | EvalStackValue.Int64 (Int64Source.Verbatim i) -> NativeIntSource.Verbatim i
-                        | EvalStackValue.Int32 i -> NativeIntSource.Verbatim (int64<int> i)
+                        | EvalStackValue.Int32 (Int32Source.Verbatim i) -> NativeIntSource.Verbatim (int64<int> i)
                         | other ->
                             failwith
                                 $"Interlocked.CompareExchange(ref native-int,...): expected NativeInt at byref target, got %O{other}"
@@ -880,7 +889,7 @@ module Intrinsics =
                         match v with
                         | EvalStackValue.NativeInt src -> src
                         | EvalStackValue.Int64 (Int64Source.Verbatim i) -> NativeIntSource.Verbatim i
-                        | EvalStackValue.Int32 i -> NativeIntSource.Verbatim (int64<int> i)
+                        | EvalStackValue.Int32 (Int32Source.Verbatim i) -> NativeIntSource.Verbatim (int64<int> i)
                         | EvalStackValue.ManagedPointer src -> NativeIntSource.ManagedPointer src
                         | EvalStackValue.NullObjectRef -> NativeIntSource.ManagedPointer ManagedPointerSource.Null
                         | other ->
@@ -899,7 +908,7 @@ module Intrinsics =
                         match EvalStackValue.ofCliType currentValue with
                         | EvalStackValue.NativeInt src -> src
                         | EvalStackValue.Int64 (Int64Source.Verbatim i) -> NativeIntSource.Verbatim i
-                        | EvalStackValue.Int32 i -> NativeIntSource.Verbatim (int64<int> i)
+                        | EvalStackValue.Int32 (Int32Source.Verbatim i) -> NativeIntSource.Verbatim (int64<int> i)
                         | other ->
                             failwith
                                 $"Interlocked.Exchange(ref native-int,...): expected NativeInt at byref target, got %O{other}"
@@ -990,7 +999,10 @@ module Intrinsics =
 
             let result =
                 match arg with
-                | EvalStackValue.Float f -> BitConverter.SingleToInt32Bits (float32<float> f) |> EvalStackValue.Int32
+                | EvalStackValue.Float f ->
+                    BitConverter.SingleToInt32Bits (float32<float> f)
+                    |> Int32Source.Verbatim
+                    |> EvalStackValue.Int32
                 | _ -> failwith "TODO"
 
             state
@@ -1006,7 +1018,7 @@ module Intrinsics =
 
             let arg =
                 match arg with
-                | EvalStackValue.Int32 i -> i
+                | EvalStackValue.Int32 (Int32Source.Verbatim i) -> i
                 | _ -> failwith "$TODO: {arr}"
 
             let result =
@@ -1109,6 +1121,7 @@ module Intrinsics =
                 | EvalStackValue.Float f ->
                     BitConverter.SingleToUInt32Bits (float32<float> f)
                     |> int<uint32>
+                    |> Int32Source.Verbatim
                     |> EvalStackValue.Int32
                 | _ -> failwith "TODO"
 
@@ -1126,7 +1139,7 @@ module Intrinsics =
 
             let result =
                 match arg with
-                | EvalStackValue.Int32 f ->
+                | EvalStackValue.Int32 (Int32Source.Verbatim f) ->
                     BitConverter.UInt32BitsToSingle (uint32<int> f)
                     |> float<float32>
                     |> EvalStackValue.Float
@@ -1148,13 +1161,13 @@ module Intrinsics =
 
                 let value =
                     match arg with
-                    | EvalStackValue.Int32 i -> uint32<int> i
+                    | EvalStackValue.Int32 (Int32Source.Verbatim i) -> uint32<int> i
                     | _ -> failwith $"BitOperations.Log2(uint): unexpected eval stack value %O{arg}"
 
                 let result = System.Numerics.BitOperations.Log2 value
 
                 state
-                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 result) currentThread
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim result)) currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
                 |> IntrinsicResult.Completed
             | [ ConcreteUInt64 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) ->
@@ -1168,7 +1181,7 @@ module Intrinsics =
                 let result = System.Numerics.BitOperations.Log2 value
 
                 state
-                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 result) currentThread
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim result)) currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
                 |> IntrinsicResult.Completed
             | [ ConcreteUIntPtr state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) ->
@@ -1179,13 +1192,13 @@ module Intrinsics =
                     | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) -> unativeint<int64> i
                     | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) -> 0un
                     | EvalStackValue.Int64 (Int64Source.Verbatim i) -> unativeint<int64> i
-                    | EvalStackValue.Int32 i -> unativeint<int> i
+                    | EvalStackValue.Int32 (Int32Source.Verbatim i) -> unativeint<int> i
                     | _ -> failwith $"BitOperations.Log2(nuint): unexpected eval stack value %O{arg}"
 
                 let result = System.Numerics.BitOperations.Log2 value
 
                 state
-                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 result) currentThread
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim result)) currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
                 |> IntrinsicResult.Completed
             | _ -> failwith $"BitOperations.Log2: unexpected signature %s{formatMethodKey intrinsicKey}"
@@ -2077,7 +2090,7 @@ module Intrinsics =
             // never emits an out-of-range native-int offset for array arithmetic.
             let offset =
                 match offset with
-                | EvalStackValue.Int32 i -> i
+                | EvalStackValue.Int32 (Int32Source.Verbatim i) -> i
                 | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) ->
                     if i < int64<int> System.Int32.MinValue || i > int64<int> System.Int32.MaxValue then
                         failwith
@@ -2125,7 +2138,7 @@ module Intrinsics =
 
                 match offset with
                 | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) -> ofInt64 i
-                | EvalStackValue.Int32 i -> i
+                | EvalStackValue.Int32 (Int32Source.Verbatim i) -> i
                 // A `nuint`/`nint` byte offset that was seeded from `IntPtr.Zero` (or `(nint)0`)
                 // arrives as `ManagedPointer Null`, because zero is the canonical null byref;
                 // accumulating onto it with `add` then yields a `NativeIntPlaceholder`. Both are
@@ -2402,7 +2415,7 @@ module Intrinsics =
 
             let index : int =
                 match index with
-                | EvalStackValue.Int32 i -> i
+                | EvalStackValue.Int32 (Int32Source.Verbatim i) -> i
                 | other -> failwith $"%s{spanTypeName}.get_Item expected Int32 index, got %O{other}"
 
             let span : CliValueType =
@@ -2688,7 +2701,7 @@ module Intrinsics =
 
             let dimension =
                 match dimensionArg with
-                | EvalStackValue.Int32 d -> d
+                | EvalStackValue.Int32 (Int32Source.Verbatim d) -> d
                 | other -> failwith $"Array.%s{boundKind}: expected an Int32 dimension, got %O{other}"
 
             match receiver with
@@ -2738,7 +2751,7 @@ module Intrinsics =
                     | other -> failwith $"logic error: unreachable Array bound accessor %s{other}"
 
                 state
-                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 result) currentThread
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim result)) currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
                 |> IntrinsicResult.Completed
             | EvalStackValue.NullObjectRef
@@ -2801,7 +2814,9 @@ module Intrinsics =
                     let result = (thisInt &&& flagInt) = flagInt
 
                     state
-                    |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (if result then 1 else 0)) currentThread
+                    |> IlMachineState.pushToEvalStack'
+                        (EvalStackValue.Int32 (Int32Source.Verbatim (if result then 1 else 0)))
+                        currentThread
                     |> IlMachineState.advanceProgramCounter currentThread
                     |> IntrinsicResult.Completed
             | Some _, Some EvalStackValue.NullObjectRef ->
