@@ -1327,6 +1327,37 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Float64 result)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
+        | "System.Private.CoreLib", "Math", "Sin" when intrinsicKey.DeclaringTypeFullName = "System.Math" ->
+            // The twin of `Math.Cos` above, and the same shape: `[Intrinsic]` +
+            // `MethodImplOptions.InternalCall` with no IL body, lowered by the JIT to the
+            // platform C library's `sin`.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/coreclr/System.Private.CoreLib/src/System/Math.CoreCLR.cs#L92-L93
+            //
+            // Note that `Math.SinCos` is *not* this method: it has an IL body of its own and
+            // bottoms out in a separate `SinCos(double, double*, double*)` InternalCall, which
+            // is still unimplemented. The hill-climbing controller below does not use it.
+            //
+            // Reached from ordinary guest code, and from `GetWaveComponent`
+            // (PortableThreadPool.HillClimbing.cs:457), nine lines after the `Math.Cos` call
+            // that the same controller makes.
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteDouble state.ConcreteTypes ], MethodReturnType.Returns (ConcreteDouble state.ConcreteTypes) ->
+                ()
+            | _ -> failwith $"Math.Sin: unexpected signature %s{formatMethodKey intrinsicKey}"
+
+            let argument, state = IlMachineState.popEvalStack currentThread state
+
+            let argument =
+                match argument with
+                | EvalStackValue.Float f -> f
+                | _ -> failwith $"Math.Sin: unexpected eval stack value: %O{argument}"
+
+            let result = DeterministicMath.sin argument
+
+            state
+            |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Float64 result)) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> IntrinsicResult.Completed
         | "System.Private.CoreLib", "String", "Equals" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteString state.ConcreteTypes ; ConcreteString state.ConcreteTypes ],

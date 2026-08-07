@@ -668,8 +668,9 @@ module TestDeterministicMath =
             // An infinite argument names no point on the circle: a domain error.
             infinity, positiveNaN
             -infinity, positiveNaN
-            // A NaN propagates with its sign and payload intact, as IEEE 754 clause 7.2
-            // recommends; `Double.NaN` is the *negative* quiet NaN.
+            // A NaN propagates with its payload intact, which IEEE 754-2019 clause 6.2.3
+            // recommends; the sign clause 6.3 leaves unspecified, and PawPrint keeps it for
+            // consistency with its own `pow`. `Double.NaN` is the *negative* quiet NaN.
             nan, negativeNaN
             ofBits 0x7FF8000000000123UL, 0x7FF8000000000123UL
             ofBits 0xFFF8000000000123UL, 0xFFF8000000000123UL
@@ -706,10 +707,10 @@ module TestDeterministicMath =
             // pattern. macOS/Arm gives the positive one this table specifies.
             BitConverter.DoubleToUInt64Bits infinity, negativeNaN
             BitConverter.DoubleToUInt64Bits -infinity, negativeNaN
-            // macOS/Arm's `cos` clears the sign of a NaN argument rather than propagating it,
-            // where clause 7.2 recommends returning the input NaN quieted. Payload survives
-            // either way, so the alternative differs from the specified answer only in the
-            // sign bit.
+            // macOS/Arm's `cos` clears the sign of a NaN argument rather than propagating it.
+            // Clause 6.3 does not specify the sign of a NaN result, so both conform; the
+            // payload survives either way, so the alternative differs from the specified
+            // answer only in the sign bit.
             0xFFF8000000000000UL, positiveNaN
             0xFFF8000000000123UL, 0x7FF8000000000123UL
             0xFFF0000000000123UL, 0x7FF8000000000123UL
@@ -735,5 +736,260 @@ module TestDeterministicMath =
             let permitted = permitted |> List.map (sprintf "%016x") |> String.concat " or "
 
             Some $"host cos(%.17g{x}): expected bits {permitted}, got %016x{host}"
+        )
+        |> reportFailures
+
+    /// An independent sine, built the same way `referenceCos` is: reduce modulo 2 pi against
+    /// Euler's pi and evaluate the sine series directly on the result, sharing neither the
+    /// constant, nor the modulus, nor the quadrant table with the implementation.
+    ///
+    /// This stays valid all the way down to `Double.Epsilon`, because it carries the reduced
+    /// argument at `referenceBits` fractional bits without ever narrowing it — which is what
+    /// lets it act as the oracle for the implementation's small-argument shortcut as well as
+    /// for the series.
+    let private referenceSin (x : float) : float =
+        let mantissa, exponent = DeterministicMath.decompose (abs x)
+
+        let scaled = mantissa * referenceOneOverTwoPi
+
+        let turns =
+            if exponent >= 0 then
+                scaled <<< exponent
+            else
+                scaled >>> -exponent
+
+        let k = (turns + (BigInteger.One <<< (referenceBits - 1))) >>> referenceBits
+        let reduced = (mantissa <<< (exponent + referenceBits)) - (k * referenceTwoPi)
+
+        // As in `referenceCos`, the series converges on the whole of [-pi, pi]. Its worst
+        // cancellation is at an argument near ±pi, where the terms peak around pi^3/6 and the
+        // sum comes back near 2^-53: about 55 bits lost out of `referenceBits`.
+        let reducedSquared = referenceMultiply reduced reduced
+        let mutable term = reduced
+        let mutable acc = BigInteger.Zero
+        let mutable j = 1
+
+        while not term.IsZero do
+            acc <- acc + term
+            term <- -(referenceMultiply term reducedSquared) / BigInteger ((j + 1) * (j + 2))
+            j <- j + 2
+
+        let magnitude = DeterministicMath.roundToDouble acc -referenceBits
+
+        // The reduction above took |x|; sine is odd, and `Double.IsNegative` rather than
+        // `< 0.0` so that the sign of a zero survives.
+        if Double.IsNegative x then -magnitude else magnitude
+
+    [<Test>]
+    let ``sin matches an independently computed reference`` () : unit =
+        // The real specification of `sin`, as `cos` has above: bit-for-bit equality with a
+        // reference accurate to several hundred bits.
+        let property (x : float) : bool =
+            let actual = BitConverter.DoubleToUInt64Bits (DeterministicMath.sin x)
+            actual = BitConverter.DoubleToUInt64Bits (referenceSin x)
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genFiniteDouble) property)
+
+    [<Test>]
+    let ``sin agrees with the host libm to within one ulp`` () : unit =
+        // A sanity check rather than a specification: the host's `sin` is not correctly
+        // rounded either, so where the two disagree it is PawPrint that is expected to be
+        // right, and `sin matches an independently computed reference` is what says so.
+        let property (x : float) : bool =
+            ulpDistance (DeterministicMath.sin x) (Math.Sin x) <= 1.0
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genFiniteDouble) property)
+
+    [<Test>]
+    let ``sin is odd`` () : unit =
+        // IEEE 754-2019 clause 9.2 requires this of the operation, not merely of the real
+        // sine: "For operations f defined by odd mathematical functions, f(-x) is -f(x) for
+        // roundTiesToEven, roundTiesToAway, and roundTowardZero for their entire domain and
+        // range." Note the narrower scope than the evenness rule `cos is even` asserts, which
+        // holds for every rounding attribute; under the directed roundings an odd function
+        // need not be exactly odd. We round ties to even throughout, so it binds here.
+        //
+        // It holds exactly rather than to within a rounding because the reduction takes |x|
+        // and the sign is reapplied to the result.
+        let property (x : float) : bool =
+            let atMinusX = BitConverter.DoubleToUInt64Bits (DeterministicMath.sin -x)
+            atMinusX = BitConverter.DoubleToUInt64Bits (-(DeterministicMath.sin x))
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genFiniteDouble) property)
+
+    [<Test>]
+    let ``sin stays within the unit interval`` () : unit =
+        let property (x : float) : bool =
+            let result = DeterministicMath.sin x
+            result >= -1.0 && result <= 1.0
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genFiniteDouble) property)
+
+    [<Test>]
+    let ``sin is a pure function of its argument`` () : unit =
+        let property (x : float) : bool =
+            let first = BitConverter.DoubleToUInt64Bits (DeterministicMath.sin x)
+            first = BitConverter.DoubleToUInt64Bits (DeterministicMath.sin x)
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genFiniteDouble) property)
+
+    [<Test>]
+    let ``sin and cos satisfy the Pythagorean identity`` () : unit =
+        // The one check that ties the two quadrant tables to each other. `sin` and `cos` read
+        // the same reduction and the same series, differing only in which residues call for
+        // the sine and which of them negate; rotating one table relative to the other leaves
+        // both functions individually plausible — still bounded, still the right parity — but
+        // breaks this immediately.
+        //
+        // Both operands are correctly rounded, so the two squarings and the addition are the
+        // only error: a few ulps of 1, far inside this bound.
+        let property (x : float) : bool =
+            let s = DeterministicMath.sin x
+            let c = DeterministicMath.cos x
+            abs ((s * s) + (c * c) - 1.0) < 1e-15
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genFiniteDouble) property)
+
+    /// A double whose magnitude is below 2^-27, spanning the subnormals up to the largest
+    /// octave on which `sin x` is exactly `x`. Biased exponent 995 is the octave
+    /// [2^-28, 2^-27), so every draw is strictly below the bound.
+    let private genTinyDouble : Gen<float> =
+        gen {
+            let! sign = Gen.elements [ 0UL ; 1UL ]
+            let! biasedExponent = Gen.choose (0, 995)
+            let! fraction = Gen.choose64 (0L, 0xF_FFFF_FFFF_FFFFL)
+
+            return
+                BitConverter.UInt64BitsToDouble ((sign <<< 63) ||| (uint64 biasedExponent <<< 52) ||| uint64 fraction)
+        }
+
+    [<Test>]
+    let ``sin returns its argument unchanged on the octaves where that is correct`` () : unit =
+        // `sin x` differs from `x` in binary64 only once `x^3/6` reaches half an ulp of `x`,
+        // i.e. once |x| exceeds about 2^-25.2; below that the correctly rounded answer is the
+        // argument itself.
+        //
+        // This range straddles `smallArgumentThreshold`, which is 2^-128: draws above it go
+        // through the reduction and the series, draws below it take the shortcut. So this is
+        // simultaneously the specification of the shortcut and the evidence that the
+        // threshold sits a hundred octaves inside the region where the shortcut is valid,
+        // rather than at the edge of it.
+        let property (x : float) : bool =
+            BitConverter.DoubleToUInt64Bits (DeterministicMath.sin x) = BitConverter.DoubleToUInt64Bits x
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genTinyDouble) property)
+
+    [<Test>]
+    let ``the small-argument shortcut agrees with the series across the boundary`` () : unit =
+        // The two doubles either side of `smallArgumentThreshold` take different code paths
+        // and must not disagree. The one at the threshold is the hardest input the series is
+        // ever asked for: its reduced argument has exactly `reducedArgumentFloor` significant
+        // bits, so it is the point at which the floor assertion is closest to firing.
+        let threshold =
+            DeterministicMath.roundToDouble
+                BigInteger.One
+                (DeterministicMath.reducedArgumentFloor - DeterministicMath.fractionBits)
+
+        let below = Math.BitDecrement threshold
+
+        [ below, "below" ; threshold, "at" ; Math.BitIncrement threshold, "above" ]
+        |> List.collect (fun (x, where) ->
+            let actual = BitConverter.DoubleToUInt64Bits (DeterministicMath.sin x)
+
+            [
+                if actual <> BitConverter.DoubleToUInt64Bits x then
+                    yield
+                        $"sin(%.17g{x}), %s{where} the threshold: expected the argument back, got %.17g{DeterministicMath.sin x}"
+                if actual <> BitConverter.DoubleToUInt64Bits (referenceSin x) then
+                    yield
+                        $"sin(%.17g{x}), %s{where} the threshold: got bits %016x{actual}, reference says %016x{BitConverter.DoubleToUInt64Bits (referenceSin x)}"
+            ]
+        )
+        |> reportFailures
+
+    /// The IEEE 754 / C99 `sin` special cases, as a table of (x, expected bits).
+    let private sinSpecialCases : (float * uint64) list =
+        let ofBits (bits : uint64) : float = BitConverter.UInt64BitsToDouble bits
+        let positiveNaN = 0x7FF8000000000000UL
+        let negativeNaN = 0xFFF8000000000000UL
+        let positiveZero = 0x0000000000000000UL
+        let negativeZero = 0x8000000000000000UL
+
+        [
+            // IEEE 754-2019 clause 9.2.1: "For the operations sin, tan, ... f(+0) is +0 and
+            // f(-0) is -0 with no exception." So the sign of a zero is specified, unlike the
+            // sign of a NaN below.
+            0.0, positiveZero
+            -0.0, negativeZero
+            // sin(x) is exactly x for any x small enough that x - x^3/6 rounds back to x.
+            ofBits 0x3E10000000000000UL, 0x3E10000000000000UL // 2^-30
+            ofBits 0xBE10000000000000UL, 0xBE10000000000000UL // -2^-30
+            // An infinite argument names no point on the circle: a domain error.
+            infinity, positiveNaN
+            -infinity, positiveNaN
+            // A NaN propagates with its payload intact, which IEEE 754-2019 clause 6.2.3
+            // recommends; the sign clause 6.3 leaves unspecified, and PawPrint keeps it for
+            // consistency with its own `pow` and `cos`. `Double.NaN` is the *negative* quiet
+            // NaN.
+            nan, negativeNaN
+            ofBits 0x7FF8000000000123UL, 0x7FF8000000000123UL
+            ofBits 0xFFF8000000000123UL, 0xFFF8000000000123UL
+            // A *signalling* NaN comes back quieted, again keeping sign and payload.
+            ofBits 0x7FF0000000000123UL, 0x7FF8000000000123UL
+            ofBits 0xFFF0000000000123UL, 0xFFF8000000000123UL
+            ofBits 0x7FF0000000000001UL, 0x7FF8000000000001UL
+        ]
+
+    [<Test>]
+    let ``sin matches the IEEE 754 special cases`` () : unit =
+        sinSpecialCases
+        |> List.choose (fun (x, expected) ->
+            let actual = BitConverter.DoubleToUInt64Bits (DeterministicMath.sin x)
+
+            if actual = expected then
+                None
+            else
+                Some $"sin(%.17g{x}): expected bits %016x{expected}, got %016x{actual}"
+        )
+        |> reportFailures
+
+    /// The rows of `sinSpecialCases` on which the host is allowed to disagree, with the one
+    /// other answer it may give. As with `cos`, every row here is a NaN payload or sign; the
+    /// zeros and the finite rows admit no alternative, because clause 9.2.1 fixes them.
+    let private sinHostAlternatives : Map<uint64, uint64> =
+        let positiveNaN = 0x7FF8000000000000UL
+        let negativeNaN = 0xFFF8000000000000UL
+
+        [
+            // The payload of a *freshly generated* NaN is the hardware's: x86 produces the
+            // negative quiet NaN and Arm the positive one.
+            BitConverter.DoubleToUInt64Bits infinity, negativeNaN
+            BitConverter.DoubleToUInt64Bits -infinity, negativeNaN
+            // macOS/Arm's libm clears the sign of a NaN argument rather than propagating it.
+            0xFFF8000000000000UL, positiveNaN
+            0xFFF8000000000123UL, 0x7FF8000000000123UL
+            0xFFF0000000000123UL, 0x7FF8000000000123UL
+        ]
+        |> Map.ofList
+
+    [<Test>]
+    let ``the host agrees about the sin special cases`` () : unit =
+        sinSpecialCases
+        |> List.choose (fun (x, expected) ->
+            let host = BitConverter.DoubleToUInt64Bits (Math.Sin x)
+            let key = BitConverter.DoubleToUInt64Bits x
+
+            let permitted =
+                match Map.tryFind key sinHostAlternatives with
+                | None -> [ expected ]
+                | Some alternative -> [ expected ; alternative ]
+
+            if List.contains host permitted then
+                None
+            else
+
+            let permitted = permitted |> List.map (sprintf "%016x") |> String.concat " or "
+
+            Some $"host sin(%.17g{x}): expected bits {permitted}, got %016x{host}"
         )
         |> reportFailures
