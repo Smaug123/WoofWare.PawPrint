@@ -341,8 +341,16 @@ type ThreadState =
 
     // --- Frame resolution primitives ---
 
+    /// The frame, if it is still live on this thread. A frame stops being live when it is unwound
+    /// — by an ordinary return, or by exception dispatch passing through it — so a caller holding a
+    /// `FrameId` across an operation that can unwind wants this rather than `getFrame`, which
+    /// treats absence as a bug. No such caller exists today; this is the honest lookup that
+    /// `getFrame` is defined in terms of.
+    static member tryGetFrame (frameId : FrameId) (s : ThreadState) : MethodState option =
+        s.MethodStates |> Map.tryFind frameId
+
     static member getFrame (frameId : FrameId) (s : ThreadState) : MethodState =
-        match s.MethodStates |> Map.tryFind frameId with
+        match ThreadState.tryGetFrame frameId s with
         | Some frame -> frame
         | None -> failwith $"Frame %O{frameId} is not live in this thread"
 
