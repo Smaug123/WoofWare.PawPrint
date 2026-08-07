@@ -1,6 +1,7 @@
 namespace WoofWare.PawPrint
 
 open System
+open System.Diagnostics
 open Checked
 
 /// The delta between the addresses of two locations in memory that aren't within the same ByteStorageIdentity.
@@ -120,7 +121,23 @@ type NativeIntSource =
     | AssemblyHandle of string
     | ModuleHandle of string
     | MetadataImportHandle of string
-    | GcHandlePtr of GcHandleAddress
+    /// A GC handle, plus whatever tag bits managed code has stuffed into its low
+    /// bits. `GcHandleAddress` is the handle's identity; `tag` is a view the guest
+    /// has imposed on it, and is always inside
+    /// `TaggedPointerBits.tagMask TaggedPointerBits.gcHandleTagWidthBits`.
+    ///
+    /// CoreLib genuinely does this: `System.WeakReference` stores
+    /// `handle | TracksResurrectionBit` and masks the bit off again on every read,
+    /// and `GCHandle` marks pinned handles with bit 0. PawPrint models neither the
+    /// handle's numeric address nor a fake stand-in for it, so the tag has to
+    /// travel alongside the identity — see `TaggedPointerBits` for the arithmetic
+    /// this admits, and `docs/plans/2026-08-06-tagged-gc-handles.md` for why.
+    ///
+    /// Consumers that dereference or free the handle (`ldind.ref`, the
+    /// `GCHandle`/`DependentHandle` InternalCalls) require `tag = 0`: real managed
+    /// code always strips the tag first, and a tagged dereference is a misaligned
+    /// read.
+    | GcHandlePtr of handle : GcHandleAddress * tag : int64
     /// Opaque handle returned by `EventPipeInternal_CreateProvider` /
     /// `EventPipeInternal_GetProvider`. PawPrint never opens a tracing
     /// session, so the payload is just a monotonically increasing ID; the
@@ -180,7 +197,8 @@ type NativeIntSource =
         | NativeIntSource.AssemblyHandle name -> $"<assembly %s{name}>"
         | NativeIntSource.ModuleHandle name -> $"<module %s{name}>"
         | NativeIntSource.MetadataImportHandle name -> $"<metadata import for %s{name}>"
-        | NativeIntSource.GcHandlePtr handle -> $"<GC handle %O{handle}>"
+        | NativeIntSource.GcHandlePtr (handle, 0L) -> $"<GC handle %O{handle}>"
+        | NativeIntSource.GcHandlePtr (handle, tag) -> $"<GC handle %O{handle}, tagged 0x%x{tag}>"
         | NativeIntSource.EventPipeProviderPtr id -> $"<EventPipe provider #%i{id}>"
         | NativeIntSource.EventPipeEventPtr id -> $"<EventPipe event #%i{id}>"
         | NativeIntSource.LowLevelMonitorPtr id -> $"%O{id}"
@@ -207,7 +225,8 @@ type NativeIntSource =
             | NativeIntSource.AssemblyHandle left, NativeIntSource.AssemblyHandle right -> left = right
             | NativeIntSource.ModuleHandle left, NativeIntSource.ModuleHandle right -> left = right
             | NativeIntSource.MetadataImportHandle left, NativeIntSource.MetadataImportHandle right -> left = right
-            | NativeIntSource.GcHandlePtr left, NativeIntSource.GcHandlePtr right -> left = right
+            | NativeIntSource.GcHandlePtr (leftHandle, leftTag), NativeIntSource.GcHandlePtr (rightHandle, rightTag) ->
+                leftHandle = rightHandle && leftTag = rightTag
             | NativeIntSource.EventPipeProviderPtr left, NativeIntSource.EventPipeProviderPtr right -> left = right
             | NativeIntSource.EventPipeEventPtr left, NativeIntSource.EventPipeEventPtr right -> left = right
             | NativeIntSource.LowLevelMonitorPtr left, NativeIntSource.LowLevelMonitorPtr right -> left = right
@@ -259,7 +278,7 @@ type NativeIntSource =
         | NativeIntSource.AssemblyHandle name -> HashCode.Combine (8, name)
         | NativeIntSource.ModuleHandle name -> HashCode.Combine (9, name)
         | NativeIntSource.MetadataImportHandle name -> HashCode.Combine (10, name)
-        | NativeIntSource.GcHandlePtr handle -> HashCode.Combine (11, handle)
+        | NativeIntSource.GcHandlePtr (handle, tag) -> HashCode.Combine (11, handle, tag)
         | NativeIntSource.EventPipeProviderPtr id -> HashCode.Combine (12, id)
         | NativeIntSource.EventPipeEventPtr id -> HashCode.Combine (13, id)
         | NativeIntSource.SyntheticCrossArrayOffset s -> HashCode.Combine (14, hash s)
@@ -278,6 +297,22 @@ module NativeIntSource =
         =
         SyntheticCrossArrayOffset.make targetStorage targetByteOffset originStorage originByteOffset
         |> NativeIntSource.SyntheticCrossArrayOffset
+
+    /// A freshly-minted GC handle, as the runtime hands it to managed code:
+    /// untagged. Managed code is what adds tag bits, via `and`/`or`/`xor`.
+    let gcHandlePtr (handle : GcHandleAddress) : NativeIntSource =
+        NativeIntSource.GcHandlePtr (handle, 0L)
+
+    /// A GC handle carrying tag bits managed code has put there. The tag must lie
+    /// inside the tag region, which is guaranteed when it comes from
+    /// `TaggedPointerBits`; the assertion catches any site that bypasses that.
+    let gcHandlePtrTagged (handle : GcHandleAddress) (tag : int64) : NativeIntSource =
+        Debug.Assert (
+            tag &&& ~~~(TaggedPointerBits.tagMask TaggedPointerBits.gcHandleTagWidthBits) = 0L,
+            $"tag 0x%x{tag} escapes the GC handle tag region; tags must come from TaggedPointerBits"
+        )
+
+        NativeIntSource.GcHandlePtr (handle, tag)
 
     let isZero (n : NativeIntSource) : bool =
         match n with
@@ -371,7 +406,11 @@ module NativeIntSource =
         | NativeIntSource.AssemblyHandle f1, NativeIntSource.AssemblyHandle f2 -> f1 = f2
         | NativeIntSource.ModuleHandle f1, NativeIntSource.ModuleHandle f2 -> f1 = f2
         | NativeIntSource.MetadataImportHandle f1, NativeIntSource.MetadataImportHandle f2 -> f1 = f2
-        | NativeIntSource.GcHandlePtr f1, NativeIntSource.GcHandlePtr f2 -> f1 = f2
+        // Two views of one handle are the same value only if they carry the same
+        // tag: CoreLib's `GCHandle.Equals` compares the raw tagged `IntPtr`, so a
+        // pinned handle does not equal the same handle with its pin marker
+        // stripped.
+        | NativeIntSource.GcHandlePtr (h1, tag1), NativeIntSource.GcHandlePtr (h2, tag2) -> h1 = h2 && tag1 = tag2
         | NativeIntSource.EventPipeProviderPtr f1, NativeIntSource.EventPipeProviderPtr f2 -> f1 = f2
         | NativeIntSource.EventPipeEventPtr f1, NativeIntSource.EventPipeEventPtr f2 -> f1 = f2
         | NativeIntSource.LowLevelMonitorPtr f1, NativeIntSource.LowLevelMonitorPtr f2 -> f1 = f2
@@ -582,9 +621,11 @@ type CliRuntimePointer =
     /// counterpart is `NativeIntSource.PerInstDictPtr`.
     | PerInstDictPtr of ConcreteTypeHandle
     | Managed of ManagedPointerSource
-    /// A GC handle stored in a typed-pointer slot (e.g. `void*`, `T*`). Arithmetic
+    /// A GC handle stored in a typed-pointer slot (e.g. `void*`, `T*`), plus any
+    /// tag bits managed code has put in its low bits (see
+    /// `NativeIntSource.GcHandlePtr`, whose contract this mirrors). Arithmetic
     /// and comparison operations on this case must go through eval-stack
     /// flattening (`EvalStack.ofCliType`) into `NativeIntSource.GcHandlePtr`;
     /// helpers like `NativeIntSource.isZero`/`isNonnegative` and conv ops only
     /// match the `NativeIntSource` form.
-    | GcHandlePtr of GcHandleAddress
+    | GcHandlePtr of handle : GcHandleAddress * tag : int64
