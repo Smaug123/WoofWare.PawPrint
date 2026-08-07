@@ -1144,13 +1144,9 @@ module internal UnaryMetadataCallOps =
     /// changes the type's evaluation-stack shape, so anything classifying that shape must look
     /// through them or it will misread `modopt(...) void` as value-returning and decline to
     /// classify a modified primitive.
-    ///
-    /// Note the first field is the *unmodified* type despite being named `original`, and the
-    /// second is the modifier despite being named `afterMod`: see `GetModifiedType` in
-    /// `TypeDefn.typeProvider`, which constructs it as `Modified (unmodifiedType, modifier, _)`.
     let rec private stripCustomModifiers (t : TypeDefn) : TypeDefn =
         match t with
-        | TypeDefn.Modified (unmodified, _modifier, _required) -> stripCustomModifiers unmodified
+        | TypeDefn.Modified m -> stripCustomModifiers m.Unmodified
         | t -> t
 
     let private calliStackKind (t : TypeDefn) : CalliStackKind option =
