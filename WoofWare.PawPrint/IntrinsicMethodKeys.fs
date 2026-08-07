@@ -564,6 +564,13 @@ module IntrinsicMethodKeys =
             pattern "System.Private.CoreLib" "System.Threading.Thread" "get_ManagedThreadId" []
             // IL body is `ldsfld <Default>k__BackingField; ret`; the .cctor constructs the comparer.
             pattern "System.Private.CoreLib" "System.Collections.Generic.EqualityComparer`1" "get_Default" []
+            // Same shape as its EqualityComparer sibling above: the IL body is
+            // `ldsfld <Default>k__BackingField; ret`, and the .cctor picks the comparer via
+            // `ComparerHelpers.CreateDefaultComparer(typeof(T))`. The [Intrinsic] marker exists so
+            // the JIT can devirtualise the returned comparer's `Compare`; PawPrint has no JIT, so
+            // running the IL yields the same object the JIT would have specialised against.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/coreclr/System.Private.CoreLib/src/System/Collections/Generic/Comparer.CoreCLR.cs#L12
+            pattern "System.Private.CoreLib" "System.Collections.Generic.Comparer`1" "get_Default" []
             // The IBinaryNumber<TSelf>.Log2 wrappers on the unsigned primitive types each have
             // an IL body of the form `ldarg.0; call int32 BitOperations::Log2(<T>); ret`
             // (with a `(T)` cast for UInt32/UInt64/UIntPtr's typed return). They are marked
