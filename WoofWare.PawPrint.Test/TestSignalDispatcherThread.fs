@@ -38,6 +38,10 @@ module TestSignalDispatcherThread =
             IsBackground = false
             Name = None
             Cpu = CpuId 0
+            // Inert here: a frameless stub cannot execute the `SystemNative_*OSThreadId`
+            // P/Invoke that reads it. Do not reuse this literal for a stub standing in
+            // for more than one thread -- guest OS thread ids must be distinct.
+            OsThreadId = OsThreadId 1u
         }
 
     [<Test>]

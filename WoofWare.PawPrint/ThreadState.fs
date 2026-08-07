@@ -310,6 +310,33 @@ type ThreadState =
         /// field, the compiler asks each future thread-creation site which core
         /// it wants.
         Cpu : CpuId
+        /// The OS thread identifier this thread reports to the guest through
+        /// `SystemNative_TryGetUInt32OSThreadId` (Linux CoreLib) and
+        /// `SystemNative_GetUInt64OSThreadId` (macOS CoreLib) — the value
+        /// `System.Threading.Lock` then uses as its owner identity.
+        ///
+        /// Assigned once, at thread creation, and never reused: real kernels do
+        /// recycle thread ids after a thread exits, but PawPrint never removes
+        /// a thread from `IlMachineState.ThreadState`, and a recycled id would
+        /// let a stale `Lock._owningThreadId` be mistaken for a live owner.
+        ///
+        /// Stored rather than recomputed at each read, even though
+        /// `EmulatedKernel.osThreadId` currently derives it from the thread's
+        /// `ThreadId` and so could answer every query without this field. The
+        /// field is what makes the id a *per-thread fact* rather than a
+        /// coincidence of the minting formula: `Cpu` next door is already one,
+        /// the test stubs that build a `ThreadState` directly can state an id
+        /// without reproducing the formula, and a future scheme that stopped
+        /// being a function of `ThreadId` — modelled tid recycling, say, or an
+        /// id a guest can influence — would need no change here.
+        ///
+        /// A total field rather than a `Map<ThreadId, OsThreadId>` on
+        /// `EmulatedKernel` for the same reason `Cpu` is: there is no truthful
+        /// default for an absent key. Every thread the scheduler can run has an
+        /// id; a missing entry could only be answered with an arbitrary lie —
+        /// and here the lie would be an *aliased* id, which is precisely the
+        /// failure this type exists to prevent.
+        OsThreadId : OsThreadId
     }
 
     // --- Frame resolution primitives ---
@@ -379,12 +406,15 @@ type ThreadState =
 
     member this.LiveFrameCount : int = this.MethodStates.Count
 
-    /// `cpu` is the simulated logical processor to pin the new thread to; it
-    /// is a parameter rather than a default so that callers must consult the
-    /// kernel's placement policy (`EmulatedKernel.cpuForRotation`), which
+    /// `cpu` and `osThreadId` are the simulated logical processor to pin the
+    /// new thread to, and the OS thread id it will report. They are parameters
+    /// rather than defaults so that callers must consult the kernel's policies
+    /// (`EmulatedKernel.cpuForRotation` and `EmulatedKernel.osThreadId`), which
     /// `ThreadState` cannot reach itself — `EmulatedKernel` is compiled after
-    /// this file.
-    static member New (cpu : CpuId) (methodState : MethodState) =
+    /// this file. For `osThreadId` there is the additional reason that a
+    /// default would be a *shared* id, and aliasing thread ids silently breaks
+    /// `System.Threading.Lock`.
+    static member New (cpu : CpuId) (osThreadId : OsThreadId) (methodState : MethodState) =
         {
             ActiveMethodState = FrameId 0
             MethodStates = Map.empty |> Map.add (FrameId 0) methodState
@@ -393,6 +423,7 @@ type ThreadState =
             IsBackground = false
             Name = None
             Cpu = cpu
+            OsThreadId = osThreadId
         }
 
     static member peekEvalStack (state : ThreadState) : EvalStackValue option =

@@ -1183,6 +1183,42 @@ module Intrinsics =
                 |> IlMachineState.advanceProgramCounter currentThread
                 |> IntrinsicResult.Completed
             | _ -> failwith $"BitOperations.Log2: unexpected signature %s{formatMethodKey intrinsicKey}"
+        | "System.Private.CoreLib", "Math", "Pow" when intrinsicKey.DeclaringTypeFullName = "System.Math" ->
+            // Math.Pow has no IL body at all, so it cannot be allowlisted in safeIntrinsics:
+            // CoreCLR declares it `[Intrinsic]` + `MethodImplOptions.InternalCall` and the JIT
+            // lowers it to a call into the platform C library's `pow`.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/coreclr/System.Private.CoreLib/src/System/Math.CoreCLR.cs#L84-L86
+            //
+            // The host's `System.Math.Pow` is deliberately *not* what we call here. `pow` is not
+            // correctly rounded and libm implementations are not required to agree bit-for-bit,
+            // so forwarding to the host would make a replay depend on the machine that recorded
+            // it. `DeterministicMath.pow` computes the same function from integer arithmetic
+            // alone; see its comments for the accuracy argument.
+            //
+            // Reached from ordinary guest code, and also from `PortableThreadPool`'s
+            // hill-climbing controller, which is what bounds how many blocking thread-pool
+            // waits a guest can perform (issue #755).
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteDouble state.ConcreteTypes ; ConcreteDouble state.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteDouble state.ConcreteTypes) -> ()
+            | _ -> failwith $"Math.Pow: unexpected signature %s{formatMethodKey intrinsicKey}"
+
+            // The exponent was pushed last, so it pops first.
+            let exponent, state = IlMachineState.popEvalStack currentThread state
+            let baseValue, state = IlMachineState.popEvalStack currentThread state
+
+            let asFloat (name : string) (value : EvalStackValue) : float =
+                match value with
+                | EvalStackValue.Float f -> f
+                | _ -> failwith $"Math.Pow: unexpected eval stack value for %s{name}: %O{value}"
+
+            let result =
+                DeterministicMath.pow (asFloat "base" baseValue) (asFloat "exponent" exponent)
+
+            state
+            |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Float64 result)) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> IntrinsicResult.Completed
         | "System.Private.CoreLib", "String", "Equals" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteString state.ConcreteTypes ; ConcreteString state.ConcreteTypes ],

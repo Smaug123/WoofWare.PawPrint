@@ -43,6 +43,8 @@ module EvalStackValue =
             failwith $"%s{operation}: refusing to convert function pointer %O{methodInfo} to an integer"
         | NativeIntSource.TypeHandlePtr typeHandle ->
             failwith $"%s{operation}: refusing to convert RuntimeTypeHandle pointer %O{typeHandle} to an integer"
+        | NativeIntSource.TypeDescPtr typeHandle ->
+            failwith $"%s{operation}: refusing to convert TypeDesc pointer %O{typeHandle} to an integer"
         | NativeIntSource.MethodTablePtr typeHandle ->
             failwith $"%s{operation}: refusing to convert MethodTable pointer %O{typeHandle} to an integer"
         | NativeIntSource.MethodTableAuxiliaryDataPtr typeHandle ->
@@ -239,6 +241,8 @@ module EvalStackValue =
                 failwith $"Conv_U: refusing to convert RuntimeMethodHandle pointer %d{handle} to unsigned native int"
             | NativeIntSource.TypeHandlePtr typeHandle ->
                 failwith $"Conv_U: refusing to convert RuntimeTypeHandle pointer %O{typeHandle} to unsigned native int"
+            | NativeIntSource.TypeDescPtr typeHandle ->
+                failwith $"Conv_U: refusing to convert TypeDesc pointer %O{typeHandle} to unsigned native int"
             | NativeIntSource.MethodTablePtr typeHandle ->
                 failwith $"Conv_U: refusing to convert MethodTable pointer %O{typeHandle} to unsigned native int"
             | NativeIntSource.MethodTableAuxiliaryDataPtr typeHandle ->
@@ -517,6 +521,8 @@ module EvalStackValue =
             | CliRuntimePointer.Verbatim ptrInt -> NativeIntSource.Verbatim ptrInt |> EvalStackValue.NativeInt
             | CliRuntimePointer.TypeHandlePtr typeHandle ->
                 NativeIntSource.TypeHandlePtr typeHandle |> EvalStackValue.NativeInt
+            | CliRuntimePointer.TypeDescPtr typeHandle ->
+                NativeIntSource.TypeDescPtr typeHandle |> EvalStackValue.NativeInt
             | CliRuntimePointer.FieldRegistryHandle ptrInt ->
                 NativeIntSource.FieldHandlePtr ptrInt |> EvalStackValue.NativeInt
             | CliRuntimePointer.MethodRegistryHandle ptrInt ->
@@ -566,6 +572,7 @@ module EvalStackValue =
                     | NativeIntSource.FieldHandlePtr f -> failwith $"TODO: {f}"
                     | NativeIntSource.MethodHandlePtr f -> failwith $"TODO: {f}"
                     | NativeIntSource.TypeHandlePtr f -> failwith $"TODO: {f}"
+                    | NativeIntSource.TypeDescPtr f -> failwith $"TODO: {f}"
                     | NativeIntSource.MethodTablePtr f -> failwith $"TODO: {f}"
                     | NativeIntSource.MethodTableAuxiliaryDataPtr f -> failwith $"TODO: {f}"
                     | NativeIntSource.PerInstInfoPtr f ->
@@ -628,6 +635,8 @@ module EvalStackValue =
                             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim i))
                         | CliRuntimePointer.TypeHandlePtr typeHandle ->
                             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr typeHandle))
+                        | CliRuntimePointer.TypeDescPtr typeHandle ->
+                            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeDescPtr typeHandle))
                         | CliRuntimePointer.FieldRegistryHandle ptr ->
                             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr ptr))
                         | CliRuntimePointer.MethodRegistryHandle ptr ->
@@ -691,6 +700,7 @@ module EvalStackValue =
                     failwith "refusing to interpret synthetic cross-storage byte offset as a pointer"
                 | NativeIntSource.FunctionPointer _ -> failwith "TODO"
                 | NativeIntSource.TypeHandlePtr _ -> failwith "refusing to interpret type handle ID as an object ref"
+                | NativeIntSource.TypeDescPtr _ -> failwith "refusing to interpret TypeDesc pointer as an object ref"
                 | NativeIntSource.MethodTablePtr _ ->
                     failwith "refusing to interpret method table pointer as an object ref"
                 | NativeIntSource.MethodTableAuxiliaryDataPtr _ ->
@@ -752,6 +762,8 @@ module EvalStackValue =
                     CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer methodInfo))
                 | NativeIntSource.TypeHandlePtr typeHandle ->
                     CliType.RuntimePointer (CliRuntimePointer.TypeHandlePtr typeHandle)
+                | NativeIntSource.TypeDescPtr typeHandle ->
+                    CliType.RuntimePointer (CliRuntimePointer.TypeDescPtr typeHandle)
                 | NativeIntSource.MethodTablePtr typeHandle ->
                     CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr typeHandle)
                 | NativeIntSource.MethodTableAuxiliaryDataPtr typeHandle ->

@@ -1079,7 +1079,8 @@ module EmulatedKernel =
     /// lands on — an interpreter detail leaking into guest-observable state.
     /// The caller therefore threads a separate cursor
     /// (`IlMachineState.NextCpuRotation`) that only guest-visible thread
-    /// creation advances.
+    /// creation advances. (`osThreadId`, below, makes the opposite choice for
+    /// the opposite reason; see there.)
     let cpuForRotation (rotation : int) (kernel : EmulatedKernel) : CpuId =
         if rotation < 0 then
             failwith
@@ -1098,6 +1099,50 @@ module EmulatedKernel =
                 $"effective ProcessorCount is %d{count}, but must be at least 1 for a simulated thread to be placed on a processor"
 
         CpuId (rotation % count)
+
+    /// OS thread id policy: the id `thread` reports to the guest through
+    /// `SystemNative_TryGetUInt32OSThreadId` and `SystemNative_GetUInt64OSThreadId`.
+    ///
+    /// The sole producer, and a function of the thread's `ThreadId` — the
+    /// interpreter's own allocation counter. Uniqueness across live threads is
+    /// the only property anything needs, and `ThreadId`s are already unique and
+    /// never reused, so it comes for free; every thread PawPrint creates has
+    /// one, guest-visible and interpreter-internal alike, so there is no second
+    /// namespace to stay disjoint from.
+    ///
+    /// Deliberately unlike `cpuForRotation`, which must *not* key off
+    /// `ThreadId`. The difference is what the guest can do with the number. A
+    /// `CpuId` is drawn from a small cyclic range and is compared against other
+    /// threads' (two threads sharing a core is a meaningful, observable fact),
+    /// so letting an interpreter-internal allocation shift the rotation would
+    /// change guest-observable behaviour. A thread id is opaque: no BCL code
+    /// does anything with it but test it for equality — `System.Threading.Lock`
+    /// uses it as an owner identity — so *which* number a thread gets is not
+    /// observable, only whether two threads share one. Real Linux agrees: its
+    /// signal-handling thread is an ordinary `pthread_create` and consumes a
+    /// tid like any other, shifting every tid minted after it.
+    ///
+    /// The `+ 1` dodges `0`, which CoreLib's
+    /// `Lock.ThreadId.InitializeForCurrentThread` (Lock.NonNativeAot.cs) maps
+    /// to `0xFFFF_FFFF` by decrement — so every thread that minted `0` would
+    /// end up sharing one id. The other sentinel, the `(uint32)-1` that
+    /// `TryGetUInt32OSThreadId` returns to mean "this platform cannot determine
+    /// a thread id", is unreachable by construction: `ThreadId` wraps an `int`,
+    /// and `Int32.MaxValue + 1` is less than half of `0xFFFF_FFFF`.
+    ///
+    /// A negative `ThreadId` is rejected rather than wrapped, because `-1`
+    /// would mint exactly the `0` this function exists to avoid. No allocator
+    /// produces one (`NextThreadId` counts up from `0`), but `FrameId -1` is an
+    /// established sentinel in this codebase, so a `ThreadId -1` is a mistake
+    /// someone could plausibly make.
+    let osThreadId (thread : ThreadId) : OsThreadId =
+        let (ThreadId.ThreadId i) = thread
+
+        if i < 0 then
+            failwith
+                $"thread id must be non-negative to mint an OS thread id (a negative id would wrap onto the fatal 0, which CoreLib maps to the (uint32)-1 sentinel); got %d{i}"
+
+        OsThreadId (uint32 i + 1u)
 
     /// Overlay the supplied environment variables on top of the kernel's
     /// existing `Environment` map. Used by `Program.run` / the CLI to layer

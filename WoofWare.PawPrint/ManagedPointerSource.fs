@@ -103,16 +103,20 @@ type ByrefRoot =
     /// Address of a UTF-16 character within a heap-allocated string's trailing
     /// character data. Created by `ldflda` on `String._firstChar`.
     | StringCharAt of str : ManagedHeapAddress * charIndex : int
-    /// Address of the cached RuntimeType pointer cell stored on a type's
-    /// MethodTableAuxiliaryData. Created by `ldflda` on
-    /// `MethodTableAuxiliaryData::ExposedClassObjectRaw`. Reads return the
-    /// canonical RuntimeType registered in `IlMachineState.TypeHandles`;
-    /// pre-allocation at byref construction is what makes the read total.
-    /// The target is a `RuntimeTypeHandleTarget` because both `Closed`
-    /// instantiations (e.g. `Box<int>`) and `OpenGenericTypeDefinition`s
-    /// (e.g. `Box<>`) have a real MethodTable with this auxiliary cell;
-    /// generic-parameter handles are TypeDescs and use a different field.
-    | MethodTableExposedClassObject of declaringType : RuntimeTypeHandleTarget
+    /// Address of the cell caching a type's canonical `RuntimeType`. Reads return
+    /// the RuntimeType registered in `IlMachineState.TypeHandles`; pre-allocation
+    /// at byref construction is what makes the read total.
+    ///
+    /// CoreCLR stores this cache in one of two structures depending on the shape
+    /// of the type, and managed code reaches it by two different `ldflda`s:
+    /// `MethodTableAuxiliaryData::ExposedClassObjectRaw` for MethodTable-backed
+    /// types (`Closed` instantiations like `Box<int>`, and
+    /// `OpenGenericTypeDefinition`s like `Box<>`), and `TypeDesc::_exposedClassObject`
+    /// for TypeDesc-backed ones (byref / pointer / function-pointer /
+    /// generic-parameter). Both cache the same RuntimeType for the same target, so
+    /// they are one cell here rather than two: two roots would give one logical
+    /// location two identities and break byref equality between them.
+    | ExposedClassObject of declaringType : RuntimeTypeHandleTarget
 
 /// Identity of a byte-addressable storage container. Offsets within the
 /// container are tracked separately.
@@ -244,8 +248,7 @@ type ManagedPointerSource =
                 | ByrefRoot.StaticField (declaringType, field, owner) ->
                     $"<static field %O{field.Get} of type %O{declaringType} in %O{owner}>"
                 | ByrefRoot.StringCharAt (str, charIndex) -> $"<char %i{charIndex} of string %O{str}>"
-                | ByrefRoot.MethodTableExposedClassObject declaringType ->
-                    $"<ExposedClassObjectRaw cell of MethodTableAuxiliaryData for type %O{declaringType}>"
+                | ByrefRoot.ExposedClassObject declaringType -> $"<cached RuntimeType cell for type %O{declaringType}>"
 
             projs |> List.fold formatProj rootStr
 

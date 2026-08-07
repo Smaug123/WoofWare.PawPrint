@@ -123,7 +123,9 @@ module TestUnaryConstIlOp =
 
         let state =
             { state with
-                ThreadState = Map.empty |> Map.add thread (ThreadState.New (CpuId 0) methodState)
+                ThreadState =
+                    Map.empty
+                    |> Map.add thread (ThreadState.New (CpuId 0) (OsThreadId 1u) methodState)
             }
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 value1) thread
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 value2) thread
@@ -262,7 +264,9 @@ module TestUnaryConstIlOp =
 
         let state =
             { state with
-                ThreadState = Map.empty |> Map.add thread (ThreadState.New (CpuId 0) methodState)
+                ThreadState =
+                    Map.empty
+                    |> Map.add thread (ThreadState.New (CpuId 0) (OsThreadId 1u) methodState)
             }
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Float value1) thread
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Float value2) thread

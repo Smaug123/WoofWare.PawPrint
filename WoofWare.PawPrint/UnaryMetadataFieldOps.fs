@@ -451,6 +451,19 @@ module internal UnaryMetadataFieldOps =
                 | None ->
                     failwith
                         $"TODO: ldflda {field.DeclaringType.Namespace}.{field.DeclaringType.Name}::{field.Name} through MethodTableAuxiliaryDataPtr %O{methodTableFor}; this auxiliary-data field has no synthetic address modelled"
+            | NativeInt (NativeIntSource.TypeDescPtr typeDescFor) ->
+                match
+                    MethodTableProjection.tryProjectTypeDescFieldAddress
+                        loggerFactory
+                        baseClassTypes
+                        field
+                        typeDescFor
+                        state
+                with
+                | Some (ptr, state) -> state, ptr
+                | None ->
+                    failwith
+                        $"TODO: ldflda {field.DeclaringType.Namespace}.{field.DeclaringType.Name}::{field.Name} through TypeDescPtr %O{typeDescFor}; this TypeDesc field has no synthetic address modelled"
             | NativeInt nativeIntSource ->
                 failwith
                     $"TODO: ldflda {field.DeclaringType.Namespace}.{field.DeclaringType.Name}::{field.Name} through native pointer %O{nativeIntSource}"

@@ -1,6 +1,7 @@
 namespace WoofWare.PawPrint
 
 open System
+open System.Diagnostics
 open Microsoft.Extensions.Logging
 
 [<RequireQualifiedAccess>]
@@ -73,27 +74,49 @@ module NullaryIlOp =
         | Some bits -> NativeIntSource.Verbatim (bits &&& mask) |> EvalStackValue.NativeInt
         | None -> failwith $"And: refusing to convert managed pointer %O{ptr} to integer bits"
 
-    let private typeHandleLowAddressBits (target : RuntimeTypeHandleTarget) : int64 =
-        match target with
-        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> 0L
-        // Generic parameters in CoreCLR are TypeVarTypeDesc, a TypeDesc subclass, so the
-        // tagged-pointer encoding sets the second-lowest bit. Reflection paths such as
-        // `RuntimeType.get_IsInterface` rely on `TypeHandle.IsTypeDesc` to short-circuit
-        // before dereferencing a non-existent MethodTable; honour that contract.
-        | RuntimeTypeHandleTarget.GenericParameter _
-        | RuntimeTypeHandleTarget.MethodGenericParameter _ -> 2L
-        | RuntimeTypeHandleTarget.Closed typeHandle ->
-            match typeHandle with
-            | ConcreteTypeHandle.Byref _
-            | ConcreteTypeHandle.Pointer _
-            | ConcreteTypeHandle.FunctionPointer _ ->
-                // CoreCLR tags TypeDesc handles by setting the second-lowest bit.
-                // PawPrint has no real address, but matching that low-bit contract
-                // lets managed CoreLib code run `TypeHandle.IsTypeDesc`.
-                2L
-            | ConcreteTypeHandle.Concrete _
-            | ConcreteTypeHandle.OneDimArrayZero _
-            | ConcreteTypeHandle.Array _ -> 0L
+    /// Mask a type-handle-shaped pointer, if the model can state the answer.
+    /// PawPrint models no address for a `MethodTable*` or a `TypeDesc*`, so the
+    /// value is `base ||| tag` with `base` unknown and `tag` given by
+    /// `TypeHandleTag`; see `TaggedPointerBits` for the decision procedure and
+    /// docs/plans/2026-08-06-typehandle-tag-bits.md for the CoreLib IL involved.
+    ///
+    /// Unlike a GC handle's tag, this tag is a function of the target, so a
+    /// changed tag is a change of identity rather than the same pointer retagged.
+    /// `untagged` is that other identity where one exists: for a TypeDesc-shaped
+    /// `TypeHandlePtr`, clearing the tag is CoreCLR's `TypeHandle.AsTypeDesc`
+    /// (`handle & ~2`) and yields the target's `TypeDesc*`. Pointers that carry
+    /// no tag to begin with pass `None`; nothing can strip them, so it is never
+    /// consulted.
+    let private typeHandleMask
+        (source : NativeIntSource)
+        (tag : int64)
+        (untagged : NativeIntSource option)
+        (mask : int64)
+        : NativeIntSource
+        =
+        match TaggedPointerBits.bitAnd TypeHandleTag.widthBits tag mask with
+        | TaggedPointerBitsResult.TagBitsOnly bits -> NativeIntSource.Verbatim bits
+        // The whole unknown base survives and the tag is unchanged, so the result
+        // is bit-identical to the input.
+        | TaggedPointerBitsResult.Retagged newTag when newTag = tag -> source
+        | TaggedPointerBitsResult.Retagged newTag ->
+            // `and` can only clear bits, so the only reachable change is clearing
+            // the whole tag.
+            // Parenthesised because `newTag = 0L` as a bare first argument parses
+            // as a named argument, not a comparison.
+            Debug.Assert (
+                (newTag = 0L),
+                $"And on %O{source} produced tag 0x%x{newTag} from 0x%x{tag}; `and` can only clear tag bits"
+            )
+
+            match untagged with
+            | Some untagged -> untagged
+            | None ->
+                failwith
+                    $"And: refusing to apply 0x%x{mask} to %O{source}; it would clear tag bits 0x%x{tag}, and PawPrint has no untagged identity for this pointer kind"
+        | TaggedPointerBitsResult.NotStatable ->
+            failwith
+                $"And: refusing to apply 0x%x{mask} to %O{source}; the result would depend on the pointer's address, which PawPrint does not model"
 
     /// Apply a bitwise operation to the low tag region of a GC handle, if the
     /// model can state the answer. See `TaggedPointerBits`: PawPrint does not
@@ -127,9 +150,24 @@ module NullaryIlOp =
             gcHandleTagOp "And" TaggedPointerBits.bitAnd handle tag mask
             |> EvalStackValue.NativeInt
         | NativeIntSource.TypeHandlePtr target ->
-            NativeIntSource.Verbatim (typeHandleLowAddressBits target &&& mask)
-            |> EvalStackValue.NativeInt
-        | NativeIntSource.MethodTablePtr _ -> NativeIntSource.Verbatim (0L &&& mask) |> EvalStackValue.NativeInt
+            let tag = TypeHandleTag.forTarget target
+
+            // A TypeDesc-shaped handle has an untagged identity — the `TypeDesc*`
+            // that `AsTypeDesc` produces. A MethodTable-shaped one carries no tag
+            // at all, so there is nothing to strip and no second identity.
+            let untagged =
+                if tag = 0L then
+                    None
+                else
+                    Some (NativeIntSource.TypeDescPtr target)
+
+            typeHandleMask source tag untagged mask |> EvalStackValue.NativeInt
+        // A `MethodTable*` and a `TypeDesc*` are both untagged: the alignment that
+        // makes the tag region available in the first place still holds, so masking
+        // to that region is honestly zero, and any base-preserving mask is the
+        // identity.
+        | NativeIntSource.MethodTablePtr _
+        | NativeIntSource.TypeDescPtr _ -> typeHandleMask source 0L None mask |> EvalStackValue.NativeInt
         | other -> failwith $"can't do binary operation on non-verbatim native int %O{other}"
 
     /// XOR of two `NativeIntSource` values in the native-int slot. Mirrors
@@ -218,6 +256,7 @@ module NullaryIlOp =
             | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer _)
             | EvalStackValue.NativeInt (NativeIntSource.FunctionPointer _)
             | EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr _)
+            | EvalStackValue.NativeInt (NativeIntSource.TypeDescPtr _)
             | EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr _)
             | EvalStackValue.NativeInt (NativeIntSource.MethodTableAuxiliaryDataPtr _)
             | EvalStackValue.NativeInt (NativeIntSource.PerInstInfoPtr _)
@@ -363,6 +402,8 @@ module NullaryIlOp =
                 failwith $"Neg: refusing to negate function pointer %O{methodInfo}"
             | NativeIntSource.TypeHandlePtr typeHandle ->
                 failwith $"Neg: refusing to negate RuntimeTypeHandle pointer %O{typeHandle}"
+            | NativeIntSource.TypeDescPtr typeHandle ->
+                failwith $"Neg: refusing to negate TypeDesc pointer %O{typeHandle}"
             | NativeIntSource.MethodTablePtr typeHandle ->
                 failwith $"Neg: refusing to negate MethodTable pointer %O{typeHandle}"
             | NativeIntSource.MethodTableAuxiliaryDataPtr typeHandle ->
@@ -721,6 +762,8 @@ module NullaryIlOp =
             | NativeIntSource.TypeHandlePtr typeHandle ->
                 failwith
                     $"Conv_ovf_u: refusing to convert RuntimeTypeHandle pointer %O{typeHandle} to unsigned native int"
+            | NativeIntSource.TypeDescPtr typeHandle ->
+                failwith $"Conv_ovf_u: refusing to convert TypeDesc pointer %O{typeHandle} to unsigned native int"
             | NativeIntSource.MethodTablePtr typeHandle ->
                 failwith $"Conv_ovf_u: refusing to convert MethodTable pointer %O{typeHandle} to unsigned native int"
             | NativeIntSource.MethodTableAuxiliaryDataPtr typeHandle ->
@@ -809,6 +852,8 @@ module NullaryIlOp =
             | NativeIntSource.TypeHandlePtr typeHandle ->
                 failwith
                     $"Conv_ovf_i: refusing to convert RuntimeTypeHandle pointer %O{typeHandle} to signed native int"
+            | NativeIntSource.TypeDescPtr typeHandle ->
+                failwith $"Conv_ovf_i: refusing to convert TypeDesc pointer %O{typeHandle} to signed native int"
             | NativeIntSource.MethodTablePtr typeHandle ->
                 failwith $"Conv_ovf_i: refusing to convert MethodTable pointer %O{typeHandle} to signed native int"
             | NativeIntSource.MethodTableAuxiliaryDataPtr typeHandle ->
@@ -1059,6 +1104,7 @@ module NullaryIlOp =
                 | NativeIntSource.FieldHandlePtr _
                 | NativeIntSource.MethodHandlePtr _
                 | NativeIntSource.TypeHandlePtr _
+                | NativeIntSource.TypeDescPtr _
                 | NativeIntSource.MethodTablePtr _
                 | NativeIntSource.MethodTableAuxiliaryDataPtr _
                 | NativeIntSource.PerInstInfoPtr _
@@ -1148,6 +1194,7 @@ module NullaryIlOp =
                 | NativeIntSource.FieldHandlePtr _
                 | NativeIntSource.MethodHandlePtr _
                 | NativeIntSource.TypeHandlePtr _
+                | NativeIntSource.TypeDescPtr _
                 | NativeIntSource.MethodTablePtr _
                 | NativeIntSource.MethodTableAuxiliaryDataPtr _
                 | NativeIntSource.PerInstInfoPtr _

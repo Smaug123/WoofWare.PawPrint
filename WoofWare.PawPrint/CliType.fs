@@ -92,6 +92,7 @@ module private ByteAddressabilityClassifier =
         | NativeIntSource.ManagedPointer _
         | NativeIntSource.FunctionPointer _
         | NativeIntSource.TypeHandlePtr _
+        | NativeIntSource.TypeDescPtr _
         | NativeIntSource.MethodTablePtr _
         | NativeIntSource.MethodTableAuxiliaryDataPtr _
         | NativeIntSource.PerInstInfoPtr _
@@ -425,6 +426,38 @@ type CliType =
         // differ in field write-timestamp bookkeeping — but it never under-reports, and the
         // only cost of a false "changed" is one redundant write of an identical value.
         | _ -> before <> after
+
+    /// If `value` is a value type holding exactly one field, laid out at offset 0 and spanning
+    /// the whole value, return that field's id and its contents. Otherwise `None`.
+    ///
+    /// Such a value type is *transparent*: it has no representation of its own beyond the field's,
+    /// so a byref that reinterprets it as the field's type addresses precisely the field's cell.
+    /// That is what makes eliding the reinterpret sound, and it is the only shape for which it is:
+    /// a struct with a second field, or with padding around the one it has, genuinely differs from
+    /// its field and must keep going through the byte-view path.
+    ///
+    /// This is deliberately a *structural* query and does not look at what the field contains, so
+    /// callers must apply their own compatibility rule to the returned contents. It also walks
+    /// fields rather than bytes, so — like `WithZeroedRangeIfChanged` — it stays defined on storage
+    /// that has no byte rendering at all, which is exactly the reference-containing case its
+    /// callers need.
+    static member TrySingleWholeValueField (value : CliType) : (FieldId * CliType) option =
+        match value with
+        | CliType.ValueType vt ->
+            // Every field must be inspected, not just those starting at offset 0. Under explicit
+            // layout a second field can begin *later* and still alias the first — an 8-byte field
+            // at 0 and a 4-byte field at 4, in an 8-byte struct — and eliding to the first would
+            // leave that sibling stale on write. Requiring the whole struct to be one field rules
+            // that out; raw-bytes storage returns `[]` and so is never transparent.
+            match CliValueType.TryAllFields vt with
+            | [ f ] when
+                f.Offset = 0
+                && f.Size = CliType.SizeOf(f.Contents).Size
+                && CliType.SizeOf(value).Size = f.Size
+                ->
+                Some (f.Id, f.Contents)
+            | _ -> None
+        | _ -> None
 
     /// Zero the byte range `[offset, offset + count)` of `value`, returning `None` if that would
     /// leave it unchanged.
@@ -1483,6 +1516,15 @@ and CliValueType =
         match cvt._Storage with
         | CliValueTypeStorage.RawBytes _ -> []
         | CliValueTypeStorage.Fields storage -> storage.Fields |> List.filter (fun f -> f.Offset = offset)
+
+    /// Every field of `cvt`, at whatever offset, returning `[]` for raw-bytes-backed value types
+    /// instead of failing. Callers that must reason about the *whole* value — rather than about
+    /// what lives at one offset — need this: `TryFieldsAt 0` alone cannot distinguish a struct
+    /// whose single field spans it from one that also aliases a second field from a later offset.
+    static member TryAllFields (cvt : CliValueType) : CliConcreteField list =
+        match cvt._Storage with
+        | CliValueTypeStorage.RawBytes _ -> []
+        | CliValueTypeStorage.Fields storage -> storage.Fields
 
     static member DereferenceFieldAt (offset : int) (size : int) (cvt : CliValueType) : CliType =
         let candidates = CliValueType.FieldsAt offset cvt

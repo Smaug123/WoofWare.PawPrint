@@ -9,6 +9,14 @@ module NativeSystemNative =
         | Some import when import.ModuleName = "libSystem.Native" -> Some import.EntryPointName
         | _ -> None
 
+    /// The OS thread id of the thread currently executing the native call.
+    let private osThreadIdOf (operation : string) (ctx : NativeCallContext) : OsThreadId =
+        match Map.tryFind ctx.Thread ctx.State.ThreadState with
+        | Some threadState -> threadState.OsThreadId
+        | None ->
+            failwith
+                $"%s{operation}: thread %O{ctx.Thread} is executing but has no ThreadState (every running thread is created through IlMachineState, which assigns an OsThreadId)"
+
     let private pushInt32 (value : int) (ctx : NativeCallContext) : NativeHandlerResult =
         ctx.State
         |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 value) ctx.Thread
@@ -348,6 +356,72 @@ module NativeSystemNative =
             let (CpuId.CpuId cpu) = cpu
 
             pushInt32 cpu ctx |> Some
+        | Some "SystemNative_TryGetUInt32OSThreadId",
+          [],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32) ->
+            // `uint32_t SystemNative_TryGetUInt32OSThreadId(void)` (pal_threading.c):
+            //
+            //     uint32_t result = (uint32_t)minipal_get_current_thread_id();
+            //     return result == 0 ? (uint32_t)-1 : result;
+            //
+            // `minipal_get_current_thread_id()` (src/native/minipal/thread.h) is
+            // `syscall(SYS_gettid)` on Linux and `pthread_threadid_np(pthread_self(), ..)`
+            // on macOS, cached in a `_Thread_local`. Note the direction: the
+            // 64-bit entry point below returns that value *verbatim*, and it is
+            // this 32-bit one that truncates. The two agree exactly when the
+            // high word is zero — always so on Linux, where a tid is a `pid_t`.
+            //
+            // The guest reaches this through `Interop.Sys.TryGetUInt32OSThreadId`
+            // from `Lock.ThreadId.InitializeForCurrentThread`
+            // (Lock.NonNativeAot.cs), which is `#if`-split per target: a Linux
+            // CoreLib compiles this branch and a macOS one compiles the
+            // `GetUInt64OSThreadId` branch instead. Both are implemented here
+            // because they are two width-projections of one value, and because
+            // which one PawPrint sees depends on the CoreLib flavour it
+            // resolves, not on anything about the guest.
+            //
+            // We return a real id rather than the `(uint32)-1` "this platform
+            // cannot determine a thread id" sentinel. Returning the sentinel
+            // would work — CoreLib substitutes `Environment.CurrentManagedThreadId`,
+            // which PawPrint also models deterministically — but it is the same
+            // answer `SystemNative_SchedGetCpu` above declines to give, and for
+            // the same reason: PawPrint presents a Linux platform identity
+            // (`SimulatedUnixPlatform`), and on Linux this call works. It also
+            // would not answer `GetUInt64OSThreadId`, which has no sentinel, so
+            // a real id has to exist regardless.
+            //
+            // The value is minted at thread creation and stored in
+            // `ThreadState.OsThreadId`; see `OsThreadId` for why it must be
+            // unique across *all* threads including PawPrint-internal ones, and
+            // why it is not a function of `ThreadId`.
+            let (OsThreadId.OsThreadId osThreadId) =
+                osThreadIdOf "SystemNative_TryGetUInt32OSThreadId" ctx
+
+            state
+            |> IlMachineState.pushToEvalStack (NativeCall.cliUInt32 osThreadId) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
+        | Some "SystemNative_GetUInt64OSThreadId",
+          [],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt64) ->
+            // `uint64_t SystemNative_GetUInt64OSThreadId(void)` (pal_threading.c)
+            // is `return (uint64_t)minipal_get_current_thread_id();` — the full
+            // native-width id, with no truncation and no sentinel. The macOS
+            // CoreLib's `Lock.ThreadId.InitializeForCurrentThread` calls this
+            // where a Linux one calls `TryGetUInt32OSThreadId` above.
+            //
+            // PawPrint's ids are 32-bit-canonical (`OsThreadId` explains why:
+            // both sentinels it must dodge are 32-bit facts), so this reports
+            // the zero-extension.
+            let (OsThreadId.OsThreadId osThreadId) =
+                osThreadIdOf "SystemNative_GetUInt64OSThreadId" ctx
+
+            state
+            |> IlMachineState.pushToEvalStack'
+                (EvalStackValue.Int64 (Int64Source.Verbatim (int64 (uint64 osThreadId))))
+                ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
         | Some "SystemNative_GetTimestamp",
           [],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int64) ->

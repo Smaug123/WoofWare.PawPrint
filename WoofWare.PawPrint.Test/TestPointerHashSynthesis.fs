@@ -253,6 +253,43 @@ module TestPointerHashSynthesis =
         counters.NextCounter |> shouldEqual 1UL
 
     [<Test>]
+    let ``a TypeDesc pointer differs from its type handle by exactly the tag bit`` () : unit =
+        // `AsTypeDesc` clears bit 1 of the same address, so the synthesised bits
+        // must relate the same way: same identity above the tag region, differing
+        // in exactly that bit. Otherwise a `ceq` between a handle and the TypeDesc
+        // masked out of it would give an answer unrelated to the real one.
+        let target =
+            RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Pointer (ConcreteTypeHandle.Concrete 1))
+
+        let handleBits, counters =
+            materialise (NativeIntSource.TypeHandlePtr target) PointerHashCounters.empty
+
+        let typeDescBits, counters =
+            materialise (NativeIntSource.TypeDescPtr target) counters
+
+        handleBits &&& 3L |> shouldEqual 2L
+        typeDescBits |> shouldEqual (handleBits &&& ~~~2L)
+
+        // One identity between them, so only one counter was spent.
+        counters.NextCounter |> shouldEqual 1UL
+
+    [<Test>]
+    let ``a MethodTable-shaped type handle has no tag to strip`` () : unit =
+        // The control for the case above: a MethodTable-backed handle is already
+        // untagged, so its low bits are clear and it aliases its MethodTable.
+        let target = RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete 1)
+
+        let handleBits, counters =
+            materialise (NativeIntSource.TypeHandlePtr target) PointerHashCounters.empty
+
+        let methodTableBits, counters =
+            materialise (NativeIntSource.MethodTablePtr target) counters
+
+        handleBits &&& 3L |> shouldEqual 0L
+        methodTableBits |> shouldEqual handleBits
+        counters.NextCounter |> shouldEqual 1UL
+
+    [<Test>]
     let ``low bits are clear for AssemblyHandle / ModuleHandle / MetadataImportHandle`` () : unit =
         let assyBits, counters =
             materialise (NativeIntSource.AssemblyHandle "Foo") PointerHashCounters.empty

@@ -30,6 +30,7 @@
     <Compile Include="TestNativeIntSource.fs" />
     <Compile Include="TestPointerHashSynthesis.fs" />
     <Compile Include="TestCliTypeBytes.fs" />
+    <Compile Include="TestCliTypeSingleWholeField.fs" />
     <Compile Include="TestStructLayout.fs" />
     <Compile Include="TestManagedHeap.fs" />
     <Compile Include="TestBinaryArithmetic.fs" />
@@ -69,6 +70,7 @@
     <Compile Include="TestGcHandleRegistry.fs" />
     <Compile Include="TestFileDescriptorRegistry.fs" />
     <Compile Include="TestNonCryptoRandom.fs" />
+    <Compile Include="TestDeterministicMath.fs" />
     <Compile Include="TestPrimitiveLikeStructRegistry.fs" />
     <Compile Include="TestEvalStackPrimitiveLikeBoundary.fs" />
     <Compile Include="TestEvalStackBoxedPrimitiveView.fs" />
@@ -93,6 +95,7 @@
     <Compile Include="TestSystemTimeAsTicks.fs" />
     <Compile Include="TestMonotonicTimestamp.fs" />
     <Compile Include="TestCpuPlacement.fs" />
+    <Compile Include="TestOsThreadId.fs" />
     <Compile Include="TestSignalTermination.fs" />
     <Compile Include="TestWaitHandle.fs" />
     <Compile Include="TestSyncBlockMonitor.fs" />
