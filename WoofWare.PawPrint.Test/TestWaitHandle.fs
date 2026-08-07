@@ -117,7 +117,10 @@ module TestWaitHandle =
                     | Ok methodState -> methodState
                     | Error missing -> failwith $"Unexpected missing assembly references creating frame: %O{missing}"
 
-                tid, ThreadState.New (CpuId 0) methodState
+                // Distinct OS thread ids, minted by the same policy the real
+                // allocation sites use: these stand in for guest threads, and
+                // no two threads may share an id.
+                tid, ThreadState.New (CpuId 0) (EmulatedKernel.osThreadId tid) methodState
             )
             |> Map.ofList
 
