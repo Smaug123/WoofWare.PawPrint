@@ -795,6 +795,10 @@ module TestDeterministicMath =
         // A sanity check rather than a specification: the host's `sin` is not correctly
         // rounded either, so where the two disagree it is PawPrint that is expected to be
         // right, and `sin matches an independently computed reference` is what says so.
+        // Measured on a sample of 1500 random doubles, the two differed on 25, always by
+        // exactly one ulp, and on every one of those the exact value (computed to 1400 bits)
+        // was nearer to PawPrint's answer — 0.4996 ulp at worst, against 0.5004 to 0.6554
+        // for the host.
         let property (x : float) : bool =
             ulpDistance (DeterministicMath.sin x) (Math.Sin x) <= 1.0
 
