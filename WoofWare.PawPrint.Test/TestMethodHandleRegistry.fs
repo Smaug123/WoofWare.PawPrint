@@ -517,9 +517,11 @@ public static class GenericMethodHolder
         let rawMethod =
             runtimeMethodHandleType.Methods
             |> List.filter (fun method ->
+                let facts = MethodInfo.requireMetadata "test" method
+
                 method.Name = methodName
-                && method.Parameters.Length = 1
-                && method.ImplAttributes.HasFlag System.Reflection.MethodImplAttributes.InternalCall
+                && facts.Parameters.Length = 1
+                && facts.ImplAttributes.HasFlag System.Reflection.MethodImplAttributes.InternalCall
             )
             |> function
                 | [ method ] -> method
