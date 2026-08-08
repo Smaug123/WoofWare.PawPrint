@@ -939,14 +939,19 @@ module NativeRuntimeMethodHandle =
             // (VerificationException)` does not intercept, so it propagates as the same exception
             // type the caller would have seen.
             //
-            // Special constraints (`struct` / `class` / `new()`) only; base-type and interface
-            // requirements are not validated for either owner of a generic parameter list, here
-            // or in the sibling `RuntimeTypeHandle_Instantiate` arm. See issue #752.
-            let constraintViolation =
-                NativeRuntimeTypeHelpers.validateSpecialConstraintsOn
+            // A method's generic parameters live in the same substitution scope as its declaring
+            // type's, so a constraint on one of them may mention either (`!0` or `!!0`). Both
+            // contexts therefore have to go in: the declaring type's arguments as `typeGenerics`,
+            // the instantiation being bound as `methodGenerics`.
+            let state, constraintViolation =
+                NativeRuntimeTypeHelpers.validateConstraintsOn
+                    ctx.LoggerFactory
                     ctx.BaseClassTypes
                     state
                     $"%s{methodInfo.DeclaringType.Namespace}.%s{methodInfo.DeclaringType.Name}.%s{methodInfo.Name}"
+                    methodInfo.DeclaringType.Assembly
+                    declaringTypeGenerics
+                    (ImmutableArray.CreateRange methodInstantiation)
                     methodInfo.Generics
                     methodInstantiation
 

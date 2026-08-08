@@ -1341,87 +1341,218 @@ module NativeRuntimeTypeHelpers =
                     && (m.MethodAttributes &&& System.Reflection.MethodAttributes.MemberAccessMask) = System.Reflection.MethodAttributes.Public
                 )
 
-    /// Validate the flag-style special constraints (`NotNullableValueTypeConstraint` /
-    /// `ReferenceTypeConstraint` / `DefaultConstructorConstraint`, i.e. `where T : struct` /
-    /// `class` / `new()`) declared by a *generic parameter list*, whoever owns it: a generic
-    /// type's, via `validateSpecialConstraints` below, or a generic method's, via
-    /// `RuntimeMethodHandle_GetStubIfNeededSlow`. Both owners reach the same CoreCLR check
-    /// while binding.
+    /// True iff `arg` is a byref-like type (a C# `ref struct`), which may not be used as a generic
+    /// argument unless the parameter carries `allows ref struct`. CoreCLR's `TypeHandle::IsByRefLike`
+    /// (typehandle.cpp:1061) answers `false` for every TypeDesc, so a structural shape — for which
+    /// `nominalTypeInfoOfArgument` returns `None` — is never byref-like whatever its element type is.
+    let argumentIsByRefLike
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (arg : ConcreteTypeHandle)
+        : bool
+        =
+        match nominalTypeInfoOfArgument state arg with
+        | None -> false
+        | Some typeInfo -> DumpedAssembly.isByRefLike baseClassTypes state._LoadedAssemblies typeInfo
+
+    /// A display name for a constraint type, for the diagnostic message only.
+    let private constraintDisplayName (state : IlMachineState) (handle : ConcreteTypeHandle) : string =
+        match nominalTypeInfoOfArgument state handle with
+        | Some typeInfo -> $"%s{typeInfo.Namespace}.%s{typeInfo.Name}"
+        | None -> string<ConcreteTypeHandle> handle
+
+    /// Validate the generic-parameter constraints declared by a *generic parameter list*, whoever
+    /// owns it: a generic type's, via `validateConstraints` below, or a generic method's, via
+    /// `RuntimeMethodHandle_GetStubIfNeededSlow`. Both owners reach the same CoreCLR check while
+    /// binding (`TypeVarTypeDesc::SatisfiesConstraints`, typedesc.cpp:1491).
     ///
-    /// Returns `Some message` describing the first violation (suitable for an
-    /// `ArgumentException` message), or `None` if every flag-style constraint is satisfied.
-    /// `ownerDisplayName` appears only in that diagnostic; callers currently use the
+    /// Per parameter, in CoreCLR's order:
+    /// 1. the flag-style special constraints (`NotNullableValueTypeConstraint` /
+    ///    `ReferenceTypeConstraint` / `DefaultConstructorConstraint`, i.e. `where T : struct` /
+    ///    `class` / `new()`);
+    /// 2. the byref-like rejection: a `ref struct` argument is refused unless the parameter carries
+    ///    `gpAllowByRefLike` (`allows ref struct`) — typedesc.cpp:1606;
+    /// 3. the general "must be assignable to" constraints from the GenericParamConstraint table
+    ///    (ECMA-335 §II.22.21), i.e. base-class and interface requirements.
+    ///
+    /// Each general constraint is concretized in the *caller's* substitution context —
+    /// `declaringAssembly` / `typeGenerics` / `methodGenerics` — before the assignability check,
+    /// exactly as CoreCLR loads it under `pTypeContextOfConstraintDeclarer` rather than deferring
+    /// to `CanCastTo` on a typical instantiation. The comment at typedesc.cpp:1565-1580 gives the
+    /// motivating example: verifying `S : A&lt;R&gt;` against `U : A&lt;T&gt;` requires substituting
+    /// to `A&lt;int&gt;`, and the same is what makes `where T : IComparable&lt;T&gt;` satisfiable at
+    /// all.
+    ///
+    /// CoreCLR additionally walks the *constraining chain* of the argument when the argument is
+    /// itself a type variable (`GatherConstraintsRecursive`), because `class A&lt;S, T&gt; where S : T`
+    /// may be instantiated as `A&lt;U, U&gt;`. That branch is unreachable here and cannot be
+    /// silently mishandled: an argument is a `ConcreteTypeHandle`, which indexes `AllConcreteTypes`
+    /// and is therefore closed by construction, so no open argument is representable to begin with.
+    /// The static-virtual-method refinement at typedesc.cpp:1686 (an abstract argument against an
+    /// interface constraint carrying unimplemented virtual statics) is likewise not implemented:
+    /// it needs `ResolveVirtualStaticMethod`, which PawPrint does not have.
+    ///
+    /// Returns `Some message` describing the first violation, or `None` if every constraint is
+    /// satisfied. `ownerDisplayName` appears only in that diagnostic; callers currently use the
     /// `Some`/`None` as a predicate and raise a message-less guest exception.
     ///
-    /// Base-type and interface requirements (the `Constraints` array) are not validated; see
-    /// issue #752.
+    /// That message is a PawPrint diagnostic, not the CLR's. It shares only the leading
+    /// `GenericArguments[i]`: the CLR emits one shape for every kind of violation, naming the
+    /// *argument* and then the *parameter* ("GenericArguments[0], 'System.Object', on 'C`1[T]'
+    /// violates the constraint of type 'T'."), whereas this names which constraint was violated,
+    /// which is far more useful when debugging the interpreter. It must therefore not be handed to
+    /// a guest verbatim without first being rewritten into the CLR's shape.
     ///
     /// CoreCLR throws either `ArgumentException` or `VerificationException` depending on the
     /// call path; we always raise `ArgumentException`, matching the most commonly observed
     /// user-facing exception from `RuntimeType.MakeGenericType`. TODO: revisit if a different
     /// surface (e.g. a guest path that goes through verification rather than reflection) needs
     /// the other exception type.
-    let validateSpecialConstraintsOn
+    let validateConstraintsOn
+        (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (ownerDisplayName : string)
+        (declaringAssembly : System.Reflection.AssemblyName)
+        (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (generics : GenericParamFromMetadata ImmutableArray)
         (genericArguments : ConcreteTypeHandle list)
-        : string option
+        : IlMachineState * string option
         =
         if generics.Length <> List.length genericArguments then
-            // Arity mismatch: defer to downstream to surface a more specific error.
-            None
+            // Arity mismatch: defer to downstream to surface a more specific error. (`Seq.zip`
+            // below would silently truncate, so this guard is load-bearing rather than defensive.)
+            state, None
         else
-            let violationFor (param : GenericParameter) (paramMd : GenericParamMetadata) (arg : ConcreteTypeHandle) =
-                let isValue = argumentIsValueType baseClassTypes state arg
 
-                let valueTypeViolation () =
-                    if paramMd.Constraint = Some GenericConstraint.NonNullableValue then
-                        if not isValue || argumentIsNullable baseClassTypes state arg then
-                            Some
-                                $"GenericArguments[%i{param.SequenceNumber}], '%s{param.Name}', on '%s{ownerDisplayName}', violates the constraint of type 'System.ValueType'."
-                        else
-                            None
+        let violation (param : GenericParameter) (constraintName : string) : string =
+            $"GenericArguments[%i{param.SequenceNumber}], '%s{param.Name}', on '%s{ownerDisplayName}', violates the constraint of type '%s{constraintName}'."
+
+        /// The flag-style constraints plus the byref-like rejection. None of these need to load
+        /// anything, so they stay off the state-threading path.
+        let specialViolationFor
+            (param : GenericParameter)
+            (paramMd : GenericParamMetadata)
+            (arg : ConcreteTypeHandle)
+            : string option
+            =
+            let isValue = argumentIsValueType baseClassTypes state arg
+
+            let valueTypeViolation () =
+                if paramMd.Constraint = Some GenericConstraint.NonNullableValue then
+                    if not isValue || argumentIsNullable baseClassTypes state arg then
+                        Some (violation param "System.ValueType")
                     else
                         None
+                else
+                    None
 
-                let referenceTypeViolation () =
-                    if paramMd.Constraint = Some GenericConstraint.Reference && isValue then
-                        Some
-                            $"GenericArguments[%i{param.SequenceNumber}], '%s{param.Name}', on '%s{ownerDisplayName}', violates the constraint of type 'class'."
-                    else
-                        None
+            let referenceTypeViolation () =
+                if paramMd.Constraint = Some GenericConstraint.Reference && isValue then
+                    Some (violation param "class")
+                else
+                    None
 
-                let newConstraintViolation () =
-                    if
-                        paramMd.RequiresParameterlessConstructor
-                        && not (argumentSatisfiesNewConstraint baseClassTypes state arg)
-                    then
-                        Some
-                            $"GenericArguments[%i{param.SequenceNumber}], '%s{param.Name}', on '%s{ownerDisplayName}', violates the constraint of type 'new()'."
-                    else
-                        None
+            let newConstraintViolation () =
+                if
+                    paramMd.RequiresParameterlessConstructor
+                    && not (argumentSatisfiesNewConstraint baseClassTypes state arg)
+                then
+                    Some (violation param "new()")
+                else
+                    None
 
-                valueTypeViolation ()
-                |> Option.orElseWith referenceTypeViolation
-                |> Option.orElseWith newConstraintViolation
+            let byRefLikeViolation () =
+                if not paramMd.AllowsByRefLike && argumentIsByRefLike baseClassTypes state arg then
+                    Some (violation param "allows ref struct")
+                else
+                    None
 
-            Seq.zip generics genericArguments
-            |> Seq.tryPick (fun ((param, paramMd), arg) -> violationFor param paramMd arg)
+            valueTypeViolation ()
+            |> Option.orElseWith referenceTypeViolation
+            |> Option.orElseWith newConstraintViolation
+            |> Option.orElseWith byRefLikeViolation
 
-    /// `validateSpecialConstraintsOn` for a generic *type*'s parameter list.
-    let validateSpecialConstraints
+        /// The general "must be assignable to" constraints. Concretizing them can load assemblies
+        /// and register types, hence the state threading.
+        let generalViolationFor
+            (state : IlMachineState)
+            (param : GenericParameter)
+            (paramMd : GenericParamMetadata)
+            (arg : ConcreteTypeHandle)
+            : IlMachineState * string option
+            =
+            ((state, None), paramMd.Constraints)
+            ||> Seq.fold (fun (state, found) constraintTypeDefn ->
+                match found with
+                | Some _ -> state, found
+                | None ->
+
+                let state, constraintHandle =
+                    IlMachineState.concretizeType
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        declaringAssembly
+                        typeGenerics
+                        methodGenerics
+                        constraintTypeDefn
+
+                // "System.Object constraint will be always satisfied" (typedesc.cpp:1637).
+                // Deliberately untested: C# cannot spell `where T : object`, so no Roslyn-compiled
+                // corpus reaches this branch, and hand-written IL would be its own fixture. It is
+                // here for parity, and because it keeps the verdict independent of whether the cast
+                // relation grants object-assignability to every shape an argument can take. Today
+                // removing it would change no answer: every argument that reaches this point walks
+                // its base chain to Object anyway.
+                let isObjectConstraint =
+                    match nominalTypeInfoOfArgument state constraintHandle with
+                    | Some typeInfo -> TypeInfo.NominallyEqual typeInfo baseClassTypes.Object
+                    | None -> false
+
+                if isObjectConstraint then
+                    state, None
+                else
+
+                let state, satisfied =
+                    IlMachineState.isConcreteTypeAssignableTo loggerFactory baseClassTypes state arg constraintHandle
+
+                if satisfied then
+                    state, None
+                else
+                    state, Some (violation param (constraintDisplayName state constraintHandle))
+            )
+
+        ((state, None), Seq.zip generics genericArguments)
+        ||> Seq.fold (fun (state, found) ((param, paramMd), arg) ->
+            match found with
+            | Some _ -> state, found
+            | None ->
+
+            match specialViolationFor param paramMd arg with
+            | Some message -> state, Some message
+            | None -> generalViolationFor state param paramMd arg
+        )
+
+    /// `validateConstraintsOn` for a generic *type*'s parameter list. The type's own generic
+    /// arguments are the substitution context for its parameters' constraints.
+    let validateConstraints
+        (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
         (genericArguments : ConcreteTypeHandle list)
-        : string option
+        : IlMachineState * string option
         =
-        validateSpecialConstraintsOn
+        validateConstraintsOn
+            loggerFactory
             baseClassTypes
             state
             $"%s{typeInfo.Namespace}.%s{typeInfo.Name}"
+            typeInfo.Assembly
+            (ImmutableArray.CreateRange genericArguments)
+            ImmutableArray.Empty
             typeInfo.Generics
             genericArguments
 

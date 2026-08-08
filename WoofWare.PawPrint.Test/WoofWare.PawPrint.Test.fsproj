@@ -82,6 +82,7 @@
     <Compile Include="TestLoadedAssemblies.fs" />
     <Compile Include="TestSharedFrameworkForwardSweep.fs" />
     <Compile Include="TestGenericParamConstraints.fs" />
+    <Compile Include="TestGenericConstraintSatisfaction.fs" />
     <Compile Include="TestGcHandleRegistry.fs" />
     <Compile Include="TestFileDescriptorRegistry.fs" />
     <Compile Include="TestNonCryptoRandom.fs" />

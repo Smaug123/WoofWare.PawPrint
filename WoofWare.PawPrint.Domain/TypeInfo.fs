@@ -132,6 +132,27 @@ type TypeInfo<'generic, 'fieldGeneric> =
         /// table (<c>Pack</c>/<c>Size</c>) and nothing else.
         /// </remarks>
         InlineArrayLength : int option
+
+        /// <summary>
+        /// Whether this type carries <c>System.Runtime.CompilerServices.IsByRefLikeAttribute</c>,
+        /// the metadata marker behind a C# <c>ref struct</c>.
+        /// </summary>
+        /// <remarks>
+        /// This records only the attribute's presence, which is not by itself the byref-like
+        /// classification: CoreCLR reads the attribute inside the <c>fIsValueClass = true</c> branch
+        /// of <c>MethodTableBuilder::BuildMethodTableThrowing</c> (methodtablebuilder.cpp:1449), so a
+        /// *class* carrying it — which C# cannot emit but IL can, <c>AttributeUsage</c> binding only
+        /// the compiler — is not byref-like. Ask <c>DumpedAssembly.isByRefLike</c>, which applies
+        /// that gate, rather than reading this field directly.
+        ///
+        /// Matched by namespace and name, with no requirement that the attribute be corelib's, as
+        /// CoreCLR also does (<c>WellKnownAttribute::IsByRefLike</c> resolves to the full name
+        /// string, wellknownattributes.h:105). That matters: Roslyn *embeds* a private copy of the
+        /// attribute into any assembly whose target framework's reference assemblies do not supply
+        /// one, so for such an assembly the constructor is a MethodDef in the assembly itself rather
+        /// than a MemberReference into corelib.
+        /// </remarks>
+        HasIsByRefLikeAttribute : bool
     }
 
     member this.IsInterface = this.TypeAttributes.HasFlag TypeAttributes.Interface
@@ -346,6 +367,7 @@ module TypeInfo =
             ImplementedInterfaces = t.ImplementedInterfaces
             Layout = t.Layout
             InlineArrayLength = t.InlineArrayLength
+            HasIsByRefLikeAttribute = t.HasIsByRefLikeAttribute
         }
 
     let mapGeneric<'a, 'b, 'field> (f : 'a -> 'b) (t : TypeInfo<'a, 'field>) : TypeInfo<'b, 'field> =
@@ -452,9 +474,19 @@ module TypeInfo =
         // (`cbVal >= sizeof(INT32) + 2`) as "not an inline array" and lays out one slot. Only
         // hand-crafted IL can produce that, and silently giving the guest one slot where it asked
         // for N is exactly the silent corruption we would rather crash on, so we fail loudly.
-        let inlineArrayLength =
-            let describeTarget () = $"type %s{ns}.%s{name}"
+        let describeTarget () = $"type %s{ns}.%s{name}"
 
+        let hasIsByRefLikeAttribute =
+            typeDef.GetCustomAttributes ()
+            |> Seq.exists (fun handle ->
+                let attr = metadataReader.GetCustomAttribute handle
+
+                match CustomAttribute.constructorParentName metadataReader describeTarget attr.Constructor with
+                | Some ("System.Runtime.CompilerServices", "IsByRefLikeAttribute") -> true
+                | _ -> false
+            )
+
+        let inlineArrayLength =
             typeDef.GetCustomAttributes ()
             |> Seq.tryPick (fun handle ->
                 let attr = metadataReader.GetCustomAttribute handle
@@ -497,6 +529,7 @@ module TypeInfo =
             Generics = genericParams
             Events = events
             ImplementedInterfaces = interfaces
+            HasIsByRefLikeAttribute = hasIsByRefLikeAttribute
             DeclaringType = declaringType
             Layout = layout
             InlineArrayLength = inlineArrayLength

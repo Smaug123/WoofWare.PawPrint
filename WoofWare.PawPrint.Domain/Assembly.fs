@@ -1720,6 +1720,26 @@ module DumpedAssembly =
             (getTypeSpec loadedAssemblies)
             ty
 
+    /// ECMA "byref-like": a value type that may not appear on the heap (a C# <c>ref struct</c>).
+    ///
+    /// CoreCLR derives this from the <c>IsByRefLikeAttribute</c> application, but only for types it
+    /// has already classified as value classes: the attribute read sits inside the
+    /// <c>fIsValueClass = true</c> branch of <c>MethodTableBuilder::BuildMethodTableThrowing</c>
+    /// (methodtablebuilder.cpp:1449). So a *class* carrying the attribute — which C# cannot emit but
+    /// IL can, since <c>AttributeUsage</c> binds only the compiler — is not byref-like, and this
+    /// gate is what makes <see cref="TypeInfo.HasIsByRefLikeAttribute"/> into the classification.
+    ///
+    /// Note this is a question about a *nominal* type. CoreCLR's <c>TypeHandle::IsByRefLike</c>
+    /// (typehandle.cpp:1061) answers <c>false</c> for every TypeDesc, so byrefs, pointers, function
+    /// pointers and arrays are never byref-like however their element type is declared.
+    let isByRefLike
+        (bct : BaseClassTypes<DumpedAssembly>)
+        (loadedAssemblies : LoadedAssemblies)
+        (ty : TypeInfo<'generic, 'field>)
+        : bool
+        =
+        ty.HasIsByRefLikeAttribute && isValueType bct loadedAssemblies ty
+
     /// Metadata layout kind: ValueType for value types, Class otherwise. Note that System.Enum and
     /// System.ValueType themselves encode as Class, matching real CLR signature encoding.
     let signatureTypeKind

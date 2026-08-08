@@ -138,6 +138,38 @@ public class C<T> where T : struct, IComparable { }
         | other -> Assert.Fail $"expected IComparable FromReference, got %O{other}"
 
     [<Test>]
+    let ``allows ref struct is surfaced as AllowsByRefLike`` () =
+        // `gpAllowByRefLike` (corhdr.h:845) is not in GenericParameterAttributes at net8.0, so
+        // `readAll` reads it as a literal flag; this pins that it reads the right bit, and that
+        // the bit is not set by the neighbouring special constraints.
+        let source =
+            """
+public class C<T> where T : allows ref struct { }
+
+public class D<T> { }
+
+public class E<T> where T : struct, allows ref struct { }
+
+public class F<T> where T : new() { }
+"""
+
+        let assembly = loadAssembly "GenericParamConstraintsAllowByRefLike" source
+
+        let allowsByRefLike (typeName : string) : bool =
+            let _, paramMd = (findType typeName assembly).Generics.[0]
+            paramMd.AllowsByRefLike
+
+        Assert.That (allowsByRefLike "C`1", Is.True)
+        Assert.That (allowsByRefLike "D`1", Is.False)
+        Assert.That (allowsByRefLike "E`1", Is.True)
+        Assert.That (allowsByRefLike "F`1", Is.False)
+
+        // The flag is orthogonal to the mutually-exclusive struct/class pair, so it must not
+        // disturb what those fields report.
+        let _, eMd = (findType "E`1" assembly).Generics.[0]
+        Assert.That (eMd.Constraint, Is.EqualTo (Some GenericConstraint.NonNullableValue))
+
+    [<Test>]
     let ``where T : System.Enum surfaces the explicit constraint`` () =
         // Unlike `struct`, an explicit Enum constraint is not a flag-style
         // constraint: it must appear in Constraints.
