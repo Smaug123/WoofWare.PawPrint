@@ -786,7 +786,13 @@ public class Placeholder { }
             let _, lf = LoggerFactory.makeTest ()
             use _loggerFactoryResource = lf
 
-            let state = IlMachineState.initial lf (ImmutableArray.Create tempDir) forwarder
+            // The host's shared framework has to be on the search path as well as the temp dir
+            // holding the forwarding target: resolving `N.Outer.Inner` means loading every
+            // assembly on its base-type chain, and that chain runs to System.Object.
+            let runtimeDirs =
+                ImmutableArray.Create (tempDir, Path.GetDirectoryName typeof<obj>.Assembly.Location)
+
+            let state = IlMachineState.initial lf runtimeDirs forwarder
 
             let state, resolvedAssembly, resolvedType =
                 IlMachineState.resolveTypeFromExport lf forwarder nestedExport ImmutableArray.Empty state

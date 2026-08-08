@@ -213,7 +213,7 @@ module ExecutionConcretization =
             Concretization.ensureTypeDefinitionBaseAssembliesLoaded
                 (IlMachineState.loader loggerFactory state)
                 state._LoadedAssemblies
-                field.DeclaringType.Assembly
+                state._LoadedAssemblies.[field.DeclaringType.Assembly]
                 field.DeclaringType.Definition.Get
 
         let state =

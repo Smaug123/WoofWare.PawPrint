@@ -22,48 +22,12 @@ module TestZeroOfBaseAssemblies =
     /// BCL primitives (including System.ValueType, the base of every F#
     /// Struct type). Concretizing a struct from this DLL does not need
     /// netstandard, but zero-initialising an instance of that struct does.
-    let private fsharpCoreNetstandard21Path' () : string =
-        let nugetRoot =
-            match Environment.GetEnvironmentVariable "NUGET_PACKAGES" with
-            | null
-            | "" -> Path.Combine (Environment.GetFolderPath Environment.SpecialFolder.UserProfile, ".nuget", "packages")
-            | value -> value
+    let private corelibPath : string = Netstandard21FSharpCore.corelibPath
 
-        let fsharpCoreDir = Path.Combine (nugetRoot, "fsharp.core")
-
-        if not (Directory.Exists fsharpCoreDir) then
-            Assert.Ignore
-                $"FSharp.Core nuget package not found under %s{fsharpCoreDir}; skipping netstandard2.1 base-chain regression."
-
-        let candidate =
-            Directory.EnumerateDirectories fsharpCoreDir
-            |> Seq.choose (fun versionDir ->
-                let dll = Path.Combine (versionDir, "lib", "netstandard2.1", "FSharp.Core.dll")
-
-                if File.Exists dll then Some dll else None
-            )
-            |> Seq.tryHead
-
-        match candidate with
-        | Some dll -> dll
-        | None ->
-            Assert.Ignore
-                "No FSharp.Core/*/lib/netstandard2.1/FSharp.Core.dll found; skipping netstandard2.1 base-chain regression."
-
-            failwith "unreachable"
-
-    let private corelibPath : string = typeof<obj>.Assembly.Location
-
-    /// netstandard.dll and every BCL facade this test may need ship alongside
-    /// System.Private.CoreLib in every Microsoft.NETCore.App runtime we test
-    /// against; a directory-scoped IAssemblyLoad can resolve them on demand.
-    let private runtimeDir : string = Path.GetDirectoryName corelibPath
+    let private runtimeDir : string = Netstandard21FSharpCore.runtimeDir
 
     let private assertNetstandardAvailable () : unit =
-        let candidate = Path.Combine (runtimeDir, "netstandard.dll")
-
-        if not (File.Exists candidate) then
-            Assert.Ignore $"netstandard.dll not found next to corelib at %s{candidate}"
+        Netstandard21FSharpCore.assertNetstandardAvailable ()
 
     let private readAssembly (path : string) : DumpedAssembly =
         let _, loggerFactory = LoggerFactory.makeTest ()
@@ -83,8 +47,7 @@ module TestZeroOfBaseAssemblies =
             failwith "Expected FSharpValueOption`1 in netstandard2.1 FSharp.Core; nuget layout may have changed"
         )
 
-    let fsharpCoreNetstandard21Path : string Lazy =
-        System.Lazy<_>.Create fsharpCoreNetstandard21Path'
+    let fsharpCoreNetstandard21Path : string Lazy = Netstandard21FSharpCore.path
 
     [<Test>]
     let ``ensureBaseAssembliesLoadedForConcreteHandle loads facade assembly reachable via base-type TypeRef``
@@ -323,7 +286,7 @@ public struct Outer
             Concretization.ensureTypeDefinitionBaseAssembliesLoaded
                 loadAssembly
                 concretizeCtx.LoadedAssemblies
-                outerAssembly.Name
+                concretizeCtx.LoadedAssemblies.[outerAssembly.Name]
                 outerTypeDef.TypeDefHandle
 
         assembliesAfterOuterBaseChain.DefinitionNames
