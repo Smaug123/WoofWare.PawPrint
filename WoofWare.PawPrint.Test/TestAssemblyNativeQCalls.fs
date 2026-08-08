@@ -11,8 +11,9 @@ open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 
-/// Tests for the QCalls behind `Assembly.GetName()`, each of which CoreCLR answers from a
-/// column of the manifest's single `Assembly` metadata row.
+/// Tests for the QCalls behind `Assembly.GetName()`. Most are answered from a column of the
+/// manifest's single `Assembly` metadata row; the `ModuleHandle_*` ones are keyed by the
+/// manifest module instead and read the image's headers rather than that row.
 ///
 /// There is no end-to-end guest coverage yet: `Assembly.GetName()` is the only managed
 /// caller a guest can reach, and it needs nine runtime primitives in sequence, so it stays
@@ -137,6 +138,79 @@ public static class HashAlgorithmLibrary
 
         Roslyn.compileAssembly hashAlgorithmAssemblyName OutputKind.DynamicallyLinkedLibrary [] [ source ]
 
+    /// A trivial library to patch a table stream version into. Each caller passes a distinct
+    /// `suffix`, because assemblies are registered by full name and two same-named images
+    /// would displace one another.
+    let private streamVersionLibraryImage (suffix : string) : byte[] =
+        Roslyn.compileAssembly
+            $"WoofWare.PawPrint.StreamVersion%s{suffix}TestLibrary"
+            OutputKind.DynamicallyLinkedLibrary
+            []
+            [
+                """
+public static class StreamVersionLibrary
+{
+    public static int Value => 1;
+}
+"""
+            ]
+
+    /// Rewrites the `MajorVersion`/`MinorVersion` bytes of `image`'s metadata table stream
+    /// header, returning a fresh image. Every toolchain emits 2.0 and there is no compiler
+    /// switch for anything else, so patching the bytes is the only way to get a second
+    /// answer — and a second answer is needed, because 2.0 is also what a handler that
+    /// hardcoded `MD_STREAM_VER_2` would return.
+    ///
+    /// This is not a synthetic shape the runtime would reject: `MetadataReader` opens a 1.0
+    /// table stream perfectly happily, which is exactly why the handler cannot assume 2.0.
+    ///
+    /// Walks ECMA-335 II.24.2.1's metadata root to find the stream header, then converts the
+    /// root-relative stream offset to a file offset via `MetadataStartOffset`. Deliberately
+    /// an independent parse rather than a call into `DumpedAssembly`, so it is an oracle for
+    /// the member under test rather than a restatement of it.
+    let private withTableStreamVersion (major : byte, minor : byte) (image : byte[]) : byte[] =
+        use peImage = new MemoryStream (image)
+        use peReader = new System.Reflection.PortableExecutable.PEReader (peImage)
+        let metadataStart = peReader.PEHeaders.MetadataStartOffset
+        let mutable reader = peReader.GetMetadata().GetReader ()
+
+        reader.ReadUInt32 () |> ignore<uint32> // BSJB signature
+        reader.ReadUInt16 () |> ignore<uint16> // root MajorVersion
+        reader.ReadUInt16 () |> ignore<uint16> // root MinorVersion
+        reader.ReadUInt32 () |> ignore<uint32> // Reserved
+        let versionStringLength = reader.ReadInt32 ()
+        reader.ReadBytes versionStringLength |> ignore<byte[]>
+        reader.ReadUInt16 () |> ignore<uint16> // Flags
+        let streamCount = int (reader.ReadUInt16 ())
+
+        let patched = Array.copy image
+        let mutable found = false
+
+        for _ = 1 to streamCount do
+            let offset = reader.ReadInt32 ()
+            reader.ReadInt32 () |> ignore<int> // Size
+            let nameStart = reader.Offset
+            let mutable nameLength = 0
+
+            while reader.ReadByte () <> 0uy do
+                nameLength <- nameLength + 1
+
+            reader.Offset <- nameStart
+            let name = reader.ReadUTF8 nameLength
+            reader.ReadByte () |> ignore<byte>
+            reader.Align 4uy
+
+            if name = "#~" || name = "#-" then
+                // II.24.2.6: Reserved (4 bytes), MajorVersion, MinorVersion.
+                patched.[metadataStart + offset + 4] <- major
+                patched.[metadataStart + offset + 5] <- minor
+                found <- true
+
+        if not found then
+            failwith "test fixture image has no #~ or #- metadata table stream to patch"
+
+        patched
+
     /// An image whose `PublicKey` blob is non-empty but whose `Flags` column leaves the
     /// `afPublicKey` bit clear. No compiler emits that — Roslyn sets the bit whenever it
     /// signs — but the format permits it, and `GetAssemblyProps` normalises it away, so it
@@ -230,23 +304,31 @@ public static class HashAlgorithmLibrary
             failwith $"type %s{namespaceName}.%s{typeName} not found in %s{assembly.Name.Name}"
         )
 
-    /// Locates the `RuntimeAssembly` method carrying the given QCall entry point and
-    /// concretizes it, so the handler sees the same `ExecutingMethod` signature the
-    /// interpreter would have handed it.
+    /// The two types in corelib that declare this family's QCall entry points.
+    let private runtimeAssembly = ("System.Reflection", "RuntimeAssembly")
+
+    let private moduleHandle = ("System", "ModuleHandle")
+
+    /// Locates the method on `declaringNamespace.declaringTypeName` carrying the given QCall
+    /// entry point and concretizes it, so the handler sees the same `ExecutingMethod`
+    /// signature the interpreter would have handed it. Most of this family declares its
+    /// entry points on `System.Reflection.RuntimeAssembly`, but the two `ModuleHandle_*` ones
+    /// `Assembly.GetName()` reaches are on `System.ModuleHandle` instead.
     let private qCallMethod
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (declaringNamespace : string, declaringTypeName : string)
         (entryPoint : string)
         (state : IlMachineState)
         : IlMachineState *
           TypeInfo<GenericParamFromMetadata, TypeDefn> *
           MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
         =
-        let runtimeAssemblyType =
-            requiredTopLevelType baseClassTypes.Corelib "System.Reflection" "RuntimeAssembly"
+        let declaringType =
+            requiredTopLevelType baseClassTypes.Corelib declaringNamespace declaringTypeName
 
         let rawMethod =
-            runtimeAssemblyType.Methods
+            declaringType.Methods
             |> List.filter (fun method ->
                 match method.NativeImport with
                 | Some import -> import.ModuleName = "QCall" && import.EntryPointName = entryPoint
@@ -254,10 +336,10 @@ public static class HashAlgorithmLibrary
             )
             |> function
                 | [ method ] -> method
-                | [] -> failwith $"QCall entry point %s{entryPoint} not found on RuntimeAssembly"
+                | [] -> failwith $"QCall entry point %s{entryPoint} not found on %s{declaringTypeName}"
                 | methods ->
                     failwith
-                        $"QCall entry point %s{entryPoint} was ambiguous on RuntimeAssembly: %d{methods.Length} matches"
+                        $"QCall entry point %s{entryPoint} was ambiguous on %s{declaringTypeName}: %d{methods.Length} matches"
 
         let state, method, _ =
             ExecutionConcretization.concretizeMethodWithTypeGenerics
@@ -270,7 +352,7 @@ public static class HashAlgorithmLibrary
                 ImmutableArray.Empty
                 state
 
-        state, runtimeAssemblyType, method
+        state, declaringType, method
 
     let private concreteValueTypeZero
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
@@ -319,6 +401,34 @@ public static class HashAlgorithmLibrary
             |> CliType.ValueType,
             state
         | other -> failwith $"QCallAssembly zero value was not a value type: %O{other}"
+
+    /// `struct QCallModule { void* _ptr; IntPtr _module; }`. PawPrint models one module per
+    /// assembly, so `_module` carries the assembly's full name exactly as `_assembly` does
+    /// above — the two structs differ only in the field name and the tag it holds.
+    let private qCallModuleValue
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (assemblyFullName : string)
+        (state : IlMachineState)
+        : CliType * IlMachineState
+        =
+        let qCallModuleType =
+            requiredTopLevelType baseClassTypes.Corelib "System.Runtime.CompilerServices" "QCallModule"
+
+        let handle, zero, state =
+            concreteValueTypeZero loggerFactory baseClassTypes state qCallModuleType
+
+        match zero with
+        | CliType.ValueType vt ->
+            let moduleField = IlMachineState.requiredOwnInstanceFieldId state handle "_module"
+
+            CliValueType.WithFieldSetById
+                moduleField
+                (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ModuleHandle assemblyFullName)))
+                vt
+            |> CliType.ValueType,
+            state
+        | other -> failwith $"QCallModule zero value was not a value type: %O{other}"
 
     /// Mirrors the `new StringHandleOnStack(ref name)` the C# wrapper builds over a local
     /// preinitialised to null; the object[1] cell stands in for that stack slot.
@@ -416,6 +526,7 @@ public static class HashAlgorithmLibrary
     let private invokeQCall
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
         (prepared : Program.PreparedProgram)
+        (declaringType : string * string)
         (entryPoint : string)
         (arguments : CliType list)
         (state : IlMachineState)
@@ -423,8 +534,8 @@ public static class HashAlgorithmLibrary
         =
         let baseClassTypes = prepared.BaseClassTypes
 
-        let state, runtimeAssemblyType, method =
-            qCallMethod loggerFactory baseClassTypes entryPoint state
+        let state, declaringTypeInfo, method =
+            qCallMethod loggerFactory baseClassTypes declaringType entryPoint state
 
         let instruction =
             { state.ThreadState.[prepared.EntryThread].MethodState with
@@ -440,13 +551,18 @@ public static class HashAlgorithmLibrary
                 State = state
                 Instruction = instruction
                 TargetAssembly = baseClassTypes.Corelib
-                TargetType = runtimeAssemblyType
+                TargetType = declaringTypeInfo
             }
 
-        match NativeRuntimeAssembly.tryExecuteQCall entryPoint ctx with
+        // Deliberately through `NativeQCall.tryExecute` rather than straight at the owning
+        // module's `tryExecuteQCall`. That is the path the interpreter takes, and it derives
+        // the entry point from the method's own import metadata, so these tests also fail if
+        // a handler exists but was never registered in the dispatch table — which is
+        // otherwise an entirely silent mistake.
+        match NativeQCall.tryExecute ctx with
         | Some (NativeHandlerResult.Completed (state, _)) -> state
         | Some result -> failwith $"unexpected %s{entryPoint} execution result: %O{result}"
-        | None -> failwith $"%s{entryPoint} QCall did not match"
+        | None -> failwith $"%s{entryPoint} QCall did not match, or is not registered in NativeQCall"
 
     /// Runs `AssemblyNative_GetFlags` for `assemblyFullName` and pops its return value.
     /// Unlike the rest of this family the answer comes back on the eval stack rather than
@@ -465,7 +581,7 @@ public static class HashAlgorithmLibrary
             qCallAssemblyValue loggerFactory baseClassTypes assemblyFullName state
 
         let state =
-            invokeQCall loggerFactory prepared "AssemblyNative_GetFlags" [ qCallAssembly ] state
+            invokeQCall loggerFactory prepared runtimeAssembly "AssemblyNative_GetFlags" [ qCallAssembly ] state
 
         let returned, state = IlMachineState.popEvalStack prepared.EntryThread state
 
@@ -492,13 +608,37 @@ public static class HashAlgorithmLibrary
             qCallAssemblyValue loggerFactory baseClassTypes assemblyFullName state
 
         let state =
-            invokeQCall loggerFactory prepared "AssemblyNative_GetHashAlgorithm" [ qCallAssembly ] state
+            invokeQCall loggerFactory prepared runtimeAssembly "AssemblyNative_GetHashAlgorithm" [ qCallAssembly ] state
 
         let returned, state = IlMachineState.popEvalStack prepared.EntryThread state
 
         match returned with
         | EvalStackValue.Int32 (Int32Source.Verbatim value) -> state, value
         | other -> failwith $"expected a verbatim Int32 return from AssemblyNative_GetHashAlgorithm, got %O{other}"
+
+    /// Runs `ModuleHandle_GetMDStreamVersion` for the manifest module of `assemblyFullName`
+    /// and pops its return value. Unlike the rest of this family it is keyed by a
+    /// `QCallModule` and declared on `System.ModuleHandle` rather than `RuntimeAssembly`.
+    let private invokeGetMDStreamVersion
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (prepared : Program.PreparedProgram)
+        (state : IlMachineState)
+        (assemblyFullName : string)
+        : IlMachineState * int
+        =
+        let baseClassTypes = prepared.BaseClassTypes
+
+        let qCallModule, state =
+            qCallModuleValue loggerFactory baseClassTypes assemblyFullName state
+
+        let state =
+            invokeQCall loggerFactory prepared moduleHandle "ModuleHandle_GetMDStreamVersion" [ qCallModule ] state
+
+        let returned, state = IlMachineState.popEvalStack prepared.EntryThread state
+
+        match returned with
+        | EvalStackValue.Int32 (Int32Source.Verbatim value) -> state, value
+        | other -> failwith $"expected a verbatim Int32 return from ModuleHandle_GetMDStreamVersion, got %O{other}"
 
     /// Runs the QCall for `assemblyFullName` and returns the heap address the handler wrote
     /// into the `StringHandleOnStack` (None if it left the slot at its preinitialised null).
@@ -520,7 +660,7 @@ public static class HashAlgorithmLibrary
             stringHandleOnStackValue loggerFactory baseClassTypes state
 
         let state =
-            invokeQCall loggerFactory prepared entryPoint [ qCallAssembly ; stringHandle ] state
+            invokeQCall loggerFactory prepared runtimeAssembly entryPoint [ qCallAssembly ; stringHandle ] state
 
         let written =
             match IlMachineState.readManagedByref baseClassTypes state target with
@@ -556,7 +696,13 @@ public static class HashAlgorithmLibrary
             objectHandleOnStackValue loggerFactory baseClassTypes state
 
         let state =
-            invokeQCall loggerFactory prepared "AssemblyNative_GetPublicKey" [ qCallAssembly ; objectHandle ] state
+            invokeQCall
+                loggerFactory
+                prepared
+                runtimeAssembly
+                "AssemblyNative_GetPublicKey"
+                [ qCallAssembly ; objectHandle ]
+                state
 
         let written =
             match IlMachineState.readManagedByref baseClassTypes state target with
@@ -585,7 +731,13 @@ public static class HashAlgorithmLibrary
             stringHandleOnStackValue loggerFactory baseClassTypes state
 
         let state =
-            invokeQCall loggerFactory prepared "AssemblyNative_GetCodeBase" [ qCallAssembly ; stringHandle ] state
+            invokeQCall
+                loggerFactory
+                prepared
+                runtimeAssembly
+                "AssemblyNative_GetCodeBase"
+                [ qCallAssembly ; stringHandle ]
+                state
 
         let returned, state = IlMachineState.popEvalStack prepared.EntryThread state
 
@@ -638,6 +790,7 @@ public static class HashAlgorithmLibrary
             invokeQCall
                 loggerFactory
                 prepared
+                runtimeAssembly
                 "AssemblyNative_GetVersion"
                 [
                     qCallAssembly
@@ -1304,6 +1457,89 @@ public static class HashAlgorithmLibrary
         let exn =
             Assert.Throws<System.Exception> (fun () ->
                 invokeGetHashAlgorithm
+                    loggerFactory
+                    prepared
+                    prepared.State
+                    "NotLoaded, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null"
+                |> ignore<IlMachineState * int>
+            )
+
+        exn.Message |> shouldContainText "is not loaded"
+
+    [<Test>]
+    let ``GetMDStreamVersion packs the table stream's schema version`` () : unit =
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let image =
+            Roslyn.compileAssembly guestAssemblyName OutputKind.ConsoleApplication [] [ guestSource ]
+
+        let prepared = prepareGuest loggerFactory image
+        let guest = prepared.State.ActiveAssembly prepared.EntryThread
+
+        // `MD_STREAM_VER_2` in metadata.h: major 2 in the senior half, minor 0 in the junior.
+        // This is what every modern image says, which is precisely the problem the fixture
+        // below solves.
+        let mdStreamVer2 = 0x20000
+
+        let state, guestVersion =
+            invokeGetMDStreamVersion loggerFactory prepared prepared.State guest.Name.FullName
+
+        guestVersion |> shouldEqual mdStreamVer2
+
+        let state, corelibVersion =
+            invokeGetMDStreamVersion loggerFactory prepared state prepared.BaseClassTypes.Corelib.Name.FullName
+
+        corelibVersion |> shouldEqual mdStreamVer2
+
+        // The only assemblies that give a different answer, and so the ones that distinguish
+        // reading the header from returning `MD_STREAM_VER_2`. It matters beyond this
+        // handler: `Assembly.GetName()` reads the PE kind only when this exceeds `0x10000`,
+        // so a 1.0 image takes the other branch, and a hardcoded answer would silently take
+        // the wrong one rather than fail.
+        //
+        // Separately named libraries rather than patched copies of the guest, because
+        // assemblies are registered by full name and same-named copies would displace each
+        // other (and the guest).
+        let oneZero, state =
+            withLoadedAssembly
+                loggerFactory
+                (streamVersionLibraryImage "OneZero" |> withTableStreamVersion (1uy, 0uy))
+                state
+
+        let state, oneZeroVersion =
+            invokeGetMDStreamVersion loggerFactory prepared state oneZero.Name.FullName
+
+        let mdStreamVer1X = 0x10000
+        oneZeroVersion |> shouldEqual mdStreamVer1X
+
+        // A non-zero minor, so the two halves cannot be swapped and the minor cannot be
+        // dropped: this is the only case where `minor ||| (major <<< 16)` differs both from
+        // `major <<< 16` and from `major ||| (minor <<< 16)`.
+        let threeSeven, state =
+            withLoadedAssembly
+                loggerFactory
+                (streamVersionLibraryImage "ThreeSeven" |> withTableStreamVersion (3uy, 7uy))
+                state
+
+        let _state, threeSevenVersion =
+            invokeGetMDStreamVersion loggerFactory prepared state threeSeven.Name.FullName
+
+        threeSevenVersion |> shouldEqual 0x30007
+
+    [<Test>]
+    let ``GetMDStreamVersion on an unloaded assembly fails loudly`` () : unit =
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let image =
+            Roslyn.compileAssembly guestAssemblyName OutputKind.ConsoleApplication [] [ guestSource ]
+
+        let prepared = prepareGuest loggerFactory image
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () ->
+                invokeGetMDStreamVersion
                     loggerFactory
                     prepared
                     prepared.State

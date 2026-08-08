@@ -61,6 +61,23 @@ type ManifestResourceLookupResult =
     | ReferencedAssembly of resourceName : string * assemblyReference : WoofWare.PawPrint.AssemblyReference
 
 /// <summary>
+/// The version of the metadata *table* stream's schema: the <c>MajorVersion</c> and
+/// <c>MinorVersion</c> bytes at offsets 4 and 5 of the <c>#~</c> (or <c>#-</c>) stream.
+/// Every image a modern compiler emits carries 2.0.
+/// </summary>
+/// <remarks>
+/// This is not the metadata root's own version (the two <c>USHORT</c>s right after the
+/// <c>BSJB</c> signature), and not its version *string* — the <c>"v4.0.30319"</c> that
+/// <c>MetadataReader.MetadataVersion</c> reports, which names a runtime rather than a
+/// schema. Those three are separate fields and only this one is the table schema.
+/// </remarks>
+type MetadataTableStreamVersion =
+    {
+        Major : int
+        Minor : int
+    }
+
+/// <summary>
 /// Represents a fully parsed .NET assembly with all its metadata components.
 /// This serves as the main container for accessing assembly information in the PawPrint library.
 /// </summary>
@@ -403,6 +420,84 @@ type DumpedAssembly =
     member this.HashAlgorithm : System.Reflection.AssemblyHashAlgorithm =
         let metadata = this.PeReader.GetMetadataReader ()
         metadata.GetAssemblyDefinition().HashAlgorithm
+
+    /// <summary>
+    /// The schema version of this image's metadata table stream. See
+    /// <see cref="MetadataTableStreamVersion"/> for which of the several "metadata version"
+    /// fields this is.
+    /// </summary>
+    /// <remarks>
+    /// Parsed out of the image by hand because <c>System.Reflection.Metadata</c> does not
+    /// expose it: <c>MetadataReader</c> reads these two bytes to decide how to interpret the
+    /// tables but publishes neither them nor anything derived from them.
+    ///
+    /// Hand-parsing is worth it rather than assuming 2.0, because the assumption is not safe
+    /// even here: <c>MetadataReader</c> will happily open an image whose table stream says
+    /// 1.0, so a <c>DumpedAssembly</c> really can hold one. The value also routes guest
+    /// control flow — <c>Assembly.GetName()</c> only reads the PE kind when this exceeds
+    /// <c>0x10000</c> — so answering 2.0 unconditionally would silently take the wrong
+    /// branch rather than fail.
+    ///
+    /// Every offset here is relative to the metadata root, which is where the stream headers'
+    /// own offsets are measured from, so no PE file offsets are involved.
+    /// </remarks>
+    member this.MetadataTableStreamVersion : MetadataTableStreamVersion =
+        let block = this.PeReader.GetMetadata ()
+        let mutable reader = block.GetReader ()
+
+        // ECMA-335 II.24.2.1: the metadata root, whose signature spells "BSJB".
+        let signature = reader.ReadUInt32 ()
+
+        if signature <> 0x424A5342u then
+            failwith
+                $"expected metadata root signature 0x424A5342 in assembly %s{this.Name.FullName}, got 0x%08X{signature}"
+
+        reader.ReadUInt16 () |> ignore<uint16> // root MajorVersion, not the table schema's
+        reader.ReadUInt16 () |> ignore<uint16> // root MinorVersion, likewise
+        reader.ReadUInt32 () |> ignore<uint32> // Reserved
+        let versionStringLength = reader.ReadInt32 ()
+        reader.ReadBytes versionStringLength |> ignore<byte[]> // the "v4.0.30319" string
+        reader.ReadUInt16 () |> ignore<uint16> // Flags
+        let streamCount = int (reader.ReadUInt16 ())
+
+        // ECMA-335 II.24.2.2: stream headers are {Offset, Size, Name}, the name being
+        // null-terminated ASCII padded to the next 4-byte boundary.
+        let mutable tableStreamOffset = None
+
+        for _ = 1 to streamCount do
+            let offset = reader.ReadInt32 ()
+            reader.ReadInt32 () |> ignore<int> // Size
+
+            let nameStart = reader.Offset
+            let mutable nameLength = 0
+
+            while reader.ReadByte () <> 0uy do
+                nameLength <- nameLength + 1
+
+            reader.Offset <- nameStart
+            let name = reader.ReadUTF8 nameLength
+            reader.ReadByte () |> ignore<byte> // the terminator
+            reader.Align 4uy
+
+            // `#~` is the compressed table stream and `#-` the uncompressed one an
+            // edit-and-continue image carries. They differ in how the tables themselves are
+            // laid out, not in this header, and CoreCLR reads the schema from whichever it
+            // opened.
+            if name = "#~" || name = "#-" then
+                tableStreamOffset <- Some offset
+
+        match tableStreamOffset with
+        | None ->
+            failwith
+                $"assembly %s{this.Name.FullName} has no #~ or #- metadata table stream, so it has no table schema version"
+        | Some offset ->
+            // ECMA-335 II.24.2.6: Reserved (4 bytes), then MajorVersion and MinorVersion.
+            let mutable header = block.GetReader (offset + 4, 2)
+
+            {
+                Major = int (header.ReadByte ())
+                Minor = int (header.ReadByte ())
+            }
 
     /// <summary>
     /// Whether this and <paramref name="other"/> are byte-identical PE images, i.e. the same
