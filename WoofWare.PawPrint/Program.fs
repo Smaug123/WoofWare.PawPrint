@@ -703,50 +703,65 @@ module Program =
                     findCoreLibraryAssemblyFromGeneric
                     findCoreLibraryAssemblyFromResolved
 
+        /// The frame the entry thread runs during startup: the entry point's *signature* with
+        /// its body replaced by a bare `ret`. Pushing cctors underneath it and pumping until
+        /// it returns is how `prepare` drives static initialisation without entering Main.
+        ///
+        /// Rebuildable rather than built once, because seeding AppContext also has to pump
+        /// the entry thread to completion, which consumes this frame; the seed then puts a
+        /// fresh one back for the cctor pump that follows.
+        let buildStartupFrame
+            (baseTypes : BaseClassTypes<DumpedAssembly>)
+            (state : IlMachineState)
+            : IlMachineState * MethodState
+            =
+            // Use the original method from metadata, but convert FakeUnit to TypeDefn
+            let rawMainMethod =
+                mainMethodFromMetadata
+                |> MethodInfo.mapTypeGenerics (fun (i, _) -> TypeDefn.GenericTypeParameter i.SequenceNumber)
+
+            let state, concretizedMainMethod, _ =
+                ExecutionConcretization.concretizeMethodWithTypeGenerics
+                    loggerFactory
+                    baseTypes
+                    ImmutableArray.Empty // No type generics for main method's declaring type
+                    { rawMainMethod with
+                        Body = MethodBody.Il (MethodInstructions.onlyRet ())
+                    }
+                    None
+                    dumped.Name
+                    ImmutableArray.Empty
+                    state
+
+            // Create the method state with the concretized method.
+            // The body has been replaced with onlyRet, so these are placeholders whose
+            // length must match the method's parameter count.
+            let placeholderArgs =
+                if mainTakesStringArrayArg then
+                    ImmutableArray.CreateRange [ CliType.ObjectRef None ]
+                else
+                    ImmutableArray.Empty
+
+            match
+                MethodState.Empty
+                    state.ConcreteTypes
+                    baseTypes
+                    state._LoadedAssemblies
+                    dumped
+                    concretizedMainMethod
+                    ImmutableArray.Empty
+                    placeholderArgs
+                    None
+            with
+            | Ok concretizedMeth -> state, concretizedMeth
+            | Error _ -> failwith "Unexpected failure creating method state with concretized method"
+
         let rec computeState (baseClassTypes : BaseClassTypes<DumpedAssembly> option) (state : IlMachineState) =
             match baseClassTypes with
             | Some baseTypes ->
                 // We already have base class types, can directly create the concretized method
-                // Use the original method from metadata, but convert FakeUnit to TypeDefn
-                let rawMainMethod =
-                    mainMethodFromMetadata
-                    |> MethodInfo.mapTypeGenerics (fun (i, _) -> TypeDefn.GenericTypeParameter i.SequenceNumber)
-
-                let state, concretizedMainMethod, _ =
-                    ExecutionConcretization.concretizeMethodWithTypeGenerics
-                        loggerFactory
-                        baseTypes
-                        ImmutableArray.Empty // No type generics for main method's declaring type
-                        { rawMainMethod with
-                            Body = MethodBody.Il (MethodInstructions.onlyRet ())
-                        }
-                        None
-                        dumped.Name
-                        ImmutableArray.Empty
-                        state
-
-                // Create the method state with the concretized method.
-                // The body has been replaced with onlyRet, so these are placeholders whose
-                // length must match the method's parameter count.
-                let placeholderArgs =
-                    if mainTakesStringArrayArg then
-                        ImmutableArray.CreateRange [ CliType.ObjectRef None ]
-                    else
-                        ImmutableArray.Empty
-
-                match
-                    MethodState.Empty
-                        state.ConcreteTypes
-                        baseTypes
-                        state._LoadedAssemblies
-                        dumped
-                        concretizedMainMethod
-                        ImmutableArray.Empty
-                        placeholderArgs
-                        None
-                with
-                | Ok concretizedMeth -> IlMachineState.addThread concretizedMeth state, Some baseTypes
-                | Error _ -> failwith "Unexpected failure creating method state with concretized method"
+                let state, concretizedMeth = buildStartupFrame baseTypes state
+                IlMachineState.addThread concretizedMeth state, Some baseTypes
             | None ->
                 // We need to discover the core library by traversing the type hierarchy
                 let mainMethodType =
@@ -784,6 +799,73 @@ module Program =
             { state with
                 ConcreteTypes = Corelib.concretizeAll state._LoadedAssemblies baseClassTypes state.ConcreteTypes
             }
+
+        // Seed AppContext before anything else runs. On CoreCLR this happens in
+        // `CorHost2::CreateAppDomainWithManager`, before any managed code at all; the deadline
+        // that actually bites is that BCL feature switches latch on first read into a
+        // `static readonly` (`EventSource.IsSupported` is the motivating one), so seeding has
+        // to precede the entry type's cctor pump below, not merely precede Main.
+        //
+        // This runs the entry thread to completion, which consumes its startup frame; a fresh
+        // one goes back afterwards so the cctor pump that follows is unaffected.
+        let state =
+            match AppContextSeed.prepareCall loggerFactory baseClassTypes hostConfig.AppContext state with
+            | None -> state
+            | Some (state, setupFrame) ->
+                logger.LogInformation "Seeding AppContext from the host's configuration properties"
+
+                let threadState =
+                    state.ThreadState.[mainThread]
+                    |> ThreadState.replaceFrames setupFrame
+                    |> fun threadState ->
+                        { threadState with
+                            Status = ThreadStatus.Runnable
+                        }
+
+                let state =
+                    { state with
+                        ThreadState = state.ThreadState |> Map.add mainThread threadState
+                    }
+
+                let state =
+                    match pumpToReturn loggerFactory logger baseClassTypes mainThread state with
+                    | RunOutcome.NormalExit (state, _) -> state
+                    | outcome ->
+                        // Nothing in `AppContext.Setup` can legitimately exit, fail fast or
+                        // throw: it allocates a Dictionary and copies strings out of buffers
+                        // we ourselves just wrote. Anything else means a cctor dragged in by
+                        // that work misbehaved, and pressing on would run Main against a
+                        // half-seeded AppContext.
+                        //
+                        // Describe the outcome by case rather than with `%O`: every
+                        // `RunOutcome` carries an `IlMachineState`, so structural formatting
+                        // would render the entire heap into the exception message.
+                        let described =
+                            match outcome with
+                            | RunOutcome.NormalExit _ -> "returned normally" // unreachable, matched above
+                            | RunOutcome.ProcessExit (_, thread) -> $"called Environment.Exit on %O{thread}"
+                            | RunOutcome.FailFast (_, thread, message) ->
+                                let message = message |> Option.defaultValue "<no message>"
+                                $"called Environment.FailFast on %O{thread}: %s{message}"
+                            | RunOutcome.SignalTerminated (_, signal) -> $"was terminated by signal %O{signal}"
+                            | RunOutcome.GuestUnhandledException (_, thread, exn) ->
+                                $"threw an unhandled exception on %O{thread}: %O{exn.ExceptionObject}"
+
+                        failwith $"Seeding AppContext %s{described}. Properties being seeded: %O{hostConfig.AppContext}"
+
+                let state, startupFrame = buildStartupFrame baseClassTypes state
+
+                let threadState =
+                    state.ThreadState.[mainThread]
+                    |> ThreadState.replaceFrames startupFrame
+                    |> fun threadState ->
+                        { threadState with
+                            Status = ThreadStatus.Runnable
+                        }
+
+                { state with
+                    ThreadState = state.ThreadState |> Map.add mainThread threadState
+                }
 
         let rec loadInitialState (state : IlMachineState) =
             match

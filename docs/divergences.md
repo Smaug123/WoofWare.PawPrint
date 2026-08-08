@@ -158,3 +158,59 @@ Console.WriteLine(AppContext.BaseDirectory);
 **Testing note**: Cannot be a `sourcesPure` comparison test, since the real runtime is launched from a real `.dll` and reports its path — there is no cross-runtime fact to assert. Covered by the PawPrint-only `sourcesImpure/AssemblyLocationEmpty.cs`, which asserts the empty `Location` for both the guest's own assembly and a framework assembly, the resulting empty `AppContext.BaseDirectory`, and `ReferenceEquals(asm.Location, string.Empty)` — CoreCLR's `StringObject::NewString` hands back the shared empty-string instance for a zero-length string, so allocating a fresh empty string here would be observably wrong.
 
 **Where this lives in code**: `NativeRuntimeAssembly.tryExecuteQCall`, the `AssemblyNative_GetLocation` case.
+
+## A `runtimeconfig.json` is validated only where PawPrint reads it
+
+**CoreCLR**: `hostpolicy` parses the whole file with rapidjson, which rejects the *entire document* for faults anywhere in it — a numeric token too large to store in a double (`kParseErrorNumberTooBig`, so `1e400`), an unpaired `\uD800` surrogate escape (`kParseErrorStringUnicodeSurrogateInvalid`), and the rest of its error surface. A fault in a section nobody reads is still fatal: for the main config the app does not launch, and for `runtimeconfig.dev.json` the whole sidecar is ignored.
+
+**PawPrint**: parses with `System.Text.Json`, whose accepted grammar is not rapidjson's. It takes `1e400` (yielding an infinity) and an unpaired surrogate escape (throwing only if you ask for the text), so a document faulty *only* in a part PawPrint never inspects is accepted here and refused there. Where the fault is in a `configProperties` value, it is caught: an overflowing number is classified `HostWouldReject`, so it behaves as a real host's rejection does. That check asks every *occurrence* of a property, including one a later duplicate shadows, because this fault stops rapidjson before it reaches the question of which duplicate wins — `{ "P": 1e400, "P": "final" }` does not launch on CoreCLR, where `{ "P": 1.5, "P": "final" }`, whose shadowed occurrence is merely unrenderable, launches with `P="final"`.
+
+**Spec status**: Both parsers implement RFC 8259, which constrains neither the range an implementation must accept for a number nor what it does with a lone surrogate escape. Two conforming parsers may differ here, and these two do.
+
+**Why we chose this**: closing it means validating rapidjson's exact accept/reject surface across every token in the document, including the ones we have no other reason to look at — reimplementing another parser's error behaviour, and taking on the job of tracking it. The configurations involved are ones no build tool emits, and the failure is confined to accepting a file a real host would refuse. The narrower version, where the fault is in a property we actually read, is implemented, because that one feeds the `HostWouldReject`/`NotReproducible` classification that decides whether a dev sidecar may be ignored.
+
+One consequence is visible in that classification. An unpaired surrogate escape in a value reaches us as the same `InvalidOperationException` that invalid UTF-8 *bytes* do, and we report both as `NotReproducible`. For the bytes that is right — a real host reads them and substitutes U+FFFD. For the escape it is too strict: a real host rejects the document, so a dev sidecar containing one would be ignored and the app would launch, where PawPrint fails. Telling them apart means inspecting the raw token, and cannot be done at all for a property *name*, where materialising the text is the operation that failed.
+
+**Observable example**:
+
+```jsonc
+// App.runtimeconfig.json
+{
+  "unread": 1e400,
+  "runtimeOptions": { "configProperties": { "Switch": "on" } }
+}
+// CoreCLR:  the app does not launch (the document fails to parse).
+// PawPrint: launches, with Switch seeded to "on".
+```
+
+**Where this lives in code**: `parseRootValue` and `renderValue` in `RuntimeConfig.fs`; the overflow check is `rejectUnparseableNumbers`, run over every occurrence before duplicate resolution, and `classificationCases` in `TestRuntimeConfig.fs` pins which faults land in which case.
+
+## The host-populated `AppContext` properties are absent
+
+**CoreCLR**: Before `hostpolicy` looks at `runtimeOptions.configProperties` at all, it populates eight properties of its own and passes them to `AppContext.Setup` in the same arrays: `TRUSTED_PLATFORM_ASSEMBLIES`, `NATIVE_DLL_SEARCH_DIRECTORIES`, `PLATFORM_RESOURCE_ROOTS`, `APP_CONTEXT_BASE_DIRECTORY`, `APP_CONTEXT_DEPS_FILES`, `FX_DEPS_FILE`, `PROBING_DIRECTORIES` and `RUNTIME_IDENTIFIER` (`hostpolicy_context.cpp`), plus `HOST_RUNTIME_CONTRACT`, and conditionally `APP_PATHS` and `STARTUP_HOOKS`. They come from deps resolution and the host's filesystem layout, never from the config file — a `configProperties` entry that reuses one of those names is a fatal `LibHostDuplicateProperty` rather than an override, so the two sets are disjoint by construction. Every .NET process therefore starts with them, whatever its `runtimeconfig.json` says, and a config with no `configProperties` section still yields nine.
+
+**PawPrint**: Populates none of them. `AppContext` contains exactly the `configProperties` the host passed in `HostConfig.AppContext`, and nothing else; with no properties at all, `AppContext.Setup` is never called and `s_dataStore` stays null (which is indistinguishable from an empty store through the public API, since `GetData` returns null for a null store and `SetData` lazily installs one).
+
+**Spec status**: Outside ECMA-335, which says nothing about host properties — this is the hosting contract rather than the CLI. Non-compliant with that contract, deliberately.
+
+**Why we chose this**: These properties describe a host PawPrint does not have. There is no deps resolution, no probing, no runtime identifier and no assembly directory layout to derive them from: the interpreter is handed a list of framework directories directly, and binds by simple name against the first hit. Synthesising plausible-looking values would be worse than omitting them, because a guest that branches on a TPA entry would then take a path justified by a path list that describes nothing real. Omission at least fails in the direction the guest can detect.
+
+The same gap covers framework-supplied properties. `hostfxr` builds its property bag by walking every resolved framework's own `runtimeconfig.json` and merging each one's `configProperties` (`runtime_config_t::combine_properties`, first writer wins, and the app is walked first so the app's value survives). PawPrint reads only the app's `runtimeconfig.json` and its `.dev.json` sidecar, because it has no framework-resolution chain to walk — it is handed runtime directories, not a framework graph. In practice this merges nothing today: the shipped `Microsoft.NETCore.App.runtimeconfig.json` for 10.0.7 declares only `tfm` and no `configProperties` at all, so the set being dropped is currently empty. It is recorded here because that is a fact about today's framework, not a guarantee.
+
+Note that this is *not* the same as "what a guest sees when there is no `runtimeconfig.json`". A real host treats a missing config as a self-contained app, fails to find `hostpolicy` beside the assembly, and exits before any managed code runs (verified: exit 131 on osx-arm64). "No config file, so no properties" exists only in PawPrint, and is likewise deliberate — the test harness compiles guests to a `MemoryStream` where no sidecar file can exist.
+
+**Observable example**:
+
+```csharp
+var tpa = AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES");
+// CoreCLR:  a ';'-separated list of every framework and app assembly path.
+// PawPrint: null.
+
+Console.WriteLine(AppContext.BaseDirectory);
+// CoreCLR:  the APP_CONTEXT_BASE_DIRECTORY property, i.e. the app's directory.
+// PawPrint: falls through to AppContext's GetBaseDirectoryCore() fallback.
+```
+
+What PawPrint does *not* do is let a config file fill the hole itself: `RuntimeConfig.parse` refuses a `configProperties` entry that claims one of these names, exactly as a real host refuses to launch such a file. The absence above is a gap in what PawPrint can tell a guest; a forged `TRUSTED_PLATFORM_ASSEMBLIES` that the guest could not tell from the real thing would be worse than the gap.
+
+**Where this lives in code**: `AppContextProperties.empty` in `RuntimeConfig.fs` documents the gap; `hostOwnedNames` in the same file is the refusal; `HostConfig.AppContext` is where a host would supply values if it had any. Closing this would mean deciding what a simulated app's filesystem layout *is*, which is a larger question than the seeding change that surfaced it.
