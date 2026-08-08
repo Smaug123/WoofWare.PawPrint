@@ -129,6 +129,32 @@ long r = ((delegate*<int, long>)p)(3);  // CoreCLR: r == 3. PawPrint: refused at
 
 **Where this lives in code**: `UnaryMetadataCallOps.executeCalli`, and the `CalliStackKind` classifier above it.
 
+## A `runtimeconfig.json` is validated only where PawPrint reads it
+
+**CoreCLR**: `hostpolicy` parses the whole file with rapidjson, which rejects the *entire document* for faults anywhere in it — a numeric token too large to store in a double (`kParseErrorNumberTooBig`, so `1e400`), an unpaired `\uD800` surrogate escape (`kParseErrorStringUnicodeSurrogateInvalid`), and the rest of its error surface. A fault in a section nobody reads is still fatal: for the main config the app does not launch, and for `runtimeconfig.dev.json` the whole sidecar is ignored.
+
+**PawPrint**: parses with `System.Text.Json`, whose accepted grammar is not rapidjson's. It takes `1e400` (yielding an infinity) and an unpaired surrogate escape (throwing only if you ask for the text), so a document faulty *only* in a part PawPrint never inspects is accepted here and refused there. Where the fault is in a property PawPrint does read, it is caught: an overflowing number is classified `HostWouldReject`, so it behaves as a real host's rejection does.
+
+**Spec status**: Both parsers implement RFC 8259, which constrains neither the range an implementation must accept for a number nor what it does with a lone surrogate escape. Two conforming parsers may differ here, and these two do.
+
+**Why we chose this**: closing it means validating rapidjson's exact accept/reject surface across every token in the document, including the ones we have no other reason to look at — reimplementing another parser's error behaviour, and taking on the job of tracking it. The configurations involved are ones no build tool emits, and the failure is confined to accepting a file a real host would refuse. The narrower version, where the fault is in a property we actually read, is implemented, because that one feeds the `HostWouldReject`/`NotReproducible` classification that decides whether a dev sidecar may be ignored.
+
+One consequence is visible in that classification. An unpaired surrogate escape in a value reaches us as the same `InvalidOperationException` that invalid UTF-8 *bytes* do, and we report both as `NotReproducible`. For the bytes that is right — a real host reads them and substitutes U+FFFD. For the escape it is too strict: a real host rejects the document, so a dev sidecar containing one would be ignored and the app would launch, where PawPrint fails. Telling them apart means inspecting the raw token, and cannot be done at all for a property *name*, where materialising the text is the operation that failed.
+
+**Observable example**:
+
+```jsonc
+// App.runtimeconfig.json
+{
+  "unread": 1e400,
+  "runtimeOptions": { "configProperties": { "Switch": "on" } }
+}
+// CoreCLR:  the app does not launch (the document fails to parse).
+// PawPrint: launches, with Switch seeded to "on".
+```
+
+**Where this lives in code**: `parseRootValue` and `renderValue` in `RuntimeConfig.fs`; the overflow check is the `Double.IsInfinity` branch, and `classificationCases` in `TestRuntimeConfig.fs` pins which faults land in which case.
+
 ## The host-populated `AppContext` properties are absent
 
 **CoreCLR**: Before `hostpolicy` looks at `runtimeOptions.configProperties` at all, it populates eight properties of its own and passes them to `AppContext.Setup` in the same arrays: `TRUSTED_PLATFORM_ASSEMBLIES`, `NATIVE_DLL_SEARCH_DIRECTORIES`, `PLATFORM_RESOURCE_ROOTS`, `APP_CONTEXT_BASE_DIRECTORY`, `APP_CONTEXT_DEPS_FILES`, `FX_DEPS_FILE`, `PROBING_DIRECTORIES` and `RUNTIME_IDENTIFIER` (`hostpolicy_context.cpp`), plus `HOST_RUNTIME_CONTRACT`, and conditionally `APP_PATHS` and `STARTUP_HOOKS`. They come from deps resolution and the host's filesystem layout, never from the config file — a `configProperties` entry that reuses one of those names is a fatal `LibHostDuplicateProperty` rather than an override, so the two sets are disjoint by construction. Every .NET process therefore starts with them, whatever its `runtimeconfig.json` says, and a config with no `configProperties` section still yields nine.

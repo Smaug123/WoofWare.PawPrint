@@ -511,6 +511,17 @@ module TestRuntimeConfig =
                 (Text.Encoding.Unicode.GetBytes (document """{ "P": "v" }""")),
             true
             // These four a real host reads without complaint; only we cannot reproduce them.
+            // rapidjson stores every number as an int64/uint64 or a double, and errors with
+            // kParseErrorNumberTooBig when it fits in none of them — so a magnitude past
+            // double's range makes a real host refuse the whole file, where
+            // `Utf8JsonReader` accepts the token and hands back an infinity.
+            "a numeric value that overflows a double", Text.Encoding.UTF8.GetBytes (document """{ "P": 1e400 }"""), true
+            "a negative overflow", Text.Encoding.UTF8.GetBytes (document """{ "P": -1e400 }"""), true
+            "an integer-shaped overflow",
+            Text.Encoding.UTF8.GetBytes (document ("""{ "P": 1""" + String.replicate 400 "0" + " }")),
+            true
+            // Underflow is not an error to rapidjson, which simply stores zero, so this one is
+            // a value we could render — and do.
             "a real-valued property", Text.Encoding.UTF8.GetBytes (document """{ "P": 1.5 }"""), false
             "an array-valued property", Text.Encoding.UTF8.GetBytes (document """{ "P": [] }"""), false
             "an object-valued property", Text.Encoding.UTF8.GetBytes (document """{ "P": {} }"""), false
@@ -931,6 +942,27 @@ module TestRuntimeConfig =
                 let exn = Assert.Throws<exn> (fun () -> HostRuntimeConfig.forAssembly dll |> ignore)
                 exn.Message |> shouldContainText "APP_PATHS"
             )
+
+    [<Test>]
+    let ``a main config that is a directory is fatal, not absent`` () =
+        // `pal::fullpath` is `realpath`, which succeeds for a directory, so hostpolicy goes on
+        // to mmap it, fails, and treats the main configuration as invalid — the app does not
+        // launch. Only ENOENT is "not existing is not an error" there, so only a genuine
+        // absence may be absence here; `File.Exists` alone would call this a missing sidecar
+        // and start the guest with no properties at all.
+        let dir =
+            Path.Combine (Path.GetTempPath (), $"pawprint-runtimeconfig-%s{Path.GetRandomFileName ()}")
+
+        Directory.CreateDirectory dir |> ignore
+
+        try
+            let dll = Path.Combine (dir, "App.dll")
+            File.WriteAllText (dll, "not a real assembly; nothing here opens it")
+            Directory.CreateDirectory (RuntimeConfig.pathForAssembly dll) |> ignore
+
+            Assert.Catch (fun () -> HostRuntimeConfig.forAssembly dll |> ignore) |> ignore
+        finally
+            Directory.Delete (dir, true)
 
     [<Test>]
     let ``no sidecars at all means no properties`` () =
