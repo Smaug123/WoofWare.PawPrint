@@ -318,6 +318,58 @@ public static class StreamVersionLibrary
         bytes.CopyTo (patched, peReader.PEHeaders.CoffHeaderStartOffset)
         patched
 
+    /// Writes a `READYTORUN_HEADER` into the image and points the COR header's
+    /// `ManagedNativeHeader` directory at it, declaring `declaredSize` bytes. Returns a fresh
+    /// image.
+    ///
+    /// No compiler under test emits a ReadyToRun image — crossgen2 does, and the framework
+    /// assemblies PawPrint loads are its output, but those cannot be patched or rebuilt here.
+    /// So this synthesises one, which is what lets the ReadyToRun arms be exercised through a
+    /// real image rather than only through the decoder.
+    ///
+    /// The header goes in the tail of the COR header itself: the `CodeManagerTable`,
+    /// `VTableFixups` and `ExportAddressTableJumps` directories at offsets 40..64 are 24
+    /// bytes that are zero in every image Roslyn emits and that neither PawPrint nor
+    /// `MetadataReader` reads. That is the only 16 contiguous bytes at a *computable* RVA
+    /// which are known to be both inside a section's `VirtualSize` and unused.
+    let private withReadyToRunHeader (flags : uint32, declaredSize : int) (image : byte[]) : byte[] =
+        use peImage = new MemoryStream (image)
+        use peReader = new PEReader (peImage)
+        let headers = peReader.PEHeaders
+        let patched = Array.copy image
+
+        // The unused directory trio, as a file offset and as an RVA.
+        let headerOffset = headers.CorHeaderStartOffset + 40
+
+        let headerRva =
+            headers.SectionHeaders
+            |> Seq.tryPick (fun section ->
+                if
+                    headerOffset >= section.PointerToRawData
+                    && headerOffset < section.PointerToRawData + section.SizeOfRawData
+                then
+                    Some (section.VirtualAddress + (headerOffset - section.PointerToRawData))
+                else
+                    None
+            )
+            |> Option.defaultWith (fun () -> failwith "COR header does not lie within any section's raw data")
+
+        let write (offset : int) (bytes : byte[]) = bytes.CopyTo (patched, offset)
+
+        // READYTORUN_HEADER: Signature ("RTR\0"), MajorVersion, MinorVersion, then the core
+        // header's Flags and NumberOfSections.
+        write headerOffset (System.BitConverter.GetBytes 0x00525452u)
+        write (headerOffset + 4) (System.BitConverter.GetBytes 16us)
+        write (headerOffset + 6) (System.BitConverter.GetBytes 0us)
+        write (headerOffset + 8) (System.BitConverter.GetBytes flags)
+        write (headerOffset + 12) (System.BitConverter.GetBytes 0)
+
+        // IMAGE_COR20_HEADER.ManagedNativeHeader, the last of its data directories.
+        write (headers.CorHeaderStartOffset + 64) (System.BitConverter.GetBytes headerRva)
+        write (headers.CorHeaderStartOffset + 68) (System.BitConverter.GetBytes declaredSize)
+
+        patched
+
     /// An image whose `PublicKey` blob is non-empty but whose `Flags` column leaves the
     /// `afPublicKey` bit clear. No compiler emits that — Roslyn sets the bit whenever it
     /// signs — but the format permits it, and `GetAssemblyProps` normalises it away, so it
@@ -2037,3 +2089,80 @@ public static class StreamVersionLibrary
             )
 
         exn.Message |> shouldContainText "is not loaded"
+
+    [<Test>]
+    let ``GetPEKind reads the ReadyToRun header out of a real image`` () : unit =
+        // Companion to the framework-assembly test: that one proves the ReadyToRun arm on the
+        // only images that actually carry a ReadyToRun header, but it cannot vary them. This
+        // one synthesises the header, so the accept/reject decision itself can be varied
+        // while everything else about the image stays fixed.
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let image =
+            Roslyn.compileAssembly guestAssemblyName OutputKind.ConsoleApplication [] [ guestSource ]
+
+        let prepared = prepareGuest loggerFactory image
+
+        // Every image the harness compiles is I386, which is also what the platform-neutral
+        // arm substitutes — so the base image is re-machined to AMD64 first. That makes
+        // "ReadyToRun header honoured" and "ReadyToRun header ignored" give *different*
+        // machines, which is the whole point: otherwise both would answer I386 and the
+        // fixtures below could not tell them apart.
+        let baseImage (suffix : string) : byte[] =
+            peKindLibraryImage suffix |> withMachine Machine.Amd64
+
+        let ignored, state =
+            withLoadedAssembly loggerFactory (baseImage "NoR2R") prepared.State
+
+        let state, ignoredKind, ignoredMachine =
+            invokeGetPEKind loggerFactory prepared state ignored.Name.FullName
+
+        ignoredKind |> shouldEqual peILonly
+        ignoredMachine |> shouldEqual (int Machine.Amd64)
+
+        // READYTORUN_FLAG_PLATFORM_NEUTRAL_SOURCE alongside the other bits crossgen2 sets.
+        let neutral, state =
+            withLoadedAssembly loggerFactory (baseImage "Neutral" |> withReadyToRunHeader (0x4Bu, 16)) state
+
+        let state, neutralKind, neutralMachine =
+            invokeGetPEKind loggerFactory prepared state neutral.Name.FullName
+
+        neutralKind |> shouldEqual peILonly
+        neutralMachine |> shouldEqual (int Machine.I386)
+
+        // A `ManagedNativeHeader` directory declaring more than its section holds is a
+        // malformed image, and CoreCLR's `CheckDirectory` rejects the whole directory rather
+        // than reading the 16 valid bytes at its start. `Int32.MaxValue` also drives the
+        // bound past what `int32` arithmetic could compute without overflowing.
+        //
+        // The bytes at that RVA are a perfectly good ReadyToRun header — identical to the
+        // fixture above — so the *only* thing separating this answer from that one is the
+        // bounds check.
+        let overlong, state =
+            withLoadedAssembly
+                loggerFactory
+                (baseImage "Overlong" |> withReadyToRunHeader (0x4Bu, System.Int32.MaxValue))
+                state
+
+        let state, overlongKind, overlongMachine =
+            invokeGetPEKind loggerFactory prepared state overlong.Name.FullName
+
+        overlongKind |> shouldEqual peILonly
+        overlongMachine |> shouldEqual (int Machine.Amd64)
+
+        // And the refusal, through the QCall rather than the decoder: a ReadyToRun image
+        // whose source IL was architecture-specific.
+        let specific, state =
+            withLoadedAssembly
+                loggerFactory
+                (baseImage "Specific" |> withReadyToRunHeader (0x4Bu &&& ~~~0x1u, 16))
+                state
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () ->
+                invokeGetPEKind loggerFactory prepared state specific.Name.FullName
+                |> ignore<IlMachineState * int * int>
+            )
+
+        exn.Message |> shouldContainText "READYTORUN_FLAG_PLATFORM_NEUTRAL_SOURCE"

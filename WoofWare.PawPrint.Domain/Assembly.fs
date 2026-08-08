@@ -584,9 +584,42 @@ type DumpedAssembly =
                 None
             else
 
-            // `GetSectionData` yields the bytes from this RVA to the end of its section, and
-            // an empty block if the RVA lies in no section at all. So a block too short to
-            // hold the header is exactly the case CoreCLR's `CheckDirectory` rejects.
+            // CoreCLR's `CheckDirectory` bounds the *whole declared range*, not just the part
+            // it goes on to read: `CheckRva` locates the containing section and requires
+            // `[rva, rva + size)` to fit inside both its `VirtualSize` and — for an image
+            // read from a file rather than mapped, which is all of PawPrint's — its
+            // `SizeOfRawData`. A directory declaring more than the section holds is a
+            // malformed image, and CoreCLR treats it as having no ReadyToRun header at all
+            // rather than reading the prefix that happens to be there.
+            //
+            // Arithmetic in `int64` because both fields are attacker-controlled `int32`s
+            // straight out of the file, so the sum can overflow; `CheckRva`'s caller guards
+            // that with `CheckOverflow`.
+            //
+            // Sections are located by unrounded `VirtualSize` where CoreCLR's `RvaToSection`
+            // rounds up to `SectionAlignment`. That cannot change the answer here: an RVA in
+            // the rounded-up padding is past `VirtualSize`, so CoreCLR finds the section and
+            // then fails the bound, while this finds no section — both "no ReadyToRun
+            // header". (The two would part company only for a zero-sized range, which the
+            // `Size < readyToRunHeaderSize` test above has already excluded.)
+            let rva = int64 directory.RelativeVirtualAddress
+            let declaredEnd = rva + int64 directory.Size
+
+            let withinSection =
+                headers.SectionHeaders
+                |> Seq.exists (fun section ->
+                    let start = int64 section.VirtualAddress
+
+                    rva >= start
+                    && rva < start + int64 section.VirtualSize
+                    && declaredEnd <= start + int64 section.VirtualSize
+                    && declaredEnd <= start + int64 section.SizeOfRawData
+                )
+
+            if not withinSection then
+                None
+            else
+
             let block = this.PeReader.GetSectionData directory.RelativeVirtualAddress
 
             if block.Length < readyToRunHeaderSize then

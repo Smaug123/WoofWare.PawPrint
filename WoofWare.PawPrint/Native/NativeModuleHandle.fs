@@ -88,11 +88,18 @@ module NativeModuleHandle =
 
             // Otherwise CoreCLR would first rewrite an `IMAGE_FILE_MACHINE_NATIVE_NI`
             // machine — the running runtime's own architecture XORed with an OS
-            // discriminator — back to `IMAGE_FILE_MACHINE_NATIVE`. Both of those are fixed
-            // at the *native runtime's* compile time, from its target architecture and OS,
-            // and PawPrint has no such identity: it is a managed interpreter, and
-            // `SimulatedUnixPlatform` deliberately models the OS the guest can observe
-            // rather than an architecture anything is built for.
+            // discriminator — back to `IMAGE_FILE_MACHINE_NATIVE`. Both are fixed when that
+            // *native* runtime is compiled, and PawPrint has no such identity to answer
+            // with.
+            //
+            // `SimulatedUnixPlatform` is not that identity, though two of its three cases do
+            // name an architecture. It models what the guest could learn by asking the OS,
+            // which AGENTS.md keeps deliberately separate from which runtime build is
+            // executing — and the latter is what this is. The separation is not academic:
+            // the CoreLib flavour comes from the runtime-dir list, not the kernel, so
+            // sourcing the machine from the kernel would let a guest read a linux-x64 native
+            // identity while interpreting a macOS-arm64 CoreLib. Its `Custom` case, which
+            // deliberately declines to say which platform it is, has no architecture at all.
             //
             // This is the only place that identity is observable, because the branch above
             // overwrites the machine unconditionally — so refusing here costs exactly the
