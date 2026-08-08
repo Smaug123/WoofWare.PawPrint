@@ -78,6 +78,7 @@
     <Compile Include="IntrinsicHelpers.fs" />
     <Compile Include="Intrinsics.fs" />
     <Compile Include="IlMachineStateExecution.fs" />
+    <Compile Include="StructMarshalStub.fs" />
     <Compile Include="NullaryIlOp.fs" />
     <Compile Include="UnaryMetadataIlOpContext.fs" />
     <Compile Include="UnaryMetadataCallOps.fs" />

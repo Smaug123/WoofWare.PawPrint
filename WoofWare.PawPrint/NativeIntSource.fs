@@ -480,7 +480,11 @@ module NativeIntSource =
         | NativeIntSource.MetadataImportHandle _
         | NativeIntSource.ModuleHandle _ -> false
         | NativeIntSource.OpaqueHashBits bits -> bits = 0L
-        | NativeIntSource.FunctionPointer _ -> failwith "TODO"
+        // A function pointer is never null. `ldftn` cannot produce one, and neither can the
+        // runtime synthesising a stub — CoreLib branches on `structMarshalStub != null` to choose
+        // between the stub and the blittable memmove path, so answering anything else here would
+        // silently send a non-blittable struct down the memmove path.
+        | NativeIntSource.FunctionPointer _ -> false
         | NativeIntSource.ManagedPointer src ->
             match src with
             | ManagedPointerSource.Null -> true
