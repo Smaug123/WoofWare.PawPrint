@@ -748,3 +748,53 @@ module TestEvalStack =
             Assert.Throws<System.Exception> (fun () -> EvalStackValueComparisons.cgtUn first second |> ignore)
 
         gt.Message |> shouldContainText "without a common root"
+
+    [<Test>]
+    let ``unsigned comparisons refuse two string byrefs whose projections differ`` () : unit =
+        // The ordering arm above holds `addr = base + 2*index + d`, where `d` is the byte
+        // effect of the projections. That gives `compare index2 index1` the sign of the
+        // address delta only when `d` agrees on both sides — which is why the arm requires
+        // the projection lists to be equal rather than merely canonical.
+        //
+        // Canonicality alone does not bound `d` within the two-byte char cell: it permits a
+        // reinterpret to a wider type with a byte cursor past that cell, or a field
+        // projection at any offset. So a byref at char 0 carrying such a projection can
+        // genuinely sit *above* a bare byref at char 1, and index order would report the
+        // opposite. Refusing is the honest answer; the array arm gets to be more permissive
+        // only because a field offset there is bounded by the element's own layout.
+        let str = ManagedHeapAddress.ManagedHeapAddress 105
+
+        let projected =
+            EvalStackValue.ManagedPointer (
+                ManagedPointerSource.Byref (
+                    ByrefRoot.StringCharAt (str, 0),
+                    [ ByrefProjection.Field (FieldId.Named "someField") ]
+                )
+            )
+
+        let bare =
+            EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, 1), []))
+
+        let lt =
+            Assert.Throws<System.Exception> (fun () -> EvalStackValueComparisons.cltUn projected bare |> ignore)
+
+        lt.Message |> shouldContainText "without a common root"
+
+        let gt =
+            Assert.Throws<System.Exception> (fun () -> EvalStackValueComparisons.cgtUn bare projected |> ignore)
+
+        gt.Message |> shouldContainText "without a common root"
+
+        // Equal projections are fine, though: `d` cancels, whatever it is. This is the
+        // generalisation the arm does allow, and it is why the check is equality rather
+        // than emptiness.
+        let alsoProjected =
+            EvalStackValue.ManagedPointer (
+                ManagedPointerSource.Byref (
+                    ByrefRoot.StringCharAt (str, 1),
+                    [ ByrefProjection.Field (FieldId.Named "someField") ]
+                )
+            )
+
+        if not (EvalStackValueComparisons.cltUn projected alsoProjected) then
+            failwith "Expected clt.un to order two identically-projected string byrefs by index"

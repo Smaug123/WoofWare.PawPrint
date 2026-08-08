@@ -448,22 +448,34 @@ module ManagedPointerSource =
                 validateByrefProjectionsAreCanonical src1 projs1
                 validateByrefProjectionsAreCanonical src2 projs2
                 Some (compare idx2 idx1)
-            // Same string, different character index. The argument is the array
-            // one above with the element size fixed: a char cell is two bytes,
-            // which is strictly positive, and the same canonicalisation keeps
-            // each pointer's byte effect within `[0, 2)` of its own cell — so
-            // `compare idx2 idx1` again agrees with the sign of the byte address
-            // delta. Equal indices are already answered by
-            // `tryByteOffsetWithinSameRoot`, which sees identical roots.
+            // Same string, different character index, same projections. Writing
+            // the address of a char byref as `base + 2*index + d`, where `d` is
+            // the byte effect of the projections, `compare idx2 idx1` has the
+            // sign of `addr2 - addr1` exactly when `d` agrees on both sides —
+            // and then it does so whatever `d` is, since it cancels. Equal
+            // indices are already answered by `tryByteOffsetWithinSameRoot`,
+            // which sees identical roots.
             //
-            // Keyed on the string object, so two separately allocated strings
+            // Hence equality of the projection lists rather than mere
+            // canonicality, which is the weaker property the array arm above
+            // relies on. That arm can afford it: a field offset there is bounded
+            // by the element type's own layout, so `d` stays within the cell and
+            // cannot overtake the next index. A char cell is two bytes and holds
+            // a primitive, so there is no such bound to appeal to — a reinterpret
+            // to a wider type with a byte cursor past those two bytes is
+            // canonical, and would put char 0 above char 1. Refusing that is the
+            // honest answer.
+            //
+            // Keyed on the string object too, so two separately allocated strings
             // still fall through to `None`: those have no defensible ordering,
             // and refusing loudly beats inventing one. This arm exists because
             // `EventSource`'s manifest handling compares a byref to the start of
             // a name against one part-way into that same string, and answering
             // "no common root" for two offsets into one object was simply wrong.
             | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str1, idx1), projs1),
-              ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str2, idx2), projs2) when str1 = str2 && idx1 <> idx2 ->
+              ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str2, idx2), projs2) when
+                str1 = str2 && idx1 <> idx2 && projs1 = projs2
+                ->
                 validateByrefProjectionsAreCanonical src1 projs1
                 validateByrefProjectionsAreCanonical src2 projs2
                 Some (compare idx2 idx1)
