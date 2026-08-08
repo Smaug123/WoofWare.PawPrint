@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <Compile Include="AssemblyInfo.fs"/>
+    <Compile Include="HostRuntimeConfig.fs"/>
     <Compile Include="DebuggerServer.fs"/>
     <Compile Include="Program.fs"/>
   </ItemGroup>

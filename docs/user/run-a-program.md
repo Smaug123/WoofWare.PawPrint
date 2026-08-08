@@ -33,8 +33,8 @@ let runGuest (dllPath : string) : int * ImmutableArray<OutputLogEntry> =
         DotnetRuntime.SelectForDll dllPath |> ImmutableArray.CreateRange
 
     // Everything the host supplies to configure the run. `HostConfig.Default` gives
-    // you the default kernel state, the round-robin scheduler, and no guest argv;
-    // override only what you care about.
+    // you the default kernel state, the round-robin scheduler, no guest argv, and no
+    // AppContext properties; override only what you care about.
     let hostConfig =
         { HostConfig.Default dotnetRuntimes with
             Kernel =
@@ -52,6 +52,27 @@ let runGuest (dllPath : string) : int * ImmutableArray<OutputLogEntry> =
             PctSeed = None
             // argv passed to the emulated program
             Argv = []
+            // Properties to seed `System.AppContext` with before any guest code runs,
+            // exactly as a real host does from `runtimeOptions.configProperties` in the
+            // app's `runtimeconfig.json`. This is how you set BCL feature switches, e.g.
+            // `"System.Diagnostics.Tracing.EventSource.IsSupported", "false"`.
+            //
+            // To take them from the guest's own runtimeconfig.json, as the CLI does, parse
+            // the file and then run the result through `combine`:
+            //     RuntimeConfig.parse (File.ReadAllBytes (RuntimeConfig.pathForAssembly dllPath))
+            //     |> Result.bind (RuntimeConfig.combine AppContextProperties.empty)
+            // Do not skip the second step. `parse` answers only what one file can answer;
+            // `combine` merges the dev sidecar (empty, above, if you are not reading one) and
+            // applies the checks that need the merged set — chiefly that the config has not
+            // claimed a property name the hosting layer owns, which a real host refuses to
+            // launch at all. Seeding an unvalidated set would hand the guest a forged
+            // `TRUSTED_PLATFORM_ASSEMBLIES` in a configuration CoreCLR would not start.
+            //
+            // `RuntimeConfig.parse` is pure — reading the file is the host's job, so that a
+            // replay never depends on the machine that produced it. It takes the raw bytes
+            // because the encoding rules are part of what it reproduces: a real host parses
+            // UTF-8 and skips only a UTF-8 BOM, so a UTF-16 config is one it refuses to run.
+            AppContext = AppContextProperties.empty
         }
 
     let terminalState, terminatingThread =

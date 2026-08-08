@@ -25,15 +25,25 @@ type HostConfig =
         /// because the runtime hands these to `Main` directly rather than the
         /// guest reading them back through a syscall.
         Argv : string list
+        /// Properties to seed `System.AppContext` with before any guest code
+        /// runs, as `hostpolicy` does from `runtimeOptions.configProperties` in
+        /// the app's `runtimeconfig.json`. This is where feature switches like
+        /// `System.Diagnostics.Tracing.EventSource.IsSupported` come from.
+        ///
+        /// Host policy rather than kernel state, hence its home here and not on
+        /// `Kernel`: nothing about these is visible to the guest as a syscall,
+        /// and the guest can overwrite any of them with `AppContext.SetData`.
+        AppContext : AppContextProperties
     }
 
     /// A host that expresses no preference beyond where to find the framework:
-    /// default kernel state, the deterministic default schedule, and no guest
-    /// arguments.
+    /// default kernel state, the deterministic default schedule, no guest
+    /// arguments, and no AppContext properties.
     static member Default (dotnetRuntimeDirs : ImmutableArray<string>) : HostConfig =
         {
             DotnetRuntimeDirs = dotnetRuntimeDirs
             Kernel = KernelConfig.Default
             PctSeed = None
             Argv = []
+            AppContext = AppContextProperties.empty
         }
