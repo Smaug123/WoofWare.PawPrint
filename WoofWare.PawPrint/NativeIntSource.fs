@@ -122,17 +122,20 @@ type FunctionPointerTarget =
     /// ordinarily *share* a helper address.
     ///
     /// Nor is a helper *flavour* encoded, which would be the way to reproduce the cases where
-    /// CoreCLR does hand back distinct addresses. `CEEInfo::getNewHelperStatic`
-    /// (jitinterface.cpp) picks between `NEWFAST` and the `NEWSFAST` family from the type's
-    /// finalizer, its base size against `LARGE_OBJECT_SIZE`, and its alignment requirement —
-    /// but also from `GCStress&lt;cfg_alloc&gt;::IsEnabled()`, `LoggingOn(LF_GCALLOC, ...)` and
-    /// `TrackAllocationsEnabled()`. So the address is a function of the host's GC, logging and
-    /// profiler configuration as much as of the type, and under any of those it collapses to
-    /// one helper for *every* type. PawPrint has no such configuration, and must not read the
-    /// host's. Reporting a single shared address is therefore not a shrug: it is what a real
-    /// runtime reports under a coherent configuration, whereas inventing a partition would
-    /// assert a GC-stress/profiler state the simulated process does not have. See
-    /// docs/divergences.md.
+    /// CoreCLR does hand back distinct addresses: `CEEInfo::getNewHelperStatic`
+    /// (jitinterface.cpp) sends a finalizable type, one whose base size reaches
+    /// `LARGE_OBJECT_SIZE`, and one requiring 8-byte alignment to different helpers from an
+    /// ordinary small type. The reason is that PawPrint cannot compute that partition honestly:
+    /// it models no finalization at all, has no byte-accurate base size to compare against
+    /// `LARGE_OBJECT_SIZE`, and no alignment requirement — so any partition it emitted would be
+    /// wrong under *every* real configuration.
+    ///
+    /// Collapsing them is at least right under some: the same selector also consults
+    /// `GCStress&lt;cfg_alloc&gt;::IsEnabled()` and `TrackAllocationsEnabled()`, and under either
+    /// of those every type takes the slow helper and they all share one address. That is a
+    /// diagnostics-on configuration rather than the default one, so this is a genuine
+    /// divergence and not a free lunch — see docs/divergences.md — but it is a divergence
+    /// towards an answer some real runtime gives, rather than towards one none does.
     | RuntimeAllocator
 
     override this.ToString () : string =

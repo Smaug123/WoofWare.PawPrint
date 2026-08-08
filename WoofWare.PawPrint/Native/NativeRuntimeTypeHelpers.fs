@@ -1102,7 +1102,10 @@ module NativeRuntimeTypeHelpers =
                     $"allocateManagedObjectOfConcreteType: ConcreteTypeHandle %O{typeHandle} not found in AllConcreteTypes"
             )
 
-        if resolved.Identity.TypeDefinition.Get <> typeInfo.TypeDefHandle then
+        // Full identity, not just the TypeDef row: row numbers collide freely across assemblies,
+        // so comparing only the handle would let a `typeInfo` from an unrelated assembly through
+        // the check this claims to make.
+        if resolved.Identity <> typeInfo.Identity then
             failwith
                 $"allocateManagedObjectOfConcreteType: handle %O{typeHandle} resolves to a different TypeDef than the supplied %s{typeInfo.Namespace}.%s{typeInfo.Name}"
 
@@ -2020,12 +2023,18 @@ module ActivationInfo =
     /// checks — the order is load-bearing where a type trips more than one, and CoreCLR throws
     /// different exception types for different checks.
     ///
-    /// Three of CoreCLR's checks are unreachable here and fail loudly rather than silently
-    /// falling through, because the only managed caller (`RuntimeType.ActivatorCache`) runs
-    /// `RuntimeType.CreateInstanceCheckThis` first and that throws for them already: `void`
-    /// (`NotSupportedException`), open generics / generic variables (`ArgumentException`), and
-    /// `ArgIterator` (`NotSupportedException`). PawPrint additionally has no shared generic
-    /// instantiations, so CoreCLR's `__Canon` check has no analogue at all.
+    /// Two of `ValidateTypeAbleToBeInstantiated`'s checks are unreachable here, because the only
+    /// managed caller (`RuntimeType.ActivatorCache`) runs `RuntimeType.CreateInstanceCheckThis`
+    /// first and that throws for them already: `void` (`NotSupportedException`) and open
+    /// generics / generic variables (`ArgumentException`). Both fail loudly here rather than
+    /// silently falling through. A third check, for generics instantiated over `__Canon`, has no
+    /// analogue at all: PawPrint has no shared generic instantiations.
+    ///
+    /// `ArgIterator` is *not* one of `ValidateTypeAbleToBeInstantiated`'s checks — it is rejected
+    /// only by managed `CreateInstanceCheckThis`, which PawPrint interprets rather than
+    /// reimplements, so there is nothing to reproduce here. (It is also byref-like, so even a
+    /// hypothetical bypass would end at `CreateInstanceDefaultCtor`'s `IsByRefLike` guard rather
+    /// than in a boxed `ArgIterator`.)
     ///
     /// Note that byref-like types are *permitted* here: CoreCLR passes `allowByRefLike: true`,
     /// and the `NotSupportedException` for a ref struct is thrown later, by managed

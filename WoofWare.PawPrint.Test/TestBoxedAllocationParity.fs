@@ -45,6 +45,9 @@ module TestBoxedAllocationParity =
             "Plain"
             "Nested"
             "WithReference"
+            // A pointer field gives the cell a `RuntimePointer` shape, which neither of the
+            // other non-byte-renderable cases above produces.
+            "WithPointer"
             // `[InlineArray]` storage is N repeats of one declared field.
             "Buffer4"
             // Generic instantiations, whose fields are concretized per instantiation.
@@ -61,6 +64,7 @@ public enum Colour { Zero = 0, One = 1 }
 public struct Plain { public int X; public long Y; public byte Z; }
 public struct Nested { public Plain Inner; public short Tag; }
 public struct WithReference { public string S; public int N; }
+public unsafe struct WithPointer { public void* P; public int N; }
 [InlineArray(4)] public struct Buffer4 { private int _element0; }
 public struct Generic<T> { public T Item; public int Count; }
 
