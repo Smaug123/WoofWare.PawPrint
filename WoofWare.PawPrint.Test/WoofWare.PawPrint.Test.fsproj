@@ -37,6 +37,7 @@
     <Compile Include="TestCliTypeCellPaths.fs" />
     <Compile Include="TestInlineArrayStorage.fs" />
     <Compile Include="TestStructLayout.fs" />
+    <Compile Include="TestMarshalLayout.fs" />
     <Compile Include="TestManagedHeap.fs" />
     <Compile Include="TestBinaryArithmetic.fs" />
     <Compile Include="TestContextSwitchPrior.fs" />
