@@ -577,6 +577,35 @@ module EvalStackValue =
         | EvalStackValue.ObjectRef _
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_R_Un" value
 
+    /// The integer bits of a stack value, but only when PawPrint already knows them —
+    /// never by synthesising an address for a pointer it does not model.
+    ///
+    /// This is the honest half of what the narrowing conversions do. Verbatim numbers, the
+    /// two exactly-known pointer bit patterns (`Null`, and the `NativeIntPlaceholder`
+    /// produced by `Unsafe.AsRef<T>((void*)bits)`), and already-synthesised hash bits all
+    /// have bits to report. A real pointer or handle does not: reporting one means
+    /// assigning it a `PointerHashCounters` identity, which is a side effect a caller may
+    /// have no business causing — so those, and cross-array offsets, return `ValueNone`
+    /// and leave the caller to refuse with its own diagnostic.
+    let rec tryExactIntegerBits (value : EvalStackValue) : int64 voption =
+        match value with
+        | EvalStackValue.Int32 (Int32Source.Verbatim i) -> ValueSome (int64<int32> i)
+        | EvalStackValue.Int32 (Int32Source.NarrowedManagedPointer _) -> ValueNone
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> ValueSome i
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) -> ValueSome bits
+        | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> ValueNone
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
+            tryExactIntegerBits (EvalStackValue.NativeInt src)
+        | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) -> ValueSome i
+        | EvalStackValue.NativeInt (NativeIntSource.OpaqueHashBits bits) -> ValueSome bits
+        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr)
+        | EvalStackValue.ManagedPointer ptr -> ManagedPointerSource.tryBitPatternBits ptr
+        | EvalStackValue.NullObjectRef -> ValueSome 0L
+        | EvalStackValue.NativeInt _
+        | EvalStackValue.Float _
+        | EvalStackValue.ObjectRef _
+        | EvalStackValue.UserDefinedValueType _ -> ValueNone
+
     let rec ofCliType (v : CliType) : EvalStackValue =
         match v with
         | CliType.Numeric numeric ->
