@@ -1235,7 +1235,27 @@ module internal UnaryMetadataCallOps =
         // so this fork has to happen before the "top of stack is a function pointer" check below.
         // See `StructMarshalStub` for why the sequence is driven by re-executing this `calli`.
         match StructMarshalStub.tryRecognise (state.ThreadState.[thread].MethodState.EvaluationStack.Values) with
-        | Some stubCall -> StructMarshalStub.executeStubCall loggerFactory baseClassTypes stubCall thread state
+        | Some stubCall ->
+            // There is no callee signature to reconcile the call site against, so the shape has to
+            // be asserted directly: `executeStubCall` reads the four arguments off the evaluation
+            // stack positionally, and a call site of any other shape would have it read the wrong
+            // slots. This is the same guard the `MethodInfo` path gets from its slot-count and
+            // return-shape checks below.
+            let callSiteArity =
+                callSiteSignature.ParameterTypes.Length
+                + (if callSiteSignature.Header.Get.IsInstance then 1 else 0)
+
+            if callSiteArity <> 4 then
+                failwith
+                    $"calli: a struct-marshal stub is invoked through `delegate*<ref byte, byte*, int, ref CleanupWorkListElement?, void>`, but this call site consumes %d{callSiteArity} evaluation-stack slot(s)"
+
+            match callSiteSignature.ReturnType with
+            | MethodReturnType.Void -> ()
+            | MethodReturnType.Returns ret ->
+                failwith
+                    $"calli: a struct-marshal stub returns void, but this call site declares a return type of %O{ret}"
+
+            StructMarshalStub.executeStubCall loggerFactory baseClassTypes stubCall thread state
         | None ->
 
         // Peek rather than pop: `loadClass` below may suspend this instruction for class
