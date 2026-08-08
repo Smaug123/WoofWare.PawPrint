@@ -2877,6 +2877,56 @@ module IlMachineManagedByref =
         | CliByteAddressabilityRejection.ValueTypeContainsRuntimePointers _
         | CliByteAddressabilityRejection.ValueTypeContainsNonByteAddressableField _ -> false
 
+    /// Whether a same-width primitive store must be serviced by replacing the *whole
+    /// destination cell*, because that cell has no byte image for a byte scatter to write
+    /// into.
+    ///
+    /// This is deliberately broader than `isNumericProvenanceRejection`, which asks a
+    /// different question about the *payload*: "does this value carry provenance we must not
+    /// flatten". A pointer-typed slot (`void*`, `T*`, `delegate*<...>`) holds a
+    /// `CliType.RuntimePointer` whose zero is `Managed Null`, and every `stind.i` into one —
+    /// including a store of plain zero — reaches the byte writer and is refused there. The
+    /// canonical guest shape is a `ref`/`out` parameter bound to a pointer-typed field, which
+    /// is how CoreLib's `RuntimeTypeHandle.GetActivationInfo` shim assigns its results into
+    /// `RuntimeType.ActivatorCache`'s fields.
+    ///
+    /// When the payload is the same width as the cell — which the caller checks — a byte
+    /// scatter and a whole-cell replacement address exactly the same range, so replacing the
+    /// cell is exact rather than a guess.
+    ///
+    /// The pointer-cell arm additionally consults the payload, which the two
+    /// numeric-provenance arms have no need to. Whole-cell replacement restamps the cell with
+    /// the payload's shape, and only a pointer-shaped payload leaves a pointer slot still
+    /// holding a pointer. On a 64-bit runtime `stind.i8`/`stind.r8` through a `long*`/`double*`
+    /// alias of the same slot are *also* exact-width stores, so width alone cannot tell them
+    /// apart; restamping for those would turn the cell into `Numeric Int64`/`Float64` and the
+    /// next read of the field would push the wrong evaluation-stack kind, failing somewhere
+    /// downstream with a message that names neither the field nor the store. Those keep the
+    /// pre-existing refusal at the store, where the cause is visible.
+    /// `sourcesPure/PointerFieldAliasedWidthStore.cs` is the parked guest for that gap.
+    ///
+    /// Object references stay excluded: replacing an objref cell with a native int is a type
+    /// change rather than a representation change, and `stind.ref` owns that path. Value-type
+    /// cells stay excluded for the same reason — a same-width primitive store is not a
+    /// whole-struct replacement.
+    let private destinationNeedsWholeCellStore
+        (newValue : CliType)
+        (rejection : CliByteAddressabilityRejection)
+        : bool
+        =
+        match rejection with
+        | CliByteAddressabilityRejection.NativeIntSourceNotByteAddressable _
+        | CliByteAddressabilityRejection.Int64SourceNotByteAddressable _ -> true
+        | CliByteAddressabilityRejection.RuntimePointer ->
+            match CliType.unwrapPrimitiveLike newValue with
+            | CliType.RuntimePointer _
+            | CliType.Numeric (CliNumericType.NativeInt _) -> true
+            | _ -> false
+        | CliByteAddressabilityRejection.ObjectReference
+        | CliByteAddressabilityRejection.ValueTypeContainsObjectReferences _
+        | CliByteAddressabilityRejection.ValueTypeContainsRuntimePointers _
+        | CliByteAddressabilityRejection.ValueTypeContainsNonByteAddressableField _ -> false
+
     let private byteAddressabilityRejection (value : CliType) : CliByteAddressabilityRejection option =
         match CliType.ByteAddressability value with
         | CliByteAddressability.ByteAddressable -> None
@@ -3113,8 +3163,32 @@ module IlMachineManagedByref =
                                 let targetCell = index + cellAdvance
 
                                 if targetCell >= 0 && targetCell < arrObj.Length then
+                                    // Same destination-side test as the non-array arm below: the
+                                    // *routing* question is about the cell, so both sites must
+                                    // ask it the same way. (What the two do once routed still
+                                    // differs: the array path in
+                                    // `writeExactWidthPrimitiveTypedStore` demands
+                                    // `haveSameCliShape` and fails loudly otherwise, while the
+                                    // non-array path checks width only and restamps the cell with
+                                    // the payload's shape. That asymmetry predates this change.)
+                                    // An array element cell really can be a
+                                    // `CliType.RuntimePointer` — C# has no `int*[]` syntax, but
+                                    // `Array.CreateInstance(typeof(int*), n)` succeeds and
+                                    // `MemoryMarshal.GetArrayDataReference(Array)` hands out a
+                                    // byte-view byref over one.
+                                    //
+                                    // This does not make that case *work*: measured, a pointer
+                                    // cell that gets past the payload gate reaches
+                                    // `writeExactWidthPrimitiveTypedStore` and stops at its
+                                    // `haveSameCliShape` check, because a `stind.i` payload
+                                    // arrives as `Numeric NativeInt` while the cell is a
+                                    // `RuntimePointer`. That is a separate, pre-existing gap in
+                                    // the byte-view typed store, and it fails loudly with a
+                                    // message naming the shapes. Routing here is still the honest
+                                    // classification, and it only ever diverts cases that
+                                    // previously failed too.
                                     match byteAddressabilityRejection arrObj.Elements.[targetCell] with
-                                    | Some rejection when isNumericProvenanceRejection rejection ->
+                                    | Some rejection when destinationNeedsWholeCellStore newValue rejection ->
                                         ValueSome (arrObj.Elements.[targetCell], rejection)
                                     | _ -> ValueNone
                                 else
@@ -3134,13 +3208,16 @@ module IlMachineManagedByref =
                     | ValueNone -> writeManagedByrefBytesOrTypedCell baseClassTypes state src newValue
                 | ValueSome _ -> writeManagedByrefBytesOrTypedCell baseClassTypes state src newValue
                 | ValueNone ->
-                    // Even a byte-renderable payload may need a typed store
-                    // when the destination cell carries non-byte-renderable
-                    // numeric provenance.
+                    // Even a byte-renderable payload may need a typed store when the
+                    // destination cell has no byte image of its own — either because it carries
+                    // non-byte-renderable numeric provenance, or because it is a pointer-typed
+                    // slot (`void*`, `delegate*<...>`), which has no byte image at all. The
+                    // pointer case additionally requires a pointer-shaped payload; see
+                    // `destinationNeedsWholeCellStore`.
                     let existing = readManagedByref baseClassTypes state src
 
                     match byteAddressabilityRejection existing with
-                    | Some rejection when isNumericProvenanceRejection rejection ->
+                    | Some rejection when destinationNeedsWholeCellStore newValue rejection ->
                         writeExactWidthPrimitiveTypedStore
                             baseClassTypes
                             state
