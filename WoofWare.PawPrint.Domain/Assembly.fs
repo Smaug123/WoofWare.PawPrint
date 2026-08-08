@@ -364,6 +364,24 @@ type DumpedAssembly =
         metadata.GetBlobContent (metadata.GetAssemblyDefinition().PublicKey)
 
     /// <summary>
+    /// The raw <c>Flags</c> column of this assembly's manifest row (ECMA-335 II.23.1.2).
+    /// </summary>
+    /// <remarks>
+    /// Deliberately *not* <c>this.Name.Flags</c>, though for once the reason is not that the
+    /// two disagree on anything a compiler will emit — they agree on every bit we can
+    /// produce. <c>AssemblyName.Flags</c> is a *masked view*: its getter returns
+    /// <c>_flags &amp;&amp;&amp; 0xFFFFF10F</c>, dropping the ContentType (<c>0x0E00</c>) and
+    /// ProcessorArchitecture (<c>0x00F0</c>) bits, which that class exposes as separate
+    /// properties instead. CoreCLR's <c>PEAssembly::GetFlags</c> returns the column's whole
+    /// <c>DWORD</c>, and its caller assigns it to <c>AssemblyName.RawFlags</c> — the unmasked
+    /// setter — precisely so those bits survive. A WindowsRuntime assembly carries
+    /// <c>0x0200</c> and would lose it through the masked view.
+    /// </remarks>
+    member this.Flags : AssemblyFlags =
+        let metadata = this.PeReader.GetMetadataReader ()
+        metadata.GetAssemblyDefinition().Flags
+
+    /// <summary>
     /// Whether this and <paramref name="other"/> are byte-identical PE images, i.e. the same
     /// assembly by every observation this interpreter can make of it.
     /// </summary>

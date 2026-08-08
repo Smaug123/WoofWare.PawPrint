@@ -3,6 +3,8 @@ namespace WoofWare.PawPrint.Test
 open System.Collections.Immutable
 open System.IO
 open System.Reflection.Metadata
+open System.Reflection.Metadata.Ecma335
+open System.Reflection.PortableExecutable
 open FsUnitTyped
 open Microsoft.CodeAnalysis
 open NUnit.Framework
@@ -13,9 +15,9 @@ open WoofWare.PawPrint
 /// column of the manifest's single `Assembly` metadata row.
 ///
 /// There is no end-to-end guest coverage yet: `Assembly.GetName()` is the only managed
-/// caller a guest can reach, and it fills its `AssemblyName` from six QCalls in a row, so
-/// it stays parked until the last of them lands (see
-/// `sourcesPure/AssemblyGetNameSimpleName.cs`). These tests pin each QCall as it arrives.
+/// caller a guest can reach, and it needs nine runtime primitives in sequence, so it stays
+/// parked until the last of them lands (see `sourcesPure/AssemblyGetNameSimpleName.cs`,
+/// whose comment enumerates them). These tests pin each one as it arrives.
 [<TestFixture>]
 module TestAssemblyNativeQCalls =
 
@@ -85,6 +87,80 @@ public static class Satellite
 """
 
         Roslyn.compileAssembly culturedAssemblyName OutputKind.DynamicallyLinkedLibrary [] [ source ]
+
+    /// A manifest `Flags` column carrying a bit that `AssemblyName.Flags` masks away. Its
+    /// getter returns `_flags &&& 0xFFFFF10F`, so the ContentType bits (`0x0E00`) vanish
+    /// there while CoreCLR's QCall — and `AssemblyName.RawFlags`, which the caller assigns
+    /// to — keep them. `0x200` is WindowsRuntime; the C# compiler emits whatever
+    /// `[assembly: AssemblyFlags]` is given, masked view or not.
+    let private maskedFlagsAssemblyName = "WoofWare.PawPrint.MaskedFlagsTestLibrary"
+
+    let private maskedFlagsColumn = 0x200
+
+    let private maskedFlagsLibraryImage () : byte[] =
+        let source =
+            $"""
+[assembly: System.Reflection.AssemblyFlags(0x{maskedFlagsColumn:x}u)]
+
+public static class MaskedFlags
+{{
+    public static int Value => 1;
+}}
+"""
+
+        Roslyn.compileAssembly maskedFlagsAssemblyName OutputKind.DynamicallyLinkedLibrary [] [ source ]
+
+    /// An image whose `PublicKey` blob is non-empty but whose `Flags` column leaves the
+    /// `afPublicKey` bit clear. No compiler emits that — Roslyn sets the bit whenever it
+    /// signs — but the format permits it, and `GetAssemblyProps` normalises it away, so it
+    /// is the only way to observe the synthesis. Hand-built for that reason.
+    let private inconsistentPublicKeyAssemblyName =
+        "WoofWare.PawPrint.InconsistentPublicKeyTestLibrary"
+
+    /// `GetAssemblyProps` only looks at the blob's *length*, but the blob still has to be a
+    /// well-formed key: registering the assembly canonicalises it by `AssemblyName.FullName`,
+    /// which computes a public key token and throws on anything it cannot parse. So the
+    /// caller passes a real key — corelib's — rather than arbitrary bytes.
+    let private inconsistentPublicKeyImage (publicKey : byte array) : byte[] =
+        let metadata = MetadataBuilder ()
+
+        metadata.AddModule (
+            0,
+            metadata.GetOrAddString (inconsistentPublicKeyAssemblyName + ".dll"),
+            metadata.GetOrAddGuid (System.Guid "6b1a9f2c-5d3e-4a7b-8c9d-0e1f2a3b4c5d"),
+            Unchecked.defaultof<GuidHandle>,
+            Unchecked.defaultof<GuidHandle>
+        )
+        |> ignore<ModuleDefinitionHandle>
+
+        metadata.AddAssembly (
+            metadata.GetOrAddString inconsistentPublicKeyAssemblyName,
+            System.Version (1, 0, 0, 0),
+            Unchecked.defaultof<StringHandle>,
+            metadata.GetOrAddBlob publicKey,
+            // The point of the fixture: a non-empty key blob with the flag left clear.
+            Unchecked.defaultof<System.Reflection.AssemblyFlags>,
+            System.Reflection.AssemblyHashAlgorithm.None
+        )
+        |> ignore<AssemblyDefinitionHandle>
+
+        let peBuilder =
+            ManagedPEBuilder (
+                PEHeaderBuilder (imageCharacteristics = (Characteristics.ExecutableImage ||| Characteristics.Dll)),
+                MetadataRootBuilder metadata,
+                BlobBuilder (),
+                null,
+                null,
+                null,
+                null,
+                0,
+                Unchecked.defaultof<MethodDefinitionHandle>,
+                CorFlags.ILOnly
+            )
+
+        let peImage = BlobBuilder ()
+        peBuilder.Serialize peImage |> ignore<BlobContentId>
+        peImage.ToArray ()
 
     /// Reads `image` as a `DumpedAssembly` and registers it in `state`, so a QCall keyed by
     /// its full name resolves. Mirrors what the interpreter's own assembly loading does.
@@ -344,6 +420,34 @@ public static class Satellite
         | Some (NativeHandlerResult.Completed (state, _)) -> state
         | Some result -> failwith $"unexpected %s{entryPoint} execution result: %O{result}"
         | None -> failwith $"%s{entryPoint} QCall did not match"
+
+    /// Runs `AssemblyNative_GetFlags` for `assemblyFullName` and pops its return value.
+    /// Unlike the rest of this family the answer comes back on the eval stack rather than
+    /// through an out-parameter, so there is nothing to preinitialise: a handler that pushed
+    /// nothing fails in `popEvalStack` rather than reading back as a sentinel.
+    let private invokeGetFlags
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (prepared : Program.PreparedProgram)
+        (state : IlMachineState)
+        (assemblyFullName : string)
+        : IlMachineState * int
+        =
+        let baseClassTypes = prepared.BaseClassTypes
+
+        let qCallAssembly, state =
+            qCallAssemblyValue loggerFactory baseClassTypes assemblyFullName state
+
+        let state =
+            invokeQCall loggerFactory prepared "AssemblyNative_GetFlags" [ qCallAssembly ] state
+
+        let returned, state = IlMachineState.popEvalStack prepared.EntryThread state
+
+        // Deliberately strict about the source as well as the width: these flags are read
+        // straight out of metadata, so anything but a plain value here (a truncated byref,
+        // say) would mean the handler pushed something it had no business pushing.
+        match returned with
+        | EvalStackValue.Int32 (Int32Source.Verbatim value) -> state, value
+        | other -> failwith $"expected a verbatim Int32 return from AssemblyNative_GetFlags, got %O{other}"
 
     /// Runs the QCall for `assemblyFullName` and returns the heap address the handler wrote
     /// into the `StringHandleOnStack` (None if it left the slot at its preinitialised null).
@@ -922,3 +1026,132 @@ public static class Satellite
             )
 
         exn.Message |> shouldContainText "is not loaded"
+
+    [<Test>]
+    let ``Flags is the raw column, not the masked AssemblyName view`` () : unit =
+        // Third instance of the same trap, and the only one where `AssemblyName` agrees with
+        // the column on everything a compiler normally emits — the disagreement is confined
+        // to bits it exposes as separate properties. So the test has to reach for a flag in
+        // the masked range rather than a typical one.
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        use peImage = new MemoryStream (maskedFlagsLibraryImage ())
+        let assembly = Assembly.read loggerFactory None peImage
+
+        int assembly.Flags |> shouldEqual maskedFlagsColumn
+
+        // Sanity: the two really do disagree here, so the assertion above is load-bearing.
+        int assembly.Name.Flags |> shouldEqual 0
+
+    [<Test>]
+    let ``GetFlags returns bits the masked AssemblyName view would drop`` () : unit =
+        // The end-to-end version of the test above: a handler sourcing this from
+        // `AssemblyName.Flags` would return 0 here, and the guest's `RawFlags` — which is
+        // where the caller puts this value precisely because it is unmasked — would lose
+        // the assembly's content type.
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let image =
+            Roslyn.compileAssembly guestAssemblyName OutputKind.ConsoleApplication [] [ guestSource ]
+
+        let prepared = prepareGuest loggerFactory image
+
+        let masked, state =
+            withLoadedAssembly loggerFactory (maskedFlagsLibraryImage ()) prepared.State
+
+        let _state, flags = invokeGetFlags loggerFactory prepared state masked.Name.FullName
+
+        flags |> shouldEqual maskedFlagsColumn
+
+    [<Test>]
+    let ``GetFlags returns the manifest row's flags per assembly`` () : unit =
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let image =
+            Roslyn.compileAssembly guestAssemblyName OutputKind.ConsoleApplication [] [ guestSource ]
+
+        // Oracle for the guest: the column read independently from the same image.
+        let expectedGuestFlags =
+            use peImage = new MemoryStream (image)
+            use peReader = new System.Reflection.PortableExecutable.PEReader (peImage)
+            let metadata = peReader.GetMetadataReader ()
+            int (metadata.GetAssemblyDefinition().Flags)
+
+        // Roslyn emits no assembly flags for an ordinary unsigned library, so this is the
+        // "nothing set" end of the range. Stated as a sanity check rather than assumed.
+        expectedGuestFlags |> shouldEqual 0
+
+        let prepared = prepareGuest loggerFactory image
+        let guest = prepared.State.ActiveAssembly prepared.EntryThread
+
+        let state, guestFlags =
+            invokeGetFlags loggerFactory prepared prepared.State guest.Name.FullName
+
+        guestFlags |> shouldEqual expectedGuestFlags
+
+        // Corelib is strong-named — `GetPublicKey writes the full key of a strong-named
+        // assembly` establishes that independently — so ECMA-335 II.23.1.2's PublicKey bit
+        // must be set in its column. That also makes this a second assembly with a
+        // different answer, so a handler ignoring its argument cannot satisfy both.
+        let _state, corelibFlags =
+            invokeGetFlags loggerFactory prepared state prepared.BaseClassTypes.Corelib.Name.FullName
+
+        let publicKeyBit = 0x1
+        corelibFlags &&& publicKeyBit |> shouldEqual publicKeyBit
+        corelibFlags |> shouldNotEqual guestFlags
+
+    [<Test>]
+    let ``GetFlags on an unloaded assembly fails loudly`` () : unit =
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let image =
+            Roslyn.compileAssembly guestAssemblyName OutputKind.ConsoleApplication [] [ guestSource ]
+
+        let prepared = prepareGuest loggerFactory image
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () ->
+                invokeGetFlags
+                    loggerFactory
+                    prepared
+                    prepared.State
+                    "NotLoaded, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null"
+                |> ignore<IlMachineState * int>
+            )
+
+        exn.Message |> shouldContainText "is not loaded"
+
+    [<Test>]
+    let ``GetFlags synthesises the PublicKey bit from a non-empty key blob`` () : unit =
+        // `GetAssemblyProps` — the metadata-import call CoreCLR reads this column through —
+        // ORs in `afPublicKey` whenever the `PublicKey` blob is non-empty, whatever the
+        // column says. Returning the column verbatim would diverge for such an image.
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let image =
+            Roslyn.compileAssembly guestAssemblyName OutputKind.ConsoleApplication [] [ guestSource ]
+
+        let prepared = prepareGuest loggerFactory image
+
+        // Corelib's own key: a real, parseable blob, so registering the fixture below does
+        // not trip over public-key-token computation.
+        let realPublicKey = prepared.BaseClassTypes.Corelib.PublicKey.AsSpan().ToArray ()
+
+        let inconsistent, state =
+            withLoadedAssembly loggerFactory (inconsistentPublicKeyImage realPublicKey) prepared.State
+
+        // Sanity: the fixture really is the awkward shape — key present, column bit clear —
+        // so the assertion below cannot pass just by echoing the column.
+        inconsistent.PublicKey.IsEmpty |> shouldEqual false
+        int inconsistent.Flags |> shouldEqual 0
+
+        let _state, flags =
+            invokeGetFlags loggerFactory prepared state inconsistent.Name.FullName
+
+        let afPublicKey = 0x1
+        flags |> shouldEqual afPublicKey
