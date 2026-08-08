@@ -45,6 +45,14 @@ type IlMachineState =
         /// compatibility facades reference implementation assemblies as `Version=0.0.0.0`), so the
         /// two must not be conflated; see `LoadedAssemblies`.
         _LoadedAssemblies : LoadedAssemblies
+        /// The definition identity of the assembly whose entry point this run was started from:
+        /// CoreCLR's "root assembly" for the AppDomain, which is what `Assembly.GetEntryAssembly`
+        /// reports. Recorded at `IlMachineState.initial` rather than derived, because neither
+        /// candidate derivation is truthful: `_LoadedAssemblies` has no ordering (and even if it
+        /// did, registration order is an accident of type resolution), and the bottom stack frame
+        /// of the entry thread is a CoreLib `.cctor` during pre-`Main` pumping and absent entirely
+        /// once `Main` has returned.
+        EntryAssembly : AssemblyName
         /// Tracks initialization state of types across assemblies
         TypeInitTable : TypeInitTable
         /// For each static-storage owner, then for each concrete type, a map of field definition

@@ -287,6 +287,7 @@ module IlMachineThreadState =
                 ThreadState = Map.empty
                 InternedStrings = ImmutableDictionary.Empty
                 _LoadedAssemblies = LoadedAssemblies.empty
+                EntryAssembly = entryAssembly.Name
                 _Statics = ImmutableDictionary.Empty
                 TypeInitTable = ImmutableDictionary.Empty
                 DotnetRuntimeDirs = dotnetRuntimeDirs
