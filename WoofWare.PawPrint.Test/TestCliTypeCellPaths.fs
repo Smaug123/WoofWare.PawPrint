@@ -581,3 +581,129 @@ module TestCliTypeCellPaths =
             )
 
         Check.One (config, Prop.forAll (Arb.fromGen shapeGen) property)
+
+    // ----------------------------------------------------------------------------------------
+    // `CandidateCellExtentsContainingByte`
+    // ----------------------------------------------------------------------------------------
+    //
+    // The subordinate half of the pair. `CellAwareMemOps` steps a copy cursor through a byte range
+    // and must decide how wide the next move should be *before* it can ask whether that width names
+    // a cell; this generator proposes the widths and `CellPathsExactlyCovering` disposes of them.
+    // Because the validator has the last word, the only thing that can actually go wrong here is
+    // under-reporting — a width the validator would have accepted but which is never offered to it,
+    // which silently costs the caller a route it should have had. That is what the completeness
+    // property below is for, and it is stated against a brute-force enumeration of every width
+    // rather than against a second hand-written walk.
+
+    [<Test>]
+    let ``candidate extents are reported outermost first and rebased through nesting`` () : unit =
+        let value = buffer ()
+
+        // Byte 8 is `Tag` inside slot 0: the whole buffer, then the slot, then the byte itself.
+        CliType.CandidateCellExtentsContainingByte 8 value
+        |> shouldEqual [ 0, 32 ; 0, 16 ; 8, 1 ]
+
+        // Byte 16 opens slot 1, whose own `Payload` starts there too — so both are rebased by 16.
+        CliType.CandidateCellExtentsContainingByte 16 value
+        |> shouldEqual [ 0, 32 ; 16, 16 ; 16, 8 ]
+
+    [<Test>]
+    let ``a byte in padding stops the descent at the enclosing cell`` () : unit =
+        let value = buffer ()
+
+        // `Elem` is `{ Box Payload@0; byte Tag@8 }` padded to 16, so bytes 9..15 belong to no
+        // field. The slot is still a cell and is still reported; there is nothing below it.
+        CliType.CandidateCellExtentsContainingByte 9 value
+        |> shouldEqual [ 0, 32 ; 0, 16 ]
+
+    [<Test>]
+    let ``a byte outside the value proposes nothing`` () : unit =
+        let value = buffer ()
+        CliType.CandidateCellExtentsContainingByte -1 value |> shouldEqual []
+        CliType.CandidateCellExtentsContainingByte 32 value |> shouldEqual []
+
+    [<Test>]
+    let ``overlapping fields stop the descent`` () : unit =
+        // Explicit layout, two fields sharing byte 0: there is no single field to descend into.
+        let value =
+            ofFieldsSized
+                8
+                [
+                    cliField "a" (CliType.Numeric (CliNumericType.Int32 0)) (Some 0) int32Handle
+                    cliField "b" (CliType.Numeric (CliNumericType.Int32 0)) (Some 0) int32Handle
+                ]
+
+        CliType.CandidateCellExtentsContainingByte 0 value |> shouldEqual [ 0, 8 ]
+
+    /// Every extent proposed genuinely lies within the value and contains the byte asked about.
+    /// Weak on its own — the validator would catch a violation — but it keeps the generator from
+    /// drifting into nonsense that happens to be harmless.
+    [<Test>]
+    let ``every proposed extent contains the byte it was asked about`` () : unit =
+        let property (shape : Shape) : bool =
+            let value, _ = buildShape "r" (Shape.Struct [ shape ])
+            let size = CliType.SizeOf(value).Size
+
+            [ 0 .. size - 1 ]
+            |> List.forall (fun byteOffset ->
+                CliType.CandidateCellExtentsContainingByte byteOffset value
+                |> List.forall (fun (offset, width) ->
+                    offset >= 0
+                    && width > 0
+                    && offset + width <= size
+                    && offset <= byteOffset
+                    && byteOffset < offset + width
+                )
+            )
+
+        Check.One (config, Prop.forAll (Arb.fromGen shapeGen) property)
+
+    /// The property the design rests on: **the generator is complete**. `CellAwareMemOps` proposes
+    /// widths from one endpoint only, so a width the validator would have accepted but which was
+    /// never proposed is a move silently lost.
+    ///
+    /// The oracle is brute force — every width from 1 to the value's size, asked of
+    /// `CellPathsExactlyCovering` directly — which is the implementation the caller would have if
+    /// it did not have this generator. Both anchorings are checked, since the copy loop runs
+    /// forwards (the cursor is the move's first byte) and backwards (its last).
+    [<Test>]
+    let ``every width the validator accepts at an anchor is proposed`` () : unit =
+        let property (shape : Shape) : bool =
+            let value, _ = buildShape "r" (Shape.Struct [ shape ])
+            let size = CliType.SizeOf(value).Size
+
+            // Mirrors `CellAwareMemOps.namedCells`: the validator reports *fields*, so the range
+            // being the whole value is the caller's own base case rather than something it returns.
+            let namesACell (start : int) (width : int) : bool =
+                (start = 0 && width = size)
+                || not (List.isEmpty (CliType.CellPathsExactlyCovering start width value))
+
+            [ 0 .. size - 1 ]
+            |> List.forall (fun byteOffset ->
+                [ false ; true ]
+                |> List.forall (fun backwards ->
+                    let proposed =
+                        CliType.CandidateCellExtentsContainingByte byteOffset value
+                        |> List.filter (fun (offset, width) ->
+                            if backwards then
+                                offset + width = byteOffset + 1
+                            else
+                                offset = byteOffset
+                        )
+                        |> List.map snd
+                        |> Set.ofList
+
+                    let accepted =
+                        [ 1..size ]
+                        |> List.filter (fun width ->
+                            let start = if backwards then byteOffset - width + 1 else byteOffset
+
+                            start >= 0 && start + width <= size && namesACell start width
+                        )
+                        |> Set.ofList
+
+                    Set.isSubset accepted proposed
+                )
+            )
+
+        Check.One (config, Prop.forAll (Arb.fromGen shapeGen) property)
