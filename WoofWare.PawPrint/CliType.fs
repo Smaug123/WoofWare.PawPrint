@@ -428,6 +428,55 @@ type CliType =
         // only cost of a false "changed" is one redundant write of an identical value.
         | _ -> before <> after
 
+    /// The extents `(offset, size)`, relative to `value`, of the nested storage cells that contain
+    /// byte `byteOffset`. Outermost first, so sizes descend.
+    ///
+    /// This is a *candidate generator*, not an answer: it navigates the layout and performs none of
+    /// `CellPathsExactlyCovering`'s aliasing or padding checks, so an extent it reports may name no
+    /// cell at all. It exists for callers that must discover a byte range before they can ask
+    /// whether that range names a cell — a bulk copy stepping through a buffer knows where its
+    /// cursor is but not how wide the next move should be. Such a caller proposes from here and
+    /// disposes with `CellPathsExactlyCovering`, which remains the sole authority on nameability.
+    /// Correctness therefore never rests on this function: an extent it invents is thrown out by
+    /// the validator, and an extent it fails to report costs the caller only the fallback route it
+    /// would have taken anyway.
+    ///
+    /// It is nonetheless *complete* for the anchored queries `CellAwareMemOps` makes of it — every
+    /// width the validator would accept at a given anchor byte is proposed here — and that is what
+    /// makes proposing from one endpoint enough. `CellPathsExactlyCovering` reaches a cell only by
+    /// descending through the unique unaliased field containing the whole range; any field
+    /// containing the range contains every byte of it, so each cell it names lies on the
+    /// containment chain of every byte in the range, which is precisely what this walks. Where this
+    /// stops early — several fields containing the byte, or none, the latter meaning the byte is
+    /// padding — the validator necessarily declines too: a second field containing the byte
+    /// overlaps the range and trips the alias check, and a range whose bytes no field contains has
+    /// no containing field either. Only the whole value survives those cases, and it is always
+    /// proposed. `TestCliTypeCellPaths` pins this against a brute-force enumeration of every width.
+    static member CandidateCellExtentsContainingByte (byteOffset : int) (value : CliType) : (int * int) list =
+        let size = CliType.SizeOf(value).Size
+
+        if byteOffset < 0 || byteOffset >= size then
+            []
+        else
+
+        let here = 0, size
+
+        match value with
+        | CliType.ValueType vt ->
+            match
+                CliValueType.TryAllFields vt
+                |> List.filter (fun f -> f.Offset <= byteOffset && byteOffset < f.Offset + f.Size)
+            with
+            | [ f ] ->
+                here
+                :: (CliType.CandidateCellExtentsContainingByte (byteOffset - f.Offset) f.Contents
+                    |> List.map (fun (offset, size) -> f.Offset + offset, size))
+            // Either several fields contain the byte (explicit layout can overlap them), in which
+            // case there is no single one to descend into, or none does and the byte is padding.
+            // Both times the whole value is the only candidate.
+            | _ -> [ here ]
+        | _ -> [ here ]
+
     /// Every storage cell of `value` whose extent is exactly the byte range
     /// `[offset, offset + size)`, as a path of `FieldId`s from `value` down to the cell, paired
     /// with the cell's contents. Ordered outermost first. Empty if the range names no cell.
