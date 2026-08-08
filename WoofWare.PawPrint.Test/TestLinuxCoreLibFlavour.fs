@@ -53,7 +53,7 @@ module TestLinuxCoreLibFlavour =
     let private nativeEntryPointNames (assembly : DumpedAssembly) : Set<string> =
         assembly.TypeDefs.Values
         |> Seq.collect (fun ty -> ty.Methods)
-        |> Seq.choose (fun method -> method.NativeImport |> Option.map _.EntryPointName)
+        |> Seq.choose (fun method -> method.TryNativeImport |> Option.map _.EntryPointName)
         |> Set.ofSeq
 
     /// Guards against `$DOTNET_LINUX_FRAMEWORK_DIR` pointing at the wrong pack — including at a

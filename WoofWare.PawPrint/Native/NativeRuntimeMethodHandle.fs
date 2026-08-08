@@ -539,7 +539,11 @@ module NativeRuntimeMethodHandle =
 
             let attrCtorAttrs : MethodAttributes =
                 match attrCtorMethodOpt with
-                | Some m -> m.MethodAttributes
+                | Some (MethodInfo.Synthesised _ as m) ->
+                    // A custom attribute's constructor is always a declared method; a synthesised
+                    // one has no attribute flags to report.
+                    failwith $"%s{operation}: attribute constructor %O{m} is synthesised and has no MethodAttributes"
+                | Some (MethodInfo.Metadata (_, facts)) -> facts.MethodAttributes
                 | None ->
                     // No constructor was supplied or found.
                     if DumpedAssembly.isValueType ctx.BaseClassTypes state._LoadedAssemblies attrTypeInfo then
@@ -946,9 +950,19 @@ module NativeRuntimeMethodHandle =
             let methodInfo =
                 resolveMethodInfoFromHandleArg operation state instruction.Arguments.[0]
 
+            // `RuntimeMethodHandle.GetAttributes` reports the raw flags to the guest. Only a
+            // declared method has any: a synthesised one cannot be reached through a
+            // `RuntimeMethodHandle` at all, because minting one for it already fails.
+            let attributes =
+                match methodInfo.TryMetadata with
+                | Some facts -> facts.MethodAttributes
+                | None ->
+                    failwith
+                        $"%s{operation}: %O{methodInfo} is synthesised by the runtime and has no MethodAttributes to report"
+
             let state =
                 IlMachineState.pushToEvalStack
-                    (CliType.Numeric (CliNumericType.Int32 (int32 methodInfo.MethodAttributes)))
+                    (CliType.Numeric (CliNumericType.Int32 (int32 attributes)))
                     ctx.Thread
                     state
 

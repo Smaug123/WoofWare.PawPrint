@@ -213,7 +213,10 @@ module TestAttributeFormatting =
                     let ti = kvp.Value
 
                     for m in ti.Methods do
-                        for attr in AttributeFormatting.attributesFor corelib (MetadataToken.MethodDef m.Handle) do
+                        for attr in
+                            AttributeFormatting.attributesFor
+                                corelib
+                                (MetadataToken.MethodDef (MethodInfo.requireMetadata "test" m).Handle) do
                             yield AttributeFormatting.formatAttributeApplication corelib attr
             }
 
@@ -230,7 +233,10 @@ module TestAttributeFormatting =
         let allRenderings =
             seq {
                 for m in exn.Methods do
-                    for attr in AttributeFormatting.attributesFor corelib (MetadataToken.MethodDef m.Handle) do
+                    for attr in
+                        AttributeFormatting.attributesFor
+                            corelib
+                            (MetadataToken.MethodDef (MethodInfo.requireMetadata "test" m).Handle) do
                         yield AttributeFormatting.formatAttributeApplication corelib attr
             }
             |> Seq.toList

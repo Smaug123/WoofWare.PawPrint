@@ -314,7 +314,11 @@ module TestFSharpPureCases =
          | MethodBody.Abstract -> ()
          | other -> failwith $"expected AbstractDispatch.Base::Combine to be MethodBody.Abstract, got %O{other}")
 
-        combine.Parameters.IsEmpty |> shouldEqual true
+        // Deliberately the Param *table*, not the arity: the whole point of this test is that the
+        // two disagree for an F#-emitted abstract member.
+        (MethodInfo.requireMetadata "test" combine).Parameters.IsEmpty
+        |> shouldEqual true
+
         MethodInfo.arity combine |> shouldEqual 1
 
     /// Regression guard for issue #692, mirroring the `AbstractDispatch` guard above. #692's
@@ -347,7 +351,8 @@ module TestFSharpPureCases =
          | MethodBody.Abstract -> ()
          | other -> failwith $"expected ByrefDispatch.Base::Bump to be MethodBody.Abstract, got %O{other}")
 
-        bump.Parameters.IsEmpty |> shouldEqual true
+        // As above: the Param table, not the arity.
+        (MethodInfo.requireMetadata "test" bump).Parameters.IsEmpty |> shouldEqual true
         MethodInfo.arity bump |> shouldEqual 1
 
         (match bump.Signature.ParameterTypes.[0] with

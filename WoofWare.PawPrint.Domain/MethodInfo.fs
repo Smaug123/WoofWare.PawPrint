@@ -165,6 +165,14 @@ type RuntimeBehaviour =
     /// fields off the delegate instance and calling through.
     | DelegateInvoke
 
+    /// The struct-marshalling stub for the declaring type: what CoreCLR builds as synthesised IL
+    /// in <c>PInvoke::CreateStructMarshalILStub</c> (dllimport.cpp:5289) and hands to CoreLib as a
+    /// code address. PawPrint interprets it directly instead.
+    ///
+    /// Unlike every other case here, a method carrying this is not declared anywhere — it is a
+    /// <see cref="MethodInfo.Synthesised"/>, so it has no MethodDef row.
+    | StructMarshalStub
+
     /// <summary>
     /// A C# 12+ <c>[UnsafeAccessor]</c> <c>extern static</c> method. The runtime
     /// synthesises the body to forward to a (possibly inaccessible) member of the
@@ -249,27 +257,38 @@ module MethodBody =
 /// Represents detailed information about a method in a .NET assembly.
 /// This is a strongly-typed representation of MethodDefinition from System.Reflection.Metadata.
 /// </summary>
-type MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars> =
-    {
-        /// <summary>
-        /// The type that declares this method, along with its assembly information.
-        /// </summary>
-        DeclaringType : ConcreteType<'typeGenerics>
+/// A method the runtime supplies rather than metadata declaring: it has no row in the MethodDef
+/// table, so none of <see cref="MetadataMethodFacts"/> exists for it.
+///
+/// CoreCLR builds these as real <c>MethodDesc</c>s over synthesised IL — see
+/// <c>PInvoke::CreateStructMarshalILStub</c> (dllimport.cpp:5289). PawPrint has no IL synthesis,
+/// so the case identifies *which* runtime behaviour this is and the interpreter supplies it
+/// directly.
+///
+/// The case carries no payload: a synthesised method's identity is its declaring type plus its
+/// kind. For a struct-marshal stub the declaring type is the type being marshalled, so two stubs
+/// for the same type are the same method — which is exactly the per-MethodTable identity
+/// CoreCLR's stub cache has.
+[<RequireQualifiedAccess>]
+type SynthesisedMethod =
+    /// The struct-marshalling stub for this method's declaring type, as returned by
+    /// <c>MarshalNative_TryGetStructMarshalStub</c>'s has-layout-non-blittable arm.
+    | StructMarshalStub
 
+/// The facts that exist only because a method was read from a MethodDef row.
+///
+/// Split out of <see cref="MethodInfo"/> so a synthesised method cannot be asked for them. Every
+/// one of these was previously a field on the method itself, which meant a synthesised method had
+/// to invent a plausible-looking value for each — a metadata token that indexes nothing, an empty
+/// Param collection, attribute flags of zero. Those are lies in fields other code keys on, and
+/// the point of the split is that the compiler now forces each consumer to say what it does when
+/// they are absent.
+type MetadataMethodFacts =
+    {
         /// <summary>
         /// The metadata token handle that uniquely identifies this method in the assembly.
         /// </summary>
         Handle : MethodDefinitionHandle
-
-        /// <summary>The name of the method.</summary>
-        Name : string
-
-        /// <summary>
-        /// The implementation this method carries. The CLR distinguishes IL bodies,
-        /// InternalCalls, P/Invokes, runtime-synthesised methods (delegates etc.), and
-        /// abstract methods; see <see cref="MethodBody"/>.
-        /// </summary>
-        Body : MethodBody<'methodVars>
 
         /// <summary>
         /// The parameters of this method, as read from the metadata Param table.
@@ -296,16 +315,6 @@ type MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars> =
         Parameters : Parameter ImmutableArray
 
         /// <summary>
-        /// The generic type parameters defined by this method, if any.
-        /// </summary>
-        Generics : 'methodGenerics ImmutableArray
-
-        /// <summary>
-        /// The signature of the method, including return type and parameter types.
-        /// </summary>
-        Signature : TypeMethodSignature<'methodVars>
-
-        /// <summary>
         /// The signature as it was read from assembly metadata.
         /// </summary>
         RawSignature : TypeMethodSignature<TypeDefn>
@@ -320,6 +329,35 @@ type MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars> =
         ImplAttributes : MethodImplAttributes
 
         NativeImport : NativeMethodImport option
+    }
+
+/// The facts every method has, however it came to exist.
+type MethodCore<'typeGenerics, 'methodGenerics, 'methodVars> =
+    {
+        /// <summary>
+        /// The type that declares this method, along with its assembly information.
+        /// </summary>
+        DeclaringType : ConcreteType<'typeGenerics>
+
+        /// <summary>The name of the method.</summary>
+        Name : string
+
+        /// <summary>
+        /// The implementation this method carries. The CLR distinguishes IL bodies,
+        /// InternalCalls, P/Invokes, runtime-synthesised methods (delegates etc.), and
+        /// abstract methods; see <see cref="MethodBody"/>.
+        /// </summary>
+        Body : MethodBody<'methodVars>
+
+        /// <summary>
+        /// The generic type parameters defined by this method, if any.
+        /// </summary>
+        Generics : 'methodGenerics ImmutableArray
+
+        /// <summary>
+        /// The signature of the method, including return type and parameter types.
+        /// </summary>
+        Signature : TypeMethodSignature<'methodVars>
 
         /// <summary>
         /// Whether this method is static (true) or an instance method (false).
@@ -327,11 +365,150 @@ type MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars> =
         IsStatic : bool
     }
 
+/// <summary>
+/// Represents detailed information about a method: either one declared by a MethodDef row, or one
+/// the runtime synthesises.
+/// </summary>
+/// <remarks>
+/// The universal facts are reachable as members (<c>Name</c>, <c>Signature</c>, …) so the great
+/// majority of consumers neither know nor care which kind they hold. The metadata-only facts are
+/// deliberately *not* projected: reaching them requires matching, which is what stops a
+/// synthesised method being asked for a token it does not have.
+/// </remarks>
+type MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars> =
+    /// Read from a MethodDef row.
+    | Metadata of core : MethodCore<'typeGenerics, 'methodGenerics, 'methodVars> * facts : MetadataMethodFacts
+    /// Supplied by the runtime; see <see cref="SynthesisedMethod"/>.
+    | Synthesised of core : MethodCore<'typeGenerics, 'methodGenerics, 'methodVars> * kind : SynthesisedMethod
+
+    member this.Core : MethodCore<'typeGenerics, 'methodGenerics, 'methodVars> =
+        match this with
+        | MethodInfo.Metadata (core, _) -> core
+        | MethodInfo.Synthesised (core, _) -> core
+
+    member this.DeclaringType : ConcreteType<'typeGenerics> = this.Core.DeclaringType
+    member this.Name : string = this.Core.Name
+    member this.Body : MethodBody<'methodVars> = this.Core.Body
+    member this.Generics : 'methodGenerics ImmutableArray = this.Core.Generics
+    member this.Signature : TypeMethodSignature<'methodVars> = this.Core.Signature
+    member this.IsStatic : bool = this.Core.IsStatic
+
+    /// Which kind of runtime-supplied method this is, or `None` if it was declared in metadata.
+    member this.SynthesisedKind : SynthesisedMethod option =
+        match this with
+        | MethodInfo.Metadata _ -> None
+        | MethodInfo.Synthesised (_, kind) -> Some kind
+
+    /// A hashable stand-in for "which method within its declaring type is this". Pairs the
+    /// metadata token with the synthesised kind, exactly the disjunction `NominallyEqual`
+    /// compares, so anything hashing a method identity stays consistent with it.
+    member this.IdentityKey : MethodDefinitionHandle option * SynthesisedMethod option =
+        (this.TryMetadata |> Option.map _.Handle), this.SynthesisedKind
+
+    /// The metadata facts, when this method has any. `None` for a synthesised method.
+    member this.TryMetadata : MetadataMethodFacts option =
+        match this with
+        | MethodInfo.Metadata (_, facts) -> Some facts
+        | MethodInfo.Synthesised _ -> None
+
+    // The four predicates below are projected deliberately, where the raw `MethodAttributes` is
+    // not. The distinction is that each has a genuine answer for a synthesised method rather than
+    // a fabricated one: the runtime supplies such a method directly, so it occupies no vtable
+    // slot, overrides nothing, and is reachable only from the interpreter that synthesised it.
+    // Handing out an attribute flags value of zero, by contrast, would be inventing metadata —
+    // which is why reflection paths that report the flags to the guest still have to match.
+
+    /// True iff this method is `virtual`. A synthesised method never is.
+    member this.IsVirtual : bool =
+        match this with
+        | MethodInfo.Metadata (_, facts) -> facts.MethodAttributes.HasFlag MethodAttributes.Virtual
+        | MethodInfo.Synthesised _ -> false
+
+    /// True iff this method introduces a new vtable slot rather than overriding one. A synthesised
+    /// method occupies no slot at all.
+    member this.IsNewSlot : bool =
+        match this with
+        | MethodInfo.Metadata (_, facts) -> facts.MethodAttributes.HasFlag MethodAttributes.NewSlot
+        | MethodInfo.Synthesised _ -> false
+
+    /// True iff this method is sealed against further overriding. Vacuously true of a synthesised
+    /// method, which is not virtual to begin with.
+    member this.IsFinal : bool =
+        match this with
+        | MethodInfo.Metadata (_, facts) -> facts.MethodAttributes.HasFlag MethodAttributes.Final
+        | MethodInfo.Synthesised _ -> true
+
+    /// The P/Invoke import this method carries, if any. `None` for a synthesised method: the
+    /// runtime supplies its body directly, so there is nothing to import. Already an option for
+    /// metadata-backed methods, so no information is lost by projecting it.
+    member this.TryNativeImport : NativeMethodImport option =
+        match this with
+        | MethodInfo.Metadata (_, facts) -> facts.NativeImport
+        | MethodInfo.Synthesised _ -> None
+
+    /// True iff this method is `public`. A synthesised method is not: it has no declaration for
+    /// anything to name, and nothing outside the interpreter can reach it.
+    member this.IsPublic : bool =
+        match this with
+        | MethodInfo.Metadata (_, facts) ->
+            (facts.MethodAttributes &&& MethodAttributes.MemberAccessMask) = MethodAttributes.Public
+        | MethodInfo.Synthesised _ -> false
+
     override this.ToString () =
         $"{this.DeclaringType.Assembly.Name}.{this.DeclaringType.Name}.{this.Name}"
 
 [<RequireQualifiedAccess>]
 module MethodInfo =
+    /// Rebuild a method with a different core, carrying whichever tail it already had. The
+    /// generic-mapping functions below are all this: they rewrite the universal facts and leave
+    /// the metadata (or the synthesised kind) exactly as it was.
+    let mapCore<'a, 'b, 'c, 'd, 'e, 'f>
+        (f : MethodCore<'a, 'b, 'c> -> MethodCore<'d, 'e, 'f>)
+        (m : MethodInfo<'a, 'b, 'c>)
+        : MethodInfo<'d, 'e, 'f>
+        =
+        match m with
+        | MethodInfo.Metadata (core, facts) -> MethodInfo.Metadata (f core, facts)
+        | MethodInfo.Synthesised (core, kind) -> MethodInfo.Synthesised (f core, kind)
+
+    /// The metadata facts, for a caller that can only meaningfully act on a declared method —
+    /// reflection, IL rendering, overload comparison. Fails for a synthesised method rather than
+    /// inventing the metadata, which is the whole point of keeping the two apart.
+    let requireMetadata
+        (operation : string)
+        (m : MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars>)
+        : MetadataMethodFacts
+        =
+        match m.TryMetadata with
+        | Some facts -> facts
+        | None -> failwith $"%s{operation}: %O{m} is synthesised by the runtime and has no metadata to read"
+
+    /// The signature as metadata declared it, for a caller that genuinely needs the `TypeDefn`
+    /// form (comparing overloads, rendering a declaration).
+    let requireRawSignature
+        (operation : string)
+        (m : MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars>)
+        : TypeMethodSignature<TypeDefn>
+        =
+        (requireMetadata operation m).RawSignature
+
+    /// True iff both methods are metadata-backed and share a MethodDef token — that is, they are
+    /// the same *declared* method, ignoring generic instantiation and declaring-type identity.
+    ///
+    /// False whenever either is synthesised. A synthesised method has no declaration, so it is
+    /// not the same declared method as anything, including another synthesised one; callers that
+    /// want to know whether two synthesised methods are the same should use `NominallyEqual`,
+    /// which compares the declaring type and the kind.
+    let sameDeclaredMethod
+        (a : MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars>)
+        (b : MethodInfo<'typeGenericsB, 'methodGenericsB, 'methodVarsB>)
+        : bool
+        =
+        match a.TryMetadata, b.TryMetadata with
+        | Some a, Some b -> a.Handle = b.Handle
+        | None, _
+        | _, None -> false
+
     let NominallyEqual
         (a : MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars>)
         (b : MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars>)
@@ -339,8 +516,17 @@ module MethodInfo =
         =
         a.DeclaringType.Identity = b.DeclaringType.Identity
         && a.DeclaringType.Generics = b.DeclaringType.Generics
-        && a.Handle = b.Handle
         && a.Generics = b.Generics
+        && // Within a declaring type, a metadata method is identified by its token and a
+        // synthesised one by its kind. The two are never equal: a synthesised method has no
+        // MethodDef row, so nothing it could be confused with.
+        (
+            match a, b with
+            | MethodInfo.Metadata (_, a), MethodInfo.Metadata (_, b) -> a.Handle = b.Handle
+            | MethodInfo.Synthesised (_, a), MethodInfo.Synthesised (_, b) -> a = b
+            | MethodInfo.Metadata _, MethodInfo.Synthesised _
+            | MethodInfo.Synthesised _, MethodInfo.Metadata _ -> false
+        )
 
     /// The true number of declared parameters (excluding `this`), independent of how many
     /// Param-table rows the metadata happened to carry. See the doc comment on
@@ -387,51 +573,47 @@ module MethodInfo =
         (this : MethodInfo<'d, 'e, 'f>)
         : bool
         =
-        hasIntrinsicAttribute getMemberRefParentType methodDefs this.CustomAttributes
+        // A synthesised method carries no custom attributes: there is no MethodDef row for one
+        // to hang off. `[Intrinsic]` in particular is a metadata annotation on BCL methods, so
+        // the answer for a runtime-supplied method is simply "no".
+        match this with
+        | MethodInfo.Synthesised _ -> false
+        | MethodInfo.Metadata (_, facts) ->
+            hasIntrinsicAttribute getMemberRefParentType methodDefs facts.CustomAttributes
 
     let mapTypeGenerics<'a, 'b, 'methodGen, 'vars>
         (f : 'a -> 'b)
         (m : MethodInfo<'a, 'methodGen, 'vars>)
         : MethodInfo<'b, 'methodGen, 'vars>
         =
-        {
-            DeclaringType = m.DeclaringType |> ConcreteType.mapGeneric (fun _ -> f)
-            Handle = m.Handle
-            Name = m.Name
-            Body = m.Body
-            Parameters = m.Parameters
-            Generics = m.Generics
-            Signature = m.Signature
-            RawSignature = m.RawSignature
-            CustomAttributes = m.CustomAttributes
-            MethodAttributes = m.MethodAttributes
-            ImplAttributes = m.ImplAttributes
-            NativeImport = m.NativeImport
-            IsStatic = m.IsStatic
-        }
+        m
+        |> mapCore (fun core ->
+            {
+                DeclaringType = core.DeclaringType |> ConcreteType.mapGeneric (fun _ -> f)
+                Name = core.Name
+                Body = core.Body
+                Generics = core.Generics
+                Signature = core.Signature
+                IsStatic = core.IsStatic
+            }
+        )
 
     let mapMethodGenerics<'a, 'b, 'vars, 'typeGen>
         (f : int -> 'a -> 'b)
         (m : MethodInfo<'typeGen, 'a, 'vars>)
         : MethodInfo<'typeGen, 'b, 'vars>
         =
-        let generics = m.Generics |> Seq.mapi f |> ImmutableArray.CreateRange
-
-        {
-            DeclaringType = m.DeclaringType
-            Handle = m.Handle
-            Name = m.Name
-            Body = m.Body
-            Parameters = m.Parameters
-            Generics = generics
-            Signature = m.Signature
-            RawSignature = m.RawSignature
-            CustomAttributes = m.CustomAttributes
-            MethodAttributes = m.MethodAttributes
-            ImplAttributes = m.ImplAttributes
-            NativeImport = m.NativeImport
-            IsStatic = m.IsStatic
-        }
+        m
+        |> mapCore (fun core ->
+            {
+                DeclaringType = core.DeclaringType
+                Name = core.Name
+                Body = core.Body
+                Generics = core.Generics |> Seq.mapi f |> ImmutableArray.CreateRange
+                Signature = core.Signature
+                IsStatic = core.IsStatic
+            }
+        )
 
     let setMethodVars
         (body : MethodBody<'vars2>)
@@ -439,21 +621,17 @@ module MethodInfo =
         (m : MethodInfo<'typeGen, 'methodGen, 'vars1>)
         : MethodInfo<'typeGen, 'methodGen, 'vars2>
         =
-        {
-            DeclaringType = m.DeclaringType
-            Handle = m.Handle
-            Name = m.Name
-            Body = body
-            Parameters = m.Parameters
-            Generics = m.Generics
-            Signature = signature
-            RawSignature = m.RawSignature
-            CustomAttributes = m.CustomAttributes
-            MethodAttributes = m.MethodAttributes
-            ImplAttributes = m.ImplAttributes
-            NativeImport = m.NativeImport
-            IsStatic = m.IsStatic
-        }
+        m
+        |> mapCore (fun core ->
+            {
+                DeclaringType = core.DeclaringType
+                Name = core.Name
+                Body = body
+                Generics = core.Generics
+                Signature = signature
+                IsStatic = core.IsStatic
+            }
+        )
 
     /// View helper for sites that genuinely just want "the IL body if there is one,"
     /// e.g. formatters, the debugger, and the abstract-method filter. Prefer matching
@@ -1112,21 +1290,25 @@ module MethodInfo =
                 declaringTypeName
                 declaringTypeGenericParams
 
-        {
-            DeclaringType = declaringType
-            Handle = methodHandle
-            Name = methodName
-            Body = body
-            Parameters = methodParams
-            Generics = methodGenericParams
-            Signature = typeSig
-            RawSignature = typeSig
-            MethodAttributes = methodAttrs
-            CustomAttributes = attrs
-            IsStatic = not methodSig.Header.IsInstance
-            ImplAttributes = implAttrs
-            NativeImport = nativeImport
-        }
+        MethodInfo.Metadata (
+            {
+                DeclaringType = declaringType
+                Name = methodName
+                Body = body
+                Generics = methodGenericParams
+                Signature = typeSig
+                IsStatic = not methodSig.Header.IsInstance
+            },
+            {
+                Handle = methodHandle
+                Parameters = methodParams
+                RawSignature = typeSig
+                MethodAttributes = methodAttrs
+                CustomAttributes = attrs
+                ImplAttributes = implAttrs
+                NativeImport = nativeImport
+            }
+        )
 
     let rec resolveBaseType
         (methodGenerics : TypeDefn ImmutableArray option)

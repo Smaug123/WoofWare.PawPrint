@@ -723,10 +723,15 @@ module DebuggerServer =
             // The executing method has been concretised, so its own generic parameters no longer
             // carry their declared names; recover them from the metadata flavour of the same
             // method. If it isn't in the index, the indices render positionally.
+            // A synthesised frame has no metadata flavour to recover names from, so it renders
+            // positionally too.
             let scope =
-                match assembly.Methods.TryGetValue frame.ExecutingMethod.Handle with
-                | true, method -> GenericScope.ofMethod method
-                | false, _ -> GenericScope.unknown
+                match frame.ExecutingMethod.TryMetadata with
+                | None -> GenericScope.unknown
+                | Some facts ->
+                    match assembly.Methods.TryGetValue facts.Handle with
+                    | true, method -> GenericScope.ofMethod method
+                    | false, _ -> GenericScope.unknown
 
             writer.WriteStartObject ()
             writer.WriteNumber ("thread", threadIdValue threadId)

@@ -1327,34 +1327,43 @@ module internal UnaryMetadataCallOps =
         // not comparable). For a generic target the raw signature still holds type parameters;
         // `calliStackKind` declines to classify those, so they are skipped rather than
         // spuriously rejected.
-        let calleeRaw = methodToCall.RawSignature
+        // Only a declared method has a raw signature. A synthesised target has none — there is no
+        // metadata form of a method the runtime supplies — so there is nothing to disagree with
+        // and the comparison is simply skipped. That is sound precisely because this check is a
+        // source of *refusals* and never of permission: declining to run it forfeits an error we
+        // might have caught, not a guarantee we were relying on. The slot-count and return-shape
+        // checks above, which are what guard frame integrity, apply to every target.
+        match methodToCall.TryMetadata with
+        | None -> ()
+        | Some facts ->
+            let calleeRaw = facts.RawSignature
 
-        // Positions only line up when both sides agree on who supplies `this`. When they do not
-        // (the EXPLICITTHIS / receiver-as-explicit-argument case described above) the lists are
-        // offset relative to each other and cannot be compared element-wise; the slot-count
-        // check above still guards frame integrity there.
-        let receiverConventionsAgree = callSiteHasImplicitThis = not methodToCall.IsStatic
+            // Positions only line up when both sides agree on who supplies `this`. When they do
+            // not (the EXPLICITTHIS / receiver-as-explicit-argument case described above) the
+            // lists are offset relative to each other and cannot be compared element-wise; the
+            // slot-count check above still guards frame integrity there.
+            let receiverConventionsAgree = callSiteHasImplicitThis = not methodToCall.IsStatic
 
-        if
-            receiverConventionsAgree
-            && callSiteSignature.ParameterTypes.Length = calleeRaw.ParameterTypes.Length
-        then
-            List.iteri2
-                (fun i (callSiteTy : TypeDefn) (calleeTy : TypeDefn) ->
-                    if calliKindsConflict callSiteTy calleeTy then
-                        failwith
-                            $"calli: call-site signature declares parameter %d{i} as %O{callSiteTy} but target %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}::%s{methodToCall.Name} declares it as %O{calleeTy}; these occupy different evaluation-stack representations, and PawPrint does not yet marshal calli arguments through the call-site signature"
-                )
-                callSiteSignature.ParameterTypes
-                calleeRaw.ParameterTypes
+            if
+                receiverConventionsAgree
+                && callSiteSignature.ParameterTypes.Length = calleeRaw.ParameterTypes.Length
+            then
+                List.iteri2
+                    (fun i (callSiteTy : TypeDefn) (calleeTy : TypeDefn) ->
+                        if calliKindsConflict callSiteTy calleeTy then
+                            failwith
+                                $"calli: call-site signature declares parameter %d{i} as %O{callSiteTy} but target %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}::%s{methodToCall.Name} declares it as %O{calleeTy}; these occupy different evaluation-stack representations, and PawPrint does not yet marshal calli arguments through the call-site signature"
+                    )
+                    callSiteSignature.ParameterTypes
+                    calleeRaw.ParameterTypes
 
-        match callSiteSignature.ReturnType, calleeRaw.ReturnType with
-        | MethodReturnType.Returns callSiteRet, MethodReturnType.Returns calleeRet when
-            calliKindsConflict callSiteRet calleeRet
-            ->
-            failwith
-                $"calli: call-site signature declares a return type of %O{callSiteRet} but target %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}::%s{methodToCall.Name} returns %O{calleeRet}; these occupy different evaluation-stack representations, and PawPrint does not yet marshal the calli result through the call-site signature"
-        | _ -> ()
+            match callSiteSignature.ReturnType, calleeRaw.ReturnType with
+            | MethodReturnType.Returns callSiteRet, MethodReturnType.Returns calleeRet when
+                calliKindsConflict callSiteRet calleeRet
+                ->
+                failwith
+                    $"calli: call-site signature declares a return type of %O{callSiteRet} but target %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}::%s{methodToCall.Name} returns %O{calleeRet}; these occupy different evaluation-stack representations, and PawPrint does not yet marshal the calli result through the call-site signature"
+            | _ -> ()
 
         let declaringTypeHandle =
             AllConcreteTypes.findExistingConcreteType
@@ -1366,7 +1375,21 @@ module internal UnaryMetadataCallOps =
                     $"calli: declaring type %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name} of the target method is not registered in AllConcreteTypes"
             )
 
-        match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
+        // Calling a method runs its declaring type's initialiser first — but a *synthesised*
+        // method is not a member of the type it names. CoreCLR puts a struct-marshal stub in its
+        // own `ILStubClass` precisely so that it is not; the declaring type here is an identity,
+        // chosen so the stub is one-per-marshalled-type, not an owner. Initialising it would be a
+        // guest-visible side effect the real runtime does not have: verified against the real
+        // runtime, a struct with an explicit static constructor keeps it dormant across
+        // `Marshal.StructureToPtr`, and `sourcesPure/MarshalStructureToPtrStaticCtorDormant.cs`
+        // pins that.
+        let classInitialisation =
+            match methodToCall with
+            | MethodInfo.Synthesised _ -> StateLoadResult.NothingToDo state
+            | MethodInfo.Metadata _ ->
+                IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state
+
+        match classInitialisation with
         | NothingToDo state ->
             // Our own frame, so the restore below can target it by id: on the suspension path the
             // *active* frame is the class initialiser's, not ours.

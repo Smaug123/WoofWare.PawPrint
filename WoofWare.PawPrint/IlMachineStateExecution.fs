@@ -398,7 +398,7 @@ module IlMachineStateExecution =
             if meth.Name <> methodToCall.Name then
                 state, false
             elif varianceInPlay then
-                state, meth.Handle = methodToCall.Handle
+                state, MethodInfo.sameDeclaredMethod meth methodToCall
             else
                 signatureMatchesTarget meth.DeclaringType.Assembly candidateTypeGenerics meth.Signature state
 
@@ -425,9 +425,8 @@ module IlMachineStateExecution =
                 None, state
             elif
                 not allowImplicitInterfaceImplementation
-                && (not (meth.MethodAttributes.HasFlag MethodAttributes.Virtual)
-                    || (meth.MethodAttributes.HasFlag MethodAttributes.NewSlot
-                        && meth.Handle <> methodToCall.Handle))
+                && (not meth.IsVirtual
+                    || (meth.IsNewSlot && not (MethodInfo.sameDeclaredMethod meth methodToCall)))
             then
                 None, state
             elif
@@ -447,8 +446,7 @@ module IlMachineStateExecution =
                 // explicit-implementation form and is private by construction.
                 allowImplicitInterfaceImplementation
                 && Some meth.Name <> interfaceExplicitNamedMethod
-                && meth.MethodAttributes &&& MethodAttributes.MemberAccessMask
-                   <> MethodAttributes.Public
+                && not meth.IsPublic
             then
                 None, state
             else
@@ -948,7 +946,7 @@ module IlMachineStateExecution =
 
         let possibleInterfaceMethods =
             possibleInterfaceMethods
-            |> List.distinctBy (fun (interfaceHandle, meth) -> interfaceHandle, meth.Handle)
+            |> List.distinctBy (fun (interfaceHandle, meth) -> interfaceHandle, meth.TryMetadata |> Option.map _.Handle)
 
         let rec hasMoreSpecificInterfaceImplementation
             (state : IlMachineState)
@@ -1312,7 +1310,10 @@ module IlMachineStateExecution =
 
             // Both instantiations share a TypeDef, so they share a method list: the slot is
             // identified by its MethodDef handle, exactly as the variance MethodImpl path does.
-            match chosenTypeInfo.Methods |> List.tryFind (fun m -> m.Handle = methodToCall.Handle) with
+            match
+                chosenTypeInfo.Methods
+                |> List.tryFind (fun m -> MethodInfo.sameDeclaredMethod m methodToCall)
+            with
             | None ->
                 failwith
                     $"variant interface dispatch: %s{chosenTy.Namespace}.%s{chosenTy.Name} has no method with handle matching %s{methodToCall.Name}, though it shares a TypeDef with the call target"
@@ -1551,8 +1552,8 @@ module IlMachineStateExecution =
         let shouldPerformVirtualResolution =
             performInterfaceResolution
             && not methodToCall.IsStatic
-            && methodToCall.MethodAttributes.HasFlag MethodAttributes.Virtual
-            && not (methodToCall.MethodAttributes.HasFlag MethodAttributes.Final)
+            && methodToCall.IsVirtual
+            && not methodToCall.IsFinal
 
         let state, methodToCall =
             if shouldPerformVirtualResolution then
@@ -1774,8 +1775,7 @@ module IlMachineStateExecution =
                 // `MissingMethodException` if the parameterless ctor is non-public — see
                 // RuntimeType.CoreCLR.cs:4034. Filter accordingly so an internal/private ctor is
                 // not silently invoked.
-                let isPublic (m : MethodInfo<_, _, _>) : bool =
-                    (m.MethodAttributes &&& MethodAttributes.MemberAccessMask) = MethodAttributes.Public
+                let isPublic (m : MethodInfo<_, _, _>) : bool = m.IsPublic
 
                 let ctor =
                     typeDef.Methods

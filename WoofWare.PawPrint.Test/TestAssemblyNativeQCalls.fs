@@ -221,7 +221,7 @@ public static class MaskedFlags
         let rawMethod =
             runtimeAssemblyType.Methods
             |> List.filter (fun method ->
-                match method.NativeImport with
+                match method.TryNativeImport with
                 | Some import -> import.ModuleName = "QCall" && import.EntryPointName = entryPoint
                 | None -> false
             )

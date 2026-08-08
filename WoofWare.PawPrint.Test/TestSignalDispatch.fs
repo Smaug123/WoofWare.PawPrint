@@ -66,7 +66,7 @@ module TestSignalDispatch =
 
         let rawMethod =
             typeDef.Methods
-            |> List.filter (fun m -> m.Name = methodName && m.IsStatic && m.Parameters.Length = arity)
+            |> List.filter (fun m -> m.Name = methodName && m.IsStatic && (MethodInfo.arity m) = arity)
             |> function
                 | [ method ] -> method
                 | [] ->
