@@ -1453,7 +1453,21 @@ module internal UnaryMetadataCallOps =
                     $"calli: declaring type %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name} of the target method is not registered in AllConcreteTypes"
             )
 
-        match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
+        // Calling a method runs its declaring type's initialiser first — but a *synthesised*
+        // method is not a member of the type it names. CoreCLR puts a struct-marshal stub in its
+        // own `ILStubClass` precisely so that it is not; the declaring type here is an identity,
+        // chosen so the stub is one-per-marshalled-type, not an owner. Initialising it would be a
+        // guest-visible side effect the real runtime does not have: verified against the real
+        // runtime, a struct with an explicit static constructor keeps it dormant across
+        // `Marshal.StructureToPtr`, and `sourcesPure/MarshalStructureToPtrStaticCtorDormant.cs`
+        // pins that.
+        let classInitialisation =
+            match methodToCall with
+            | MethodInfo.Synthesised _ -> StateLoadResult.NothingToDo state
+            | MethodInfo.Metadata _ ->
+                IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state
+
+        match classInitialisation with
         | NothingToDo state ->
             // Our own frame, so the restore below can target it by id: on the suspension path the
             // *active* frame is the class initialiser's, not ours.
