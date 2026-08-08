@@ -130,6 +130,36 @@ module NativeRuntimeMethodHandle =
             Error
                 $"declaring type %O{declaringType} is an array; array intrinsic methods (Get/Set/Address) are not represented in the method-handle registry, so no handle should name one"
 
+    /// CoreCLR's `MethodDesc::IsClassConstructorOrCtor` (method.hpp:491), which
+    /// `RuntimeMethodHandle::IsConstructor` (runtimehandles.cpp:2135) returns verbatim:
+    ///
+    ///     DWORD dwAttrs = GetAttrs();
+    ///     if (IsMdRTSpecialName(dwAttrs))
+    ///     {
+    ///         LPCUTF8 name = GetName();
+    ///         return IsMdInstanceInitializer(dwAttrs, name) || IsMdClassConstructor(dwAttrs, name);
+    ///     }
+    ///     return FALSE;
+    ///
+    /// Both inner macros re-test `mdRTSpecialName` and compare the name with `strcmp`
+    /// (corhdr.h:433-435), so the predicate is exactly: the `RTSpecialName` flag is set, and the
+    /// name is `.ctor` or `.cctor` (case-sensitively). Neither macro consults `mdStatic`, so a
+    /// `.cctor` is recognised by flag and name alone; and the flag alone does not suffice, since
+    /// `RTSpecialName` is also set on other runtime-special members.
+    ///
+    /// Despite the FCall's name this covers *class* constructors too, and `RuntimeType.GetMethodBase`
+    /// (RuntimeType.CoreCLR.cs:1932) relies on that: the answer selects whether the guest is handed a
+    /// `RuntimeConstructorInfo` or a `RuntimeMethodInfo`.
+    ///
+    /// This is deliberately not shared with the `.ctor` searches in `IlMachineStateExecution`
+    /// (fs:1728, 1783, 1793), which answer a different question -- whether a type has a
+    /// parameterless *instance* constructor to invoke -- and so need arity and staticness while
+    /// excluding `.cctor`. CoreCLR draws the same distinction, between `IsCtor` (method.hpp:967) and
+    /// this predicate.
+    let isConstructorOrClassConstructor (attributes : MethodAttributes) (name : string) : bool =
+        attributes.HasFlag MethodAttributes.RTSpecialName
+        && (name = ".ctor" || name = ".cctor")
+
     /// The instantiation CoreCLR's `MethodDesc::LoadMethodInstantiation` (method.cpp:793) reports
     /// for a method, expressed over PawPrint's representation so it can be pinned independently of
     /// the QCall plumbing. The two counts are exactly the ones `isGenericMethodDefinition` above
@@ -1088,6 +1118,30 @@ module NativeRuntimeMethodHandle =
                     (EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr target))
                     ctx.Thread
                     state
+
+            NativeHandlerResult.completed state |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeMethodHandle",
+          "IsConstructor",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System",
+                                              "RuntimeMethodHandleInternal",
+                                              generics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) when generics.IsEmpty ->
+            // CoreCLR (runtimehandles.cpp:2135): asserts non-null and returns
+            // pMethod->IsClassConstructorOrCtor(). See `isConstructorOrClassConstructor` above for
+            // the predicate; it reads the same two things CoreCLR does, the method's attributes and
+            // its metadata name.
+            let operation = "RuntimeMethodHandle.IsConstructor"
+
+            let methodInfo =
+                resolveMethodInfoFromHandleArg operation state instruction.Arguments.[0]
+
+            let result =
+                isConstructorOrClassConstructor methodInfo.MethodAttributes methodInfo.Name
+
+            let state = IlMachineState.pushToEvalStack (CliType.ofBool result) ctx.Thread state
 
             NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib",
