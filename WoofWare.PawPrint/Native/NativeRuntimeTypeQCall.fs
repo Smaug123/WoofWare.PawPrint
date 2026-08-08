@@ -211,15 +211,20 @@ module NativeRuntimeTypeQCall =
                         readTypeHandleInstantiationElement ctx.BaseClassTypes operation state instantiationPointer index
                 ]
 
-            // Validate the special-constraint flags (NotNullableValueTypeConstraint /
-            // ReferenceTypeConstraint / DefaultConstructorConstraint) before
-            // instantiating. Base-type and interface (`Constraints` array)
-            // requirements are not validated; see issue #752.
-            let constraintViolation =
-                openGenericTypeInfoForValidation state typeHandleTarget
-                |> Option.bind (fun typeInfo ->
-                    validateSpecialConstraints ctx.BaseClassTypes state typeInfo genericArguments
-                )
+            // Validate the parameter list's constraints before instantiating: the special-constraint
+            // flags (NotNullableValueTypeConstraint / ReferenceTypeConstraint /
+            // DefaultConstructorConstraint), the `allows ref struct` rejection, and the base-type
+            // and interface requirements from the GenericParamConstraint table.
+            //
+            // Pointers, byrefs and `void` never reach here: the managed `RuntimeType.MakeGenericType`
+            // screens them out (`SanityCheckGenericArguments` /
+            // `ThrowIfTypeNeverValidGenericArgument`) before the QCall, and PawPrint interprets that
+            // BCL code like any other.
+            let state, constraintViolation =
+                match openGenericTypeInfoForValidation state typeHandleTarget with
+                | None -> state, None
+                | Some typeInfo ->
+                    validateConstraints ctx.LoggerFactory ctx.BaseClassTypes state typeInfo genericArguments
 
             match constraintViolation with
             | Some _message ->

@@ -17,6 +17,13 @@ type GenericParamMetadata =
         Variance : GenericVariance option
         Constraint : GenericConstraint option
         RequiresParameterlessConstructor : bool
+        /// The <c>allows ref struct</c> anti-constraint (<c>gpAllowByRefLike</c>, corhdr.h:845).
+        /// Unlike every other entry here it *widens* what the parameter accepts: without it, a
+        /// byref-like type argument is rejected (CoreCLR `TypeVarTypeDesc::SatisfiesConstraints`,
+        /// typedesc.cpp:1606). It is orthogonal to <see cref="Constraint"/> rather than another
+        /// member of that mutually-exclusive pair, so it lives in its own field alongside
+        /// <see cref="RequiresParameterlessConstructor"/>.
+        AllowsByRefLike : bool
         /// The general (base-type and interface) constraints declared on this parameter,
         /// from the GenericParamConstraint table (ECMA-335 §II.22.21).
         /// Each entry is the constraint type as a TypeDefn, decoded relative to
@@ -56,6 +63,12 @@ type GenericParamFromMetadata = GenericParameter * GenericParamMetadata
 
 [<RequireQualifiedAccess>]
 module GenericParameter =
+    /// <c>gpAllowByRefLike</c> (corhdr.h:845), the metadata flag behind <c>allows ref struct</c>.
+    /// Spelled as a literal rather than <c>GenericParameterAttributes.AllowByRefLike</c> because
+    /// that enum member was added in .NET 9 and this project targets net8.0.
+    let private allowByRefLikeFlag : GenericParameterAttributes =
+        LanguagePrimitives.EnumOfValue 0x0020
+
     /// Decode a single constraint target (a TypeDef, TypeRef, or TypeSpec entity
     /// handle from the GenericParamConstraint table) into a TypeDefn.
     ///
@@ -162,6 +175,7 @@ module GenericParameter =
                     Variance = variance
                     Constraint = constr
                     RequiresParameterlessConstructor = requiresParamlessCons
+                    AllowsByRefLike = param.Attributes.HasFlag allowByRefLikeFlag
                     Constraints = constraints
                 }
 
