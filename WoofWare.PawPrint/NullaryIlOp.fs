@@ -2086,56 +2086,47 @@ module NullaryIlOp =
             let popped, state = IlMachineState.popEvalStack currentThread state
             let converted = EvalStackValue.toNativeInt popped
 
-            let state =
+            // Crossing from byref-world to native-pointer-world: subsequent
+            // pointer arithmetic must be byte-stride per ECMA-335 §III.1.5,
+            // so anchor a `ReinterpretAs T` projection on plain array
+            // byrefs. Plain byrefs (no anchor) keep element-stride
+            // arithmetic to match `Unsafe.Add<T>`.
+            let conv =
                 match converted with
-                | None -> failwith "TODO: Conv_I conversion failure unimplemented"
-                | Some conv ->
-                    // Crossing from byref-world to native-pointer-world: subsequent
-                    // pointer arithmetic must be byte-stride per ECMA-335 §III.1.5,
-                    // so anchor a `ReinterpretAs T` projection on plain array
-                    // byrefs. Plain byrefs (no anchor) keep element-stride
-                    // arithmetic to match `Unsafe.Add<T>`.
-                    let conv =
-                        match conv with
-                        | NativeIntSource.ManagedPointer ptr ->
-                            ManagedPointerByteView.anchorByteViewIfPlainArrayByref corelib state ptr
-                            |> NativeIntSource.ManagedPointer
-                        | other -> other
+                | NativeIntSource.ManagedPointer ptr ->
+                    ManagedPointerByteView.anchorByteViewIfPlainArrayByref corelib state ptr
+                    |> NativeIntSource.ManagedPointer
+                | other -> other
 
-                    state
-                    |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt conv) currentThread
+            let state =
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt conv) currentThread
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
 
             (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Conv_I1 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
-            let converted = EvalStackValue.convToInt8 popped state.PointerHashCounters
+            let conv, counters = EvalStackValue.convToInt8 popped state.PointerHashCounters
 
             let state =
-                match converted with
-                | None -> failwith "TODO: Conv_I1 conversion failure unimplemented"
-                | Some (conv, counters) ->
-                    { state with
-                        PointerHashCounters = counters
-                    }
-                    |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim conv)) currentThread
+                { state with
+                    PointerHashCounters = counters
+                }
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim conv)) currentThread
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
 
             (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Conv_I2 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
-            let converted = EvalStackValue.convToInt16 popped state.PointerHashCounters
+            let conv, counters = EvalStackValue.convToInt16 popped state.PointerHashCounters
 
             let state =
-                match converted with
-                | None -> failwith "TODO: Conv_I2 conversion failure unimplemented"
-                | Some (conv, counters) ->
-                    { state with
-                        PointerHashCounters = counters
-                    }
-                    |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim conv)) currentThread
+                { state with
+                    PointerHashCounters = counters
+                }
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim conv)) currentThread
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
 
@@ -2156,42 +2147,33 @@ module NullaryIlOp =
             (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Conv_I8 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
-            let converted = EvalStackValue.convToInt64 popped
+            let conv = EvalStackValue.convToInt64 popped
 
             let state =
-                match converted with
-                | None -> failwith "TODO: Conv_I8 conversion failure unimplemented"
-                | Some conv ->
-                    state
-                    |> IlMachineState.pushToEvalStack' (EvalStackValue.Int64 conv) currentThread
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int64 conv) currentThread
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
 
             (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Conv_R4 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
-            let converted = EvalStackValue.convToFloat32 popped
+            let conv = EvalStackValue.convToFloat32 popped
 
             let state =
-                match converted with
-                | None -> failwith "TODO: Conv_R4 conversion failure unimplemented"
-                | Some conv ->
-                    state
-                    |> IlMachineState.pushToEvalStack' (EvalStackValue.Float conv) currentThread
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Float conv) currentThread
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
 
             (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Conv_R8 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
-            let converted = EvalStackValue.convToFloat64 popped
+            let conv = EvalStackValue.convToFloat64 popped
 
             let state =
-                match converted with
-                | None -> failwith "TODO: Conv_R8 conversion failure unimplemented"
-                | Some conv ->
-                    state
-                    |> IlMachineState.pushToEvalStack' (EvalStackValue.Float conv) currentThread
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Float conv) currentThread
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
 
@@ -2200,65 +2182,56 @@ module NullaryIlOp =
             let popped, state = IlMachineState.popEvalStack currentThread state
             let converted = EvalStackValue.toUnsignedNativeInt popped
 
-            let state =
+            // NativeIntSource.Verbatim backs the native-int stack slot with
+            // a signed int64, but the bits are what matter: signed and
+            // unsigned native-int comparisons reinterpret the slot as
+            // needed. `int64 (conv : uint64)` is a bit-exact reinterpret
+            // cast in F#, which is what ECMA-335 requires here (truncate
+            // high-order bits beyond the native word size).
+            let conv =
                 match converted with
-                | None -> failwith "TODO: Conv_U conversion failure unimplemented"
-                | Some conv ->
-                    // NativeIntSource.Verbatim backs the native-int stack slot with
-                    // a signed int64, but the bits are what matter: signed and
-                    // unsigned native-int comparisons reinterpret the slot as
-                    // needed. `int64 (conv : uint64)` is a bit-exact reinterpret
-                    // cast in F#, which is what ECMA-335 requires here (truncate
-                    // high-order bits beyond the native word size).
-                    let conv =
-                        match conv with
-                        | UnsignedNativeIntSource.Verbatim conv -> int64 conv |> NativeIntSource.Verbatim
-                        | UnsignedNativeIntSource.FromManagedPointer ptr ->
-                            // Crossing from byref-world to native-pointer-world: subsequent
-                            // pointer arithmetic must be byte-stride per ECMA-335 §III.1.5,
-                            // so anchor a `ReinterpretAs T` projection on plain array
-                            // byrefs. Plain byrefs (no anchor) keep element-stride
-                            // arithmetic to match `Unsafe.Add<T>`.
-                            ManagedPointerByteView.anchorByteViewIfPlainArrayByref corelib state ptr
-                            |> NativeIntSource.ManagedPointer
-                        | UnsignedNativeIntSource.FromSyntheticCrossArrayStorage i ->
-                            NativeIntSource.SyntheticCrossArrayOffset i
-                        | UnsignedNativeIntSource.FromOpaqueHashBits bits -> NativeIntSource.OpaqueHashBits bits
+                | UnsignedNativeIntSource.Verbatim conv -> int64 conv |> NativeIntSource.Verbatim
+                | UnsignedNativeIntSource.FromManagedPointer ptr ->
+                    // Crossing from byref-world to native-pointer-world: subsequent
+                    // pointer arithmetic must be byte-stride per ECMA-335 §III.1.5,
+                    // so anchor a `ReinterpretAs T` projection on plain array
+                    // byrefs. Plain byrefs (no anchor) keep element-stride
+                    // arithmetic to match `Unsafe.Add<T>`.
+                    ManagedPointerByteView.anchorByteViewIfPlainArrayByref corelib state ptr
+                    |> NativeIntSource.ManagedPointer
+                | UnsignedNativeIntSource.FromSyntheticCrossArrayStorage i ->
+                    NativeIntSource.SyntheticCrossArrayOffset i
+                | UnsignedNativeIntSource.FromOpaqueHashBits bits -> NativeIntSource.OpaqueHashBits bits
 
-                    state
-                    |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt conv) currentThread
+            let state =
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt conv) currentThread
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
 
             (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Conv_U1 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
-            let converted = EvalStackValue.convToUInt8 popped state.PointerHashCounters
+            let conv, counters = EvalStackValue.convToUInt8 popped state.PointerHashCounters
 
             let state =
-                match converted with
-                | None -> failwith "TODO: Conv_U1 conversion failure unimplemented"
-                | Some (conv, counters) ->
-                    { state with
-                        PointerHashCounters = counters
-                    }
-                    |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim conv)) currentThread
+                { state with
+                    PointerHashCounters = counters
+                }
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim conv)) currentThread
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
 
             (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Conv_U2 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
-            let converted = EvalStackValue.convToUInt16 popped state.PointerHashCounters
+            let conv, counters = EvalStackValue.convToUInt16 popped state.PointerHashCounters
 
             let state =
-                match converted with
-                | None -> failwith "TODO: Conv_U2 conversion failure unimplemented"
-                | Some (conv, counters) ->
-                    { state with
-                        PointerHashCounters = counters
-                    }
-                    |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim conv)) currentThread
+                { state with
+                    PointerHashCounters = counters
+                }
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim conv)) currentThread
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
 
@@ -2279,14 +2252,11 @@ module NullaryIlOp =
             (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Conv_U8 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
-            let converted = EvalStackValue.convToUInt64 popped
+            let conv = EvalStackValue.convToUInt64 popped
 
             let state =
-                match converted with
-                | None -> failwith "TODO: Conv_U8 conversion failure unimplemented"
-                | Some conv ->
-                    state
-                    |> IlMachineState.pushToEvalStack' (EvalStackValue.Int64 conv) currentThread
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int64 conv) currentThread
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
 
@@ -3139,14 +3109,11 @@ module NullaryIlOp =
         | Break -> failwith "TODO: Break unimplemented"
         | Conv_r_un ->
             let popped, state = IlMachineState.popEvalStack currentThread state
-            let converted = EvalStackValue.convUnsignedToFloat popped
+            let conv = EvalStackValue.convUnsignedToFloat popped
 
             let state =
-                match converted with
-                | None -> failwith "TODO: Conv_r_un conversion failure unimplemented"
-                | Some conv ->
-                    state
-                    |> IlMachineState.pushToEvalStack' (EvalStackValue.Float conv) currentThread
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Float conv) currentThread
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
 

@@ -1486,9 +1486,7 @@ module TestBinaryArithmetic =
 
     let private convU8AndAdd (state : IlMachineState) (ptr : EvalStackValue) (capacity : int64) : EvalStackValue =
         let widened : EvalStackValue =
-            match EvalStackValue.convToUInt64 ptr with
-            | Some src -> EvalStackValue.Int64 src
-            | None -> failwith $"convToUInt64 returned None for %O{ptr}"
+            EvalStackValue.convToUInt64 ptr |> EvalStackValue.Int64
 
         execute ArithmeticOperation.add state widened (EvalStackValue.Int64 (Int64Source.Verbatim capacity))
 
@@ -1498,13 +1496,11 @@ module TestBinaryArithmetic =
         let ptr = byteViewPointer arr 1 3
 
         let widened : EvalStackValue =
-            match EvalStackValue.convToUInt64 ptr with
-            | Some src -> EvalStackValue.Int64 src
-            | None -> failwith "convToUInt64 returned None"
+            EvalStackValue.convToUInt64 ptr |> EvalStackValue.Int64
 
         let recovered : NativeIntSource =
             match EvalStackValue.toUnsignedNativeInt widened with
-            | Some (UnsignedNativeIntSource.FromManagedPointer mp) -> NativeIntSource.ManagedPointer mp
+            | UnsignedNativeIntSource.FromManagedPointer mp -> NativeIntSource.ManagedPointer mp
             | other -> failwith $"expected FromManagedPointer, got %O{other}"
 
         let asNativeInt = EvalStackValue.NativeInt recovered
@@ -1518,14 +1514,9 @@ module TestBinaryArithmetic =
         let ptr = byteViewPointer arr 2 1
 
         let widened : EvalStackValue =
-            match EvalStackValue.convToInt64 ptr with
-            | Some src -> EvalStackValue.Int64 src
-            | None -> failwith "convToInt64 returned None"
+            EvalStackValue.convToInt64 ptr |> EvalStackValue.Int64
 
-        let recovered : NativeIntSource =
-            match EvalStackValue.toNativeInt widened with
-            | Some src -> src
-            | None -> failwith "toNativeInt returned None"
+        let recovered : NativeIntSource = EvalStackValue.toNativeInt widened
 
         if not (EvalStackValueComparisons.ceq ptr (EvalStackValue.NativeInt recovered)) then
             failwith $"expected Conv.I8 → Conv.I to round-trip the byref, got %O{recovered}"
@@ -1536,7 +1527,7 @@ module TestBinaryArithmetic =
         // This keeps later arithmetic on the result usable without dragging the
         // null-pointer special case through every arm.
         match EvalStackValue.convToUInt64 (EvalStackValue.ManagedPointer ManagedPointerSource.Null) with
-        | Some (Int64Source.Verbatim 0L) -> ()
+        | Int64Source.Verbatim 0L -> ()
         | other -> failwith $"expected null → verbatim 0, got %O{other}"
 
     [<Test>]
@@ -1548,7 +1539,7 @@ module TestBinaryArithmetic =
 
         let recovered : NativeIntSource =
             match EvalStackValue.toUnsignedNativeInt advanced with
-            | Some (UnsignedNativeIntSource.FromManagedPointer mp) -> NativeIntSource.ManagedPointer mp
+            | UnsignedNativeIntSource.FromManagedPointer mp -> NativeIntSource.ManagedPointer mp
             | other -> failwith $"expected FromManagedPointer after Conv.U, got %O{other}"
 
         // Original byref was at array index 1 with byte cursor 0; advancing 5 bytes
@@ -1641,7 +1632,7 @@ module TestBinaryArithmetic =
                     let advanced = convU8AndAdd state ptr (int64 capacity)
 
                     match EvalStackValue.toUnsignedNativeInt advanced with
-                    | Some (UnsignedNativeIntSource.FromManagedPointer mp) ->
+                    | UnsignedNativeIntSource.FromManagedPointer mp ->
                         EvalStackValue.NativeInt (NativeIntSource.ManagedPointer mp)
                     | other -> failwith $"unexpected: %O{other}"
 

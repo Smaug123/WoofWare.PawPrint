@@ -211,17 +211,17 @@ module EvalStackValue =
     let private convRUnFromInt64 (value : int64) : float = (# "conv.r.un" value : float #)
 
     /// The conversion performed by Conv_u.
-    let toUnsignedNativeInt (value : EvalStackValue) : UnsignedNativeIntSource option =
+    let toUnsignedNativeInt (value : EvalStackValue) : UnsignedNativeIntSource =
         // Table III.8. Negative inputs are bit-reinterpreted (zero-extended
         // for Int32, same bits for Int64/NativeInt); the F# `uint32`/`uint64`
         // conversions from signed already do this.
         match value with
         | EvalStackValue.Int32 int32Source ->
             let i = Int32Source.value "Conv_U" int32Source
-            Some (uint64 (uint32 i) |> UnsignedNativeIntSource.Verbatim)
-        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> Some (uint64 i |> UnsignedNativeIntSource.Verbatim)
+            uint64 (uint32 i) |> UnsignedNativeIntSource.Verbatim
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> uint64 i |> UnsignedNativeIntSource.Verbatim
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset i) ->
-            Some (UnsignedNativeIntSource.FromSyntheticCrossArrayStorage i)
+            UnsignedNativeIntSource.FromSyntheticCrossArrayStorage i
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
             // Inversion of `Conv.U8` / `Conv.I8` followed by `Conv.U`. On a
             // 64-bit interpreter the widening is bit-preserving, so the
@@ -231,23 +231,21 @@ module EvalStackValue =
             // `UnmanagedMemoryStream.Initialize` idiom checks for; modelling
             // that would require revisiting `NATIVE_INT_SIZE`.
             match src with
-            | NativeIntSource.ManagedPointer ptr -> Some (UnsignedNativeIntSource.FromManagedPointer ptr)
-            | NativeIntSource.SyntheticCrossArrayOffset s ->
-                Some (UnsignedNativeIntSource.FromSyntheticCrossArrayStorage s)
-            | NativeIntSource.Verbatim n -> Some (UnsignedNativeIntSource.Verbatim (uint64 n))
+            | NativeIntSource.ManagedPointer ptr -> UnsignedNativeIntSource.FromManagedPointer ptr
+            | NativeIntSource.SyntheticCrossArrayOffset s -> UnsignedNativeIntSource.FromSyntheticCrossArrayStorage s
+            | NativeIntSource.Verbatim n -> UnsignedNativeIntSource.Verbatim (uint64 n)
             | _ -> failwith $"TODO: Conv_U from widened native int with non-pointer source %O{src}"
         | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) ->
             // `conv.u` narrows synthesised hash bits from int64 width back to
             // native-int width. Preserve the synthesis tag so downstream code
             // (e.g. `BitOperations.RotateLeft`'s `(nuint)` cast) sees the same
             // contract: deterministic numeric content, not a real pointer.
-            UnsignedNativeIntSource.FromOpaqueHashBits bits |> Some
+            UnsignedNativeIntSource.FromOpaqueHashBits bits
         | EvalStackValue.NativeInt i ->
             match i with
-            | NativeIntSource.Verbatim i -> uint64 i |> UnsignedNativeIntSource.Verbatim |> Some
-            | NativeIntSource.SyntheticCrossArrayOffset i ->
-                UnsignedNativeIntSource.FromSyntheticCrossArrayStorage i |> Some
-            | NativeIntSource.ManagedPointer ptr -> UnsignedNativeIntSource.FromManagedPointer ptr |> Some
+            | NativeIntSource.Verbatim i -> uint64 i |> UnsignedNativeIntSource.Verbatim
+            | NativeIntSource.SyntheticCrossArrayOffset i -> UnsignedNativeIntSource.FromSyntheticCrossArrayStorage i
+            | NativeIntSource.ManagedPointer ptr -> UnsignedNativeIntSource.FromManagedPointer ptr
             | NativeIntSource.FunctionPointer methodInfo ->
                 failwith $"Conv_U: refusing to convert function pointer %O{methodInfo} to unsigned native int"
             | NativeIntSource.FieldHandlePtr handle ->
@@ -283,38 +281,36 @@ module EvalStackValue =
                 failwith $"Conv_U: refusing to convert module handle %s{moduleName} to unsigned native int"
             | NativeIntSource.MetadataImportHandle moduleName ->
                 failwith $"Conv_U: refusing to convert metadata import handle %s{moduleName} to unsigned native int"
-            | NativeIntSource.OpaqueHashBits bits -> UnsignedNativeIntSource.FromOpaqueHashBits bits |> Some
-        | EvalStackValue.Float f -> convUFromFloat f |> UnsignedNativeIntSource.Verbatim |> Some
+            | NativeIntSource.OpaqueHashBits bits -> UnsignedNativeIntSource.FromOpaqueHashBits bits
+        | EvalStackValue.Float f -> convUFromFloat f |> UnsignedNativeIntSource.Verbatim
         | EvalStackValue.ManagedPointer managedPointerSource ->
-            UnsignedNativeIntSource.FromManagedPointer managedPointerSource |> Some
-        | EvalStackValue.NullObjectRef ->
-            ManagedPointerSource.Null |> UnsignedNativeIntSource.FromManagedPointer |> Some
+            UnsignedNativeIntSource.FromManagedPointer managedPointerSource
+        | EvalStackValue.NullObjectRef -> ManagedPointerSource.Null |> UnsignedNativeIntSource.FromManagedPointer
         | EvalStackValue.ObjectRef _
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_U" value
 
     /// The conversion performed by Conv_i.
-    let toNativeInt (value : EvalStackValue) : NativeIntSource option =
+    let toNativeInt (value : EvalStackValue) : NativeIntSource =
         match value with
-        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> i |> convIFromInt64 |> NativeIntSource.Verbatim |> Some
-        | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset i) ->
-            NativeIntSource.SyntheticCrossArrayOffset i |> Some
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> i |> convIFromInt64 |> NativeIntSource.Verbatim
+        | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset i) -> NativeIntSource.SyntheticCrossArrayOffset i
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
             // Inversion of `Conv.U8` / `Conv.I8` followed by `Conv.I`. See
             // the matching arm in `toUnsignedNativeInt` for the architecture
             // assumption.
-            Some src
+            src
         | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) ->
             // `conv.i` narrows synthesised hash bits from int64 width back to
             // native-int width. The tag is preserved so the bits remain
             // distinguishable from real-pointer NativeInt sources.
-            NativeIntSource.OpaqueHashBits bits |> Some
+            NativeIntSource.OpaqueHashBits bits
         | EvalStackValue.Int32 int32Source ->
             let i = Int32Source.value "Conv_I" int32Source
-            i |> convIFromInt32 |> NativeIntSource.Verbatim |> Some
-        | EvalStackValue.NativeInt src -> Some src
-        | EvalStackValue.Float f -> f |> convIFromFloat |> NativeIntSource.Verbatim |> Some
-        | EvalStackValue.ManagedPointer ptr -> NativeIntSource.ManagedPointer ptr |> Some
-        | EvalStackValue.NullObjectRef -> ManagedPointerSource.Null |> NativeIntSource.ManagedPointer |> Some
+            i |> convIFromInt32 |> NativeIntSource.Verbatim
+        | EvalStackValue.NativeInt src -> src
+        | EvalStackValue.Float f -> f |> convIFromFloat |> NativeIntSource.Verbatim
+        | EvalStackValue.ManagedPointer ptr -> NativeIntSource.ManagedPointer ptr
+        | EvalStackValue.NullObjectRef -> ManagedPointerSource.Null |> NativeIntSource.ManagedPointer
         | EvalStackValue.ObjectRef _
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_I" value
 
@@ -335,38 +331,38 @@ module EvalStackValue =
     /// `(sbyte)(long)ptr` agree by construction rather than by coincidence.
     /// CoreLib chooses between those spellings with `#if TARGET_64BIT` inside
     /// `IntPtr.GetHashCode` (IntPtr.cs:90-97), so they have to.
-    let convToInt8 (value : EvalStackValue) (counters : PointerHashCounters) : (int32 * PointerHashCounters) option =
+    let convToInt8 (value : EvalStackValue) (counters : PointerHashCounters) : int32 * PointerHashCounters =
         match value with
         | EvalStackValue.Int32 int32Source ->
             let i = Int32Source.value "Conv_I1" int32Source
-            Some (convI1FromInt32 i, counters)
-        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> Some (convI1FromInt64 i, counters)
+            convI1FromInt32 i, counters
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convI1FromInt64 i, counters
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
-        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) -> Some (convI1FromInt64 bits, counters)
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) -> convI1FromInt64 bits, counters
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _))
         | EvalStackValue.NativeInt src ->
             let bits, counters = PointerHashSynthesis.materialiseHashBits "Conv_I1" src counters
-            Some (convI1FromInt64 bits, counters)
-        | EvalStackValue.Float f -> Some (convI1FromFloat f, counters)
+            convI1FromInt64 bits, counters
+        | EvalStackValue.Float f -> convI1FromFloat f, counters
         | EvalStackValue.ManagedPointer _
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ObjectRef _
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_I1" value
 
     /// `conv.i2`. See `convToInt8` for why this takes `PointerHashCounters`.
-    let convToInt16 (value : EvalStackValue) (counters : PointerHashCounters) : (int32 * PointerHashCounters) option =
+    let convToInt16 (value : EvalStackValue) (counters : PointerHashCounters) : int32 * PointerHashCounters =
         match value with
         | EvalStackValue.Int32 int32Source ->
             let i = Int32Source.value "Conv_I2" int32Source
-            Some (convI2FromInt32 i, counters)
-        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> Some (convI2FromInt64 i, counters)
+            convI2FromInt32 i, counters
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convI2FromInt64 i, counters
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
-        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) -> Some (convI2FromInt64 bits, counters)
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) -> convI2FromInt64 bits, counters
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _))
         | EvalStackValue.NativeInt src ->
             let bits, counters = PointerHashSynthesis.materialiseHashBits "Conv_I2" src counters
-            Some (convI2FromInt64 bits, counters)
-        | EvalStackValue.Float f -> Some (convI2FromFloat f, counters)
+            convI2FromInt64 bits, counters
+        | EvalStackValue.Float f -> convI2FromFloat f, counters
         | EvalStackValue.ManagedPointer _
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ObjectRef _
@@ -408,61 +404,60 @@ module EvalStackValue =
         | EvalStackValue.ObjectRef _
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_I4" value
 
-    let convToInt64 (value : EvalStackValue) : Int64Source option =
+    let convToInt64 (value : EvalStackValue) : Int64Source =
         match value with
         | EvalStackValue.Int32 int32Source ->
             let i = Int32Source.value "Conv_I8" int32Source
-            Some (int64<int> i |> Int64Source.Verbatim)
-        | EvalStackValue.Int64 i -> Some i
+            int64<int> i |> Int64Source.Verbatim
+        | EvalStackValue.Int64 i -> i
         | EvalStackValue.NativeInt src ->
             // `widenedNativeInt` normalises the Verbatim/SyntheticCrossArrayOffset/Null
             // cases back to canonical Int64Source variants. Non-numeric
             // sources (managed pointers, function pointers, type handles)
             // get wrapped so their provenance survives the
             // `Conv.I8 → … → Conv.I` round-trip.
-            Some (Int64Source.widenedNativeInt src true)
-        | EvalStackValue.Float f -> convI8FromFloat f |> Int64Source.Verbatim |> Some
+            Int64Source.widenedNativeInt src true
+        | EvalStackValue.Float f -> convI8FromFloat f |> Int64Source.Verbatim
         | EvalStackValue.ManagedPointer ptr ->
             // Same rationale as the NativeInt arm: keep the pointer's provenance
             // as a widened-native-int so a subsequent `Conv.U` / `Conv.I`
             // recovers the original ManagedPointer.
-            Some (Int64Source.widenedNativeInt (NativeIntSource.ManagedPointer ptr) true)
+            Int64Source.widenedNativeInt (NativeIntSource.ManagedPointer ptr) true
         | EvalStackValue.NullObjectRef ->
-            Some (Int64Source.widenedNativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) true)
+            Int64Source.widenedNativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) true
         | EvalStackValue.ObjectRef _
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_I8" value
 
     /// Then truncates to int64.
-    let convToUInt64 (value : EvalStackValue) : Int64Source option =
+    let convToUInt64 (value : EvalStackValue) : Int64Source =
         match value with
         | EvalStackValue.Int32 int32Source ->
             let i = Int32Source.value "Conv_U8" int32Source
-            Some (int64 (uint32 i) |> Int64Source.Verbatim)
-        | EvalStackValue.Int64 i -> Some i
-        | EvalStackValue.NativeInt src -> Some (Int64Source.widenedNativeInt src false)
-        | EvalStackValue.Float f -> convU8FromFloat f |> Int64Source.Verbatim |> Some
-        | EvalStackValue.ManagedPointer ptr ->
-            Some (Int64Source.widenedNativeInt (NativeIntSource.ManagedPointer ptr) false)
+            int64 (uint32 i) |> Int64Source.Verbatim
+        | EvalStackValue.Int64 i -> i
+        | EvalStackValue.NativeInt src -> Int64Source.widenedNativeInt src false
+        | EvalStackValue.Float f -> convU8FromFloat f |> Int64Source.Verbatim
+        | EvalStackValue.ManagedPointer ptr -> Int64Source.widenedNativeInt (NativeIntSource.ManagedPointer ptr) false
         | EvalStackValue.NullObjectRef ->
-            Some (Int64Source.widenedNativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) false)
+            Int64Source.widenedNativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) false
         | EvalStackValue.ObjectRef _
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_U8" value
 
     /// `conv.u1`, then truncates to int32. See `convToInt8` for why this takes
     /// `PointerHashCounters`.
-    let convToUInt8 (value : EvalStackValue) (counters : PointerHashCounters) : (int32 * PointerHashCounters) option =
+    let convToUInt8 (value : EvalStackValue) (counters : PointerHashCounters) : int32 * PointerHashCounters =
         match value with
         | EvalStackValue.Int32 int32Source ->
             let i = Int32Source.value "Conv_U1" int32Source
-            Some (convU1FromInt32 i, counters)
-        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> Some (convU1FromInt64 i, counters)
+            convU1FromInt32 i, counters
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convU1FromInt64 i, counters
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
-        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) -> Some (convU1FromInt64 bits, counters)
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) -> convU1FromInt64 bits, counters
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _))
         | EvalStackValue.NativeInt src ->
             let bits, counters = PointerHashSynthesis.materialiseHashBits "Conv_U1" src counters
-            Some (convU1FromInt64 bits, counters)
-        | EvalStackValue.Float f -> Some (convU1FromFloat f, counters)
+            convU1FromInt64 bits, counters
+        | EvalStackValue.Float f -> convU1FromFloat f, counters
         | EvalStackValue.ManagedPointer _
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ObjectRef _
@@ -470,19 +465,19 @@ module EvalStackValue =
 
     /// `conv.u2`, then truncates to int32. See `convToInt8` for why this takes
     /// `PointerHashCounters`.
-    let convToUInt16 (value : EvalStackValue) (counters : PointerHashCounters) : (int32 * PointerHashCounters) option =
+    let convToUInt16 (value : EvalStackValue) (counters : PointerHashCounters) : int32 * PointerHashCounters =
         match value with
         | EvalStackValue.Int32 int32Source ->
             let i = Int32Source.value "Conv_U2" int32Source
-            Some (convU2FromInt32 i, counters)
-        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> Some (convU2FromInt64 i, counters)
+            convU2FromInt32 i, counters
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convU2FromInt64 i, counters
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
-        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) -> Some (convU2FromInt64 bits, counters)
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) -> convU2FromInt64 bits, counters
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _))
         | EvalStackValue.NativeInt src ->
             let bits, counters = PointerHashSynthesis.materialiseHashBits "Conv_U2" src counters
-            Some (convU2FromInt64 bits, counters)
-        | EvalStackValue.Float f -> Some (convU2FromFloat f, counters)
+            convU2FromInt64 bits, counters
+        | EvalStackValue.Float f -> convU2FromFloat f, counters
         | EvalStackValue.ManagedPointer _
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ObjectRef _
@@ -516,12 +511,12 @@ module EvalStackValue =
         | EvalStackValue.ObjectRef _
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_U4" value
 
-    let convToFloat32 (value : EvalStackValue) : float option =
+    let convToFloat32 (value : EvalStackValue) : float =
         match value with
         | EvalStackValue.Int32 int32Source ->
             let i = Int32Source.value "Conv_R4" int32Source
-            convR4FromInt32 i |> Some
-        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convR4FromInt64 i |> Some
+            convR4FromInt32 i
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convR4FromInt64 i
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) ->
             failwith "Refusing to convert byte offset to float"
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
@@ -533,19 +528,19 @@ module EvalStackValue =
             // would let these bits become a float, materialising synthesised
             // pointer provenance into the float domain.
             failwith $"Refusing to convert synthesised pointer-hash bits 0x%x{bits} (native int) to float"
-        | EvalStackValue.NativeInt src -> nativeIntBitsForFloatConversion "Conv_R4" src |> convR4FromInt64 |> Some
-        | EvalStackValue.Float f -> convR4FromFloat f |> Some
+        | EvalStackValue.NativeInt src -> nativeIntBitsForFloatConversion "Conv_R4" src |> convR4FromInt64
+        | EvalStackValue.Float f -> convR4FromFloat f
         | EvalStackValue.ManagedPointer _
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ObjectRef _
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_R4" value
 
-    let convToFloat64 (value : EvalStackValue) : float option =
+    let convToFloat64 (value : EvalStackValue) : float =
         match value with
         | EvalStackValue.Int32 int32Source ->
             let i = Int32Source.value "Conv_R8" int32Source
-            convR8FromInt32 i |> Some
-        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convR8FromInt64 i |> Some
+            convR8FromInt32 i
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convR8FromInt64 i
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) ->
             failwith "Refusing to convert byte offset to float"
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
@@ -554,19 +549,19 @@ module EvalStackValue =
             failwith $"Refusing to convert synthesised pointer-hash bits 0x%x{bits} to float"
         | EvalStackValue.NativeInt (NativeIntSource.OpaqueHashBits bits) ->
             failwith $"Refusing to convert synthesised pointer-hash bits 0x%x{bits} (native int) to float"
-        | EvalStackValue.NativeInt src -> nativeIntBitsForFloatConversion "Conv_R8" src |> convR8FromInt64 |> Some
-        | EvalStackValue.Float f -> convR8FromFloat f |> Some
+        | EvalStackValue.NativeInt src -> nativeIntBitsForFloatConversion "Conv_R8" src |> convR8FromInt64
+        | EvalStackValue.Float f -> convR8FromFloat f
         | EvalStackValue.ManagedPointer _
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ObjectRef _
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_R8" value
 
-    let convUnsignedToFloat (value : EvalStackValue) : float option =
+    let convUnsignedToFloat (value : EvalStackValue) : float =
         match value with
         | EvalStackValue.Int32 int32Source ->
             let i = Int32Source.value "Conv_R_un" int32Source
-            convRUnFromInt32 i |> Some
-        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convRUnFromInt64 i |> Some
+            convRUnFromInt32 i
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convRUnFromInt64 i
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) ->
             failwith "Refusing to convert byte offset to float"
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
@@ -575,7 +570,7 @@ module EvalStackValue =
             failwith $"Refusing to convert synthesised pointer-hash bits 0x%x{bits} to float"
         | EvalStackValue.NativeInt (NativeIntSource.OpaqueHashBits bits) ->
             failwith $"Refusing to convert synthesised pointer-hash bits 0x%x{bits} (native int) to float"
-        | EvalStackValue.NativeInt src -> nativeIntBitsForFloatConversion "Conv_R_Un" src |> convRUnFromInt64 |> Some
+        | EvalStackValue.NativeInt src -> nativeIntBitsForFloatConversion "Conv_R_Un" src |> convRUnFromInt64
         | EvalStackValue.Float _ -> failwith "Conv_R_Un: refusing to convert an existing float as unsigned integer"
         | EvalStackValue.ManagedPointer _
         | EvalStackValue.NullObjectRef

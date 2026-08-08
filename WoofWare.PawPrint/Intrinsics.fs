@@ -521,9 +521,7 @@ module Intrinsics =
                 let valueArg, state = IlMachineState.popEvalStack currentThread state
                 let byrefArg, state = IlMachineState.popEvalStack currentThread state
 
-                let value =
-                    EvalStackValue.convToInt64 valueArg
-                    |> Option.defaultWith (fun () -> failwith $"%s{operation}: expected int64 value, got %O{valueArg}")
+                let value = EvalStackValue.convToInt64 valueArg
 
                 match popManagedByrefArgument operation byrefArg with
                 | ManagedPointerSource.Null -> interlockedNullLocation state
@@ -636,9 +634,7 @@ module Intrinsics =
                 let valueArg, state = IlMachineState.popEvalStack currentThread state
                 let byrefArg, state = IlMachineState.popEvalStack currentThread state
 
-                let value =
-                    EvalStackValue.convToInt64 valueArg
-                    |> Option.defaultWith (fun () -> failwith $"%s{operation}: expected int64 value, got %O{valueArg}")
+                let value = EvalStackValue.convToInt64 valueArg
 
                 match popManagedByrefArgument operation byrefArg with
                 | ManagedPointerSource.Null -> interlockedNullLocation state
