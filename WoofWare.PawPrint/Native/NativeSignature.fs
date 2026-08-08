@@ -14,8 +14,9 @@ module NativeSignature =
 
     /// Resolve a Signature `_sig` argument to the owning assembly plus the
     /// COR signature `BlobHandle` it points at. PawPrint installs `_sig` as a
-    /// managed byref over a field's PE-metadata signature blob; this helper
-    /// unwraps that byref. Callers that only need the raw bytes can use
+    /// managed byref over a field's or a method's PE-metadata signature blob
+    /// (see `fillFieldSignature` / `fillMethodSignature`); this helper unwraps
+    /// that byref. Callers that only need the raw bytes can use
     /// `resolveSignatureBlob`; callers that need to seek with a `BlobReader`
     /// (e.g. token-aware parsers) acquire a fresh reader from the returned
     /// handle.
@@ -31,21 +32,26 @@ module NativeSignature =
                                                                                              _))) -> peByteRange
             | other -> failwith $"%s{operation}: expected managed pointer over a PE byte range for sig, got %O{other}"
 
+        let assembly () : DumpedAssembly =
+            state.LoadedAssembly' peByteRange.AssemblyFullName
+            |> Option.defaultWith (fun () ->
+                failwith $"%s{operation}: signature blob references unloaded assembly %s{peByteRange.AssemblyFullName}"
+            )
+
         match peByteRange.Source with
         | PeByteRangePointerSource.FieldSignatureBlob field ->
-            let assembly =
-                state.LoadedAssembly' peByteRange.AssemblyFullName
-                |> Option.defaultWith (fun () ->
-                    failwith
-                        $"%s{operation}: signature blob references unloaded assembly %s{peByteRange.AssemblyFullName}"
-                )
-
+            let assembly = assembly ()
             let mdReader = assembly.PeReader.GetMetadataReader ()
             let fieldDef = mdReader.GetFieldDefinition field.Get
             assembly, fieldDef.Signature
-        | other ->
-            failwith
-                $"%s{operation}: signature `_sig` byref points at non-signature PE byte range %O{other}; only FieldSignatureBlob is currently supported"
+        | PeByteRangePointerSource.MethodSignatureBlob method ->
+            let assembly = assembly ()
+            let mdReader = assembly.PeReader.GetMetadataReader ()
+            let methodDef = mdReader.GetMethodDefinition method.Get
+            assembly, methodDef.Signature
+        | PeByteRangePointerSource.FieldRva _
+        | PeByteRangePointerSource.ManagedResource _ ->
+            failwith $"%s{operation}: signature `_sig` byref points at non-signature PE byte range %O{peByteRange}"
 
     /// Resolve a Signature `_sig` argument to the COR signature blob bytes it
     /// points at. Built on top of `resolveSignatureBlobHandle`.
@@ -207,6 +213,245 @@ module NativeSignature =
 
         state
 
+    /// ECMA II.23.2.3 calling-convention low nibble values that a *method* signature can carry.
+    let private callingConventionVarArg : int = 0x5
+
+    /// The managed `CallingConventions` bits CoreCLR's `SignatureNative::SetCallingConvention`
+    /// (runtimehandles.h:455) derives from the raw ECMA calling-convention byte. Note that this
+    /// is a translation, not the raw byte: `CallingConventions.Standard` is 0x1 while
+    /// `IMAGE_CEE_CS_CALLCONV_DEFAULT` is 0x0.
+    let private callConvStandard : int = 0x1
+    let private callConvVarArgs : int = 0x2
+    let private callConvHasThis : int = 0x20
+    let private callConvExplicitThis : int = 0x40
+
+    let private managedCallingConventionOfHeader (operation : string) (header : SignatureHeader) : int =
+        // CoreCLR dispatches on the blob's own calling convention, not on which handle it was
+        // given, so a FIELD-shaped blob reached from a method handle would take the *field* arm
+        // there. No MethodDef can carry one; assert rather than silently reporting Standard.
+        match header.Kind with
+        | SignatureKind.Method -> ()
+        | other ->
+            failwith
+                $"%s{operation}: method signature blob has signature kind %O{other}, not Method; a MethodDef cannot carry a field or local-variable calling convention"
+
+        let baseBits =
+            if int header.CallingConvention = callingConventionVarArg then
+                callConvVarArgs
+            else
+                callConvStandard
+
+        let withThis =
+            if header.IsInstance then
+                baseBits ||| callConvHasThis
+            else
+                baseBits
+
+        if header.HasExplicitThis then
+            withThis ||| callConvExplicitThis
+        else
+            withThis
+
+    /// The `SigTypeContext` a method-backed `Signature` resolves its blob against: CoreCLR builds
+    /// it from the declaring type's class instantiation plus
+    /// `pMethodDesc->LoadMethodInstantiation()` (`Signature_Init`, runtimehandles.cpp:1622, and
+    /// `SignatureNative::GetTypeContext`, runtimehandles.h:388). Returns the defining assembly too,
+    /// since token resolution against the blob needs it.
+    ///
+    /// A generic method *definition* has no representable context: the handle the introduced-method
+    /// iterator mints carries empty `MethodGenerics` while the method declares type parameters, and
+    /// CoreCLR resolves against the typical instantiation, whose method generic parameters a
+    /// `ConcreteTypeHandle` cannot name (the same limit that parks
+    /// `sourcesPure/MakeGenericMethodOpenArgument.cs`). Fail loudly rather than substitute.
+    let private methodSignatureTypeContext
+        (operation : string)
+        (state : IlMachineState)
+        (methodHandleArg : CliType)
+        : DumpedAssembly *
+          MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> *
+          MetadataMethodIdentity *
+          ImmutableArray<ConcreteTypeHandle> *
+          ImmutableArray<ConcreteTypeHandle>
+        =
+        let identity =
+            NativeRuntimeMethodHandle.resolveMetadataIdentityFromArg operation state methodHandleArg
+
+        let methodInfo =
+            NativeRuntimeMethodHandle.methodInfoOfMetadataIdentity operation state identity
+
+        let assemblyFullName = identity.GetAssemblyFullName ()
+
+        let assembly =
+            state.LoadedAssembly' assemblyFullName
+            |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
+
+        let declaringTypeHandle = identity.GetDeclaringType ()
+
+        let typeGenerics =
+            match declaringTypeHandle with
+            | ConcreteTypeHandle.Concrete _ ->
+                match AllConcreteTypes.lookup declaringTypeHandle state.ConcreteTypes with
+                | Some declaringType -> declaringType.Generics
+                | None ->
+                    failwith
+                        $"%s{operation}: declaring type handle %O{declaringTypeHandle} was not concretized, so the method signature cannot be resolved"
+            | ConcreteTypeHandle.Byref _
+            | ConcreteTypeHandle.Pointer _
+            | ConcreteTypeHandle.FunctionPointer _
+            | ConcreteTypeHandle.OneDimArrayZero _
+            | ConcreteTypeHandle.Array _ ->
+                // CoreCLR reaches this via `declType.GetClassOrArrayInstantiation()`, which for an
+                // array type yields its element type as a one-element instantiation, so the
+                // runtime-generated array methods (Get/Set/Address/.ctor) resolve their signatures
+                // against it. PawPrint stores array element types structurally in the handle rather
+                // than as a generic argument vector, so that projection does not exist here.
+                failwith
+                    $"TODO: %s{operation} on a method whose declaring type is the structural type %O{declaringTypeHandle}; CoreCLR resolves such a signature against GetClassOrArrayInstantiation, which PawPrint does not model"
+
+        let methodGenerics = identity.GetMethodGenerics () |> ImmutableArray.CreateRange
+
+        if methodInfo.Generics.Length <> methodGenerics.Length then
+            let plural =
+                if methodInfo.Generics.Length = 1 then
+                    "generic parameter"
+                else
+                    "generic parameters"
+
+            failwith
+                $"TODO: %s{operation} on generic method definition %s{methodInfo.Name}: it declares %d{methodInfo.Generics.Length} %s{plural} but the handle carries %d{methodGenerics.Length} generic argument(s); CoreCLR resolves the signature against the typical instantiation, whose method generic parameters PawPrint's ConcreteTypeHandle cannot represent"
+
+        assembly, methodInfo, identity, typeGenerics, methodGenerics
+
+    /// Populate the Signature object's `_returnTypeORfieldType`, `_arguments`, `_sig`, `_csig`,
+    /// `_pMethod` and calling-convention fields for the method-backed path, mirroring CoreCLR's
+    /// `Signature_Init` (runtimehandles.cpp:1585) when `pMethodDesc != NULL`. `_declaringType` is
+    /// supplied by the managed constructor, so this helper only fills the runtime-derived fields.
+    ///
+    /// The types come from PawPrint's already-parsed `MethodInfo.Signature` rather than from a
+    /// second parse of the COR blob, so a method's reflected parameter types cannot disagree with
+    /// the types the interpreter binds calls against. `_sig`/`_csig` still point at the blob,
+    /// because the byte-level readers (`GetParameterOffsetInternal`,
+    /// `Signature_GetCustomModifiersAtOffset`, `Signature_AreEqual`) work from the bytes.
+    let private fillMethodSignature
+        (ctx : NativeCallContext)
+        (operation : string)
+        (signatureAddr : ManagedHeapAddress)
+        (methodHandleArg : CliType)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        let assembly, methodInfo, identity, typeGenerics, methodGenerics =
+            methodSignatureTypeContext operation state methodHandleArg
+
+        let concretize (state : IlMachineState) (defn : TypeDefn) : IlMachineState * ConcreteTypeHandle =
+            IlMachineState.concretizeType
+                ctx.LoggerFactory
+                ctx.BaseClassTypes
+                state
+                assembly.Name
+                typeGenerics
+                methodGenerics
+                defn
+
+        // CoreCLR takes the return type from `msig.GetRetTypeHandleThrowing()`, which for a void
+        // return is `System.Void`'s TypeHandle rather than a null one.
+        let state, returnTypeHandle =
+            match methodInfo.Signature.ReturnType with
+            | MethodReturnType.Void ->
+                let state, _, voidHandle =
+                    NativeRuntimeTypeHelpers.concretizeNonGenericCorelibType
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        state
+                        "System"
+                        "Void"
+
+                state, voidHandle
+            | MethodReturnType.Returns ret -> concretize state ret
+
+        let returnTypeAddr, state =
+            IlMachineState.getOrAllocateType
+                ctx.LoggerFactory
+                ctx.BaseClassTypes
+                (RuntimeTypeHandleTarget.Closed returnTypeHandle)
+                state
+
+        let state =
+            setSignatureField state signatureAddr "_returnTypeORfieldType" (CliType.ObjectRef (Some returnTypeAddr))
+
+        let state =
+            setSignatureField
+                state
+                signatureAddr
+                "_managedCallingConventionAndArgIteratorFlags"
+                (CliType.Numeric (
+                    CliNumericType.Int32 (managedCallingConventionOfHeader operation methodInfo.Signature.Header.Get)
+                ))
+
+        // CoreCLR allocates the `_arguments` array unconditionally -- `AllocateSzArray(arrayHandle,
+        // nArgs)` with nArgs possibly 0 -- and the managed `Signature.Arguments` getter asserts it
+        // is non-null, so a nullary method must still get an empty array rather than null.
+        let state, _, runtimeTypeElementHandle =
+            NativeRuntimeTypeHelpers.concretizeNonGenericCorelibType
+                ctx.LoggerFactory
+                ctx.BaseClassTypes
+                state
+                "System"
+                "RuntimeType"
+
+        // CoreCLR sizes `_arguments` with `msig.NumFixedArgs()`, i.e. the parameters before any
+        // VARARG sentinel. A MethodDef signature never carries a sentinel -- only a call site's
+        // MemberRef does -- so the two counts coincide here; assert it rather than assume it,
+        // because if they ever diverge we would silently publish the optional parameters as fixed.
+        let parameterTypes = methodInfo.Signature.ParameterTypes
+
+        if List.length parameterTypes <> methodInfo.Signature.RequiredParameterCount then
+            failwith
+                $"%s{operation}: method %s{methodInfo.Name} has %d{List.length parameterTypes} parameter types but %d{methodInfo.Signature.RequiredParameterCount} required parameters; a MethodDef signature was not expected to carry a VARARG sentinel"
+
+        let arrayAddr, state =
+            IlMachineState.allocateArray
+                (ConcreteTypeHandle.OneDimArrayZero runtimeTypeElementHandle)
+                (fun () -> CliType.ObjectRef None)
+                (List.length parameterTypes)
+                state
+
+        let state =
+            ((state, 0), parameterTypes)
+            ||> List.fold (fun (state, index) parameterType ->
+                let state, handle = concretize state parameterType
+
+                let addr, state =
+                    IlMachineState.getOrAllocateType
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        (RuntimeTypeHandleTarget.Closed handle)
+                        state
+
+                let state =
+                    IlMachineState.setArrayValue arrayAddr (CliType.ObjectRef (Some addr)) index state
+
+                state, index + 1
+            )
+            |> fst
+
+        let state =
+            setSignatureField state signatureAddr "_arguments" (CliType.ObjectRef (Some arrayAddr))
+
+        let peByteRange =
+            IlMachineState.peByteRangeForMethodSignatureBlob assembly (identity.GetMethodDefinitionHandle().Get)
+
+        let state, sigPointer =
+            IlMachineState.peByteRangePointer ctx.LoggerFactory ctx.BaseClassTypes peByteRange state
+
+        let state =
+            setSignatureField state signatureAddr "_sig" (CliType.RuntimePointer (CliRuntimePointer.Managed sigPointer))
+
+        let state =
+            setSignatureField state signatureAddr "_csig" (CliType.Numeric (CliNumericType.Int32 peByteRange.Size))
+
+        setSignatureField state signatureAddr "_pMethod" methodHandleArg
+
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
@@ -270,29 +515,40 @@ module NativeSignature =
                 | other -> failwith $"%s{operation}: expected ObjectRef in ObjectHandleOnStack, got %O{other}"
 
             requireNullCorSig operation instruction.Arguments.[1] instruction.Arguments.[2]
-            requireNullMethodHandle operation instruction.Arguments.[4]
+
+            // CoreCLR's precedence is `if (pMethodDesc != NULL) ... else if (pFieldDesc != NULL)`,
+            // then a caller-supplied raw blob. PawPrint classifies the inputs explicitly instead,
+            // and refuses both-non-null: no managed `Signature` constructor passes both, so a value
+            // arriving that way would be a PawPrint bug, and silently preferring one would hide it.
+            let methodHandle =
+                NativeCall.methodHandleIdOfRuntimeMethodHandleInternal operation instruction.Arguments.[4]
 
             let fieldHandle =
                 NativeRuntimeFieldHandle.fieldHandleOfRuntimeFieldHandleInternal
                     operation
                     state
                     instruction.Arguments.[3]
-                |> Option.defaultWith (fun () ->
-                    failwith
-                        $"TODO: %s{operation} non-field signature parsing is not implemented; fieldHandle was null, pCorSig=%O{instruction.Arguments.[1]}, cCorSig=%O{instruction.Arguments.[2]}, methodHandle=%O{instruction.Arguments.[4]}"
-                )
 
             let state =
-                fillFieldSignature
-                    ctx
-                    operation
-                    signatureAddr
-                    fieldHandle
-                    "_returnTypeORfieldType"
-                    "_managedCallingConventionAndArgIteratorFlags"
-                    "_sig"
-                    "_csig"
-                    state
+                match methodHandle, fieldHandle with
+                | Some _, Some fieldHandle ->
+                    failwith
+                        $"%s{operation}: got both a field handle and a method handle (field %O{fieldHandle}, methodHandle=%O{instruction.Arguments.[4]}); no managed Signature constructor supplies both"
+                | Some _, None -> fillMethodSignature ctx operation signatureAddr instruction.Arguments.[4] state
+                | None, Some fieldHandle ->
+                    fillFieldSignature
+                        ctx
+                        operation
+                        signatureAddr
+                        fieldHandle
+                        "_returnTypeORfieldType"
+                        "_managedCallingConventionAndArgIteratorFlags"
+                        "_sig"
+                        "_csig"
+                        state
+                | None, None ->
+                    failwith
+                        $"TODO: %s{operation} non-field signature parsing is not implemented; fieldHandle was null, pCorSig=%O{instruction.Arguments.[1]}, cCorSig=%O{instruction.Arguments.[2]}, methodHandle=%O{instruction.Arguments.[4]}"
 
             NativeHandlerResult.completed state |> Some
         | "Signature_GetCustomModifiersAtOffset",
@@ -320,9 +576,12 @@ module NativeSignature =
             // caller `Signature.GetCustomModifiersAtOffset` asserts the result is
             // non-null even when cMods = 0, so we always allocate.
             //
-            // Today PawPrint's `_sig` byref is only populated for field-shaped
-            // signatures (see `Signature_Init` / `GetSignature` above), so we use
-            // the declaring type's instantiation as the type context.
+            // The type context follows `SignatureNative::GetTypeContext`
+            // (runtimehandles.h:388): when `_pMethod` is non-null it is the method's
+            // context (declaring-class instantiation plus method instantiation), and
+            // only otherwise is it the declaring type's alone. Both shapes of `_sig`
+            // reach here -- `Signature_Init` populates it for field-backed and
+            // method-backed signatures alike.
             // CMOD_INTERNAL (0x21) carries a `void*` that points at a runtime-only
             // TypeHandle; CoreCLR's own metadata writer never emits it from PE bytes,
             // so we fail loudly if we encounter one.
@@ -370,44 +629,62 @@ module NativeSignature =
                 | CliType.Numeric (CliNumericType.Int32 v) -> v
                 | other -> failwith $"%s{operation}: expected Int32 in Signature._csig, got %O{other}"
 
-            let declaringTypeFieldId =
-                IlMachineState.requiredOwnInstanceFieldId state signatureObj.ConcreteType "_declaringType"
+            let pMethodFieldId =
+                IlMachineState.requiredOwnInstanceFieldId state signatureObj.ConcreteType "_pMethod"
 
-            let declaringTypeAddr =
-                match AllocatedNonArrayObject.DereferenceFieldById declaringTypeFieldId signatureObj with
-                | CliType.ObjectRef (Some addr) -> addr
-                | CliType.ObjectRef None ->
-                    failwith
-                        $"%s{operation}: Signature._declaringType was null; the field-backed slice always carries a declaring RuntimeType"
-                | other ->
-                    failwith $"%s{operation}: expected RuntimeType ObjectRef in Signature._declaringType, got %O{other}"
+            let pMethod =
+                AllocatedNonArrayObject.DereferenceFieldById pMethodFieldId signatureObj
 
-            let declaringTypeObj = ManagedHeap.get declaringTypeAddr state.ManagedHeap
+            let typeGenerics, methodGenerics =
+                match NativeCall.methodHandleIdOfRuntimeMethodHandleInternal operation pMethod with
+                | Some _ ->
+                    let _, _, _, typeGenerics, methodGenerics =
+                        methodSignatureTypeContext operation state pMethod
 
-            let handleFieldId =
-                IlMachineState.requiredOwnInstanceFieldId state declaringTypeObj.ConcreteType "m_handle"
+                    typeGenerics, methodGenerics
+                | None ->
 
-            let declaringTarget =
-                match
-                    AllocatedNonArrayObject.DereferenceFieldById handleFieldId declaringTypeObj
-                    |> CliType.unwrapPrimitiveLike
-                with
-                | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr target)) -> target
-                | other -> failwith $"%s{operation}: expected TypeHandlePtr in RuntimeType.m_handle, got %O{other}"
+                let declaringTypeFieldId =
+                    IlMachineState.requiredOwnInstanceFieldId state signatureObj.ConcreteType "_declaringType"
 
-            let typeGenerics =
-                match declaringTarget with
-                | RuntimeTypeHandleTarget.Closed handle ->
-                    match AllConcreteTypes.lookup handle state.ConcreteTypes with
-                    | Some ct -> ct.Generics
-                    | None ->
+                let declaringTypeAddr =
+                    match AllocatedNonArrayObject.DereferenceFieldById declaringTypeFieldId signatureObj with
+                    | CliType.ObjectRef (Some addr) -> addr
+                    | CliType.ObjectRef None ->
                         failwith
-                            $"%s{operation}: declaring type handle %O{handle} was not concretized, so custom modifiers cannot be resolved"
-                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> ImmutableArray.Empty
-                | RuntimeTypeHandleTarget.GenericParameter _
-                | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
-                    failwith
-                        $"%s{operation}: declaring type %O{declaringTarget} is a generic parameter; the field-backed slice expects a real declaring type"
+                            $"%s{operation}: Signature._declaringType was null; the field-backed slice always carries a declaring RuntimeType"
+                    | other ->
+                        failwith
+                            $"%s{operation}: expected RuntimeType ObjectRef in Signature._declaringType, got %O{other}"
+
+                let declaringTypeObj = ManagedHeap.get declaringTypeAddr state.ManagedHeap
+
+                let handleFieldId =
+                    IlMachineState.requiredOwnInstanceFieldId state declaringTypeObj.ConcreteType "m_handle"
+
+                let declaringTarget =
+                    match
+                        AllocatedNonArrayObject.DereferenceFieldById handleFieldId declaringTypeObj
+                        |> CliType.unwrapPrimitiveLike
+                    with
+                    | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr target)) -> target
+                    | other -> failwith $"%s{operation}: expected TypeHandlePtr in RuntimeType.m_handle, got %O{other}"
+
+                let typeGenerics =
+                    match declaringTarget with
+                    | RuntimeTypeHandleTarget.Closed handle ->
+                        match AllConcreteTypes.lookup handle state.ConcreteTypes with
+                        | Some ct -> ct.Generics
+                        | None ->
+                            failwith
+                                $"%s{operation}: declaring type handle %O{handle} was not concretized, so custom modifiers cannot be resolved"
+                    | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> ImmutableArray.Empty
+                    | RuntimeTypeHandleTarget.GenericParameter _
+                    | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
+                        failwith
+                            $"%s{operation}: declaring type %O{declaringTarget} is a generic parameter; the field-backed slice expects a real declaring type"
+
+                typeGenerics, ImmutableArray.Empty
 
             let assembly, blobHandle = resolveSignatureBlobHandle operation state sigCliValue
             let mdReader = assembly.PeReader.GetMetadataReader ()
@@ -491,7 +768,7 @@ module NativeSignature =
                             state
                             resolvedAssy.Name
                             typeGenerics
-                            ImmutableArray.Empty
+                            methodGenerics
                             typeDefn
 
                     let runtimeTypeAddr, state =

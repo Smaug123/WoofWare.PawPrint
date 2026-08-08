@@ -780,6 +780,12 @@ module IlMachineManagedByref =
                 let mutable blobReader = mdReader.GetBlobReader fieldDef.Signature
                 blobReader.Offset <- byteOffset
                 blobReader.ReadBytes targetSize
+            | PeByteRangePointerSource.MethodSignatureBlob method ->
+                let mdReader = assembly.PeReader.GetMetadataReader ()
+                let methodDef = mdReader.GetMethodDefinition method.Get
+                let mutable blobReader = mdReader.GetBlobReader methodDef.Signature
+                blobReader.Offset <- byteOffset
+                blobReader.ReadBytes targetSize
 
         CliType.ofBytesLike targetTemplate bytes
 

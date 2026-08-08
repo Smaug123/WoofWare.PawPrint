@@ -19,6 +19,9 @@ type PeByteRangePointerSource =
     /// via the assembly's `MetadataReader.GetBlobBytes` rather than through
     /// `PeReader.GetSectionData`.
     | FieldSignatureBlob of field : ComparableFieldDefinitionHandle
+    /// The COR signature blob for a method definition (ECMA II.23.2.1). Same
+    /// storage story as `FieldSignatureBlob`.
+    | MethodSignatureBlob of method : ComparableMethodDefinitionHandle
 
 type PeByteRangePointer =
     {
@@ -34,6 +37,7 @@ type PeByteRangePointer =
             | PeByteRangePointerSource.FieldRva field -> $"field %O{field.Get}"
             | PeByteRangePointerSource.ManagedResource resourceName -> $"managed resource %s{resourceName}"
             | PeByteRangePointerSource.FieldSignatureBlob field -> $"field signature blob for %O{field.Get}"
+            | PeByteRangePointerSource.MethodSignatureBlob method -> $"method signature blob for %O{method.Get}"
 
         $"<PE data %s{this.AssemblyFullName} %s{source} at %d{this.RelativeVirtualAddress} size %d{this.Size}>"
 
@@ -590,7 +594,8 @@ module ManagedPointerSource =
             match peByteRange.Source with
             | PeByteRangePointerSource.FieldRva _
             | PeByteRangePointerSource.ManagedResource _ -> Some 3
-            | PeByteRangePointerSource.FieldSignatureBlob _ -> None
+            | PeByteRangePointerSource.FieldSignatureBlob _
+            | PeByteRangePointerSource.MethodSignatureBlob _ -> None
         // Object fields, static fields, stack slots and the synthetic roots have no
         // stable in-container offset either (see `tryStableAddressBits` and
         // `NullaryIlOp.tryManagedPointerAddressBits`), so there is nothing to pair
