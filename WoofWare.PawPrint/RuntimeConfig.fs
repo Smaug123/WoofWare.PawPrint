@@ -120,6 +120,84 @@ module RuntimeConfig =
     let devPathForAssembly (assemblyPath : string) : string =
         Path.ChangeExtension (assemblyPath, ".runtimeconfig.dev.json")
 
+    /// The property names the hosting layer populates for itself, which a `runtimeconfig.json`
+    /// therefore may not use.
+    ///
+    /// `hostpolicy_context.cpp` adds these before it walks `configProperties`, so the loop's
+    /// `coreclr_property_bag_t::add` returns false for a config entry that reuses one, and the
+    /// launch ends in `LibHostDuplicateProperty` — "It is invalid to specify values for
+    /// properties populated by the hosting layer in the application's .runtimeconfig.json".
+    /// `HOST_RUNTIME_CONTRACT` is added after the loop instead, but checked the same way and
+    /// unconditionally, so it belongs here too.
+    ///
+    /// Exact spellings only: the bag is an `unordered_map` with default equality, so
+    /// `trusted_platform_assemblies` is an ordinary property to a real host.
+    ///
+    /// Two members of `PropertyNameMapping` are deliberately absent. `STARTUP_HOOKS` is added
+    /// after the loop with its result ignored, and hostpolicy explicitly reads a
+    /// config-supplied value back so it can append the environment's hooks to it — config is a
+    /// supported source. `APP_PATHS` is conditional, and handled separately below.
+    let private hostOwnedNames : Set<string> =
+        Set.ofList
+            [
+                "TRUSTED_PLATFORM_ASSEMBLIES"
+                "NATIVE_DLL_SEARCH_DIRECTORIES"
+                "PLATFORM_RESOURCE_ROOTS"
+                "APP_CONTEXT_BASE_DIRECTORY"
+                "APP_CONTEXT_DEPS_FILES"
+                "FX_DEPS_FILE"
+                "PROBING_DIRECTORIES"
+                "RUNTIME_IDENTIFIER"
+                "HOST_RUNTIME_CONTRACT"
+            ]
+
+    /// The opt-in switch that makes `hostpolicy` set `APP_PATHS` itself, at which point a
+    /// config-supplied `APP_PATHS` becomes a duplicate and the launch fails. Without it,
+    /// `APP_PATHS` is an ordinary property. Compared case-insensitively in both name and
+    /// value, as `pal::strcasecmp` does, and the last occurrence wins — which is what the
+    /// deduplicated map this is consulted against already holds.
+    [<Literal>]
+    let private SetAppPathsSwitch = "Microsoft.NETCore.DotNetHostPolicy.SetAppPaths"
+
+    [<Literal>]
+    let private AppPathsName = "APP_PATHS"
+
+    /// Refuse a config that claims a name the hosting layer owns.
+    ///
+    /// Checked after rendering rather than during it, which is the order a real launch uses:
+    /// `parse_opts` renders every value into `m_properties` first, and the collision is only
+    /// detected later, when `hostpolicy_context` copies them into the property bag.
+    ///
+    /// PawPrint has nothing of its own for these to collide *with* — it populates none of
+    /// them (see docs/divergences.md) — so accepting one would not merely diverge, it would
+    /// hand the guest a forged built-in that it has no way to distinguish from the real
+    /// thing, in a configuration that could never have launched on a real runtime.
+    let private rejectHostOwnedNames (values : Map<string, string>) : Result<Map<string, string>, string> =
+        let claimed =
+            values |> Map.toList |> List.map fst |> List.filter hostOwnedNames.Contains
+
+        let setAppPathsRequested =
+            values
+            |> Map.toSeq
+            |> Seq.exists (fun (name, value) ->
+                String.Equals (name, SetAppPathsSwitch, StringComparison.OrdinalIgnoreCase)
+                && String.Equals (value, "true", StringComparison.OrdinalIgnoreCase)
+            )
+
+        let claimed =
+            if setAppPathsRequested && values.ContainsKey AppPathsName then
+                AppPathsName :: claimed
+            else
+                claimed
+
+        match claimed with
+        | [] -> Ok values
+        | claimed ->
+            let names = claimed |> List.sort |> String.concat ", "
+
+            Error
+                $"runtimeconfig.json sets %s{names}, which the hosting layer populates for itself. A real host refuses such a file outright — `coreclr_property_bag_t::add` reports the duplicate and the launch ends in LibHostDuplicateProperty, with 'It is invalid to specify values for properties populated by the hosting layer in the application's .runtimeconfig.json' — so this configuration could not run on CoreCLR at all. PawPrint populates none of these itself, so seeding one would hand the guest a value it would take for the real thing. Remove the property."
+
     /// Materialise a JSON string that the reader accepted as a token but may still refuse to
     /// transcode, because its bytes are not valid UTF-8.
     ///
@@ -204,9 +282,20 @@ module RuntimeConfig =
     /// members are legal JSON that neither parser rejects. `JsonElement.TryGetProperty`
     /// returns the *last*, so using it here would silently disagree with a real host about
     /// which `runtimeOptions` block is in force.
+    /// `NameEquals` rather than `property.Name = name`, because materialising a name we are
+    /// only walking past can fail: a sibling member whose name is not valid UTF-8 would throw
+    /// out of the lookup (see `tryMaterialise`) and take the launch with it, over bytes
+    /// neither we nor a real host ever read. `NameEquals` compares against the raw UTF-8 in
+    /// the document, and still decodes JSON escapes, so an escaped spelling of the section
+    /// name matches exactly as it does for rapidjson.
     let private tryFindFirstMember (name : string) (obj : JsonElement) : JsonElement option =
         obj.EnumerateObject ()
-        |> Seq.tryPick (fun property -> if property.Name = name then Some property.Value else None)
+        |> Seq.tryPick (fun property ->
+            if property.NameEquals name then
+                Some property.Value
+            else
+                None
+        )
 
     /// The UTF-8 byte-order mark, the only encoding preamble `json_parser_t::parse_file`
     /// recognises.
@@ -357,6 +446,7 @@ module RuntimeConfig =
                 renderValue name value
                 |> Result.map (fun rendered -> Map.add name (AppContextProperties.truncateAtNul rendered) acc)
         )
+        |> Result.bind rejectHostOwnedNames
         |> Result.map (fun values ->
             // Already truncated and deduplicated above, so `ofMap`'s collision check cannot
             // fire here; going through it keeps the invariant in one place.

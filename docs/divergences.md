@@ -155,4 +155,6 @@ Console.WriteLine(AppContext.BaseDirectory);
 // PawPrint: falls through to AppContext's GetBaseDirectoryCore() fallback.
 ```
 
-**Where this lives in code**: `AppContextProperties.empty` in `RuntimeConfig.fs` documents the gap; `HostConfig.AppContext` is where a host would supply values if it had any. Closing this would mean deciding what a simulated app's filesystem layout *is*, which is a larger question than the seeding change that surfaced it.
+What PawPrint does *not* do is let a config file fill the hole itself: `RuntimeConfig.parse` refuses a `configProperties` entry that claims one of these names, exactly as a real host refuses to launch such a file. The absence above is a gap in what PawPrint can tell a guest; a forged `TRUSTED_PLATFORM_ASSEMBLIES` that the guest could not tell from the real thing would be worse than the gap.
+
+**Where this lives in code**: `AppContextProperties.empty` in `RuntimeConfig.fs` documents the gap; `hostOwnedNames` in the same file is the refusal; `HostConfig.AppContext` is where a host would supply values if it had any. Closing this would mean deciding what a simulated app's filesystem layout *is*, which is a larger question than the seeding change that surfaced it.
