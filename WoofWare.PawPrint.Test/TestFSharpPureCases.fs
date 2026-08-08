@@ -129,19 +129,23 @@ module TestFSharpPureCases =
         Set.ofList
             [
                 // `sprintf` reflects over the format's argument types, which walks
-                // `RuntimeType.GetMethodBase`: a run of consecutive InternalCalls
-                // (`IsDynamicMethod`, then `GetDeclaringType`, whose body is
-                // `GetRuntimeType(GetMethodTable(method))`, then `IsConstructor`, then
-                // `HasMethodInstantiation`). It stops at the unimplemented
-                // `RuntimeMethodHandle.HasMethodInstantiation`
-                // (`System.RuntimeMethodHandle::HasMethodInstantiation(RuntimeMethodHandleInternal)
-                // -> bool`, runtimehandles.cpp:1722), the last of those.
+                // `RuntimeType.GetMethodBase`. Every InternalCall that method reaches
+                // (`IsDynamicMethod`, `GetDeclaringType`, whose body is
+                // `GetRuntimeType(GetMethodTable(method))`, `IsConstructor`, and
+                // `HasMethodInstantiation`) is implemented, and this case gets past all of them. It
+                // stops afterwards on an unrelated gap in the pointer model: `Conv_I4` of an
+                // `Int64Source.WidenedNativeInt` carrying a `MethodRegistryHandle`
+                // (EvalStack.fs:358). That is the shape of hashing a handle's `IntPtr`: on 64-bit
+                // `IntPtr.GetHashCode` is `long value = _value; value.GetHashCode()`
+                // (IntPtr.cs:90-94), and `Int64.GetHashCode` is `(int)l ^ (int)(l >> 32)`, so the
+                // pointer is widened and then truncated. `PointerHashSynthesis` already models the
+                // `MethodHandle` key; the missing piece is bits for the widen-then-truncate path.
                 //
-                // Being consecutive statements of one BCL method, none of those natives can be
-                // pinned alone by any guest source; `TestMethodHandleRegistry.fs` drives each
-                // directly instead, and `TestNativeRuntimeMethodHandle.fs` pins their pure cores.
-                // `sourcesPure/MakeGenericMethodConstraintSatisfied.cs` is parked at the same
-                // native by the same path.
+                // Those reflection natives are consecutive statements of one BCL method, so none can
+                // be pinned alone by any guest source: `TestMethodHandleRegistry.fs` drives each
+                // directly, and `TestNativeRuntimeMethodHandle.fs` pins their pure cores.
+                // `sourcesPure/MakeGenericMethodConstraintSatisfied.cs` reaches the same gap by the
+                // same path.
                 "SprintfBasic"
             ]
 
