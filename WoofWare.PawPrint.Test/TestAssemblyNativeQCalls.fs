@@ -141,6 +141,20 @@ public static class HashAlgorithmLibrary
     /// A trivial library to patch a table stream version into. Each caller passes a distinct
     /// `suffix`, because assemblies are registered by full name and two same-named images
     /// would displace one another.
+    let private peKindLibraryImage (suffix : string) : byte[] =
+        Roslyn.compileAssembly
+            $"WoofWare.PawPrint.PEKind%s{suffix}TestLibrary"
+            OutputKind.DynamicallyLinkedLibrary
+            []
+            [
+                """
+public static class PEKindLibrary
+{
+    public static int Value => 1;
+}
+"""
+            ]
+
     let private streamVersionLibraryImage (suffix : string) : byte[] =
         Roslyn.compileAssembly
             $"WoofWare.PawPrint.StreamVersion%s{suffix}TestLibrary"
@@ -209,6 +223,99 @@ public static class StreamVersionLibrary
         if not found then
             failwith "test fixture image has no #~ or #- metadata table stream to patch"
 
+        patched
+
+    /// The PE, COR and ReadyToRun header fields that decide an image's PE kind, read out of
+    /// the raw bytes here rather than through `DumpedAssembly.PEImageHeaders`.
+    ///
+    /// This reports the *inputs*, never the kind: the expected kinds below stay written-down
+    /// constants, because a second implementation of the packing could be wrong in the same
+    /// way as the first. What it buys is that a test can assert what shape of image it is
+    /// looking at — so "corelib answers ILOnly/I386" cannot silently become a vacuous claim
+    /// if the framework ever stops shipping ReadyToRun images.
+    ///
+    /// The RVA-to-file-offset walk is done by hand off the section table, rather than through
+    /// `PEReader.GetSectionData` as the member under test does, so the directory lookup and
+    /// the field offsets are not shared with it.
+    let private imageHeaderFacts
+        (image : byte[])
+        : {|
+              Machine : Machine
+              IsPE32Plus : bool
+              CorFlags : CorFlags
+              ReadyToRunFlags : uint32 option
+          |}
+        =
+        use peImage = new MemoryStream (image)
+        use peReader = new PEReader (peImage)
+        let headers = peReader.PEHeaders
+
+        let corHeaderStart = headers.CorHeaderStartOffset
+        // IMAGE_COR20_HEADER: cb, MajorRuntimeVersion, MinorRuntimeVersion, MetaData
+        // directory, then Flags at offset 16 and the ManagedNativeHeader directory at 64.
+        let corFlags =
+            System.BitConverter.ToInt32 (image, corHeaderStart + 16) |> enum<CorFlags>
+
+        let nativeHeaderRva = System.BitConverter.ToInt32 (image, corHeaderStart + 64)
+        let nativeHeaderSize = System.BitConverter.ToInt32 (image, corHeaderStart + 68)
+
+        let rvaToOffset (rva : int) : int option =
+            headers.SectionHeaders
+            |> Seq.tryPick (fun section ->
+                if
+                    rva >= section.VirtualAddress
+                    && rva < section.VirtualAddress + section.SizeOfRawData
+                then
+                    Some (section.PointerToRawData + (rva - section.VirtualAddress))
+                else
+                    None
+            )
+
+        let readyToRunFlags =
+            // `sizeof(READYTORUN_HEADER)` is 16: Signature, MajorVersion, MinorVersion,
+            // Flags, NumberOfSections.
+            if nativeHeaderRva = 0 || nativeHeaderSize < 16 then
+                None
+            else
+                match rvaToOffset nativeHeaderRva with
+                | None -> None
+                | Some offset ->
+                    // READYTORUN_SIGNATURE, "RTR\0".
+                    if System.BitConverter.ToUInt32 (image, offset) <> 0x00525452u then
+                        None
+                    else
+                        System.BitConverter.ToUInt32 (image, offset + 8) |> Some
+
+        {|
+            Machine = headers.CoffHeader.Machine
+            IsPE32Plus = headers.PEHeader.Magic = PEMagic.PE32Plus
+            CorFlags = corFlags
+            ReadyToRunFlags = readyToRunFlags
+        |}
+
+    /// Rewrites an image's COR header `Flags`, returning a fresh image. The 32-bit flags are
+    /// the two bits `peKindAndMachine` reads that no compiler will emit on request here
+    /// (Roslyn only sets them for `/platform:x86` and `anycpu32bitpreferred`, neither of
+    /// which the test harness compiles with), so patching is how to reach those arms through
+    /// a real image rather than through the pure function alone.
+    let private withCorFlags (flags : CorFlags) (image : byte[]) : byte[] =
+        use peImage = new MemoryStream (image)
+        use peReader = new PEReader (peImage)
+        let patched = Array.copy image
+        let bytes = System.BitConverter.GetBytes (int flags)
+        bytes.CopyTo (patched, peReader.PEHeaders.CorHeaderStartOffset + 16)
+        patched
+
+    /// Rewrites an image's COFF header `Machine`, returning a fresh image. Every image the
+    /// harness compiles is AnyCPU and so says I386, which is also what the ReadyToRun
+    /// platform-neutral arm substitutes — so without this, a handler that ignored the COFF
+    /// header entirely would pass.
+    let private withMachine (machine : Machine) (image : byte[]) : byte[] =
+        use peImage = new MemoryStream (image)
+        use peReader = new PEReader (peImage)
+        let patched = Array.copy image
+        let bytes = System.BitConverter.GetBytes (uint16 machine)
+        bytes.CopyTo (patched, peReader.PEHeaders.CoffHeaderStartOffset)
         patched
 
     /// An image whose `PublicKey` blob is non-empty but whose `Flags` column leaves the
@@ -615,6 +722,41 @@ public static class StreamVersionLibrary
         match returned with
         | EvalStackValue.Int32 (Int32Source.Verbatim value) -> state, value
         | other -> failwith $"expected a verbatim Int32 return from AssemblyNative_GetHashAlgorithm, got %O{other}"
+
+    /// Runs `ModuleHandle_GetPEKind` for the manifest module of `assemblyFullName` and reads
+    /// back the two `out int` slots. Unlike everything else in this family the answer comes
+    /// through two pointers at once, so both slots are seeded and both are read: a handler
+    /// that wrote the same value twice, or wrote them in the wrong order, has to be caught
+    /// by the values rather than by the shape.
+    let private invokeGetPEKind
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (prepared : Program.PreparedProgram)
+        (state : IlMachineState)
+        (assemblyFullName : string)
+        : IlMachineState * int * int
+        =
+        let baseClassTypes = prepared.BaseClassTypes
+
+        let qCallModule, state =
+            qCallModuleValue loggerFactory baseClassTypes assemblyFullName state
+
+        let peKindSlot, state = int32OutSlot baseClassTypes state
+        let machineSlot, state = int32OutSlot baseClassTypes state
+
+        let state =
+            invokeQCall
+                loggerFactory
+                prepared
+                moduleHandle
+                "ModuleHandle_GetPEKind"
+                [
+                    qCallModule
+                    CliType.RuntimePointer (CliRuntimePointer.Managed peKindSlot)
+                    CliType.RuntimePointer (CliRuntimePointer.Managed machineSlot)
+                ]
+                state
+
+        state, readInt32Out baseClassTypes state peKindSlot, readInt32Out baseClassTypes state machineSlot
 
     /// Runs `ModuleHandle_GetMDStreamVersion` for the manifest module of `assemblyFullName`
     /// and pops its return value. Unlike the rest of this family it is keyed by a
@@ -1632,6 +1774,266 @@ public static class StreamVersionLibrary
                     prepared.State
                     "NotLoaded, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null"
                 |> ignore<IlMachineState * ManagedHeapAddress option * int>
+            )
+
+        exn.Message |> shouldContainText "is not loaded"
+
+    /// `CorPEKind` (corhdr.h), the bitfield `GetPEKind` writes through its first pointer.
+    let private peILonly = 0x1
+    let private pe32BitRequired = 0x2
+    let private pe32Plus = 0x4
+    let private pe32BitPreferred = 0x10
+
+    let private headersOf
+        (machine : Machine)
+        (isPE32Plus : bool)
+        (corFlags : CorFlags)
+        (readyToRun : ReadyToRunHeader option)
+        : PEImageHeaders
+        =
+        {
+            Machine = machine
+            IsPE32Plus = isPE32Plus
+            CorFlags = corFlags
+            ReadyToRunHeader = readyToRun
+        }
+
+    /// `IMAGE_FILE_MACHINE_NATIVE_NI` as a linux-x64 CoreCLR computes it: AMD64 XORed with
+    /// the `__linux__` discriminator `0x7B79` (coreclr/inc/pedecoder.h). This is the machine
+    /// crossgen2 stamps into a linux-x64 ReadyToRun image, and deliberately names no
+    /// `ImageFileMachine` case at all — which is why an implementation that reported it
+    /// verbatim would be so visibly wrong.
+    let private linuxX64NativeNiMachine : Machine =
+        LanguagePrimitives.EnumOfValue (uint16 Machine.Amd64 ^^^ 0x7B79us)
+
+    /// The shape crossgen2 emits: version 16.0, and the platform-neutral bit alongside
+    /// several others, so a handler that compared the whole flags word against a constant
+    /// rather than masking the bit would fail.
+    let private readyToRunNeutral : ReadyToRunHeader =
+        {
+            MajorVersion = 16
+            MinorVersion = 0
+            Flags = 0x4Bu
+        }
+
+    [<Test>]
+    let ``peKindAndMachine decodes the header combinations CoreCLR distinguishes`` () : unit =
+        // Each case is `PEDecoder::GetPEKindAndMachine` (coreclr/inc/pedecoder.inl) applied by
+        // hand. Driving the decoder directly rather than through an image is what makes the
+        // arms reachable at all: no compiler emits the MC++ shape, and the ReadyToRun arms
+        // need a crossgen2 image.
+        let decode (headers : PEImageHeaders) : int * int =
+            let result = NativeModuleHandle.peKindAndMachine "test" headers
+            result.PEKind, result.Machine
+
+        // AnyCPU, which is every image the test harness compiles and every non-ReadyToRun
+        // framework assembly.
+        decode (headersOf Machine.I386 false CorFlags.ILOnly None)
+        |> shouldEqual (peILonly, int Machine.I386)
+
+        // A RID-specific publish: IL-only, but pinned to one architecture, so `pe32Plus`
+        // survives and the machine is the real one.
+        decode (headersOf Machine.Amd64 true CorFlags.ILOnly None)
+        |> shouldEqual (peILonly ||| pe32Plus, int Machine.Amd64)
+
+        // CoreCLR's `HOST_64BIT` compensation: PE32+ *and* I386 *and* IL-only means the
+        // Windows shim promoted a PE32 header in memory, so the PE32+ bit is a lie and gets
+        // cleared. Only the conjunction does it — the case above keeps its bit.
+        decode (headersOf Machine.I386 true CorFlags.ILOnly None)
+        |> shouldEqual (peILonly, int Machine.I386)
+
+        // `/platform:x86`. 32BITREQUIRED set and 32BITPREFERRED clear is the two-bit field's
+        // "image is x86-specific".
+        decode (headersOf Machine.I386 false (CorFlags.ILOnly ||| CorFlags.Requires32Bit) None)
+        |> shouldEqual (peILonly ||| pe32BitRequired, int Machine.I386)
+
+        // `/platform:anycpu32bitpreferred`. Both bits set is a *different* value of the same
+        // field, not the sum of two flags, so this must not also report `pe32BitRequired`.
+        decode (
+            headersOf Machine.I386 false (CorFlags.ILOnly ||| CorFlags.Requires32Bit ||| CorFlags.Prefers32Bit) None
+        )
+        |> shouldEqual (peILonly ||| pe32BitPreferred, int Machine.I386)
+
+        // 32BITPREFERRED without 32BITREQUIRED is the field's fourth value, which corhdr.h
+        // calls "illegal, reserved for future use". CoreCLR's macros match neither, so
+        // neither bit is reported.
+        decode (headersOf Machine.I386 false (CorFlags.ILOnly ||| CorFlags.Prefers32Bit) None)
+        |> shouldEqual (peILonly, int Machine.I386)
+
+        // The "MC++ peculiarity": a managed PE32 image that is neither IL-only nor flagged
+        // 32-bit would otherwise decode to `peNot` (0), which claims it is not a PE file at
+        // all, so CoreCLR substitutes `pe32BitRequired`.
+        decode (headersOf Machine.I386 false CorFlags.StrongNameSigned None)
+        |> shouldEqual (pe32BitRequired, int Machine.I386)
+
+        // ReadyToRun compiled from platform-neutral IL: report what that IL reported, so the
+        // assembly name still looks the way it did before the AOT step. Note how much this
+        // discards — PE32+, the AOT machine, and the absence of `ILOnly` all vanish.
+        decode (
+            headersOf
+                linuxX64NativeNiMachine
+                true
+                (CorFlags.ILLibrary ||| CorFlags.StrongNameSigned)
+                (Some readyToRunNeutral)
+        )
+        |> shouldEqual (peILonly, int Machine.I386)
+
+    [<Test>]
+    let ``peKindAndMachine refuses a ReadyToRun image compiled from architecture-specific IL`` () : unit =
+        // The one case whose answer depends on which architecture's native runtime is
+        // executing: CoreCLR would rewrite an `IMAGE_FILE_MACHINE_NATIVE_NI` machine back to
+        // `IMAGE_FILE_MACHINE_NATIVE`, both of which are fixed when that runtime is built.
+        // Refusing is confined to exactly this case because the platform-neutral arm above
+        // overwrites the machine regardless, so it is the only place the identity shows.
+        let exn =
+            Assert.Throws<System.Exception> (fun () ->
+                NativeModuleHandle.peKindAndMachine
+                    "test"
+                    (headersOf
+                        linuxX64NativeNiMachine
+                        true
+                        (CorFlags.ILLibrary ||| CorFlags.StrongNameSigned)
+                        (Some
+                            { readyToRunNeutral with
+                                Flags = readyToRunNeutral.Flags &&& ~~~0x1u
+                            }))
+                |> ignore<PEKindAndMachine>
+            )
+
+        exn.Message |> shouldContainText "READYTORUN_FLAG_PLATFORM_NEUTRAL_SOURCE"
+
+    [<Test>]
+    let ``GetPEKind reports the image's own kind and machine`` () : unit =
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let image =
+            Roslyn.compileAssembly guestAssemblyName OutputKind.ConsoleApplication [] [ guestSource ]
+
+        let prepared = prepareGuest loggerFactory image
+        let guest = prepared.State.ActiveAssembly prepared.EntryThread
+
+        // Pin what the guest image actually is, so the expected answer below is anchored to
+        // its headers rather than to a guess about what Roslyn emits.
+        let guestFacts = imageHeaderFacts image
+        guestFacts.Machine |> shouldEqual Machine.I386
+        guestFacts.IsPE32Plus |> shouldEqual false
+        guestFacts.CorFlags |> shouldEqual CorFlags.ILOnly
+        guestFacts.ReadyToRunFlags |> shouldEqual None
+
+        let state, guestKind, guestMachine =
+            invokeGetPEKind loggerFactory prepared prepared.State guest.Name.FullName
+
+        guestKind |> shouldEqual peILonly
+        guestMachine |> shouldEqual (int Machine.I386)
+
+        // Separately named libraries rather than patched copies of the guest, because
+        // assemblies are registered by full name and same-named copies would displace each
+        // other (and the guest).
+        //
+        // Every image the harness compiles is I386, which is also the value the ReadyToRun
+        // platform-neutral arm substitutes — so without a differently-machined image, a
+        // handler that never read the COFF header at all would pass.
+        let amd64, state =
+            withLoadedAssembly loggerFactory (peKindLibraryImage "Amd64" |> withMachine Machine.Amd64) state
+
+        let state, amd64Kind, amd64Machine =
+            invokeGetPEKind loggerFactory prepared state amd64.Name.FullName
+
+        amd64Kind |> shouldEqual peILonly
+        amd64Machine |> shouldEqual (int Machine.Amd64)
+
+        // The COR flags likewise: the harness compiles AnyCPU only, so the 32-bit arms need a
+        // patched image to be reachable through a real one at all.
+        let required, state =
+            withLoadedAssembly
+                loggerFactory
+                (peKindLibraryImage "Required"
+                 |> withCorFlags (CorFlags.ILOnly ||| CorFlags.Requires32Bit))
+                state
+
+        let state, requiredKind, requiredMachine =
+            invokeGetPEKind loggerFactory prepared state required.Name.FullName
+
+        requiredKind |> shouldEqual (peILonly ||| pe32BitRequired)
+        requiredMachine |> shouldEqual (int Machine.I386)
+
+        let preferred, state =
+            withLoadedAssembly
+                loggerFactory
+                (peKindLibraryImage "Preferred"
+                 |> withCorFlags (CorFlags.ILOnly ||| CorFlags.Requires32Bit ||| CorFlags.Prefers32Bit))
+                state
+
+        let _state, preferredKind, preferredMachine =
+            invokeGetPEKind loggerFactory prepared state preferred.Name.FullName
+
+        preferredKind |> shouldEqual (peILonly ||| pe32BitPreferred)
+        preferredMachine |> shouldEqual (int Machine.I386)
+
+    [<Test>]
+    let ``GetPEKind reports the pre-AOT identity of a ReadyToRun framework assembly`` () : unit =
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let image =
+            Roslyn.compileAssembly guestAssemblyName OutputKind.ConsoleApplication [] [ guestSource ]
+
+        let prepared = prepareGuest loggerFactory image
+        let corelib = prepared.BaseClassTypes.Corelib
+
+        let corelibPath =
+            corelib.OriginalPath
+            |> Option.defaultWith (fun () ->
+                failwith "corelib was not loaded from a file, so its bytes cannot be read independently"
+            )
+
+        let corelibFacts = imageHeaderFacts (File.ReadAllBytes corelibPath)
+
+        // Assert the shape before the answer. Every assembly in a shipped shared framework is
+        // ReadyToRun, and its raw headers say something quite different from what the guest
+        // is entitled to see: no `ILOnly` bit, PE32+, and a machine that is the real
+        // architecture XORed with an OS discriminator (`IMAGE_FILE_MACHINE_NATIVE_NI`) and so
+        // names no `ImageFileMachine` case at all. If a future framework stopped shipping
+        // ReadyToRun images, the answer below would still be right but would no longer be
+        // testing the ReadyToRun arm, and this is what says so.
+        let readyToRunFlags =
+            corelibFacts.ReadyToRunFlags
+            |> Option.defaultWith (fun () ->
+                failwith
+                    $"corelib at %s{corelibPath} has no ReadyToRun header, so this test no longer exercises the ReadyToRun arm"
+            )
+
+        readyToRunFlags &&& 0x1u |> shouldEqual 0x1u
+        corelibFacts.IsPE32Plus |> shouldEqual true
+        corelibFacts.CorFlags &&& CorFlags.ILOnly |> shouldEqual (enum<CorFlags> 0)
+        corelibFacts.Machine |> shouldNotEqual Machine.I386
+
+        let _state, corelibKind, corelibMachine =
+            invokeGetPEKind loggerFactory prepared prepared.State corelib.Name.FullName
+
+        // What the IL corelib was compiled from said: AnyCPU.
+        corelibKind |> shouldEqual peILonly
+        corelibMachine |> shouldEqual (int Machine.I386)
+
+    [<Test>]
+    let ``GetPEKind on an unloaded assembly fails loudly`` () : unit =
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let image =
+            Roslyn.compileAssembly guestAssemblyName OutputKind.ConsoleApplication [] [ guestSource ]
+
+        let prepared = prepareGuest loggerFactory image
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () ->
+                invokeGetPEKind
+                    loggerFactory
+                    prepared
+                    prepared.State
+                    "NotLoaded, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null"
+                |> ignore<IlMachineState * int * int>
             )
 
         exn.Message |> shouldContainText "is not loaded"

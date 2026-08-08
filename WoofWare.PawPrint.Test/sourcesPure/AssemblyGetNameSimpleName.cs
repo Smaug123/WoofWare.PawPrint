@@ -19,18 +19,19 @@ public class AssemblyGetNameSimpleName
         if (self.Name.Length == 0) return 3;
 
         string again = typeof(AssemblyGetNameSimpleName).Assembly.GetName().Name;
-        if (!string.Equals(self.Name, again, StringComparison.Ordinal)) return 4;
+        if (self.Name != again) return 4;
 
-        // The simple name is not the display name: `FullName` appends version, culture and
-        // public key token. This is what stops the QCall from being satisfied by handing
-        // back the assembly identity it was keyed by.
-        string full = typeof(AssemblyGetNameSimpleName).Assembly.FullName;
-        if (full == null) return 5;
-        if (string.Equals(full, self.Name, StringComparison.Ordinal)) return 6;
-        if (!full.StartsWith(self.Name + ", ", StringComparison.Ordinal)) return 7;
+        // The simple name is not the display name: a display name carries `, Version=`
+        // and the rest of the identity after a comma. This is what stops the QCall from
+        // being satisfied by handing back the assembly identity it was keyed by — which
+        // for PawPrint is exactly a display name. `Assembly.FullName` would be the
+        // sharper way to say this; it is asserted in `AssemblyFullNameDisplayName.cs`,
+        // which needs a QCall this file does not.
+        if (self.Name.IndexOf(',') >= 0) return 5;
+        if (corelib.IndexOf(',') >= 0) return 6;
 
         // A dot in a simple name is part of the name, not a separator.
-        if (corelib.IndexOf('.') < 0) return 8;
+        if (corelib.IndexOf('.') < 0) return 7;
 
         return 0;
     }
