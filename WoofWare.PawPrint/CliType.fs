@@ -1558,6 +1558,45 @@ and CliValueType =
             NextTimestamp = 1UL
         }
 
+    /// Describe why `field` was not found in `fields`, in enough detail to diagnose the failure
+    /// from the message alone.
+    ///
+    /// The overwhelmingly likely cause of a metadata-keyed miss is that the *same* field
+    /// definition is present in storage under a different declaring-type `ConcreteTypeHandle`:
+    /// the site performing the access concretized the field's declaring type to a different
+    /// instantiation from the one in force when the object's storage was laid out (see
+    /// `IlMachineRuntimeMetadata.collectAllInstanceFields`, which keys an inherited field to the
+    /// type that *declares* it, versus `ExecutionConcretization.concretizeFieldDeclaringType`,
+    /// which keys it to the declaring type named by the access site's token). Callers cannot tell
+    /// those two apart from "no such field" alone, so say which it is.
+    static member private DescribeMissingField
+        (operation : string)
+        (field : FieldId)
+        (fields : CliConcreteField list)
+        (cvt : CliValueType)
+        : string
+        =
+        let available =
+            match fields with
+            | [] -> "none"
+            | _ -> fields |> List.map (fun f -> $"'%O{f.Id}'") |> String.concat ", "
+
+        let sameDefinition =
+            match FieldId.tryFieldDefinition field with
+            | None -> []
+            | Some wanted -> fields |> List.filter (fun f -> FieldId.tryFieldDefinition f.Id = Some wanted)
+
+        let diagnosis =
+            match sameDefinition with
+            | [] -> ""
+            | _ ->
+                let keyedTo =
+                    sameDefinition |> List.map (fun f -> $"'%O{f.Id}'") |> String.concat ", "
+
+                $" The same field definition IS present in storage, keyed to a different declaring type: %s{keyedTo}. That means the declaring-type instantiation computed at the access site disagrees with the one used when this value's storage was built."
+
+        $"%s{operation}: field '%O{field}' not found on value of declared type %O{cvt._Declared}. Available field identities: %s{available}.%s{diagnosis}"
+
     static member private FindFieldById (field : FieldId) (cvt : CliValueType) : CliConcreteField =
         let fields = CliValueType.FieldStorage "CliValueType.FindFieldById" cvt
 
@@ -1569,13 +1608,14 @@ and CliValueType =
         | [] ->
             match field with
             | FieldId.Metadata _
-            | FieldId.InlineArrayElement _ -> failwith $"Field '%O{field}' not found"
+            | FieldId.InlineArrayElement _ ->
+                failwith (CliValueType.DescribeMissingField "CliValueType.FindFieldById" field fields cvt)
             | FieldId.Named name ->
                 let nameMatches = fields |> List.filter (fun f -> f.Name = name)
 
                 match nameMatches with
                 | [ f ] -> f
-                | [] -> failwith $"Field '%O{field}' not found"
+                | [] -> failwith (CliValueType.DescribeMissingField "CliValueType.FindFieldById" field fields cvt)
                 | _ :: _ :: _ -> failwith $"Field name '%s{name}' is ambiguous; use metadata field identity"
 
     /// Returns the offset and size.

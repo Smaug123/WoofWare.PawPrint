@@ -70,6 +70,21 @@ module FieldId =
 
     let named (name : string) : FieldId = FieldId.Named name
 
+    /// The metadata field definition this identity names, for the two cases that have one.
+    /// `Named` is a name-keyed identity with no metadata behind it, so it has none.
+    let tryFieldDefinition (field : FieldId) : ComparableFieldDefinitionHandle option =
+        match field with
+        | FieldId.Metadata (field = handle)
+        | FieldId.InlineArrayElement (field = handle) -> Some handle
+        | FieldId.Named _ -> None
+
+    /// The declaring type this identity is keyed to, for the two cases that have one.
+    let tryDeclaringType (field : FieldId) : ConcreteTypeHandle option =
+        match field with
+        | FieldId.Metadata (declaringType = declaringType)
+        | FieldId.InlineArrayElement (declaringType = declaringType) -> Some declaringType
+        | FieldId.Named _ -> None
+
     let exactlyEqual (left : FieldId) (right : FieldId) : bool =
         match left, right with
         | FieldId.Metadata (leftType, leftField, _), FieldId.Metadata (rightType, rightField, _) ->
