@@ -220,6 +220,26 @@ module IlMachineManagedByref =
         | CliByteAddressability.Rejected _ -> ValueNone
         | CliByteAddressability.ByteAddressable -> ValueSome (CliType.ToBytes value)
 
+    /// `true` only when replacing `current` with `updated` is provably unobservable, so the write
+    /// can be skipped.
+    ///
+    /// Structural equality is not such a proof. `-0.0f` and `+0.0f` compare equal and are told
+    /// apart by `1.0f / x`, so a value differing from its replacement only in the sign of a zero
+    /// would have its write dropped. That bites hardest where it is least visible: storage holding
+    /// a reference has no byte image, so it is compared structurally or not at all.
+    ///
+    /// Both proofs below are exact — a byte image settles every bit, and two `ObjectRef`s are the
+    /// heap addresses themselves. Everything else is written. Failing to spot a no-op costs a
+    /// redundant store; a wrong "no-op" costs the write.
+    let private isProvableNoOpWrite (current : CliType) (updated : CliType) : bool =
+        match tryToBytesForNoopCheck current, tryToBytesForNoopCheck updated with
+        | ValueSome currentBytes, ValueSome updatedBytes -> currentBytes = updatedBytes
+        | _ ->
+
+        match current, updated with
+        | CliType.ObjectRef a, CliType.ObjectRef b -> a = b
+        | _ -> false
+
     let setStatic
         (owner : StaticOwner)
         (ty : ConcreteTypeHandle)
@@ -1360,6 +1380,28 @@ module IlMachineManagedByref =
         | ElideAsStorageInnerField of FieldId list
         | NotTransparent
 
+    /// The storage cell a `ReinterpretAs`-then-`Field` byref names, if any. The field sits
+    /// `fieldOffset` bytes into the reinterpret target, which itself sits `byteOffset` bytes into
+    /// the storage, so the byref addresses whatever cell occupies that sum.
+    ///
+    /// Shared by the write-side dispatcher, which asks whether such a cell exists in order to
+    /// route the write, and by the writer that then installs into it. Asking and answering with
+    /// one function is what keeps them from disagreeing about which accesses are serviceable.
+    let private tryNameCellThroughReinterpretField
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (byteOffset : int)
+        (storageValue : CliType)
+        (reinterpretTy : ConcreteType<ConcreteTypeHandle>)
+        (field : FieldId)
+        : FieldId list option
+        =
+        let reinterpretZero = zeroForConcreteType baseClassTypes state reinterpretTy
+        let fieldOffset, _ = CliType.getFieldLayoutById field reinterpretZero
+        let fieldTemplate = CliType.getFieldById field reinterpretZero
+
+        tryNameCellForByrefAccess (byteOffset + fieldOffset) storageValue fieldTemplate
+
     /// Classifier shared by the read- and write-side `ReinterpretAs+Field`
     /// dispatchers. See `TransparentWrapperOutcome` for the cases.
     let private classifyTransparentWrapper
@@ -2209,6 +2251,52 @@ module IlMachineManagedByref =
 
             match byteViewShape with
             | ValueSome (prefixProjs, byteOffset) ->
+                // Storage with no byte image cannot be written bytewise at all: not by the
+                // specialised root writers below, and not by lifting outward in `resolveCell`,
+                // which has no byte-addressable cell to lift to. Descend instead and name the cell
+                // the range picks out, mirroring `readManagedByrefBytesAs`. This is the route for
+                // `buffer[k].Tag = v` over an `[InlineArray]` whose element holds a reference: the
+                // value written is byte-renderable, so the write arrives here rather than at the
+                // structural writer, but the *storage* is not.
+                //
+                // Probed only for roots whose typed read is total. `readRootValue` throws for
+                // `PeByteRange`, and for the raw byte pools when no typed cell starts at the
+                // offset; those roots are byte storage by construction and can never hold a
+                // reference anyway. `tryNameCellForByrefAccess` yields `None` for byte-addressable
+                // storage, so nothing that reaches the writers below today is diverted.
+                //
+                // This does read the root value for `ArrayElement` and `HeapValue`, which
+                // previously went straight to a specialised byte writer. Both reads are total:
+                // those roots are only ever built by `ldelema` and by boxing, which validate the
+                // element and the payload respectively.
+                let namedWrite : IlMachineState voption =
+                    match outerRoot with
+                    | ByrefRoot.PeByteRange _
+                    | ByrefRoot.StackMemoryByte _
+                    | ByrefRoot.NativeMemoryByte _
+                    | ByrefRoot.StringCharAt _ -> ValueNone
+                    | _ ->
+
+                    let rootValue = readRootValue state outerRoot
+                    let cellHere = readProjectedValue rootValue prefixProjs
+
+                    match tryNameCellForByrefAccess byteOffset cellHere newValue with
+                    | None -> ValueNone
+                    | Some path ->
+                        if isProvableNoOpWrite (CliType.getCellAtPath path cellHere) newValue then
+                            ValueSome state
+                        else
+
+                        let updatedCell = CliType.withCellAtPathSet path newValue cellHere
+
+                        match applyProjectionsForWriteIfChanged rootValue prefixProjs updatedCell with
+                        | None -> ValueSome state
+                        | Some updatedRoot -> ValueSome (writeRootValue state outerRoot updatedRoot)
+
+                match namedWrite with
+                | ValueSome state -> state
+                | ValueNone ->
+
                 match outerRoot, prefixProjs with
                 | ByrefRoot.StackMemoryByte (thread, frame, block, rootByteOffset), [] ->
                     // Byte-addressable byte-view writes through a localloc buffer
@@ -2429,12 +2517,10 @@ module IlMachineManagedByref =
             let current = CliType.getCellAtPath path storageValue
 
             if isCellIdentityCompatible newValue current then
-                let updated = CliType.withCellAtPathSet path newValue storageValue
-
-                if updated = storageValue then
+                if isProvableNoOpWrite current newValue then
                     ValueSome None
                 else
-                    ValueSome (Some updated)
+                    ValueSome (Some (CliType.withCellAtPathSet path newValue storageValue))
             else
                 failwith
                     $"%s{operation}: assigning %s{describeCliStorage state newValue}, which is not the same kind of value as the %s{describeCliStorage state current} held by %s{describeCell}"
@@ -2449,11 +2535,9 @@ module IlMachineManagedByref =
         // is refused upstream while its offset is computed, so it cannot arrive here and there is
         // nothing to write for it yet; `InlineArrayFieldWriteAtLaterSlot.cs` is parked on it.
         let tryNameThroughField (field : FieldId) : CliType option voption =
-            let reinterpretZero = zeroForConcreteType baseClassTypes state reinterpretTy
-            let fieldOffset, _ = CliType.getFieldLayoutById field reinterpretZero
-            let fieldTemplate = CliType.getFieldById field reinterpretZero
-
-            match tryNameCellForByrefAccess (byteOffset + fieldOffset) storageValue fieldTemplate with
+            match
+                tryNameCellThroughReinterpretField baseClassTypes state byteOffset storageValue reinterpretTy field
+            with
             | None -> ValueNone
             | Some path -> writeIntoNamedCell path $"the cell %O{path} named by field %O{field} of %O{reinterpretTy}"
 
@@ -2469,7 +2553,7 @@ module IlMachineManagedByref =
                     // thing than it claims to.
                     match newValue with
                     | _ when isCellIdentityCompatible newValue storageValue ->
-                        if storageValue = newValue then
+                        if isProvableNoOpWrite storageValue newValue then
                             ValueSome None
                         else
                             ValueSome (Some newValue)
@@ -2667,7 +2751,13 @@ module IlMachineManagedByref =
                     match classifyTransparentWrapper bct state storageValue reinterpretTy field with
                     | TransparentWrapperOutcome.ElideAsField _
                     | TransparentWrapperOutcome.ElideAsStorageInnerField _ -> true
-                    | TransparentWrapperOutcome.NotTransparent -> false
+                    | TransparentWrapperOutcome.NotTransparent ->
+                        // Not a wrapper, but the byref may still name a cell outright —
+                        // `buffer[0].Payload = box`, where `Elem` wraps nothing. Only the
+                        // structural writer reaches the naming step, so route on whether that
+                        // step would find a cell, using the very function that will look.
+                        tryNameCellThroughReinterpretField bct state 0 storageValue reinterpretTy field
+                        |> Option.isSome
                 | Some bct,
                   (ByrefRoot.HeapValue _ | ByrefRoot.HeapObjectField _ | ByrefRoot.ArrayElement _),
                   [ ByrefProjection.ReinterpretAs reinterpretTy ] ->
