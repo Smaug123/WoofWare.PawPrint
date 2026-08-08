@@ -158,3 +158,29 @@ Console.WriteLine(AppContext.BaseDirectory);
 **Testing note**: Cannot be a `sourcesPure` comparison test, since the real runtime is launched from a real `.dll` and reports its path — there is no cross-runtime fact to assert. Covered by the PawPrint-only `sourcesImpure/AssemblyLocationEmpty.cs`, which asserts the empty `Location` for both the guest's own assembly and a framework assembly, the resulting empty `AppContext.BaseDirectory`, and `ReferenceEquals(asm.Location, string.Empty)` — CoreCLR's `StringObject::NewString` hands back the shared empty-string instance for a zero-length string, so allocating a fresh empty string here would be observably wrong.
 
 **Where this lives in code**: `NativeRuntimeAssembly.tryExecuteQCall`, the `AssemblyNative_GetLocation` case.
+
+## The host-populated `AppContext` properties are absent
+
+**CoreCLR**: Before `hostpolicy` looks at `runtimeOptions.configProperties` at all, it populates eight properties of its own and passes them to `AppContext.Setup` in the same arrays: `TRUSTED_PLATFORM_ASSEMBLIES`, `NATIVE_DLL_SEARCH_DIRECTORIES`, `PLATFORM_RESOURCE_ROOTS`, `APP_CONTEXT_BASE_DIRECTORY`, `APP_CONTEXT_DEPS_FILES`, `FX_DEPS_FILE`, `PROBING_DIRECTORIES` and `RUNTIME_IDENTIFIER` (`hostpolicy_context.cpp`), plus `HOST_RUNTIME_CONTRACT`, and conditionally `APP_PATHS` and `STARTUP_HOOKS`. They come from deps resolution and the host's filesystem layout, never from the config file — a `configProperties` entry that reuses one of those names is a fatal `LibHostDuplicateProperty` rather than an override, so the two sets are disjoint by construction. Every .NET process therefore starts with them, whatever its `runtimeconfig.json` says, and a config with no `configProperties` section still yields nine.
+
+**PawPrint**: Populates none of them. `AppContext` contains exactly the `configProperties` the host passed in `HostConfig.AppContext`, and nothing else; with no properties at all, `AppContext.Setup` is never called and `s_dataStore` stays null (which is indistinguishable from an empty store through the public API, since `GetData` returns null for a null store and `SetData` lazily installs one).
+
+**Spec status**: Outside ECMA-335, which says nothing about host properties — this is the hosting contract rather than the CLI. Non-compliant with that contract, deliberately.
+
+**Why we chose this**: These properties describe a host PawPrint does not have. There is no deps resolution, no probing, no runtime identifier and no assembly directory layout to derive them from: the interpreter is handed a list of framework directories directly, and binds by simple name against the first hit. Synthesising plausible-looking values would be worse than omitting them, because a guest that branches on a TPA entry would then take a path justified by a path list that describes nothing real. Omission at least fails in the direction the guest can detect.
+
+Note that this is *not* the same as "what a guest sees when there is no `runtimeconfig.json`". A real host treats a missing config as a self-contained app, fails to find `hostpolicy` beside the assembly, and exits before any managed code runs (verified: exit 131 on osx-arm64). "No config file, so no properties" exists only in PawPrint, and is likewise deliberate — the test harness compiles guests to a `MemoryStream` where no sidecar file can exist.
+
+**Observable example**:
+
+```csharp
+var tpa = AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES");
+// CoreCLR:  a ';'-separated list of every framework and app assembly path.
+// PawPrint: null.
+
+Console.WriteLine(AppContext.BaseDirectory);
+// CoreCLR:  the APP_CONTEXT_BASE_DIRECTORY property, i.e. the app's directory.
+// PawPrint: falls through to AppContext's GetBaseDirectoryCore() fallback.
+```
+
+**Where this lives in code**: `AppContextProperties.empty` in `RuntimeConfig.fs` documents the gap; `HostConfig.AppContext` is where a host would supply values if it had any. Closing this would mean deciding what a simulated app's filesystem layout *is*, which is a larger question than the seeding change that surfaced it.
