@@ -74,4 +74,11 @@ module HostRuntimeConfig =
             | Ok properties -> properties
             | Error e -> failwith $"Could not read %s{configPath}: %s{e}"
 
-        AppContextProperties.overlay (devPropertiesFor dllPath) main
+        // Through `combine` rather than `overlay`, because the hosting layer's names are only
+        // detectable once both files are in hand: a real host merges them into one property
+        // set and finds the duplicate there. That is also why a host-owned name in the dev
+        // sidecar is fatal despite this function ignoring that file's *parse* failures — the
+        // real host keeps such a property and dies on it rather than dropping it.
+        match RuntimeConfig.combine (devPropertiesFor dllPath) main with
+        | Ok properties -> properties
+        | Error e -> failwith $"Could not use the runtime configuration beside %s{dllPath}: %s{e}"

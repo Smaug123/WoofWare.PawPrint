@@ -196,7 +196,7 @@ module RuntimeConfig =
             let names = claimed |> List.sort |> String.concat ", "
 
             Error
-                $"runtimeconfig.json sets %s{names}, which the hosting layer populates for itself. A real host refuses such a file outright — `coreclr_property_bag_t::add` reports the duplicate and the launch ends in LibHostDuplicateProperty, with 'It is invalid to specify values for properties populated by the hosting layer in the application's .runtimeconfig.json' — so this configuration could not run on CoreCLR at all. PawPrint populates none of these itself, so seeding one would hand the guest a value it would take for the real thing. Remove the property."
+                $"the runtimeconfig.json files for this app set %s{names} between them, which the hosting layer populates for itself. A real host refuses such a file outright — `coreclr_property_bag_t::add` reports the duplicate and the launch ends in LibHostDuplicateProperty, with 'It is invalid to specify values for properties populated by the hosting layer in the application's .runtimeconfig.json' — so this configuration could not run on CoreCLR at all. PawPrint populates none of these itself, so seeding one would hand the guest a value it would take for the real thing. Remove the property."
 
     /// Materialise a JSON string that the reader accepted as a token but may still refuse to
     /// transcode, because its bytes are not valid UTF-8.
@@ -372,6 +372,10 @@ module RuntimeConfig =
     /// Malformed JSON, a section of the wrong shape, and a value whose hostpolicy rendering
     /// we do not reproduce are all errors: a misconfigured file should be loud, not silently
     /// equivalent to an empty one.
+    ///
+    /// One file's worth, and only the checks that one file can answer. Whether the properties
+    /// claim a name the hosting layer owns is `combine`'s question, because a real host asks
+    /// it of the dev and main configs merged rather than of either alone.
     let parse (contents : byte[]) : Result<AppContextProperties, string> =
         match parseRootValue contents with
         | Error e -> Error e
@@ -446,9 +450,33 @@ module RuntimeConfig =
                 renderValue name value
                 |> Result.map (fun rendered -> Map.add name (AppContextProperties.truncateAtNul rendered) acc)
         )
-        |> Result.bind rejectHostOwnedNames
         |> Result.map (fun values ->
             // Already truncated and deduplicated above, so `ofMap`'s collision check cannot
             // fire here; going through it keeps the invariant in one place.
             AppContextProperties.ofMap values
         )
+
+    /// Combine the two sidecars into the property set a guest is seeded with: the dev config
+    /// first, the main config over the top, and then the checks that only make sense once
+    /// both are in hand.
+    ///
+    /// This is the layer at which a real host validates, and the reason it is a separate step
+    /// from `parse`. `ensure_dev_config_parsed` and `parse_opts` write into one `m_properties`
+    /// between them, and the hosting layer's names are only detected as duplicates afterwards,
+    /// when `hostpolicy_context` copies that merged set into the property bag. Two files can
+    /// therefore each be unobjectionable and still be fatal together — `APP_PATHS` in one and
+    /// `SetAppPaths` in the other is exactly that — and a host-owned name in the *dev* file is
+    /// as fatal as in the main one, even though a dev file's own parse failures are ignored.
+    ///
+    /// Any caller assembling properties from files should come through here rather than
+    /// calling `AppContextProperties.overlay` directly, which does the merge but not the
+    /// checks. A host supplying its own property bag via `ofMap` is trusted and does not.
+    let combine
+        (devConfig : AppContextProperties)
+        (mainConfig : AppContextProperties)
+        : Result<AppContextProperties, string>
+        =
+        AppContextProperties.overlay devConfig mainConfig
+        |> AppContextProperties.toMap
+        |> rejectHostOwnedNames
+        |> Result.map AppContextProperties.ofMap
