@@ -104,6 +104,32 @@ module AppContextProperties =
                 ||> Map.fold (fun acc k v -> Map.add k v acc)
         }
 
+/// Why a `runtimeconfig.json` did not yield properties.
+///
+/// The distinction is load-bearing rather than decorative, because one caller acts on it:
+/// hostpolicy ignores a `runtimeconfig.dev.json` it cannot read, so PawPrint may ignore one
+/// too — but only for the failures hostpolicy is ignoring. A file that a real host reads
+/// perfectly well, and that PawPrint merely cannot reproduce, must not be quietly dropped:
+/// doing so launches a guest whose configuration differs from the one it asked for, which is
+/// the entire failure this module exists to prevent.
+type RuntimeConfigError =
+    /// The file is one a real host also refuses: malformed JSON, no `runtimeOptions`, a
+    /// section of the wrong shape, an encoding `parse_file` does not accept. `parse_file`
+    /// returns false for these, which for the dev config `ensure_parsed` shrugs off.
+    | HostWouldReject of message : string
+    /// The file is one a real host reads and acts on, but whose properties PawPrint cannot
+    /// reproduce exactly — a value rapidjson's `Writer` would format in a way we do not
+    /// implement, or bytes that are not valid UTF-8. A real launch proceeds (or fails later,
+    /// on a name the hosting layer owns); either way, ignoring this file is not what it does.
+    | NotReproducible of message : string
+
+    member this.Message : string =
+        match this with
+        | RuntimeConfigError.HostWouldReject message
+        | RuntimeConfigError.NotReproducible message -> message
+
+    override this.ToString () : string = this.Message
+
 [<RequireQualifiedAccess>]
 module RuntimeConfig =
 
@@ -154,8 +180,17 @@ module RuntimeConfig =
     /// The opt-in switch that makes `hostpolicy` set `APP_PATHS` itself, at which point a
     /// config-supplied `APP_PATHS` becomes a duplicate and the launch fails. Without it,
     /// `APP_PATHS` is an ordinary property. Compared case-insensitively in both name and
-    /// value, as `pal::strcasecmp` does, and the last occurrence wins — which is what the
-    /// deduplicated map this is consulted against already holds.
+    /// value, as `pal::strcasecmp` does.
+    ///
+    /// hostpolicy's loop *assigns* rather than accumulates — `set_app_paths = (value ==
+    /// "true")` on each case-insensitive name match — so where several differently-cased
+    /// spellings of the name disagree, the last one it happens to visit wins. There is no
+    /// "last" to honour here, though: the keys reach that loop by iterating an
+    /// `unordered_map` (`corehost_init.cpp` builds `m_clr_keys` from `combined_properties`),
+    /// so CoreCLR's own answer in that case is a function of hash order rather than of the
+    /// file. Any spelling asking for the switch therefore counts, which is the conservative
+    /// reading: it treats a config whose fate upstream is a coin toss as one that claims
+    /// `APP_PATHS`, and refuses it, rather than picking one of the two outcomes and running.
     [<Literal>]
     let private SetAppPathsSwitch = "Microsoft.NETCore.DotNetHostPolicy.SetAppPaths"
 
@@ -172,7 +207,7 @@ module RuntimeConfig =
     /// them (see docs/divergences.md) — so accepting one would not merely diverge, it would
     /// hand the guest a forged built-in that it has no way to distinguish from the real
     /// thing, in a configuration that could never have launched on a real runtime.
-    let private rejectHostOwnedNames (values : Map<string, string>) : Result<Map<string, string>, string> =
+    let private rejectHostOwnedNames (values : Map<string, string>) : Result<Map<string, string>, RuntimeConfigError> =
         let claimed =
             values |> Map.toList |> List.map fst |> List.filter hostOwnedNames.Contains
 
@@ -195,8 +230,9 @@ module RuntimeConfig =
         | claimed ->
             let names = claimed |> List.sort |> String.concat ", "
 
-            Error
+            RuntimeConfigError.HostWouldReject
                 $"the runtimeconfig.json files for this app set %s{names} between them, which the hosting layer populates for itself. A real host refuses such a file outright — `coreclr_property_bag_t::add` reports the duplicate and the launch ends in LibHostDuplicateProperty, with 'It is invalid to specify values for properties populated by the hosting layer in the application's .runtimeconfig.json' — so this configuration could not run on CoreCLR at all. PawPrint populates none of these itself, so seeding one would hand the guest a value it would take for the real thing. Remove the property."
+            |> Error
 
     /// Materialise a JSON string that the reader accepted as a token but may still refuse to
     /// transcode, because its bytes are not valid UTF-8.
@@ -215,22 +251,24 @@ module RuntimeConfig =
     /// the host produces *two* replacement characters where `Encoding.UTF8.GetString` produces
     /// three. Seeding the guest a string of a different length from the one CoreCLR would have
     /// given it is exactly the silent divergence this module refuses everywhere else.
-    let private tryMaterialise (describe : string) (read : unit -> string) : Result<string, string> =
+    let private tryMaterialise (describe : string) (read : unit -> string) : Result<string, RuntimeConfigError> =
         try
             Ok (read ())
         with :? InvalidOperationException ->
-            Error
+            RuntimeConfigError.NotReproducible
                 $"runtimeconfig.json %s{describe} is not valid UTF-8. A real host does not validate the encoding either, and launches the app with CoreCLR substituting U+FFFD for the offending bytes; PawPrint does not reproduce that substitution exactly (for `ED A0 80` a real host yields two replacement characters where .NET's decoder yields three), and seeding an approximation would silently give the guest a different string from the one it would see on CoreCLR. Write the file as valid UTF-8."
+            |> Error
 
     /// Render one `configProperties` value the way `hostpolicy` does.
     ///
     /// `runtime_config.cpp` takes `GetString()` for a JSON string and otherwise re-serialises
     /// the value with a `rapidjson::Writer`. We reproduce that exactly for strings, booleans,
     /// integers and `null`, and refuse everything else — see `refusal` below for why.
-    let private renderValue (name : string) (value : JsonElement) : Result<string, string> =
-        let refusal (kind : string) (wouldBe : string) : Result<string, string> =
-            Error
+    let private renderValue (name : string) (value : JsonElement) : Result<string, RuntimeConfigError> =
+        let refusal (kind : string) (wouldBe : string) : Result<string, RuntimeConfigError> =
+            RuntimeConfigError.NotReproducible
                 $"runtimeconfig.json property '%s{name}' has a %s{kind} value, which PawPrint does not know how to convert to an AppContext property string. A real host re-serialises it with rapidjson's Writer (%s{wouldBe}); reproducing that formatting exactly is not yet implemented, and seeding an approximation would silently give the guest a different value from the one it would see on CoreCLR. Remove the property, or express it as a string, boolean or integer."
+            |> Error
 
         match value.ValueKind with
         | JsonValueKind.String ->
@@ -241,7 +279,9 @@ module RuntimeConfig =
             | Error e -> Error e
             | Ok null ->
                 // Unreachable: `GetString` only returns null for JsonValueKind.Null.
-                Error $"logic error: runtimeconfig.json property '%s{name}' reported kind String but decoded to null"
+                RuntimeConfigError.NotReproducible
+                    $"logic error: runtimeconfig.json property '%s{name}' reported kind String but decoded to null"
+                |> Error
             | Ok s -> Ok s
         | JsonValueKind.True -> Ok "true"
         | JsonValueKind.False -> Ok "false"
@@ -274,7 +314,10 @@ module RuntimeConfig =
                         "it exceeds int64/uint64, so a real host holds it as a double: e.g. 99999999999999999999 becomes 100000000000000000000.0"
         | JsonValueKind.Array -> refusal "array" """e.g. [1, "two"] becomes [1,"two"]"""
         | JsonValueKind.Object -> refusal "object" """e.g. {"a": 1} becomes {"a":1}"""
-        | kind -> Error $"runtimeconfig.json property '%s{name}' has unexpected JSON kind %O{kind}"
+        | kind ->
+            RuntimeConfigError.HostWouldReject
+                $"runtimeconfig.json property '%s{name}' has unexpected JSON kind %O{kind}"
+            |> Error
 
     /// The *first* member of `obj` with this name.
     ///
@@ -328,7 +371,7 @@ module RuntimeConfig =
     /// Trailing content is ignored rather than rejected because the host parses with
     /// `kParseStopWhenDoneFlag`, which suppresses rapidjson's "document root not singular"
     /// error. Being stricter than the host would mean refusing to run a program that runs.
-    let private parseRootValue (contents : byte[]) : Result<JsonDocument, string> =
+    let private parseRootValue (contents : byte[]) : Result<JsonDocument, RuntimeConfigError> =
         let body =
             if
                 contents.Length >= utf8Bom.Length
@@ -352,9 +395,12 @@ module RuntimeConfig =
 
             match JsonDocument.TryParseValue &reader with
             | true, doc -> Ok doc
-            | false, _ -> Error "could not parse runtimeconfig.json: it contains no JSON value"
+            | false, _ ->
+                RuntimeConfigError.HostWouldReject "could not parse runtimeconfig.json: it contains no JSON value"
+                |> Error
         with :? JsonException as e ->
-            Error $"could not parse runtimeconfig.json: %s{e.Message}"
+            RuntimeConfigError.HostWouldReject $"could not parse runtimeconfig.json: %s{e.Message}"
+            |> Error
 
     /// Read the AppContext properties out of the contents of a `runtimeconfig.json`.
     ///
@@ -376,7 +422,7 @@ module RuntimeConfig =
     /// One file's worth, and only the checks that one file can answer. Whether the properties
     /// claim a name the hosting layer owns is `combine`'s question, because a real host asks
     /// it of the dev and main configs merged rather than of either alone.
-    let parse (contents : byte[]) : Result<AppContextProperties, string> =
+    let parse (contents : byte[]) : Result<AppContextProperties, RuntimeConfigError> =
         match parseRootValue contents with
         | Error e -> Error e
         | Ok doc ->
@@ -384,13 +430,16 @@ module RuntimeConfig =
         use doc = doc
 
         if doc.RootElement.ValueKind <> JsonValueKind.Object then
-            Error $"runtimeconfig.json must have a JSON object at its root, but found %O{doc.RootElement.ValueKind}"
+            RuntimeConfigError.HostWouldReject
+                $"runtimeconfig.json must have a JSON object at its root, but found %O{doc.RootElement.ValueKind}"
+            |> Error
         else
 
         match tryFindFirstMember "runtimeOptions" doc.RootElement with
         | None ->
-            Error
+            RuntimeConfigError.HostWouldReject
                 "runtimeconfig.json has no 'runtimeOptions' section, which a real host treats as an invalid configuration (runtime_config.cpp, ensure_parsed). An absent runtimeconfig.json is fine; a present one must have the section."
+            |> Error
         | Some runtimeOptions ->
 
         // `parse_opts` returns success immediately for a null value, so an explicit
@@ -398,8 +447,9 @@ module RuntimeConfig =
         if runtimeOptions.ValueKind = JsonValueKind.Null then
             Ok AppContextProperties.empty
         else if runtimeOptions.ValueKind <> JsonValueKind.Object then
-            Error
+            RuntimeConfigError.HostWouldReject
                 $"runtimeconfig.json 'runtimeOptions' must be an object or null, but found %O{runtimeOptions.ValueKind}"
+            |> Error
         else
 
         match tryFindFirstMember "configProperties" runtimeOptions with
@@ -409,8 +459,9 @@ module RuntimeConfig =
         if configProperties.ValueKind <> JsonValueKind.Object then
             // hostpolicy calls `GetObject()` on this without checking, which is undefined
             // behaviour for any other kind. There is no behaviour to match, so refuse.
-            Error
+            RuntimeConfigError.HostWouldReject
                 $"runtimeconfig.json 'runtimeOptions.configProperties' must be an object, but found %O{configProperties.ValueKind}"
+            |> Error
         else
 
         // Resolve duplicates *before* rendering, in two passes, because hostpolicy's loop
@@ -474,7 +525,7 @@ module RuntimeConfig =
     let combine
         (devConfig : AppContextProperties)
         (mainConfig : AppContextProperties)
-        : Result<AppContextProperties, string>
+        : Result<AppContextProperties, RuntimeConfigError>
         =
         AppContextProperties.overlay devConfig mainConfig
         |> AppContextProperties.toMap
