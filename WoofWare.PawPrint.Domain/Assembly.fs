@@ -78,6 +78,48 @@ type MetadataTableStreamVersion =
     }
 
 /// <summary>
+/// The <c>READYTORUN_HEADER</c> (<c>coreclr/inc/readytorun.h</c>) an ahead-of-time-compiled
+/// image carries in the COR header's <c>ManagedNativeHeader</c> directory. Its <c>Flags</c>
+/// are the <c>ReadyToRunFlag</c> bits, of which
+/// <c>READYTORUN_FLAG_PLATFORM_NEUTRAL_SOURCE</c> (<c>0x1</c>) records that the IL this
+/// image was compiled from was itself platform-neutral.
+/// </summary>
+/// <remarks>
+/// Held as the two version numbers plus the flags word rather than as a parsed flag set,
+/// because the flags are an open enumeration that grows with each R2R format revision, and
+/// an image can legally carry a bit this build has never heard of.
+/// </remarks>
+type ReadyToRunHeader =
+    {
+        MajorVersion : int
+        MinorVersion : int
+        Flags : uint32
+    }
+
+/// <summary>
+/// The facts about an image's PE and COR headers that determine what CoreCLR calls its "PE
+/// kind": the COFF <c>Machine</c>, whether the optional header is PE32+, the COR header's
+/// <c>Flags</c>, and the ReadyToRun header if the image has one.
+/// </summary>
+/// <remarks>
+/// Deliberately the raw header fields rather than any encoding of them.
+/// <c>PEDecoder::GetPEKindAndMachine</c> packs these into a <c>CorPEKind</c> bitfield, but
+/// that packing is one particular runtime API's answer and belongs with the code that
+/// reproduces that API, not here.
+///
+/// There is no case for "no COR header": every <c>DumpedAssembly</c> is a managed assembly,
+/// so it has one — an image without would have failed long before this, when its metadata
+/// was first read.
+/// </remarks>
+type PEImageHeaders =
+    {
+        Machine : Machine
+        IsPE32Plus : bool
+        CorFlags : CorFlags
+        ReadyToRunHeader : ReadyToRunHeader option
+    }
+
+/// <summary>
 /// Represents a fully parsed .NET assembly with all its metadata components.
 /// This serves as the main container for accessing assembly information in the PawPrint library.
 /// </summary>
@@ -498,6 +540,115 @@ type DumpedAssembly =
                 Major = int (header.ReadByte ())
                 Minor = int (header.ReadByte ())
             }
+
+    /// <summary>
+    /// The PE and COR header fields that determine this image's PE kind. See
+    /// <see cref="PEImageHeaders"/>.
+    /// </summary>
+    /// <remarks>
+    /// The first three come straight off <c>System.Reflection.Metadata</c>'s parsed headers.
+    /// The ReadyToRun header does not: nothing in that library exposes it, so it is located
+    /// and parsed here by the same rule <c>PEDecoder::FindReadyToRunHeader</c> uses — the COR
+    /// header's <c>ManagedNativeHeader</c> directory, if it declares at least a whole
+    /// <c>READYTORUN_HEADER</c>, lies within the image, and starts with the
+    /// <c>RTR\0</c> signature. Note the deliberate absence of a version check: CoreCLR does
+    /// not gate this recognition on the R2R format version, and neither can anything
+    /// reproducing it.
+    ///
+    /// This matters much more than it looks. Every assembly in a shipped shared framework is
+    /// ReadyToRun, and such an image does <em>not</em> set <c>COMIMAGE_FLAGS_ILONLY</c> and
+    /// carries a machine value that is the real one XORed with an OS discriminator — so an
+    /// implementation that ignored the R2R header would report a machine that names no real
+    /// architecture, for corelib among others.
+    /// </remarks>
+    member this.PEImageHeaders : PEImageHeaders =
+        let headers = this.PeReader.PEHeaders
+
+        // A COR header is reached through the optional header's data directories, so this
+        // succeeding is also what makes `headers.PEHeader` below non-null.
+        let corHeader =
+            match headers.CorHeader with
+            | null ->
+                failwith
+                    $"assembly %s{this.Name.FullName} has no COR header, so it is not a managed image; it should never have parsed as an assembly"
+            | corHeader -> corHeader
+
+        // `sizeof(READYTORUN_HEADER)`: Signature, MajorVersion, MinorVersion, and the core
+        // header's Flags and NumberOfSections.
+        let readyToRunHeaderSize = 16
+
+        let readyToRun =
+            let directory = corHeader.ManagedNativeHeaderDirectory
+
+            if directory.RelativeVirtualAddress = 0 || directory.Size < readyToRunHeaderSize then
+                None
+            else
+
+            // CoreCLR's `CheckDirectory` bounds the *whole declared range*, not just the part
+            // it goes on to read: `CheckRva` locates the containing section and requires
+            // `[rva, rva + size)` to fit inside both its `VirtualSize` and — for an image
+            // read from a file rather than mapped, which is all of PawPrint's — its
+            // `SizeOfRawData`. A directory declaring more than the section holds is a
+            // malformed image, and CoreCLR treats it as having no ReadyToRun header at all
+            // rather than reading the prefix that happens to be there.
+            //
+            // Arithmetic in `int64` because both fields are attacker-controlled `int32`s
+            // straight out of the file, so the sum can overflow; `CheckRva`'s caller guards
+            // that with `CheckOverflow`.
+            //
+            // Sections are located by unrounded `VirtualSize` where CoreCLR's `RvaToSection`
+            // rounds up to `SectionAlignment`. That cannot change the answer here: an RVA in
+            // the rounded-up padding is past `VirtualSize`, so CoreCLR finds the section and
+            // then fails the bound, while this finds no section — both "no ReadyToRun
+            // header". (The two would part company only for a zero-sized range, which the
+            // `Size < readyToRunHeaderSize` test above has already excluded.)
+            let rva = int64 directory.RelativeVirtualAddress
+            let declaredEnd = rva + int64 directory.Size
+
+            let withinSection =
+                headers.SectionHeaders
+                |> Seq.exists (fun section ->
+                    let start = int64 section.VirtualAddress
+
+                    rva >= start
+                    && rva < start + int64 section.VirtualSize
+                    && declaredEnd <= start + int64 section.VirtualSize
+                    && declaredEnd <= start + int64 section.SizeOfRawData
+                )
+
+            if not withinSection then
+                None
+            else
+
+            let block = this.PeReader.GetSectionData directory.RelativeVirtualAddress
+
+            if block.Length < readyToRunHeaderSize then
+                None
+            else
+
+            let mutable reader = block.GetReader (0, readyToRunHeaderSize)
+
+            // READYTORUN_SIGNATURE, which spells "RTR\0".
+            if reader.ReadUInt32 () <> 0x00525452u then
+                None
+            else
+
+            let major = int (reader.ReadUInt16 ())
+            let minor = int (reader.ReadUInt16 ())
+
+            Some
+                {
+                    MajorVersion = major
+                    MinorVersion = minor
+                    Flags = reader.ReadUInt32 ()
+                }
+
+        {
+            Machine = headers.CoffHeader.Machine
+            IsPE32Plus = headers.PEHeader.Magic = PEMagic.PE32Plus
+            CorFlags = corHeader.Flags
+            ReadyToRunHeader = readyToRun
+        }
 
     /// <summary>
     /// Whether this and <paramref name="other"/> are byte-identical PE images, i.e. the same
