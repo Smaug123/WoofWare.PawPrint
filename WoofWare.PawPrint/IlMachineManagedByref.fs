@@ -132,6 +132,86 @@ module IlMachineManagedByref =
         let b = CliType.unwrapPrimitiveLikeDeep b
         sameCliConstructor a b
 
+    /// `true` iff a storage cell holding `cell` may stand in for a value of CliType `target`
+    /// without any bytewise reinterpret step — i.e. reading the cell *is* reading the target, and
+    /// writing the target into it *is* writing the cell.
+    ///
+    /// This is deliberately type identity rather than layout compatibility. A cell's declared type
+    /// is not decoration: `CliValueType.Declared` decides primitive-like flattening at the eval
+    /// stack boundary, so storing a value of some other equally-shaped type into a cell would leave
+    /// the cell lying about what it holds. Anything this refuses falls through to the bytewise
+    /// path, which is correct wherever it is defined and produces a useful diagnostic where it is
+    /// not, so refusing costs nothing but a slower route.
+    ///
+    /// Note that no test distinguishes this from the laxer "any two value types" rule, and that is
+    /// not an oversight: reaching the difference needs a reinterpret between two *distinct* value
+    /// types over reference-containing storage, which the real runtime performs happily and
+    /// PawPrint deliberately refuses. That divergence cannot be asserted differentially, so the
+    /// strictness here is a deliberate choice of the safe direction rather than a pinned-down
+    /// behaviour. Mutating it does not fail the suite; treat it as load-bearing anyway.
+    let private isCellIdentityCompatible (cell : CliType) (target : CliType) : bool =
+        match cell, target with
+        | CliType.ObjectRef _, CliType.ObjectRef _ -> true
+        | CliType.ValueType a, CliType.ValueType b -> a.Declared = b.Declared
+        | CliType.Numeric a, CliType.Numeric b -> CliNumericType.SameKind a b
+        | CliType.Bool _, CliType.Bool _ -> true
+        | CliType.Char _, CliType.Char _ -> true
+        | _ -> false
+
+    /// The storage cell a reinterpreting byref addresses, when the bytewise path cannot serve the
+    /// access at all. `[InlineArray(N)] struct { T _item; }` produces exactly this shape — indexing
+    /// element `k` is `Unsafe.Add(ref Unsafe.As<TBuffer, T>(ref buffer), k)`, i.e.
+    /// `[ReinterpretAs T; ByteOffset k * sizeof(T)]`.
+    ///
+    /// Byte-addressable storage deliberately gets `None`, so this never changes which path serves
+    /// an access that already works: bytes remain the general mechanism and naming a cell is the
+    /// fallback for storage that has no byte image. That is not a new rule — it is the one the
+    /// object-reference-only predicate already encoded implicitly, since `ObjectRef` storage is
+    /// exactly the non-byte-addressable case. Stating it here keeps
+    /// `isCellIdentityCompatible` a predicate about types alone, rather than one that also
+    /// silently means "and bytes would not have worked".
+    ///
+    /// The gate is conservatism, not correctness: where both routes are defined they agree, which
+    /// is what `TestCliTypeCellPaths`'s "naming a cell agrees with the byte view" property pins.
+    /// Removing the gate accordingly fails no test. It earns its place by making that agreement
+    /// something this code does not have to rely on holding in every corner — provenance-carrying
+    /// numerics and pointer-shaped values have their own byte-rendering rules — rather than by
+    /// changing an answer.
+    ///
+    /// `CliType.CellPathsExactlyCovering` supplies the structural half: the range is exactly some
+    /// cell's extent, unaliased by any sibling, so nothing outside it can be disturbed. It reports
+    /// nested cells outermost first, so taking the first type-compatible answer names the
+    /// shallowest cell that will do.
+    let private tryNameCellForByrefAccess
+        (byteOffset : int)
+        (storage : CliType)
+        (targetTemplate : CliType)
+        : FieldId list option
+        =
+        match CliType.ByteAddressability storage with
+        | CliByteAddressability.ByteAddressable -> None
+        | CliByteAddressability.Rejected _ ->
+
+        let targetSize = CliType.sizeOf targetTemplate
+
+        // The range can name the storage itself and not merely a field of it: an
+        // `Unsafe.As<Elem, Wrapper>` over reference-containing storage reinterprets the whole
+        // cell. `CellPathsExactlyCovering` reports *fields*, so the empty path is this function's
+        // own base case rather than something it can return — and deliberately so, since folding
+        // it into that recursion would give every exactly-covering field a second, laxer route to
+        // the same path, bypassing the field-consistency gate there.
+        if
+            byteOffset = 0
+            && targetSize = CliType.sizeOf storage
+            && isCellIdentityCompatible storage targetTemplate
+        then
+            Some []
+        else
+
+        CliType.CellPathsExactlyCovering byteOffset targetSize storage
+        |> List.tryFind (fun (_, contents) -> isCellIdentityCompatible contents targetTemplate)
+        |> Option.map fst
+
     /// Byte image of a CLI value for noop-detection purposes. If a value is
     /// classified as byte-addressable, `CliType.ToBytes` must be able to render
     /// it; otherwise the classifier is wrong and should fail here.
@@ -587,9 +667,34 @@ module IlMachineManagedByref =
             else
                 ValueNone
 
-        match shortCircuitCell with
-        | ValueSome cellValue -> cellValue
-        | ValueNone ->
+        // The short-circuit above only recognises a *whole* element. An element that is a value
+        // type containing object references has no byte image at all, so a read that lands inside
+        // one cannot be served by the byte-scatter loop below either — the only thing to return is
+        // the cell the byte range names. `tryNameCellForByrefAccess` yields `None` for
+        // byte-addressable elements, so nothing that reaches the byte walk today is diverted.
+        // A range spilling past the element yields `None` too, and falls through to the walk,
+        // which reports the unrenderable cell.
+        let namedInnerCell =
+            match shortCircuitCell with
+            | ValueSome _ -> ValueNone
+            | ValueNone ->
+
+            let targetCell = index + cellAdvance
+
+            if targetCell < 0 || targetCell >= arrObj.Length then
+                ValueNone
+            else
+
+            let cellValue = arrObj.Elements.[targetCell]
+
+            tryNameCellForByrefAccess inCellStart cellValue targetTemplate
+            |> Option.map (fun path -> CliType.getCellAtPath path cellValue)
+            |> ValueOption.ofOption
+
+        match shortCircuitCell, namedInnerCell with
+        | ValueSome cellValue, _
+        | _, ValueSome cellValue -> cellValue
+        | ValueNone, ValueNone ->
             let buf = Array.zeroCreate<byte> targetSize
             let mutable filled = 0
             let mutable cell = index + cellAdvance
@@ -769,6 +874,22 @@ module IlMachineManagedByref =
         : CliType
         =
         match tryReadHeapValueFieldPrecise state addr byteOffset targetTemplate with
+        | Some cell -> cell
+        | None ->
+
+        // `tryReadHeapValueFieldPrecise` preserves provenance for a top-level field when a byte
+        // route also exists; this serves the case where none does. A boxed value type containing
+        // object references has no byte image, so naming the cell the range picks out is the only
+        // way to answer, and unlike the precise reader it descends to any depth. Byte-addressable
+        // payloads get `None` here, so the byte rendering below stays the route for everything
+        // that already works.
+        let namedCell =
+            let boxed = CliType.ValueType (ManagedHeap.get addr state.ManagedHeap).Contents
+
+            tryNameCellForByrefAccess byteOffset boxed targetTemplate
+            |> Option.map (fun path -> CliType.getCellAtPath path boxed)
+
+        match namedCell with
         | Some cell -> cell
         | None ->
 
@@ -1015,68 +1136,6 @@ module IlMachineManagedByref =
 
             ValueSome (structuralPrefix, totalOffset)
 
-    /// `true` iff a storage cell holding `cell` may stand in for a value of CliType `target`
-    /// without any bytewise reinterpret step — i.e. reading the cell *is* reading the target, and
-    /// writing the target into it *is* writing the cell.
-    ///
-    /// This is deliberately type identity rather than layout compatibility. A cell's declared type
-    /// is not decoration: `CliValueType.Declared` decides primitive-like flattening at the eval
-    /// stack boundary, so storing a value of some other equally-shaped type into a cell would leave
-    /// the cell lying about what it holds. Anything this refuses falls through to the bytewise
-    /// path, which is correct wherever it is defined and produces a useful diagnostic where it is
-    /// not, so refusing costs nothing but a slower route.
-    ///
-    /// Note that no test distinguishes this from the laxer "any two value types" rule, and that is
-    /// not an oversight: reaching the difference needs a reinterpret between two *distinct* value
-    /// types over reference-containing storage, which the real runtime performs happily and
-    /// PawPrint deliberately refuses. That divergence cannot be asserted differentially, so the
-    /// strictness here is a deliberate choice of the safe direction rather than a pinned-down
-    /// behaviour. Mutating it does not fail the suite; treat it as load-bearing anyway.
-    let private isCellIdentityCompatible (cell : CliType) (target : CliType) : bool =
-        match cell, target with
-        | CliType.ObjectRef _, CliType.ObjectRef _ -> true
-        | CliType.ValueType a, CliType.ValueType b -> a.Declared = b.Declared
-        | CliType.Numeric a, CliType.Numeric b -> CliNumericType.SameKind a b
-        | CliType.Bool _, CliType.Bool _ -> true
-        | CliType.Char _, CliType.Char _ -> true
-        | _ -> false
-
-    /// The storage cell a reinterpreting byref addresses, when the bytewise path cannot serve the
-    /// access at all. `[InlineArray(N)] struct { T _item; }` produces exactly this shape — indexing
-    /// element `k` is `Unsafe.Add(ref Unsafe.As<TBuffer, T>(ref buffer), k)`, i.e.
-    /// `[ReinterpretAs T; ByteOffset k * sizeof(T)]`.
-    ///
-    /// Byte-addressable storage deliberately gets `None`, so this never changes which path serves
-    /// an access that already works: bytes remain the general mechanism and naming a cell is the
-    /// fallback for storage that has no byte image. That is not a new rule — it is the one the
-    /// object-reference-only predicate already encoded implicitly, since `ObjectRef` storage is
-    /// exactly the non-byte-addressable case. Stating it here keeps
-    /// `isCellIdentityCompatible` a predicate about types alone, rather than one that also
-    /// silently means "and bytes would not have worked".
-    ///
-    /// The gate is conservatism, not correctness: where both routes are defined they agree, which
-    /// is what `TestCliTypeCellPaths`'s "naming a cell agrees with the byte view" property pins.
-    /// Removing the gate accordingly fails no test. It earns its place by making that agreement
-    /// something this code does not have to rely on holding in every corner — provenance-carrying
-    /// numerics and pointer-shaped values have their own byte-rendering rules — rather than by
-    /// changing an answer.
-    ///
-    /// `CliType.CellPathsExactlyCovering` supplies the structural half: the range is exactly some
-    /// cell's extent, unaliased by any sibling, so nothing outside it can be disturbed. It reports
-    /// nested cells outermost first, so taking the first type-compatible answer names the
-    /// shallowest cell that will do.
-    let private tryNameCellForByrefAccess
-        (byteOffset : int)
-        (storage : CliType)
-        (targetTemplate : CliType)
-        : FieldId list option
-        =
-        match CliType.ByteAddressability storage with
-        | CliByteAddressability.ByteAddressable -> None
-        | CliByteAddressability.Rejected _ ->
-            CliType.CellPathsExactlyCovering byteOffset (CliType.sizeOf targetTemplate) storage
-            |> List.tryFind (fun (_, contents) -> isCellIdentityCompatible contents targetTemplate)
-            |> Option.map fst
 
     let readManagedByrefBytesAs
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -1293,8 +1352,9 @@ module IlMachineManagedByref =
     /// `CliType.getFieldById` / `withFieldSetById`.
     ///
     /// `NotTransparent` means the access must go through the bytewise
-    /// reinterpret path; callers whose storage cannot be byte-addressed
-    /// (ObjectRef, today) must produce their own diagnostic in that branch.
+    /// reinterpret path; callers whose storage cannot be byte-addressed (a
+    /// bare `ObjectRef`, or a value type holding one) must produce their own
+    /// diagnostic in that branch.
     type private TransparentWrapperOutcome =
         | ElideAsField of FieldId
         | ElideAsStorageInnerField of FieldId list
@@ -2328,25 +2388,31 @@ module IlMachineManagedByref =
         // Bytewise reinterpret over an `ObjectRef` is meaningless because
         // ObjectRef storage is not byte-addressable; the classifier reuses the
         // same predicate as `readReinterpretedByrefField` to decide whether
-        // this is a transparent wrapper access we can pass through. Phase A
-        // restricts the classifier to ref↔ref, so this path also handles only
-        // ref↔ref writes; future phases widen the predicate alongside the
-        // write-side coercion step that becomes necessary as soon as storage
-        // and field CliTypes are not exactly equal.
+        // this is a transparent wrapper access we can pass through. A bare
+        // reference is not the only storage with no byte image — a value type
+        // holding references has none either — so each leg below accepts
+        // exactly what the classifier's `isCellIdentityCompatible` accepts,
+        // rather than object references alone. Anything narrower would refuse
+        // writes the classifier has already declared elidable.
         let transparentWrapperFastPath () : CliType option voption =
             match reinterpretProjs, byteOffset with
             | [ ByrefProjection.Field field ], 0 ->
                 match classifyTransparentWrapper baseClassTypes state storageValue reinterpretTy field with
                 | TransparentWrapperOutcome.ElideAsField _ ->
+                    // The classifier chose this outcome because the storage is identity-compatible
+                    // with the wrapper's only field, which spans the wrapper; writing that field
+                    // therefore replaces the storage outright. Hold the value being stored to the
+                    // same standard, so the storage cannot end up holding a different kind of
+                    // thing than it claims to.
                     match newValue with
-                    | CliType.ObjectRef _ ->
+                    | _ when isCellIdentityCompatible newValue storageValue ->
                         if storageValue = newValue then
                             ValueSome None
                         else
                             ValueSome (Some newValue)
                     | other ->
                         failwith
-                            $"%s{operation}: assigning non-object value %s{describeCliStorage state other} to object-reference field %O{field} of single-instance-field wrapper"
+                            $"%s{operation}: assigning %s{describeCliStorage state other}, which is not the same kind of value as the %s{describeCliStorage state storageValue} it would replace, to field %O{field} of a single-instance-field wrapper"
                 | TransparentWrapperOutcome.ElideAsStorageInnerField innerPath ->
                     // The cell was chosen because it is identity-compatible with the reinterpret
                     // target; the value being stored must be too, or we would be writing one kind
