@@ -70,7 +70,11 @@ public static class TaskWhenAll
     // TestResultsInArgumentOrder while still passing. A TCS task completes only when this thread
     // calls SetResult, so the two IsCompleted checks below are facts about WhenAll's semantics and
     // not races: WhenAll cannot complete before *every* input has, so it is incomplete before any
-    // SetResult and still incomplete after only the first.
+    // SetResult and still incomplete once only one of the two has been completed.
+    //
+    // Driving completion by hand also lets the inputs be completed in reverse argument order, which
+    // is what makes the result-ordering assertions discriminating rather than decorative -- see the
+    // comment at the SetResult calls.
     static int TestPendingTasks()
     {
         TaskCompletionSource<int> first = new TaskCompletionSource<int>();
@@ -79,10 +83,14 @@ public static class TaskWhenAll
         Task<int[]> all = Task.WhenAll(first.Task, second.Task);
         if (all.IsCompleted) return 1;
 
-        first.SetResult(1);
+        // Deliberately completed in reverse argument order. Completing `first` first would make
+        // completion order and argument order coincide, so a WhenAll that collected results in
+        // completion order would still produce [1, 2] and the assertions below would be vacuous.
+        // This way such a regression produces [2, 1] and is caught.
+        second.SetResult(2);
         if (all.IsCompleted) return 2;
 
-        second.SetResult(2);
+        first.SetResult(1);
 
         int[] results = all.Result;
         if (results.Length != 2) return 3;
