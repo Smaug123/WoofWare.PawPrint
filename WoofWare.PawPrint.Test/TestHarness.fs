@@ -25,6 +25,13 @@ type EndToEndTestCase =
         /// the invariant-globalization default is always present even when the
         /// overlay is empty) plus the reported processor count.
         KernelConfig : KernelConfig
+        /// AppContext properties to seed before the guest starts, as a real host
+        /// does from `runtimeconfig.json`. Must be empty for any case run through
+        /// the *pure* (differential) harness: the oracle there loads the guest
+        /// in-process on the host runtime, whose `AppContext` is already set up
+        /// and cannot be reseeded, so a seeded property is a PawPrint-only fact
+        /// and belongs in `sourcesImpure`. `TestPureCases.runTest` enforces this.
+        AppContext : AppContextProperties
         ExpectsUnhandledException : bool
         /// Optional assertion run against the final PawPrint state once the
         /// guest has exited. Used by impure tests that want to verify

@@ -3,18 +3,34 @@ namespace WoofWare.PawPrint
 open System.Collections.Immutable
 open System.Reflection
 
-type MethodHandle =
+/// The identity of a method that exists in some assembly's metadata: a MethodDef token, the
+/// assembly it was read from, and the type/method instantiations bound to this particular handle.
+/// This is the analogue of a CoreCLR `MethodDesc*` that answers `false` to `IsNoMetadata()`.
+type MetadataMethodIdentity =
     private
         {
             AssemblyFullName : string
             DeclaringType : ConcreteTypeHandle
-            MethodHandle : ComparableMethodDefinitionHandle
+            MethodDefinition : ComparableMethodDefinitionHandle
             MethodGenerics : ConcreteTypeHandle list
         }
 
     member this.GetAssemblyFullName () : string = this.AssemblyFullName
-    member this.GetMethodDefinitionHandle () : ComparableMethodDefinitionHandle = this.MethodHandle
+    member this.GetDeclaringType () : ConcreteTypeHandle = this.DeclaringType
+    member this.GetMethodDefinitionHandle () : ComparableMethodDefinitionHandle = this.MethodDefinition
     member this.GetMethodGenerics () : ConcreteTypeHandle list = this.MethodGenerics
+
+/// What a `RuntimeMethodHandleInternal` registry id can name.
+///
+/// The cases are public (the payloads are not) specifically so that consumers must match, and so
+/// that adding a case forces every site that cares to be revisited by the compiler rather than by
+/// a reader. CoreCLR's `MethodDesc` covers both metadata-backed methods and "no metadata" ones --
+/// `DynamicMethod`/LCG stubs, which have no MethodDef token and no defining assembly, and which
+/// `RuntimeMethodHandle.IsDynamicMethod` (`MethodDesc::IsNoMetadata()`) exists to distinguish.
+/// PawPrint models no such methods today, so `FromMetadata` is currently the only case; when
+/// `DynamicMethod` support lands it gains a sibling, and every `match` on this type stops compiling
+/// until that case has been considered there.
+type MethodHandle = | FromMetadata of MetadataMethodIdentity
 
 type MethodHandleRegistry =
     private
@@ -51,7 +67,7 @@ module MethodHandleRegistry =
         =
         {
             AssemblyFullName = method.DeclaringType.Assembly.FullName
-            MethodHandle = ComparableMethodDefinitionHandle.Make method.Handle
+            MethodDefinition = ComparableMethodDefinitionHandle.Make method.Handle
             DeclaringType =
                 AllConcreteTypes.findExistingConcreteType
                     allConcreteTypes
@@ -62,6 +78,7 @@ module MethodHandleRegistry =
                 )
             MethodGenerics = method.Generics |> Seq.toList
         }
+        |> MethodHandle.FromMetadata
 
     /// Build a CliValueType representing a `System.RuntimeMethodHandleInternal` whose `m_handle`
     /// field carries the given verbatim CliType. Callers pass either a `MethodRegistryHandle id`
@@ -116,9 +133,10 @@ module MethodHandleRegistry =
         {
             AssemblyFullName = declaringType.Assembly.FullName
             DeclaringType = declaringHandle
-            MethodHandle = ComparableMethodDefinitionHandle.Make method.Handle
+            MethodDefinition = ComparableMethodDefinitionHandle.Make method.Handle
             MethodGenerics = []
         }
+        |> MethodHandle.FromMetadata
 
     /// Returns a bare `System.RuntimeMethodHandleInternal` value type identifying the given method
     /// declared on `declaringType`, allocating a fresh registry id if necessary. No managed-heap

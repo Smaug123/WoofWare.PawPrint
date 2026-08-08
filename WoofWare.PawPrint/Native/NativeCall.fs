@@ -402,14 +402,15 @@ module NativeCall =
                 byteCount
                 (fun byteIndex -> readUtf8Byte operation baseClassTypes state byteConcreteType ptr byteIndex)
 
-    /// Allocate a managed <c>byte[]</c> backing buffer for an unmanaged-looking blob and return
-    /// a byref to its first element. Shared by callers that need to materialise <c>ConstArray</c>
-    /// or null-terminated UTF-8 results across the native boundary.
-    let allocateBlobByteArray
+    /// Allocate a managed <c>byte[]</c> holding <paramref name="storage"/> and return the array
+    /// object itself. Use this when the guest receives the array as an object — e.g. a QCall
+    /// writing through an <c>ObjectHandleOnStack</c>; use <c>allocateBlobByteArray</c> when it
+    /// receives a pointer into the buffer instead.
+    let allocateManagedByteArray
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (storage : byte array)
         (state : IlMachineState)
-        : ManagedPointerSource * IlMachineState
+        : ManagedHeapAddress * IlMachineState
         =
         let byteHandle =
             AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Byte
@@ -429,6 +430,18 @@ module NativeCall =
             )
             |> fst
 
+        arrayAddr, state
+
+    /// Allocate a managed <c>byte[]</c> backing buffer for an unmanaged-looking blob and return
+    /// a byref to its first element. Shared by callers that need to materialise <c>ConstArray</c>
+    /// or null-terminated UTF-8 results across the native boundary.
+    let allocateBlobByteArray
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (storage : byte array)
+        (state : IlMachineState)
+        : ManagedPointerSource * IlMachineState
+        =
+        let arrayAddr, state = allocateManagedByteArray baseClassTypes storage state
         ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), []), state
 
     /// Allocate a block on the simulated process's native heap (the pool that backs

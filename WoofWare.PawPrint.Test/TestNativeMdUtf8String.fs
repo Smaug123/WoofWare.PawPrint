@@ -13,8 +13,8 @@ open WoofWare.PawPrint
 /// The end-to-end coverage lives in `sourcesPure/MdUtf8StringEqualsCaseInsensitive.cs` (ASCII,
 /// passing) and `sourcesPure/MdUtf8StringEqualsCaseInsensitiveUnicode.cs` (non-ASCII, currently
 /// in `TestPureCases.unimplemented` because `Encoding.UTF8.GetByteCount` on a non-ASCII name
-/// hits an unrelated `clt.un`-on-`StringCharAt`-byrefs gap). These tests exercise the
-/// comparison directly so the Unicode semantics are pinned regardless.
+/// hits the unimplemented `BitOperations.TrailingZeroCount(uint32)` intrinsic). These tests
+/// exercise the comparison directly so the Unicode semantics are pinned regardless.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestNativeMdUtf8String =

@@ -319,6 +319,17 @@ module internal CellAwareMemOps =
     /// (`writeRootValue` for `ArrayElement`/`HeapObjectField`/`HeapValue`)
     /// overwrite wholesale and would silently rewrite the cell's shape on
     /// a mismatch.
+    ///
+    /// No test distinguishes this, and that is measured rather than assumed:
+    /// `TestBulkMoveCellAccess` drives a copy on which the guard demonstrably
+    /// fires (`long` cells into `double` cells via `MemoryMarshal.Cast`), and
+    /// removing it still changes no answer, because the read path carries the
+    /// payload through either cell shape. The shapes it refuses are ones the
+    /// real runtime accepts, so the difference cannot be asserted
+    /// differentially at all — the same position `isCellIdentityCompatible`
+    /// records one layer up. It is a deliberate choice of the safe direction;
+    /// treat it as load-bearing regardless of what mutating it does to the
+    /// suite.
     let private cellsHaveCompatibleShape (a : CliType) (b : CliType) : bool =
         match a, b with
         | CliType.Bool _, CliType.Bool _
@@ -341,30 +352,36 @@ module internal CellAwareMemOps =
         | CliType.ValueType a, CliType.ValueType b -> a.Declared = b.Declared
         | _ -> false
 
-    /// True for byref roots whose cell shape is non-trivial (each root
-    /// designates a typed cell, possibly non-byte-addressable). The byte-walk
-    /// path through `readManagedByrefBytesAs` works for byte-addressable
-    /// cells under these roots, but fails for non-byte-addressable cells
-    /// (ObjectRef, RuntimePointer, value types containing those); the
-    /// cell-aware fast path handles both. Byte-storage roots
-    /// (`StackMemoryByte`, `NativeMemoryByte`, `PeByteRange`,
-    /// `StringCharAt`) and stack-slot roots (`LocalVariable`, `Argument`,
-    /// `StaticField`) are not considered here — the byte-walk path is the
-    /// modelled access shape for them, and stripping to a `[]` residual
-    /// for a `readManagedByref` call into a byte-storage root would fail
-    /// because the root carries no typed cell at arbitrary byte offsets.
+    /// True for byref roots that designate a typed cell, as opposed to a flat pool of bytes.
+    /// Stripping such a byref to a `[]` residual and handing it to `readManagedByref` yields that
+    /// cell; doing the same to a byte-pool root fails, because those carry no typed cell at an
+    /// arbitrary byte offset. That difference is the whole content of this predicate.
+    ///
+    /// The byte-walk path through `readManagedByrefBytesAs` serves byte-addressable cells under
+    /// either kind of root, but fails outright on cells that have no byte image (`ObjectRef`,
+    /// `RuntimePointer`, value types containing those); for those the typed step is the only
+    /// correct route. Where both routes are defined they agree, so the typed step is taken
+    /// whenever it applies rather than only when bytes would have failed.
+    ///
+    /// Stack and static slots belong on the typed side and used to be listed with the byte pools,
+    /// justified as "the byte-walk path is the modelled access shape for them". That is a policy
+    /// dressed as a structural fact, and it cost every bulk move through a local its only route
+    /// into reference-containing storage. Gating them on the *contents* being byte-unaddressable
+    /// would be worse than either honest answer: the same local would flip between routes
+    /// depending on what it happened to hold at the time, making a predicate named for the root's
+    /// kind quietly mean "and bytes would not have worked".
     let private rootIsCellAware (root : ByrefRoot) : bool =
         match root with
         | ByrefRoot.ArrayElement _
         | ByrefRoot.HeapValue _
         | ByrefRoot.HeapObjectField _
-        | ByrefRoot.ExposedClassObject _ -> true
+        | ByrefRoot.ExposedClassObject _
         | ByrefRoot.LocalVariable _
         | ByrefRoot.Argument _
+        | ByrefRoot.StaticField _ -> true
         | ByrefRoot.StackMemoryByte _
         | ByrefRoot.NativeMemoryByte _
         | ByrefRoot.PeByteRange _
-        | ByrefRoot.StaticField _
         | ByrefRoot.StringCharAt _ -> false
 
     /// True if the residual byref (after stripping its byte-view suffix)
@@ -376,25 +393,51 @@ module internal CellAwareMemOps =
         | ManagedPointerSource.Byref (root, _) -> rootIsCellAware root
         | _ -> false
 
-    /// Attempt to copy a single whole cell, starting at byte offset `i` in
-    /// the buffer. Returns `Some cellSize` when the move succeeded; in that
-    /// case `state` has been updated and the caller must advance `i` by
-    /// `cellSize` bytes. Returns `None` when the cell-aware path is not
-    /// applicable; the caller must then fall back to a single byte step.
+    /// Attempt to move one whole storage cell across, with the copy cursor sitting at byte `i` of
+    /// the requested range. Returns `Some (state, width)` when a move happened, in which case the
+    /// caller advances the cursor by `width`; `None` when no cell could be named, in which case the
+    /// caller falls back to a single byte step.
     ///
-    /// The path is taken iff both src and dest byrefs are anchored on
-    /// cell-aware roots (see `rootIsCellAware`), strip to a typed
-    /// residual at the same intra-cell byte offset (which must be 0 for a
-    /// forward step, or `cellSize - 1` for a backward step), the residual
-    /// cells have compatible CLI shape (so the wholesale typed write does
-    /// not silently change the dest's shape), and there are at least
-    /// `cellSize` bytes remaining in the requested copy. The path is the
-    /// only correct option for non-byte-addressable cells (`ObjectRef`,
-    /// `RuntimePointer`, value-type cells containing those); for
-    /// byte-addressable cells under cell-aware roots it remains correct
-    /// (and faster than the byte-by-byte loop), so we take it
-    /// unconditionally when the preconditions hold rather than
-    /// restricting to non-byte-addressable cells only.
+    /// Each endpoint is considered on its own terms. A byref strips to a typed residual plus an
+    /// intra-cell byte offset, and the cell the move should take is whichever one the range
+    /// anchored at that offset names — which need not be the residual cell itself, and need not be
+    /// at the same offset on both sides. `[InlineArray(8)] struct { object _item; }` is the shape
+    /// that forces both points: a `Span<object>` over such a local is one indivisible 64-byte cell,
+    /// so copying a single element out of it is a strict sub-range on the source side while the
+    /// destination is a whole 8-byte array cell, and once the cursor passes the first element the
+    /// two offsets diverge (the array side canonicalises into `arr[k]` at offset 0, the buffer side
+    /// walks up through one cell). Object references have no byte image, so there is no bytewise
+    /// route to fall back to: naming the cell is the only way to serve this at all.
+    ///
+    /// Widths are proposed from the *source* by `CliType.CandidateCellExtentsContainingByte` and
+    /// validated on both sides by `CliType.CellPathsExactlyCovering`, which stays the authority on
+    /// whether a range names a cell. Proposing from one side suffices because a width the
+    /// destination can name and the source cannot is not a width we could move anyway, and because
+    /// the generator is complete for the source (argued at its definition).
+    ///
+    /// Three properties this relies on, none of them accidental:
+    ///
+    /// - **Largest width first is a preference, not a correctness question.** Every validated
+    ///   candidate at a given width covers the identical byte range on both sides, so the choices
+    ///   differ only in which level of a nesting chain is replaced wholesale, and a same-`Declared`
+    ///   value-type replacement over the same extent is not observable. Across widths, one step of
+    ///   `n` bytes and `n / k` steps of `k` bytes move the same bytes.
+    /// - **Variable widths keep `shouldCopyBackwards`'s overlap guarantee**, which was written when
+    ///   every step was one whole cell. A step reads its entire source range before writing its
+    ///   destination range, and the cursor then advances by exactly the width moved. So for a
+    ///   forward loop (used when the destination is at or before the source in shared storage), a
+    ///   step's writes land at or before the bytes it just read, and every later step reads from
+    ///   strictly beyond the cursor — untouched. The backward loop is the mirror image. The
+    ///   argument never mentions the width, so letting it vary changes nothing.
+    /// - **A step always advances.** Widths are positive and at most `cap`, so the caller cannot
+    ///   spin. PawPrint gives fieldless default-layout structs `sizeOf = 0`, and a zero-sized cell
+    ///   would otherwise return a zero-width "success" and loop forever; that shape is rejected
+    ///   here rather than being left to the byte step, which would itself fail loudly — the
+    ///   intended outcome, since a positive byte copy anchored on a zero-sized cell is an
+    ///   interpreter-bug shape.
+    ///
+    /// Cells must additionally have compatible CLI shape (`cellsHaveCompatibleShape`), so that the
+    /// wholesale typed write does not silently rewrite what the destination cell claims to hold.
     let private tryWholeCellMoveAt
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -409,39 +452,105 @@ module internal CellAwareMemOps =
         else
 
         match inCellOffsetAndStripByteView src, inCellOffsetAndStripByteView dest with
-        | Some (srcPlain, srcInCell), Some (destPlain, destInCell) when srcInCell = destInCell ->
+        | Some (srcPlain, srcInCell), Some (destPlain, destInCell) ->
             let srcCell = IlMachineState.readManagedByref baseClassTypes state srcPlain
-            let cellSize = CliType.sizeOf srcCell
+            let destCell = IlMachineState.readManagedByref baseClassTypes state destPlain
+            let srcCellSize = CliType.sizeOf srcCell
+            let destCellSize = CliType.sizeOf destCell
 
-            let aligned =
-                if backwards then
-                    srcInCell = cellSize - 1
-                else
-                    srcInCell = 0
+            // Bytes the cursor can consume within its own cell: forwards, to the cell's end;
+            // backwards, back to the cell's start (the cursor byte is the move's *last*).
+            let available (inCell : int) (cellSize : int) : int =
+                if backwards then inCell + 1 else cellSize - inCell
 
-            // Reject `cellSize <= 0`: a zero-sized value-type cell (PawPrint
-            // gives fieldless default-layout structs `sizeOf = 0`) would
-            // return `Some (newState, 0)`, and the caller would advance `i`
-            // by zero — spinning the copy loop forever for any positive
-            // requested byte count. Falling back to the byte step is also
-            // wrong here (we'd read a byte off a non-existent cell), so the
-            // caller's byte step would itself fail loudly — which is the
-            // intended behaviour, since a positive byte copy against a
-            // zero-sized cell anchor is an interpreter-bug shape.
-            if not aligned || cellSize <= 0 || cellSize > bytesRemaining then
+            let cap =
+                List.min
+                    [
+                        available srcInCell srcCellSize
+                        available destInCell destCellSize
+                        bytesRemaining
+                    ]
+
+            let cursorsAreInsideTheirCells =
+                srcInCell >= 0
+                && srcInCell < srcCellSize
+                && destInCell >= 0
+                && destInCell < destCellSize
+
+            if cap <= 0 || not cursorsAreInsideTheirCells then
                 None
             else
-                let destCell = IlMachineState.readManagedByref baseClassTypes state destPlain
 
-                if CliType.sizeOf destCell <> cellSize then
-                    None
-                elif not (cellsHaveCompatibleShape srcCell destCell) then
-                    None
-                else
-                    let newState =
-                        IlMachineState.writeManagedByrefWithBase baseClassTypes state destPlain srcCell
+            // Where a move of `width` bytes anchored at this cursor begins.
+            let startOf (inCell : int) (width : int) : int =
+                if backwards then inCell - width + 1 else inCell
 
-                    Some (newState, cellSize)
+            /// The cells of `cell` whose extent is exactly the `width`-byte range anchored at
+            /// `inCell`, outermost first, as the `FieldId` path to reach each and its contents.
+            /// `CellPathsExactlyCovering` reports *fields*, so the case where the range is the
+            /// whole of `cell` is this function's own base case rather than something it returns.
+            let namedCells (cell : CliType) (inCell : int) (width : int) : (FieldId list * CliType) list =
+                let start = startOf inCell width
+
+                let whole =
+                    if start = 0 && width = CliType.sizeOf cell then
+                        [ [], cell ]
+                    else
+                        []
+
+                whole @ CliType.CellPathsExactlyCovering start width cell
+
+            let candidateWidths : int list =
+                CliType.CandidateCellExtentsContainingByte srcInCell srcCell
+                |> List.choose (fun (offset, width) ->
+                    let anchoredAtCursor =
+                        if backwards then
+                            offset + width = srcInCell + 1
+                        else
+                            offset = srcInCell
+
+                    if anchoredAtCursor && width > 0 && width <= cap then
+                        Some width
+                    else
+                        None
+                )
+
+            // Outermost-first at every level, so the first hit is the widest move whose two ends
+            // both name a cell and agree on shape.
+            let move =
+                candidateWidths
+                |> List.tryPick (fun width ->
+                    namedCells srcCell srcInCell width
+                    |> List.tryPick (fun (_, srcContents) ->
+                        namedCells destCell destInCell width
+                        |> List.tryPick (fun (destPath, destContents) ->
+                            if cellsHaveCompatibleShape srcContents destContents then
+                                Some (srcContents, destPath, width)
+                            else
+                                None
+                        )
+                    )
+                )
+
+            match move with
+            | None -> None
+            | Some (srcContents, destPath, width) ->
+                if width <= 0 then
+                    failwith
+                        $"tryWholeCellMoveAt: chose a non-advancing move of width %d{width}; the caller's cursor would not progress (this is an interpreter bug)"
+
+                let destByref =
+                    match destPlain with
+                    | ManagedPointerSource.Byref (root, projs) ->
+                        ManagedPointerSource.Byref (root, projs @ List.map ByrefProjection.Field destPath)
+                    | other ->
+                        failwith
+                            $"tryWholeCellMoveAt: byte-view stripping returned a non-Byref pointer %O{other} (this is an interpreter bug)"
+
+                let newState =
+                    IlMachineState.writeManagedByrefWithBase baseClassTypes state destByref srcContents
+
+                Some (newState, width)
         | _ -> None
 
     /// Attempt to zero a single whole cell, starting at byte offset `i` in the

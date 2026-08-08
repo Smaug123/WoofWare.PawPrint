@@ -38,6 +38,7 @@
     <Compile Include="TestProjectionByteOffset.fs" />
     <Compile Include="TestInlineArrayStorage.fs" />
     <Compile Include="TestStructLayout.fs" />
+    <Compile Include="TestMarshalLayout.fs" />
     <Compile Include="TestManagedHeap.fs" />
     <Compile Include="TestBinaryArithmetic.fs" />
     <Compile Include="TestContextSwitchPrior.fs" />
@@ -45,6 +46,7 @@
     <Compile Include="TestStackMemoryPool.fs" />
     <Compile Include="TestNativeMemoryPool.fs" />
     <Compile Include="TestAbsoluteUnixPath.fs" />
+    <Compile Include="TestRuntimeConfig.fs" />
     <Compile Include="TestSwitchIlOp.fs" />
     <Compile Include="TestUnaryConstIlOp.fs" />
     <Compile Include="TestUnaryMetadataIlOp.fs" />
@@ -65,11 +67,14 @@
     <Compile Include="TestNativeSignature.fs" />
     <Compile Include="TestNativeCustomAttribute.fs" />
     <Compile Include="TestManifestResources.fs" />
+    <Compile Include="TestAssemblyNativeQCalls.fs" />
     <Compile Include="TestNativeEnum.fs" />
     <Compile Include="TestMethodHandleRegistry.fs" />
     <Compile Include="TestMethodReturnType.fs" />
     <Compile Include="TestFunctionPointerConcretization.fs" />
+    <Compile Include="Netstandard21FSharpCore.fs" />
     <Compile Include="TestZeroOfBaseAssemblies.fs" />
+    <Compile Include="TestTypeResolutionBaseAssemblies.fs" />
     <Compile Include="TestAssemblyDictionaryKeying.fs" />
     <Compile Include="TestLoadedAssemblies.fs" />
     <Compile Include="TestSharedFrameworkForwardSweep.fs" />
@@ -117,6 +122,7 @@
     <Compile Include="TestLinuxCoreLibFlavour.fs" />
     <Compile Include="TestInlineArrayLayout.fs" />
     <Compile Include="TestReinterpretCellAccess.fs" />
+    <Compile Include="TestBulkMoveCellAccess.fs" />
     <Compile Include="TestPureCases.fs" />
     <Compile Include="TestFSharpPureCases.fs" />
     <Compile Include="TestImpureCases.fs" />

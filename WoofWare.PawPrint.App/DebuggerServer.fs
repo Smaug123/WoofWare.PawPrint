@@ -357,6 +357,7 @@ module DebuggerServer =
                     Kernel = kernelConfig
                     PctSeed = pctSeed
                     Argv = argv
+                    AppContext = HostRuntimeConfig.forAssembly dllPath
                 }
         with
         | Program.ProgramStartResult.Ready prepared -> SessionState.Running (prepared, 0L)

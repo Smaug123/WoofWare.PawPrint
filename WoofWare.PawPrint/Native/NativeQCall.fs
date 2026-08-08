@@ -87,9 +87,13 @@ module NativeQCall =
             "Enum_GetValuesAndNames", NativeEnum.tryExecuteQCall "Enum_GetValuesAndNames"
             "MetadataImport_Enum", NativeMetadataImport.tryExecuteQCall "MetadataImport_Enum"
             "AssemblyNative_GetEntryAssembly", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetEntryAssembly"
+            "AssemblyNative_GetLocale", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetLocale"
             "AssemblyNative_GetLocation", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetLocation"
+            "AssemblyNative_GetPublicKey", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetPublicKey"
             "AssemblyNative_GetResource", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetResource"
+            "AssemblyNative_GetSimpleName", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetSimpleName"
             "AssemblyNative_GetTypeCore", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetTypeCore"
+            "AssemblyNative_GetVersion", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetVersion"
             "AssemblyNative_IsApplyUpdateSupported",
             NativeMetadataUpdater.tryExecuteQCall "AssemblyNative_IsApplyUpdateSupported"
             "CustomAttribute_CreateCustomAttributeInstance",

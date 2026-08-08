@@ -39,10 +39,16 @@
       dotnet-runtime-src = pkgs.fetchgit {
         url = "https://github.com/dotnet/runtime";
         rev = "7706f546bac1a99b3d891afe3591dc88c67f0cc4"; # v10.0.7 (tree self-reports 10.0.6; see above)
-        hash = "sha256-eMV1mZ2iy84CiHTOU2vZ5LaDFFAAyGlhetDKmBn0IMs=";
+        hash = "sha256-ivd8/HvHF+0keQM1CWUXS6AivxJWmJTWSUKGPFVmkjA=";
         sparseCheckout = [
           "src/coreclr"
           "src/libraries/System.Private.CoreLib"
+          # hostfxr/hostpolicy: the native host that reads `runtimeconfig.json` and hands
+          # the resulting properties to `AppContext.Setup`. `runtime_config.cpp` is the
+          # authority on how a JSON value becomes the string a guest sees, and it defers
+          # to the vendored rapidjson below for every non-string value.
+          "src/native/corehost"
+          "src/native/external/rapidjson"
           "eng"
         ];
       };
