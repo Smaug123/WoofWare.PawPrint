@@ -266,6 +266,28 @@ module RealRuntime =
     let executeWithRealRuntime (args : string[]) (assemblyBytes : byte array) : RealRuntimeResult =
         executeWithTimeout guestTimeout args assemblyBytes
 
+    /// Run a managed assembly that already sits on disk beside the assemblies it depends on.
+    ///
+    /// `executeWithTimeout` owns a scratch directory holding exactly one image, so it cannot run a
+    /// guest that references anything but the shared framework. This instead runs the assembly
+    /// where it lies, which is what makes its siblings resolve: an app with no `deps.json` gets
+    /// every `.dll` in its own directory placed on the trusted platform assemblies list, so a
+    /// directory of co-compiled assemblies binds by simple name with no probing logic of ours.
+    ///
+    /// This writes `<name>.runtimeconfig.json` beside the assembly, overwriting any existing one.
+    /// An app that ships its own configuration is a published app; use `executePublishedApp`.
+    let executeAssemblyInPlace (args : string[]) (dllPath : string) : RealRuntimeResult =
+        if not (File.Exists dllPath) then
+            failwith $"Cannot run %s{dllPath} under the real runtime: the assembly does not exist."
+
+        let directory = Path.GetDirectoryName dllPath
+        // The host derives the config's name from the assembly's *file* name, not from its
+        // assembly name, and the file is already on disk under a name the caller chose.
+        let name = Path.GetFileNameWithoutExtension dllPath
+        File.WriteAllText (Path.Combine (directory, name + ".runtimeconfig.json"), runtimeConfig)
+
+        runToCompletion guestTimeout muxerPath (dllPath :: List.ofArray args) directory name
+
     /// Run an already-published application in place, by executing its apphost.
     ///
     /// A published app carries its own dependencies, `runtimeconfig.json` and `deps.json` in its

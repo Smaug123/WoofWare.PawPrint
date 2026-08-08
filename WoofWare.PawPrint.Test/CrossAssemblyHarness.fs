@@ -5,7 +5,6 @@ open System.Collections.Immutable
 open System.IO
 open System.Reflection.Metadata
 open System.Reflection.PortableExecutable
-open System.Runtime.Loader
 open FsUnitTyped
 open Microsoft.CodeAnalysis
 open WoofWare.DotnetRuntimeLocator
@@ -138,38 +137,19 @@ module CrossAssemblyHarness =
 
             reraise ()
 
-    /// This loads the guest in-process, unlike `RealRuntime.executeWithRealRuntime`, and so
-    /// has some hazards, e.g. it is killed outright by a guest which calls `Environment.Exit`.
+    /// Run the entry assembly on the real runtime, as its own process.
+    ///
+    /// The guest is a child process for the same reasons `RealRuntime` gives: in-process it shares
+    /// every process-global with the test runner, so `Environment.Exit` or `FailFast` kills the run
+    /// outright, and an escaped exception arrives as a `TargetInvocationException` whose message
+    /// identifies nothing. Its sibling assemblies are already laid out in `entryPath`'s directory,
+    /// which is exactly what the host needs to bind them.
     let private executeWithRealRuntime (entryPath : string) : int =
-        let tempDir = Path.GetDirectoryName entryPath
-
-        let loadContext =
-            new AssemblyLoadContext ("CrossAssemblyEndToEnd", isCollectible = true)
-
-        loadContext.add_Resolving (fun context assemblyName ->
-            let candidate = Path.Combine (tempDir, assemblyName.Name + ".dll")
-
-            if File.Exists candidate then
-                context.LoadFromAssemblyPath candidate
-            else
-                null
-        )
-
-        try
-            let entry : Reflection.Assembly = loadContext.LoadFromAssemblyPath entryPath
-            let entryPoint : Reflection.MethodInfo = entry.EntryPoint
-
-            let invokeArgs : obj[] =
-                match entryPoint.GetParameters().Length with
-                | 0 -> [||]
-                | _ ->
-                    let mainArgs : string[] = [||]
-                    [| mainArgs :> obj |]
-
-            let result : obj = entryPoint.Invoke ((null : obj), invokeArgs)
-            unbox<int> result
-        finally
-            loadContext.Unload ()
+        match RealRuntime.executeAssemblyInPlace [||] entryPath with
+        | RealRuntimeResult.NormalExit exitCode -> exitCode
+        | RealRuntimeResult.UnhandledException report ->
+            failwith $"Real runtime terminated with an unhandled exception:\n%s{report}"
+        | RealRuntimeResult.FailFast report -> failwith $"Real runtime called Environment.FailFast:\n%s{report}"
 
     /// The `AssemblyRef` table's names in row order. Enumeration of
     /// `MetadataReader.AssemblyReferences` walks rows 1..N in order, and row order is precisely what
@@ -239,6 +219,15 @@ module CrossAssemblyHarness =
         (case : CrossAssemblyEndToEndTestCase)
         : unit
         =
+        // The oracle is a real process, and a process exit code carries 8 bits on Unix, whereas
+        // PawPrint's is read as a full int32 off the evaluation stack. Reject an expectation the
+        // oracle could never report before doing any work, so that a test author meets the limit
+        // here rather than as a mystifying "expected 256, got 0" from the comparison below.
+        if case.ExpectedReturnCode < 0 || case.ExpectedReturnCode > 255 then
+            failwithf
+                "Expected return code %d cannot be carried by a process exit code (0-255), so the real runtime cannot act as the oracle for it. Have the guest return a small discriminating value instead."
+                case.ExpectedReturnCode
+
         let compiled = compileAssemblies case.Assemblies
 
         for divergence in divergences do
