@@ -60,6 +60,44 @@ public static class Entry
 
     let private metadataAssemblyName (image : byte[]) : string = metadataAssemblyDefinition image |> fst
 
+    /// A culture on the manifest row is only legal for a library — the C# compiler rejects
+    /// `[assembly: AssemblyCulture]` on an executable (CS7059, "executables cannot be
+    /// satellite assemblies"). So a cultured assembly has to be compiled separately and
+    /// loaded alongside the guest.
+    let private culturedAssemblyName = "WoofWare.PawPrint.CulturedTestLibrary"
+
+    /// Deliberately not the canonical casing: `AssemblyName.CultureName` normalises this
+    /// through `CultureInfo` and reports `en-GB`, whereas CoreCLR's `md.szLocale` — and so
+    /// the string the guest receives — is the column verbatim.
+    let private culturedColumn = "EN-gb"
+
+    let private culturedNormalised = "en-GB"
+
+    let private culturedLibraryImage () : byte[] =
+        let source =
+            $"""
+[assembly: System.Reflection.AssemblyCulture("{culturedColumn}")]
+
+public static class Satellite
+{{
+    public static int Value => 1;
+}}
+"""
+
+        Roslyn.compileAssembly culturedAssemblyName OutputKind.DynamicallyLinkedLibrary [] [ source ]
+
+    /// Reads `image` as a `DumpedAssembly` and registers it in `state`, so a QCall keyed by
+    /// its full name resolves. Mirrors what the interpreter's own assembly loading does.
+    let private withLoadedAssembly
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (image : byte[])
+        (state : IlMachineState)
+        : DumpedAssembly * IlMachineState
+        =
+        use peImage = new MemoryStream (image)
+        let assembly = Assembly.read loggerFactory None peImage
+        assembly, state.WithLoadedAssembly assembly
+
     let private prepareGuest
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
         (image : byte[])
@@ -289,9 +327,11 @@ public static class Entry
 
     /// Runs the QCall for `assemblyFullName` and returns the heap address the handler wrote
     /// into the `StringHandleOnStack` (None if it left the slot at its preinitialised null).
-    let private invokeGetSimpleName
+    /// Shared by every `(QCallAssembly, StringHandleOnStack) -> void` entry point.
+    let private invokeStringQCall
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
         (prepared : Program.PreparedProgram)
+        (entryPoint : string)
         (state : IlMachineState)
         (assemblyFullName : string)
         : IlMachineState * ManagedHeapAddress option
@@ -305,7 +345,7 @@ public static class Entry
             stringHandleOnStackValue loggerFactory baseClassTypes state
 
         let state =
-            invokeQCall loggerFactory prepared "AssemblyNative_GetSimpleName" [ qCallAssembly ; stringHandle ] state
+            invokeQCall loggerFactory prepared entryPoint [ qCallAssembly ; stringHandle ] state
 
         let written =
             match IlMachineState.readManagedByref baseClassTypes state target with
@@ -313,6 +353,24 @@ public static class Entry
             | other -> failwith $"expected StringHandleOnStack target to contain an object ref, got %O{other}"
 
         state, written
+
+    let private invokeGetSimpleName
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (prepared : Program.PreparedProgram)
+        (state : IlMachineState)
+        (assemblyFullName : string)
+        : IlMachineState * ManagedHeapAddress option
+        =
+        invokeStringQCall loggerFactory prepared "AssemblyNative_GetSimpleName" state assemblyFullName
+
+    let private invokeGetLocale
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (prepared : Program.PreparedProgram)
+        (state : IlMachineState)
+        (assemblyFullName : string)
+        : IlMachineState * ManagedHeapAddress option
+        =
+        invokeStringQCall loggerFactory prepared "AssemblyNative_GetLocale" state assemblyFullName
 
     /// Runs `AssemblyNative_GetVersion` for `assemblyFullName` and reads back the four
     /// `out int` slots, in the declared parameter order (major, minor, build, revision).
@@ -564,6 +622,132 @@ public static class Entry
                     prepared.State
                     "NotLoaded, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null"
                 |> ignore<IlMachineState * (int * int * int * int)>
+            )
+
+        exn.Message |> shouldContainText "is not loaded"
+
+    [<Test>]
+    let ``CultureName is the raw Culture column, not the CultureInfo-normalised name`` () : unit =
+        // The distinction the handler depends on. `AssemblyName` runs the column through
+        // `CultureInfo`, so it cannot be the source for a QCall that must hand the guest
+        // `md.szLocale` verbatim.
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let image = culturedLibraryImage ()
+
+        use peImage = new MemoryStream (image)
+        let assembly = Assembly.read loggerFactory None peImage
+
+        assembly.CultureName |> shouldEqual culturedColumn
+
+        // Sanity: the two really do disagree, so the assertion above is load-bearing rather
+        // than accidentally passing because the compiler already canonicalised the column.
+        culturedColumn |> shouldNotEqual culturedNormalised
+        assembly.Name.CultureName |> shouldEqual culturedNormalised
+
+    [<Test>]
+    let ``CultureName is empty for a culture-neutral assembly`` () : unit =
+        // A nil `Culture` handle resolves to offset 0 of the `#Strings` heap, which is the
+        // empty string — the same thing CoreCLR's `getString` returns, and not null.
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let image =
+            Roslyn.compileAssembly guestAssemblyName OutputKind.ConsoleApplication [] [ guestSource ]
+
+        use peImage = new MemoryStream (image)
+        let assembly = Assembly.read loggerFactory None peImage
+
+        assembly.CultureName |> shouldEqual ""
+
+    [<Test>]
+    let ``GetLocale writes the Culture column verbatim`` () : unit =
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let image =
+            Roslyn.compileAssembly guestAssemblyName OutputKind.ConsoleApplication [] [ guestSource ]
+
+        let prepared = prepareGuest loggerFactory image
+
+        let cultured, state =
+            withLoadedAssembly loggerFactory (culturedLibraryImage ()) prepared.State
+
+        let state, written =
+            invokeGetLocale loggerFactory prepared state cultured.Name.FullName
+
+        let addr =
+            written
+            |> Option.defaultWith (fun () -> failwith "handler left the StringHandleOnStack at null")
+
+        // Not `culturedNormalised`: a handler sourcing this from `AssemblyName` would write
+        // that instead, and the guest's `CultureInfo.GetCultureInfo` would then be handed a
+        // string CoreCLR never produced.
+        assertIsString prepared.BaseClassTypes state addr culturedColumn
+
+    [<Test>]
+    let ``GetLocale writes the canonical empty string for a culture-neutral assembly`` () : unit =
+        // CoreCLR reaches `retString.Set("")` here rather than leaving the handle untouched:
+        // the pointer it guards on is non-null because a nil `Culture` index resolves into
+        // the `#Strings` heap. That matters to the guest, which branches on `locale == null`
+        // before calling `CultureInfo.GetCultureInfo(locale)` — the empty string takes the
+        // second path, and `GetCultureInfo("")` is the invariant culture.
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let image =
+            Roslyn.compileAssembly guestAssemblyName OutputKind.ConsoleApplication [] [ guestSource ]
+
+        let prepared = prepareGuest loggerFactory image
+        let baseClassTypes = prepared.BaseClassTypes
+        let guest = prepared.State.ActiveAssembly prepared.EntryThread
+
+        let state, guestLocale =
+            invokeGetLocale loggerFactory prepared prepared.State guest.Name.FullName
+
+        let guestAddr =
+            guestLocale
+            |> Option.defaultWith (fun () -> failwith "handler left the StringHandleOnStack at null")
+
+        assertIsString baseClassTypes state guestAddr ""
+
+        // A framework assembly is culture-neutral too.
+        let state, corelibLocale =
+            invokeGetLocale loggerFactory prepared state baseClassTypes.Corelib.Name.FullName
+
+        let corelibAddr =
+            corelibLocale
+            |> Option.defaultWith (fun () -> failwith "handler left the StringHandleOnStack at null")
+
+        assertIsString baseClassTypes state corelibAddr ""
+
+        // `StringObject::NewString` hands back the shared empty-string instance for a
+        // zero-length string, so these are reference-identical on CoreCLR and must be here.
+        let canonicalEmpty, _state =
+            IlMachineState.internCanonicalEmptyString loggerFactory baseClassTypes state
+
+        guestAddr |> shouldEqual canonicalEmpty
+        corelibAddr |> shouldEqual canonicalEmpty
+
+    [<Test>]
+    let ``GetLocale on an unloaded assembly fails loudly`` () : unit =
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let image =
+            Roslyn.compileAssembly guestAssemblyName OutputKind.ConsoleApplication [] [ guestSource ]
+
+        let prepared = prepareGuest loggerFactory image
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () ->
+                invokeGetLocale
+                    loggerFactory
+                    prepared
+                    prepared.State
+                    "NotLoaded, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null"
+                |> ignore<IlMachineState * ManagedHeapAddress option>
             )
 
         exn.Message |> shouldContainText "is not loaded"
