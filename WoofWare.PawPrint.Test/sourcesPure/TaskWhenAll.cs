@@ -60,10 +60,42 @@ public static class TaskWhenAll
         return 0;
     }
 
-    // Tasks that are genuinely pending when WhenAll is called, so the promise has to register a
-    // continuation on each rather than observing them already complete. The results are still
-    // asserted in argument order, which WhenAll guarantees irrespective of which task finishes first.
+    // Tasks that are still incomplete when WhenAll inspects them, so the promise must register a
+    // continuation on each rather than observing them already complete.
+    //
+    // Completion is driven by TaskCompletionSource rather than by Task.Run precisely so that this is
+    // guaranteed rather than merely likely: a Task.Run delegate is free to finish before WhenAll ever
+    // looks at its argument, on the real runtime as much as under PawPrint, in which case WhenAll
+    // takes the already-completed path and the subtest silently degrades into a duplicate of
+    // TestResultsInArgumentOrder while still passing. A TCS task completes only when this thread
+    // calls SetResult, so the two IsCompleted checks below are facts about WhenAll's semantics and
+    // not races: WhenAll cannot complete before *every* input has, so it is incomplete before any
+    // SetResult and still incomplete after only the first.
     static int TestPendingTasks()
+    {
+        TaskCompletionSource<int> first = new TaskCompletionSource<int>();
+        TaskCompletionSource<int> second = new TaskCompletionSource<int>();
+
+        Task<int[]> all = Task.WhenAll(first.Task, second.Task);
+        if (all.IsCompleted) return 1;
+
+        first.SetResult(1);
+        if (all.IsCompleted) return 2;
+
+        second.SetResult(2);
+
+        int[] results = all.Result;
+        if (results.Length != 2) return 3;
+        if (results[0] != 1) return 4;
+        if (results[1] != 2) return 5;
+        return 0;
+    }
+
+    // WhenAll composed with thread-pool dispatch. Unlike TestPendingTasks this makes no claim about
+    // whether the tasks are still running when WhenAll sees them -- either scheduling is legal, and
+    // the assertions hold both ways -- so what it pins is that WhenAll accepts pool-scheduled work
+    // and still orders results by argument rather than by completion.
+    static int TestPoolScheduledTasks()
     {
         Task<int> first = Task.Run(() => 1);
         Task<int> second = Task.Run(() => 2);
@@ -91,6 +123,9 @@ public static class TaskWhenAll
 
         result = TestPendingTasks();
         if (result != 0) return 400 + result;
+
+        result = TestPoolScheduledTasks();
+        if (result != 0) return 500 + result;
 
         return 0;
     }
