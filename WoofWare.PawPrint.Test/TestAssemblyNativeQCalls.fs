@@ -9,24 +9,35 @@ open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 
-/// Tests for the `AssemblyNative_GetSimpleName` QCall, which CoreCLR answers from the
-/// `Name` column of the manifest's single `Assembly` metadata row.
+/// Tests for the QCalls behind `Assembly.GetName()`, each of which CoreCLR answers from a
+/// column of the manifest's single `Assembly` metadata row.
 ///
-/// There is no end-to-end guest coverage yet: the only managed caller a guest can reach
-/// is `Assembly.GetName()`, which goes on to need `AssemblyNative_GetVersion`,
-/// `_GetLocale`, `_GetPublicKey`, `_GetFlags` and `_GetCodeBase` as well. The parked
-/// `sourcesPure/AssemblyGetNameSimpleName.cs` records that; these tests pin the QCall
-/// itself in the meantime.
+/// There is no end-to-end guest coverage yet: `Assembly.GetName()` is the only managed
+/// caller a guest can reach, and it fills its `AssemblyName` from six QCalls in a row, so
+/// it stays parked until the last of them lands (see
+/// `sourcesPure/AssemblyGetNameSimpleName.cs`). These tests pin each QCall as it arrives.
 [<TestFixture>]
-module TestAssemblyNativeSimpleName =
+module TestAssemblyNativeQCalls =
 
     /// Deliberately dotted. CoreCLR reads the simple name straight out of metadata, so a
     /// dotted name comes back whole; an implementation that split a qualified name at a
     /// '.' (as the type-name QCalls legitimately do) would truncate it.
     let private guestAssemblyName = "WoofWare.PawPrint.SimpleNameTestGuest"
 
+    /// Four distinct, non-zero components, so a handler that transposed two of them or
+    /// wrote one pointer four times cannot pass. Deliberately not Roslyn's `0.0.0.0`
+    /// default, which every transposition survives.
+    let private guestAssemblyVersion = System.Version (4, 3, 2, 1)
+
+    /// Seeded into every `out int` slot before a call. Negative, so it cannot collide with
+    /// any value CoreCLR can write through one of these pointers (the metadata columns it
+    /// widens are `USHORT`), which makes "never written" a distinguishable outcome.
+    let private unwrittenSentinel = -1
+
     let private guestSource =
         """
+[assembly: System.Reflection.AssemblyVersion("4.3.2.1")]
+
 public static class Entry
 {
     public static int Main(string[] args)
@@ -36,15 +47,18 @@ public static class Entry
 }
 """
 
-    /// The oracle: the `Name` column of the `Assembly` row, read from the same image with
+    /// The oracle for both QCalls below: the `Assembly` row read from the same image with
     /// `MetadataReader` — i.e. exactly what CoreCLR's `GetAssemblyProps(TokenFromRid(1,
     /// mdtAssembly), ...)` hands back. Reading it from the image rather than restating the
-    /// constant keeps the test honest if the compiler ever mangles the name it was given.
-    let private metadataAssemblyName (image : byte[]) : string =
+    /// constants keeps the test honest if the compiler ever mangles what it was given.
+    let private metadataAssemblyDefinition (image : byte[]) : string * System.Version =
         use peImage = new MemoryStream (image)
         use peReader = new System.Reflection.PortableExecutable.PEReader (peImage)
         let metadata = peReader.GetMetadataReader ()
-        metadata.GetString (metadata.GetAssemblyDefinition().Name)
+        let assemblyDef = metadata.GetAssemblyDefinition ()
+        metadata.GetString assemblyDef.Name, assemblyDef.Version
+
+    let private metadataAssemblyName (image : byte[]) : string = metadataAssemblyDefinition image |> fst
 
     let private prepareGuest
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
@@ -75,9 +89,13 @@ public static class Entry
             failwith $"type %s{namespaceName}.%s{typeName} not found in %s{assembly.Name.Name}"
         )
 
-    let private getSimpleNameMethod
+    /// Locates the `RuntimeAssembly` method carrying the given QCall entry point and
+    /// concretizes it, so the handler sees the same `ExecutingMethod` signature the
+    /// interpreter would have handed it.
+    let private qCallMethod
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (entryPoint : string)
         (state : IlMachineState)
         : IlMachineState *
           TypeInfo<GenericParamFromMetadata, TypeDefn> *
@@ -90,17 +108,15 @@ public static class Entry
             runtimeAssemblyType.Methods
             |> List.filter (fun method ->
                 match method.NativeImport with
-                | Some import ->
-                    import.ModuleName = "QCall"
-                    && import.EntryPointName = "AssemblyNative_GetSimpleName"
+                | Some import -> import.ModuleName = "QCall" && import.EntryPointName = entryPoint
                 | None -> false
             )
             |> function
                 | [ method ] -> method
-                | [] -> failwith "QCall entry point AssemblyNative_GetSimpleName not found on RuntimeAssembly"
+                | [] -> failwith $"QCall entry point %s{entryPoint} not found on RuntimeAssembly"
                 | methods ->
                     failwith
-                        $"QCall entry point AssemblyNative_GetSimpleName was ambiguous on RuntimeAssembly: %d{methods.Length} matches"
+                        $"QCall entry point %s{entryPoint} was ambiguous on RuntimeAssembly: %d{methods.Length} matches"
 
         let state, method, _ =
             ExecutionConcretization.concretizeMethodWithTypeGenerics
@@ -200,6 +216,77 @@ public static class Entry
             value, target, state
         | other -> failwith $"StringHandleOnStack zero value was not a value type: %O{other}"
 
+    /// Allocates an `int[1]` and returns a managed pointer at element 0, standing in for
+    /// the caller's `out int` local. Seeded with a value no metadata version column can
+    /// hold, so a handler that never wrote is distinguishable from one that wrote 0.
+    let private int32OutSlot
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        : ManagedPointerSource * IlMachineState
+        =
+        let int32Handle =
+            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Int32
+
+        let arrayAddr, state =
+            IlMachineState.allocateArray
+                (ConcreteTypeHandle.OneDimArrayZero int32Handle)
+                (fun () -> CliType.Numeric (CliNumericType.Int32 unwrittenSentinel))
+                1
+                state
+
+        ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), []), state
+
+    let private readInt32Out
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (ptr : ManagedPointerSource)
+        : int
+        =
+        match
+            IlMachineState.readManagedByref baseClassTypes state ptr
+            |> CliType.unwrapPrimitiveLikeDeep
+        with
+        | CliType.Numeric (CliNumericType.Int32 value) -> value
+        | other -> failwith $"expected Int32 out value, got %O{other}"
+
+    /// Runs `entryPoint` with the given native arguments against the entry thread, and
+    /// returns the state the handler produced. Fails if the handler declines the call or
+    /// suspends rather than completing.
+    let private invokeQCall
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (prepared : Program.PreparedProgram)
+        (entryPoint : string)
+        (arguments : CliType list)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        let baseClassTypes = prepared.BaseClassTypes
+
+        let state, runtimeAssemblyType, method =
+            qCallMethod loggerFactory baseClassTypes entryPoint state
+
+        let instruction =
+            { state.ThreadState.[prepared.EntryThread].MethodState with
+                ExecutingMethod = method
+                Arguments = ImmutableArray.CreateRange arguments
+            }
+
+        let ctx : NativeCallContext =
+            {
+                LoggerFactory = loggerFactory
+                BaseClassTypes = baseClassTypes
+                Thread = prepared.EntryThread
+                State = state
+                Instruction = instruction
+                TargetAssembly = baseClassTypes.Corelib
+                TargetType = runtimeAssemblyType
+            }
+
+        match NativeRuntimeAssembly.tryExecuteQCall entryPoint ctx with
+        | Some (NativeHandlerResult.Completed (state, _)) -> state
+        | Some result -> failwith $"unexpected %s{entryPoint} execution result: %O{result}"
+        | None -> failwith $"%s{entryPoint} QCall did not match"
+
     /// Runs the QCall for `assemblyFullName` and returns the heap address the handler wrote
     /// into the `StringHandleOnStack` (None if it left the slot at its preinitialised null).
     let private invokeGetSimpleName
@@ -217,31 +304,8 @@ public static class Entry
         let stringHandle, target, state =
             stringHandleOnStackValue loggerFactory baseClassTypes state
 
-        let state, runtimeAssemblyType, qCallMethod =
-            getSimpleNameMethod loggerFactory baseClassTypes state
-
-        let instruction =
-            { state.ThreadState.[prepared.EntryThread].MethodState with
-                ExecutingMethod = qCallMethod
-                Arguments = ImmutableArray.CreateRange [ qCallAssembly ; stringHandle ]
-            }
-
-        let ctx : NativeCallContext =
-            {
-                LoggerFactory = loggerFactory
-                BaseClassTypes = baseClassTypes
-                Thread = prepared.EntryThread
-                State = state
-                Instruction = instruction
-                TargetAssembly = baseClassTypes.Corelib
-                TargetType = runtimeAssemblyType
-            }
-
         let state =
-            match NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetSimpleName" ctx with
-            | Some (NativeHandlerResult.Completed (state, _)) -> state
-            | Some result -> failwith $"unexpected AssemblyNative_GetSimpleName execution result: %O{result}"
-            | None -> failwith "AssemblyNative_GetSimpleName QCall did not match"
+            invokeQCall loggerFactory prepared "AssemblyNative_GetSimpleName" [ qCallAssembly ; stringHandle ] state
 
         let written =
             match IlMachineState.readManagedByref baseClassTypes state target with
@@ -249,6 +313,48 @@ public static class Entry
             | other -> failwith $"expected StringHandleOnStack target to contain an object ref, got %O{other}"
 
         state, written
+
+    /// Runs `AssemblyNative_GetVersion` for `assemblyFullName` and reads back the four
+    /// `out int` slots, in the declared parameter order (major, minor, build, revision).
+    let private invokeGetVersion
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (prepared : Program.PreparedProgram)
+        (state : IlMachineState)
+        (assemblyFullName : string)
+        : IlMachineState * (int * int * int * int)
+        =
+        let baseClassTypes = prepared.BaseClassTypes
+
+        let qCallAssembly, state =
+            qCallAssemblyValue loggerFactory baseClassTypes assemblyFullName state
+
+        // Four separate slots, so a handler that wrote one pointer four times, or wrote
+        // through the wrong one, cannot look correct.
+        let majorPtr, state = int32OutSlot baseClassTypes state
+        let minorPtr, state = int32OutSlot baseClassTypes state
+        let buildPtr, state = int32OutSlot baseClassTypes state
+        let revisionPtr, state = int32OutSlot baseClassTypes state
+
+        let pointerArgument (ptr : ManagedPointerSource) : CliType =
+            CliType.RuntimePointer (CliRuntimePointer.Managed ptr)
+
+        let state =
+            invokeQCall
+                loggerFactory
+                prepared
+                "AssemblyNative_GetVersion"
+                [
+                    qCallAssembly
+                    pointerArgument majorPtr
+                    pointerArgument minorPtr
+                    pointerArgument buildPtr
+                    pointerArgument revisionPtr
+                ]
+                state
+
+        let read = readInt32Out baseClassTypes state
+
+        state, (read majorPtr, read minorPtr, read buildPtr, read revisionPtr)
 
     /// Asserts that `addr` is a genuine `System.String` heap object carrying `expected`,
     /// rather than merely a side-table entry.
@@ -376,6 +482,88 @@ public static class Entry
                     prepared.State
                     "NotLoaded, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null"
                 |> ignore<IlMachineState * ManagedHeapAddress option>
+            )
+
+        exn.Message |> shouldContainText "is not loaded"
+
+    [<Test>]
+    let ``GetVersion writes the four Assembly metadata row columns`` () : unit =
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let image =
+            Roslyn.compileAssembly guestAssemblyName OutputKind.ConsoleApplication [] [ guestSource ]
+
+        // Sanity: the compiler honoured the [assembly: AssemblyVersion] we asked for, so
+        // the four expected components below really are four distinct non-zero numbers
+        // and the ordering assertions are load-bearing.
+        let _, metadataVersion = metadataAssemblyDefinition image
+        metadataVersion |> shouldEqual guestAssemblyVersion
+
+        let prepared = prepareGuest loggerFactory image
+        let guest = prepared.State.ActiveAssembly prepared.EntryThread
+
+        let _state, (major, minor, build, revision) =
+            invokeGetVersion loggerFactory prepared prepared.State guest.Name.FullName
+
+        (major, minor, build, revision)
+        |> shouldEqual (metadataVersion.Major, metadataVersion.Minor, metadataVersion.Build, metadataVersion.Revision)
+
+    [<Test>]
+    let ``GetVersion answers per assembly rather than with a constant`` () : unit =
+        // Corelib carries the shared framework's own version, which is not the guest's, so
+        // a handler ignoring its QCallAssembly argument cannot satisfy both. Asserting
+        // corelib's exact version would just restate the value PawPrint parsed from the
+        // same metadata row, so assert the structural facts instead: a well-formed
+        // four-component version, in the range the metadata columns can hold, that is not
+        // the guest's.
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let image =
+            Roslyn.compileAssembly guestAssemblyName OutputKind.ConsoleApplication [] [ guestSource ]
+
+        let prepared = prepareGuest loggerFactory image
+        let guest = prepared.State.ActiveAssembly prepared.EntryThread
+
+        let state, guestVersion =
+            invokeGetVersion loggerFactory prepared prepared.State guest.Name.FullName
+
+        let _state, corelibVersion =
+            invokeGetVersion loggerFactory prepared state prepared.BaseClassTypes.Corelib.Name.FullName
+
+        corelibVersion |> shouldNotEqual guestVersion
+
+        let corelibMajor, corelibMinor, corelibBuild, corelibRevision = corelibVersion
+
+        for component_ in [ corelibMajor ; corelibMinor ; corelibBuild ; corelibRevision ] do
+            // Never the sentinel (so every slot was written), and inside the range a
+            // USHORT metadata column can hold.
+            component_ |> shouldBeGreaterThan -1
+            component_ |> shouldBeSmallerThan (int System.UInt16.MaxValue + 1)
+
+        // A shared framework's corelib is never version 0.0.0.0; if it were, the
+        // "differs from the guest" assertion above would be passing for the wrong reason.
+        corelibMajor |> shouldBeGreaterThan 0
+
+    [<Test>]
+    let ``GetVersion on an unloaded assembly fails loudly`` () : unit =
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let image =
+            Roslyn.compileAssembly guestAssemblyName OutputKind.ConsoleApplication [] [ guestSource ]
+
+        let prepared = prepareGuest loggerFactory image
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () ->
+                invokeGetVersion
+                    loggerFactory
+                    prepared
+                    prepared.State
+                    "NotLoaded, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null"
+                |> ignore<IlMachineState * (int * int * int * int)>
             )
 
         exn.Message |> shouldContainText "is not loaded"

@@ -368,6 +368,87 @@ module NativeRuntimeAssembly =
                     (CliType.ObjectRef (Some nameAddr))
 
             NativeHandlerResult.completed state |> Some
+        | "AssemblyNative_GetVersion",
+          "System.Private.CoreLib",
+          "System.Reflection",
+          "RuntimeAssembly",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "QCallAssembly",
+                                              qCallAssemblyGenerics)
+            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
+            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
+            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
+            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ],
+          MethodReturnType.Void when qCallAssemblyGenerics.IsEmpty ->
+            let operation = "AssemblyNative_GetVersion"
+
+            if instruction.Arguments.Length <> 5 then
+                failwith $"%s{operation}: expected five native arguments, got %d{instruction.Arguments.Length}"
+
+            let assemblyFullName =
+                instruction.Arguments.[0]
+                |> NativeCall.qCallAssemblyToAssemblyFullName operation state
+
+            let assembly =
+                state.LoadedAssembly' assemblyFullName
+                |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
+
+            // CoreCLR reads the four `USHORT` columns of the manifest's single
+            // `Assembly` metadata row (`PEAssembly::GetVersion` ->
+            // `GetAssemblyProps(TokenFromRid(1, mdtAssembly), ..., &md, ...)`) and
+            // widens each to `INT32`. PawPrint's `DumpedAssembly.Name` is
+            // `AssemblyDefinition.GetAssemblyName()` over that same row, and its
+            // `Version` is built from those same four columns, so reading it here
+            // is the same four numbers by construction.
+            let version = assembly.Name.Version
+
+            if isNull version then
+                failwith $"%s{operation}: assembly %s{assemblyFullName} has no version in its Assembly metadata row"
+
+            // `AssemblyName.Version` from metadata is always four-component, because
+            // the metadata row always carries all four columns. A `System.Version`
+            // built with fewer reports -1 for the missing tail, which would be a
+            // value CoreCLR can never produce here (its columns are unsigned), so
+            // treat it as a parse bug rather than widening it into the guest.
+            let components =
+                [
+                    "major", version.Major
+                    "minor", version.Minor
+                    "build", version.Build
+                    "revision", version.Revision
+                ]
+
+            for name, value in components do
+                if value < 0 then
+                    failwith
+                        $"%s{operation}: assembly %s{assemblyFullName} has no %s{name} version component (got %d{value})"
+
+                // The metadata columns are `USHORT`, so CoreCLR's widening to `INT32`
+                // can never exceed `UInt16.MaxValue`. Anything larger means we read
+                // the version from somewhere other than the Assembly row.
+                if value > int System.UInt16.MaxValue then
+                    failwith
+                        $"%s{operation}: assembly %s{assemblyFullName} has %s{name} version component %d{value}, which does not fit the metadata row's UInt16 column"
+
+            let writeComponent (argIndex : int) (argName : string) (value : int) (state : IlMachineState) =
+                let target =
+                    NativeCall.managedPointerOfPointerArgument operation argName instruction.Arguments.[argIndex]
+
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    target
+                    (CliType.Numeric (CliNumericType.Int32 value))
+
+            let state =
+                state
+                |> writeComponent 1 "majVer" version.Major
+                |> writeComponent 2 "minVer" version.Minor
+                |> writeComponent 3 "buildNum" version.Build
+                |> writeComponent 4 "revNum" version.Revision
+
+            NativeHandlerResult.completed state |> Some
         | "AssemblyNative_GetTypeCore",
           "System.Private.CoreLib",
           "System.Reflection",
