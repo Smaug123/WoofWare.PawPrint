@@ -55,6 +55,9 @@ module IlMachineState =
     let peByteRangeForFieldSignatureBlob =
         IlMachineTypeResolution.peByteRangeForFieldSignatureBlob
 
+    let peByteRangeForMethodSignatureBlob =
+        IlMachineTypeResolution.peByteRangeForMethodSignatureBlob
+
     let peByteRangePointer = IlMachineTypeResolution.peByteRangePointer
 
     let getFrame = IlMachineThreadState.getFrame
