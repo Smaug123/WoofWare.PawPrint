@@ -954,48 +954,54 @@ module Concretization =
                 sourceAssembly.Name.FullName
                 unexpected
 
+    /// <remarks>
+    /// This threads the <c>DumpedAssembly</c> itself rather than its <c>AssemblyName</c>, and
+    /// deliberately so: <c>LoadedAssemblies</c> is keyed by definition <em>full name</em>, and
+    /// <c>AssemblyName.FullName</c> re-formats that string from its components on every single
+    /// access. This walk runs on the type-resolution hot path, so a lookup per link is not free.
+    /// Each step already holds the assembly it needs — for a TypeDef link it is the same one, and
+    /// for a TypeRef/TypeSpec link the resolver hands back the canonical instance.
+    /// </remarks>
     let rec private ensureBaseTypeAssembliesLoaded
         (loadAssembly : IAssemblyLoad)
         (assemblies : LoadedAssemblies)
-        (assyName : AssemblyName)
+        (assy : DumpedAssembly)
         (baseTypeInfo : BaseTypeInfo option)
         : LoadedAssemblies
         =
         match baseTypeInfo with
         | None -> assemblies
         | Some (BaseTypeInfo.TypeDef handle) ->
-            let assy = assemblies.[assyName]
             let baseType = assy.TypeDefs.[handle]
-            ensureBaseTypeAssembliesLoaded loadAssembly assemblies assy.Name baseType.BaseType
+            ensureBaseTypeAssembliesLoaded loadAssembly assemblies assy baseType.BaseType
         | Some (BaseTypeInfo.TypeRef handle) ->
-            let assy = assemblies.[assyName]
             let typeRef = assy.TypeRefs.[handle]
 
             let newAssemblies, resolvedAssembly, resolvedHandle =
                 ensureTypeRefResolved loadAssembly assemblies assy typeRef
 
             let resolvedType = resolvedAssembly.TypeDefs.[resolvedHandle]
-            ensureBaseTypeAssembliesLoaded loadAssembly newAssemblies resolvedAssembly.Name resolvedType.BaseType
+            ensureBaseTypeAssembliesLoaded loadAssembly newAssemblies resolvedAssembly resolvedType.BaseType
         | Some (BaseTypeInfo.TypeSpec handle) ->
-            let assy = assemblies.[assyName]
             let typeSpec = assy.TypeSpecs.[handle].Signature
 
             let newAssemblies, resolvedAssembly, resolvedHandle =
                 ensureTypeDefnResolved loadAssembly assemblies assy typeSpec
 
             let resolvedType = resolvedAssembly.TypeDefs.[resolvedHandle]
-            ensureBaseTypeAssembliesLoaded loadAssembly newAssemblies resolvedAssembly.Name resolvedType.BaseType
+            ensureBaseTypeAssembliesLoaded loadAssembly newAssemblies resolvedAssembly resolvedType.BaseType
 
+    /// Load every assembly reachable from the base-type chain of the given type definition.
+    /// <paramref name="assy"/> must be the canonical instance for the assembly which defines it.
     let ensureTypeDefinitionBaseAssembliesLoaded
         (loadAssembly : IAssemblyLoad)
         (assemblies : LoadedAssemblies)
-        (assemblyName : AssemblyName)
+        (assy : DumpedAssembly)
         (typeDefinitionHandle : TypeDefinitionHandle)
         : LoadedAssemblies
         =
-        let assy = assemblies.[assemblyName]
         let typeDef = assy.TypeDefs.[typeDefinitionHandle]
-        ensureBaseTypeAssembliesLoaded loadAssembly assemblies assy.Name typeDef.BaseType
+        ensureBaseTypeAssembliesLoaded loadAssembly assemblies assy typeDef.BaseType
 
     /// Force-load every assembly needed for CliType.zeroOf to zero-initialise the
     /// given concrete handle. zeroOf calls DumpedAssembly.isValueType on the top
@@ -1056,7 +1062,7 @@ module Concretization =
                         ensureTypeDefinitionBaseAssembliesLoaded
                             loadAssembly
                             assemblies
-                            concreteType.Assembly
+                            assemblies.[concreteType.Assembly]
                             concreteType.Definition.Get
 
                     let outerAssembly = assemblies.[concreteType.Assembly]
@@ -1129,7 +1135,7 @@ module Concretization =
             ensureTypeDefinitionBaseAssembliesLoaded
                 loadAssembly
                 assemblies
-                method.DeclaringType.Assembly
+                assemblies.[method.DeclaringType.Assembly]
                 method.DeclaringType.Definition.Get
 
         let concCtx =

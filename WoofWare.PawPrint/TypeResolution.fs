@@ -85,6 +85,39 @@ module TypeResolution =
                 assemblies, targetAssy
         }
 
+    /// <summary>
+    /// Discharge the precondition of the pure base-chain walks, for a type we are about to hand
+    /// to a caller: load every assembly reachable from <paramref name="ty"/>'s base-type chain.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>DumpedAssembly.isValueType</c>, <c>signatureTypeKind</c> and <c>typeInfoToTypeDefn</c>
+    /// walk a type's base-type chain given only a <c>LoadedAssemblies</c>. They cannot load, so
+    /// they fail hard ("seems pretty unlikely that we could have constructed this object without
+    /// loading its base type") whenever a link in that chain is a TypeRef scoped to an assembly
+    /// nobody has loaded yet. Those functions are called from roughly a hundred places across the
+    /// interpreter, almost none of which hold the load capability, so the precondition has to be
+    /// established here — at the one layer that can both resolve a type and read a file.
+    /// </para>
+    /// <para>
+    /// This also matches the real CLR, which cannot build a MethodTable for a type without first
+    /// loading its base type, and so has the same closure property for free.
+    /// </para>
+    /// </remarks>
+    let private primeBaseChain
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (assemblies : LoadedAssemblies)
+        (definedIn : DumpedAssembly)
+        (ty : WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>)
+        : LoadedAssemblies
+        =
+        Concretization.ensureTypeDefinitionBaseAssembliesLoaded
+            (directoryLoader loggerFactory dotnetRuntimeDirs)
+            assemblies
+            definedIn
+            ty.TypeDefHandle
+
     let rec internal resolveTopLevelTypeFromName
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -96,7 +129,8 @@ module TypeResolution =
         : LoadedAssemblies * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
         match Assembly.resolveTopLevelTypeFromName assy assemblies ns name genericArgs with
-        | TypeResolutionResult.Resolved (assy, _, typeDef) -> assemblies, assy, typeDef
+        | TypeResolutionResult.Resolved (assy, _, typeDef) ->
+            primeBaseChain loggerFactory dotnetRuntimeDirs assemblies assy typeDef, assy, typeDef
         | TypeResolutionResult.FirstLoadAssy loadFirst ->
             let assemblies, _, _ =
                 loadAssembly
@@ -121,7 +155,8 @@ module TypeResolution =
         : LoadedAssemblies * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
         match Assembly.resolveTypeFromExport fromAssembly assemblies genericArgs ty with
-        | TypeResolutionResult.Resolved (assy, _, typeDef) -> assemblies, assy, typeDef
+        | TypeResolutionResult.Resolved (assy, _, typeDef) ->
+            primeBaseChain loggerFactory dotnetRuntimeDirs assemblies assy typeDef, assy, typeDef
         | TypeResolutionResult.FirstLoadAssy loadFirst ->
             let assemblies, _, _ =
                 loadAssembly
@@ -146,7 +181,8 @@ module TypeResolution =
         : LoadedAssemblies * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
         match Assembly.resolveTypeRef assemblies referencedInAssembly typeGenericArgs target with
-        | TypeResolutionResult.Resolved (assy, _, typeDef) -> assemblies, assy, typeDef
+        | TypeResolutionResult.Resolved (assy, _, typeDef) ->
+            primeBaseChain loggerFactory dotnetRuntimeDirs assemblies assy typeDef, assy, typeDef
         | TypeResolutionResult.FirstLoadAssy loadFirst ->
             let assemblies, _, _ =
                 loadAssembly
@@ -346,7 +382,39 @@ module TypeResolution =
 
             assemblies, preserved
 
+    /// Resolve a TypeDefn to the metadata of the type it names, loading assemblies as required.
+    ///
+    /// The returned TypeInfo satisfies the base-chain closure invariant described on
+    /// <c>primeBaseChain</c>: every assembly reachable from its base-type chain is loaded in the
+    /// returned load context, so the caller may run the pure walks (<c>isValueType</c>,
+    /// <c>signatureTypeKind</c>, <c>typeInfoToTypeDefn</c>) over it.
     and resolveTypeFromDefn
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (ty : TypeDefn)
+        (typeGenericArgs : ImmutableArray<TypeDefn>)
+        (methodGenericArgs : ImmutableArray<TypeDefn>)
+        (assy : DumpedAssembly)
+        (assemblies : LoadedAssemblies)
+        : LoadedAssemblies * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
+        =
+        let assemblies, resolvedIn, resolved =
+            resolveTypeFromDefnUnprimed
+                loggerFactory
+                dotnetRuntimeDirs
+                baseClassTypes
+                ty
+                typeGenericArgs
+                methodGenericArgs
+                assy
+                assemblies
+
+        primeBaseChain loggerFactory dotnetRuntimeDirs assemblies resolvedIn resolved, resolvedIn, resolved
+
+    /// The body of <c>resolveTypeFromDefn</c>, without the base-chain priming its contract
+    /// promises. Only <c>resolveTypeFromDefn</c> may call this.
+    and private resolveTypeFromDefnUnprimed
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)

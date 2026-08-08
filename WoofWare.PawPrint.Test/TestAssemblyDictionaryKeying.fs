@@ -127,7 +127,7 @@ module TestAssemblyDictionaryKeying =
         Concretization.ensureTypeDefinitionBaseAssembliesLoaded
             (loader ())
             loaded
-            targetAssembly.Name
+            loaded.[targetAssembly.Name]
             identity.TypeDefinition.Get
         |> ignore
 
