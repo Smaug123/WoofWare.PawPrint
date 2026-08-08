@@ -123,16 +123,29 @@ public class Outer<A>
 }
 """
 
-    let private corpusAssembly : DumpedAssembly =
-        let bytes =
-            Roslyn.compileAssembly
-                "PawPrint.FieldIdAgreement"
-                Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
-                []
-                [ corpusSource ]
+    let private corpusBytes : byte array =
+        Roslyn.compileAssembly
+            "PawPrint.FieldIdAgreement"
+            Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+            []
+            [ corpusSource ]
 
-        use stream = new MemoryStream (bytes)
+    let private corpusAssembly : DumpedAssembly =
+        use stream = new MemoryStream (corpusBytes)
         AssemblyApi.read loggerFactory (Some "PawPrint.FieldIdAgreement.dll") stream
+
+    /// The same image, loaded into *this* process, so real .NET reflection can be the oracle for
+    /// which instantiation of a base type declares an inherited field. That is the one question
+    /// PawPrint's own type graph cannot be asked without circularity: read the expected base
+    /// instantiation out of the storage identity under test and any self-consistent-but-wrong
+    /// answer (`Base<int,string>` where `DerivedReorders<int,string> : Base<string,int>` was
+    /// meant) agrees with itself.
+    ///
+    /// Safe to load in-process: this is a library with no entry point and no static state, so
+    /// unlike a guest under test it cannot touch a process-global. Nothing here executes any of
+    /// its code -- only reflection over its metadata.
+    let private corpusRuntimeAssembly : System.Reflection.Assembly =
+        System.Reflection.Assembly.Load corpusBytes
 
     let private fsharpCore : DumpedAssembly =
         Assembly.readFile loggerFactory fsharpCorePath
@@ -465,57 +478,147 @@ public class Outer<A>
         |> Seq.tryHead
         |> Option.defaultWith (fun () -> failwith $"nested type %s{outer}/%s{inner} missing from the corpus assembly")
 
-    /// Every corpus type, paired with its generic arity.
-    let private corpusTypes : (TypeInfo<GenericParamFromMetadata, TypeDefn> * int) list =
+    /// The same corpus type as real .NET sees it, for the reflection oracle. Nested types are
+    /// spelled with `+` in the reflection name grammar.
+    let private corpusRuntimeType (name : string) : System.Type =
+        corpusRuntimeAssembly.GetType ("PawPrint.FieldIdAgreement." + name)
+        |> Option.ofObj
+        |> Option.defaultWith (fun () ->
+            failwith $"PawPrint.FieldIdAgreement.%s{name} missing from the corpus assembly as loaded by the CLR"
+        )
+
+    /// Every corpus type: PawPrint's view, the CLR's view, and its generic arity.
+    let private corpusTypes : (TypeInfo<GenericParamFromMetadata, TypeDefn> * System.Type * int) list =
         [
-            corpusType "Base`2", 2
-            corpusType "NonGenericBase", 0
-            corpusType "DerivedAddsParam`3", 3
-            corpusType "DerivedReorders`2", 2
-            corpusType "DerivedPartlyConcrete`1", 1
-            corpusType "DerivedNestsBaseInItsOwnArgs`1", 1
-            corpusType "Middle`1", 1
-            corpusType "Leaf`1", 1
-            corpusType "ClosedDerived", 0
-            corpusType "GenericFromNonGeneric`1", 1
-            corpusType "ShadowsField`1", 1
-            corpusType "Outer`1", 1
+            corpusType "Base`2", corpusRuntimeType "Base`2", 2
+            corpusType "NonGenericBase", corpusRuntimeType "NonGenericBase", 0
+            corpusType "DerivedAddsParam`3", corpusRuntimeType "DerivedAddsParam`3", 3
+            corpusType "DerivedReorders`2", corpusRuntimeType "DerivedReorders`2", 2
+            corpusType "DerivedPartlyConcrete`1", corpusRuntimeType "DerivedPartlyConcrete`1", 1
+            corpusType "DerivedNestsBaseInItsOwnArgs`1", corpusRuntimeType "DerivedNestsBaseInItsOwnArgs`1", 1
+            corpusType "Middle`1", corpusRuntimeType "Middle`1", 1
+            corpusType "Leaf`1", corpusRuntimeType "Leaf`1", 1
+            corpusType "ClosedDerived", corpusRuntimeType "ClosedDerived", 0
+            corpusType "GenericFromNonGeneric`1", corpusRuntimeType "GenericFromNonGeneric`1", 1
+            corpusType "ShadowsField`1", corpusRuntimeType "ShadowsField`1", 1
+            corpusType "Outer`1", corpusRuntimeType "Outer`1", 1
             // `Outer<A>.Inner<B>` has arity 2: a nested type's generic parameters include the
             // enclosing type's.
-            corpusNestedType "Outer`1" "Inner`1", 2
+            corpusNestedType "Outer`1" "Inner`1", corpusRuntimeType "Outer`1+Inner`1", 2
         ]
+
+    /// A closed type argument, carried in both worlds at once: generating the pair is what lets
+    /// the reflection oracle be applied to exactly the instantiation PawPrint was handed.
+    type private TestArg =
+        {
+            AsTypeDefn : TypeDefn
+            AsRuntimeType : System.Type
+        }
 
     /// Closed type arguments to instantiate the corpus at. Deliberately mixes primitives,
     /// reference types, arrays and a generic instantiation of a corpus type, since a generic
     /// argument that is itself a generic instantiation is the case where a lossy
     /// handle-to-`TypeDefn` round trip would show up.
-    let private genTypeArg : Gen<TypeDefn> =
+    let private genTypeArg : Gen<TestArg> =
         let leaves =
             [
-                TypeDefn.PrimitiveType PrimitiveType.Int32
-                TypeDefn.PrimitiveType PrimitiveType.Int64
-                TypeDefn.PrimitiveType PrimitiveType.String
-                TypeDefn.PrimitiveType PrimitiveType.Object
-                TypeDefn.PrimitiveType PrimitiveType.Boolean
-                TypeDefn.OneDimensionalArrayLowerBoundZero (TypeDefn.PrimitiveType PrimitiveType.Int32)
+                TypeDefn.PrimitiveType PrimitiveType.Int32, typeof<int>
+                TypeDefn.PrimitiveType PrimitiveType.Int64, typeof<int64>
+                TypeDefn.PrimitiveType PrimitiveType.String, typeof<string>
+                TypeDefn.PrimitiveType PrimitiveType.Object, typeof<obj>
+                TypeDefn.PrimitiveType PrimitiveType.Boolean, typeof<bool>
+                TypeDefn.OneDimensionalArrayLowerBoundZero (TypeDefn.PrimitiveType PrimitiveType.Int32),
+                typeof<int array>
             ]
+            |> List.map (fun (defn, ty) ->
+                {
+                    AsTypeDefn = defn
+                    AsRuntimeType = ty
+                }
+            )
             |> Gen.elements
 
         let nested =
             gen {
                 let! a = leaves
                 let! b = leaves
-                return closedTypeDefn baseState (corpusType "Base`2") [ a ; b ]
+
+                return
+                    {
+                        AsTypeDefn = closedTypeDefn baseState (corpusType "Base`2") [ a.AsTypeDefn ; b.AsTypeDefn ]
+                        AsRuntimeType =
+                            (corpusRuntimeType "Base`2").MakeGenericType [| a.AsRuntimeType ; b.AsRuntimeType |]
+                    }
             }
 
         Gen.frequency [ 4, leaves ; 1, nested ]
 
-    let private genInstantiation : Gen<TypeInfo<GenericParamFromMetadata, TypeDefn> * TypeDefn list> =
+    let private genInstantiation : Gen<TypeInfo<GenericParamFromMetadata, TypeDefn> * System.Type * TestArg list> =
         gen {
-            let! typeInfo, arity = Gen.elements corpusTypes
+            let! typeInfo, runtimeType, arity = Gen.elements corpusTypes
             let! args = Gen.listOfLength arity genTypeArg
-            return typeInfo, args
+            return typeInfo, runtimeType, args
         }
+
+    // ------------------------------------------------------------------------------------
+    // The reflection oracle
+    // ------------------------------------------------------------------------------------
+
+    // Both renderers below deliberately drop namespaces and compare on `Name` alone. Every corpus
+    // type name is unique, as is every type used as a generic argument, so the rendering is
+    // unambiguous here -- and it sidesteps the fact that metadata gives a nested type an empty
+    // namespace while reflection reports its enclosing one.
+
+    let rec private renderRuntimeType (t : System.Type) : string =
+        if t.IsArray then
+            renderRuntimeType (t.GetElementType ()) + "[]"
+        elif t.IsGenericType then
+            let args =
+                t.GetGenericArguments () |> Array.map renderRuntimeType |> String.concat ","
+
+            $"%s{t.Name}<%s{args}>"
+        else
+            t.Name
+
+    let rec private renderHandle (state : IlMachineState) (handle : ConcreteTypeHandle) : string =
+        match handle with
+        | ConcreteTypeHandle.OneDimArrayZero element -> renderHandle state element + "[]"
+        | ConcreteTypeHandle.Array (element, rank) ->
+            renderHandle state element + "[" + String.replicate (rank - 1) "," + "]"
+        | ConcreteTypeHandle.Byref element -> renderHandle state element + "&"
+        | ConcreteTypeHandle.Pointer element -> renderHandle state element + "*"
+        | ConcreteTypeHandle.FunctionPointer _ -> "<fnptr>"
+        | ConcreteTypeHandle.Concrete _ ->
+            match AllConcreteTypes.lookup handle state.ConcreteTypes with
+            | None -> $"<unregistered %O{handle}>"
+            | Some ct ->
+                if ct.Generics.IsEmpty then
+                    ct.Name
+                else
+                    let args = ct.Generics |> Seq.map (renderHandle state) |> String.concat ","
+
+                    $"%s{ct.Name}<%s{args}>"
+
+    /// What the CLR says about the same instantiation: for each instance field, the name of the
+    /// exact closed type that declares it. `GetFields` walks the base chain, and every corpus
+    /// field is public, so this is the whole storage picture.
+    let private runtimeDeclaringTypes (runtimeType : System.Type) : Set<string * string> =
+        runtimeType.GetFields (
+            System.Reflection.BindingFlags.Instance
+            ||| System.Reflection.BindingFlags.Public
+            ||| System.Reflection.BindingFlags.NonPublic
+        )
+        |> Array.map (fun f -> f.Name, renderRuntimeType f.DeclaringType)
+        |> Set.ofArray
+
+    /// The same picture as PawPrint's storage records it.
+    let private storageDeclaringTypes (state : IlMachineState) (fields : CliField list) : Set<string * string> =
+        fields
+        |> List.choose (fun f ->
+            FieldId.tryDeclaringType f.Id
+            |> Option.map (fun declaring -> f.Name, renderHandle state declaring)
+        )
+        |> Set.ofList
 
     // ------------------------------------------------------------------------------------
     // Tests
@@ -523,8 +626,11 @@ public class Outer<A>
 
     [<Test>]
     let ``storage and access-site field identities agree, over generated instantiations`` () : unit =
-        let property (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>, args : TypeDefn list) : bool =
-            let state, handle = layoutReady baseState typeInfo args
+        let property
+            (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>, runtimeType : System.Type, args : TestArg list)
+            : bool
+            =
+            let state, handle = layoutReady baseState typeInfo (args |> List.map _.AsTypeDefn)
 
             let state, fields =
                 IlMachineState.collectAllInstanceFields loggerFactory bct state handle
@@ -532,11 +638,42 @@ public class Outer<A>
             let state, violations = violationsFor state handle fields
             let _, stability = inheritedIdentitiesAreStable state handle fields
 
-            match violations @ stability with
+            // The independent half. Everything above derives the expected declaring type from
+            // PawPrint's own type graph, so an instantiation that is wrong but self-consistent --
+            // keying `DerivedReorders<int,string>`'s inherited fields to `Base<int,string>` rather
+            // than `Base<string,int>` -- agrees with itself and passes. The CLR has no such
+            // stake: ask it which closed type declares each field, and compare.
+            let closedRuntimeType =
+                match args with
+                | [] -> runtimeType
+                | _ -> runtimeType.MakeGenericType (args |> List.map _.AsRuntimeType |> Array.ofList)
+
+            let expected = runtimeDeclaringTypes closedRuntimeType
+            let actual = storageDeclaringTypes state fields
+
+            let oracleProblems =
+                if expected = actual then
+                    []
+                else
+                    let render (s : Set<string * string>) =
+                        s
+                        |> Set.toList
+                        |> List.map (fun (field, declaring) -> $"%s{field} declared by %s{declaring}")
+                        |> String.concat ", "
+
+                    [ $"the CLR says [%s{render expected}] but storage says [%s{render actual}]" ]
+
+            let problems = (violations @ stability |> List.map string) @ oracleProblems
+
+            match problems with
             | [] -> true
-            | problems ->
-                let rendered = problems |> List.map string |> String.concat "\n  "
-                let renderedArgs = args |> List.map string |> String.concat "; "
+            | _ ->
+                let rendered = problems |> String.concat "\n  "
+
+                let renderedArgs =
+                    args
+                    |> List.map (fun a -> renderRuntimeType a.AsRuntimeType)
+                    |> String.concat "; "
 
                 failwith $"%s{typeInfo.Namespace}.%s{typeInfo.Name} instantiated at [%s{renderedArgs}]:\n  %s{rendered}"
 
@@ -554,9 +691,15 @@ public class Outer<A>
         |> List.ofSeq
 
     /// The corpus above is under this fixture's control, so it can only ever pin shapes we
-    /// thought to write down. FSharp.Core is not: this sweeps every type in it that inherits
-    /// from another of its own types, which is where the reported failure lived
-    /// (`PrintfFormat`5 : PrintfFormat`4`).
+    /// thought to write down. FSharp.Core is not: this sweeps every type in it that inherits,
+    /// which is where the reported failure lived (`PrintfFormat`5 : PrintfFormat`4`).
+    ///
+    /// Note the division of labour. This sweep is breadth: it pins that each identity names the
+    /// type that really declares the field, that an access site recomputes it, and that it does
+    /// not depend on the derived type it was reached through. It has no independent oracle for
+    /// *which instantiation* of a base type is correct, and it instantiates uniformly, so a
+    /// wrong-but-self-consistent base instantiation is invisible to it. That question is settled
+    /// by the corpus property above, which asks the CLR.
     [<Test>]
     let ``storage and access-site field identities agree across FSharp.Core`` () : unit =
         let mutable state = baseState
