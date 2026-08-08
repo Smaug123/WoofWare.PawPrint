@@ -97,6 +97,7 @@ module NativeQCall =
             "AssemblyNative_GetPublicKey", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetPublicKey"
             "AssemblyNative_GetResource", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetResource"
             "AssemblyNative_GetSimpleName", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetSimpleName"
+            "AssemblyNative_GetFullName", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetFullName"
             "AssemblyNative_GetTypeCore", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetTypeCore"
             "AssemblyNative_GetVersion", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetVersion"
             "AssemblyNative_IsApplyUpdateSupported",

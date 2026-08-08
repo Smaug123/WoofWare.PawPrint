@@ -16,6 +16,225 @@ module NativeRuntimeAssembly =
         else
             name.Substring (0, idx), name.Substring (idx + 1)
 
+    /// <summary>
+    /// The eight-byte strong name token of a public key: ECMA-335 II.6.3's low eight bytes of
+    /// the key's SHA-1 hash, in reverse order.
+    /// </summary>
+    /// <remarks>
+    /// CoreCLR's <c>StrongNameTokenFromPublicKey</c> consults a table of six well-known keys
+    /// before hashing. That table is a pure cache and is deliberately not reproduced: every
+    /// one of its declared tokens is exactly what this computes, checked key by key against
+    /// the pinned sources — including the ECMA neutral key, whose
+    /// <c>b77a5c561934e089</c> is its own SHA-1 despite the surrounding code calling that key
+    /// one that "doesn't look like a valid key".
+    ///
+    /// Its <c>StrongNameIsValidPublicKey</c> precondition is not reproduced either, for a
+    /// different reason: it rejects a malformed blob with <c>CORSEC_E_INVALID_PUBLICKEY</c>,
+    /// which the caller throws, but no such blob can reach here. PawPrint registers an
+    /// assembly under its display name, and computing that already derives a token and throws
+    /// on a key it cannot parse — so an image with an unparseable key fails to load long
+    /// before a guest can ask for its name. Pinned by the test <c>an assembly with a malformed
+    /// public key never loads</c>, which also checks the <c>afPublicKey</c> bit being clear is
+    /// not a way around it (CoreCLR force-sets that bit for any non-empty blob on a manifest
+    /// row, so the blob is never treated as an already-computed token).
+    /// </remarks>
+    let publicKeyToken (publicKey : byte[]) : byte[] =
+        let hash = System.Security.Cryptography.SHA1.HashData publicKey
+        hash.[hash.Length - 8 ..] |> Array.rev
+
+    /// <summary>
+    /// Escapes one segment of a display name, as
+    /// <c>TextualIdentityParser::EscapeString</c> does.
+    /// </summary>
+    /// <remarks>
+    /// Not the same algorithm as the BCL's, which is why <c>AssemblyName.FullName</c> is not
+    /// an answer for <c>GetFullName</c>. Both escape <c>=</c>, <c>,</c>, <c>\</c>, tab,
+    /// newline and carriage return, and both quote a segment with leading or trailing
+    /// whitespace. They part company on embedded quotes: this one quotes with whichever of
+    /// <c>'</c> or <c>"</c> the segment does not itself contain and then leaves that quote
+    /// unescaped, so <c>Fn"Probe</c> becomes <c>'Fn"Probe'</c> where the BCL produces
+    /// <c>"Fn\"Probe"</c>.
+    /// </remarks>
+    let escapeDisplayNameSegment (segment : string) : string =
+        let isWhitespace (c : char) : bool =
+            c = '\n' || c = '\r' || c = ' ' || c = '\t'
+
+        let built = System.Text.StringBuilder ()
+
+        // Leading or trailing whitespace requires quoting. CoreCLR reads both ends before it
+        // starts, so this decision is made on the input rather than as it goes — and an empty
+        // segment never reaches here, because `ToString` returns early on an empty simple
+        // name and substitutes "neutral" for an empty culture.
+        let mutable needQuotes =
+            segment.Length > 0
+            && (isWhitespace segment.[0] || isWhitespace segment.[segment.Length - 1])
+
+        let mutable quoteChar = '"'
+
+        for c in segment do
+            match c with
+            | '"'
+            | '\'' ->
+                if needQuotes && quoteChar <> c then
+                    // Already quoting with the *other* character, so this one is unambiguous.
+                    built.Append c |> ignore<System.Text.StringBuilder>
+                elif not needQuotes then
+                    // First quote seen: start quoting with the opposite character so this one
+                    // needs no escape. Note this can be reached after characters have already
+                    // been appended, which is exactly why the quotes are added at the end.
+                    needQuotes <- true
+                    quoteChar <- (if c = '"' then '\'' else '"')
+                    built.Append c |> ignore<System.Text.StringBuilder>
+                else
+                    built.Append('\\').Append c |> ignore<System.Text.StringBuilder>
+            | '='
+            | ','
+            | '\\' -> built.Append('\\').Append c |> ignore<System.Text.StringBuilder>
+            | '\t' -> built.Append "\\t" |> ignore<System.Text.StringBuilder>
+            | '\n' -> built.Append "\\n" |> ignore<System.Text.StringBuilder>
+            | '\r' -> built.Append "\\r" |> ignore<System.Text.StringBuilder>
+            | c -> built.Append c |> ignore<System.Text.StringBuilder>
+
+        if needQuotes then
+            $"%c{quoteChar}%s{built.ToString ()}%c{quoteChar}"
+        else
+            built.ToString ()
+
+    /// <summary>
+    /// The <c>processorArchitecture=</c> value CoreCLR reports for a manifest <c>Flags</c>
+    /// column, or <c>None</c> when it reports no such segment.
+    /// </summary>
+    /// <remarks>
+    /// <c>afPA_Mask</c> is <c>0x70</c>, a three-bit *field* whose values run
+    /// MSIL/x86/IA64/AMD64/ARM/ARM64/NoPlatform — but
+    /// <c>GetProcessorArchitectureFromAssemblyFlags</c> bit-*tests* it in priority order
+    /// (<c>flags &amp; afPA_MSIL</c>, then <c>flags &amp; afPA_x86</c>, …), so overlapping
+    /// values fall through to whichever name is tested first. The mapping that results is
+    /// therefore not the one the field names suggest, and is reproduced rather than corrected
+    /// because it is what a guest observes:
+    ///
+    /// <code>
+    /// field   0x10  0x20  0x30  0x40  0x50  0x60  0x70
+    /// name    MSIL  x86   IA64  AMD64 ARM   ARM64 NoPlatform
+    /// answer  MSIL  x86   MSIL  AMD64 MSIL  x86   MSIL
+    /// </code>
+    ///
+    /// So <c>IA64</c> and <c>ARM</c>, though present in CoreCLR's own name table, name no
+    /// reachable value. Confirmed on the real runtime for all seven, not read off alone.
+    /// </remarks>
+    let processorArchitectureSegment (flags : int) : string option =
+        // Emitted at all only when some bit of the field is set — `(m_dwFlags & afPA_Mask)`
+        // in `GetDisplayName`, tested before the mapping below is consulted.
+        if flags &&& 0x70 = 0 then
+            None
+        elif flags &&& 0x10 <> 0 then
+            Some "MSIL"
+        elif flags &&& 0x20 <> 0 then
+            Some "x86"
+        // Transcribed in CoreCLR's order even though this arm cannot fire: reaching it means
+        // both 0x10 and 0x20 are clear, so `flags &&& 0x30` is zero too.
+        elif flags &&& 0x30 <> 0 then
+            Some "IA64"
+        elif flags &&& 0x40 <> 0 then
+            Some "AMD64"
+        else
+            // `afPA_ARM64` (0x60) is tested last in CoreCLR and is unreachable, because 0x60
+            // carries 0x20 and so has already answered x86. Every value of the field is
+            // covered above; nothing is left for this arm.
+            failwith
+                $"processorArchitectureSegment: assembly flags 0x%08X{flags} set a processor-architecture bit that no CoreCLR arm claims, which should be impossible for a three-bit field"
+
+    /// <summary>
+    /// The display name CoreCLR reports for an assembly, i.e.
+    /// <c>TextualIdentityParser::ToString</c> over the <c>ASM_DISPLAYF_FULL</c> projection of
+    /// the manifest's single <c>Assembly</c> row.
+    /// </summary>
+    /// <remarks>
+    /// Built from the raw columns rather than from <c>DumpedAssembly.Name.FullName</c>, which
+    /// would be both the obvious answer and the wrong one: that is the BCL's formatting of a
+    /// *parsed* <c>AssemblyName</c>, and it is also the key PawPrint registers assemblies
+    /// under. It diverges three ways, each confirmed against the real runtime — it normalises
+    /// the culture (<c>EN-gb</c> becomes <c>en-GB</c>), it omits
+    /// <c>processorArchitecture</c> entirely, and it escapes embedded quotes differently.
+    /// </remarks>
+    let displayName
+        (simpleName : string)
+        (version : System.Version)
+        (culture : string)
+        (publicKey : byte[])
+        (flags : int)
+        : string
+        =
+        // `ToString` clears its output and returns the moment the simple name is empty, so
+        // such an assembly's display name is the empty string rather than a nameless list of
+        // the remaining segments. Unreachable through the real runtime, which refuses to load
+        // an image whose `Name` column is empty ("The given assembly name was invalid"), but
+        // PawPrint's loader has no such check.
+        //
+        // Note this is a different situation from `GetSimpleName`, which fails loudly on the
+        // same column. There, CoreCLR only yields "" when the metadata import itself failed —
+        // a corrupted image by its own assertion — whereas here `ToString` branches on the
+        // value deliberately, for a row that parsed perfectly well.
+        if System.String.IsNullOrEmpty simpleName then
+            ""
+        else
+
+        let built = System.Text.StringBuilder ()
+
+        built.Append (escapeDisplayNameSegment simpleName)
+        |> ignore<System.Text.StringBuilder>
+
+        // `0xFFFF` in the major column suppresses the whole segment. That is a real value of
+        // the row's `USHORT` column rather than an impossible sentinel, so an assembly
+        // versioned 65535.x.y.z genuinely has no `Version=` in its display name.
+        if version.Major <> 0xFFFF then
+            built.Append(", Version=").Append(version.Major).Append('.').Append (version.Minor)
+            |> ignore<System.Text.StringBuilder>
+
+            built.Append('.').Append(version.Build).Append('.').Append (version.Revision)
+            |> ignore<System.Text.StringBuilder>
+
+        built.Append ", Culture=" |> ignore<System.Text.StringBuilder>
+
+        if System.String.IsNullOrEmpty culture then
+            built.Append "neutral" |> ignore<System.Text.StringBuilder>
+        else
+            built.Append (escapeDisplayNameSegment culture)
+            |> ignore<System.Text.StringBuilder>
+
+        // `BaseAssemblySpec::Init` ORs `afPublicKey` in whenever the blob is non-empty, so
+        // `IsAfPublicKeyToken` — which is the *absence* of that bit — is never true for a
+        // manifest row. The blob is therefore always a key to be hashed, never a token to be
+        // copied, and the branch that copies one is unreachable from here.
+        if publicKey.Length = 0 then
+            built.Append ", PublicKeyToken=null" |> ignore<System.Text.StringBuilder>
+        else
+            built.Append ", PublicKeyToken=" |> ignore<System.Text.StringBuilder>
+
+            for b in publicKeyToken publicKey do
+                built.Append (b.ToString "x2") |> ignore<System.Text.StringBuilder>
+
+        // Lowercase initial, alone among the segments, and that is upstream's spelling.
+        match processorArchitectureSegment flags with
+        | None -> ()
+        | Some architecture ->
+            built.Append(", processorArchitecture=").Append architecture
+            |> ignore<System.Text.StringBuilder>
+
+        // afRetargetable
+        if flags &&& 0x100 <> 0 then
+            built.Append ", Retargetable=Yes" |> ignore<System.Text.StringBuilder>
+
+        // afContentType_Mask / afContentType_WindowsRuntime. Tested as a field equality, not a
+        // bit test, so the other values of the mask emit nothing. Unreachable through the
+        // real runtime, which refuses to *load* a WindowsRuntime assembly at all ("The given
+        // assembly name was invalid"), but PawPrint's loader has no such check, so the guest
+        // can get here.
+        if flags &&& 0xE00 = 0x200 then
+            built.Append ", ContentType=WindowsRuntime" |> ignore<System.Text.StringBuilder>
+
+        built.ToString ()
+
     let private writeLength
         (ctx : NativeCallContext)
         (state : IlMachineState)
@@ -655,6 +874,79 @@ module NativeRuntimeAssembly =
                     ctx.BaseClassTypes
                     state
                     retSimpleName
+                    (CliType.ObjectRef (Some nameAddr))
+
+            NativeHandlerResult.completed state |> Some
+        | "AssemblyNative_GetFullName",
+          "System.Private.CoreLib",
+          "System.Reflection",
+          "RuntimeAssembly",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "QCallAssembly",
+                                              qCallAssemblyGenerics)
+            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "StringHandleOnStack",
+                                              stringHandleGenerics) ],
+          MethodReturnType.Void when qCallAssemblyGenerics.IsEmpty && stringHandleGenerics.IsEmpty ->
+            let operation = "AssemblyNative_GetFullName"
+
+            if instruction.Arguments.Length <> 2 then
+                failwith $"%s{operation}: expected two native arguments, got %d{instruction.Arguments.Length}"
+
+            let assemblyFullName =
+                instruction.Arguments.[0]
+                |> NativeCall.qCallAssemblyToAssemblyFullName operation state
+
+            let assembly =
+                state.LoadedAssembly' assemblyFullName
+                |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
+
+            let retString =
+                NativeCall.stringHandleOnStackTarget operation state "retString" instruction.Arguments.[1]
+
+            // CoreCLR builds this from the manifest row and nothing else:
+            // `PEAssembly::GetDisplayName` seeds an `AssemblySpec` from the row
+            // (`BaseAssemblySpec::Init` over `GetAssemblyProps`) and renders it with
+            // `ASM_DISPLAYF_FULL`. So the same five raw columns the rest of this family
+            // reads one at a time, assembled — deliberately not `assembly.Name.FullName`,
+            // which is the BCL's rendering of a parsed `AssemblyName` and diverges from this
+            // in three ways; see `displayName`.
+            //
+            // That it is also the key this assembly is registered under makes the
+            // distinction easy to lose: returning the key would agree on every assembly a
+            // compiler emits and disagree on the ones that matter.
+            let version = assembly.Name.Version
+
+            if isNull version then
+                failwith $"%s{operation}: assembly %s{assemblyFullName} has no version in its Assembly metadata row"
+
+            let fullName =
+                displayName
+                    assembly.Name.Name
+                    version
+                    assembly.CultureName
+                    (Array.ofSeq assembly.PublicKey)
+                    (int assembly.Flags)
+
+            // `StringHandleOnStack::Set` goes through `StringObject::NewString`, which returns
+            // the shared empty-string instance for a zero-length string and allocates afresh
+            // for every other length. So an assembly whose display name is empty — the
+            // empty-simple-name case above — must hand back the canonical instance, or
+            // `ReferenceEquals(asm.FullName, string.Empty)` would answer differently here from
+            // there.
+            let nameAddr, state =
+                if fullName.Length = 0 then
+                    IlMachineState.internCanonicalEmptyString ctx.LoggerFactory ctx.BaseClassTypes state
+                else
+                    IlMachineState.allocateManagedString ctx.LoggerFactory ctx.BaseClassTypes fullName state
+
+            let state =
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    retString
                     (CliType.ObjectRef (Some nameAddr))
 
             NativeHandlerResult.completed state |> Some
