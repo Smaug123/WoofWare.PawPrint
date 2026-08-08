@@ -32,7 +32,7 @@ module internal IntrinsicHelpers =
         baseClassTypes : BaseClassTypes<DumpedAssembly> ->
         state : IlMachineState ->
         elementType : ConcreteTypeHandle ->
-        offset : int ->
+        offset : int64 ->
         src : EvalStackValue ->
             EvalStackValue * IlMachineState
 

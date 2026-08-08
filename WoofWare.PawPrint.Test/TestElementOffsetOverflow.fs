@@ -133,7 +133,12 @@ module TestElementOffsetOverflow =
             let arr, st = allocateIntArray 4 (state ())
 
             let result =
-                IntrinsicHelpers.offsetManagedPointerByElements bct st int32Handle offset (elementByref arr index)
+                IntrinsicHelpers.offsetManagedPointerByElements
+                    bct
+                    st
+                    int32Handle
+                    (int64<int> offset)
+                    (elementByref arr index)
                 |> fst
 
             // The int64 oracle: the walk is plain integer addition on the element index, and the
@@ -158,6 +163,62 @@ module TestElementOffsetOverflow =
                 $"generator explored too few extreme sums: %d{extremeSum} of %d{total} exceeded 2^30, so a wrap near the int32 limit could go unnoticed"
 
     [<Test>]
+    let ``element walk accepts a widened offset whose result is representable`` () : unit =
+        // The offset is a *native-int* element count, so it must not be narrowed to int32 before
+        // the walk decides what it can represent. Negating `Int32.MinValue` (what
+        // `Unsafe.Subtract(ref p, Int32.MinValue)` does) produces exactly this offset, and from
+        // index -1 it lands on `Int32.MaxValue` — representable, and what real .NET computes.
+        let arr, st = allocateIntArray 4 (state ())
+
+        let result =
+            IntrinsicHelpers.offsetManagedPointerByElements bct st int32Handle 2147483648L (elementByref arr -1)
+            |> fst
+
+        result
+        |> shouldEqual (
+            EvalStackValue.ManagedPointer (
+                ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, System.Int32.MaxValue), [])
+            )
+        )
+
+    [<Test>]
+    let ``bit-pattern walk accepts an offset beyond the int32 range`` () : unit =
+        // A bit-pattern byref carries its whole address in an int64, so it has no int32 index to
+        // overflow and must accept offsets the anchored roots cannot. `Unsafe.Subtract(ref
+        // Unsafe.NullRef<byte>(), Int32.MinValue)` is the reachable shape; real .NET yields the bit
+        // pattern 0x80000000.
+        let byteHandle = handleFor bct.Byte
+
+        let result =
+            IntrinsicHelpers.offsetManagedPointerByElements
+                bct
+                (state ())
+                byteHandle
+                2147483648L
+                (EvalStackValue.ManagedPointer ManagedPointerSource.Null)
+            |> fst
+
+        match result with
+        | EvalStackValue.ManagedPointer ptr ->
+            ManagedPointerSource.tryBitPatternBits ptr
+            |> shouldEqual (ValueSome 2147483648L)
+        | other -> failwith $"expected a bit-pattern byref, got %O{other}"
+
+    [<Test>]
+    let ``element walk refuses an offset too wide for any anchored root`` () : unit =
+        // Beyond +/-(2^32 - 1) no int32 index can absorb the walk, whatever the source index is.
+        let arr, st = allocateIntArray 4 (state ())
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () ->
+                IntrinsicHelpers.offsetManagedPointerByElements bct st int32Handle 4294967296L (elementByref arr 0)
+                |> ignore
+            )
+
+        ex.Message |> shouldContainText "TODO: byref element offset"
+        ex.Message |> shouldContainText "4294967296"
+
+    [<Test>]
     let ``element walk refuses an index that overflows int32`` () : unit =
         // The exact shape Codex found: `Unsafe.Add(ref a[1], Int32.MaxValue)`. Real .NET lands
         // +8589934592 bytes from &a[0]; wrapping would report -8589934592.
@@ -169,7 +230,7 @@ module TestElementOffsetOverflow =
                     bct
                     st
                     int32Handle
-                    System.Int32.MaxValue
+                    (int64<int> System.Int32.MaxValue)
                     (elementByref arr 1)
                 |> ignore
             )
@@ -187,7 +248,7 @@ module TestElementOffsetOverflow =
                     bct
                     st
                     int32Handle
-                    System.Int32.MinValue
+                    (int64<int> System.Int32.MinValue)
                     (elementByref arr -1)
                 |> ignore
             )
@@ -217,7 +278,7 @@ module TestElementOffsetOverflow =
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->
-                IntrinsicHelpers.offsetManagedPointerByElements bct st int64Handle 300000000 src
+                IntrinsicHelpers.offsetManagedPointerByElements bct st int64Handle 300000000L src
                 |> ignore
             )
 
@@ -243,7 +304,7 @@ module TestElementOffsetOverflow =
             )
 
         let result =
-            IntrinsicHelpers.offsetManagedPointerByElements bct st int64Handle 1 src |> fst
+            IntrinsicHelpers.offsetManagedPointerByElements bct st int64Handle 1L src |> fst
 
         // One `long` forward is 8 bytes, and the array's stride is 4, so the byte cursor
         // normalises cleanly back onto cell 2 rather than leaving a trailing `ByteOffset`.

@@ -725,7 +725,12 @@ module TestBinaryArithmetic =
             // Byte elements, so "offset by n elements" is "offset by n bytes"
             // and the two paths are directly comparable.
             let viaIntrinsic, _ =
-                IntrinsicHelpers.offsetManagedPointerByElements baseClassTypes (state ()) byteHandle offset start
+                IntrinsicHelpers.offsetManagedPointerByElements
+                    baseClassTypes
+                    (state ())
+                    byteHandle
+                    (int64<int> offset)
+                    start
 
             if viaOpcode <> viaIntrinsic then
                 failwith
