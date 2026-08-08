@@ -451,6 +451,8 @@ module IlFormatting =
             [ header ; "  // No IL body (runtime-provided delegate .ctor)" ]
         | MethodBody.RuntimeProvided RuntimeBehaviour.DelegateInvoke ->
             [ header ; "  // No IL body (runtime-provided delegate Invoke)" ]
+        | MethodBody.RuntimeProvided RuntimeBehaviour.StructMarshalStub ->
+            [ header ; "  // No IL body (runtime-provided struct-marshal stub)" ]
         | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (kind, targetName)) ->
             let nameStr =
                 match targetName with

@@ -1145,6 +1145,8 @@ module Assembly =
                     Console.WriteLine "<runtime-provided: delegate .ctor>"
                 | MethodBody.RuntimeProvided RuntimeBehaviour.DelegateInvoke ->
                     Console.WriteLine "<runtime-provided: delegate Invoke>"
+                | MethodBody.RuntimeProvided RuntimeBehaviour.StructMarshalStub ->
+                    Console.WriteLine "<runtime-provided: struct-marshal stub>"
                 | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (kind, targetName)) ->
                     let nameStr =
                         match targetName with

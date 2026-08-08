@@ -655,6 +655,7 @@ module NativeCall =
                 match behaviour with
                 | RuntimeBehaviour.DelegateCtor -> "Runtime (delegate .ctor)"
                 | RuntimeBehaviour.DelegateInvoke -> "Runtime (delegate Invoke)"
+                | RuntimeBehaviour.StructMarshalStub -> "Runtime (struct-marshal stub)"
                 | RuntimeBehaviour.UnsafeAccessor (kind, targetName) ->
                     let nameStr =
                         match targetName with

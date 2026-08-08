@@ -165,6 +165,14 @@ type RuntimeBehaviour =
     /// fields off the delegate instance and calling through.
     | DelegateInvoke
 
+    /// The struct-marshalling stub for the declaring type: what CoreCLR builds as synthesised IL
+    /// in <c>PInvoke::CreateStructMarshalILStub</c> (dllimport.cpp:5289) and hands to CoreLib as a
+    /// code address. PawPrint interprets it directly instead.
+    ///
+    /// Unlike every other case here, a method carrying this is not declared anywhere — it is a
+    /// <see cref="MethodInfo.Synthesised"/>, so it has no MethodDef row.
+    | StructMarshalStub
+
     /// <summary>
     /// A C# 12+ <c>[UnsafeAccessor]</c> <c>extern static</c> method. The runtime
     /// synthesises the body to forward to a (possibly inaccessible) member of the
