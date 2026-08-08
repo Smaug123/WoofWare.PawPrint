@@ -114,35 +114,6 @@ module TestImpureCases =
             // such a path directly in the meantime.
             currentDirectoryCase "/héllo/中文/🐶"
 
-            {
-                // The motivating case for host-seeded AppContext, parked for an unrelated
-                // reason. The seeding itself works: the guest reaches Main and
-                // `AppContext.TryGetSwitch` reports the switch as seeded `false`. What stops
-                // it is `EventSource`'s name/manifest handling, which compares two byrefs
-                // into the *same* string at different character offsets:
-                //
-                //   refusing to clt.un byrefs without a common root:
-                //     <char 0 of string <object #105>> vs <char 28 of string <object #105>>
-                //
-                // Two `ByrefRoot.StringCharAt` byrefs into one string object plainly do share
-                // a root, so `EvalStackValueComparisons.cltUn` is being needlessly
-                // conservative; teaching it to compare same-object string byrefs by offset is
-                // its own change, and belongs with the other byref-comparison work rather
-                // than bundled into AppContext seeding.
-                //
-                // Un-park when that lands. Until then `AppContextConfigProperties.cs` and
-                // `AppContextSeededBeforeCctor.cs` in `cases` cover the seeding mechanism
-                // itself, including boolean switch values read back through `TryGetSwitch`.
-                FileName = "EventSourceDisabled.cs"
-                ExpectedReturnCode = 0
-                KernelConfig = KernelConfig.Default
-                AppContext =
-                    AppContextProperties.ofMap (
-                        Map.ofList [ "System.Diagnostics.Tracing.EventSource.IsSupported", "false" ]
-                    )
-                ExpectsUnhandledException = false
-                AssertTerminalState = None
-            }
         ]
 
     let cases : EndToEndTestCase list =
@@ -155,6 +126,20 @@ module TestImpureCases =
             // fails a test that says so.
             currentDirectoryCase "/"
             currentDirectoryCase "/home/pawprint/work"
+            {
+                // The motivating case for host-seeded AppContext: a BCL feature switch,
+                // declared in `runtimeconfig.json` and latched by `EventSource` on first
+                // read. Impure for the same reason as the case below.
+                FileName = "EventSourceDisabled.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList [ "System.Diagnostics.Tracing.EventSource.IsSupported", "false" ]
+                    )
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
             {
                 // Host-seeded AppContext properties, as `hostpolicy` installs them from
                 // `runtimeconfig.json`. Impure because the differential oracle loads the
