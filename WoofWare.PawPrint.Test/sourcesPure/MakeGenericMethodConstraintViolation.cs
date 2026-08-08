@@ -120,12 +120,10 @@ class Program
         if (!Throws (derived, typeof (string)))
             return 9;
 
-        // The *satisfying* cases are deliberately not asserted here. Binding one succeeds, and
-        // reflection then continues into RuntimeType.GetMethodBase, which reaches the unimplemented
-        // RuntimeMethodHandle.IsDynamicMethod InternalCall -- an unrelated gap that would make this
-        // case fail for the wrong reason. `sourcesPure/MethodOnClosedGenericType.cs` covers a
-        // successful rebinding through the same QCall by a route that does not reach that call, and
-        // `TestNativeRuntimeMethodHandle.fs` pins the outcome table directly.
+        // The *satisfying* mirror of each case above lives in
+        // `sourcesPure/MakeGenericMethodConstraintSatisfied.cs`. Keeping the two polarities in
+        // separate files is deliberate: an always-rejecting check would pass this file alone, and
+        // an always-accepting one would pass that one alone.
 
         return 0;
     }

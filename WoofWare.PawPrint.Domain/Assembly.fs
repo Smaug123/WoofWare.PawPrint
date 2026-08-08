@@ -1720,50 +1720,14 @@ module DumpedAssembly =
             (getTypeSpec loadedAssemblies)
             ty
 
-    /// True iff <paramref name="attr"/>'s constructor belongs to
-    /// <c>System.Runtime.CompilerServices.IsByRefLikeAttribute</c>.
-    ///
-    /// Matched by namespace and name alone, with no requirement that the attribute be corelib's.
-    /// CoreCLR does the same (`WellKnownAttribute::IsByRefLike` resolves to that full name string,
-    /// wellknownattributes.h:105), and it matters: Roslyn *embeds* a private copy of the attribute
-    /// into any assembly whose target framework's reference assemblies do not supply one, so for
-    /// such an assembly the constructor is a MethodDef in the assembly under inspection rather
-    /// than a MemberReference into corelib. Requiring corelib here would silently make every such
-    /// ref struct look ordinary.
-    let private isByRefLikeAttribute
-        (declaringAssembly : DumpedAssembly)
-        (attr : WoofWare.PawPrint.CustomAttribute)
-        : bool
-        =
-        let isTheAttributeType (ns : string) (name : string) : bool =
-            ns = "System.Runtime.CompilerServices" && name = "IsByRefLikeAttribute"
-
-        match attr.Constructor with
-        | MetadataToken.MethodDef handle ->
-            match declaringAssembly.Methods.TryGetValue handle with
-            | true, ctor -> isTheAttributeType ctor.DeclaringType.Namespace ctor.DeclaringType.Name
-            | false, _ -> false
-        | MetadataToken.MemberReference handle ->
-            match declaringAssembly.Members.TryGetValue handle with
-            | true, memberRef ->
-                match memberRef.Parent with
-                | MetadataToken.TypeReference typeRefHandle ->
-                    match declaringAssembly.TypeRefs.TryGetValue typeRefHandle with
-                    | true, typeRef -> isTheAttributeType typeRef.Namespace typeRef.Name
-                    | false, _ -> false
-                // A TypeSpec or ModuleRef parent cannot name a non-generic corelib attribute type.
-                | _ -> false
-            | false, _ -> false
-        | _ -> false
-
     /// ECMA "byref-like": a value type that may not appear on the heap (a C# <c>ref struct</c>).
     ///
     /// CoreCLR derives this from the <c>IsByRefLikeAttribute</c> application, but only for types it
     /// has already classified as value classes: the attribute read sits inside the
     /// <c>fIsValueClass = true</c> branch of <c>MethodTableBuilder::BuildMethodTableThrowing</c>
     /// (methodtablebuilder.cpp:1449). So a *class* carrying the attribute — which C# cannot emit but
-    /// IL can, since <c>AttributeUsage</c> binds only the compiler — is not byref-like, and we gate
-    /// on <see cref="isValueType"/> to match.
+    /// IL can, since <c>AttributeUsage</c> binds only the compiler — is not byref-like, and this
+    /// gate is what makes <see cref="TypeInfo.HasIsByRefLikeAttribute"/> into the classification.
     ///
     /// Note this is a question about a *nominal* type. CoreCLR's <c>TypeHandle::IsByRefLike</c>
     /// (typehandle.cpp:1061) answers <c>false</c> for every TypeDesc, so byrefs, pointers, function
@@ -1774,9 +1738,7 @@ module DumpedAssembly =
         (ty : TypeInfo<'generic, 'field>)
         : bool
         =
-        isValueType bct loadedAssemblies ty
-        && (let declaringAssembly = assemblies loadedAssemblies ty.Assembly
-            ty.Attributes |> List.exists (isByRefLikeAttribute declaringAssembly))
+        ty.HasIsByRefLikeAttribute && isValueType bct loadedAssemblies ty
 
     /// Metadata layout kind: ValueType for value types, Class otherwise. Note that System.Enum and
     /// System.ValueType themselves encode as Class, matching real CLR signature encoding.

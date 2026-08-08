@@ -43,6 +43,8 @@ public interface IMarker { }
 
 public interface IOther { }
 
+public interface IOut<out T> { }
+
 public class BaseType { }
 
 public class DerivedType : BaseType, IMarker { }
@@ -55,6 +57,8 @@ public sealed class SealedMarker : IMarker { }
 
 public class NoPublicCtor { private NoPublicCtor() { } }
 
+public class OutOfDerived : IOut<DerivedType> { }
+
 public struct MarkedStruct : IMarker { public int X; }
 
 public struct PlainStruct { public int X; }
@@ -64,6 +68,8 @@ public enum MyEnum { A }
 public ref struct MarkedRefStruct : IMarker { public int X; }
 
 public ref struct PlainRefStruct { public int X; }
+
+public ref struct GenericRefStruct<T> { public int X; }
 
 public class H_None<T> { }
 public class H_Struct<T> where T : struct { }
@@ -76,6 +82,9 @@ public class H_BaseAndMarker<T> where T : BaseType, IMarker { }
 public class H_Comparable<T> where T : IComparable { }
 public class H_ComparableOfSelf<T> where T : IComparable<T> { }
 public class H_EnumerableOfInt<T> where T : IEnumerable<int> { }
+public class H_EnumerableOfObject<T> where T : IEnumerable<object> { }
+public class H_ListOfUInt<T> where T : IList<uint> { }
+public class H_OutOfBase<T> where T : IOut<BaseType> { }
 public class H_Enum<T> where T : Enum { }
 public class H_AllowsRef<T> where T : allows ref struct { }
 public class H_AllowsRefMarker<T> where T : IMarker, allows ref struct { }
@@ -100,6 +109,9 @@ public class H2_BaseThenMarker<A, B> where A : BaseType where B : IMarker { }
             "H_Comparable`1"
             "H_ComparableOfSelf`1"
             "H_EnumerableOfInt`1"
+            "H_EnumerableOfObject`1"
+            "H_ListOfUInt`1"
+            "H_OutOfBase`1"
             "H_Enum`1"
             "H_AllowsRef`1"
             "H_AllowsRefMarker`1"
@@ -125,6 +137,7 @@ public class H2_BaseThenMarker<A, B> where A : BaseType where B : IMarker { }
             "MyEnum"
             "MarkedRefStruct"
             "PlainRefStruct"
+            "OutOfDerived"
         ]
 
     let private image : byte[] =
@@ -184,10 +197,22 @@ public class H2_BaseThenMarker<A, B> where A : BaseType where B : IMarker { }
             name, defn, hostType name
 
         // Deliberately *not* `typeInfoToTypeDefn'`, which would hand back the open instantiation
-        // `Nullable<!0>` rather than the bare definition this needs as its generic head.
-        let nullableInt =
+        // `Nullable<!0>` rather than the bare definition these need as their generic head.
+        let closedCorelibGeneric (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>) (arg : TypeDefn) =
             TypeDefn.GenericInstantiation (
-                TypeDefn.FromDefinition (bct.Nullable.Identity, Reflection.Metadata.SignatureTypeKind.ValueType),
+                TypeDefn.FromDefinition (typeInfo.Identity, Reflection.Metadata.SignatureTypeKind.ValueType),
+                ImmutableArray.Create arg
+            )
+
+        let corelibType (ns : string) (name : string) =
+            corelib.TryGetTopLevelTypeDef ns name
+            |> Option.defaultWith (fun () -> failwith $"%s{ns}.%s{name} not found in corelib")
+
+        let guestGenericRefStruct =
+            let typeInfo = guestType "GenericRefStruct`1"
+
+            TypeDefn.GenericInstantiation (
+                TypeDefn.FromDefinition (typeInfo.Identity, Reflection.Metadata.SignatureTypeKind.ValueType),
                 ImmutableArray.Create (TypeDefn.PrimitiveType PrimitiveType.Int32)
             )
 
@@ -196,10 +221,27 @@ public class H2_BaseThenMarker<A, B> where A : BaseType where B : IMarker { }
             "System.Int32", TypeDefn.PrimitiveType PrimitiveType.Int32, typeof<int>
             "System.String", TypeDefn.PrimitiveType PrimitiveType.String, typeof<string>
             "System.Object", TypeDefn.PrimitiveType PrimitiveType.Object, typeof<obj>
-            "System.Nullable<System.Int32>", nullableInt, typeof<Nullable<int>>
+            "System.Nullable<System.Int32>",
+            closedCorelibGeneric bct.Nullable (TypeDefn.PrimitiveType PrimitiveType.Int32),
+            typeof<Nullable<int>>
+            // A *corelib* ref struct: its IsByRefLikeAttribute constructor is a MethodDef in the
+            // assembly under inspection, where the guest ref structs' is a MemberReference into
+            // corelib. Without this the two encodings the classification has to understand are not
+            // both covered.
+            // (Reflected rather than written as `typeof<Span<int>>`, which F# refuses: a byref-like
+            // type may not instantiate a generic, and `typeof<_>` is one.)
+            "System.Span<System.Int32>",
+            closedCorelibGeneric (corelibType "System" "Span`1") (TypeDefn.PrimitiveType PrimitiveType.Int32),
+            typeof<obj>.Assembly.GetType("System.Span`1").MakeGenericType typeof<int>
+            "GenericRefStruct<System.Int32>",
+            guestGenericRefStruct,
+            (hostType "GenericRefStruct`1").MakeGenericType typeof<int>
             "System.Int32[]",
             TypeDefn.OneDimensionalArrayLowerBoundZero (TypeDefn.PrimitiveType PrimitiveType.Int32),
             typeof<int[]>
+            "System.String[]",
+            TypeDefn.OneDimensionalArrayLowerBoundZero (TypeDefn.PrimitiveType PrimitiveType.String),
+            typeof<string[]>
         ]
 
     /// `GenericArguments[N]` opens both the CLR's message and PawPrint's, which is the only part of
