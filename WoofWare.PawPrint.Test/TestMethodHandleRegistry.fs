@@ -377,8 +377,9 @@ public static class GenericMethodHolder
         // Round-trip: the registered id resolves back to a MethodHandle whose method-def handle
         // matches the one we registered.
         let resolved =
-            MethodHandleRegistry.resolveMethodFromId registryId registry
-            |> Option.defaultWith (fun () -> failwith $"registry id %d{registryId} did not resolve")
+            match MethodHandleRegistry.resolveMethodFromId registryId registry with
+            | Some (MethodHandle.FromMetadata identity) -> identity
+            | None -> failwith $"registry id %d{registryId} did not resolve"
 
         resolved.GetMethodDefinitionHandle ()
         |> shouldEqual (ComparableMethodDefinitionHandle.Make targetMethod.Handle)
@@ -477,6 +478,139 @@ public static class GenericMethodHolder
         with
         | CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle id) -> id |> shouldNotEqual 0L
         | other -> failwith $"Expected MethodRegistryHandle id for generic-method definition, got %O{other}"
+
+    let private requiredTopLevelType
+        (assembly : DumpedAssembly)
+        (namespaceName : string)
+        (typeName : string)
+        : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        =
+        assembly.TryGetTopLevelTypeDef namespaceName typeName
+        |> Option.defaultWith (fun () -> failwith $"type %s{namespaceName}.%s{typeName} not found")
+
+    /// Drive the `RuntimeMethodHandle.IsDynamicMethod` InternalCall directly, with the given
+    /// `RuntimeMethodHandleInternal` as its sole argument, and return what it pushed.
+    ///
+    /// This native cannot be reached from guest C#/F# in isolation: `RuntimeType.GetMethodBase`
+    /// is its only BCL caller, and the very next thing that method does on the `false` branch is
+    /// `RuntimeMethodHandle.GetDeclaringType`, which bottoms out in the (still unimplemented)
+    /// `GetMethodTable` InternalCall. So the handler is exercised here rather than by a case in
+    /// `sourcesPure/`.
+    let private invokeIsDynamicMethod
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (methodHandleInternal : CliType)
+        (state : IlMachineState)
+        : EvalStackValue
+        =
+        let runtimeMethodHandleType =
+            requiredTopLevelType baseClassTypes.Corelib "System" "RuntimeMethodHandle"
+
+        let rawMethod =
+            runtimeMethodHandleType.Methods
+            |> List.filter (fun method -> method.Name = "IsDynamicMethod" && method.Parameters.Length = 1)
+            |> function
+                | [ method ] -> method
+                | [] -> failwith "RuntimeMethodHandle.IsDynamicMethod native method not found"
+                | methods -> failwith $"RuntimeMethodHandle.IsDynamicMethod was ambiguous: %d{methods.Length} matches"
+
+        let state, method, _ =
+            ExecutionConcretization.concretizeMethodWithTypeGenerics
+                loggerFactory
+                baseClassTypes
+                ImmutableArray.Empty
+                rawMethod
+                None
+                baseClassTypes.Corelib.Name
+                ImmutableArray.Empty
+                state
+
+        let methodState =
+            match
+                MethodState.Empty
+                    state.ConcreteTypes
+                    baseClassTypes
+                    state._LoadedAssemblies
+                    baseClassTypes.Corelib
+                    method
+                    ImmutableArray.Empty
+                    (ImmutableArray.Create methodHandleInternal)
+                    None
+            with
+            | Ok methodState -> methodState
+            | Error missing ->
+                failwith $"Unexpected missing assembly references creating IsDynamicMethod frame: %O{missing}"
+
+        let thread = ThreadId.ThreadId 0
+
+        let state =
+            { state with
+                ThreadState =
+                    Map.empty
+                    |> Map.add thread (ThreadState.New (CpuId 0) (OsThreadId 1u) methodState)
+            }
+
+        let ctx : NativeCallContext =
+            {
+                LoggerFactory = loggerFactory
+                BaseClassTypes = baseClassTypes
+                Thread = thread
+                State = state
+                Instruction = state.ThreadState.[thread].MethodState
+                TargetAssembly = baseClassTypes.Corelib
+                TargetType = runtimeMethodHandleType
+            }
+
+        let state =
+            match NativeRuntimeMethodHandle.tryExecute ctx with
+            | Some (NativeHandlerResult.Completed (state, _)) -> state
+            | Some result -> failwith $"unexpected IsDynamicMethod execution result: %O{result}"
+            | None -> failwith "RuntimeMethodHandle.IsDynamicMethod did not match"
+
+        IlMachineState.popEvalStack thread state |> fst
+
+    [<Test>]
+    let ``IsDynamicMethod is false for a registry-minted handle`` () : unit =
+        let loggerFactory, baseClassTypes, _, targetMethod, _, state = loadFixture ()
+        let declaringType = findDeclaringConcreteType state targetMethod
+
+        let internalHandle, registry =
+            MethodHandleRegistry.getOrAllocateInternalHandle
+                baseClassTypes
+                state.ConcreteTypes
+                declaringType
+                targetMethod
+                state.MethodHandles
+
+        let state =
+            { state with
+                MethodHandles = registry
+            }
+
+        // PawPrint has no Reflection.Emit, so nothing it can mint is a no-metadata method.
+        // `CliType.ofBool false` is an Int32 0 on the eval stack.
+        invokeIsDynamicMethod loggerFactory baseClassTypes (CliType.ValueType internalHandle) state
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+
+    [<Test>]
+    let ``IsDynamicMethod fails loudly for an unregistered handle id`` () : unit =
+        // CoreCLR dereferences the MethodDesc* and asserts non-null, so an id the registry never
+        // minted is a PawPrint contract violation rather than a guest-visible condition. Returning
+        // `false` here would let the guest walk on into GetDeclaringType and fail further from the
+        // cause.
+        let loggerFactory, baseClassTypes, _, _, _, state = loadFixture ()
+
+        let bogusHandle =
+            MethodHandleRegistry.internalHandleFromId baseClassTypes state.ConcreteTypes 12345L
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () ->
+                invokeIsDynamicMethod loggerFactory baseClassTypes (CliType.ValueType bogusHandle) state
+                |> ignore
+            )
+
+        ex.Message
+        |> shouldContainText "RuntimeMethodHandle.IsDynamicMethod: registry id 12345 did not resolve"
 
     [<Test>]
     let ``methodHandleIdOfRuntimeMethodHandleInternal accepts both canonical and post-rewrap forms`` () : unit =

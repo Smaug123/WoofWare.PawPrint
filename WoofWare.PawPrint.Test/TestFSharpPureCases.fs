@@ -119,27 +119,34 @@ module TestFSharpPureCases =
             "SprintfBasic"
         ]
 
-    // PawPrint cannot yet allocate string argv (Program.allocateArgs is unimplemented),
-    // so all F# test cases that require argv dispatch are unimplemented for now.
     let unimplemented : Set<string> =
         Set.ofList
             [
                 // The `RuntimeMethodHandle.IsGenericMethodDefinition` InternalCall this case was
                 // written to pin (issue #690) now works, and so do the `stelem` TypeReference
                 // token (issue #691) that `Printf`'s boxed-argument array reaches next, the
-                // `RuntimeMethodHandle_GetMethodInstantiation` QCall (issue #718), and the
+                // `RuntimeMethodHandle_GetMethodInstantiation` QCall (issue #718), the
                 // `RuntimeMethodHandle_GetStubIfNeededSlow` QCall (issue #743) that
-                // `MakeGenericMethod` needs. `sprintf` now gets as far as the
-                // `RuntimeMethodHandle.IsDynamicMethod` InternalCall
-                // (`System.RuntimeMethodHandle::IsDynamicMethod(RuntimeMethodHandleInternal) ->
-                // System.Boolean`), which is unimplemented.
+                // `MakeGenericMethod` needs, and the `RuntimeMethodHandle.IsDynamicMethod`
+                // InternalCall. `sprintf` now gets as far as
+                // `System.RuntimeMethodHandle::GetMethodTable(RuntimeMethodHandleInternal) ->
+                // MethodTable*`, which is unimplemented.
                 //
-                // Each of those features is pinned directly rather than through this case:
-                // `isGenericMethodDefinition` by `sourcesPure/MethodIsGenericMethodDefinition.cs`,
-                // `GetMethodInstantiation` by `sourcesPure/MethodGetGenericArguments.cs`,
-                // `GetStubIfNeededSlow` by `sourcesPure/MethodOnClosedGenericType.cs`, and all
-                // three predicates by `TestNativeRuntimeMethodHandle.fs`. So no earlier issue's
-                // coverage depends on this case passing.
+                // That is the next step of the very same `RuntimeType.GetMethodBase` call
+                // (RuntimeType.CoreCLR.cs:1825-1836): having established the handle is not a
+                // dynamic method, it calls `RuntimeMethodHandle.GetDeclaringType`, whose body is
+                // `GetRuntimeType(GetMethodTable(method))`. So `IsDynamicMethod` cannot be pinned
+                // end-to-end by any guest source -- nothing can reach it without immediately
+                // reaching `GetMethodTable` too. It is pinned instead by
+                // `TestMethodHandleRegistry.fs`, which drives the InternalCall directly.
+                //
+                // Each of the earlier features is likewise pinned directly rather than through
+                // this case: `isGenericMethodDefinition` by
+                // `sourcesPure/MethodIsGenericMethodDefinition.cs`, `GetMethodInstantiation` by
+                // `sourcesPure/MethodGetGenericArguments.cs`, `GetStubIfNeededSlow` by
+                // `sourcesPure/MethodOnClosedGenericType.cs`, and the pure cores of the first two
+                // by `TestNativeRuntimeMethodHandle.fs`. So no earlier issue's coverage depends on
+                // this case passing.
                 "SprintfBasic"
             ]
 
