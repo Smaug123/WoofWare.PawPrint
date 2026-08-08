@@ -472,6 +472,87 @@ type CliType =
             | _ -> None
         | _ -> None
 
+    /// Every storage cell of `value` whose extent is exactly the byte range
+    /// `[offset, offset + size)`, as a path of `FieldId`s from `value` down to the cell, paired
+    /// with the cell's contents. Ordered outermost first. Empty if the range names no cell.
+    ///
+    /// This is `TryFieldExactlyCovering` made total over depth. Naming a cell is what lets the
+    /// byref layer serve an access whose storage has no byte rendering at all — a value type
+    /// containing object references — since there the bytewise path cannot run and the cell is the
+    /// only thing left to read or write. A range that is *part* of a cell, that spans two, or that
+    /// one cell covers exactly while another *aliases* it, names nothing: the first two have no
+    /// single cell to point at, and the third would leave the alias stale on write.
+    ///
+    /// More than one answer is normal rather than an ambiguity: a transparent wrapper and the field
+    /// it wraps occupy the same bytes, and which one a caller wants depends on the type it is
+    /// reinterpreting to. Answers therefore form a nesting chain, and a caller that takes the first
+    /// type-compatible one gets the shallowest cell that will do — the one that disturbs least on
+    /// write.
+    ///
+    /// Like `TryFieldExactlyCovering`, this is deliberately *structural*: it does not look at what
+    /// a cell contains, so callers must apply their own compatibility rule to the contents. It
+    /// walks fields rather than bytes, so it stays defined precisely where the byte path is not.
+    /// Raw-bytes storage has no fields, so it never answers.
+    static member CellPathsExactlyCovering
+        (offset : int)
+        (size : int)
+        (value : CliType)
+        : (FieldId list * CliType) list
+        =
+        if size <= 0 then
+            []
+        else
+
+        match value with
+        | CliType.ValueType vt ->
+            let fields = CliValueType.TryAllFields vt
+
+            // Widened to 64 bits because `offset` is guest-controlled — it accumulates
+            // `Unsafe.Add`/`Unsafe.AddByteOffset` arithmetic — so the range's end point need not
+            // fit in an `int`. This file compiles under `open Checked`, so computing it narrowly
+            // would raise `OverflowException` out of a lookup whose contract is to return `[]`.
+            // Field offsets and sizes come from a laid-out type and are small; only the range is
+            // suspect.
+            let rangeStart = int64 offset
+            let rangeEnd = int64 offset + int64 size
+
+            // The range must sit inside a single field for any cell to name it. Under explicit
+            // layout several fields can contain it, in which case a write through one would strand
+            // the others, so we refuse rather than pick.
+            let containing =
+                fields
+                |> List.filter (fun f -> int64 f.Offset <= rangeStart && rangeEnd <= int64 f.Offset + int64 f.Size)
+
+            match containing with
+            | [ f ] ->
+                let aliased =
+                    fields
+                    |> List.exists (fun g ->
+                        not (FieldId.exactlyEqual g.Id f.Id)
+                        && int64 g.Offset < rangeEnd
+                        && rangeStart < int64 g.Offset + int64 g.Size
+                    )
+
+                if aliased then
+                    []
+                else
+
+                // A field whose laid-out extent exceeds its contents' own size has padding in it,
+                // so the range covers the field but not the *value*; descend without naming it.
+                let namesThisField =
+                    f.Offset = offset && f.Size = size && f.Size = CliType.SizeOf(f.Contents).Size
+
+                let deeper =
+                    CliType.CellPathsExactlyCovering (offset - f.Offset) size f.Contents
+                    |> List.map (fun (path, leaf) -> f.Id :: path, leaf)
+
+                if namesThisField then
+                    ([ f.Id ], f.Contents) :: deeper
+                else
+                    deeper
+            | _ -> []
+        | _ -> []
+
     /// If `value` is a value type holding exactly one field, laid out at offset 0 and spanning
     /// the whole value, return that field's id and its contents. Otherwise `None`.
     ///
