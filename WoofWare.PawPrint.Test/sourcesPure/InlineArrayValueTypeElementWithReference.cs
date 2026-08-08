@@ -2,23 +2,22 @@ using System;
 using System.Runtime.CompilerServices;
 
 // An `[InlineArray(N)]` whose element is a *struct that contains a reference*, rather than a bare
-// reference or a byte-addressable primitive. This is the one element shape the N-slot layout does
-// not make reachable, and it is a limit of the byref reinterpret elision rather than of the layout:
+// reference or a byte-addressable primitive.
 //
-//   - the layout is right (the sweep in `TestInlineArrayLayout.fs` covers a `{byte; object}`
-//     element and agrees with the real runtime on every size);
-//   - `buffer[k]` is `[ReinterpretAs Elem; ByteOffset k * sizeof(Elem)]`, and
-//     `TryFieldExactlyCovering` does find slot `k` exactly;
-//   - but `isLayoutCompatibleForElision` (IlMachineManagedByref.fs) is object-reference identity
-//     only, so it declines, and the bytewise fallback then fails in `reinterpretStorageBytes`
-//     because a value type containing object references has no byte rendering.
+// Such storage has no byte image at all, so every bytewise route into it fails and the only way to
+// serve an access is to name the storage cell its byte range picks out
+// (`CliType.CellPathsExactlyCovering`). All three accesses below take different routes to that:
+// `buffer[k] = ...` names the slot on the write side, `buffer[k].Tag` descends into the slot
+// through the byte-view read path, and `buffer[k].Payload` through the `ReinterpretAs`+`Field`
+// classifier.
 //
-// This is not specific to inline arrays and predates them: on `main` — where the struct's storage
-// was its one declared field — the *first* element diverges identically, with the same
-// "write through `ReinterpretAs` over byte-unaddressable storage (value type containing object
-// references)" failure. Un-parking it needs the elision predicate widened to accept two cells of
-// the same declared value type, which changes the `Unsafe.As`-wrapper classifier for every caller
-// and so wants its own change.
+// The reference is declared second but laid out first — auto layout promotes references — so `Tag`
+// sits at a non-zero offset inside each slot. That is what makes reading it a genuine descent
+// rather than a whole-cell read: a resolver that only looked at top-level cells, or that ignored
+// the offset within the slot, would fail here rather than quietly returning the wrong byte.
+//
+// `TestReinterpretCellAccess` sweeps this shape and its variants against the real runtime;
+// this file is the minimal end-to-end case.
 public class TestInlineArrayValueTypeElementWithReference
 {
     private sealed class Box { public int V; }

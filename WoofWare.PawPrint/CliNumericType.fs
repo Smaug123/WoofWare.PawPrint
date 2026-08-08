@@ -308,6 +308,36 @@ type CliNumericType =
         | CliNumericType.Float32 _ -> 4
         | CliNumericType.Float64 _ -> 8
 
+    /// `true` iff two numerics are the same CLR numeric kind, ignoring the values they hold.
+    ///
+    /// Not "the same width": `Int32` and `Float32` are both four bytes and are not interchangeable,
+    /// and `Int64`/`NativeInt` differ in provenance tracking even though both are eight. Callers
+    /// use this to decide whether a storage cell may stand in for a value without a bytewise
+    /// reinterpret, so anything short of same-kind would silently change what a cell claims to
+    /// hold.
+    static member SameKind (a : CliNumericType) (b : CliNumericType) : bool =
+        match a, b with
+        | CliNumericType.Int32 _, CliNumericType.Int32 _
+        | CliNumericType.Int64 _, CliNumericType.Int64 _
+        | CliNumericType.NativeInt _, CliNumericType.NativeInt _
+        | CliNumericType.NativeFloat _, CliNumericType.NativeFloat _
+        | CliNumericType.Int8 _, CliNumericType.Int8 _
+        | CliNumericType.Int16 _, CliNumericType.Int16 _
+        | CliNumericType.UInt8 _, CliNumericType.UInt8 _
+        | CliNumericType.UInt16 _, CliNumericType.UInt16 _
+        | CliNumericType.Float32 _, CliNumericType.Float32 _
+        | CliNumericType.Float64 _, CliNumericType.Float64 _ -> true
+        | CliNumericType.Int32 _, _
+        | CliNumericType.Int64 _, _
+        | CliNumericType.NativeInt _, _
+        | CliNumericType.NativeFloat _, _
+        | CliNumericType.Int8 _, _
+        | CliNumericType.Int16 _, _
+        | CliNumericType.UInt8 _, _
+        | CliNumericType.UInt16 _, _
+        | CliNumericType.Float32 _, _
+        | CliNumericType.Float64 _, _ -> false
+
     static member ToBytes (t : CliNumericType) : byte[] =
         match t with
         | CliNumericType.Int32 i -> BitConverter.GetBytes i
