@@ -303,6 +303,67 @@ module NativeRuntimeAssembly =
                     (CliType.ObjectRef (Some emptyAddr))
 
             NativeHandlerResult.completed state |> Some
+        | "AssemblyNative_GetFlags",
+          "System.Private.CoreLib",
+          "System.Reflection",
+          "RuntimeAssembly",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "QCallAssembly",
+                                              qCallAssemblyGenerics) ],
+          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                                      "System.Reflection",
+                                                                      "AssemblyNameFlags",
+                                                                      flagsGenerics)) when
+            qCallAssemblyGenerics.IsEmpty && flagsGenerics.IsEmpty
+            ->
+            let operation = "AssemblyNative_GetFlags"
+
+            if instruction.Arguments.Length <> 1 then
+                failwith $"%s{operation}: expected one native argument, got %d{instruction.Arguments.Length}"
+
+            let assemblyFullName =
+                instruction.Arguments.[0]
+                |> NativeCall.qCallAssemblyToAssemblyFullName operation state
+
+            let assembly =
+                state.LoadedAssembly' assemblyFullName
+                |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
+
+            // CoreCLR returns `pAssembly->GetPEAssembly()->GetFlags()`, the whole `DWORD` of
+            // the manifest row's `Flags` column. Note `DumpedAssembly.Flags` rather than
+            // `Name.Flags`: the latter is a masked view that drops the ContentType and
+            // ProcessorArchitecture bits, whereas the managed caller assigns this result to
+            // `AssemblyName.RawFlags`, which keeps them.
+            //
+            // Unlike the rest of this family the value comes back as a return value rather
+            // than through an out-parameter. `AssemblyNameFlags` is an Int32-backed enum, so
+            // it travels on the eval stack as its underlying primitive.
+            //
+            // The column is not quite the answer on its own. `GetAssemblyProps` — the
+            // metadata-import call every CoreCLR reader of this column goes through —
+            // synthesises the `afPublicKey` bit whenever the `PublicKey` blob is non-empty,
+            // whatever the column says ("Turn on the afPublicKey if PublicKey blob is not
+            // empty", mdinternalro.cpp). The two disagree only for an image whose blob and
+            // flag were written inconsistently, which no compiler emits but the format
+            // permits, so reproduce the normalisation rather than the column.
+            //
+            // It lives here rather than on `DumpedAssembly.Flags` deliberately: that member
+            // is the manifest column and should stay exactly that, while this is the
+            // behaviour of a particular CoreCLR API being reproduced at the seam that
+            // reproduces CoreCLR APIs.
+            let afPublicKey = 0x0001
+
+            let flags =
+                if assembly.PublicKey.IsEmpty then
+                    int assembly.Flags
+                else
+                    int assembly.Flags ||| afPublicKey
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 flags)) ctx.Thread state
+
+            NativeHandlerResult.completed state |> Some
         | "AssemblyNative_GetLocale",
           "System.Private.CoreLib",
           "System.Reflection",
