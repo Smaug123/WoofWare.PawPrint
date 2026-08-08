@@ -577,6 +577,109 @@ public static class GenericMethodHolder
 
     let private invokeGetMethodTable = invokeRuntimeMethodHandleFCall "GetMethodTable"
 
+    let private invokeIsConstructor = invokeRuntimeMethodHandleFCall "IsConstructor"
+
+    /// Register `method`'s (non-generic) declaring type in `state.ConcreteTypes` and hand back the
+    /// `ConcreteType` the method-handle registry needs. `findDeclaringConcreteType` above only
+    /// finds a type some earlier concretization already registered; this puts one there.
+    let private concretizeDeclaringType
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (assembly : DumpedAssembly)
+        (method : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
+        (state : IlMachineState)
+        : IlMachineState * ConcreteType<ConcreteTypeHandle>
+        =
+        let declaringTypeInfo = assembly.TypeDefs.[method.DeclaringType.Definition.Get]
+
+        let stk =
+            DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies declaringTypeInfo
+
+        let state, handle =
+            IlMachineState.concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                assembly.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                (TypeDefn.FromDefinition (method.DeclaringType.Identity, stk))
+
+        let concrete =
+            AllConcreteTypes.lookup handle state.ConcreteTypes
+            |> Option.defaultWith (fun () -> failwith $"declaring-type handle %O{handle} not present in mapping")
+
+        state, concrete
+
+    /// Mint a `RuntimeMethodHandleInternal` for the named method of the given source, and return
+    /// what the `IsConstructor` InternalCall pushes for it.
+    let private isConstructorOf (assemblyName : string) (source : string) (typeName : string) (methodName : string) =
+        let loggerFactory, baseClassTypes, assembly, state =
+            loadAssemblyFromSource assemblyName source
+
+        let targetMethod = assembly |> findMethod typeName methodName
+
+        let state, declaringType =
+            concretizeDeclaringType loggerFactory baseClassTypes assembly targetMethod state
+
+        let internalHandle, registry =
+            MethodHandleRegistry.getOrAllocateInternalHandle
+                baseClassTypes
+                state.ConcreteTypes
+                declaringType
+                targetMethod
+                state.MethodHandles
+
+        let state =
+            { state with
+                MethodHandles = registry
+            }
+
+        invokeIsConstructor loggerFactory baseClassTypes (CliType.ValueType internalHandle) state
+
+    /// One type carrying all three method shapes the predicate must distinguish. The static
+    /// constructor is written explicitly rather than left to a static field initialiser, because
+    /// Roslyn folds a constant initialiser into the field's metadata and emits no `.cctor` at all.
+    let private constructorFixtureSource : string =
+        """
+public class HasConstructors
+{
+    public static int Shared;
+
+    static HasConstructors()
+    {
+        Shared = 5;
+    }
+
+    public HasConstructors()
+    {
+    }
+
+    public int Plain()
+    {
+        return 1;
+    }
+}
+"""
+
+    [<Test>]
+    let ``IsConstructor is true for an instance constructor`` () : unit =
+        isConstructorOf "IsConstructorCtorAssembly" constructorFixtureSource "HasConstructors" ".ctor"
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 1))
+
+    [<Test>]
+    let ``IsConstructor is true for a static constructor`` () : unit =
+        // CoreCLR's `IsClassConstructorOrCtor` (method.hpp:491) covers `.cctor` as well as `.ctor`,
+        // which is why the FCall's name understates it. `RuntimeType.GetMethodBase` relies on that:
+        // a `.cctor` handle must produce a ConstructorInfo, not a MethodInfo.
+        isConstructorOf "IsConstructorCctorAssembly" constructorFixtureSource "HasConstructors" ".cctor"
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 1))
+
+    [<Test>]
+    let ``IsConstructor is false for an ordinary method`` () : unit =
+        isConstructorOf "IsConstructorPlainAssembly" constructorFixtureSource "HasConstructors" "Plain"
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+
     [<Test>]
     let ``IsDynamicMethod is false for a registry-minted handle`` () : unit =
         let loggerFactory, baseClassTypes, _, targetMethod, _, state = loadFixture ()

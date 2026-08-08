@@ -442,3 +442,81 @@ module TestNativeRuntimeMethodHandle =
 
         reasonFor (ConcreteTypeHandle.OneDimArrayZero (ConcreteTypeHandle.Concrete 1))
         |> shouldContainText "array"
+
+    // ---------------------------------------------------------------------------------------
+    // `isConstructorOrClassConstructor`: CoreCLR's `MethodDesc::IsClassConstructorOrCtor`
+    // (method.hpp:491), which the `RuntimeMethodHandle.IsConstructor` FCall
+    // (runtimehandles.cpp:2135) returns verbatim.
+    //
+    // `RuntimeType.GetMethodBase` (RuntimeType.CoreCLR.cs:1932) branches on it to decide whether
+    // to build a `RuntimeConstructorInfo` or a `RuntimeMethodInfo`, so the answer selects which
+    // reflection object a guest gets back, not merely a flag it can read.
+    // ---------------------------------------------------------------------------------------
+
+    let private withRtSpecialName (attrs : MethodAttributes) : MethodAttributes =
+        enum<MethodAttributes> (int attrs ||| int MethodAttributes.RTSpecialName)
+
+    let private withoutRtSpecialName (attrs : MethodAttributes) : MethodAttributes =
+        enum<MethodAttributes> (int attrs &&& ~~~(int MethodAttributes.RTSpecialName))
+
+    /// Arbitrary `MethodAttributes` bit patterns. The predicate consults exactly one bit, so the
+    /// point of generating the rest is to pin that: no other flag may change the answer.
+    let private methodAttributes : Gen<MethodAttributes> =
+        Gen.choose (0, 65535) |> Gen.map enum<MethodAttributes>
+
+    /// Names spanning the two that count and several near misses. `.CCTOR` is here because CoreCLR
+    /// compares with `strcmp` (corhdr.h:433-435), so the match is case-sensitive.
+    let private candidateNames : Gen<string> =
+        Gen.elements [ ".ctor" ; ".cctor" ; ".CCTOR" ; ".Ctor" ; "ctor" ; ".ctorx" ; "Foo" ; "" ]
+
+    [<Test>]
+    let ``IsConstructor: the truth table CoreCLR's macros spell out`` () : unit =
+        // `IsMdInstanceInitializer` / `IsMdClassConstructor` (corhdr.h:433,435) each re-test
+        // mdRTSpecialName, so the whole predicate is: the bit is set, and the name is one of the
+        // two initializer names. Note neither macro consults mdStatic: a `.cctor` is reported by
+        // name and flag alone.
+        let rtSpecial = MethodAttributes.RTSpecialName
+
+        NativeRuntimeMethodHandle.isConstructorOrClassConstructor rtSpecial ".ctor"
+        |> shouldEqual true
+
+        NativeRuntimeMethodHandle.isConstructorOrClassConstructor rtSpecial ".cctor"
+        |> shouldEqual true
+
+        // The name alone is not enough: an ordinary method that happens to be called `.ctor`
+        // without the flag is not a constructor to CoreCLR.
+        NativeRuntimeMethodHandle.isConstructorOrClassConstructor MethodAttributes.Public ".ctor"
+        |> shouldEqual false
+
+        NativeRuntimeMethodHandle.isConstructorOrClassConstructor MethodAttributes.Public ".cctor"
+        |> shouldEqual false
+
+        // The flag alone is not enough either: RTSpecialName is also set on other runtime-special
+        // members, and it is the name that distinguishes an initializer.
+        NativeRuntimeMethodHandle.isConstructorOrClassConstructor rtSpecial "Foo"
+        |> shouldEqual false
+
+        // Case-sensitive, and no prefix matching.
+        NativeRuntimeMethodHandle.isConstructorOrClassConstructor rtSpecial ".CCTOR"
+        |> shouldEqual false
+
+        NativeRuntimeMethodHandle.isConstructorOrClassConstructor rtSpecial ".ctorx"
+        |> shouldEqual false
+
+    [<Test>]
+    let ``property: without RTSpecialName nothing is a constructor, whatever it is called`` () : unit =
+        let property (attrs : MethodAttributes, name : string) : bool =
+            not (NativeRuntimeMethodHandle.isConstructorOrClassConstructor (withoutRtSpecialName attrs) name)
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen (Gen.zip methodAttributes candidateNames)) property)
+
+    [<Test>]
+    let ``property: only the two initializer names can be constructors, whatever the flags`` () : unit =
+        let property (attrs : MethodAttributes, name : string) : bool =
+            if name = ".ctor" || name = ".cctor" then
+                // With the flag set these must be true; the other flags must not interfere.
+                NativeRuntimeMethodHandle.isConstructorOrClassConstructor (withRtSpecialName attrs) name
+            else
+                not (NativeRuntimeMethodHandle.isConstructorOrClassConstructor (withRtSpecialName attrs) name)
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen (Gen.zip methodAttributes candidateNames)) property)
