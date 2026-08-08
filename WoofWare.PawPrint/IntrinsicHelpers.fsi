@@ -7,13 +7,15 @@ module internal IntrinsicHelpers =
     /// under PawPrint's current scalar-only virtual hardware profile.
     val scalarOnlyFalseIsSupportedIntrinsics : Set<string>
 
-    /// Walk a value-type's fields to decide whether its storage contains any managed references,
-    /// hiding the cycle-detection memo table used by the implementation.
-    val typeInfoContainsReferences :
+    /// Walk a value-type's fields to decide whether its storage contains any managed references
+    /// (object references or by-refs), hiding the cycle-detection memo table used by the
+    /// implementation. The walk is in the concrete domain, so a field typed `T` is resolved
+    /// against the instantiation `handle` names rather than against a generic parameter.
+    val concreteTypeContainsReferences :
         loggerFactory : ILoggerFactory ->
         baseClassTypes : BaseClassTypes<DumpedAssembly> ->
         state : IlMachineState ->
-        typeInfo : TypeInfo<TypeDefn, TypeDefn> ->
+        handle : ConcreteTypeHandle ->
             IlMachineState * bool
 
     /// Pop a `System.Type`/`System.RuntimeType` receiver from the guest evaluation stack and

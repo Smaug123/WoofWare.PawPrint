@@ -5,33 +5,65 @@ open System.Collections.Immutable
 open Microsoft.Extensions.Logging
 
 module internal IntrinsicHelpers =
-    type RefTypeProcessingStatus =
+    type private RefTypeProcessingStatus =
         | InProgress
         | Completed of bool
 
-    type RefTypeKey =
-        {
-            Identity : ResolvedTypeIdentity
-            Generics : TypeDefn list
-        }
+    /// CoreLib's primitive value types. Each is defined with a single instance field whose
+    /// signature is the primitive type itself (`System.Int32.m_value : int32`), so walking their
+    /// fields bottoms out only on the cycle check below. Short-circuiting is both cheaper and
+    /// clearer than relying on that.
+    let private primitiveValueTypeNames =
+        set
+            [
+                "Boolean"
+                "Byte"
+                "SByte"
+                "Char"
+                "Int16"
+                "UInt16"
+                "Int32"
+                "UInt32"
+                "Int64"
+                "UInt64"
+                "IntPtr"
+                "UIntPtr"
+                "Single"
+                "Double"
+            ]
 
-    let refTypeKey (td : TypeInfo<TypeDefn, TypeDefn>) : RefTypeKey =
-        {
-            Identity = td.Identity
-            Generics = Seq.toList td.Generics
-        }
-
-    let rec containsRefType
+    /// Decide whether the storage of `handle` contains any managed references, walking the fields
+    /// of value types transitively.
+    ///
+    /// The walk is in the *concrete* domain: `handle` names an exact instantiation, so a field
+    /// typed `T` is concretized against the declaring type's own generic arguments rather than
+    /// against a manufactured `GenericTypeParameter` placeholder. That is what makes
+    /// `Box<string>` distinguishable from `Box<int>`, and it is why the memo table is keyed on
+    /// the handle: `ConcreteTypeHandle` already identifies identity *and* instantiation.
+    let rec private containsRefType
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        (seenSoFar : ImmutableDictionary<RefTypeKey, RefTypeProcessingStatus>)
-        (td : TypeInfo<TypeDefn, TypeDefn>)
-        : IlMachineState * ImmutableDictionary<_, RefTypeProcessingStatus> * bool
+        (seenSoFar : ImmutableDictionary<ConcreteTypeHandle, RefTypeProcessingStatus>)
+        (handle : ConcreteTypeHandle)
+        : IlMachineState * ImmutableDictionary<ConcreteTypeHandle, RefTypeProcessingStatus> * bool
         =
-        let key = refTypeKey td
+        match handle with
+        // An array is an object reference.
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _ -> state, seenSoFar, true
+        // A byref is a GC-tracked pointer, and CoreCLR counts it: the JIT answers
+        // `IsReferenceOrContainsReferences<T>` with `varTypeIsGC(fromType) || fromLayout->HasGCPtr()`
+        // (jit/importercalls.cpp:3624), and a layout's `m_gcPtrCount` includes its `TYP_BYREF`
+        // slots (jit/layout.cpp:576). Hence the API's documented contract: "a value type that
+        // contains references *or by-refs*".
+        | ConcreteTypeHandle.Byref _ -> state, seenSoFar, true
+        // Unmanaged pointers are not GC-tracked.
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ -> state, seenSoFar, false
+        | ConcreteTypeHandle.Concrete _ ->
 
-        match seenSoFar.TryGetValue key with
+        match seenSoFar.TryGetValue handle with
         | true, InProgress ->
             // We've hit a cycle. Optimistically assume this path does not introduce a reference type.
             // If another path finds a reference type, its 'true' will override this.
@@ -40,51 +72,75 @@ module internal IntrinsicHelpers =
             // We've already calculated this; return the memoized result.
             state, seenSoFar, v
         | false, _ ->
-            if DumpedAssembly.isReferenceType baseClassTypes state._LoadedAssemblies td then
-                // Short-circuit: if the type itself is a reference type, we're done.
-                let seenSoFar = seenSoFar.Add (key, Completed true)
-                state, seenSoFar, true
+            let concrete =
+                AllConcreteTypes.lookup handle state.ConcreteTypes
+                |> Option.defaultWith (fun () -> failwith $"type was not registered: %O{handle}")
+
+            if
+                concrete.Assembly.Name = "System.Private.CoreLib"
+                && concrete.Namespace = "System"
+                && primitiveValueTypeNames.Contains concrete.Name
+            then
+                state, seenSoFar.Add (handle, Completed false), false
             else
-                // It's a value type, so we must check its fields.
-                // Mark as in progress before recursing.
-                let seenSoFarWithInProgress = seenSoFar.Add (key, InProgress)
 
-                let stateAfterFieldResolution, nonStaticFields =
-                    ((state, []), td.Fields)
-                    ||> List.fold (fun (currentState, acc) field ->
-                        if field.IsStatic then
-                            currentState, acc
-                        else
-                            // TODO: generics
-                            let newState, _, info =
-                                IlMachineState.resolveTypeFromDefn
-                                    loggerFactory
-                                    baseClassTypes
-                                    field.Signature
-                                    ImmutableArray.Empty
-                                    ImmutableArray.Empty
-                                    (currentState.LoadedAssembly (td.Assembly) |> Option.get)
-                                    currentState
+            let assy =
+                state.LoadedAssembly concrete.Assembly
+                |> Option.defaultWith (fun () ->
+                    failwith $"assembly %O{concrete.Assembly} of concrete type %O{handle} is not loaded"
+                )
 
-                            newState, info :: acc
-                    )
+            let td = assy.TypeDefs.[concrete.Definition.Get]
 
-                // Recurse through the fields, correctly propagating state.
-                let finalState, finalSeenSoFar, fieldsContainRefType =
-                    ((stateAfterFieldResolution, seenSoFarWithInProgress, false), nonStaticFields)
-                    ||> List.fold (fun (currentState, currentSeenSoFar, currentResult) field ->
-                        if currentResult then
-                            (currentState, currentSeenSoFar, true) // Short-circuit
-                        else
-                            let newState, newSeenSoFar, fieldResult =
-                                containsRefType loggerFactory baseClassTypes currentState currentSeenSoFar field
+            if not (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies td) then
+                // Short-circuit: if the type itself is a reference type, we're done.
+                state, seenSoFar.Add (handle, Completed true), true
+            else
 
-                            (newState, newSeenSoFar, currentResult || fieldResult)
-                    )
+            // It's a value type, so we must check its fields.
+            // Mark as in progress before recursing.
+            let seenSoFarWithInProgress = seenSoFar.Add (handle, InProgress)
 
-                // Mark as completed with the final result before returning.
-                let finalSeenSoFar = finalSeenSoFar.SetItem (key, Completed fieldsContainRefType)
-                finalState, finalSeenSoFar, fieldsContainRefType
+            // Concretize each instance field's signature against *this* instantiation's generic
+            // arguments. A field is declared in the same assembly as its declaring type, so that
+            // assembly is the resolution scope for the signature's tokens. There is no method
+            // generic context: a field signature cannot mention one.
+            let stateAfterFieldResolution, nonStaticFields =
+                ((state, []), td.Fields)
+                ||> List.fold (fun (currentState, acc) field ->
+                    if field.IsStatic then
+                        currentState, acc
+                    else
+                        let newState, fieldHandle =
+                            IlMachineState.concretizeType
+                                loggerFactory
+                                baseClassTypes
+                                currentState
+                                concrete.Assembly
+                                concrete.Generics
+                                ImmutableArray.Empty
+                                field.Signature
+
+                        newState, fieldHandle :: acc
+                )
+
+            // Recurse through the fields, correctly propagating state.
+            let finalState, finalSeenSoFar, fieldsContainRefType =
+                ((stateAfterFieldResolution, seenSoFarWithInProgress, false), nonStaticFields)
+                ||> List.fold (fun (currentState, currentSeenSoFar, currentResult) field ->
+                    if currentResult then
+                        (currentState, currentSeenSoFar, true) // Short-circuit
+                    else
+                        let newState, newSeenSoFar, fieldResult =
+                            containsRefType loggerFactory baseClassTypes currentState currentSeenSoFar field
+
+                        (newState, newSeenSoFar, currentResult || fieldResult)
+                )
+
+            // Mark as completed with the final result before returning.
+            let finalSeenSoFar = finalSeenSoFar.SetItem (handle, Completed fieldsContainRefType)
+
+            finalState, finalSeenSoFar, fieldsContainRefType
 
     let concreteTypeContainsReferences
         (loggerFactory : ILoggerFactory)
@@ -93,65 +149,7 @@ module internal IntrinsicHelpers =
         (handle : ConcreteTypeHandle)
         : IlMachineState * bool
         =
-        match handle with
-        | ConcreteTypeHandle.OneDimArrayZero _
-        | ConcreteTypeHandle.Array _ -> state, true
-        | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _
-        | ConcreteTypeHandle.FunctionPointer _ -> state, false
-        | ConcreteTypeHandle.Concrete _ ->
-            let concrete =
-                AllConcreteTypes.lookup handle state.ConcreteTypes
-                |> Option.defaultWith (fun () -> failwith $"type was not registered: %O{handle}")
-
-            let primitiveValueTypeNames =
-                set
-                    [
-                        "Boolean"
-                        "Byte"
-                        "SByte"
-                        "Char"
-                        "Int16"
-                        "UInt16"
-                        "Int32"
-                        "UInt32"
-                        "Int64"
-                        "UInt64"
-                        "IntPtr"
-                        "UIntPtr"
-                        "Single"
-                        "Double"
-                    ]
-
-            if
-                concrete.Assembly.Name = "System.Private.CoreLib"
-                && concrete.Namespace = "System"
-                && primitiveValueTypeNames.Contains concrete.Name
-            then
-                state, false
-            else
-                let td =
-                    state.LoadedAssembly concrete.Assembly
-                    |> Option.get
-                    |> fun a -> a.TypeDefs.[concrete.Definition.Get]
-
-                if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies td then
-                    td
-                    |> TypeInfo.mapGeneric (fun (par, _) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
-                    |> containsRefType loggerFactory baseClassTypes state ImmutableDictionary.Empty
-                    |> fun (state, _, result) -> state, result
-                else
-                    state, true
-
-    let typeInfoContainsReferences
-        (loggerFactory : ILoggerFactory)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        (typeInfo : TypeInfo<TypeDefn, TypeDefn>)
-        : IlMachineState * bool
-        =
-        typeInfo
-        |> containsRefType loggerFactory baseClassTypes state ImmutableDictionary.Empty
+        containsRefType loggerFactory baseClassTypes state ImmutableDictionary.Empty handle
         |> fun (state, _, result) -> state, result
 
     let popRuntimeTypeHandle
