@@ -34,7 +34,6 @@
     <Compile Include="TestNativeIntSource.fs" />
     <Compile Include="TestPointerHashSynthesis.fs" />
     <Compile Include="TestCliTypeBytes.fs" />
-    <Compile Include="TestCliTypeSingleWholeField.fs" />
     <Compile Include="TestCliTypeCellPaths.fs" />
     <Compile Include="TestInlineArrayStorage.fs" />
     <Compile Include="TestStructLayout.fs" />

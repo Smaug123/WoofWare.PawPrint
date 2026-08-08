@@ -197,6 +197,35 @@ module TestCliTypeCellPaths =
         CliType.CellPathsExactlyCovering 0 8 value |> shouldEqual []
         CliType.CellPathsExactlyCovering 4 4 value |> shouldEqual []
 
+    /// Two fields declared at the *same* offset are each the other's alias, so neither may be
+    /// named. Distinct from the case above, where one field strictly contains the range.
+    [<Test>]
+    let ``a union of two same-width fields names nothing`` () : unit =
+        let value =
+            ofFieldsSized
+                4
+                [
+                    cliField "AsInt" (CliType.Numeric (CliNumericType.Int32 0)) (Some 0) int32Handle
+                    cliField "AlsoInt" (CliType.Numeric (CliNumericType.Int32 0)) (Some 0) int32Handle
+                ]
+
+        CliType.CellPathsExactlyCovering 0 4 value |> shouldEqual []
+
+    /// A narrower field overlapping the start of a wider one: the wider field contains the range
+    /// exactly, but the narrow sibling aliases part of it, so naming the wider one would leave the
+    /// narrow one stale on write.
+    [<Test>]
+    let ``a narrower overlapping sibling blocks the field that covers the range`` () : unit =
+        let value =
+            ofFieldsSized
+                4
+                [
+                    cliField "AsInt" (CliType.Numeric (CliNumericType.Int32 0)) (Some 0) int32Handle
+                    cliField "Byte0" (CliType.Numeric (CliNumericType.UInt8 0uy)) (Some 0) byteHandle
+                ]
+
+        CliType.CellPathsExactlyCovering 0 4 value |> shouldEqual []
+
     /// An *abutting* sibling must not block: otherwise no field past the first could ever be named.
     /// This is the boundary case of the aliasing rule.
     [<Test>]

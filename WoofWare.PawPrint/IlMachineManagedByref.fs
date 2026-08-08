@@ -1258,10 +1258,9 @@ module IlMachineManagedByref =
                                 // `[InlineArray(N)]` over a reference element generates for
                                 // every slot. The byref addresses precisely that cell, so we
                                 // can hand it back. Storage where the range merely *straddles*
-                                // a reference, or is aliased by a sibling, is rejected by
-                                // `TryFieldExactlyCovering` and still routes bytewise, where it
-                                // fails loudly rather than silently dropping the rest of the
-                                // struct.
+                                // a reference, or is aliased by a sibling, names no cell and
+                                // still routes bytewise, where it fails loudly rather than
+                                // silently dropping the rest of the struct.
                                 tryNameCellForByrefAccess byteOffset cell targetTemplate
                                 |> Option.map (fun path -> CliType.getCellAtPath path cell)
                             | _ -> None
