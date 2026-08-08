@@ -204,6 +204,105 @@ module NativeRuntimeAssembly =
                         $"TODO: %s{operation} does not support assembly-forwarded manifest resource %s{actualResourceName} in %s{assemblyFullName} forwarded to %s{assemblyReference.Name.FullName}"
 
             NativeHandlerResult.completed state |> Some
+        // Declared on `Assembly` itself rather than `RuntimeAssembly` — the `LibraryImport`
+        // lives in `Assembly.CoreCLR.cs`, next to `GetEntryAssemblyInternal` which is its only
+        // caller.
+        | "AssemblyNative_GetEntryAssembly",
+          "System.Private.CoreLib",
+          "System.Reflection",
+          "Assembly",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "ObjectHandleOnStack",
+                                              objectHandleGenerics) ],
+          MethodReturnType.Void when objectHandleGenerics.IsEmpty ->
+            let operation = "AssemblyNative_GetEntryAssembly"
+
+            if instruction.Arguments.Length <> 1 then
+                failwith $"%s{operation}: expected one native argument, got %d{instruction.Arguments.Length}"
+
+            let retAssembly =
+                NativeCall.objectHandleOnStackTarget operation state "retAssembly" instruction.Arguments.[0]
+
+            // CoreCLR leaves `retAssembly` untouched when the AppDomain has no root assembly —
+            // it was hosted rather than launched from an image — and `GetEntryAssemblyInternal`
+            // preinitializes its local to null so that reads back as `null`. PawPrint is only
+            // ever entered through an entry assembly (`IlMachineState.initial` demands one), so
+            // that branch does not arise here and the write below is unconditional.
+            let assembly =
+                state.LoadedAssembly state.EntryAssembly
+                |> Option.defaultWith (fun () ->
+                    failwith $"%s{operation}: entry assembly %s{state.EntryAssembly.FullName} is not loaded"
+                )
+
+            let runtimeAssemblyAddr, state =
+                NativeRuntimeType.getOrAllocateRuntimeAssembly ctx.LoggerFactory ctx.BaseClassTypes assembly.Name state
+
+            let state =
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    retAssembly
+                    (CliType.ObjectRef (Some runtimeAssemblyAddr))
+
+            NativeHandlerResult.completed state |> Some
+        | "AssemblyNative_GetLocation",
+          "System.Private.CoreLib",
+          "System.Reflection",
+          "RuntimeAssembly",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "QCallAssembly",
+                                              qCallAssemblyGenerics)
+            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "StringHandleOnStack",
+                                              stringHandleGenerics) ],
+          MethodReturnType.Void when qCallAssemblyGenerics.IsEmpty && stringHandleGenerics.IsEmpty ->
+            let operation = "AssemblyNative_GetLocation"
+
+            if instruction.Arguments.Length <> 2 then
+                failwith $"%s{operation}: expected two native arguments, got %d{instruction.Arguments.Length}"
+
+            let assemblyFullName =
+                instruction.Arguments.[0]
+                |> NativeCall.qCallAssemblyToAssemblyFullName operation state
+
+            // Decoded and checked only to keep the handler honest about its
+            // input: a caller handing us an assembly we have not loaded is a
+            // bug worth hearing about, even though the answer below does not
+            // depend on which assembly this is.
+            state.LoadedAssembly' assemblyFullName
+            |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
+            |> ignore<DumpedAssembly>
+
+            let retString =
+                NativeCall.stringHandleOnStackTarget operation state "retString" instruction.Arguments.[1]
+
+            // CoreCLR answers `pAssembly->GetPEAssembly()->GetPath()`, which is
+            // empty for any assembly with no file backing — a byte-array load, a
+            // dynamic assembly, or a single-file-published app. Under PawPrint
+            // *every* assembly is that shape: the guest has no filesystem, so
+            // there is no path it could open. Synthesising a plausible-looking
+            // path would be a fiction the guest cannot act on, and for a
+            // framework assembly resolved from `DotnetRuntimeDirs` it would also
+            // leak the host machine's layout into the run's replay contract.
+            //
+            // `internCanonicalEmptyString` rather than a fresh allocation because
+            // CoreCLR's `StringObject::NewString` returns the shared empty-string
+            // instance for a zero-length string, so `ReferenceEquals(asm.Location,
+            // string.Empty)` holds there and must hold here.
+            let emptyAddr, state =
+                IlMachineState.internCanonicalEmptyString ctx.LoggerFactory ctx.BaseClassTypes state
+
+            let state =
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    retString
+                    (CliType.ObjectRef (Some emptyAddr))
+
+            NativeHandlerResult.completed state |> Some
         | "AssemblyNative_GetTypeCore",
           "System.Private.CoreLib",
           "System.Reflection",
