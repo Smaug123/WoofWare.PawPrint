@@ -252,3 +252,25 @@ Console.WriteLine(AppContext.BaseDirectory);
 What PawPrint does *not* do is let a config file fill the hole itself: `RuntimeConfig.parse` refuses a `configProperties` entry that claims one of these names, exactly as a real host refuses to launch such a file. The absence above is a gap in what PawPrint can tell a guest; a forged `TRUSTED_PLATFORM_ASSEMBLIES` that the guest could not tell from the real thing would be worse than the gap.
 
 **Where this lives in code**: `AppContextProperties.empty` in `RuntimeConfig.fs` documents the gap; `hostOwnedNames` in the same file is the refusal; `HostConfig.AppContext` is where a host would supply values if it had any. Closing this would mean deciding what a simulated app's filesystem layout *is*, which is a larger question than the seeding change that surfaced it.
+
+## `Activator.CreateInstance` rejection messages
+
+**CoreCLR**: When `Activator.CreateInstance(Type)` refuses a type, the exception the guest catches carries a two-part message: `RuntimeType.ActivatorCache` catches whatever `RuntimeTypeHandle_GetActivationInfo` threw and rethrows the same exception *type* with `SR.Activator_CannotCreateInstance` formatted around the original message — so `Activator.CreateInstance(typeof(SomeAbstract))` reads "Cannot dynamically create an instance of type 'SomeAbstract'. Reason: Cannot create an abstract class.", the tail coming from the unmanaged layer's `Acc_CreateAbst`.
+
+**PawPrint**: The exception *type* is identical, and so is the outer sentence — that half is produced by ordinary managed code PawPrint interprets. The inner reason is not: PawPrint raises runtime-synthesised exceptions by allocating the type and calling its *parameterless* constructor (`IlMachineStateExecution.raiseRuntimeException`), so the inner message is the framework's default for that exception type rather than the specific reason. The guest sees "Reason: " followed by the wrong sentence.
+
+**Spec status**: Outside ECMA-335, which does not specify exception message text.
+
+**Why we chose this**: The exception type is what a `catch` clause selects on, and it is what a program can act on; the message is diagnostic prose. Carrying the reason across would mean teaching the native-handler boundary to construct exceptions through a message-taking constructor, and then reproducing CoreCLR's resource strings — a general change to the raise path plus a corpus of English text to keep in sync with a runtime we pin but do not build. This is a general property of every PawPrint-synthesised exception; it is recorded here rather than under `raiseRuntimeException` because `ActivatorCache`'s rewrap makes it unusually visible: the wrong sentence is embedded in a message the guest is likely to print, instead of merely being the message of an exception it caught.
+
+**Observable example**:
+
+```csharp
+try { Activator.CreateInstance(typeof(System.IDisposable)); }
+catch (MissingMethodException e) { Console.WriteLine(e.Message); }
+// CoreCLR:  "Cannot dynamically create an instance of type 'System.IDisposable'.
+//            Reason: Cannot create an instance of an interface."
+// PawPrint: same sentence, same exception type, different text after "Reason: ".
+```
+
+**Where this lives in code**: `ActivationInfo.classify` in `Native/NativeRuntimeTypeHelpers.fs` picks the exception type per CoreCLR's `ValidateTypeAbleToBeInstantiated`; `NativeHandlerResult.raiseException` is the boundary that cannot carry a message. `WoofWare.PawPrint.Test/sourcesPure/ActivatorCreateInstanceNonGeneric.cs` deliberately compares exception *types* only, for this reason.

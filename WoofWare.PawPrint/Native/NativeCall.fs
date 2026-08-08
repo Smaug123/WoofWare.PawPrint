@@ -552,18 +552,7 @@ module NativeCall =
         | other -> failwith $"%s{operation}: expected %s{argName} to be ObjectHandleOnStack, got %O{other}"
 
     let methodTableOfEvalStackValue (operation : string) (arg : EvalStackValue) : ConcreteTypeHandle =
-        match arg with
-        | EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed typeHandle))
-        | EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed typeHandle)) ->
-            typeHandle
-        | EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity))
-        | EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity)) ->
-            failwith $"%s{operation}: expected closed MethodTable pointer argument, got open generic %O{identity}"
-        | EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.GenericParameter _ as target))
-        | EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.MethodGenericParameter _ as target)) ->
-            failwith
-                $"%s{operation}: expected closed MethodTable pointer argument, got generic parameter %O{target} (TypeDescs have no MethodTable)"
-        | other -> failwith $"%s{operation}: expected MethodTable pointer argument, got %O{other}"
+        EvalStackValue.requireMethodTable operation arg
 
     /// Decode a `void*`/`TypeHandle` argument to the underlying RuntimeTypeHandleTarget. Unlike
     /// `methodTableOfEvalStackValue`, this preserves the full target so callers that legitimately

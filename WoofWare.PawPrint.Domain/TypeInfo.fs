@@ -249,6 +249,11 @@ type BaseClassTypes<'corelib> =
         Enum : TypeInfo<GenericParamFromMetadata, TypeDefn>
         ValueType : TypeInfo<GenericParamFromMetadata, TypeDefn>
         DelegateType : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        /// <c>System.MulticastDelegate</c>, whose direct subclasses are exactly the
+        /// delegate types: CoreCLR sets <c>EEClass::IsDelegate</c> iff a type's immediate
+        /// parent is this one (<c>methodtablebuilder.cpp</c>), so neither
+        /// <c>System.Delegate</c> nor <c>MulticastDelegate</c> itself is a delegate type.
+        MulticastDelegateType : TypeInfo<GenericParamFromMetadata, TypeDefn>
         Object : TypeInfo<GenericParamFromMetadata, TypeDefn>
         RuntimeMethodHandle : TypeInfo<GenericParamFromMetadata, TypeDefn>
         RuntimeMethodInfoStub : TypeInfo<GenericParamFromMetadata, TypeDefn>

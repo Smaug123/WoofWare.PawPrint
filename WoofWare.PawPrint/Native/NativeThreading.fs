@@ -870,7 +870,8 @@ module NativeThreading =
                         delegateObj
                     |> CliType.unwrapPrimitiveLike
                 with
-                | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer mi)) -> mi
+                | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer target)) ->
+                    FunctionPointerTarget.requireManaged "Thread.StartInternal" target
                 | other ->
                     failwith $"Thread.StartInternal: expected FunctionPointer in delegate _methodPtr, got %O{other}"
 
