@@ -41,12 +41,14 @@ module TestRuntimeConfig =
     let private parseBytesOk (json : byte[]) : Map<string, string> =
         match RuntimeConfig.parse json with
         | Ok props -> AppContextProperties.toMap props
-        | Error e -> failwith $"expected a successful parse, but got: %s{e}"
+        | Error e -> failwith $"expected a successful parse, but got: %s{e.Message}"
 
-    let private parseBytesError (json : byte[]) : string =
+    let private parseBytesErrorCase (json : byte[]) : RuntimeConfigError =
         match RuntimeConfig.parse json with
         | Error e -> e
         | Ok props -> failwith $"expected a failed parse, but got: %O{AppContextProperties.toMap props |> Map.toList}"
+
+    let private parseBytesError (json : byte[]) : string = (parseBytesErrorCase json).Message
 
     let private parseOk (json : string) : Map<string, string> =
         parseBytesOk (Text.Encoding.UTF8.GetBytes json)
@@ -171,11 +173,11 @@ module TestRuntimeConfig =
     let private combineOk (dev : Map<string, string>) (main : Map<string, string>) : Map<string, string> =
         match RuntimeConfig.combine (AppContextProperties.ofMap dev) (AppContextProperties.ofMap main) with
         | Ok props -> AppContextProperties.toMap props
-        | Error e -> failwith $"expected a successful combine, but got: %s{e}"
+        | Error e -> failwith $"expected a successful combine, but got: %s{e.Message}"
 
     let private combineError (dev : Map<string, string>) (main : Map<string, string>) : string =
         match RuntimeConfig.combine (AppContextProperties.ofMap dev) (AppContextProperties.ofMap main) with
-        | Error e -> e
+        | Error e -> e.Message
         | Ok props -> failwith $"expected a failed combine, but got: %O{AppContextProperties.toMap props |> Map.toList}"
 
     [<Test>]
@@ -482,6 +484,49 @@ module TestRuntimeConfig =
 
         parseOk $$"""{ "{{r}}untimeOptions": { "{{c}}onfigProperties": { "P": "v" } } }"""
         |> shouldEqual (Map.ofList [ "P", "v" ])
+
+    // ------------------------------------------------------------------
+    // Which kind of failure it was.
+    // ------------------------------------------------------------------
+
+    /// `parse` fails for two quite different reasons, and `HostRuntimeConfig` acts on the
+    /// difference: a dev sidecar may be ignored exactly when hostpolicy would ignore it. Left
+    /// untested the classification would be free to drift, and the drift would be silent —
+    /// misclassifying a `NotReproducible` as `HostWouldReject` turns "we cannot run this
+    /// faithfully" into "launch without those properties".
+    let private classificationCases : (string * byte[] * bool) list =
+        // (description, bytes, isHostWouldReject)
+        [
+            "malformed JSON", Text.Encoding.UTF8.GetBytes "}{ not json", true
+            "no runtimeOptions", Text.Encoding.UTF8.GetBytes """{ "other": 1 }""", true
+            "runtimeOptions of the wrong shape", Text.Encoding.UTF8.GetBytes """{ "runtimeOptions": [] }""", true
+            "configProperties of the wrong shape",
+            Text.Encoding.UTF8.GetBytes """{ "runtimeOptions": { "configProperties": [] } }""",
+            true
+            "a root that is not an object", Text.Encoding.UTF8.GetBytes "[]", true
+            // hostpolicy parses UTF-8 and skips only a UTF-8 BOM, so it refuses this outright.
+            "a UTF-16 document",
+            Array.append
+                (Text.Encoding.Unicode.GetPreamble ())
+                (Text.Encoding.Unicode.GetBytes (document """{ "P": "v" }""")),
+            true
+            // These four a real host reads without complaint; only we cannot reproduce them.
+            "a real-valued property", Text.Encoding.UTF8.GetBytes (document """{ "P": 1.5 }"""), false
+            "an array-valued property", Text.Encoding.UTF8.GetBytes (document """{ "P": [] }"""), false
+            "an object-valued property", Text.Encoding.UTF8.GetBytes (document """{ "P": {} }"""), false
+            "invalid UTF-8 in a value", documentWithRawBytes (asciiBytes "P") invalidUtf8, false
+        ]
+
+    [<Test>]
+    let ``failures are classified by whether a real host would also refuse the file`` () =
+        for description, bytes, expectedHostWouldReject in classificationCases do
+            let actual =
+                match parseBytesErrorCase bytes with
+                | RuntimeConfigError.HostWouldReject _ -> true
+                | RuntimeConfigError.NotReproducible _ -> false
+
+            if actual <> expectedHostWouldReject then
+                failwith $"%s{description}: expected HostWouldReject=%b{expectedHostWouldReject} but got %b{actual}"
 
     [<Test>]
     let ``a UTF-8 BOM is skipped`` () =
@@ -792,10 +837,15 @@ module TestRuntimeConfig =
             )
 
     [<Test>]
-    let ``a dev config with invalid UTF-8 is not fatal`` () =
-        // The failure mode this guards is a joint one: `parse` must contain the transcoding
-        // failure as an `Error` *and* this caller must treat that error as survivable. If the
-        // former regresses, the exception sails straight through the latter.
+    let ``a dev config with invalid UTF-8 fails cleanly rather than throwing`` () =
+        // Two claims at once. `parse` must contain the transcoding failure as an `Error`
+        // rather than letting `InvalidOperationException` escape — asserted by the exception
+        // type below, since an escaping one would not be our `failwith`.
+        //
+        // And that error must be fatal, not swallowed: a real host reads these bytes happily,
+        // substituting U+FFFD, so the property exists on a real launch. Dropping the file
+        // would start the guest a property short. This is the `NotReproducible` half of the
+        // classification, and the reason a dev sidecar is not simply "ignore all failures".
         let dir =
             Path.Combine (Path.GetTempPath (), $"pawprint-runtimeconfig-%s{Path.GetRandomFileName ()}")
 
@@ -811,9 +861,9 @@ module TestRuntimeConfig =
                 documentWithRawBytes (asciiBytes "DevOnly") invalidUtf8
             )
 
-            HostRuntimeConfig.forAssembly dll
-            |> AppContextProperties.toMap
-            |> shouldEqual (Map.ofList [ "P", "v" ])
+            let exn = Assert.Throws<exn> (fun () -> HostRuntimeConfig.forAssembly dll |> ignore)
+            exn.Message |> shouldContainText "UTF-8"
+            exn.Message |> shouldContainText "App.runtimeconfig.dev.json"
         finally
             Directory.Delete (dir, true)
 
@@ -827,6 +877,35 @@ module TestRuntimeConfig =
             (fun dll ->
                 let exn = Assert.Throws<exn> (fun () -> HostRuntimeConfig.forAssembly dll |> ignore)
                 exn.Message |> shouldContainText "App.runtimeconfig.json"
+            )
+
+    [<Test>]
+    let ``a dev config we cannot reproduce is fatal, unlike one that is merely broken`` () =
+        // `parse` fails for two quite different reasons, and only one of them is hostpolicy's
+        // own. A value rapidjson renders perfectly well and we decline to approximate is a
+        // file a real launch *acts on*; dropping it would start the guest with a property
+        // missing. Contrast `a broken dev config is not fatal` directly above, where the file
+        // is one hostpolicy also refuses.
+        withSidecars
+            (Some (document """{ "P": "v" }"""))
+            (Some (document """{ "DevOnly": 1.5 }"""))
+            (fun dll ->
+                let exn = Assert.Throws<exn> (fun () -> HostRuntimeConfig.forAssembly dll |> ignore)
+                exn.Message |> shouldContainText "DevOnly"
+            )
+
+    [<Test>]
+    let ``an unreproducible dev value cannot smuggle a host-owned name past the check`` () =
+        // The case that motivated splitting the error: CoreCLR renders `[]` happily, so the
+        // property exists and the launch dies on the duplicate. Swallowing our refusal to
+        // render it would drop the property, and with it the collision — PawPrint would run
+        // a configuration that cannot start on a real runtime.
+        withSidecars
+            (Some (document """{ "P": "v" }"""))
+            (Some (document """{ "APP_CONTEXT_BASE_DIRECTORY": [] }"""))
+            (fun dll ->
+                let exn = Assert.Throws<exn> (fun () -> HostRuntimeConfig.forAssembly dll |> ignore)
+                exn.Message |> shouldContainText "APP_CONTEXT_BASE_DIRECTORY"
             )
 
     [<Test>]
