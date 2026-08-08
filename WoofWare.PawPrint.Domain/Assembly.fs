@@ -345,6 +345,25 @@ type DumpedAssembly =
         metadata.GetString (metadata.GetAssemblyDefinition().Culture)
 
     /// <summary>
+    /// The raw <c>PublicKey</c> blob column of this assembly's manifest row: the full public
+    /// key of a strong-named assembly, and empty for one that is not strong-named. This is
+    /// the key itself, not the eight-byte token that display names carry.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately *not* <c>this.Name.GetPublicKey()</c>, for the same reason
+    /// <see cref="CultureName"/> is not <c>this.Name.CultureName</c>: <c>AssemblyName</c>
+    /// reports <c>null</c> for an assembly with no key, where the column — and so CoreCLR's
+    /// <c>PEAssembly::GetPublicKey</c>, and so the guest — sees a zero-length blob. The two
+    /// agree whenever a key is actually present.
+    ///
+    /// A nil <c>PublicKey</c> handle reads as an empty (not default) array, matching the
+    /// zero <c>cbPublicKey</c> that CoreCLR's <c>GetAssemblyProps</c> reports for that row.
+    /// </remarks>
+    member this.PublicKey : ImmutableArray<byte> =
+        let metadata = this.PeReader.GetMetadataReader ()
+        metadata.GetBlobContent (metadata.GetAssemblyDefinition().PublicKey)
+
+    /// <summary>
     /// Whether this and <paramref name="other"/> are byte-identical PE images, i.e. the same
     /// assembly by every observation this interpreter can make of it.
     /// </summary>
