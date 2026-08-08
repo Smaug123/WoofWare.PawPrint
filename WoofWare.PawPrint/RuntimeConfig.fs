@@ -105,13 +105,6 @@ module AppContextProperties =
         }
 
 /// Why a `runtimeconfig.json` did not yield properties.
-///
-/// The distinction is load-bearing rather than decorative, because one caller acts on it:
-/// hostpolicy ignores a `runtimeconfig.dev.json` it cannot read, so PawPrint may ignore one
-/// too — but only for the failures hostpolicy is ignoring. A file that a real host reads
-/// perfectly well, and that PawPrint merely cannot reproduce, must not be quietly dropped:
-/// doing so launches a guest whose configuration differs from the one it asked for, which is
-/// the entire failure this module exists to prevent.
 type RuntimeConfigError =
     /// The file is one a real host also refuses: malformed JSON, no `runtimeOptions`, a
     /// section of the wrong shape, an encoding `parse_file` does not accept. `parse_file`
