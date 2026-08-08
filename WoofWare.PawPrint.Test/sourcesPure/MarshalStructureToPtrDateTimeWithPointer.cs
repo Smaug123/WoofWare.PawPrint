@@ -56,6 +56,15 @@ public class Program
                 // struct carrying a live pointer marshals at all, which a whole-struct byte
                 // read of the source made impossible.
                 if (BitConverter.Int64BitsToDouble(Marshal.ReadInt64(p, 16)) != s.When.ToOADate()) return 4;
+
+                // Marshal into the *same* buffer again. The first pass left a pointer cell at
+                // offset 8, and the second must be able to overwrite it. A byte-wise clear of
+                // the image cannot: PawPrint models a pointer as a cell with provenance and no
+                // byte rendering, and native memory is byte storage, so the whole image is
+                // rewritten field by field instead.
+                Marshal.StructureToPtr(s, p, false);
+                if (Marshal.ReadInt32(p, 0) != 7) return 9;
+                if (BitConverter.Int64BitsToDouble(Marshal.ReadInt64(p, 16)) != s.When.ToOADate()) return 10;
             }
             finally
             {

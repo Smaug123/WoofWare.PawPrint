@@ -19,11 +19,20 @@ type StructMarshalFieldKind =
     /// (ilmarshalers.cpp:1241), which calls managed `StubHelpers.DateMarshaler.ConvertToNative`.
     | OADate
 
-/// One field's contribution to the unmanaged image: where it goes, and how it gets there.
+/// One field's contribution to the unmanaged image: where it goes, how it gets there, and the
+/// managed value it starts from.
 type StructMarshalStep =
     {
         Placement : MarshalFieldPlacement
         Kind : StructMarshalFieldKind
+        /// The field's *effective* managed value, resolved through the containing value type
+        /// rather than read off `Placement.Field.Contents`.
+        ///
+        /// The two differ under explicit layout. Assigning one of a set of overlapping fields
+        /// deliberately leaves its siblings' stored `Contents` stale — `WithFieldSetById` says so
+        /// — and it is `DereferenceFieldById` that resolves which write actually covers a given
+        /// range. Marshalling the stored contents would emit the stale sibling.
+        Value : CliType
     }
 
 /// Everything needed to write a struct's unmanaged image, derived once from the struct's value.
@@ -199,7 +208,7 @@ module StructMarshalStub =
             let steps =
                 placements
                 |> List.map (fun placement ->
-                    let contents = placement.Field.Contents
+                    let contents = CliValueType.DereferenceFieldById placement.Field.Id vt
 
                     // A `[MarshalAs]` descriptor selects the field's native type, and CoreCLR
                     // rejects most pairings outright: `Int32` admits only `I4`/`U4`
@@ -233,6 +242,7 @@ module StructMarshalStub =
                                 {
                                     Placement = placement
                                     Kind = StructMarshalFieldKind.CopyBytes
+                                    Value = contents
                                 }
                     else
 
@@ -244,6 +254,7 @@ module StructMarshalStub =
                             {
                                 Placement = placement
                                 Kind = StructMarshalFieldKind.OADate
+                                Value = contents
                             }
                     | _ when isBlittableField concreteTypes assemblies corelib contents ->
                         MarshalSizeError.NotImplemented
@@ -489,13 +500,79 @@ module StructMarshalStub =
                 failwith
                     $"%s{operation}: type %O{call.TypeHandle} has no marshal plan at stub-execution time, though the QCall minted a stub for it: %s{reason.Reason}"
 
-        /// Zero the whole unmanaged image, which is what CoreCLR's stub does with `initblk` at
-        /// the top of its Marshal stream (dllimport.cpp:1290) and at the end of its Cleanup
-        /// stream (dllimport.cpp:1319). Both matter to a guest that can see the buffer:
-        /// padding bytes and, after a cleanup, released field ranges must read as zero rather
-        /// than as whatever the buffer held before.
-        let clearImage (nativeSize : int) (state : IlMachineState) : IlMachineState =
-            CellAwareMemOps.clear baseClassTypes operation state destination nativeSize
+        let byteView = byteType operation baseClassTypes state
+
+        /// Write `value` at `nativeOffset` in the destination, as a `stind` through a byte-view
+        /// byref would — which is what the guest's own `Marshal.Write*` does after pointer
+        /// arithmetic.
+        let writeAt (nativeOffset : int) (value : CliType) (state : IlMachineState) : IlMachineState =
+            let target =
+                ManagedPointerByteView.addByteOffset baseClassTypes state byteView nativeOffset destination
+
+            IlMachineState.writeManagedByrefWithBase baseClassTypes state target value
+
+        /// Write the unmanaged image: each step contributes its native value at its placement, and
+        /// every byte not covered by a step is zeroed.
+        ///
+        /// The gaps have to be zeroed because CoreCLR's stub does the equivalent with `initblk`
+        /// over the whole image — at the top of its Marshal stream (dllimport.cpp:1290, "so we can
+        /// do a partial cleanup if marshalling fails") and at the end of its Cleanup stream
+        /// (:1319) — and a guest reading the buffer can see the difference.
+        ///
+        /// It is the *field* ranges that cannot simply be byte-zeroed alongside them.
+        /// `CellAwareMemOps.clear` byte-walks a `NativeMemoryByte` root by design — for byte
+        /// storage the byte walk is the modelled access shape — so it cannot overwrite a cell that
+        /// has no byte rendering, and a destination reused after a previous marshal holds exactly
+        /// such a cell whenever the struct has a pointer field. Writing each field slot as a typed
+        /// value replaces the cell wholesale, which both clears it and is what the marshal has to
+        /// do anyway.
+        let writeImage
+            (plan : StructMarshalPlan)
+            (valueFor : StructMarshalStep -> CliType)
+            (state : IlMachineState)
+            : IlMachineState
+            =
+            let mutable state = state
+            let mutable cursor = 0
+
+            // Placements ascend for sequential layout but not for explicit layout, and explicit
+            // fields may overlap; ordering by offset makes the gap walk correct for both, and
+            // `max` keeps an overlapped range from being re-zeroed as if it were a gap.
+            for step in plan.Steps |> List.sortBy (fun s -> s.Placement.NativeOffset) do
+                let offset = step.Placement.NativeOffset
+
+                if offset > cursor then
+                    let gapAt =
+                        ManagedPointerByteView.addByteOffset baseClassTypes state byteView cursor destination
+
+                    state <- CellAwareMemOps.clear baseClassTypes operation state gapAt (offset - cursor)
+
+                cursor <- max cursor (offset + step.Placement.NativeSize.Size)
+
+            if cursor < plan.NativeSize.Size then
+                let gapAt =
+                    ManagedPointerByteView.addByteOffset baseClassTypes state byteView cursor destination
+
+                state <- CellAwareMemOps.clear baseClassTypes operation state gapAt (plan.NativeSize.Size - cursor)
+
+            // Fields last, and in declaration order: under explicit layout two fields may cover
+            // the same bytes, and CoreCLR marshals them in declaration order, so the later one
+            // wins.
+            for step in plan.Steps do
+                state <- writeAt step.Placement.NativeOffset (valueFor step) state
+
+            state
+
+        /// The zero of a step's *native* form. Not the zero of its managed form: an `OADate`
+        /// step's native cell is a `double`, and installing a zeroed `DateTime` there would leave
+        /// the destination holding a managed-shaped cell.
+        let nativeZero (step : StructMarshalStep) : CliType =
+            match step.Kind with
+            | StructMarshalFieldKind.OADate -> CliType.Numeric (CliNumericType.Float64 0.0)
+            | StructMarshalFieldKind.CopyBytes -> CliType.ZeroLike step.Value
+
+        let clearImage (plan : StructMarshalPlan) (state : IlMachineState) : IlMachineState =
+            writeImage plan nativeZero state
 
         match op with
         | Operation.Cleanup ->
@@ -513,7 +590,7 @@ module StructMarshalStub =
             let zero, state =
                 IlMachineState.cliTypeZeroOfHandle state baseClassTypes call.TypeHandle
 
-            finish (clearImage (planFor zero).NativeSize.Size state)
+            finish (clearImage (planFor zero) state)
         | Operation.Unmarshal ->
             failwith
                 $"TODO %s{operation}: native-to-managed direction (MarshalOperation.Unmarshal, reached via Marshal.PtrToStructure) is not implemented for type %O{call.TypeHandle}"
@@ -541,7 +618,7 @@ module StructMarshalStub =
         // Cleanup stream and re-zeroes (dllimport.cpp:1319); here, the buffer was zeroed on the
         // pass that pushed the conversion and we never write on the pass that throws. Both leave
         // a zeroed image, including when the guest handed us a dirty buffer.
-        let state = clearImage plan.NativeSize.Size state
+        let state = clearImage plan state
 
         let conversions =
             plan.Steps
@@ -585,8 +662,7 @@ module StructMarshalStub =
 
             let ilOpIndexBeforeCall = (IlMachineState.getFrame thread frameId state).IlOpIndex
 
-            let state =
-                IlMachineState.pushToEvalStack next.Placement.Field.Contents thread state
+            let state = IlMachineState.pushToEvalStack next.Value thread state
 
             let threadState = state.ThreadState.[thread]
 
@@ -648,26 +724,9 @@ module StructMarshalStub =
                 IlMachineState.setFrame thread frameId restored state, WhatWeDid.SuspendedForClassInit
         else
 
-        // Every conversion has completed. Only now do we touch the destination, so a retry can
-        // never have observed a partially-written image.
-        let byteView = byteType operation baseClassTypes state
-
-        let mutable state = state
-        let mutable remainingConversions = call.Completed
-
+        // Every conversion has completed. Only now do we touch the destination with real values,
+        // so a retry can never have observed a partially-written image.
         for step in plan.Steps do
-            let toWrite =
-                match step.Kind with
-                | StructMarshalFieldKind.CopyBytes -> step.Placement.Field.Contents
-                | StructMarshalFieldKind.OADate ->
-                    match remainingConversions with
-                    | [] ->
-                        failwith
-                            $"%s{operation}: ran out of conversion results while writing field %s{step.Placement.Field.Name}"
-                    | head :: rest ->
-                        remainingConversions <- rest
-                        CliType.Numeric (CliNumericType.Float64 head)
-
             // The destination is a raw buffer the guest sized from `Marshal.SizeOf`, so the plan's
             // own total is the only bound we can check against. A step that ran past it would be
             // writing outside what the guest allocated.
@@ -675,15 +734,22 @@ module StructMarshalStub =
                 failwith
                     $"%s{operation}: field %s{step.Placement.Field.Name} would be written at offset %d{step.Placement.NativeOffset} for %d{step.Placement.NativeSize.Size} byte(s), past the %d{plan.NativeSize.Size}-byte unmanaged image of %O{call.TypeHandle}"
 
-            let target =
-                ManagedPointerByteView.addByteOffset
-                    baseClassTypes
-                    state
-                    byteView
-                    step.Placement.NativeOffset
-                    destination
+        // Conversion results are consumed in plan order, which is the order they were requested.
+        let mutable remainingConversions = call.Completed
 
-            state <- IlMachineState.writeManagedByrefWithBase baseClassTypes state target toWrite
+        let valueFor (step : StructMarshalStep) : CliType =
+            match step.Kind with
+            | StructMarshalFieldKind.CopyBytes -> step.Value
+            | StructMarshalFieldKind.OADate ->
+                match remainingConversions with
+                | [] ->
+                    failwith
+                        $"%s{operation}: ran out of conversion results while writing field %s{step.Placement.Field.Name}"
+                | head :: rest ->
+                    remainingConversions <- rest
+                    CliType.Numeric (CliNumericType.Float64 head)
+
+        let state = writeImage plan valueFor state
 
         if not (List.isEmpty remainingConversions) then
             failwith
