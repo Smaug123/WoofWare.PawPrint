@@ -9,8 +9,9 @@ open NUnit.Framework
 open WoofWare.PawPrint
 
 /// Tests for the pure cores of the `RuntimeMethodHandle` natives (NativeRuntimeMethodHandle.fs):
-/// `isGenericMethodDefinition` (behind the `IsGenericMethodDefinition` InternalCall) and
-/// `methodInstantiationTargets` (behind the `RuntimeMethodHandle_GetMethodInstantiation` QCall).
+/// `isGenericMethodDefinition` (behind the `IsGenericMethodDefinition` InternalCall),
+/// `methodInstantiationTargets` (behind the `RuntimeMethodHandle_GetMethodInstantiation` QCall), and
+/// `methodTableOfDeclaringType` (behind the `GetMethodTable` InternalCall).
 /// Each has partial end-to-end coverage in `sourcesPure/`; these tests pin the arms that are not
 /// yet reachable end-to-end, plus the ordering and fail-loud behaviour that a passing end-to-end
 /// case would not distinguish.
@@ -340,3 +341,104 @@ module TestNativeRuntimeMethodHandle =
                 )
 
         Check.One (propertyConfig, property)
+
+    /// A `ConcreteTypeHandle` of each shape, nested to the given depth. `methodTableOfDeclaringType`
+    /// classifies on the outermost constructor only, so depth exists purely to stop the nominal case
+    /// from being the only inhabitant reached.
+    let rec private concreteTypeHandleOfDepth (depth : int) : Gen<ConcreteTypeHandle> =
+        let nominal = Gen.choose (0, 20) |> Gen.map ConcreteTypeHandle.Concrete
+
+        if depth <= 0 then
+            nominal
+        else
+
+        let inner = concreteTypeHandleOfDepth (depth - 1)
+
+        let functionPointer =
+            inner
+            |> Gen.map (fun ret ->
+                ConcreteTypeHandle.FunctionPointer
+                    {
+                        Header = ComparableSignatureHeader.Make (System.Reflection.Metadata.SignatureHeader 0uy)
+                        ParameterTypes = []
+                        GenericParameterCount = 0
+                        RequiredParameterCount = 0
+                        ReturnType = MethodReturnType.Returns ret
+                    }
+            )
+
+        let array =
+            gen {
+                let! element = inner
+                let! rank = Gen.choose (1, 3)
+                return ConcreteTypeHandle.Array (element, rank)
+            }
+
+        Gen.oneof
+            [
+                nominal
+                inner |> Gen.map ConcreteTypeHandle.Byref
+                inner |> Gen.map ConcreteTypeHandle.Pointer
+                inner |> Gen.map ConcreteTypeHandle.OneDimArrayZero
+                array
+                functionPointer
+            ]
+
+    let private isNominal (handle : ConcreteTypeHandle) : bool =
+        match handle with
+        | ConcreteTypeHandle.Concrete _ -> true
+        | _ -> false
+
+    [<Test>]
+    let ``property: GetMethodTable accepts exactly the nominal declaring types, unchanged`` () : unit =
+        let property (handle : ConcreteTypeHandle) : bool =
+            match NativeRuntimeMethodHandle.methodTableOfDeclaringType handle with
+            | Ok target ->
+                // Accepted handles are returned verbatim -- no canonicalisation, no projection --
+                // and must be MethodTable-backed by the single home of CoreCLR's tagged-pointer
+                // rule, since `NativeIntSource.MethodTablePtr` is what the caller wraps them in.
+                isNominal handle
+                && target = RuntimeTypeHandleTarget.Closed handle
+                && TypeHandleTag.forTarget target = 0L
+            | Error _ -> not (isNominal handle)
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen (concreteTypeHandleOfDepth 3)) property)
+
+    [<Test>]
+    let ``property: the shapes refused despite owning a MethodTable are exactly the arrays`` () : unit =
+        // Arrays are the one refusal that is not justified by CoreCLR: they are not TypeDescs, they
+        // do own MethodTables, and their Get/Set/Address MethodDescs live on them. They are refused
+        // only because PawPrint's registry cannot mint such a handle. Keeping that distinction
+        // visible in a test means the day it becomes wrong, it fails here rather than silently
+        // rejecting a legitimate handle.
+        let property (handle : ConcreteTypeHandle) : bool =
+            let refused =
+                match NativeRuntimeMethodHandle.methodTableOfDeclaringType handle with
+                | Ok _ -> false
+                | Error _ -> true
+
+            let methodTableBacked =
+                TypeHandleTag.forTarget (RuntimeTypeHandleTarget.Closed handle) = 0L
+
+            let isArray =
+                match handle with
+                | ConcreteTypeHandle.OneDimArrayZero _
+                | ConcreteTypeHandle.Array _ -> true
+                | _ -> false
+
+            (refused && methodTableBacked) = isArray
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen (concreteTypeHandleOfDepth 3)) property)
+
+    [<Test>]
+    let ``GetMethodTable refusals say which shape they refused and why`` () : unit =
+        let reasonFor (handle : ConcreteTypeHandle) : string =
+            match NativeRuntimeMethodHandle.methodTableOfDeclaringType handle with
+            | Ok target -> failwith $"expected %O{handle} to be refused, but it produced %O{target}"
+            | Error reason -> reason
+
+        reasonFor (ConcreteTypeHandle.Byref (ConcreteTypeHandle.Concrete 1))
+        |> shouldContainText "TypeDesc"
+
+        reasonFor (ConcreteTypeHandle.OneDimArrayZero (ConcreteTypeHandle.Concrete 1))
+        |> shouldContainText "array"
