@@ -194,21 +194,26 @@ module ExecutionConcretization =
 
         concretizeMethodWithAllGenerics loggerFactory baseClassTypes typeGenerics methodToCall methodGenerics state
 
-    let concretizeFieldForExecution
+    /// Concretize the declaring type of a resolved field token, substituting any generic
+    /// parameters it still mentions against the supplied context.
+    ///
+    /// This is the handle that keys every `FieldId` an `ldfld`/`stfld`/`ldflda` site builds, and
+    /// it must equal the handle `IlMachineRuntimeMetadata.collectAllInstanceFields` used when the
+    /// receiver's storage was laid out -- otherwise the field cannot be found. It is factored out
+    /// of `concretizeFieldForExecution` so that agreement can be tested directly against the
+    /// production code rather than against a re-implementation of it, which would be free to drift
+    /// away from this exactly when it mattered. See `TestFieldIdAgreement`.
+    ///
+    /// Returns the declaring type's handle and its concretized generic arguments.
+    let concretizeFieldDeclaringType
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (thread : ThreadId)
+        (contextTypeGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (contextMethodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (field : WoofWare.PawPrint.FieldInfo<TypeDefn, TypeDefn>)
         (state : IlMachineState)
         : IlMachineState * ConcreteTypeHandle * ImmutableArray<ConcreteTypeHandle>
         =
-        // Get type and method generics from current execution context
-        let currentMethod = state.ThreadState.[thread].MethodState.ExecutingMethod
-
-        let contextTypeGenerics = currentMethod.DeclaringType.Generics
-
-        let contextMethodGenerics = currentMethod.Generics |> ImmutableArray.CreateRange
-
         let loadedAssemblies =
             Concretization.ensureTypeDefinitionBaseAssembliesLoaded
                 (IlMachineState.loader loggerFactory state)
@@ -280,3 +285,20 @@ module ExecutionConcretization =
         let typeGenerics = concretizedType.Generics
 
         state, declaringHandle, typeGenerics
+
+    let concretizeFieldForExecution
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (thread : ThreadId)
+        (field : WoofWare.PawPrint.FieldInfo<TypeDefn, TypeDefn>)
+        (state : IlMachineState)
+        : IlMachineState * ConcreteTypeHandle * ImmutableArray<ConcreteTypeHandle>
+        =
+        // Get type and method generics from current execution context
+        let currentMethod = state.ThreadState.[thread].MethodState.ExecutingMethod
+
+        let contextTypeGenerics = currentMethod.DeclaringType.Generics
+
+        let contextMethodGenerics = currentMethod.Generics |> ImmutableArray.CreateRange
+
+        concretizeFieldDeclaringType loggerFactory baseClassTypes contextTypeGenerics contextMethodGenerics field state

@@ -34,10 +34,10 @@ type FieldId =
 
     override this.ToString () : string =
         match this with
-        | FieldId.Metadata (declaringType, field, name) -> $"%O{declaringType}::%s{name} (%O{field.Get})"
+        | FieldId.Metadata (declaringType, field, name) -> $"%O{declaringType}::%s{name} (%O{field})"
         | FieldId.Named name -> name
         | FieldId.InlineArrayElement (declaringType, field, name, index) ->
-            $"%O{declaringType}::%s{name} (inline-array slot %d{index} of %O{field.Get})"
+            $"%O{declaringType}::%s{name} (inline-array slot %d{index} of %O{field})"
 
 [<RequireQualifiedAccess>]
 module FieldId =

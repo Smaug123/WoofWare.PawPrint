@@ -36,6 +36,7 @@
     <Compile Include="TestCliTypeBytes.fs" />
     <Compile Include="TestCliTypeCellPaths.fs" />
     <Compile Include="TestFieldIdDiagnostics.fs" />
+    <Compile Include="TestFieldIdAgreement.fs" />
     <Compile Include="TestProjectionByteOffset.fs" />
     <Compile Include="TestInlineArrayStorage.fs" />
     <Compile Include="TestStructLayout.fs" />

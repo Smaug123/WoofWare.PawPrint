@@ -110,6 +110,13 @@ module TestFieldIdDiagnostics =
             Assert.Throws (fun () -> CliValueType.DereferenceFieldById requested stored |> ignore)
 
         exn.Message |> shouldContainText "Available field identities:"
+
+        // `FieldDefinitionHandle` inherits `ToString` from `obj`, so without
+        // `ComparableFieldDefinitionHandle.ToString` every identity in this message would render
+        // its field as the literal text "System.Reflection.Metadata.FieldDefinitionHandle" --
+        // identical for every field, and so useless for telling two of them apart. Field tokens
+        // are table 0x04.
+        exn.Message |> shouldContainText "Field(0x04"
         // The declared type of the value being read is part of the picture too: without it you
         // cannot tell whether the *object* or the *access* was the thing keyed unexpectedly.
         exn.Message |> shouldContainText (string (handleFor bct.IntPtr))
