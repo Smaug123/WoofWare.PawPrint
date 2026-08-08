@@ -508,7 +508,7 @@ public static class GenericMethodHolder
 
         let rawMethod =
             runtimeMethodHandleType.Methods
-            |> List.filter (fun method -> method.Name = "IsDynamicMethod" && method.Parameters.Length = 1)
+            |> List.filter (fun method -> method.Name = "IsDynamicMethod" && (MethodInfo.arity method) = 1)
             |> function
                 | [ method ] -> method
                 | [] -> failwith "RuntimeMethodHandle.IsDynamicMethod native method not found"
