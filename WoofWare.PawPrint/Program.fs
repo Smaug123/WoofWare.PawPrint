@@ -177,15 +177,25 @@ module Program =
     let private fireExpiredDeadlines (state : IlMachineState) : IlMachineState =
         let now = state.Kernel.VirtualClockMs
 
+        // Written as a fold rather than `Map.toSeq |> Seq.choose |> Seq.toList`, because this
+        // runs on every scheduler tick — i.e. once per interpreted IL instruction — and on the
+        // overwhelmingly common tick nothing has expired at all. That pipeline still allocates
+        // to say so: `Map.toSeq` builds a tree-walking enumerator carrying its own stack,
+        // `Seq.choose` wraps it in a second enumerator plus a closure, and `Seq.toList`
+        // allocates a builder, all to produce an empty list. Measured at ~505 bytes per tick on
+        // a single-threaded guest, and it grows with the thread count.
+        //
+        // `Map.foldBack` visits keys in descending order, so consing during the fold yields the
+        // very same ascending-`ThreadId` list the `Map.toSeq` pipeline produced — which is what
+        // makes this substitution behaviour-preserving outright, rather than only up to the
+        // `sortKey` ordering applied below.
         let expired =
-            state.ThreadState
-            |> Map.toSeq
-            |> Seq.choose (fun (tid, ts) ->
+            (state.ThreadState, [])
+            ||> Map.foldBack (fun tid ts acc ->
                 match waitDeadline ts.Status with
-                | Some (kind, deadline) when deadline <= now -> Some (tid, kind)
-                | _ -> None
+                | Some (kind, deadline) when deadline <= now -> (tid, kind) :: acc
+                | _ -> acc
             )
-            |> Seq.toList
 
         let monitorQueuePosition (LowLevelMonitorId mid as monitorId : LowLevelMonitorId) (thread : ThreadId) : int =
             let monitor = Map.find monitorId state.Kernel.LowLevelMonitors
