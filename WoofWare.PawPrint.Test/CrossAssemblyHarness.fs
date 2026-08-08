@@ -138,6 +138,8 @@ module CrossAssemblyHarness =
 
             reraise ()
 
+    /// This loads the guest in-process, unlike `RealRuntime.executeWithRealRuntime`, and so
+    /// has some hazards, e.g. it is killed outright by a guest which calls `Environment.Exit`.
     let private executeWithRealRuntime (entryPath : string) : int =
         let tempDir = Path.GetDirectoryName entryPath
 
