@@ -33,7 +33,10 @@ module NativeRuntimeAssembly =
     /// which the caller throws, but no such blob can reach here. PawPrint registers an
     /// assembly under its display name, and computing that already derives a token and throws
     /// on a key it cannot parse — so an image with an unparseable key fails to load long
-    /// before a guest can ask for its name.
+    /// before a guest can ask for its name. Pinned by the test <c>an assembly with a malformed
+    /// public key never loads</c>, which also checks the <c>afPublicKey</c> bit being clear is
+    /// not a way around it (CoreCLR force-sets that bit for any non-empty blob on a manifest
+    /// row, so the blob is never treated as an already-computed token).
     /// </remarks>
     let publicKeyToken (publicKey : byte[]) : byte[] =
         let hash = System.Security.Cryptography.SHA1.HashData publicKey
@@ -927,8 +930,17 @@ module NativeRuntimeAssembly =
                     (Array.ofSeq assembly.PublicKey)
                     (int assembly.Flags)
 
+            // `StringHandleOnStack::Set` goes through `StringObject::NewString`, which returns
+            // the shared empty-string instance for a zero-length string and allocates afresh
+            // for every other length. So an assembly whose display name is empty — the
+            // empty-simple-name case above — must hand back the canonical instance, or
+            // `ReferenceEquals(asm.FullName, string.Empty)` would answer differently here from
+            // there.
             let nameAddr, state =
-                IlMachineState.allocateManagedString ctx.LoggerFactory ctx.BaseClassTypes fullName state
+                if fullName.Length = 0 then
+                    IlMachineState.internCanonicalEmptyString ctx.LoggerFactory ctx.BaseClassTypes state
+                else
+                    IlMachineState.allocateManagedString ctx.LoggerFactory ctx.BaseClassTypes fullName state
 
             let state =
                 IlMachineState.writeManagedByrefWithBase

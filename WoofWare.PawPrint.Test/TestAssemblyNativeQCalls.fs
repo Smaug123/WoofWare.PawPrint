@@ -2496,7 +2496,79 @@ public static class StreamVersionLibrary
         // Deliberately a fixture that would otherwise have plenty to say — a culture, a
         // processor architecture and the retargetable bit — so "empty" cannot be mistaken for
         // "nothing to report".
-        let _state, actual =
-            invokeGetFullName loggerFactory prepared state loaded.Name.FullName
+        let state, firstAddr =
+            invokeStringQCall loggerFactory prepared "AssemblyNative_GetFullName" state loaded.Name.FullName
 
-        actual |> shouldEqual ""
+        let firstAddr =
+            firstAddr
+            |> Option.defaultWith (fun () -> failwith "handler left the StringHandleOnStack at null")
+
+        assertIsString prepared.BaseClassTypes state firstAddr ""
+
+        // `StringHandleOnStack::Set` goes through `StringObject::NewString`, which returns the
+        // *shared* empty-string instance for a zero-length string. So two calls must hand back
+        // the same reference here, where for any other length they must not — CoreCLR does not
+        // intern QCall results, and a guest can see the difference with `ReferenceEquals`.
+        let state, secondAddr =
+            invokeStringQCall loggerFactory prepared "AssemblyNative_GetFullName" state loaded.Name.FullName
+
+        secondAddr |> shouldEqual (Some firstAddr)
+
+        // The contrast, on an assembly whose display name is not empty: freshly allocated each
+        // time, so this pair must differ.
+        let guest = state.ActiveAssembly prepared.EntryThread
+
+        let state, guestFirst =
+            invokeStringQCall loggerFactory prepared "AssemblyNative_GetFullName" state guest.Name.FullName
+
+        let _state, guestSecond =
+            invokeStringQCall loggerFactory prepared "AssemblyNative_GetFullName" state guest.Name.FullName
+
+        guestFirst |> shouldNotEqual guestSecond
+
+    [<Test>]
+    let ``an assembly with a malformed public key never loads`` () : unit =
+        // `publicKeyToken` hashes its blob without reproducing CoreCLR's
+        // `StrongNameIsValidPublicKey` precondition, whose failure CoreCLR turns into a thrown
+        // `CORSEC_E_INVALID_PUBLICKEY`. That is only sound because no such blob can reach it,
+        // and this is what says so: PawPrint registers an assembly under its display name, and
+        // computing that derives a token and rejects a key it cannot parse.
+        //
+        // Checked with the `afPublicKey` bit both set and clear, because CoreCLR force-sets it
+        // for any non-empty AssemblyDef blob — so a flag-clear manifest is not a way to have
+        // the blob treated as an already-computed token and skip the derivation.
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        // Not a well-formed `PublicKeyBlob`: no signature/hash algorithm identifiers and no
+        // `PUBLICKEYBLOB` magic byte.
+        let garbage = Array.init 32 byte
+
+        let guestImage =
+            Roslyn.compileAssembly guestAssemblyName OutputKind.ConsoleApplication [] [ guestSource ]
+
+        let prepared = prepareGuest loggerFactory guestImage
+
+        for label, flags in [ "flag clear", 0x0 ; "flag set", 0x1 ] do
+            let image =
+                displayNameImage
+                    $"WoofWare.DnGarbage%s{label.Replace (' ', '-')}"
+                    (System.Version (1, 0, 0, 0))
+                    null
+                    flags
+                    garbage
+
+            // The real runtime declines it too, so this is not a place the two disagree.
+            realRuntimeDisplayName image |> shouldEqual None
+
+            // Through `withLoadedAssembly`, which is the interpreter's own path: `Assembly.read`
+            // by itself is lazy about the manifest row and does not look at the blob, so it is
+            // deriving the *registration key* that rejects this — exactly the claim being
+            // pinned.
+            let exn =
+                Assert.Throws<System.Security.SecurityException> (fun () ->
+                    withLoadedAssembly loggerFactory image prepared.State
+                    |> ignore<DumpedAssembly * IlMachineState>
+                )
+
+            exn.Message |> shouldContainText "public key"
