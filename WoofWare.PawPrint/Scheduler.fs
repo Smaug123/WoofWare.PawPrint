@@ -31,16 +31,21 @@ module Scheduler =
     /// Enumerate the Runnable threads in ascending id order. Used by every
     /// policy: the set of candidates is policy-independent, only the choice
     /// among them differs. Kept private so policies stay enumerable here.
+    /// Runnable threads in ascending `ThreadId` order.
+    ///
+    /// Written as a fold rather than a `Map.toSeq |> Seq.choose |> Seq.sortBy |> Seq.toList`
+    /// pipeline because this runs on every scheduler tick, i.e. once per interpreted IL
+    /// instruction, and that pipeline allocates several enumerators plus the sort's scratch
+    /// array per call. `Map.foldBack` visits keys in descending order, so consing during the
+    /// fold produces the ascending list directly; `ThreadId` is a single-field wrapper over the
+    /// `int`, so map-key order *is* the `ThreadId i` order the old `sortBy` asked for.
     let private runnableThreads (state : IlMachineState) : ThreadId list =
-        state.ThreadState
-        |> Map.toSeq
-        |> Seq.choose (fun (tid, ts) ->
+        (state.ThreadState, [])
+        ||> Map.foldBack (fun tid ts acc ->
             match ts.Status with
-            | ThreadStatus.Runnable -> Some tid
-            | _ -> None
+            | ThreadStatus.Runnable -> tid :: acc
+            | _ -> acc
         )
-        |> Seq.sortBy (fun (ThreadId i) -> i)
-        |> Seq.toList
 
     /// Does any thread currently have status `Runnable`? Used by the
     /// deadline-advance loop in `Program.fs` to decide whether jumping the
@@ -49,7 +54,14 @@ module Scheduler =
     /// Runnable), so callers should reach for this helper instead of
     /// invoking `chooseNext` and discarding its returned state.
     let hasAnyRunnable (state : IlMachineState) : bool =
-        not (List.isEmpty (runnableThreads state))
+        // Deliberately not `runnableThreads`: the caller only asks whether the set is empty, and
+        // this is on the per-tick path, so answer without materialising the list at all.
+        state.ThreadState
+        |> Map.exists (fun _ ts ->
+            match ts.Status with
+            | ThreadStatus.Runnable -> true
+            | _ -> false
+        )
 
     /// Pick the next thread to run, returning the (possibly-updated) machine
     /// state alongside the choice so that stochastic policies can thread

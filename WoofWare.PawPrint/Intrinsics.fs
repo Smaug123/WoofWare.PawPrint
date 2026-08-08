@@ -19,6 +19,63 @@ module Intrinsics =
 
     let isSafeIntrinsic (key : IntrinsicMethodKey) : bool = IntrinsicMethodKeys.isSafeIntrinsic key
 
+    /// The int32 value argument of an intrinsic whose signature match already established
+    /// that the parameter's declared type is int32.
+    ///
+    /// Honours the CLI's implicit call-boundary coercion between int32 and the
+    /// pointer-sized integer types: `impImplicitIorI4Cast` (importer.cpp:2459) runs on
+    /// every call argument (importercalls.cpp:6453, "insert any widening or narrowing casts
+    /// for backwards compatibility"), and on 64-bit `varTypeIsI(TYP_LONG)` holds — `VTF_I64`
+    /// aliases `VTF_I` there (typelist.h:10-16) — so a 64-bit-wide integer on the stack
+    /// narrows into an int32 parameter. That is legal IL, so PawPrint accepts it too.
+    ///
+    /// What it does *not* do, and what `conv.i4` would, is synthesise bits for a pointer:
+    /// an int32 parameter cannot legally receive one, and narrowing it would assign the
+    /// pointer a `PointerHashCounters` identity, perturbing every synthesised value later in
+    /// the run. `Int32Source.value` likewise still refuses a byref that `conv.i4` already
+    /// truncated, whose numeric value depends on an address PawPrint does not model.
+    let internal int32ValueArgument (operation : string) (value : EvalStackValue) : int32 =
+        match value with
+        | EvalStackValue.Int32 src -> Int32Source.value operation src
+        // There is no implicit float-to-integer coercion at a call boundary:
+        // `impImplicitR4orR8Cast` converts only between R4 and R8.
+        | EvalStackValue.Float f ->
+            failwith
+                $"%s{operation}: refusing to coerce float %f{f} into the int32 value argument; the CLI coerces integers at a call boundary, not floats"
+        | _ ->
+            match EvalStackValue.tryExactIntegerBits value with
+            | ValueSome bits -> int32 bits
+            | ValueNone ->
+                failwith
+                    $"%s{operation}: refusing to narrow %O{value} into the int32 value argument; its bits are an address PawPrint does not model, and synthesising them would register a pointer identity for a value that an int32 parameter cannot legally hold"
+
+    /// The int64 value argument of an intrinsic whose signature match already established
+    /// that the parameter's declared type is int64. See `int32ValueArgument` for the
+    /// coercion rule; the same `impImplicitIorI4Cast` sign-extends an int32 stack value into
+    /// an int64 parameter on 64-bit.
+    ///
+    /// No refusal is needed for a pointer here, because widening to int64 is bit-preserving
+    /// on a 64-bit interpreter: `Int64Source.widenedNativeInt` keeps the provenance rather
+    /// than fabricating bits, and `Interlocked.And` / `Or` go on to feed it through
+    /// `Int64Source.bitAnd` / `bitOr`, which can answer for a pointer-derived operand.
+    let internal int64ValueArgument (operation : string) (value : EvalStackValue) : Int64Source =
+        match value with
+        | EvalStackValue.Int64 src -> src
+        | EvalStackValue.Int32 src -> Int64Source.Verbatim (int64<int32> (Int32Source.value operation src))
+        | EvalStackValue.NativeInt src -> Int64Source.widenedNativeInt src true
+        // A byref, and `ldnull`, are both pointer-sized and both coerced:
+        // `impImplicitIorI4Cast` retypes a zero `TYP_REF` constant to `TYP_I_IMPL`
+        // outright ("We also allow an implicit conversion of a ldnull into a
+        // TYP_I_IMPL(0)"), and `varTypeIsI(TYP_BYREF)` holds. `widenedNativeInt`
+        // normalises the exactly-known bit patterns and keeps a real byref's
+        // provenance, so any refusal is left to the arithmetic that consumes it.
+        | EvalStackValue.ManagedPointer ptr -> Int64Source.widenedNativeInt (NativeIntSource.ManagedPointer ptr) true
+        | EvalStackValue.NullObjectRef -> Int64Source.Verbatim 0L
+        | EvalStackValue.Float _
+        | EvalStackValue.ObjectRef _
+        | EvalStackValue.UserDefinedValueType _ ->
+            failwith $"%s{operation}: expected an integer value argument, got %O{value}"
+
     open IntrinsicHelpers
 
     let call
@@ -467,20 +524,7 @@ module Intrinsics =
                 let valueArg, state = IlMachineState.popEvalStack currentThread state
                 let byrefArg, state = IlMachineState.popEvalStack currentThread state
 
-                let narrowed, counters =
-                    EvalStackValue.convToInt32 valueArg state.PointerHashCounters
-
-                let state =
-                    { state with
-                        PointerHashCounters = counters
-                    }
-
-                let value =
-                    match narrowed with
-                    | EvalStackValue.Int32 (Int32Source.Verbatim value) -> value
-                    | converted ->
-                        failwith
-                            $"%s{operation}: expected int32 value, got %O{valueArg} (which narrowed to %O{converted})"
+                let value = int32ValueArgument operation valueArg
 
                 match popManagedByrefArgument operation byrefArg with
                 | ManagedPointerSource.Null -> interlockedNullLocation state
@@ -521,7 +565,7 @@ module Intrinsics =
                 let valueArg, state = IlMachineState.popEvalStack currentThread state
                 let byrefArg, state = IlMachineState.popEvalStack currentThread state
 
-                let value = EvalStackValue.convToInt64 valueArg
+                let value = int64ValueArgument operation valueArg
 
                 match popManagedByrefArgument operation byrefArg with
                 | ManagedPointerSource.Null -> interlockedNullLocation state
@@ -544,7 +588,14 @@ module Intrinsics =
                             uint64<int64> current + uint64<int64> value
                             |> int64<uint64>
                             |> Int64Source.Verbatim
-                        | _, _ -> failwith "TODO"
+                        | _, _ ->
+                            // `Interlocked.And` / `Or` route through `Int64Source.bitAnd` /
+                            // `bitOr`, which synthesise hash bits for a pointer-derived
+                            // operand. Addition has no `Int64Source` counterpart yet, so a
+                            // pointer-derived location or addend stops here rather than
+                            // silently dropping provenance.
+                            failwith
+                                $"TODO: %s{operation} on int64 needs both operands verbatim; got location %O{current} and value %O{value}"
 
                     let state =
                         IlMachineState.writeManagedByrefWithBase
@@ -560,15 +611,17 @@ module Intrinsics =
                     |> IlMachineState.advanceProgramCounter currentThread
                     |> IntrinsicResult.Completed
 
+            let operation = $"Interlocked.%s{methodToCall.Name}"
+
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteByref (ConcreteInt32 state.ConcreteTypes) ; ConcreteInt32 state.ConcreteTypes ],
               MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes)
             | [ ConcreteByref (ConcreteUInt32 state.ConcreteTypes) ; ConcreteUInt32 state.ConcreteTypes ],
-              MethodReturnType.Returns (ConcreteUInt32 state.ConcreteTypes) -> executeInt32 methodToCall.Name state
+              MethodReturnType.Returns (ConcreteUInt32 state.ConcreteTypes) -> executeInt32 operation state
             | [ ConcreteByref (ConcreteInt64 state.ConcreteTypes) ; ConcreteInt64 state.ConcreteTypes ],
               MethodReturnType.Returns (ConcreteInt64 state.ConcreteTypes)
             | [ ConcreteByref (ConcreteUInt64 state.ConcreteTypes) ; ConcreteUInt64 state.ConcreteTypes ],
-              MethodReturnType.Returns (ConcreteUInt64 state.ConcreteTypes) -> executeInt64 methodToCall.Name state
+              MethodReturnType.Returns (ConcreteUInt64 state.ConcreteTypes) -> executeInt64 operation state
             | _ -> IntrinsicResult.Unrecognised
 
         | "System.Private.CoreLib", "Interlocked", ("And" | "Or") ->
@@ -587,20 +640,7 @@ module Intrinsics =
                 let valueArg, state = IlMachineState.popEvalStack currentThread state
                 let byrefArg, state = IlMachineState.popEvalStack currentThread state
 
-                let narrowed, counters =
-                    EvalStackValue.convToInt32 valueArg state.PointerHashCounters
-
-                let state =
-                    { state with
-                        PointerHashCounters = counters
-                    }
-
-                let value =
-                    match narrowed with
-                    | EvalStackValue.Int32 (Int32Source.Verbatim value) -> value
-                    | converted ->
-                        failwith
-                            $"%s{operation}: expected int32 value, got %O{valueArg} (which narrowed to %O{converted})"
+                let value = int32ValueArgument operation valueArg
 
                 match popManagedByrefArgument operation byrefArg with
                 | ManagedPointerSource.Null -> interlockedNullLocation state
@@ -634,7 +674,7 @@ module Intrinsics =
                 let valueArg, state = IlMachineState.popEvalStack currentThread state
                 let byrefArg, state = IlMachineState.popEvalStack currentThread state
 
-                let value = EvalStackValue.convToInt64 valueArg
+                let value = int64ValueArgument operation valueArg
 
                 match popManagedByrefArgument operation byrefArg with
                 | ManagedPointerSource.Null -> interlockedNullLocation state

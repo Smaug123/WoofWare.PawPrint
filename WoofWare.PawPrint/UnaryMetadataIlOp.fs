@@ -1,9 +1,24 @@
 namespace WoofWare.PawPrint
 
+open System.Collections.Concurrent
+open System.Runtime.CompilerServices
 open Microsoft.Extensions.Logging
 
 [<RequireQualifiedAccess>]
 module internal UnaryMetadataIlOp =
+    /// One logger per (factory, opcode), rather than one per executed instruction: an
+    /// `ILoggerFactory` is under no obligation to return a cached instance, and this runs on
+    /// every `call`/`ldfld`/`newobj`/... the guest executes. Keyed weakly on the factory so a
+    /// disposed factory is not kept alive by this cache.
+    let private loggerCache =
+        ConditionalWeakTable<ILoggerFactory, ConcurrentDictionary<UnaryMetadataTokenIlOp, ILogger>> ()
+
+    let private logger (loggerFactory : ILoggerFactory) (op : UnaryMetadataTokenIlOp) : ILogger =
+        let forFactory =
+            loggerCache.GetValue (loggerFactory, fun _ -> ConcurrentDictionary ())
+
+        forFactory.GetOrAdd (op, (fun op -> loggerFactory.CreateLogger (op.ToString ())))
+
     let execute
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -13,7 +28,7 @@ module internal UnaryMetadataIlOp =
         (thread : ThreadId)
         : IlMachineState * WhatWeDid
         =
-        let logger = loggerFactory.CreateLogger (op.ToString ())
+        let logger = logger loggerFactory op
 
         let activeAssy =
             state.LoadedAssembly sourcedMetadataToken.SourceAssembly

@@ -1,12 +1,23 @@
 namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
+open System.Runtime.CompilerServices
 open Microsoft.Extensions.Logging
 open Microsoft.FSharp.Core
 
 [<RequireQualifiedAccess>]
 module AbstractMachine =
     type private Dummy = class end
+
+    /// `executeOneStep` runs once per interpreted IL instruction, and `CreateLogger` is not free
+    /// at that rate: the `Type` overload formats a display name on every call, and an
+    /// `ILoggerFactory` is under no obligation to return a cached instance (the one in
+    /// `WoofWare.PawPrint.Test` allocates a fresh logger per call). Ask each factory once.
+    /// Keyed weakly so that disposing a factory still lets it be collected.
+    let private loggerCache = ConditionalWeakTable<ILoggerFactory, ILogger> ()
+
+    let private logger (loggerFactory : ILoggerFactory) : ILogger =
+        loggerCache.GetValue (loggerFactory, fun f -> f.CreateLogger typeof<Dummy>.DeclaringType)
 
     let executeOneStep
         (loggerFactory : ILoggerFactory)
@@ -15,7 +26,7 @@ module AbstractMachine =
         (thread : ThreadId)
         : ExecutionResult
         =
-        let logger = loggerFactory.CreateLogger typeof<Dummy>.DeclaringType
+        let logger = logger loggerFactory
         let instruction = state.ThreadState.[thread].MethodState
 
         let dispatchNative () =
@@ -216,24 +227,32 @@ module AbstractMachine =
                 $"Wanted to execute a nonexistent instruction in {instruction.ExecutingMethod.DeclaringType.Name}.{instruction.ExecutingMethod.Name}"
         | true, executingInstruction ->
 
-        let executingInType =
-            match state.LoadedAssembly instruction.ExecutingMethod.DeclaringType.Assembly with
-            | None -> "<unloaded assembly>"
-            | Some assy ->
-                match assy.TypeDefs.TryGetValue instruction.ExecutingMethod.DeclaringType.Definition.Get with
-                | true, v -> v.Name
-                | false, _ -> "<unrecognised type>"
+        // Everything this message needs stays behind the level check, because it runs once per
+        // interpreted IL instruction: the assembly lookup is keyed by `AssemblyName` (whose
+        // `FullName` recomputes a public key token), `Map.maxKeyValue` walks the instruction
+        // map, and the parameterised `LogTrace` overload boxes each argument into an `obj[]`
+        // before any provider gets to decide whether it wants the message.
+        if logger.IsEnabled LogLevel.Trace then
+            let executingInType =
+                match state.LoadedAssembly instruction.ExecutingMethod.DeclaringType.Assembly with
+                | None -> "<unloaded assembly>"
+                | Some assy ->
+                    match assy.TypeDefs.TryGetValue instruction.ExecutingMethod.DeclaringType.Definition.Get with
+                    | true, v -> v.Name
+                    | false, _ -> "<unrecognised type>"
 
-        logger.LogTrace (
-            "Executing one step (index {ExecutingIlOpIndex}, max {MaxIlOpIndex}, in method {ExecutingMethodType}.{ExecutingMethodName}): {ExecutingIlOp}",
-            instruction.IlOpIndex,
-            (Map.maxKeyValue instructions.Locations |> fst),
-            executingInType,
-            instruction.ExecutingMethod.Name,
-            executingInstruction
-        )
+            logger.LogTrace (
+                "Executing one step (index {ExecutingIlOpIndex}, max {MaxIlOpIndex}, in method {ExecutingMethodType}.{ExecutingMethodName}): {ExecutingIlOp}",
+                instruction.IlOpIndex,
+                (Map.maxKeyValue instructions.Locations |> fst),
+                executingInType,
+                instruction.ExecutingMethod.Name,
+                executingInstruction
+            )
 
-        match instructions.Locations.[instruction.IlOpIndex] with
+        // `executingInstruction` is the value `TryGetValue` above already produced for this
+        // index; re-indexing `Locations` would be a second lookup for the same key.
+        match executingInstruction with
         | IlOp.Nullary op -> NullaryIlOp.execute loggerFactory baseClassTypes state thread op
         | IlOp.UnaryConst unaryConstIlOp ->
             UnaryConstIlOp.execute state thread unaryConstIlOp |> ExecutionResult.stepped
