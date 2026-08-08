@@ -162,6 +162,22 @@ module TestRuntimeConfig =
             "HOST_RUNTIME_CONTRACT"
         ]
 
+    [<Literal>]
+    let private SetAppPathsSwitch = "Microsoft.NETCore.DotNetHostPolicy.SetAppPaths"
+
+    /// The host-owned check belongs to `combine`, not to the per-file parser, because a real
+    /// host merges the dev sidecar and the main config into one property set and only then
+    /// detects the duplicate. These go through it; a single file's worth is `main` alone.
+    let private combineOk (dev : Map<string, string>) (main : Map<string, string>) : Map<string, string> =
+        match RuntimeConfig.combine (AppContextProperties.ofMap dev) (AppContextProperties.ofMap main) with
+        | Ok props -> AppContextProperties.toMap props
+        | Error e -> failwith $"expected a successful combine, but got: %s{e}"
+
+    let private combineError (dev : Map<string, string>) (main : Map<string, string>) : string =
+        match RuntimeConfig.combine (AppContextProperties.ofMap dev) (AppContextProperties.ofMap main) with
+        | Error e -> e
+        | Ok props -> failwith $"expected a failed combine, but got: %O{AppContextProperties.toMap props |> Map.toList}"
+
     [<Test>]
     let ``a property the hosting layer owns is refused`` () =
         // Accepting one would run a configuration that cannot launch on a real runtime, and
@@ -169,15 +185,23 @@ module TestRuntimeConfig =
         // (see docs/divergences.md), so there is nothing to collide with and the value would
         // simply be believed.
         for name in hostOwnedNames do
-            let err = parseError (document $"""{{ "{name}": "forged" }}""")
-            err |> shouldContainText name
+            combineError Map.empty (Map.ofList [ name, "forged" ]) |> shouldContainText name
+
+    [<Test>]
+    let ``a host-owned name is fatal wherever it came from`` () =
+        // hostpolicy merges the dev sidecar into the same `m_properties` the main config
+        // writes to, and the duplicate is only detected afterwards, when `hostpolicy_context`
+        // fills the property bag from the merged set. So a host-owned name in the *dev* file
+        // is just as fatal, and must not be quietly dropped as "a broken dev file".
+        for name in hostOwnedNames do
+            combineError (Map.ofList [ name, "forged" ]) Map.empty |> shouldContainText name
 
     [<Test>]
     let ``the comparison is case-sensitive, as the host's is`` () =
         // `coreclr_property_bag_t::add` looks the key up in an `unordered_map` with default
         // equality, so only the exact spelling collides. A lowercased name is an ordinary
         // property to a real host, and must be one here.
-        parseOk (document """{ "trusted_platform_assemblies": "not the real one" }""")
+        combineOk Map.empty (Map.ofList [ "trusted_platform_assemblies", "not the real one" ])
         |> shouldEqual (Map.ofList [ "trusted_platform_assemblies", "not the real one" ])
 
     [<Test>]
@@ -185,7 +209,7 @@ module TestRuntimeConfig =
         // Deliberately not in the list: hostpolicy adds it *after* the config loop, ignores
         // `add`'s result, and explicitly reads a config-supplied value back via `try_get` so
         // it can append the environment's hooks to it. Config is a supported source here.
-        parseOk (document """{ "STARTUP_HOOKS": "/hooks/one.dll" }""")
+        combineOk Map.empty (Map.ofList [ "STARTUP_HOOKS", "/hooks/one.dll" ])
         |> shouldEqual (Map.ofList [ "STARTUP_HOOKS", "/hooks/one.dll" ])
 
     [<Test>]
@@ -193,26 +217,45 @@ module TestRuntimeConfig =
         // The conditional case: `APP_PATHS` is added after the loop and only when
         // `Microsoft.NETCore.DotNetHostPolicy.SetAppPaths` is true, so on its own it is a
         // perfectly ordinary property and only the pair is fatal.
-        parseOk (document """{ "APP_PATHS": "/somewhere" }""")
+        combineOk Map.empty (Map.ofList [ "APP_PATHS", "/somewhere" ])
         |> shouldEqual (Map.ofList [ "APP_PATHS", "/somewhere" ])
 
-        let err =
-            parseError (
-                document """{ "APP_PATHS": "/somewhere", "Microsoft.NETCore.DotNetHostPolicy.SetAppPaths": "true" }"""
-            )
-
-        err |> shouldContainText "APP_PATHS"
-
-        // The switch is compared case-insensitively in both key and value (`pal::strcasecmp`),
-        // and anything other than "true" leaves APP_PATHS alone.
-        parseError (
-            document """{ "APP_PATHS": "/somewhere", "microsoft.netcore.dotnethostpolicy.setapppaths": "TRUE" }"""
-        )
+        combineError Map.empty (Map.ofList [ "APP_PATHS", "/somewhere" ; SetAppPathsSwitch, "true" ])
         |> shouldContainText "APP_PATHS"
 
-        parseOk (
-            document """{ "APP_PATHS": "/somewhere", "Microsoft.NETCore.DotNetHostPolicy.SetAppPaths": "false" }"""
-        )
+        // The switch is compared case-insensitively in both name and value (`pal::strcasecmp`),
+        // and anything other than "true" leaves APP_PATHS alone.
+        combineError
+            Map.empty
+            (Map.ofList
+                [
+                    "APP_PATHS", "/somewhere"
+                    "microsoft.netcore.dotnethostpolicy.setapppaths", "TRUE"
+                ])
+        |> shouldContainText "APP_PATHS"
+
+        combineOk Map.empty (Map.ofList [ "APP_PATHS", "/somewhere" ; SetAppPathsSwitch, "false" ])
+        |> Map.containsKey "APP_PATHS"
+        |> shouldEqual true
+
+    [<Test>]
+    let ``the APP_PATHS pair is fatal even when split across the two sidecars`` () =
+        // Neither file is objectionable alone, which is exactly why this check cannot live in
+        // the per-file parser: a real host merges first and only then discovers the pair.
+        combineError (Map.ofList [ "APP_PATHS", "/somewhere" ]) (Map.ofList [ SetAppPathsSwitch, "true" ])
+        |> shouldContainText "APP_PATHS"
+
+        combineError (Map.ofList [ SetAppPathsSwitch, "true" ]) (Map.ofList [ "APP_PATHS", "/somewhere" ])
+        |> shouldContainText "APP_PATHS"
+
+    [<Test>]
+    let ``the main config can switch APP_PATHS back off`` () =
+        // The merged value is what a real host sees, and the main config overrides the dev
+        // one, so a dev sidecar asking for APP_PATHS that main turns off is not the fatal
+        // pair. Checking the dev file on its own would have got this backwards.
+        combineOk
+            (Map.ofList [ "APP_PATHS", "/somewhere" ; SetAppPathsSwitch, "true" ])
+            (Map.ofList [ SetAppPathsSwitch, "false" ])
         |> Map.containsKey "APP_PATHS"
         |> shouldEqual true
 
@@ -784,6 +827,30 @@ module TestRuntimeConfig =
             (fun dll ->
                 let exn = Assert.Throws<exn> (fun () -> HostRuntimeConfig.forAssembly dll |> ignore)
                 exn.Message |> shouldContainText "App.runtimeconfig.json"
+            )
+
+    [<Test>]
+    let ``a host-owned name in the dev sidecar stops the launch`` () =
+        // The whole point of validating after the merge: this file parses perfectly well, so
+        // "a broken dev config is not fatal" must not swallow it. A real host keeps the
+        // property and dies with LibHostDuplicateProperty; dropping it would launch a guest
+        // whose configuration could never have run.
+        withSidecars
+            (Some (document """{ "P": "v" }"""))
+            (Some (document """{ "APP_CONTEXT_BASE_DIRECTORY": "/forged" }"""))
+            (fun dll ->
+                let exn = Assert.Throws<exn> (fun () -> HostRuntimeConfig.forAssembly dll |> ignore)
+                exn.Message |> shouldContainText "APP_CONTEXT_BASE_DIRECTORY"
+            )
+
+    [<Test>]
+    let ``the APP_PATHS pair split across sidecars stops the launch`` () =
+        withSidecars
+            (Some (document $$"""{ "{{SetAppPathsSwitch}}": "true" }"""))
+            (Some (document """{ "APP_PATHS": "/somewhere" }"""))
+            (fun dll ->
+                let exn = Assert.Throws<exn> (fun () -> HostRuntimeConfig.forAssembly dll |> ignore)
+                exn.Message |> shouldContainText "APP_PATHS"
             )
 
     [<Test>]
