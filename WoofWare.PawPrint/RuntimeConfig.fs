@@ -120,6 +120,30 @@ module RuntimeConfig =
     let devPathForAssembly (assemblyPath : string) : string =
         Path.ChangeExtension (assemblyPath, ".runtimeconfig.dev.json")
 
+    /// Materialise a JSON string that the reader accepted as a token but may still refuse to
+    /// transcode, because its bytes are not valid UTF-8.
+    ///
+    /// `Utf8JsonReader` does not validate a string token's encoding, and `JsonDocument` only
+    /// transcodes when asked for the text, so invalid bytes surface as an
+    /// `InvalidOperationException` from `GetString()` or `JsonProperty.Name` long after
+    /// parsing "succeeded". `parse` promises a `Result`, and the caller that treats a bad dev
+    /// config as survivable depends on that promise, so the failure has to be contained here.
+    ///
+    /// Contained as a refusal rather than reproduced, which is a deliberate choice and the
+    /// same one `renderValue` makes below. hostpolicy does not validate either — rapidjson is
+    /// not given `kParseValidateEncodingFlag` — so a real host launches the app, and CoreCLR's
+    /// UTF-8 → UTF-16 conversion substitutes U+FFFD. Measured against a real .NET 10 host, we
+    /// cannot reproduce that substitution with the decoder we have: for the bytes `ED A0 80`
+    /// the host produces *two* replacement characters where `Encoding.UTF8.GetString` produces
+    /// three. Seeding the guest a string of a different length from the one CoreCLR would have
+    /// given it is exactly the silent divergence this module refuses everywhere else.
+    let private tryMaterialise (describe : string) (read : unit -> string) : Result<string, string> =
+        try
+            Ok (read ())
+        with :? InvalidOperationException ->
+            Error
+                $"runtimeconfig.json %s{describe} is not valid UTF-8. A real host does not validate the encoding either, and launches the app with CoreCLR substituting U+FFFD for the offending bytes; PawPrint does not reproduce that substitution exactly (for `ED A0 80` a real host yields two replacement characters where .NET's decoder yields three), and seeding an approximation would silently give the guest a different string from the one it would see on CoreCLR. Write the file as valid UTF-8."
+
     /// Render one `configProperties` value the way `hostpolicy` does.
     ///
     /// `runtime_config.cpp` takes `GetString()` for a JSON string and otherwise re-serialises
@@ -135,11 +159,12 @@ module RuntimeConfig =
             // `GetString()` decodes the escapes, so the guest sees the value, not its JSON
             // spelling. The caller truncates at the first NUL, matching where hostpolicy
             // assigns this `char_t*` into a `pal::string_t`.
-            match value.GetString () with
-            | null ->
+            match tryMaterialise $"the value of property '%s{name}'" value.GetString with
+            | Error e -> Error e
+            | Ok null ->
                 // Unreachable: `GetString` only returns null for JsonValueKind.Null.
                 Error $"logic error: runtimeconfig.json property '%s{name}' reported kind String but decoded to null"
-            | s -> Ok s
+            | Ok s -> Ok s
         | JsonValueKind.True -> Ok "true"
         | JsonValueKind.False -> Ok "false"
         | JsonValueKind.Null -> Ok "null"
@@ -303,11 +328,26 @@ module RuntimeConfig =
         // The name is truncated at its first NUL before being used as a key, because that is
         // where hostpolicy's `pal::string_t` assignment truncates — so two names differing
         // only after a NUL really are one property, and the later wins rather than colliding.
+        // A name is materialised here, and can fail to be: it is the one place a diagnostic
+        // cannot quote the offending property, since producing its text is what failed, so it
+        // says where the property sits instead.
         let effective =
-            (Map.empty, configProperties.EnumerateObject ())
-            ||> Seq.fold (fun acc property ->
-                Map.add (AppContextProperties.truncateAtNul property.Name) property.Value acc
+            (Ok Map.empty, configProperties.EnumerateObject () |> Seq.indexed)
+            ||> Seq.fold (fun acc (index, property) ->
+                match acc with
+                | Error _ -> acc
+                | Ok acc ->
+
+                let describe =
+                    $"the name of the property at position %i{index + 1} of configProperties"
+
+                tryMaterialise describe (fun () -> property.Name)
+                |> Result.map (fun name -> Map.add (AppContextProperties.truncateAtNul name) property.Value acc)
             )
+
+        match effective with
+        | Error e -> Error e
+        | Ok effective ->
 
         (Ok Map.empty, Map.toSeq effective)
         ||> Seq.fold (fun acc (name, value) ->
