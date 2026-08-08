@@ -303,6 +303,68 @@ module NativeRuntimeAssembly =
                     (CliType.ObjectRef (Some emptyAddr))
 
             NativeHandlerResult.completed state |> Some
+        | "AssemblyNative_GetLocale",
+          "System.Private.CoreLib",
+          "System.Reflection",
+          "RuntimeAssembly",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "QCallAssembly",
+                                              qCallAssemblyGenerics)
+            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "StringHandleOnStack",
+                                              stringHandleGenerics) ],
+          MethodReturnType.Void when qCallAssemblyGenerics.IsEmpty && stringHandleGenerics.IsEmpty ->
+            let operation = "AssemblyNative_GetLocale"
+
+            if instruction.Arguments.Length <> 2 then
+                failwith $"%s{operation}: expected two native arguments, got %d{instruction.Arguments.Length}"
+
+            let assemblyFullName =
+                instruction.Arguments.[0]
+                |> NativeCall.qCallAssemblyToAssemblyFullName operation state
+
+            let assembly =
+                state.LoadedAssembly' assemblyFullName
+                |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
+
+            let retString =
+                NativeCall.stringHandleOnStackTarget operation state "retString" instruction.Arguments.[1]
+
+            // CoreCLR answers `pAssembly->GetPEAssembly()->GetLocale()`, which is
+            // `md.szLocale` — the manifest row's `Culture` column verbatim. Note
+            // `DumpedAssembly.CultureName` rather than `Name.CultureName`: the latter
+            // has been through `CultureInfo` normalisation and would hand the guest
+            // "en-GB" for a column reading "EN-gb".
+            let locale = assembly.CultureName
+
+            // CoreCLR guards its write with `if (pLocale)`, leaving the caller's
+            // preinitialised `string? locale = null` in place when the pointer is
+            // null. That cannot happen for an image we could have loaded: the
+            // pointer comes from the `#Strings` heap, and a nil `Culture` index
+            // resolves to the empty string there rather than to null (a bad index
+            // makes `GetAssemblyProps` fail, which `PEAssembly::GetLocale` throws
+            // on). So the write below is unconditional, and a culture-neutral
+            // assembly takes the guest's `CultureInfo.GetCultureInfo("")` path —
+            // which yields the invariant culture — rather than its `locale == null`
+            // fallback, exactly as on CoreCLR.
+            let localeAddr, state =
+                if System.String.IsNullOrEmpty locale then
+                    // `StringObject::NewString` returns the shared empty-string
+                    // instance for a zero-length string; see AssemblyNative_GetLocation.
+                    IlMachineState.internCanonicalEmptyString ctx.LoggerFactory ctx.BaseClassTypes state
+                else
+                    IlMachineState.allocateManagedString ctx.LoggerFactory ctx.BaseClassTypes locale state
+
+            let state =
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    retString
+                    (CliType.ObjectRef (Some localeAddr))
+
+            NativeHandlerResult.completed state |> Some
         | "AssemblyNative_GetSimpleName",
           "System.Private.CoreLib",
           "System.Reflection",
