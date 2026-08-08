@@ -1052,19 +1052,47 @@ module IlMachineManagedByref =
     /// offset. `Field` projections consult `templateThunk` for the current
     /// type cursor (lazy, so chains containing no `Field` never resolve a
     /// template); `ReinterpretAs` re-anchors the cursor via `templateFor`;
-    /// `ByteOffset` adds raw bytes and either terminates the walk or
-    /// re-anchors via the immediately following `ReinterpretAs`.
+    /// `ByteOffset` adds raw bytes and leaves the cursor alone.
     ///
-    /// A `ByteOffset` followed directly by a `Field` projection is a
-    /// construction-site invariant violation (the cursor would have no
-    /// type anchor); this raises a descriptive `failwith` so the caller
-    /// can decide whether to propagate the bug or degrade.
+    /// A `Field` *after* a `ByteOffset` resolves against the carried cursor,
+    /// which is what `ldflda` on a `ref T` sitting `n` bytes along means in
+    /// the real runtime: `base + n + offsetof(field, T)`, with no check on
+    /// `n`. The cursor is still `T`-typed because
+    /// `ManagedPointerSource.appendProjection` only appends a `ByteOffset` to
+    /// a chain already ending in a `ReinterpretAs` (and the two sites that
+    /// build a chain directly, `RuntimeFieldProjection`'s `RawData::Data`
+    /// projection and `normaliseTrailingByteOffset`, both emit the
+    /// `ReinterpretAs` immediately before it). So a byte cursor always
+    /// qualifies a reinterpret, and that reinterpret's target is the anchor.
+    /// `peelTrailingByteView` strips the leading `ReinterpretAs` before
+    /// calling in, which is why the suffix may *begin* with a `ByteOffset`:
+    /// the anchor is then the `rootTemplate` the caller supplies.
+    ///
+    /// The genuine violation is the mirror image — a `ByteOffset` hung off a
+    /// `Field` navigation, with no reinterpret to say what type the raw bytes
+    /// are being viewed as. `appendProjection` refuses to construct that, so
+    /// reaching here with it means a chain was built directly and got it
+    /// wrong; this raises a descriptive `failwith` so the caller can decide
+    /// whether to propagate the bug or degrade.
     let internal walkProjectionByteOffset
         (templateFor : ConcreteType<ConcreteTypeHandle> -> CliType)
         (rootTemplate : unit -> CliType)
         (projs : ByrefProjection list)
         : int
         =
+        // Structural precondition, checked once up front rather than woven
+        // through the fold: it is a property of the chain alone, and keeping
+        // it separate leaves the walk a plain accumulation.
+        let rec checkAnchored (remaining : ByrefProjection list) : unit =
+            match remaining with
+            | ByrefProjection.Field _ :: (ByrefProjection.ByteOffset n :: _) ->
+                failwith
+                    $"Field navigation followed by ByteOffset %d{n} without an intervening ReinterpretAs in projection chain: %A{projs} (this is an interpreter bug)"
+            | _ :: rest -> checkAnchored rest
+            | [] -> ()
+
+        checkAnchored projs
+
         let rec walk (templateThunk : unit -> CliType) (offset : int) (remaining : ByrefProjection list) : int =
             match remaining with
             | [] -> offset
@@ -1074,14 +1102,7 @@ module IlMachineManagedByref =
                 let fieldTemplate = CliType.getFieldById field template
                 walk (fun () -> fieldTemplate) (offset + fieldOffset) rest
             | ByrefProjection.ReinterpretAs newReinTy :: rest -> walk (fun () -> templateFor newReinTy) offset rest
-            | ByrefProjection.ByteOffset n :: rest ->
-                match rest with
-                | [] -> offset + n
-                | ByrefProjection.ReinterpretAs _ :: _
-                | ByrefProjection.ByteOffset _ :: _ -> walk templateThunk (offset + n) rest
-                | ByrefProjection.Field _ :: _ ->
-                    failwith
-                        $"ByteOffset %d{n} followed by Field navigation without an intervening ReinterpretAs in projection chain: %A{projs} (this is an interpreter bug)"
+            | ByrefProjection.ByteOffset n :: rest -> walk templateThunk (offset + n) rest
 
         walk rootTemplate 0 projs
 
@@ -1104,9 +1125,10 @@ module IlMachineManagedByref =
     ///
     /// Returns `ValueSome (structuralPrefix, offset)` when the chain contains
     /// at least one `ReinterpretAs`, else `ValueNone`. The `structuralPrefix`
-    /// never contains a `ReinterpretAs` by construction. A non-trailing
-    /// `ByteOffset` (which the construction-site canonicaliser never
-    /// produces) is an interpreter bug and is raised here.
+    /// never contains a `ReinterpretAs` by construction. A `ByteOffset` hung
+    /// off a `Field` navigation, with no reinterpret to anchor it, is a
+    /// construction-site invariant violation and is raised by the walk; see
+    /// `walkProjectionByteOffset`.
     ///
     /// `baseClassTypes` is required only when the byte-view suffix navigates
     /// through a `Field` projection (Field layout is resolved against the
@@ -2526,24 +2548,46 @@ module IlMachineManagedByref =
                     $"%s{operation}: assigning %s{describeCliStorage state newValue}, which is not the same kind of value as the %s{describeCliStorage state current} held by %s{describeCell}"
 
         // The write mirror of the naming step in `readReinterpretedByrefField`: a trailing `Field`
-        // lands `fieldOffset` bytes into the reinterpret target, which itself sits `byteOffset`
+        // lands `fieldOffset` bytes into the reinterpret target, which itself sits `offset`
         // bytes into the storage, so the byref names whatever cell occupies that sum.
         // `buffer[0].Payload = box` is exactly this shape, and the classifier cannot serve it —
         // `Elem` is not a transparent single-field wrapper of anything.
-        //
-        // A later slot would put a `ByteOffset` between the reinterpret and the field. That chain
-        // is refused upstream while its offset is computed, so it cannot arrive here and there is
-        // nothing to write for it yet; `InlineArrayFieldWriteAtLaterSlot.cs` is parked on it.
-        let tryNameThroughField (field : FieldId) : CliType option voption =
-            match
-                tryNameCellThroughReinterpretField baseClassTypes state byteOffset storageValue reinterpretTy field
-            with
+        let tryNameThroughFieldAt (offset : int) (field : FieldId) : CliType option voption =
+            match tryNameCellThroughReinterpretField baseClassTypes state offset storageValue reinterpretTy field with
             | None -> ValueNone
             | Some path -> writeIntoNamedCell path $"the cell %O{path} named by field %O{field} of %O{reinterpretTy}"
 
         let transparentWrapperFastPath () : CliType option voption =
-            match reinterpretProjs, byteOffset with
-            | [ ByrefProjection.Field field ], 0 ->
+            match reinterpretProjs with
+            // A trailing `Field` may be preceded by a `ByteOffset`: `buffer[k].Payload = box`
+            // walks the reinterpreted view on by whole elements before selecting the field, giving
+            // `[ByteOffset k*sizeof(Elem); Field Payload]`. The two cursors add, exactly as in the
+            // no-field arm below — `byteOffset` is the prefix cursor into `storageValue` taken
+            // before the reinterpret, and the trailing `ByteOffset` moves the reinterpreted view
+            // on from there.
+            //
+            // Only a *non-byte-renderable* value arrives here at all: `writeManagedByrefCore`
+            // routes on `CliType.ByteAddressability newValue`, so the sibling
+            // `buffer[k].Tag = someByte` goes to the bytes-or-typed-cell writer instead and is
+            // served by its own cell naming. Both shapes need the `ByteOffset`-then-`Field` chain
+            // to fold to an offset in the first place, which is why they were blocked together.
+            | [ ByrefProjection.Field field ]
+            | [ ByrefProjection.ByteOffset _ ; ByrefProjection.Field field ] ->
+                let trailingOffset =
+                    match reinterpretProjs with
+                    | [ ByrefProjection.ByteOffset n ; _ ] -> n
+                    | _ -> 0
+
+                let totalOffset = byteOffset + trailingOffset
+
+                // The transparent-wrapper classifier asks whether the wrapper's single field spans
+                // the storage exactly, which is only a meaningful question at offset zero. At any
+                // other offset the byref necessarily names an interior cell, so only the naming
+                // route applies.
+                if totalOffset <> 0 then
+                    tryNameThroughFieldAt totalOffset field
+                else
+
                 match classifyTransparentWrapper baseClassTypes state storageValue reinterpretTy field with
                 | TransparentWrapperOutcome.ElideAsField _ ->
                     // The classifier chose this outcome because the storage is identity-compatible
@@ -2564,9 +2608,8 @@ module IlMachineManagedByref =
                     writeIntoNamedCell innerPath $"inner cell %O{innerPath} of a nested single-instance-field wrapper"
                 | TransparentWrapperOutcome.NotTransparent ->
                     // Not a wrapper the classifier recognises, but the byref may still name a cell
-                    // outright — see the trailing-`Field` arm below, which this shape is the
-                    // zero-offset case of.
-                    tryNameThroughField field
+                    // outright — the same naming route the non-zero-offset case above takes.
+                    tryNameThroughFieldAt 0 field
             // No trailing `Field`: the byref reinterprets the storage directly as some other
             // type, possibly walked forward by `Unsafe.Add`. When the byte range it picks out is
             // exactly one reference-typed cell of the storage, the write lands squarely on that
@@ -2583,7 +2626,8 @@ module IlMachineManagedByref =
             // `CliType.WithZeroedRangeIfChanged`: the value written here is an arbitrary
             // reference rather than a zero, so there is nothing to decompose — the field is
             // simply replaced.
-            | ([] | [ ByrefProjection.ByteOffset _ ]), _ ->
+            | []
+            | [ ByrefProjection.ByteOffset _ ] ->
                 let trailingOffset =
                     match reinterpretProjs with
                     | [ ByrefProjection.ByteOffset n ] -> n

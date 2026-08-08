@@ -4,19 +4,19 @@ using System.Runtime.CompilerServices;
 // `buffer[k].Tag = ...` for `k > 0`: the same field write as
 // `InlineArrayFieldWriteThroughIndex.cs`, one slot along.
 //
-// The extra slot is what breaks it, and not in the cell resolver. Slot `k` adds a `ByteOffset`
-// between the reinterpret and the field, giving `[ReinterpretAs Elem; ByteOffset k*sizeof(Elem);
-// Field Tag]`. `walkProjectionByteOffset` refuses a `ByteOffset` followed by a `Field` as a
-// construction-site invariant violation — the cursor has no type anchor — and does so while
-// computing the byte offset, before any cell naming can be attempted.
+// The extra slot puts a `ByteOffset` between the reinterpret and the field, giving
+// `[ReinterpretAs Elem; ByteOffset k*sizeof(Elem); Field Tag]`. That is a legal chain — the
+// cursor is still `Elem`-typed, because a `ByteOffset` is only ever appended to a chain already
+// ending in a `ReinterpretAs` — and it folds to `k*sizeof(Elem) + offsetof(Tag)`, exactly what
+// `ldflda` on a `ref Elem` sitting `k` elements along means in the real runtime.
 //
-// This is the same blocker as `ReinterpretReadNestedFieldThroughIndex.cs`, reached from the write
-// side instead of the read side. For the `Unsafe.Add(ref elem, k)` idiom the anchor is in fact
-// still live — the offset moved by whole elements, so the cursor is `Elem`-typed — but that guard
-// is shared well beyond inline arrays, so relaxing it wants its own change.
+// The file deliberately covers both field kinds, because they are served by different writers:
+// `writeManagedByrefCore` routes on whether the value being stored is byte-renderable, so
+// `Tag = 8` (a byte) goes to the bytes-or-typed-cell writer while `Payload = new Box(...)` (a
+// reference) goes to the structural writer's trailing-`Field` arm. Both need the chain to fold to
+// an offset first, which is what they had in common while this was parked.
 //
-// Not a regression: at the parent commit this program fails at the first statement instead, with
-// "refusing byte view over value type containing object references".
+// Slot 0 is kept as the control: it needs no `ByteOffset` at all.
 public class TestInlineArrayFieldWriteAtLaterSlot
 {
     private sealed class Box { public int V; }
