@@ -147,10 +147,11 @@ module AppContextSeed =
     /// Build the call to `AppContext.Setup` that seeds `properties`, returning the machine
     /// state with the argument buffers allocated and a frame ready to be installed and run.
     ///
-    /// `None` when there is nothing to seed. That is not the same as calling `Setup` with a
-    /// count of zero: `Setup` unconditionally assigns a fresh dictionary to `s_dataStore`,
-    /// and PawPrint's honest default when no host supplied any properties is to leave
-    /// AppContext exactly as CoreLib's own lazy initialisation would.
+    /// `None` when there is nothing to seed, which skips the call rather than making it with a
+    /// count of zero. The two differ internally — `Setup` assigns a fresh dictionary to
+    /// `s_dataStore`, where skipping leaves it null — but not observably: `GetData` returns
+    /// null for a null store, and `SetData` lazily installs one. So this buys the cheaper path
+    /// without changing what a guest can see.
     ///
     /// The native blocks allocated here are deliberately never freed. `hostpolicy`'s arrays
     /// outlive the call too, and a guest is entitled to have kept a `char*` into one — so

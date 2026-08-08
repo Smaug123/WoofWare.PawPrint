@@ -33,8 +33,12 @@ module HostRuntimeConfig =
     /// Read the AppContext properties for a guest assembly from the `runtimeconfig.json` the
     /// SDK emits beside it, as `hostpolicy` does.
     ///
-    /// A missing main config yields no properties: PawPrint is routinely pointed at a bare
-    /// dll, and `runtime_config_t::ensure_parsed` likewise treats "not existing" as success.
+    /// A missing main config yields no properties, because PawPrint is routinely pointed at a
+    /// bare dll. `runtime_config_t::ensure_parsed` also treats "not existing" as success, but
+    /// do not read that as agreement: a real launch then finds no framework reference, decides
+    /// the app is self-contained, and dies looking for `hostpolicy` beside it, so no guest ever
+    /// observes the no-config case. This is a deliberate divergence, recorded in
+    /// docs/divergences.md, not a match.
     /// A file that is present but invalid *is* an error, and throws — silently treating it as
     /// empty would drop the guest's feature switches and leave it running with quietly
     /// different behaviour. This present/absent split is exactly why `RuntimeConfig.parse`

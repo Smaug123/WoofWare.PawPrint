@@ -40,10 +40,13 @@ module AppContextProperties =
 
     /// No properties at all.
     ///
-    /// Note that this is *not* the same as "what a real .NET app starts with": a real host
-    /// always seeds at least `TRUSTED_PLATFORM_ASSEMBLIES` and friends. It is PawPrint's
-    /// honest default — there is no host filesystem layout to derive those from — and it is
-    /// what a guest sees when nobody supplied a `runtimeconfig.json`.
+    /// This is PawPrint's own default, and it is not what any real .NET process starts with:
+    /// a real host populates eight properties of its own — `TRUSTED_PLATFORM_ASSEMBLIES`,
+    /// `APP_CONTEXT_BASE_DIRECTORY` and friends — before it so much as looks at
+    /// `configProperties`, and PawPrint populates none of them. Nor is it "what a guest sees
+    /// when there is no `runtimeconfig.json`": a real host never gets a guest as far as
+    /// managed code in that case. See the "host-populated `AppContext` properties" entry in
+    /// docs/divergences.md for both, and for why they are deliberate.
     let empty : AppContextProperties =
         {
             Values = Map.empty
