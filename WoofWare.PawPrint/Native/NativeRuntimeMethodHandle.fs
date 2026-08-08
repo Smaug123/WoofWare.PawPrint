@@ -64,6 +64,25 @@ module NativeRuntimeMethodHandle =
     let isGenericMethodDefinition (methodGenericParamCount : int) (handleInstantiationCount : int) : bool =
         methodGenericParamCount > 0 && handleInstantiationCount = 0
 
+    /// The predicate behind CoreCLR's `MethodDesc::IsNoMetadata` (method.hpp:1932), which
+    /// `RuntimeMethodHandle::IsDynamicMethod` (runtimehandles.cpp:1746) returns verbatim:
+    /// `FC_RETURN_BOOL(pMethod->IsNoMetadata())`.
+    ///
+    /// "No metadata" is CoreCLR's name for a `MethodDesc` that no MethodDef token names --
+    /// `DynamicMethod`/LCG stubs, built at runtime by `Reflection.Emit` rather than read from an
+    /// assembly. `RuntimeType.GetMethodBase` (RuntimeType.CoreCLR.cs:1825) branches on this
+    /// *first*, because for such a method there is no declaring assembly to look a token up in;
+    /// it instead recovers the `DynamicMethod` from the handle's `Resolver`. Every other reflection
+    /// native in this file assumes the metadata branch was taken.
+    ///
+    /// PawPrint has no `Reflection.Emit`, so every handle its registry can mint is metadata-backed
+    /// and this is `false` throughout. That is a fact about the *representation*, not a policy
+    /// choice: `MethodHandle` has no case that could denote a no-metadata method. When one is
+    /// added, this match stops compiling.
+    let isDynamicMethod (handle : MethodHandle) : bool =
+        match handle with
+        | MethodHandle.FromMetadata _ -> false
+
     /// The instantiation CoreCLR's `MethodDesc::LoadMethodInstantiation` (method.cpp:793) reports
     /// for a method, expressed over PawPrint's representation so it can be pinned independently of
     /// the QCall plumbing. The two counts are exactly the ones `isGenericMethodDefinition` above
@@ -285,20 +304,20 @@ module NativeRuntimeMethodHandle =
             failwith $"%s{operation}: registry id %d{methodHandleId} did not resolve to a known MethodHandle"
         )
 
-    /// The metadata `MethodInfo` the given handle's MethodDef token names.
-    let private methodInfoOfMethodHandle
+    /// The metadata `MethodInfo` the given identity's MethodDef token names.
+    let private methodInfoOfMetadataIdentity
         (operation : string)
         (state : IlMachineState)
-        (methodHandle : MethodHandle)
+        (identity : MetadataMethodIdentity)
         : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>
         =
-        let assemblyFullName = methodHandle.GetAssemblyFullName ()
+        let assemblyFullName = identity.GetAssemblyFullName ()
 
         let assembly =
             state.LoadedAssembly' assemblyFullName
             |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
 
-        let methodDefHandle = methodHandle.GetMethodDefinitionHandle().Get
+        let methodDefHandle = identity.GetMethodDefinitionHandle().Get
 
         let mutable methodInfo =
             Unchecked.defaultof<MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>>
@@ -308,14 +327,28 @@ module NativeRuntimeMethodHandle =
 
         methodInfo
 
+    /// Resolve a `RuntimeMethodHandleInternal` argument to the metadata identity it denotes.
+    /// Every native that reads a MethodDef token, a declaring assembly, or a method instantiation
+    /// needs one of these, and none of them has an answer for a no-metadata (`DynamicMethod`)
+    /// handle -- so when that case lands, this match is one of the sites that must decide what to
+    /// do rather than silently reading a token that does not exist.
+    let private resolveMetadataIdentityFromArg
+        (operation : string)
+        (state : IlMachineState)
+        (arg : CliType)
+        : MetadataMethodIdentity
+        =
+        match resolveMethodHandleFromArg operation state arg with
+        | MethodHandle.FromMetadata identity -> identity
+
     let private resolveMethodInfoFromHandleArg
         (operation : string)
         (state : IlMachineState)
         (arg : CliType)
         : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>
         =
-        resolveMethodHandleFromArg operation state arg
-        |> methodInfoOfMethodHandle operation state
+        resolveMetadataIdentityFromArg operation state arg
+        |> methodInfoOfMetadataIdentity operation state
 
     /// Resolve a <c>QCallTypeHandle</c>-encoded type to its
     /// <c>(DumpedAssembly, TypeInfo)</c>, accepting the MethodTable-backed
@@ -603,10 +636,10 @@ module NativeRuntimeMethodHandle =
             if instruction.Arguments.Length <> 3 then
                 failwith $"%s{operation}: expected three native arguments, got %d{instruction.Arguments.Length}"
 
-            let methodHandle =
-                resolveMethodHandleFromArg operation state instruction.Arguments.[0]
+            let identity =
+                resolveMetadataIdentityFromArg operation state instruction.Arguments.[0]
 
-            let methodInfo = methodInfoOfMethodHandle operation state methodHandle
+            let methodInfo = methodInfoOfMetadataIdentity operation state identity
 
             let retTypes =
                 NativeCall.objectHandleOnStackTarget operation state "retTypes" instruction.Arguments.[1]
@@ -622,9 +655,9 @@ module NativeRuntimeMethodHandle =
                 methodInstantiationTargets
                     operation
                     methodInfo.DeclaringType.Identity
-                    (methodHandle.GetMethodDefinitionHandle ())
+                    (identity.GetMethodDefinitionHandle ())
                     methodInfo.Generics.Length
-                    (methodHandle.GetMethodGenerics ())
+                    (identity.GetMethodGenerics ())
 
             // An empty instantiation leaves `retTypes` unwritten, so the caller's local stays
             // null. That is what CopyRuntimeTypeHandles does for 0 args (runtimehandles.cpp:573),
@@ -693,10 +726,8 @@ module NativeRuntimeMethodHandle =
                 NativeCall.methodHandleIdOfRuntimeMethodHandleInternal operation instruction.Arguments.[0]
                 |> Option.defaultWith (fun () -> failwith $"%s{operation}: null RuntimeMethodHandleInternal")
 
-            let methodHandle =
-                resolveMethodHandleFromArg operation state instruction.Arguments.[0]
-
-            let methodInfo = methodInfoOfMethodHandle operation state methodHandle
+            let methodInfo =
+                resolveMethodInfoFromHandleArg operation state instruction.Arguments.[0]
 
             let declaringTarget =
                 NativeCall.qCallTypeHandleToRuntimeTypeHandleTarget
@@ -936,15 +967,39 @@ module NativeRuntimeMethodHandle =
             // PawPrint's representation.
             let operation = "RuntimeMethodHandle.IsGenericMethodDefinition"
 
+            let identity =
+                resolveMetadataIdentityFromArg operation state instruction.Arguments.[0]
+
+            let methodInfo = methodInfoOfMetadataIdentity operation state identity
+
+            let result =
+                isGenericMethodDefinition methodInfo.Generics.Length (identity.GetMethodGenerics ()).Length
+
+            let state = IlMachineState.pushToEvalStack (CliType.ofBool result) ctx.Thread state
+
+            NativeHandlerResult.completed state |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeMethodHandle",
+          "IsDynamicMethod",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System",
+                                              "RuntimeMethodHandleInternal",
+                                              generics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) when generics.IsEmpty ->
+            // CoreCLR (runtimehandles.cpp:1746): FC_RETURN_BOOL(pMethod->IsNoMetadata()).
+            // See `isDynamicMethod` above for the predicate.
+            //
+            // Deliberately resolves the handle rather than the `MethodInfo` behind it: this is the
+            // one native here whose whole job is to say whether that metadata lookup is legitimate,
+            // so performing the lookup first would beg the question.
+            let operation = "RuntimeMethodHandle.IsDynamicMethod"
+
             let methodHandle =
                 resolveMethodHandleFromArg operation state instruction.Arguments.[0]
 
-            let methodInfo = methodInfoOfMethodHandle operation state methodHandle
-
-            let result =
-                isGenericMethodDefinition methodInfo.Generics.Length (methodHandle.GetMethodGenerics ()).Length
-
-            let state = IlMachineState.pushToEvalStack (CliType.ofBool result) ctx.Thread state
+            let state =
+                IlMachineState.pushToEvalStack (CliType.ofBool (isDynamicMethod methodHandle)) ctx.Thread state
 
             NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib",

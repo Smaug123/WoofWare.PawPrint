@@ -260,14 +260,17 @@ module NativeCustomAttribute =
                             $"%s{operation}: RuntimeMethodInfoStub at %O{ctorStubAddr} carried a null RuntimeMethodHandleInternal"
                     )
 
-                let methodHandle =
-                    MethodHandleRegistry.resolveMethodFromId methodRegistryId state.MethodHandles
-                    |> Option.defaultWith (fun () ->
+                // An attribute's constructor is always a metadata method: it is named by a
+                // MethodDef/MemberRef token in the custom-attribute blob we are decoding, so a
+                // no-metadata (`DynamicMethod`) handle cannot reach here.
+                let identity =
+                    match MethodHandleRegistry.resolveMethodFromId methodRegistryId state.MethodHandles with
+                    | Some (MethodHandle.FromMetadata identity) -> identity
+                    | None ->
                         failwith
                             $"%s{operation}: RuntimeMethodHandleInternal id %d{methodRegistryId} (from stub at %O{ctorStubAddr}) did not resolve to a registered MethodHandle"
-                    )
 
-                let ctorAssemblyName = methodHandle.GetAssemblyFullName ()
+                let ctorAssemblyName = identity.GetAssemblyFullName ()
 
                 let ctorAssembly =
                     state.LoadedAssembly' ctorAssemblyName
@@ -275,7 +278,7 @@ module NativeCustomAttribute =
                         failwith $"%s{operation}: ctor's declaring assembly %s{ctorAssemblyName} is not loaded"
                     )
 
-                let methodDefHandle = methodHandle.GetMethodDefinitionHandle().Get
+                let methodDefHandle = identity.GetMethodDefinitionHandle().Get
 
                 let ctorMetadata =
                     let mutable found = Unchecked.defaultof<_>
@@ -404,7 +407,7 @@ module NativeCustomAttribute =
                         ctx.BaseClassTypes
                         concreteType.Generics
                         ctorMetadata
-                        (methodHandle.GetMethodGenerics () |> ImmutableArray.CreateRange)
+                        (identity.GetMethodGenerics () |> ImmutableArray.CreateRange)
                         state
 
                 if MethodInfo.arity concretizedCtor <> List.length fixedArgs then
