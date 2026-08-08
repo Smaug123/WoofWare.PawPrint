@@ -274,3 +274,26 @@ catch (MissingMethodException e) { Console.WriteLine(e.Message); }
 ```
 
 **Where this lives in code**: `ActivationInfo.classify` in `Native/NativeRuntimeTypeHelpers.fs` picks the exception type per CoreCLR's `ValidateTypeAbleToBeInstantiated`; `NativeHandlerResult.raiseException` is the boundary that cannot carry a message. `WoofWare.PawPrint.Test/sourcesPure/ActivatorCreateInstanceNonGeneric.cs` deliberately compares exception *types* only, for this reason.
+
+## The `newobj` allocation helper has one address for every type
+
+**CoreCLR**: `RuntimeTypeHandle_GetActivationInfo` hands `RuntimeType.ActivatorCache` the address of a JIT allocation helper, chosen by `CEEInfo::getNewHelperStatic` (`jitinterface.cpp`). That choice is not constant: `NEWFAST` is used for a type with a finalizer, for one whose base size reaches `LARGE_OBJECT_SIZE`, and for a COM object type, while ordinary small types get the `NEWSFAST` family (with `ALIGN8` variants where 64-bit alignment is required). So two activation caches can legitimately hold different `_pfnAllocator` values.
+
+**PawPrint**: One address for every type. `FunctionPointerTarget.RuntimeAllocator` is nullary, so any two allocator pointers compare equal and hash identically.
+
+**Spec status**: Outside ECMA-335 entirely — the identity of a JIT helper is an implementation detail of the CoreCLR/JIT pairing, not part of the CLI.
+
+**Why we chose this**: Because the helper's identity is not a function of the type. The same `getNewHelperStatic` consults `GCStress<cfg_alloc>::IsEnabled()`, `LoggingOn(LF_GCALLOC, ...)` and `TrackAllocationsEnabled()`, and under any of those every type — finalizable or not, large or small — takes the slow helper and they all share one address again. The value therefore depends on the host's GC, logging and profiler configuration as much as on the type being activated. PawPrint has no such configuration, and deliberately does not read the host's (see `EmulatedKernel.fs`: a replay must not depend on the machine that produced it). "One shared address" is not a shrug — it is exactly what a real runtime reports under a coherent configuration. Inventing a partition would be worse: it would assert a specific GC-stress and profiler state that the simulated process does not have, and would trade an equality that is right under one real configuration for one that is right under none.
+
+The same reasoning is why the case carries no `MethodTable` payload. That would make every type's allocator distinct, which inverts the common CoreCLR answer rather than approximating it.
+
+**Observable example**:
+
+```csharp
+// Reachable only by reflecting into RuntimeType's private activation caches and reading
+// ActivatorCache._pfnAllocator as an IntPtr for two types.
+// CoreCLR:  a finalizable class and a small ordinary class can report different addresses.
+// PawPrint: always equal.
+```
+
+**Where this lives in code**: `FunctionPointerTarget.RuntimeAllocator` in `NativeIntSource.fs` carries the reasoning; `NativeRuntimeTypeQCall.fs` is the only producer, and `UnaryMetadataCallOps.executeAllocatorCalli` the only consumer. `CanonicalPointerKey.RuntimeAllocatorFunctionPointer` gives it a single synthesised hash-bit identity to match.
