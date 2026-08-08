@@ -94,7 +94,8 @@ module StructMarshalStub =
         // (`readSource`) and writes each field as a typed value, so a pointer cell survives into
         // the destination intact. What a guest cannot then do is *read the destination back*
         // through a byte view — `Marshal.ReadIntPtr` over such a cell is refused by
-        // `executeLdind` — but that is a gap in reading native memory, not in classifying fields.
+        // `executeLdind` (#801) — but that is a gap in reading native memory, not in classifying
+        // fields.
         | CliType.Numeric (CliNumericType.NativeInt _) -> true
         | CliType.Numeric _ -> true
         | CliType.Bool _
