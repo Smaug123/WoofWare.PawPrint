@@ -2227,6 +2227,33 @@ module IlMachineManagedByref =
                 | _, prefixProjs ->
                     let rootValue = readRootValue state outerRoot
 
+                    // Storage with no byte image cannot be written by lifting outward either:
+                    // there is no byte-addressable cell to lift to. Descend instead and name the
+                    // cell the range picks out, mirroring `readManagedByrefBytesAs`. This is the
+                    // route for `buffer[k].Tag = v` over an `[InlineArray]` whose element holds a
+                    // reference: the value written is byte-renderable, so the write arrives here
+                    // rather than at the structural writer, but the *storage* is not.
+                    // `tryNameCellForByrefAccess` yields `None` for byte-addressable storage, so
+                    // nothing that reaches `resolveCell` today is diverted.
+                    let namedWrite =
+                        let cellHere = readProjectedValue rootValue prefixProjs
+
+                        match tryNameCellForByrefAccess byteOffset cellHere newValue with
+                        | None -> ValueNone
+                        | Some path ->
+                            let updatedCell = CliType.withCellAtPathSet path newValue cellHere
+
+                            if updatedCell = cellHere then
+                                ValueSome state
+                            else
+                                match applyProjectionsForWriteIfChanged rootValue prefixProjs updatedCell with
+                                | None -> ValueSome state
+                                | Some updatedRoot -> ValueSome (writeRootValue state outerRoot updatedRoot)
+
+                    match namedWrite with
+                    | ValueSome state -> state
+                    | ValueNone ->
+
                     // Symmetric to the read path: when the byte write overflows
                     // the immediate cell, lift back through trailing `Field`
                     // projections so a write through e.g. `Unsafe.Add(ref s.A, 1)`
@@ -2394,6 +2421,42 @@ module IlMachineManagedByref =
         // exactly what the classifier's `isCellIdentityCompatible` accepts,
         // rather than object references alone. Anything narrower would refuse
         // writes the classifier has already declared elidable.
+        // Install `newValue` into the cell at `path`, the byref having been shown to name exactly
+        // that cell. The cell was chosen because it is identity-compatible with what the byref
+        // reinterprets it as, so the value being stored must be too, or the cell would end up
+        // holding a different kind of thing than it claims to.
+        let writeIntoNamedCell (path : FieldId list) (describeCell : string) : CliType option voption =
+            let current = CliType.getCellAtPath path storageValue
+
+            if isCellIdentityCompatible newValue current then
+                let updated = CliType.withCellAtPathSet path newValue storageValue
+
+                if updated = storageValue then
+                    ValueSome None
+                else
+                    ValueSome (Some updated)
+            else
+                failwith
+                    $"%s{operation}: assigning %s{describeCliStorage state newValue}, which is not the same kind of value as the %s{describeCliStorage state current} held by %s{describeCell}"
+
+        // The write mirror of the naming step in `readReinterpretedByrefField`: a trailing `Field`
+        // lands `fieldOffset` bytes into the reinterpret target, which itself sits `byteOffset`
+        // bytes into the storage, so the byref names whatever cell occupies that sum.
+        // `buffer[0].Payload = box` is exactly this shape, and the classifier cannot serve it —
+        // `Elem` is not a transparent single-field wrapper of anything.
+        //
+        // A later slot would put a `ByteOffset` between the reinterpret and the field. That chain
+        // is refused upstream while its offset is computed, so it cannot arrive here and there is
+        // nothing to write for it yet; `InlineArrayFieldWriteAtLaterSlot.cs` is parked on it.
+        let tryNameThroughField (field : FieldId) : CliType option voption =
+            let reinterpretZero = zeroForConcreteType baseClassTypes state reinterpretTy
+            let fieldOffset, _ = CliType.getFieldLayoutById field reinterpretZero
+            let fieldTemplate = CliType.getFieldById field reinterpretZero
+
+            match tryNameCellForByrefAccess (byteOffset + fieldOffset) storageValue fieldTemplate with
+            | None -> ValueNone
+            | Some path -> writeIntoNamedCell path $"the cell %O{path} named by field %O{field} of %O{reinterpretTy}"
+
         let transparentWrapperFastPath () : CliType option voption =
             match reinterpretProjs, byteOffset with
             | [ ByrefProjection.Field field ], 0 ->
@@ -2414,23 +2477,12 @@ module IlMachineManagedByref =
                         failwith
                             $"%s{operation}: assigning %s{describeCliStorage state other}, which is not the same kind of value as the %s{describeCliStorage state storageValue} it would replace, to field %O{field} of a single-instance-field wrapper"
                 | TransparentWrapperOutcome.ElideAsStorageInnerField innerPath ->
-                    // The cell was chosen because it is identity-compatible with the reinterpret
-                    // target; the value being stored must be too, or we would be writing one kind
-                    // of thing into a cell that claims to hold another.
-                    let current = CliType.getCellAtPath innerPath storageValue
-
-                    match newValue with
-                    | _ when isCellIdentityCompatible newValue current ->
-                        let updated = CliType.withCellAtPathSet innerPath newValue storageValue
-
-                        if updated = storageValue then
-                            ValueSome None
-                        else
-                            ValueSome (Some updated)
-                    | other ->
-                        failwith
-                            $"%s{operation}: assigning %s{describeCliStorage state other}, which is not the same kind of value as the %s{describeCliStorage state current} held by inner cell %O{innerPath} of a nested single-instance-field wrapper"
-                | TransparentWrapperOutcome.NotTransparent -> ValueNone
+                    writeIntoNamedCell innerPath $"inner cell %O{innerPath} of a nested single-instance-field wrapper"
+                | TransparentWrapperOutcome.NotTransparent ->
+                    // Not a wrapper the classifier recognises, but the byref may still name a cell
+                    // outright — see the trailing-`Field` arm below, which this shape is the
+                    // zero-offset case of.
+                    tryNameThroughField field
             // No trailing `Field`: the byref reinterprets the storage directly as some other
             // type, possibly walked forward by `Unsafe.Add`. When the byte range it picks out is
             // exactly one reference-typed cell of the storage, the write lands squarely on that
@@ -2456,18 +2508,7 @@ module IlMachineManagedByref =
                 let targetTemplate = zeroForConcreteType baseClassTypes state reinterpretTy
 
                 match tryNameCellForByrefAccess (byteOffset + trailingOffset) storageValue targetTemplate with
-                | Some innerPath ->
-                    match newValue with
-                    | _ when isCellIdentityCompatible newValue targetTemplate ->
-                        let updated = CliType.withCellAtPathSet innerPath newValue storageValue
-
-                        if updated = storageValue then
-                            ValueSome None
-                        else
-                            ValueSome (Some updated)
-                    | other ->
-                        failwith
-                            $"%s{operation}: assigning %s{describeCliStorage state other}, which is not the reinterpret type %O{reinterpretTy}, to the storage cell %O{innerPath} that the byref names"
+                | Some innerPath -> writeIntoNamedCell innerPath $"the storage cell %O{innerPath} that the byref names"
                 | None -> ValueNone
             | _ -> ValueNone
 
