@@ -29,58 +29,69 @@ type EvalStackValue =
 
 [<RequireQualifiedAccess>]
 module EvalStackValue =
-    let private nativeIntBitsForIntegerConversion (operation : string) (src : NativeIntSource) : int64 =
+    /// Bits of a native-int-shaped value for `conv.r4` / `conv.r8` / `conv.r.un`.
+    ///
+    /// A float destination refuses every shape whose bits PawPrint does not model,
+    /// rather than synthesising them the way the narrowing integer conversions do.
+    /// The difference is that a narrowing conversion keeps its result in the integer
+    /// domain, where `Int64Source.OpaqueHashBits` and the pointer-shaped
+    /// `NativeIntSource` cases can still recognise a synthesised value and refuse to
+    /// let it become a pointer again; a float carries no such tag, so bits laundered
+    /// into it are indistinguishable from a measurement of a real address.
+    let private nativeIntBitsForFloatConversion (operation : string) (src : NativeIntSource) : int64 =
         match src with
         | NativeIntSource.Verbatim i -> i
         | NativeIntSource.SyntheticCrossArrayOffset _ ->
-            failwith $"%s{operation}: refusing to convert cross-array offset to an integer"
+            failwith $"%s{operation}: refusing to convert cross-array offset to a float"
         | NativeIntSource.ManagedPointer ManagedPointerSource.Null -> 0L
         | NativeIntSource.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits) ->
-            // `Unsafe.AsRef<T>((void*)bits)` placeholders ARE bit patterns;
-            // narrowing to a smaller integer is just truncation of those bits.
+            // `Unsafe.AsRef<T>((void*)bits)` placeholders ARE bit patterns, not
+            // addresses, so converting one to a float is ordinary arithmetic on a
+            // number the guest itself supplied.
             bits
         | NativeIntSource.ManagedPointer ptr ->
-            failwith $"%s{operation}: refusing to convert managed pointer %O{ptr} to an integer"
+            failwith $"%s{operation}: refusing to convert managed pointer %O{ptr} to a float"
         | NativeIntSource.FunctionPointer methodInfo ->
-            failwith $"%s{operation}: refusing to convert function pointer %O{methodInfo} to an integer"
+            failwith $"%s{operation}: refusing to convert function pointer %O{methodInfo} to a float"
         | NativeIntSource.TypeHandlePtr typeHandle ->
-            failwith $"%s{operation}: refusing to convert RuntimeTypeHandle pointer %O{typeHandle} to an integer"
+            failwith $"%s{operation}: refusing to convert RuntimeTypeHandle pointer %O{typeHandle} to a float"
         | NativeIntSource.TypeDescPtr typeHandle ->
-            failwith $"%s{operation}: refusing to convert TypeDesc pointer %O{typeHandle} to an integer"
+            failwith $"%s{operation}: refusing to convert TypeDesc pointer %O{typeHandle} to a float"
         | NativeIntSource.MethodTablePtr typeHandle ->
-            failwith $"%s{operation}: refusing to convert MethodTable pointer %O{typeHandle} to an integer"
+            failwith $"%s{operation}: refusing to convert MethodTable pointer %O{typeHandle} to a float"
         | NativeIntSource.MethodTableAuxiliaryDataPtr typeHandle ->
-            failwith $"%s{operation}: refusing to convert MethodTableAuxiliaryData pointer %O{typeHandle} to an integer"
+            failwith $"%s{operation}: refusing to convert MethodTableAuxiliaryData pointer %O{typeHandle} to a float"
         | NativeIntSource.PerInstInfoPtr handle ->
-            failwith $"%s{operation}: refusing to convert PerInstInfo pointer %O{handle} to an integer"
+            failwith $"%s{operation}: refusing to convert PerInstInfo pointer %O{handle} to a float"
         | NativeIntSource.PerInstDictPtr handle ->
-            failwith $"%s{operation}: refusing to convert PerInstDict pointer %O{handle} to an integer"
+            failwith $"%s{operation}: refusing to convert PerInstDict pointer %O{handle} to a float"
         | NativeIntSource.FieldHandlePtr handle ->
-            failwith $"%s{operation}: refusing to convert RuntimeFieldHandle pointer %d{handle} to an integer"
+            failwith $"%s{operation}: refusing to convert RuntimeFieldHandle pointer %d{handle} to a float"
         | NativeIntSource.MethodHandlePtr handle ->
-            failwith $"%s{operation}: refusing to convert RuntimeMethodHandle pointer %d{handle} to an integer"
+            failwith $"%s{operation}: refusing to convert RuntimeMethodHandle pointer %d{handle} to a float"
         | NativeIntSource.GcHandlePtr (handle, _) ->
-            failwith $"%s{operation}: refusing to convert GC handle pointer %O{handle} to an integer"
+            failwith $"%s{operation}: refusing to convert GC handle pointer %O{handle} to a float"
         | NativeIntSource.EventPipeProviderPtr id ->
-            failwith $"%s{operation}: refusing to convert EventPipe provider handle #%d{id} to an integer"
+            failwith $"%s{operation}: refusing to convert EventPipe provider handle #%d{id} to a float"
         | NativeIntSource.EventPipeEventPtr id ->
-            failwith $"%s{operation}: refusing to convert EventPipe event handle #%d{id} to an integer"
+            failwith $"%s{operation}: refusing to convert EventPipe event handle #%d{id} to a float"
         | NativeIntSource.LowLevelMonitorPtr id ->
-            failwith $"%s{operation}: refusing to convert low-level monitor handle %O{id} to an integer"
+            failwith $"%s{operation}: refusing to convert low-level monitor handle %O{id} to a float"
         | NativeIntSource.WaitHandlePtr id ->
-            failwith $"%s{operation}: refusing to convert wait handle %O{id} to an integer"
+            failwith $"%s{operation}: refusing to convert wait handle %O{id} to a float"
         | NativeIntSource.AssemblyHandle assemblyName ->
-            failwith $"%s{operation}: refusing to convert assembly handle %s{assemblyName} to an integer"
+            failwith $"%s{operation}: refusing to convert assembly handle %s{assemblyName} to a float"
         | NativeIntSource.ModuleHandle moduleName ->
-            failwith $"%s{operation}: refusing to convert module handle %s{moduleName} to an integer"
+            failwith $"%s{operation}: refusing to convert module handle %s{moduleName} to a float"
         | NativeIntSource.MetadataImportHandle moduleName ->
-            failwith $"%s{operation}: refusing to convert metadata import handle %s{moduleName} to an integer"
+            failwith $"%s{operation}: refusing to convert metadata import handle %s{moduleName} to a float"
         | NativeIntSource.OpaqueHashBits bits ->
-            // Synthesised pointer-hash bits are deterministic numeric content;
-            // narrowing them to int32 is exactly the cast-cache final step
-            // `(int)((hash * 0x...) >> hashShift)`. Width-narrowing keeps the
-            // bits in the int domain (no pointer escape).
-            bits
+            // The three float conversions each refuse this shape before reaching
+            // here, so that their diagnostic can name the native-int slot. Refuse
+            // again rather than fall through to a permissive answer: a float is the
+            // one destination from which a synthesised value can never be
+            // recognised again.
+            failwith $"%s{operation}: refusing to convert synthesised pointer-hash bits 0x%x{bits} to a float"
 
     let private failReferenceConversion (operation : string) (value : EvalStackValue) : 'a =
         match value with
@@ -307,35 +318,55 @@ module EvalStackValue =
         | EvalStackValue.ObjectRef _
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_I" value
 
-    let convToInt8 (value : EvalStackValue) : int32 option =
+    /// `conv.i1`.
+    ///
+    /// The narrowing integer conversions (`conv.i1` / `conv.i2` / `conv.i4` and
+    /// their unsigned counterparts) take `PointerHashCounters` because a
+    /// pointer-shaped source must be materialised into bits before it can be
+    /// truncated. The destination is narrower than a pointer, so the result cannot
+    /// be a pointer and the honest answer is the source's bits;
+    /// `PointerHashSynthesis.materialiseHashBits` supplies them from the pointer's
+    /// identity, memoised so that one pointer always truncates to one number, and
+    /// refuses exactly the shapes a narrowing must refuse — a real byref, whose
+    /// address PawPrint does not model, and a cross-array offset, which is a
+    /// difference of two such addresses.
+    ///
+    /// The two spellings of the operation share an arm, so `(sbyte)ptr` and
+    /// `(sbyte)(long)ptr` agree by construction rather than by coincidence.
+    /// CoreLib chooses between those spellings with `#if TARGET_64BIT` inside
+    /// `IntPtr.GetHashCode` (IntPtr.cs:90-97), so they have to.
+    let convToInt8 (value : EvalStackValue) (counters : PointerHashCounters) : (int32 * PointerHashCounters) option =
         match value with
         | EvalStackValue.Int32 int32Source ->
             let i = Int32Source.value "Conv_I1" int32Source
-            convI1FromInt32 i |> Some
-        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convI1FromInt64 i |> Some
+            Some (convI1FromInt32 i, counters)
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> Some (convI1FromInt64 i, counters)
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
-        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
-            failwith $"TODO: Conv_I1 from widened native int %O{src} (truncating pointer-shaped int64 to int8)"
-        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) -> convI1FromInt64 bits |> Some
-        | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_I1" src |> convI1FromInt64 |> Some
-        | EvalStackValue.Float f -> convI1FromFloat f |> Some
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) -> Some (convI1FromInt64 bits, counters)
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _))
+        | EvalStackValue.NativeInt src ->
+            let bits, counters = PointerHashSynthesis.materialiseHashBits "Conv_I1" src counters
+            Some (convI1FromInt64 bits, counters)
+        | EvalStackValue.Float f -> Some (convI1FromFloat f, counters)
         | EvalStackValue.ManagedPointer _
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ObjectRef _
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_I1" value
 
-    let convToInt16 (value : EvalStackValue) : int32 option =
+    /// `conv.i2`. See `convToInt8` for why this takes `PointerHashCounters`.
+    let convToInt16 (value : EvalStackValue) (counters : PointerHashCounters) : (int32 * PointerHashCounters) option =
         match value with
         | EvalStackValue.Int32 int32Source ->
             let i = Int32Source.value "Conv_I2" int32Source
-            convI2FromInt32 i |> Some
-        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convI2FromInt64 i |> Some
+            Some (convI2FromInt32 i, counters)
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> Some (convI2FromInt64 i, counters)
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
-        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
-            failwith $"TODO: Conv_I2 from widened native int %O{src} (truncating pointer-shaped int64 to int16)"
-        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) -> convI2FromInt64 bits |> Some
-        | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_I2" src |> convI2FromInt64 |> Some
-        | EvalStackValue.Float f -> convI2FromFloat f |> Some
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) -> Some (convI2FromInt64 bits, counters)
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _))
+        | EvalStackValue.NativeInt src ->
+            let bits, counters = PointerHashSynthesis.materialiseHashBits "Conv_I2" src counters
+            Some (convI2FromInt64 bits, counters)
+        | EvalStackValue.Float f -> Some (convI2FromFloat f, counters)
         | EvalStackValue.ManagedPointer _
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ObjectRef _
@@ -346,30 +377,33 @@ module EvalStackValue =
     let private narrowByrefTo32 (truncate : int64 -> int32) (ptr : ManagedPointerSource) : EvalStackValue =
         Int32Source.narrowManagedPointer truncate ptr |> EvalStackValue.Int32
 
-    let convToInt32 (value : EvalStackValue) : EvalStackValue =
+    /// `conv.i4`. See `convToInt8` for why this takes `PointerHashCounters`.
+    let convToInt32 (value : EvalStackValue) (counters : PointerHashCounters) : EvalStackValue * PointerHashCounters =
         match value with
         // Identity, narrowed byrefs included: re-truncating a value that is
         // already 32 bits wide changes nothing.
-        | EvalStackValue.Int32 i -> EvalStackValue.Int32 i
+        | EvalStackValue.Int32 i -> EvalStackValue.Int32 i, counters
         | EvalStackValue.Int64 (Int64Source.Verbatim i) ->
-            convI4FromInt64 i |> Int32Source.Verbatim |> EvalStackValue.Int32
+            convI4FromInt64 i |> Int32Source.Verbatim |> EvalStackValue.Int32, counters
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
-        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
-            failwith $"TODO: Conv_I4 from widened native int %O{src} (truncating pointer-shaped int64 to int32)"
         | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) ->
             // Truncating synthesised hash bits to int32 is the load-bearing
             // path: `CastCache.KeyToBucket` ends in `(int)((hash * c) >> shift)`
             // to produce an array index. The result has no provenance, but
             // an array index doesn't need one.
-            convI4FromInt64 bits |> Int32Source.Verbatim |> EvalStackValue.Int32
-        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) -> narrowByrefTo32 convI4FromInt64 ptr
+            convI4FromInt64 bits |> Int32Source.Verbatim |> EvalStackValue.Int32, counters
+        // A byref keeps more than hash bits would: `NarrowedManagedPointer` still
+        // answers a mask, which is what managed code narrowing an address is usually
+        // about, and `materialiseHashBits` refuses byrefs precisely so that a
+        // synthesised number can never stand in for an address PawPrint doesn't model.
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (NativeIntSource.ManagedPointer ptr, _))
+        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) -> narrowByrefTo32 convI4FromInt64 ptr, counters
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _))
         | EvalStackValue.NativeInt src ->
-            nativeIntBitsForIntegerConversion "Conv_I4" src
-            |> convI4FromInt64
-            |> Int32Source.Verbatim
-            |> EvalStackValue.Int32
-        | EvalStackValue.Float f -> convI4FromFloat f |> Int32Source.Verbatim |> EvalStackValue.Int32
-        | EvalStackValue.ManagedPointer ptr -> narrowByrefTo32 convI4FromInt64 ptr
+            let bits, counters = PointerHashSynthesis.materialiseHashBits "Conv_I4" src counters
+            convI4FromInt64 bits |> Int32Source.Verbatim |> EvalStackValue.Int32, counters
+        | EvalStackValue.Float f -> convI4FromFloat f |> Int32Source.Verbatim |> EvalStackValue.Int32, counters
+        | EvalStackValue.ManagedPointer ptr -> narrowByrefTo32 convI4FromInt64 ptr, counters
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ObjectRef _
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_I4" value
@@ -414,67 +448,70 @@ module EvalStackValue =
         | EvalStackValue.ObjectRef _
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_U8" value
 
-    /// Then truncates to int32.
-    let convToUInt8 (value : EvalStackValue) : int32 option =
+    /// `conv.u1`, then truncates to int32. See `convToInt8` for why this takes
+    /// `PointerHashCounters`.
+    let convToUInt8 (value : EvalStackValue) (counters : PointerHashCounters) : (int32 * PointerHashCounters) option =
         match value with
         | EvalStackValue.Int32 int32Source ->
             let i = Int32Source.value "Conv_U1" int32Source
-            convU1FromInt32 i |> Some
-        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convU1FromInt64 i |> Some
+            Some (convU1FromInt32 i, counters)
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> Some (convU1FromInt64 i, counters)
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
-        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
-            failwith $"TODO: Conv_U1 from widened native int %O{src} (truncating pointer-shaped int64 to uint8)"
-        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) -> convU1FromInt64 bits |> Some
-        | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_U1" src |> convU1FromInt64 |> Some
-        | EvalStackValue.Float f -> convU1FromFloat f |> Some
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) -> Some (convU1FromInt64 bits, counters)
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _))
+        | EvalStackValue.NativeInt src ->
+            let bits, counters = PointerHashSynthesis.materialiseHashBits "Conv_U1" src counters
+            Some (convU1FromInt64 bits, counters)
+        | EvalStackValue.Float f -> Some (convU1FromFloat f, counters)
         | EvalStackValue.ManagedPointer _
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ObjectRef _
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_U1" value
 
-    /// Then truncates to int32.
-    let convToUInt16 (value : EvalStackValue) : int32 option =
+    /// `conv.u2`, then truncates to int32. See `convToInt8` for why this takes
+    /// `PointerHashCounters`.
+    let convToUInt16 (value : EvalStackValue) (counters : PointerHashCounters) : (int32 * PointerHashCounters) option =
         match value with
         | EvalStackValue.Int32 int32Source ->
             let i = Int32Source.value "Conv_U2" int32Source
-            convU2FromInt32 i |> Some
-        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> convU2FromInt64 i |> Some
+            Some (convU2FromInt32 i, counters)
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> Some (convU2FromInt64 i, counters)
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
-        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
-            failwith $"TODO: Conv_U2 from widened native int %O{src} (truncating pointer-shaped int64 to uint16)"
-        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) -> convU2FromInt64 bits |> Some
-        | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_U2" src |> convU2FromInt64 |> Some
-        | EvalStackValue.Float f -> convU2FromFloat f |> Some
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) -> Some (convU2FromInt64 bits, counters)
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _))
+        | EvalStackValue.NativeInt src ->
+            let bits, counters = PointerHashSynthesis.materialiseHashBits "Conv_U2" src counters
+            Some (convU2FromInt64 bits, counters)
+        | EvalStackValue.Float f -> Some (convU2FromFloat f, counters)
         | EvalStackValue.ManagedPointer _
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ObjectRef _
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_U2" value
 
-    /// Then truncates to int32.
-    let convToUInt32 (value : EvalStackValue) : EvalStackValue =
+    /// `conv.u4`, then truncates to int32. See `convToInt8` for why this takes
+    /// `PointerHashCounters`.
+    let convToUInt32 (value : EvalStackValue) (counters : PointerHashCounters) : EvalStackValue * PointerHashCounters =
         match value with
         // A narrowed byref is already 32 bits wide, and `conv.u4` only reinterprets
         // those bits; it neither discards any nor makes the value knowable.
-        | EvalStackValue.Int32 (Int32Source.NarrowedManagedPointer _ as i) -> EvalStackValue.Int32 i
+        | EvalStackValue.Int32 (Int32Source.NarrowedManagedPointer _ as i) -> EvalStackValue.Int32 i, counters
         | EvalStackValue.Int32 (Int32Source.Verbatim i) ->
-            convU4FromInt32 i |> Int32Source.Verbatim |> EvalStackValue.Int32
+            convU4FromInt32 i |> Int32Source.Verbatim |> EvalStackValue.Int32, counters
         | EvalStackValue.Int64 (Int64Source.Verbatim i) ->
-            convU4FromInt64 i |> Int32Source.Verbatim |> EvalStackValue.Int32
+            convU4FromInt64 i |> Int32Source.Verbatim |> EvalStackValue.Int32, counters
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> failwith "TODO: SyntheticCrossArrayOffset"
-        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
-            failwith $"TODO: Conv_U4 from widened native int %O{src} (truncating pointer-shaped int64 to uint32)"
         | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) ->
-            convU4FromInt64 bits |> Int32Source.Verbatim |> EvalStackValue.Int32
+            convU4FromInt64 bits |> Int32Source.Verbatim |> EvalStackValue.Int32, counters
         // Same rationale as `convToInt32`: the byref survives the narrowing so that
         // the mask managed code is about to apply stays answerable.
-        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) -> narrowByrefTo32 convU4FromInt64 ptr
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (NativeIntSource.ManagedPointer ptr, _))
+        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) -> narrowByrefTo32 convU4FromInt64 ptr, counters
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _))
         | EvalStackValue.NativeInt src ->
-            nativeIntBitsForIntegerConversion "Conv_U4" src
-            |> convU4FromInt64
-            |> Int32Source.Verbatim
-            |> EvalStackValue.Int32
-        | EvalStackValue.Float f -> convU4FromFloat f |> Int32Source.Verbatim |> EvalStackValue.Int32
-        | EvalStackValue.ManagedPointer ptr -> narrowByrefTo32 convU4FromInt64 ptr
+            let bits, counters = PointerHashSynthesis.materialiseHashBits "Conv_U4" src counters
+            convU4FromInt64 bits |> Int32Source.Verbatim |> EvalStackValue.Int32, counters
+        | EvalStackValue.Float f -> convU4FromFloat f |> Int32Source.Verbatim |> EvalStackValue.Int32, counters
+        | EvalStackValue.ManagedPointer ptr -> narrowByrefTo32 convU4FromInt64 ptr, counters
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ObjectRef _
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_U4" value
@@ -496,7 +533,7 @@ module EvalStackValue =
             // would let these bits become a float, materialising synthesised
             // pointer provenance into the float domain.
             failwith $"Refusing to convert synthesised pointer-hash bits 0x%x{bits} (native int) to float"
-        | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_R4" src |> convR4FromInt64 |> Some
+        | EvalStackValue.NativeInt src -> nativeIntBitsForFloatConversion "Conv_R4" src |> convR4FromInt64 |> Some
         | EvalStackValue.Float f -> convR4FromFloat f |> Some
         | EvalStackValue.ManagedPointer _
         | EvalStackValue.NullObjectRef
@@ -517,7 +554,7 @@ module EvalStackValue =
             failwith $"Refusing to convert synthesised pointer-hash bits 0x%x{bits} to float"
         | EvalStackValue.NativeInt (NativeIntSource.OpaqueHashBits bits) ->
             failwith $"Refusing to convert synthesised pointer-hash bits 0x%x{bits} (native int) to float"
-        | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_R8" src |> convR8FromInt64 |> Some
+        | EvalStackValue.NativeInt src -> nativeIntBitsForFloatConversion "Conv_R8" src |> convR8FromInt64 |> Some
         | EvalStackValue.Float f -> convR8FromFloat f |> Some
         | EvalStackValue.ManagedPointer _
         | EvalStackValue.NullObjectRef
@@ -538,7 +575,7 @@ module EvalStackValue =
             failwith $"Refusing to convert synthesised pointer-hash bits 0x%x{bits} to float"
         | EvalStackValue.NativeInt (NativeIntSource.OpaqueHashBits bits) ->
             failwith $"Refusing to convert synthesised pointer-hash bits 0x%x{bits} (native int) to float"
-        | EvalStackValue.NativeInt src -> nativeIntBitsForIntegerConversion "Conv_R_Un" src |> convRUnFromInt64 |> Some
+        | EvalStackValue.NativeInt src -> nativeIntBitsForFloatConversion "Conv_R_Un" src |> convRUnFromInt64 |> Some
         | EvalStackValue.Float _ -> failwith "Conv_R_Un: refusing to convert an existing float as unsigned integer"
         | EvalStackValue.ManagedPointer _
         | EvalStackValue.NullObjectRef

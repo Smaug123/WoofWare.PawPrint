@@ -1286,3 +1286,83 @@ module TestNullaryIlOp =
             match result with
             | Ok value -> failwith $"%O{op} widened a truncated byref instead of refusing: got %O{value}"
             | Error message -> message |> shouldContainText "truncat"
+
+    /// The six unchecked narrowing conversions, paired with the destination width
+    /// their diagnostics name. `TestEvalStack` pins what each *computes* from a
+    /// pointer-shaped source; these cases pin that the op arm writes the resulting
+    /// `PointerHashCounters` back into the machine state.
+    ///
+    /// Without that write-back each conversion would restart counter assignment from
+    /// zero, so two distinct handles could be handed identical bits — which
+    /// `docs/plans/2026-05-14-pointer-hash-counter-strategy.md` calls out as the one
+    /// failure mode of synthesis that nothing downstream can detect, because it makes
+    /// distinct pointers compare equal.
+    let private narrowingOps : NullaryIlOp list =
+        [
+            NullaryIlOp.Conv_I1
+            NullaryIlOp.Conv_I2
+            NullaryIlOp.Conv_I4
+            NullaryIlOp.Conv_U1
+            NullaryIlOp.Conv_U2
+            NullaryIlOp.Conv_U4
+        ]
+
+    [<TestCaseSource(nameof narrowingOps)>]
+    let ``narrowing a pointer registers its identity in the machine state`` (op : NullaryIlOp) : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let handle = NativeIntSource.MethodHandlePtr 17L
+
+        let state, thread =
+            stateWithNullary loggerFactory op (EvalStackValue.NativeInt handle)
+
+        state.PointerHashCounters |> shouldEqual PointerHashCounters.empty
+
+        match NullaryIlOp.execute loggerFactory baseClassTypes state thread op with
+        | ExecutionResult.Stepped (state, whatWeDid, _) ->
+            whatWeDid |> shouldEqual WhatWeDid.Executed
+
+            // One identity assigned, and retained: a discarded counter map would leave
+            // this at zero while still producing a plausible-looking number.
+            state.PointerHashCounters.NextCounter |> shouldEqual 1UL
+            state.PointerHashCounters.Assigned.Count |> shouldEqual 1
+        | other -> failwith $"Expected %O{op} to step, got %O{other}"
+
+    [<Test>]
+    let ``narrowing reads the counters already in the machine state`` () : unit =
+        // The other half of the write-back: the op arm must *read* the state's counter
+        // map, not a fresh one. Given a state that has already assigned bits to one
+        // handle, narrowing a second handle has to produce a different int32 — which is
+        // the guest-observable fact a hashtable keyed on `IntPtr.GetHashCode` depends on.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let narrow (counters : PointerHashCounters) (handle : NativeIntSource) : EvalStackValue * PointerHashCounters =
+            let state, thread =
+                stateWithNullary loggerFactory NullaryIlOp.Conv_I4 (EvalStackValue.NativeInt handle)
+
+            let state =
+                { state with
+                    PointerHashCounters = counters
+                }
+
+            match NullaryIlOp.execute loggerFactory baseClassTypes state thread NullaryIlOp.Conv_I4 with
+            | ExecutionResult.Stepped (state, _, _) ->
+                IlMachineState.popEvalStack thread state |> fst, state.PointerHashCounters
+            | other -> failwith $"Expected Conv_I4 to step, got %O{other}"
+
+        let first, counters =
+            narrow PointerHashCounters.empty (NativeIntSource.MethodHandlePtr 17L)
+
+        let second, counters = narrow counters (NativeIntSource.MethodHandlePtr 18L)
+
+        if first = second then
+            failwith $"Conv_I4 gave both method handles the same int32 %O{first}"
+
+        counters.Assigned.Count |> shouldEqual 2
+
+        // And the first handle still narrows to what it did before: assignment is
+        // memoised, not re-derived.
+        let again, _ = narrow counters (NativeIntSource.MethodHandlePtr 17L)
+        again |> shouldEqual first

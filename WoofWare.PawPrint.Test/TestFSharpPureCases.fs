@@ -129,23 +129,21 @@ module TestFSharpPureCases =
         Set.ofList
             [
                 // `sprintf` reflects over the format's argument types, which walks
-                // `RuntimeType.GetMethodBase`. Every InternalCall that method reaches
-                // (`IsDynamicMethod`, `GetDeclaringType`, whose body is
-                // `GetRuntimeType(GetMethodTable(method))`, `IsConstructor`, and
-                // `HasMethodInstantiation`) is implemented, and this case gets past all of them. It
-                // stops afterwards on an unrelated gap in the pointer model: `Conv_I4` of an
-                // `Int64Source.WidenedNativeInt` carrying a `MethodRegistryHandle`
-                // (EvalStack.fs:358). That is the shape of hashing a handle's `IntPtr`: on 64-bit
-                // `IntPtr.GetHashCode` is `long value = _value; value.GetHashCode()`
-                // (IntPtr.cs:90-94), and `Int64.GetHashCode` is `(int)l ^ (int)(l >> 32)`, so the
-                // pointer is widened and then truncated. `PointerHashSynthesis` already models the
-                // `MethodHandle` key; the missing piece is bits for the widen-then-truncate path.
+                // `RuntimeType.GetMethodBase` and then asks the resulting `MethodBase` for its
+                // parameters. `GetMethodBase` itself completes; the case stops in
+                // `RuntimeMethodInfo.Signature`, at the `Signature_Init` QCall
+                // (NativeSignature.fs:223) called with a non-null `RuntimeMethodHandleInternal`:
                 //
-                // Those reflection natives are consecutive statements of one BCL method, so none can
-                // be pinned alone by any guest source: `TestMethodHandleRegistry.fs` drives each
-                // directly, and `TestNativeRuntimeMethodHandle.fs` pins their pure cores.
-                // `sourcesPure/MakeGenericMethodConstraintSatisfied.cs` reaches the same gap by the
-                // same path.
+                //   TODO: Signature_Init method signature parsing is not implemented;
+                //   got non-null Numeric (NativeInt (MethodHandlePtr 25L))
+                //
+                // The handler implements the *field* arm only — `requireNullMethodHandle`
+                // (NativeSignature.fs:95) is the guard that rejects the method arm — so what is
+                // missing is parsing a MethodDef signature blob into the `Signature` object's
+                // `_returnTypeORfieldType` / `_arguments` / `_sig` fields, which is its own change.
+                //
+                // `sourcesPure/MakeGenericMethodConstraintSatisfied.cs` covers the `GetMethodBase`
+                // walk itself and passes; it does not go on to read parameters.
                 "SprintfBasic"
             ]
 

@@ -467,8 +467,16 @@ module Intrinsics =
                 let valueArg, state = IlMachineState.popEvalStack currentThread state
                 let byrefArg, state = IlMachineState.popEvalStack currentThread state
 
+                let narrowed, counters =
+                    EvalStackValue.convToInt32 valueArg state.PointerHashCounters
+
+                let state =
+                    { state with
+                        PointerHashCounters = counters
+                    }
+
                 let value =
-                    match EvalStackValue.convToInt32 valueArg with
+                    match narrowed with
                     | EvalStackValue.Int32 (Int32Source.Verbatim value) -> value
                     | converted ->
                         failwith
@@ -581,8 +589,16 @@ module Intrinsics =
                 let valueArg, state = IlMachineState.popEvalStack currentThread state
                 let byrefArg, state = IlMachineState.popEvalStack currentThread state
 
+                let narrowed, counters =
+                    EvalStackValue.convToInt32 valueArg state.PointerHashCounters
+
+                let state =
+                    { state with
+                        PointerHashCounters = counters
+                    }
+
                 let value =
-                    match EvalStackValue.convToInt32 valueArg with
+                    match narrowed with
                     | EvalStackValue.Int32 (Int32Source.Verbatim value) -> value
                     | converted ->
                         failwith
