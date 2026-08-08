@@ -2469,3 +2469,34 @@ public static class StreamVersionLibrary
             )
 
         exn.Message |> shouldContainText "is not loaded"
+
+    [<Test>]
+    let ``GetFullName reports nothing at all for an empty simple name`` () : unit =
+        // `TextualIdentityParser::ToString` clears its output and returns as soon as the
+        // simple name is empty, so the display name is the empty string — not the remaining
+        // segments with the name missing, which is what an implementation that simply appended
+        // an empty name would produce.
+        //
+        // Like the WindowsRuntime case this has no real-runtime oracle: CoreCLR refuses to
+        // load such an image at all. PawPrint's loader has no such check, so a guest can reach
+        // it, and the expectation is read off upstream rather than observed.
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let nameless = displayNameImage "" (System.Version (4, 3, 2, 1)) "EN-gb" 0x110 null
+
+        realRuntimeDisplayName nameless |> shouldEqual None
+
+        let image =
+            Roslyn.compileAssembly guestAssemblyName OutputKind.ConsoleApplication [] [ guestSource ]
+
+        let prepared = prepareGuest loggerFactory image
+        let loaded, state = withLoadedAssembly loggerFactory nameless prepared.State
+
+        // Deliberately a fixture that would otherwise have plenty to say — a culture, a
+        // processor architecture and the retargetable bit — so "empty" cannot be mistaken for
+        // "nothing to report".
+        let _state, actual =
+            invokeGetFullName loggerFactory prepared state loaded.Name.FullName
+
+        actual |> shouldEqual ""

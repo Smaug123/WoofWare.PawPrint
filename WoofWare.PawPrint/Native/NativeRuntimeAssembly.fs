@@ -162,6 +162,20 @@ module NativeRuntimeAssembly =
         (flags : int)
         : string
         =
+        // `ToString` clears its output and returns the moment the simple name is empty, so
+        // such an assembly's display name is the empty string rather than a nameless list of
+        // the remaining segments. Unreachable through the real runtime, which refuses to load
+        // an image whose `Name` column is empty ("The given assembly name was invalid"), but
+        // PawPrint's loader has no such check.
+        //
+        // Note this is a different situation from `GetSimpleName`, which fails loudly on the
+        // same column. There, CoreCLR only yields "" when the metadata import itself failed —
+        // a corrupted image by its own assertion — whereas here `ToString` branches on the
+        // value deliberately, for a row that parsed perfectly well.
+        if System.String.IsNullOrEmpty simpleName then
+            ""
+        else
+
         let built = System.Text.StringBuilder ()
 
         built.Append (escapeDisplayNameSegment simpleName)
