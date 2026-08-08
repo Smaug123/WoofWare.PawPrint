@@ -717,9 +717,12 @@ module Program =
                         loggerFactory
                         baseTypes
                         ImmutableArray.Empty // No type generics for main method's declaring type
-                        { rawMainMethod with
-                            Body = MethodBody.Il (MethodInstructions.onlyRet ())
-                        }
+                        (rawMainMethod
+                         |> MethodInfo.mapCore (fun core ->
+                             { core with
+                                 Body = MethodBody.Il (MethodInstructions.onlyRet ())
+                             }
+                         ))
                         None
                         dumped.Name
                         ImmutableArray.Empty

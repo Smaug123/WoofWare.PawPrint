@@ -748,7 +748,7 @@ public unsafe struct PointerWrapper
         =
         let objectToString =
             bct.Object.Methods
-            |> List.find (fun method -> method.Name = "ToString" && method.Parameters.IsEmpty)
+            |> List.find (fun method -> method.Name = "ToString" && (MethodInfo.arity method = 0))
 
         let state, signature =
             TypeMethodSignature.map

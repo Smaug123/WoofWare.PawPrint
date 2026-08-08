@@ -66,7 +66,7 @@ public static class Entry
         let rawMethod =
             threadType.Methods
             |> List.filter (fun method ->
-                match method.NativeImport with
+                match method.TryNativeImport with
                 | Some import ->
                     import.ModuleName = "QCall"
                     && import.EntryPointName = "ThreadNative_YieldThread"

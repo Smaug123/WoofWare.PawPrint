@@ -2,6 +2,7 @@ namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
 open System.Reflection
+open System.Reflection.Metadata
 
 type MethodHandle =
     private
@@ -43,6 +44,18 @@ module MethodHandleRegistry =
             NextHandle = 1L
         }
 
+    /// A `MethodHandle` is the identity the guest sees through `RuntimeMethodHandle`, so it is
+    /// keyed on a MethodDef token. A synthesised method has no such token, and no reflection
+    /// surface either — nothing can name it, so nothing can ask for its handle. Reaching here
+    /// with one means some path handed a runtime-supplied method to reflection, which is a bug in
+    /// that path rather than something to paper over with a fabricated token.
+    let private requireDeclaredMethod (method : MethodInfo<'tyGen, 'methGen, 'vars>) : MethodDefinitionHandle =
+        match method.TryMetadata with
+        | Some facts -> facts.Handle
+        | None ->
+            failwith
+                $"cannot mint a RuntimeMethodHandle for %O{method}: it is synthesised by the runtime and has no MethodDef token"
+
     /// Build a `MethodHandle` describing the canonical identity of a concretised method.
     let private makeMethodHandle
         (allConcreteTypes : AllConcreteTypes)
@@ -51,7 +64,7 @@ module MethodHandleRegistry =
         =
         {
             AssemblyFullName = method.DeclaringType.Assembly.FullName
-            MethodHandle = ComparableMethodDefinitionHandle.Make method.Handle
+            MethodHandle = ComparableMethodDefinitionHandle.Make (requireDeclaredMethod method)
             DeclaringType =
                 AllConcreteTypes.findExistingConcreteType
                     allConcreteTypes
@@ -116,7 +129,7 @@ module MethodHandleRegistry =
         {
             AssemblyFullName = declaringType.Assembly.FullName
             DeclaringType = declaringHandle
-            MethodHandle = ComparableMethodDefinitionHandle.Make method.Handle
+            MethodHandle = ComparableMethodDefinitionHandle.Make (requireDeclaredMethod method)
             MethodGenerics = []
         }
 

@@ -130,7 +130,7 @@ public static class Entry
             (fun methods ->
                 methods
                 |> List.filter (fun method ->
-                    match method.NativeImport with
+                    match method.TryNativeImport with
                     | Some import -> import.ModuleName = "QCall" && import.EntryPointName = "ThreadNative_SpinWait"
                     | None -> false
                 )

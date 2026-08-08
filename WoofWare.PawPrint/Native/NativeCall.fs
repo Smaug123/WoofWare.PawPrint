@@ -16,7 +16,7 @@ type NativeCallContext =
 [<RequireQualifiedAccess>]
 module NativeCall =
     let tryQCallEntryPoint (ctx : NativeCallContext) : string option =
-        match ctx.Instruction.ExecutingMethod.NativeImport with
+        match ctx.Instruction.ExecutingMethod.TryNativeImport with
         | Some import when import.ModuleName = "QCall" -> Some import.EntryPointName
         | _ -> None
 
@@ -635,7 +635,7 @@ module NativeCall =
             match instruction.ExecutingMethod.Body with
             | MethodBody.InternalCall -> "InternalCall"
             | MethodBody.PInvoke ->
-                match instruction.ExecutingMethod.NativeImport with
+                match instruction.ExecutingMethod.TryNativeImport with
                 | Some import -> $"PInvokeImpl %s{import.ModuleName}!%s{import.EntryPointName}"
                 | None -> "PInvokeImpl"
             | MethodBody.RuntimeProvided behaviour ->

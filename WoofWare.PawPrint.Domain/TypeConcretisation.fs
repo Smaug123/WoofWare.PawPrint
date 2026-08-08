@@ -1230,22 +1230,20 @@ module Concretization =
             method.Generics
             |> ImmutableArray.map (fun (gp, md) -> methodArgs.[gp.SequenceNumber])
 
+        // Concretization rewrites only the universal facts — declaring type, body, generics,
+        // signature — so whichever tail the method carries passes through untouched.
         let concretizedMethod : MethodInfo<_, _, _> =
-            {
-                DeclaringType = concretizedDeclaringType
-                Handle = method.Handle
-                Name = method.Name
-                Body = body
-                Parameters = method.Parameters
-                Generics = genericHandles
-                Signature = signature
-                RawSignature = method.RawSignature
-                CustomAttributes = method.CustomAttributes
-                MethodAttributes = method.MethodAttributes
-                ImplAttributes = method.ImplAttributes
-                NativeImport = method.NativeImport
-                IsStatic = method.IsStatic
-            }
+            method
+            |> MethodInfo.mapCore (fun core ->
+                {
+                    DeclaringType = concretizedDeclaringType
+                    Name = core.Name
+                    Body = body
+                    Generics = genericHandles
+                    Signature = signature
+                    IsStatic = core.IsStatic
+                }
+            )
 
         // Every ConcreteTypeHandle this method emits is subsequently fed to
         // CliType.zeroOf: locals when the frame is set up (MethodState.Empty),
