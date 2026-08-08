@@ -434,6 +434,51 @@ module NativeRuntimeAssembly =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 flags)) ctx.Thread state
 
             NativeHandlerResult.completed state |> Some
+        | "AssemblyNative_GetHashAlgorithm",
+          "System.Private.CoreLib",
+          "System.Reflection",
+          "RuntimeAssembly",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "QCallAssembly",
+                                              qCallAssemblyGenerics) ],
+          MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                                      "System.Configuration.Assemblies",
+                                                                      "AssemblyHashAlgorithm",
+                                                                      hashAlgorithmGenerics)) when
+            qCallAssemblyGenerics.IsEmpty && hashAlgorithmGenerics.IsEmpty
+            ->
+            let operation = "AssemblyNative_GetHashAlgorithm"
+
+            if instruction.Arguments.Length <> 1 then
+                failwith $"%s{operation}: expected one native argument, got %d{instruction.Arguments.Length}"
+
+            let assemblyFullName =
+                instruction.Arguments.[0]
+                |> NativeCall.qCallAssemblyToAssemblyFullName operation state
+
+            let assembly =
+                state.LoadedAssembly' assemblyFullName
+                |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
+
+            // CoreCLR returns `pAssembly->GetPEAssembly()->GetHashAlgId()`, which is the
+            // `HashAlgId` column of the manifest row read through `GetAssemblyProps`. Unlike
+            // the `Flags` column next door, that call applies no normalisation to this one —
+            // it is `*pulHashAlgId = getHashAlgIdOfAssembly(pRecord)` and nothing else
+            // (mdinternalro.cpp) — so the column verbatim is the whole answer.
+            //
+            // Like `GetFlags` and unlike the rest of this family the value is a return value
+            // rather than an out-parameter. `AssemblyHashAlgorithm` is an Int32-backed enum,
+            // so it travels on the eval stack as its underlying primitive; the column itself
+            // is a `ULONG`, but the QCall's own signature is `INT32` and CoreCLR does the
+            // same reinterpretation.
+            let state =
+                IlMachineState.pushToEvalStack
+                    (CliType.Numeric (CliNumericType.Int32 (int assembly.HashAlgorithm)))
+                    ctx.Thread
+                    state
+
+            NativeHandlerResult.completed state |> Some
         | "AssemblyNative_GetLocale",
           "System.Private.CoreLib",
           "System.Reflection",

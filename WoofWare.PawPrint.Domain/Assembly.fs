@@ -382,6 +382,29 @@ type DumpedAssembly =
         metadata.GetAssemblyDefinition().Flags
 
     /// <summary>
+    /// The raw <c>HashAlgId</c> column of this assembly's manifest row (ECMA-335 II.23.1.1):
+    /// the algorithm used to hash the assembly's other files, <c>0x8004</c> (SHA1) for
+    /// anything Roslyn emits.
+    /// </summary>
+    /// <remarks>
+    /// Unlike its three siblings above, this one is not a case where <c>AssemblyName</c>
+    /// would give a different answer: <c>AssemblyName.HashAlgorithm</c> carries the column
+    /// faithfully, including values outside the enum, so either source would do. It is the
+    /// column for two other reasons. First, that property is <c>[Obsolete]</c> as
+    /// SYSLIB0037 ("obsolete and not supported"), so reading it is a build error here and a
+    /// standing bet that the BCL keeps honouring a member it has announced it does not
+    /// support. Second, CoreCLR's <c>PEAssembly::GetHashAlgId</c> reads the column, so this
+    /// is what the primitive being reproduced actually consults.
+    ///
+    /// The column is a <c>ULONG</c> and the format constrains it no further than that, so
+    /// this can hold a value no <c>AssemblyHashAlgorithm</c> case names. CoreCLR passes such
+    /// a value through unexamined and so must anything reproducing it.
+    /// </remarks>
+    member this.HashAlgorithm : System.Reflection.AssemblyHashAlgorithm =
+        let metadata = this.PeReader.GetMetadataReader ()
+        metadata.GetAssemblyDefinition().HashAlgorithm
+
+    /// <summary>
     /// Whether this and <paramref name="other"/> are byte-identical PE images, i.e. the same
     /// assembly by every observation this interpreter can make of it.
     /// </summary>
