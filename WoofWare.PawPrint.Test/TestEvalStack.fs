@@ -110,7 +110,7 @@ module TestEvalStack =
             ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange, [ ByrefProjection.ByteOffset 4 ])
 
         match EvalStackValue.toUnsignedNativeInt (EvalStackValue.ManagedPointer ptr) with
-        | Some (UnsignedNativeIntSource.FromManagedPointer actual) ->
+        | UnsignedNativeIntSource.FromManagedPointer actual ->
             match actual with
             | ManagedPointerSource.Byref (ByrefRoot.PeByteRange actualPeByteRange, [ ByrefProjection.ByteOffset 4 ]) when
                 actualPeByteRange = peByteRange
@@ -813,9 +813,9 @@ module TestEvalStack =
     // ---------------------------------------------------------------------------
 
     /// One of the six unchecked narrowing conversions, normalised so a single
-    /// property can range over all of them: the four sub-32-bit conversions return
-    /// `int32 option`, and `conv.i4` / `conv.u4` return an `EvalStackValue`, so both
-    /// are reduced to the int32 the opcode pushes.
+    /// property can range over all of them: the four sub-32-bit conversions return the
+    /// pushed int32 directly, while `conv.i4` / `conv.u4` return the `EvalStackValue`
+    /// they push, so the latter are unwrapped to the same int32.
     type private NarrowingConv =
         {
             Name : string
@@ -824,20 +824,16 @@ module TestEvalStack =
             Apply : EvalStackValue -> PointerHashCounters -> int32 * PointerHashCounters
         }
 
-    let private ofOptionReturning
+    let private ofInt32Returning
         (name : string)
         (destinationBits : int)
-        (f : EvalStackValue -> PointerHashCounters -> (int32 * PointerHashCounters) option)
+        (f : EvalStackValue -> PointerHashCounters -> int32 * PointerHashCounters)
         : NarrowingConv
         =
         {
             Name = name
             DestinationBits = destinationBits
-            Apply =
-                fun value counters ->
-                    match f value counters with
-                    | Some result -> result
-                    | None -> failwith $"%s{name}: conversion returned None for %O{value}"
+            Apply = f
         }
 
     let private ofEvalStackReturning
@@ -857,10 +853,10 @@ module TestEvalStack =
 
     let private narrowingConversions : NarrowingConv list =
         [
-            ofOptionReturning "conv.i1" 8 EvalStackValue.convToInt8
-            ofOptionReturning "conv.u1" 8 EvalStackValue.convToUInt8
-            ofOptionReturning "conv.i2" 16 EvalStackValue.convToInt16
-            ofOptionReturning "conv.u2" 16 EvalStackValue.convToUInt16
+            ofInt32Returning "conv.i1" 8 EvalStackValue.convToInt8
+            ofInt32Returning "conv.u1" 8 EvalStackValue.convToUInt8
+            ofInt32Returning "conv.i2" 16 EvalStackValue.convToInt16
+            ofInt32Returning "conv.u2" 16 EvalStackValue.convToUInt16
             ofEvalStackReturning "conv.i4" EvalStackValue.convToInt32
             ofEvalStackReturning "conv.u4" EvalStackValue.convToUInt32
         ]
