@@ -78,12 +78,26 @@ module HostRuntimeConfig =
     let forAssembly (dllPath : string) : AppContextProperties =
         let configPath = RuntimeConfig.pathForAssembly dllPath
 
-        let main =
-            if not (File.Exists configPath) then
-                AppContextProperties.empty
-            else
+        // Attempt the read and treat only a genuine absence as absence, because that is the
+        // only case hostpolicy forgives: `ensure_parsed` calls `pal::fullpath`, which is
+        // `realpath` and returns false *just* for ENOENT, and anything that resolves goes on
+        // to `parse_file`. So a path that exists but is not a readable file — a directory of
+        // that name, most obviously — is one a real host resolves, fails to mmap, and refuses
+        // to launch on. `File.Exists` would call it a missing sidecar and start the guest with
+        // no properties at all.
+        let contents =
+            try
+                Some (File.ReadAllBytes configPath)
+            with
+            | :? FileNotFoundException
+            | :? DirectoryNotFoundException -> None
 
-            match RuntimeConfig.parse (File.ReadAllBytes configPath) with
+        let main =
+            match contents with
+            | None -> AppContextProperties.empty
+            | Some bytes ->
+
+            match RuntimeConfig.parse bytes with
             | Ok properties -> properties
             | Error e -> failwith $"Could not read %s{configPath}: %s{e.Message}"
 

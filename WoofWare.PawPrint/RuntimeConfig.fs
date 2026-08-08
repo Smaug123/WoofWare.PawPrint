@@ -294,6 +294,23 @@ module RuntimeConfig =
             // its value is.
             let raw = value.GetRawText ()
 
+            // Before anything else: rapidjson stores every number as an int64, a uint64 or a
+            // double, and fails the *whole document* with kParseErrorNumberTooBig when it fits
+            // in none of them. `Utf8JsonReader` has no such limit — it accepts the token and
+            // hands back an infinity — so a magnitude past double's range is a file a real
+            // host refuses to read at all, not a value we merely decline to render. The
+            // difference matters: a dev sidecar a real host rejects outright is one it
+            // ignores and launches without.
+            //
+            // Underflow is not the same case. rapidjson reports no error for `1e-400`, it just
+            // stores zero, so that stays an ordinary unrenderable real below.
+            match value.TryGetDouble () with
+            | true, d when Double.IsInfinity d ->
+                RuntimeConfigError.HostWouldReject
+                    $"runtimeconfig.json property '%s{name}' has the numeric value %s{raw}, which is too large for the double a real host would store it in. rapidjson fails the entire document with 'Number too big to be stored in double', so this configuration does not launch on CoreCLR at all."
+                |> Error
+            | _ ->
+
             let looksIntegral = not (raw.Contains '.' || raw.Contains 'e' || raw.Contains 'E')
 
             if not looksIntegral then

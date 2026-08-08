@@ -473,6 +473,7 @@ module TestImpureCases =
                 FileName = "AssemblyLocationEmpty.cs"
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
