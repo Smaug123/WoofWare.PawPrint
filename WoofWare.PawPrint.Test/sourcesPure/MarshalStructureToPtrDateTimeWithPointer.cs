@@ -48,13 +48,11 @@ public class Program
             {
                 Marshal.StructureToPtr(s, p, false);
                 if (Marshal.ReadInt32(p, 0) != 7) return 2;
-                // The pointer field is deliberately not read back. It marshals correctly
-                // — the destination cell holds the pointer with its provenance — but
-                // `Marshal.ReadIntPtr` then takes a byte view over that cell, which
-                // `executeLdind` refuses. That is an unrelated gap in reading native memory
-                // that holds a pointer, not a marshalling one; what this case pins is that a
-                // struct carrying a live pointer marshals at all, which a whole-struct byte
-                // read of the source made impossible.
+                // The pointer field is deliberately not read back: `Marshal.ReadIntPtr` over
+                // the marshalled cell is refused, though the same buffer written by
+                // `Marshal.WriteIntPtr` reads back fine. Tracked as issue #801. What this case
+                // pins is that a struct carrying a live pointer marshals at all, which a
+                // whole-struct byte read of the source made impossible.
                 if (BitConverter.Int64BitsToDouble(Marshal.ReadInt64(p, 16)) != s.When.ToOADate()) return 4;
 
                 // Marshal into the *same* buffer again. The first pass left a pointer cell at

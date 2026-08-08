@@ -242,7 +242,17 @@ module StructMarshalStub =
                                 {
                                     Placement = placement
                                     Kind = StructMarshalFieldKind.CopyBytes
-                                    Value = contents
+                                    // Unwrap primitive-like wrappers. The native image has no
+                                    // notion of `System.IntPtr`-the-struct — it holds a
+                                    // pointer-sized value — and writing the wrapper installs a
+                                    // value-type cell in native memory whose `_value` field
+                                    // carries the provenance. `Marshal.ReadIntPtr` then takes a
+                                    // byte view over that cell and is refused, where the same
+                                    // buffer written by `Marshal.WriteIntPtr` reads back fine.
+                                    // Composites reach this arm only when they are primitive-like
+                                    // (see `isCopyableVerbatim`), so this unwraps exactly the
+                                    // cases that need it.
+                                    Value = CliType.unwrapPrimitiveLikeDeep contents
                                 }
                     else
 
@@ -502,14 +512,13 @@ module StructMarshalStub =
 
         let byteView = byteType operation baseClassTypes state
 
-        /// Write `value` at `nativeOffset` in the destination, as a `stind` through a byte-view
-        /// byref would — which is what the guest's own `Marshal.Write*` does after pointer
-        /// arithmetic.
-        let writeAt (nativeOffset : int) (value : CliType) (state : IlMachineState) : IlMachineState =
-            let target =
-                ManagedPointerByteView.addByteOffset baseClassTypes state byteView nativeOffset destination
+        /// The address of byte `nativeOffset` of the destination, as a byte-view byref — the same
+        /// shape the guest's own pointer arithmetic produces before a `stind`.
+        let addressOf (nativeOffset : int) (state : IlMachineState) : ManagedPointerSource =
+            ManagedPointerByteView.addByteOffset baseClassTypes state byteView nativeOffset destination
 
-            IlMachineState.writeManagedByrefWithBase baseClassTypes state target value
+        let writeAt (nativeOffset : int) (value : CliType) (state : IlMachineState) : IlMachineState =
+            IlMachineState.writeManagedByrefWithBase baseClassTypes state (addressOf nativeOffset state) value
 
         /// Write the unmanaged image: each step contributes its native value at its placement, and
         /// every byte not covered by a step is zeroed.
@@ -542,18 +551,19 @@ module StructMarshalStub =
                 let offset = step.Placement.NativeOffset
 
                 if offset > cursor then
-                    let gapAt =
-                        ManagedPointerByteView.addByteOffset baseClassTypes state byteView cursor destination
-
-                    state <- CellAwareMemOps.clear baseClassTypes operation state gapAt (offset - cursor)
+                    state <-
+                        CellAwareMemOps.clear baseClassTypes operation state (addressOf cursor state) (offset - cursor)
 
                 cursor <- max cursor (offset + step.Placement.NativeSize.Size)
 
             if cursor < plan.NativeSize.Size then
-                let gapAt =
-                    ManagedPointerByteView.addByteOffset baseClassTypes state byteView cursor destination
-
-                state <- CellAwareMemOps.clear baseClassTypes operation state gapAt (plan.NativeSize.Size - cursor)
+                state <-
+                    CellAwareMemOps.clear
+                        baseClassTypes
+                        operation
+                        state
+                        (addressOf cursor state)
+                        (plan.NativeSize.Size - cursor)
 
             // Fields last, and in declaration order: under explicit layout two fields may cover
             // the same bytes, and CoreCLR marshals them in declaration order, so the later one
