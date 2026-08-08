@@ -208,6 +208,12 @@ module StructMarshalStub =
             let steps =
                 placements
                 |> List.map (fun placement ->
+                    // Known limitation (#802): when two or more fields overlap this range,
+                    // `DereferenceFieldById` answers by byte-rendering the storage, which a
+                    // pointer cell has no rendering for. So an overlapped `IntPtr` field throws
+                    // from here rather than marshalling. The single-covering-field case — every
+                    // sequential layout, and most explicit ones — returns the cell directly and
+                    // is unaffected.
                     let contents = CliValueType.DereferenceFieldById placement.Field.Id vt
 
                     // A `[MarshalAs]` descriptor selects the field's native type, and CoreCLR
@@ -535,6 +541,14 @@ module StructMarshalStub =
         /// such a cell whenever the struct has a pointer field. Writing each field slot as a typed
         /// value replaces the cell wholesale, which both clears it and is what the marshal has to
         /// do anyway.
+        ///
+        /// Known limitation (#801): that reasoning holds only while the gaps are gaps in *both*
+        /// the old and the new contents of the buffer. Reuse one buffer for two different struct
+        /// layouts — `{ IntPtr; DateTime }` then `{ int; DateTime }` — and the second layout's
+        /// padding at bytes 4..7 lands inside the first's pointer cell, where the gap clear
+        /// byte-walks into it and throws. CoreCLR's `initblk` has no notion of cells and so has no
+        /// such trouble; closing it needs a "drop any cells overlapping this range" operation on
+        /// the native memory pool, which does not exist yet.
         let writeImage
             (plan : StructMarshalPlan)
             (valueFor : StructMarshalStep -> CliType)
