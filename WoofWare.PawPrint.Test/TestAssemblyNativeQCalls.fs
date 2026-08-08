@@ -110,6 +110,33 @@ public static class MaskedFlags
 
         Roslyn.compileAssembly maskedFlagsAssemblyName OutputKind.DynamicallyLinkedLibrary [] [ source ]
 
+    /// Every image Roslyn emits carries SHA1 (`0x8004`) in its `HashAlgId` column unless
+    /// told otherwise, and corelib is SHA1 too, so without an assembly that says something
+    /// else nothing here could tell a handler that reads the column from one that returns a
+    /// constant. `[assembly: AssemblyAlgorithmId]` writes the column directly.
+    ///
+    /// The value is deliberately not an `AssemblyHashAlgorithm` case. ECMA-335 II.23.1.1
+    /// makes the column a `ULONG` and constrains it no further, CoreCLR's `GetAssemblyProps`
+    /// hands it back unexamined, and the managed caller casts it to the enum without
+    /// validating — so an unnamed value is a legal thing for a guest to see, and pinning it
+    /// down here also rules out a handler that tried to canonicalise through the enum.
+    let private hashAlgorithmAssemblyName = "WoofWare.PawPrint.HashAlgorithmTestLibrary"
+
+    let private hashAlgorithmColumn = 0x1234
+
+    let private hashAlgorithmLibraryImage () : byte[] =
+        let source =
+            $"""
+[assembly: System.Reflection.AssemblyAlgorithmId(0x{hashAlgorithmColumn:x}u)]
+
+public static class HashAlgorithmLibrary
+{{
+    public static int Value => 1;
+}}
+"""
+
+        Roslyn.compileAssembly hashAlgorithmAssemblyName OutputKind.DynamicallyLinkedLibrary [] [ source ]
+
     /// An image whose `PublicKey` blob is non-empty but whose `Flags` column leaves the
     /// `afPublicKey` bit clear. No compiler emits that — Roslyn sets the bit whenever it
     /// signs — but the format permits it, and `GetAssemblyProps` normalises it away, so it
@@ -448,6 +475,30 @@ public static class MaskedFlags
         match returned with
         | EvalStackValue.Int32 (Int32Source.Verbatim value) -> state, value
         | other -> failwith $"expected a verbatim Int32 return from AssemblyNative_GetFlags, got %O{other}"
+
+    /// Runs `AssemblyNative_GetHashAlgorithm` for `assemblyFullName` and pops its return
+    /// value. Same shape as `invokeGetFlags`: the answer is a return value, so a handler
+    /// that pushed nothing fails in `popEvalStack` rather than reading back as a sentinel.
+    let private invokeGetHashAlgorithm
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (prepared : Program.PreparedProgram)
+        (state : IlMachineState)
+        (assemblyFullName : string)
+        : IlMachineState * int
+        =
+        let baseClassTypes = prepared.BaseClassTypes
+
+        let qCallAssembly, state =
+            qCallAssemblyValue loggerFactory baseClassTypes assemblyFullName state
+
+        let state =
+            invokeQCall loggerFactory prepared "AssemblyNative_GetHashAlgorithm" [ qCallAssembly ] state
+
+        let returned, state = IlMachineState.popEvalStack prepared.EntryThread state
+
+        match returned with
+        | EvalStackValue.Int32 (Int32Source.Verbatim value) -> state, value
+        | other -> failwith $"expected a verbatim Int32 return from AssemblyNative_GetHashAlgorithm, got %O{other}"
 
     /// Runs the QCall for `assemblyFullName` and returns the heap address the handler wrote
     /// into the `StringHandleOnStack` (None if it left the slot at its preinitialised null).
@@ -1191,6 +1242,76 @@ public static class MaskedFlags
 
         let afPublicKey = 0x1
         flags |> shouldEqual afPublicKey
+
+    [<Test>]
+    let ``GetHashAlgorithm returns the manifest row's hash algorithm per assembly`` () : unit =
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let image =
+            Roslyn.compileAssembly guestAssemblyName OutputKind.ConsoleApplication [] [ guestSource ]
+
+        // Oracle for the guest: the column read independently from the same image.
+        let expectedGuestHashAlgorithm =
+            use peImage = new MemoryStream (image)
+            use peReader = new System.Reflection.PortableExecutable.PEReader (peImage)
+            let metadata = peReader.GetMetadataReader ()
+            int (metadata.GetAssemblyDefinition().HashAlgorithm)
+
+        // Stated as a sanity check rather than assumed: Roslyn's default is SHA1, which is
+        // also what makes `hashAlgorithmLibraryImage` necessary below.
+        let sha1 = 0x8004
+        expectedGuestHashAlgorithm |> shouldEqual sha1
+
+        let prepared = prepareGuest loggerFactory image
+        let guest = prepared.State.ActiveAssembly prepared.EntryThread
+
+        let state, guestHashAlgorithm =
+            invokeGetHashAlgorithm loggerFactory prepared prepared.State guest.Name.FullName
+
+        guestHashAlgorithm |> shouldEqual expectedGuestHashAlgorithm
+
+        // Corelib is SHA1 as well, so it is not a second answer — assert that rather than
+        // leaving it implied, since it is the reason the fixture below exists at all.
+        let state, corelibHashAlgorithm =
+            invokeGetHashAlgorithm loggerFactory prepared state prepared.BaseClassTypes.Corelib.Name.FullName
+
+        corelibHashAlgorithm |> shouldEqual sha1
+
+        // The assembly that does give a different answer, so a handler ignoring its argument
+        // — or returning a constant SHA1, which would satisfy both assertions above — cannot
+        // pass. Its column also names no `AssemblyHashAlgorithm` case, so this pins down that
+        // the value travels through uninterpreted.
+        let custom, state =
+            withLoadedAssembly loggerFactory (hashAlgorithmLibraryImage ()) state
+
+        let _state, customHashAlgorithm =
+            invokeGetHashAlgorithm loggerFactory prepared state custom.Name.FullName
+
+        customHashAlgorithm |> shouldEqual hashAlgorithmColumn
+        customHashAlgorithm |> shouldNotEqual guestHashAlgorithm
+
+    [<Test>]
+    let ``GetHashAlgorithm on an unloaded assembly fails loudly`` () : unit =
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let image =
+            Roslyn.compileAssembly guestAssemblyName OutputKind.ConsoleApplication [] [ guestSource ]
+
+        let prepared = prepareGuest loggerFactory image
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () ->
+                invokeGetHashAlgorithm
+                    loggerFactory
+                    prepared
+                    prepared.State
+                    "NotLoaded, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null"
+                |> ignore<IlMachineState * int>
+            )
+
+        exn.Message |> shouldContainText "is not loaded"
 
     [<Test>]
     let ``GetCodeBase reports no code base, and still writes the string`` () : unit =

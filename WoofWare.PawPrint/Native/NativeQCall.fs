@@ -89,6 +89,7 @@ module NativeQCall =
             "AssemblyNative_GetCodeBase", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetCodeBase"
             "AssemblyNative_GetEntryAssembly", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetEntryAssembly"
             "AssemblyNative_GetFlags", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetFlags"
+            "AssemblyNative_GetHashAlgorithm", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetHashAlgorithm"
             "AssemblyNative_GetLocale", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetLocale"
             "AssemblyNative_GetLocation", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetLocation"
             "AssemblyNative_GetPublicKey", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetPublicKey"
