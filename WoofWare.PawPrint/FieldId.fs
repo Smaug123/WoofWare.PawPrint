@@ -34,10 +34,10 @@ type FieldId =
 
     override this.ToString () : string =
         match this with
-        | FieldId.Metadata (declaringType, field, name) -> $"%O{declaringType}::%s{name} (%O{field.Get})"
+        | FieldId.Metadata (declaringType, field, name) -> $"%O{declaringType}::%s{name} (%O{field})"
         | FieldId.Named name -> name
         | FieldId.InlineArrayElement (declaringType, field, name, index) ->
-            $"%O{declaringType}::%s{name} (inline-array slot %d{index} of %O{field.Get})"
+            $"%O{declaringType}::%s{name} (inline-array slot %d{index} of %O{field})"
 
 [<RequireQualifiedAccess>]
 module FieldId =
@@ -69,6 +69,21 @@ module FieldId =
             FieldId.InlineArrayElement (declaringType, field, inlineArrayElementName name index, index)
 
     let named (name : string) : FieldId = FieldId.Named name
+
+    /// The metadata field definition this identity names, for the two cases that have one.
+    /// `Named` is a name-keyed identity with no metadata behind it, so it has none.
+    let tryFieldDefinition (field : FieldId) : ComparableFieldDefinitionHandle option =
+        match field with
+        | FieldId.Metadata (field = handle)
+        | FieldId.InlineArrayElement (field = handle) -> Some handle
+        | FieldId.Named _ -> None
+
+    /// The declaring type this identity is keyed to, for the two cases that have one.
+    let tryDeclaringType (field : FieldId) : ConcreteTypeHandle option =
+        match field with
+        | FieldId.Metadata (declaringType = declaringType)
+        | FieldId.InlineArrayElement (declaringType = declaringType) -> Some declaringType
+        | FieldId.Named _ -> None
 
     let exactlyEqual (left : FieldId) (right : FieldId) : bool =
         match left, right with
