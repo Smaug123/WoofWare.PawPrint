@@ -488,15 +488,18 @@ public static class GenericMethodHolder
         assembly.TryGetTopLevelTypeDef namespaceName typeName
         |> Option.defaultWith (fun () -> failwith $"type %s{namespaceName}.%s{typeName} not found")
 
-    /// Drive the `RuntimeMethodHandle.IsDynamicMethod` InternalCall directly, with the given
+    /// Drive a one-argument `RuntimeMethodHandle` InternalCall directly, with the given
     /// `RuntimeMethodHandleInternal` as its sole argument, and return what it pushed.
     ///
-    /// This native cannot be reached from guest C#/F# in isolation: `RuntimeType.GetMethodBase`
-    /// is its only BCL caller, and the very next thing that method does on the `false` branch is
-    /// `RuntimeMethodHandle.GetDeclaringType`, which bottoms out in the (still unimplemented)
-    /// `GetMethodTable` InternalCall. So the handler is exercised here rather than by a case in
-    /// `sourcesPure/`.
-    let private invokeIsDynamicMethod
+    /// The natives driven this way cannot be reached from guest C#/F# in isolation:
+    /// `RuntimeType.GetMethodBase` is the only BCL caller of `IsDynamicMethod`, and on the `false`
+    /// branch it immediately calls `RuntimeMethodHandle.GetDeclaringType`, whose body is
+    /// `GetRuntimeType(GetMethodTable(method))` -- so no guest source can reach either of those two
+    /// without reaching the other. `GetMethodBase` then goes on to `IsConstructor`
+    /// (RuntimeType.CoreCLR.cs:1934) and `HasMethodInstantiation`, neither of which is implemented,
+    /// so the whole chain is exercised here rather than by a case in `sourcesPure/`.
+    let private invokeRuntimeMethodHandleFCall
+        (methodName : string)
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (methodHandleInternal : CliType)
@@ -508,11 +511,11 @@ public static class GenericMethodHolder
 
         let rawMethod =
             runtimeMethodHandleType.Methods
-            |> List.filter (fun method -> method.Name = "IsDynamicMethod" && method.Parameters.Length = 1)
+            |> List.filter (fun method -> method.Name = methodName && method.Parameters.Length = 1)
             |> function
                 | [ method ] -> method
-                | [] -> failwith "RuntimeMethodHandle.IsDynamicMethod native method not found"
-                | methods -> failwith $"RuntimeMethodHandle.IsDynamicMethod was ambiguous: %d{methods.Length} matches"
+                | [] -> failwith $"RuntimeMethodHandle.%s{methodName} native method not found"
+                | methods -> failwith $"RuntimeMethodHandle.%s{methodName} was ambiguous: %d{methods.Length} matches"
 
         let state, method, _ =
             ExecutionConcretization.concretizeMethodWithTypeGenerics
@@ -539,7 +542,8 @@ public static class GenericMethodHolder
             with
             | Ok methodState -> methodState
             | Error missing ->
-                failwith $"Unexpected missing assembly references creating IsDynamicMethod frame: %O{missing}"
+                failwith
+                    $"Unexpected missing assembly references creating RuntimeMethodHandle.%s{methodName} frame: %O{missing}"
 
         let thread = ThreadId.ThreadId 0
 
@@ -564,10 +568,14 @@ public static class GenericMethodHolder
         let state =
             match NativeRuntimeMethodHandle.tryExecute ctx with
             | Some (NativeHandlerResult.Completed (state, _)) -> state
-            | Some result -> failwith $"unexpected IsDynamicMethod execution result: %O{result}"
-            | None -> failwith "RuntimeMethodHandle.IsDynamicMethod did not match"
+            | Some result -> failwith $"unexpected RuntimeMethodHandle.%s{methodName} execution result: %O{result}"
+            | None -> failwith $"RuntimeMethodHandle.%s{methodName} did not match"
 
         IlMachineState.popEvalStack thread state |> fst
+
+    let private invokeIsDynamicMethod = invokeRuntimeMethodHandleFCall "IsDynamicMethod"
+
+    let private invokeGetMethodTable = invokeRuntimeMethodHandleFCall "GetMethodTable"
 
     [<Test>]
     let ``IsDynamicMethod is false for a registry-minted handle`` () : unit =
@@ -611,6 +619,170 @@ public static class GenericMethodHolder
 
         ex.Message
         |> shouldContainText "RuntimeMethodHandle.IsDynamicMethod: registry id 12345 did not resolve"
+
+    [<Test>]
+    let ``GetMethodTable names the declaring type of a method on a non-generic type`` () : unit =
+        let loggerFactory, baseClassTypes, _, targetMethod, _, state = loadFixture ()
+        let declaringType = findDeclaringConcreteType state targetMethod
+
+        let expected =
+            AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes targetMethod.DeclaringType.Identity
+            |> Option.defaultWith (fun () -> failwith "declaring type was not registered in ConcreteTypes")
+
+        let internalHandle, registry =
+            MethodHandleRegistry.getOrAllocateInternalHandle
+                baseClassTypes
+                state.ConcreteTypes
+                declaringType
+                targetMethod
+                state.MethodHandles
+
+        let state =
+            { state with
+                MethodHandles = registry
+            }
+
+        invokeGetMethodTable loggerFactory baseClassTypes (CliType.ValueType internalHandle) state
+        |> shouldEqual (
+            EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed expected))
+        )
+
+    [<Test>]
+    let ``GetMethodTable preserves the instantiation of a closed generic declaring type`` () : unit =
+        // CoreCLR's `MethodDesc::GetMethodTable` returns the MethodTable of the chunk the MethodDesc
+        // lives in, which for a *shared* (reference-type) instantiation is the canonical
+        // `Holder<__Canon>`. PawPrint models no sharing at all, which is exactly CoreCLR's
+        // value-type-instantiation regime: the MethodTable of `Holder<int>.Target` is `Holder<int>`.
+        // So the instantiation must survive; collapsing it to the open generic definition (which is
+        // a different MethodTable in CoreCLR too, with IsGenericTypeDefinition = true) would be
+        // wrong, and this assertion is what fails if someone tries it.
+        let source =
+            """
+public class GenericHolder<T>
+{
+    public int Target(T t)
+    {
+        return 1;
+    }
+}
+"""
+
+        let loggerFactory, baseClassTypes, assembly, state =
+            loadAssemblyFromSource "GetMethodTableGenericTypeAssembly" source
+
+        let targetMethod = assembly |> findMethod "GenericHolder`1" "Target"
+
+        let declaringTypeInfo =
+            assembly.TypeDefs.[targetMethod.DeclaringType.Definition.Get]
+
+        let stk =
+            DumpedAssembly.signatureTypeKind baseClassTypes state._LoadedAssemblies declaringTypeInfo
+
+        let closedDefn =
+            TypeDefn.GenericInstantiation (
+                TypeDefn.FromDefinition (targetMethod.DeclaringType.Identity, stk),
+                ImmutableArray.Create (TypeDefn.PrimitiveType PrimitiveType.Int32)
+            )
+
+        let state, closedHandle =
+            IlMachineState.concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                assembly.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                closedDefn
+
+        let closedConcrete =
+            AllConcreteTypes.lookup closedHandle state.ConcreteTypes
+            |> Option.defaultWith (fun () -> failwith $"closed handle %O{closedHandle} not present in mapping")
+
+        // Guard the guard: if this were empty, the test could not distinguish an exact MethodTable
+        // from a canonicalised one.
+        closedConcrete.Generics.IsEmpty |> shouldEqual false
+
+        let internalHandle, registry =
+            MethodHandleRegistry.getOrAllocateInternalHandle
+                baseClassTypes
+                state.ConcreteTypes
+                closedConcrete
+                targetMethod
+                state.MethodHandles
+
+        let state =
+            { state with
+                MethodHandles = registry
+            }
+
+        invokeGetMethodTable loggerFactory baseClassTypes (CliType.ValueType internalHandle) state
+        |> shouldEqual (
+            EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed closedHandle))
+        )
+
+    [<Test>]
+    let ``GetMethodTable ignores the method instantiation bound to the handle`` () : unit =
+        // A method's MethodTable is its *declaring type*'s; the method's own generic arguments live
+        // on the MethodDesc, not the MethodTable. `Identity<int>` and `Identity<string>` therefore
+        // share a MethodTable, and this pins that the handle's `MethodGenerics` do not leak into it.
+        let source =
+            """
+public static class GenericMethodHolder
+{
+    public static T Identity<T>(T t)
+    {
+        return t;
+    }
+}
+"""
+
+        let loggerFactory, baseClassTypes, assembly, state =
+            loadAssemblyFromSource "GetMethodTableGenericMethodAssembly" source
+
+        let targetMethod = assembly |> findMethod "GenericMethodHolder" "Identity"
+
+        let concretizeWith (methodGeneric : TypeDefn) (state : IlMachineState) =
+            let state, concretized, _ =
+                ExecutionConcretization.concretizeMethodWithTypeGenerics
+                    loggerFactory
+                    baseClassTypes
+                    ImmutableArray.Empty
+                    targetMethod
+                    (Some (ImmutableArray.Create methodGeneric))
+                    assembly.Name
+                    ImmutableArray.Empty
+                    state
+
+            let internalHandle, registry =
+                MethodHandleRegistry.getOrAllocateConcreteInternalHandle
+                    baseClassTypes
+                    state.ConcreteTypes
+                    concretized
+                    state.MethodHandles
+
+            internalHandle,
+            { state with
+                MethodHandles = registry
+            }
+
+        let intHandle, state =
+            concretizeWith (TypeDefn.PrimitiveType PrimitiveType.Int32) state
+
+        let stringHandle, state =
+            concretizeWith (TypeDefn.PrimitiveType PrimitiveType.String) state
+
+        let expected =
+            AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes targetMethod.DeclaringType.Identity
+            |> Option.defaultWith (fun () -> failwith "declaring type was not registered in ConcreteTypes")
+
+        let expectedValue =
+            EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed expected))
+
+        invokeGetMethodTable loggerFactory baseClassTypes (CliType.ValueType intHandle) state
+        |> shouldEqual expectedValue
+
+        invokeGetMethodTable loggerFactory baseClassTypes (CliType.ValueType stringHandle) state
+        |> shouldEqual expectedValue
 
     [<Test>]
     let ``methodHandleIdOfRuntimeMethodHandleInternal accepts both canonical and post-rewrap forms`` () : unit =

@@ -83,6 +83,53 @@ module NativeRuntimeMethodHandle =
         match handle with
         | MethodHandle.FromMetadata _ -> false
 
+    /// The `MethodTable*` CoreCLR's `RuntimeMethodHandle::GetMethodTable` FCall
+    /// (runtimehandles.cpp:1344) returns: `pMethod->GetMethodTable()`, i.e. the MethodTable of the
+    /// chunk the MethodDesc lives in (method.hpp:3687). `Error` carries the reason this declaring
+    /// type cannot name a MethodTable, for the caller to prefix with its operation name.
+    ///
+    /// The instantiation is preserved verbatim rather than canonicalised. In CoreCLR the chunk's
+    /// MethodTable is the *canonical* one, which for a shared (reference-type) instantiation is
+    /// `Foo&lt;__Canon&gt;` -- but for a value-type instantiation `Foo&lt;int&gt;` is its own canonical
+    /// MethodTable, so returning the exact type is what CoreCLR itself does whenever the
+    /// instantiation is unshared. PawPrint has no code sharing at all: every handle its registry can
+    /// mint records an exact declaring type (`MethodHandleRegistry.makeMethodHandle` /
+    /// `makeOpenMethodHandle`), so the unshared regime is the only one there is, and this is the
+    /// faithful projection of it rather than an approximation of `__Canon`.
+    ///
+    /// Note this is not `RuntimeTypeHandleTarget.OpenGenericTypeDefinition`: that models
+    /// `typeof(Foo&lt;&gt;)`, whose MethodTable answers `IsGenericTypeDefinition = true`, which
+    /// `Foo&lt;__Canon&gt;` does not. The two are deliberately distinct MethodTables here (see the
+    /// `MethodTablePtr`/`TypeHandlePtr` CEQ arms in NativeIntSource.fs) as they are in CoreCLR.
+    ///
+    /// The one guest-observable difference this leaves is handle identity across reference-type
+    /// instantiations: real .NET shares one MethodDesc between `List&lt;string&gt;.Add` and
+    /// `List&lt;object&gt;.Add`, so their `MethodHandle.Value`s compare equal, while PawPrint mints
+    /// two registry ids. That difference is created by the registry recording exact declaring types,
+    /// not by this function, and would exist however this FCall answered.
+    let methodTableOfDeclaringType (declaringType : ConcreteTypeHandle) : Result<RuntimeTypeHandleTarget, string> =
+        match declaringType with
+        | ConcreteTypeHandle.Concrete _ -> Ok (RuntimeTypeHandleTarget.Closed declaringType)
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ ->
+            // TypeDescs own no MethodDescs in CoreCLR, so no MethodDesc's MethodTable can be one:
+            // `TypeHandleTag.forTarget` classifies exactly these shapes as TypeDesc-tagged, and
+            // `NativeIntSource.MethodTablePtr` requires producer sites to reject them.
+            Error
+                $"declaring type %O{declaringType} is a byref/pointer/function-pointer, which is a TypeDesc and owns no MethodTable; a MethodDesc's declaring type is never a TypeDesc"
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _ ->
+            // Arrays do have MethodTables (they are not TypeDescs), and in CoreCLR their `Get`/`Set`/
+            // `Address` MethodDescs really do live on them -- so passing an array handle straight
+            // through would be the CoreCLR-honest answer. It is refused only because nothing in
+            // PawPrint can mint such a handle today: both `MethodHandle` constructors resolve a
+            // nominal type identity plus generics, which always yields `Concrete`. Whoever teaches
+            // the registry about array intrinsic methods should delete this arm rather than work
+            // around it.
+            Error
+                $"declaring type %O{declaringType} is an array; array intrinsic methods (Get/Set/Address) are not represented in the method-handle registry, so no handle should name one"
+
     /// The instantiation CoreCLR's `MethodDesc::LoadMethodInstantiation` (method.cpp:793) reports
     /// for a method, expressed over PawPrint's representation so it can be pinned independently of
     /// the QCall plumbing. The two counts are exactly the ones `isGenericMethodDefinition` above
@@ -1000,6 +1047,47 @@ module NativeRuntimeMethodHandle =
 
             let state =
                 IlMachineState.pushToEvalStack (CliType.ofBool (isDynamicMethod methodHandle)) ctx.Thread state
+
+            NativeHandlerResult.completed state |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeMethodHandle",
+          "GetMethodTable",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System",
+                                              "RuntimeMethodHandleInternal",
+                                              generics) ],
+          MethodReturnType.Returns (ConcretePointer (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                                                       "System.Runtime.CompilerServices",
+                                                                                       "MethodTable",
+                                                                                       retGenerics))) when
+            generics.IsEmpty && retGenerics.IsEmpty
+            ->
+            // CoreCLR (runtimehandles.cpp:1344): asserts non-null and returns
+            // pMethod->GetMethodTable(). See `methodTableOfDeclaringType` above for what that
+            // MethodTable is and why the instantiation is preserved as-is.
+            //
+            // The only managed caller is `RuntimeMethodHandle.GetDeclaringType`
+            // (RuntimeHandles.cs:1094), whose body is `RuntimeTypeHandle.GetRuntimeType(pMT)` --
+            // i.e. `pMT->AuxiliaryData->ExposedClassObject`, which
+            // `MethodTableProjection.tryProjectAuxiliaryDataFieldAddress` serves by pre-allocating
+            // the canonical `RuntimeType`. So the `?? GetRuntimeTypeFromHandleSlow(...)` fallback in
+            // that accessor never fires, which is what lets this hand back a bare pointer identity.
+            let operation = "RuntimeMethodHandle.GetMethodTable"
+
+            let identity =
+                resolveMetadataIdentityFromArg operation state instruction.Arguments.[0]
+
+            let target =
+                match methodTableOfDeclaringType (identity.GetDeclaringType ()) with
+                | Ok target -> target
+                | Error reason -> failwith $"%s{operation}: %s{reason}"
+
+            let state =
+                IlMachineState.pushToEvalStack'
+                    (EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr target))
+                    ctx.Thread
+                    state
 
             NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib",

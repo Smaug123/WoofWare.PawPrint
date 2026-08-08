@@ -119,34 +119,30 @@ module TestFSharpPureCases =
             "SprintfBasic"
         ]
 
+    /// F# cases not expected to pass under PawPrint.
+    ///
+    /// A case named here is skipped as Inconclusive by `F# pure tests`, and only its *real-runtime*
+    /// behaviour is checked. Nothing therefore detects a parked case that has started passing, so
+    /// before recording that a case is blocked on a named primitive, un-park it and observe the
+    /// failure: parking it is what stops the claim being checked.
     let unimplemented : Set<string> =
         Set.ofList
             [
-                // The `RuntimeMethodHandle.IsGenericMethodDefinition` InternalCall this case was
-                // written to pin (issue #690) now works, and so do the `stelem` TypeReference
-                // token (issue #691) that `Printf`'s boxed-argument array reaches next, the
-                // `RuntimeMethodHandle_GetMethodInstantiation` QCall (issue #718), the
-                // `RuntimeMethodHandle_GetStubIfNeededSlow` QCall (issue #743) that
-                // `MakeGenericMethod` needs, and the `RuntimeMethodHandle.IsDynamicMethod`
-                // InternalCall. `sprintf` now gets as far as
-                // `System.RuntimeMethodHandle::GetMethodTable(RuntimeMethodHandleInternal) ->
-                // MethodTable*`, which is unimplemented.
+                // `sprintf` reflects over the format's argument types, which walks
+                // `RuntimeType.GetMethodBase`: a run of consecutive InternalCalls
+                // (`IsDynamicMethod`, then `GetDeclaringType`, whose body is
+                // `GetRuntimeType(GetMethodTable(method))`, then `IsConstructor`, then
+                // `HasMethodInstantiation`). It stops at the unimplemented
+                // `RuntimeMethodHandle.IsConstructor`
+                // (`System.RuntimeMethodHandle::IsConstructor(RuntimeMethodHandleInternal) -> bool`,
+                // runtimehandles.cpp:2135), reached at RuntimeType.CoreCLR.cs:1934, with
+                // `HasMethodInstantiation` (runtimehandles.cpp:1722) behind it on the method branch.
                 //
-                // That is the next step of the very same `RuntimeType.GetMethodBase` call
-                // (RuntimeType.CoreCLR.cs:1825-1836): having established the handle is not a
-                // dynamic method, it calls `RuntimeMethodHandle.GetDeclaringType`, whose body is
-                // `GetRuntimeType(GetMethodTable(method))`. So `IsDynamicMethod` cannot be pinned
-                // end-to-end by any guest source -- nothing can reach it without immediately
-                // reaching `GetMethodTable` too. It is pinned instead by
-                // `TestMethodHandleRegistry.fs`, which drives the InternalCall directly.
-                //
-                // Each of the earlier features is likewise pinned directly rather than through
-                // this case: `isGenericMethodDefinition` by
-                // `sourcesPure/MethodIsGenericMethodDefinition.cs`, `GetMethodInstantiation` by
-                // `sourcesPure/MethodGetGenericArguments.cs`, `GetStubIfNeededSlow` by
-                // `sourcesPure/MethodOnClosedGenericType.cs`, and the pure cores of the first two
-                // by `TestNativeRuntimeMethodHandle.fs`. So no earlier issue's coverage depends on
-                // this case passing.
+                // Being consecutive statements of one BCL method, none of those natives can be
+                // pinned alone by any guest source; `TestMethodHandleRegistry.fs` drives each
+                // directly instead, and `TestNativeRuntimeMethodHandle.fs` pins their pure cores.
+                // `sourcesPure/MakeGenericMethodConstraintSatisfied.cs` is parked at the same
+                // native by the same path.
                 "SprintfBasic"
             ]
 
