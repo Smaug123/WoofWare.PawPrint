@@ -305,6 +305,13 @@ module Program =
         (whatWeDid : WhatWeDid)
         : unit
         =
+        // Called once per interpreted IL instruction. `ActiveAssembly` is a by-name lookup over
+        // the loaded assemblies, and the parameterised `LogTrace` overload boxes its argument
+        // into an `obj[]` before the level is consulted, so both stay behind the check.
+        if not (logger.IsEnabled LogLevel.Trace) then
+            ()
+        else
+
         match whatWeDid with
         | WhatWeDid.Executed ->
             logger.LogTrace (
