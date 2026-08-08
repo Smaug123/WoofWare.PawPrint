@@ -275,6 +275,27 @@ type SynthesisedMethod =
     /// <c>MarshalNative_TryGetStructMarshalStub</c>'s has-layout-non-blittable arm.
     | StructMarshalStub
 
+[<RequireQualifiedAccess>]
+module SynthesisedMethod =
+    /// Whether calling this method obliges the runtime to initialise its declaring type first, as
+    /// calling a declared method does.
+    ///
+    /// For a synthesised method the declaring type is the *subject* rather than the *owner* — the
+    /// type it acts on, chosen so the method's identity is one-per-subject — so the ordinary
+    /// "calling a member initialises its type" rule does not follow. Whatever initialisation a
+    /// synthesised method's semantics genuinely require is part of those semantics and is
+    /// discharged by its interpreter: the struct-marshal stub, for instance, runs `loadClass` on
+    /// `StubHelpers.DateMarshaler` itself before calling into it.
+    ///
+    /// This is a total function on purpose. Answering `false` for every kind would be a fine
+    /// approximation today and a silent trap tomorrow: a future kind whose semantics *do* require
+    /// its subject initialised — a JIT-style allocation helper for a precise-init type, say, where
+    /// CoreCLR emits the check at the call site — would inherit the skip without anyone being
+    /// asked. Adding a case here breaks the build, which is where the question should be put.
+    let initialisesDeclaringType (kind : SynthesisedMethod) : bool =
+        match kind with
+        | SynthesisedMethod.StructMarshalStub -> false
+
 /// The facts that exist only because a method was read from a MethodDef row.
 ///
 /// Split out of <see cref="MethodInfo"/> so a synthesised method cannot be asked for them. Every
@@ -1289,6 +1310,18 @@ module MethodInfo =
                 declaringTypeNamespace
                 declaringTypeName
                 declaringTypeGenericParams
+
+        // `IsStatic` lives in the core because a synthesised method needs an answer, but for a
+        // metadata method it is also derivable from `MethodAttributes.Static`. Splitting the two
+        // apart made disagreement representable, so check it here at the one place both are in
+        // hand rather than leaving a silently-inconsistent method to be discovered downstream.
+        do
+            let staticByAttribute = methodAttrs.HasFlag MethodAttributes.Static
+            let staticBySignature = not methodSig.Header.IsInstance
+
+            if staticByAttribute <> staticBySignature then
+                failwith
+                    $"%s{declaringTypeName}::%s{methodName} disagrees with itself about being static: MethodAttributes says %b{staticByAttribute}, the signature header says %b{staticBySignature}"
 
         MethodInfo.Metadata (
             {
