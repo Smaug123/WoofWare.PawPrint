@@ -168,12 +168,22 @@ module NativeCall =
         | CliType.Numeric (CliNumericType.Int32 i) -> i
         | other -> failwith $"%s{operation}: expected Int32 argument, got %O{other}"
 
+    /// Extract the registry id from the m_handle of a `RuntimeFieldHandleInternal`, or `None` for
+    /// the null sentinel. The null sentinel has several spellings, because
+    /// `default(RuntimeFieldHandleInternal)` reaches PawPrint as whichever zero shape the
+    /// zero-initialising path produced -- a verbatim zero or a null managed pointer, in either the
+    /// runtime-pointer or the native-int tag. Recognise all four, exactly as
+    /// `methodHandleIdOfRuntimeMethodHandleInternal` does below: a caller that dispatches on "did
+    /// I get a field handle?" needs this to answer honestly for every spelling of null, rather than
+    /// throwing on the ones it happens not to list.
     let fieldHandleIdOfRuntimeFieldHandleInternal (operation : string) (arg : CliType) : int64 option =
         match CliType.unwrapPrimitiveLikeDeep arg with
         | CliType.RuntimePointer (CliRuntimePointer.FieldRegistryHandle id) -> Some id
         | CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L) -> None
+        | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null) -> None
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr id)) -> Some id
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) -> None
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)) -> None
         | other ->
             failwith
                 $"%s{operation}: expected RuntimeFieldHandleInternal containing a field-registry handle, got %O{other}"
