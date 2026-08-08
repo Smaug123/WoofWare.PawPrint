@@ -71,7 +71,7 @@ module TestFieldIdDiagnostics =
 
         message |> shouldContainText "not found"
         // The smoking gun: same field definition, different declaring type.
-        message |> shouldContainText "The same field definition IS present in storage"
+        message |> shouldContainText "keyed to a different declaring type"
         // And the actual identity present, so the reader can diff the two handles by eye.
         message
         |> shouldContainText (string (FieldId.metadata (handleFor bct.IntPtr) valueField.Handle valueField.Name))
@@ -95,8 +95,67 @@ module TestFieldIdDiagnostics =
 
         exn.Message |> shouldContainText "not found"
 
-        exn.Message.Contains "The same field definition IS present in storage"
-        |> shouldEqual false
+        exn.Message.Contains "keyed to a different declaring type" |> shouldEqual false
+
+    [<Test>]
+    let ``an out-of-range inline-array slot is not blamed on the declaring type`` () : unit =
+        // Inline-array repeats share their field definition *and* their declaring type with slot
+        // 0, so a missing slot index must not be reported as a declaring-type disagreement:
+        // nothing about the declaring type is wrong.
+        let valueField = intPtrValueField ()
+        let declaringType = handleFor bct.IntPtr
+
+        let slot (index : int) : CliField =
+            {
+                Id =
+                    FieldId.inlineArrayElement
+                        declaringType
+                        (ComparableFieldDefinitionHandle.Make valueField.Handle)
+                        valueField.Name
+                        index
+                Name = FieldId.inlineArrayElementName valueField.Name index
+                Contents = CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
+                Offset = None
+                Type = handleFor bct.IntPtr
+                MarshallingDescriptor = None
+            }
+
+        let stored =
+            [ slot 0 ; slot 1 ]
+            |> CliValueType.OfFields bct concreteTypes declaringType Layout.Default CharSet.Ansi
+
+        let requested =
+            FieldId.inlineArrayElement
+                declaringType
+                (ComparableFieldDefinitionHandle.Make valueField.Handle)
+                valueField.Name
+                7
+
+        let exn =
+            Assert.Throws (fun () -> CliValueType.DereferenceFieldById requested stored |> ignore)
+
+        exn.Message
+        |> shouldContainText "inline-array slot index that storage does not have"
+
+        exn.Message.Contains "keyed to a different declaring type" |> shouldEqual false
+
+    [<Test>]
+    let ``a same-row field of a different name is not mistaken for the requested one`` () : unit =
+        // `FieldDefinitionHandle` is a row index scoped to its defining module, so an object whose
+        // base chain spans assemblies can hold two unrelated fields with equal handles. Only a
+        // matching name makes "this is the same field at another instantiation" credible.
+        let valueField = intPtrValueField ()
+        let stored = intPtrValueKeyedTo (handleFor bct.IntPtr)
+
+        let requested =
+            FieldId.metadata (handleFor bct.Int32) valueField.Handle "a_completely_different_field"
+
+        let exn =
+            Assert.Throws (fun () -> CliValueType.DereferenceFieldById requested stored |> ignore)
+
+        exn.Message |> shouldContainText "not found"
+
+        exn.Message.Contains "keyed to a different declaring type" |> shouldEqual false
 
     [<Test>]
     let ``the failure message lists the identities that are present`` () : unit =

@@ -259,10 +259,12 @@ public class Outer<A>
 
     /// Check every instance field of `handle`'s storage against the two-producer agreement.
     /// Returns the (possibly assembly-loading) state alongside the violations found.
-    let private violationsFor (state : IlMachineState) (handle : ConcreteTypeHandle) : IlMachineState * Violation list =
-        let state, fields =
-            IlMachineState.collectAllInstanceFields loggerFactory bct state handle
-
+    let private violationsFor
+        (state : IlMachineState)
+        (handle : ConcreteTypeHandle)
+        (fields : CliField list)
+        : IlMachineState * Violation list
+        =
         ((state, []), fields)
         ||> List.fold (fun (state, acc) (field : CliField) ->
             let complain (state : IlMachineState) (complaint : string) =
@@ -333,21 +335,58 @@ public class Outer<A>
             let asResolved : FieldInfo<TypeDefn, TypeDefn> =
                 declaredField |> FieldInfo.mapTypeGenerics (fun i _ -> genericArgs.[i])
 
-            let state, accessSiteHandle, _ =
-                ExecutionConcretization.concretizeFieldDeclaringType
-                    loggerFactory
-                    bct
-                    ImmutableArray.Empty
-                    ImmutableArray.Empty
-                    asResolved
-                    state
+            // The three ways a real access site can present the same declaring type. All must
+            // land on the storage handle.
+            //
+            //  * closed: `resolveMemberWithGenerics` has already substituted the frame's
+            //    generics into the TypeSpec, so the declaring type mentions no parameters and
+            //    the contexts are irrelevant;
+            //  * open over the declaring *type*'s parameters, closed by `contextTypeGenerics`;
+            //  * open over *method* parameters, closed by `contextMethodGenerics` -- which does
+            //    reach here in production (see `concretizeFieldDeclaringType`'s note about
+            //    `Array.Empty<T>` leaving a `GenericMethodParameter` in place).
+            //
+            // Without the latter two the property would pass even if the two context arguments
+            // were swapped or ignored, since nothing would ever need substituting.
+            let openOver (make : int -> TypeDefn) : FieldInfo<TypeDefn, TypeDefn> =
+                declaredField |> FieldInfo.mapTypeGenerics (fun i _ -> make i)
 
-            if accessSiteHandle <> declaringHandle then
-                complain
-                    state
-                    $"an access site would key this field to %O{accessSiteHandle}, but storage keyed it to %O{declaringHandle}"
-            else
-                state, acc
+            let presentations =
+                [
+                    "closed", asResolved, ImmutableArray.Empty, ImmutableArray.Empty
+                    "open over type parameters",
+                    openOver TypeDefn.GenericTypeParameter,
+                    declaringType.Generics,
+                    ImmutableArray.Empty
+                    "open over method parameters",
+                    openOver TypeDefn.GenericMethodParameter,
+                    ImmutableArray.Empty,
+                    declaringType.Generics
+                ]
+
+            ((state, acc), presentations)
+            ||> List.fold (fun (state, acc) (description, field', typeContext, methodContext) ->
+                let state, accessSiteHandle, _ =
+                    ExecutionConcretization.concretizeFieldDeclaringType
+                        loggerFactory
+                        bct
+                        typeContext
+                        methodContext
+                        field'
+                        state
+
+                if accessSiteHandle <> declaringHandle then
+                    state,
+                    {
+                        Field = field.Id
+                        LaidOutFor = handle
+                        Complaint =
+                            $"an access site presenting the declaring type %s{description} would key this field to %O{accessSiteHandle}, but storage keyed it to %O{declaringHandle}"
+                    }
+                    :: acc
+                else
+                    state, acc
+            )
         )
 
     /// P3: an inherited field's identity does not depend on which derived type you reached it
@@ -355,11 +394,9 @@ public class Outer<A>
     let private inheritedIdentitiesAreStable
         (state : IlMachineState)
         (handle : ConcreteTypeHandle)
+        (fields : CliField list)
         : IlMachineState * Violation list
         =
-        let state, fields =
-            IlMachineState.collectAllInstanceFields loggerFactory bct state handle
-
         ((state, []), fields)
         ||> List.fold (fun (state, acc) (field : CliField) ->
             match FieldId.tryDeclaringType field.Id with
@@ -372,7 +409,22 @@ public class Outer<A>
             else
 
             let state, declaringFields =
-                IlMachineState.collectAllInstanceFields loggerFactory bct state declaringHandle
+                try
+                    IlMachineState.collectAllInstanceFields loggerFactory bct state declaringHandle
+                with e ->
+                    // Recorded rather than thrown: the derived type laid out, so its declaring
+                    // type failing to is itself a finding, not a reason to abandon the sweep.
+                    state,
+                    [
+                        {
+                            Id = FieldId.named $"<laying out %O{declaringHandle} threw: %s{e.Message}>"
+                            Name = ""
+                            Contents = CliType.ObjectRef None
+                            Offset = None
+                            Type = declaringHandle
+                            MarshallingDescriptor = None
+                        }
+                    ]
 
             let present =
                 declaringFields |> List.exists (fun f -> FieldId.exactlyEqual f.Id field.Id)
@@ -474,8 +526,11 @@ public class Outer<A>
         let property (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>, args : TypeDefn list) : bool =
             let state, handle = layoutReady baseState typeInfo args
 
-            let state, violations = violationsFor state handle
-            let _, stability = inheritedIdentitiesAreStable state handle
+            let state, fields =
+                IlMachineState.collectAllInstanceFields loggerFactory bct state handle
+
+            let state, violations = violationsFor state handle fields
+            let _, stability = inheritedIdentitiesAreStable state handle fields
 
             match violations @ stability with
             | [] -> true
@@ -516,21 +571,35 @@ public class Outer<A>
             let args =
                 List.replicate typeInfo.Generics.Length (TypeDefn.PrimitiveType PrimitiveType.Int32)
 
-            try
-                let s, handle = layoutReady state typeInfo args
-                let s, found = violationsFor s handle
-                let s, stability = inheritedIdentitiesAreStable s handle
+            // Only laying the type out may skip. Once storage exists, an exception out of the
+            // checks themselves is a failure of the invariant, not a reason to look away -- an
+            // access-site concretization that throws (say, because a generic context was
+            // substituted from the wrong array) is exactly the bug this sweep exists to catch.
+            let laidOut =
+                try
+                    let s, handle = layoutReady state typeInfo args
+
+                    let s, fields = IlMachineState.collectAllInstanceFields loggerFactory bct s handle
+
+                    state <- s
+                    Some (handle, fields)
+                with e ->
+                    skipped <- (typeInfo.Namespace + "." + typeInfo.Name, e.Message) :: skipped
+                    None
+
+            match laidOut with
+            | None -> ()
+            | Some (handle, fields) ->
+                let s, found = violationsFor state handle fields
+                let s, stability = inheritedIdentitiesAreStable s handle fields
                 state <- s
                 swept <- swept + 1
                 violations <- violations @ found @ stability
-            with e ->
-                // Layout can fail for reasons with nothing to do with this invariant (an
-                // unimplemented zero value, an unresolvable base chain, an instantiation that
-                // violates a constraint we do not check). Those are not evidence either way, but
-                // they must stay visible: a silent skip would let this sweep decay to covering
-                // nothing while still passing.
-                skipped <- (typeInfo.Namespace + "." + typeInfo.Name, e.Message) :: skipped
 
+        // Layout can fail for reasons with nothing to do with this invariant (an unimplemented
+        // zero value, an unresolvable base chain, an instantiation that violates a constraint we
+        // do not check). Those are not evidence either way, but they must stay visible: a silent
+        // skip would let this sweep decay to covering nothing while still passing.
         TestContext.Out.WriteLine
             $"swept %d{swept} of %d{sweepableFsharpCoreTypes.Length} FSharp.Core type(s); %d{skipped.Length} could not be laid out"
 
@@ -588,5 +657,5 @@ public class Outer<A>
         FieldId.tryDeclaringType valueField.Id |> shouldEqual (Some baseHandle)
         derivedHandle |> shouldNotEqual baseHandle
 
-        let _, violations = violationsFor state derivedHandle
+        let _, violations = violationsFor state derivedHandle fields
         violations |> List.map string |> shouldEqual []

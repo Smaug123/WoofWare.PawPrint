@@ -1561,14 +1561,27 @@ and CliValueType =
     /// Describe why `field` was not found in `fields`, in enough detail to diagnose the failure
     /// from the message alone.
     ///
-    /// The overwhelmingly likely cause of a metadata-keyed miss is that the *same* field
-    /// definition is present in storage under a different declaring-type `ConcreteTypeHandle`:
-    /// the site performing the access concretized the field's declaring type to a different
-    /// instantiation from the one in force when the object's storage was laid out (see
+    /// The interesting cause of a metadata-keyed miss is that the *same* field definition is
+    /// present in storage under a different declaring-type `ConcreteTypeHandle`: the site
+    /// performing the access concretized the field's declaring type to a different instantiation
+    /// from the one in force when the object's storage was laid out (see
     /// `IlMachineRuntimeMetadata.collectAllInstanceFields`, which keys an inherited field to the
     /// type that *declares* it, versus `ExecutionConcretization.concretizeFieldDeclaringType`,
     /// which keys it to the declaring type named by the access site's token). Callers cannot tell
-    /// those two apart from "no such field" alone, so say which it is.
+    /// that apart from "no such field" alone, so say which it is.
+    ///
+    /// Two near-misses must not be reported as that, because they are different failures:
+    ///
+    ///  * an inline-array slot index that is out of range shares both its field definition *and*
+    ///    its declaring type with the slots that are present, so nothing about the declaring type
+    ///    is wrong;
+    ///  * a `FieldDefinitionHandle` is a row index scoped to its defining module, so two fields of
+    ///    unrelated assemblies can carry equal handles. A single object's storage spans its whole
+    ///    base chain and so can span assemblies -- `FSharpException : System.Exception` does.
+    ///    Requiring the names to agree as well makes a coincidental row collision vanishingly
+    ///    unlikely; this member has no `AllConcreteTypes` with which to confirm the defining
+    ///    module outright, so the wording stays hedged and the full identity list is always
+    ///    printed for the reader to check.
     static member private DescribeMissingField
         (operation : string)
         (field : FieldId)
@@ -1581,19 +1594,39 @@ and CliValueType =
             | [] -> "none"
             | _ -> fields |> List.map (fun f -> $"'%O{f.Id}'") |> String.concat ", "
 
-        let sameDefinition =
-            match FieldId.tryFieldDefinition field with
+        let requestedDefinition = FieldId.tryFieldDefinition field
+        let requestedDeclaringType = FieldId.tryDeclaringType field
+
+        let sameDefinitionAs (predicate : ConcreteTypeHandle option -> bool) : CliConcreteField list =
+            match requestedDefinition with
             | None -> []
-            | Some wanted -> fields |> List.filter (fun f -> FieldId.tryFieldDefinition f.Id = Some wanted)
+            | Some wanted ->
+                fields
+                |> List.filter (fun f ->
+                    FieldId.tryFieldDefinition f.Id = Some wanted
+                    && predicate (FieldId.tryDeclaringType f.Id)
+                )
+
+        // Same field definition, same declaring type: the declaring type is not what differs.
+        // Only the inline-array storage slots can be shaped like this.
+        let sameDeclaringType =
+            sameDefinitionAs (fun declaringType -> declaringType = requestedDeclaringType)
+
+        // Same field definition and name, different declaring type: the smoking gun.
+        let differentDeclaringType =
+            sameDefinitionAs (fun declaringType -> declaringType <> requestedDeclaringType)
+            |> List.filter (fun f -> f.Id.Name = field.Name)
+
+        let describe (matches : CliConcreteField list) : string =
+            matches |> List.map (fun f -> $"'%O{f.Id}'") |> String.concat ", "
 
         let diagnosis =
-            match sameDefinition with
-            | [] -> ""
-            | _ ->
-                let keyedTo =
-                    sameDefinition |> List.map (fun f -> $"'%O{f.Id}'") |> String.concat ", "
-
-                $" The same field definition IS present in storage, keyed to a different declaring type: %s{keyedTo}. That means the declaring-type instantiation computed at the access site disagrees with the one used when this value's storage was built."
+            match sameDeclaringType, differentDeclaringType with
+            | [], [] -> ""
+            | _ :: _, _ ->
+                $" Storage does hold other slots of this same field definition on this same declaring type (%s{describe sameDeclaringType}), so the declaring type is not what differs; this is an inline-array slot index that storage does not have."
+            | [], _ :: _ ->
+                $" The same field definition and name IS present in storage, keyed to a different declaring type: %s{describe differentDeclaringType}. That most likely means the declaring-type instantiation computed at the access site disagrees with the one used when this value's storage was built."
 
         $"%s{operation}: field '%O{field}' not found on value of declared type %O{cvt._Declared}. Available field identities: %s{available}.%s{diagnosis}"
 
