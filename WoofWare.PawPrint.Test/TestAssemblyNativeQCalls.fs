@@ -219,9 +219,13 @@ public static class Satellite
 
     /// Mirrors the `new StringHandleOnStack(ref name)` the C# wrapper builds over a local
     /// preinitialised to null; the object[1] cell stands in for that stack slot.
-    let private stringHandleOnStackValue
+    /// `StringHandleOnStack` and `ObjectHandleOnStack` are both a lone `void* _ptr` wrapping a
+    /// byref to the caller's local; only the name differs. The object[1] cell stands in for
+    /// that stack slot, and starts null exactly as the C# wrappers' locals do.
+    let private handleOnStackValue
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (handleTypeName : string)
         (state : IlMachineState)
         : CliType * ManagedPointerSource * IlMachineState
         =
@@ -237,11 +241,11 @@ public static class Satellite
 
         let target = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), [])
 
-        let stringHandleType =
-            requiredTopLevelType baseClassTypes.Corelib "System.Runtime.CompilerServices" "StringHandleOnStack"
+        let handleType =
+            requiredTopLevelType baseClassTypes.Corelib "System.Runtime.CompilerServices" handleTypeName
 
         let handle, zero, state =
-            concreteValueTypeZero loggerFactory baseClassTypes state stringHandleType
+            concreteValueTypeZero loggerFactory baseClassTypes state handleType
 
         match zero with
         | CliType.ValueType vt ->
@@ -252,7 +256,23 @@ public static class Satellite
                 |> CliType.ValueType
 
             value, target, state
-        | other -> failwith $"StringHandleOnStack zero value was not a value type: %O{other}"
+        | other -> failwith $"%s{handleTypeName} zero value was not a value type: %O{other}"
+
+    let private stringHandleOnStackValue
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        : CliType * ManagedPointerSource * IlMachineState
+        =
+        handleOnStackValue loggerFactory baseClassTypes "StringHandleOnStack" state
+
+    let private objectHandleOnStackValue
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        : CliType * ManagedPointerSource * IlMachineState
+        =
+        handleOnStackValue loggerFactory baseClassTypes "ObjectHandleOnStack" state
 
     /// Allocates an `int[1]` and returns a managed pointer at element 0, standing in for
     /// the caller's `out int` local. Seeded with a value no metadata version column can
@@ -363,6 +383,33 @@ public static class Satellite
         =
         invokeStringQCall loggerFactory prepared "AssemblyNative_GetSimpleName" state assemblyFullName
 
+    /// Runs `AssemblyNative_GetPublicKey` for `assemblyFullName` and returns the heap address
+    /// the handler wrote into the `ObjectHandleOnStack` (None if it left the slot at null).
+    let private invokeGetPublicKey
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (prepared : Program.PreparedProgram)
+        (state : IlMachineState)
+        (assemblyFullName : string)
+        : IlMachineState * ManagedHeapAddress option
+        =
+        let baseClassTypes = prepared.BaseClassTypes
+
+        let qCallAssembly, state =
+            qCallAssemblyValue loggerFactory baseClassTypes assemblyFullName state
+
+        let objectHandle, target, state =
+            objectHandleOnStackValue loggerFactory baseClassTypes state
+
+        let state =
+            invokeQCall loggerFactory prepared "AssemblyNative_GetPublicKey" [ qCallAssembly ; objectHandle ] state
+
+        let written =
+            match IlMachineState.readManagedByref baseClassTypes state target with
+            | CliType.ObjectRef maybeAddr -> maybeAddr
+            | other -> failwith $"expected ObjectHandleOnStack target to contain an object ref, got %O{other}"
+
+        state, written
+
     let private invokeGetLocale
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
         (prepared : Program.PreparedProgram)
@@ -413,6 +460,34 @@ public static class Satellite
         let read = readInt32Out baseClassTypes state
 
         state, (read majorPtr, read minorPtr, read buildPtr, read revisionPtr)
+
+    /// Asserts that `addr` is a genuine `byte[]` — element type included, so an array of the
+    /// right values but the wrong width cannot pass — carrying exactly `expected`.
+    let private assertIsByteArray
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (addr : ManagedHeapAddress)
+        (expected : byte array)
+        : unit
+        =
+        let array = state.ManagedHeap.Arrays.[addr]
+
+        let byteHandle =
+            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Byte
+
+        array.ConcreteType
+        |> shouldEqual (ConcreteTypeHandle.OneDimArrayZero byteHandle)
+
+        let actual =
+            array.Elements
+            |> Seq.map (fun element ->
+                match CliType.unwrapPrimitiveLikeDeep element with
+                | CliType.Numeric (CliNumericType.UInt8 b) -> b
+                | other -> failwith $"expected byte element, got %O{other}"
+            )
+            |> Seq.toArray
+
+        actual |> shouldEqual expected
 
     /// Asserts that `addr` is a genuine `System.String` heap object carrying `expected`,
     /// rather than merely a side-table entry.
@@ -743,6 +818,102 @@ public static class Satellite
         let exn =
             Assert.Throws<System.Exception> (fun () ->
                 invokeGetLocale
+                    loggerFactory
+                    prepared
+                    prepared.State
+                    "NotLoaded, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null"
+                |> ignore<IlMachineState * ManagedHeapAddress option>
+            )
+
+        exn.Message |> shouldContainText "is not loaded"
+
+    [<Test>]
+    let ``PublicKey is the raw blob column, not the AssemblyName view`` () : unit =
+        // The distinction the handler depends on, and the mirror of the `CultureName` one:
+        // `AssemblyName` reports null for an assembly with no key, where the column is a
+        // zero-length blob and CoreCLR hands the guest an empty array.
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let image =
+            Roslyn.compileAssembly guestAssemblyName OutputKind.ConsoleApplication [] [ guestSource ]
+
+        use peImage = new MemoryStream (image)
+        let assembly = Assembly.read loggerFactory None peImage
+
+        assembly.PublicKey.IsDefault |> shouldEqual false
+        assembly.PublicKey.Length |> shouldEqual 0
+
+        // Sanity: the two really do disagree, so the assertion above is load-bearing.
+        assembly.Name.GetPublicKey () |> isNull |> shouldEqual true
+
+    [<Test>]
+    let ``GetPublicKey writes an empty array, not null, for an assembly with no key`` () : unit =
+        // `ObjectHandleOnStack::SetByteArray` allocates and writes unconditionally — there is
+        // no null guard here at all, unlike `GetLocale` — so the caller's preinitialised
+        // `byte[]? publicKey = null` is always overwritten, and an unsigned assembly's key
+        // reads back as `byte[0]` rather than null.
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let image =
+            Roslyn.compileAssembly guestAssemblyName OutputKind.ConsoleApplication [] [ guestSource ]
+
+        let prepared = prepareGuest loggerFactory image
+        let guest = prepared.State.ActiveAssembly prepared.EntryThread
+
+        let state, written =
+            invokeGetPublicKey loggerFactory prepared prepared.State guest.Name.FullName
+
+        let addr =
+            written
+            |> Option.defaultWith (fun () -> failwith "handler left the ObjectHandleOnStack at null")
+
+        assertIsByteArray prepared.BaseClassTypes state addr [||]
+
+    [<Test>]
+    let ``GetPublicKey writes the full key of a strong-named assembly`` () : unit =
+        // Corelib is strong-named, so this is the non-empty half. The oracle is
+        // `AssemblyName.GetPublicKey()`: an independent parse of the same row, which agrees
+        // with the raw column whenever a key is actually present (it is only the absent case
+        // where it reports null instead of empty).
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let image =
+            Roslyn.compileAssembly guestAssemblyName OutputKind.ConsoleApplication [] [ guestSource ]
+
+        let prepared = prepareGuest loggerFactory image
+        let corelib = prepared.BaseClassTypes.Corelib
+
+        let expected = corelib.Name.GetPublicKey ()
+
+        // Sanity: corelib really is signed, so this test is not silently the empty case again.
+        expected |> isNull |> shouldEqual false
+        expected.Length |> shouldBeGreaterThan 0
+
+        let state, written =
+            invokeGetPublicKey loggerFactory prepared prepared.State corelib.Name.FullName
+
+        let addr =
+            written
+            |> Option.defaultWith (fun () -> failwith "handler left the ObjectHandleOnStack at null")
+
+        assertIsByteArray prepared.BaseClassTypes state addr expected
+
+    [<Test>]
+    let ``GetPublicKey on an unloaded assembly fails loudly`` () : unit =
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let image =
+            Roslyn.compileAssembly guestAssemblyName OutputKind.ConsoleApplication [] [ guestSource ]
+
+        let prepared = prepareGuest loggerFactory image
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () ->
+                invokeGetPublicKey
                     loggerFactory
                     prepared
                     prepared.State

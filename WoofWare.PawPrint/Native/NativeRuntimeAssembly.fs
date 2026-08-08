@@ -365,6 +365,58 @@ module NativeRuntimeAssembly =
                     (CliType.ObjectRef (Some localeAddr))
 
             NativeHandlerResult.completed state |> Some
+        | "AssemblyNative_GetPublicKey",
+          "System.Private.CoreLib",
+          "System.Reflection",
+          "RuntimeAssembly",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "QCallAssembly",
+                                              qCallAssemblyGenerics)
+            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "ObjectHandleOnStack",
+                                              objectHandleGenerics) ],
+          MethodReturnType.Void when qCallAssemblyGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
+            let operation = "AssemblyNative_GetPublicKey"
+
+            if instruction.Arguments.Length <> 2 then
+                failwith $"%s{operation}: expected two native arguments, got %d{instruction.Arguments.Length}"
+
+            let assemblyFullName =
+                instruction.Arguments.[0]
+                |> NativeCall.qCallAssemblyToAssemblyFullName operation state
+
+            let assembly =
+                state.LoadedAssembly' assemblyFullName
+                |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
+
+            let retPublicKey =
+                NativeCall.objectHandleOnStackTarget operation state "retPublicKey" instruction.Arguments.[1]
+
+            // CoreCLR answers `pAssembly->GetPEAssembly()->GetPublicKey(&cb)`, which is the
+            // `PublicKey` blob column of the manifest row — the full key, not the eight-byte
+            // token a display name carries. Note `DumpedAssembly.PublicKey` rather than
+            // `Name.GetPublicKey()`: the latter reports null for an assembly with no key,
+            // where the column is a zero-length blob.
+            let publicKey = assembly.PublicKey.AsSpan().ToArray ()
+
+            // `ObjectHandleOnStack::SetByteArray` allocates and writes unconditionally —
+            // unlike `GetLocale`, there is no null guard here at all — so a zero-length key
+            // still produces a real `byte[0]`, and the caller's preinitialised
+            // `byte[]? publicKey = null` is always overwritten. A guest asking an
+            // unsigned assembly for its key gets an empty array, never null.
+            let arrayAddr, state =
+                NativeCall.allocateManagedByteArray ctx.BaseClassTypes publicKey state
+
+            let state =
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    retPublicKey
+                    (CliType.ObjectRef (Some arrayAddr))
+
+            NativeHandlerResult.completed state |> Some
         | "AssemblyNative_GetSimpleName",
           "System.Private.CoreLib",
           "System.Reflection",
