@@ -448,6 +448,25 @@ module ManagedPointerSource =
                 validateByrefProjectionsAreCanonical src1 projs1
                 validateByrefProjectionsAreCanonical src2 projs2
                 Some (compare idx2 idx1)
+            // Same string, different character index. The argument is the array
+            // one above with the element size fixed: a char cell is two bytes,
+            // which is strictly positive, and the same canonicalisation keeps
+            // each pointer's byte effect within `[0, 2)` of its own cell — so
+            // `compare idx2 idx1` again agrees with the sign of the byte address
+            // delta. Equal indices are already answered by
+            // `tryByteOffsetWithinSameRoot`, which sees identical roots.
+            //
+            // Keyed on the string object, so two separately allocated strings
+            // still fall through to `None`: those have no defensible ordering,
+            // and refusing loudly beats inventing one. This arm exists because
+            // `EventSource`'s manifest handling compares a byref to the start of
+            // a name against one part-way into that same string, and answering
+            // "no common root" for two offsets into one object was simply wrong.
+            | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str1, idx1), projs1),
+              ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str2, idx2), projs2) when str1 = str2 && idx1 <> idx2 ->
+                validateByrefProjectionsAreCanonical src1 projs1
+                validateByrefProjectionsAreCanonical src2 projs2
+                Some (compare idx2 idx1)
             // Same native-memory block, different root byte offsets:
             // `tryByteOffsetWithinSameRoot` only catches identical roots,
             // but `NativeMemoryByte (block, n)` produced by pointer

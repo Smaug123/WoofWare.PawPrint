@@ -680,3 +680,71 @@ module TestEvalStack =
             Assert.Throws<System.Exception> (fun () -> EvalStackValueComparisons.cge n f |> ignore)
 
         gxNF.Message |> shouldContainText "invalid comparison"
+
+    [<Test>]
+    let ``unsigned comparisons order two byrefs into the same string by character index`` () : unit =
+        // `EventSource`'s manifest handling compares a byref to the start of a name
+        // against one part-way into the *same* string, which reaches `clt.un` as two
+        // `StringCharAt` byrefs sharing an object. Refusing that was needlessly
+        // conservative: they plainly have a common root, and two characters of one
+        // string sit at known, ordered addresses.
+        //
+        // The justification mirrors the `ArrayElement` arm of
+        // `tryByteAddressDeltaSign`: a char cell is two bytes — strictly positive —
+        // and canonicalisation keeps each pointer's byte effect within its own cell,
+        // so index order is address order.
+        let str = ManagedHeapAddress.ManagedHeapAddress 105
+
+        let at (charIndex : int) : EvalStackValue =
+            EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), []))
+
+        let atStart = at 0
+        let later = at 28
+
+        if not (EvalStackValueComparisons.cltUn atStart later) then
+            failwith "Expected clt.un to report char 0 as strictly below char 28 of the same string"
+
+        if EvalStackValueComparisons.cltUn later atStart then
+            failwith "Expected clt.un to report char 28 as not strictly below char 0 of the same string"
+
+        if not (EvalStackValueComparisons.cgtUn later atStart) then
+            failwith "Expected cgt.un to report char 28 as strictly above char 0 of the same string"
+
+        if EvalStackValueComparisons.cgtUn atStart later then
+            failwith "Expected cgt.un to report char 0 as not strictly above char 28 of the same string"
+
+        // The same character is neither above nor below itself. This case already
+        // worked, via the identical-root path; it is here so that a fix which
+        // answers only for *differing* indices is still caught.
+        if EvalStackValueComparisons.cltUn atStart (at 0) then
+            failwith "Expected clt.un to report a character as not strictly below itself"
+
+        if EvalStackValueComparisons.cgtUn atStart (at 0) then
+            failwith "Expected cgt.un to report a character as not strictly above itself"
+
+    [<Test>]
+    let ``unsigned comparisons still refuse byrefs into two different strings`` () : unit =
+        // The counterpart to the arm above, and the reason it is keyed on the string
+        // object rather than on the root shape: two separately allocated strings have
+        // no defensible ordering, so refusing loudly stays the right answer. Without
+        // this, widening the arm to any pair of `StringCharAt` byrefs would look
+        // correct.
+        let first =
+            EvalStackValue.ManagedPointer (
+                ManagedPointerSource.Byref (ByrefRoot.StringCharAt (ManagedHeapAddress.ManagedHeapAddress 105, 0), [])
+            )
+
+        let second =
+            EvalStackValue.ManagedPointer (
+                ManagedPointerSource.Byref (ByrefRoot.StringCharAt (ManagedHeapAddress.ManagedHeapAddress 106, 4), [])
+            )
+
+        let lt =
+            Assert.Throws<System.Exception> (fun () -> EvalStackValueComparisons.cltUn first second |> ignore)
+
+        lt.Message |> shouldContainText "without a common root"
+
+        let gt =
+            Assert.Throws<System.Exception> (fun () -> EvalStackValueComparisons.cgtUn first second |> ignore)
+
+        gt.Message |> shouldContainText "without a common root"
