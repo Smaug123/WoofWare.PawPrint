@@ -238,6 +238,40 @@ module internal IntrinsicHelpers =
             EvalStackValue.ManagedPointer ptrSrc, state
         | ValueNone ->
 
+        // Every anchored-byref branch below combines `offset` with a stored index or byte
+        // offset that PawPrint represents as an int32. The IL this models does the same
+        // arithmetic at native-int width (`sizeof !!T; conv.i; mul; add`), so an int32 result
+        // that wraps is a limit of *our* representation, not the CLI's — and it does not merely
+        // lose precision, it puts the byref on the wrong side of the source address
+        // (`Unsafe.Add(ref a[1], Int32.MaxValue)` would report -8589934592 bytes instead of
+        // +8589934592). The bit-pattern branch above needs none of this: it already carries its
+        // whole address in an int64. Refuse what we cannot represent rather than answer wrongly.
+        let representable (what : string) (value : int64) : int =
+            if
+                value < int64<int> System.Int32.MinValue
+                || value > int64<int> System.Int32.MaxValue
+            then
+                failwith
+                    $"TODO: byref element offset: %s{what} is %d{value}, which does not fit in the int32 PawPrint stores for it; a byref this far from its root is not modelled"
+
+            int32<int64> value
+
+        /// `sizeof(T) * offset`: the byte distance this element walk covers. Deferred rather than
+        /// computed up front, because the branches that step whole cells never form it, and their
+        /// index arithmetic can be representable when this product is not.
+        let byteDelta () : int =
+            representable $"a walk of %d{offset} elements of size %d{tSize}" (int64<int> tSize * int64<int> offset)
+
+        /// `index + offset` on a root that stores a cell index rather than a byte offset.
+        let offsetIndex (what : string) (index : int) : int =
+            representable $"%s{what} %d{index} advanced by %d{offset}" (int64<int> index + int64<int> offset)
+
+        /// `byteOffset + sizeof(T) * offset` on a root that stores a byte offset directly.
+        let offsetByteOffset (what : string) (byteOffset : int) : int =
+            representable
+                $"%s{what} %d{byteOffset} advanced by %d{offset} elements of size %d{tSize}"
+                (int64<int> byteOffset + int64<int> tSize * int64<int> offset)
+
         let ptr : EvalStackValue =
             match src with
             | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs)) ->
@@ -290,7 +324,7 @@ module internal IntrinsicHelpers =
                     projectionsAreByteViewCompatible
                     && (trailingIsByteOffset || (tSize <> arrElementSize && trailingIsReinterpretAs))
                 then
-                    let byteDelta = tSize * offset
+                    let byteDelta = byteDelta ()
                     let baseSrc = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i), projs)
 
                     let normalisationElementSize =
@@ -314,7 +348,10 @@ module internal IntrinsicHelpers =
                         | ByrefProjection.ReinterpretAs _ -> ()
                         | _ -> failwith $"TODO: byref element offset on byref with non-ReinterpretAs projection: %O{p}"
 
-                    ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, i + offset), projs)
+                    ManagedPointerSource.Byref (
+                        ByrefRoot.ArrayElement (arr, offsetIndex "array element index" i),
+                        projs
+                    )
                     |> EvalStackValue.ManagedPointer
             | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, i), projs) as src) ->
                 let stringCharSize = 2
@@ -345,7 +382,7 @@ module internal IntrinsicHelpers =
                     let normalisation = ByteOffsetNormalisationContext.nonArrayRootsOnly
 
                     src
-                    |> ManagedPointerSource.addByteOffsetToByteView normalisation (tSize * offset)
+                    |> ManagedPointerSource.addByteOffsetToByteView normalisation (byteDelta ())
                     |> EvalStackValue.ManagedPointer
                 else
                     if tSize <> stringCharSize then
@@ -359,7 +396,7 @@ module internal IntrinsicHelpers =
                             failwith
                                 $"TODO: byref element offset on string byref with non-ReinterpretAs projection: %O{p}"
 
-                    ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, i + offset), projs)
+                    ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, offsetIndex "string char index" i), projs)
                     |> EvalStackValue.ManagedPointer
             | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread,
                                                                                                     frame,
@@ -367,13 +404,21 @@ module internal IntrinsicHelpers =
                                                                                                     byteOffset),
                                                                          [])) ->
                 ManagedPointerSource.Byref (
-                    ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset + (tSize * offset)),
+                    ByrefRoot.StackMemoryByte (
+                        thread,
+                        frame,
+                        block,
+                        offsetByteOffset "stack memory byte offset" byteOffset
+                    ),
                     []
                 )
                 |> EvalStackValue.ManagedPointer
             | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, byteOffset),
                                                                          [])) ->
-                ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, byteOffset + (tSize * offset)), [])
+                ManagedPointerSource.Byref (
+                    ByrefRoot.NativeMemoryByte (block, offsetByteOffset "native memory byte offset" byteOffset),
+                    []
+                )
                 |> EvalStackValue.ManagedPointer
             | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (_, projs) as src) ->
                 let projectionsAreByteViewCompatible =
@@ -389,7 +434,7 @@ module internal IntrinsicHelpers =
                     let normalisation = ByteOffsetNormalisationContext.nonArrayRootsOnly
 
                     src
-                    |> ManagedPointerSource.addByteOffsetToByteView normalisation (tSize * offset)
+                    |> ManagedPointerSource.addByteOffsetToByteView normalisation (byteDelta ())
                     |> EvalStackValue.ManagedPointer
                 elif offset = 0 then
                     EvalStackValue.ManagedPointer src
@@ -406,7 +451,7 @@ module internal IntrinsicHelpers =
                     let normalisation = ByteOffsetNormalisationContext.nonArrayRootsOnly
 
                     src
-                    |> ManagedPointerSource.addByteOffsetUnderReinterpret normalisation elementTypeInfo (tSize * offset)
+                    |> ManagedPointerSource.addByteOffsetUnderReinterpret normalisation elementTypeInfo (byteDelta ())
                     |> EvalStackValue.ManagedPointer
             | _ -> failwith $"TODO: byref element offset on non-managed-pointer: %O{src}"
 
