@@ -21,8 +21,10 @@ open WoofWare.PawPrint.Test
 /// promoting references — so the shapes below vary the reference's declared position, count, and
 /// nesting depth rather than assuming one arrangement.
 ///
-/// Each program returns a checksum that depends on every field of every slot, so a read or write
-/// that lands one cell over changes the answer rather than going unnoticed.
+/// Each program computes a checksum that depends on every field of every slot, so a read or write
+/// that lands one cell over changes the answer rather than going unnoticed. A process exit code
+/// carries only 8 bits, so the real runtime is asked for one byte of it per run and the harness
+/// reassembles the four; PawPrint returns the whole checksum in one run.
 ///
 /// The `noReferences` shape is a control: its storage *is* byte-addressable, so it must keep going
 /// through the bytewise path. It is here to catch the opposite failure — cell naming quietly taking
@@ -127,7 +129,7 @@ public class Probe
         private Elem _item;
     }
 
-    public static int Main()
+    public static int Main(string[] argv)
     {
         Buf buf = default;
 
@@ -161,7 +163,21 @@ public class Probe
         acc = acc * 31 + SCORE1;
         acc = acc * 31 + SCORE2;
 
-        return acc;
+        if (argv.Length == 0) return acc;
+
+        // A Unix process exit code is 8 bits, so a real process cannot return the checksum at
+        // all; it reports one byte of it per run, selected here. PawPrint is asked for the whole
+        // thing in a single run, so a truncation on either side shows up as a disagreement.
+        switch (argv[0])
+        {
+            case "0": return acc & 0xFF;
+            case "1": return (acc >> 8) & 0xFF;
+            case "2": return (acc >> 16) & 0xFF;
+            case "3": return (acc >> 24) & 0xFF;
+            // Unreachable: the sweep passes 0..3. Falling back to another byte would let a
+            // mis-indexed caller reassemble a plausible checksum, so make it loud.
+            default: throw new ArgumentOutOfRangeException(nameof(argv), argv[0], "unknown checksum byte selector");
+        }
     }
 }
 """
@@ -232,11 +248,19 @@ public class Probe
         let text = source elementShapes.[case]
         let image = Roslyn.compile [ text ]
 
-        let expected =
-            match RealRuntime.executeWithRealRuntime [||] image with
+        // One byte of the checksum per run: see the guest's selector switch for why.
+        let byteFromRealRuntime (index : int) : int =
+            match RealRuntime.executeWithRealRuntime [| string index |] image with
             | RealRuntimeResult.NormalExit exitCode -> exitCode
-            | RealRuntimeResult.UnhandledException exn ->
-                failwith $"%s{case}: real runtime threw unhandled %s{exn.GetType().Name}: %s{exn.Message}"
+            | RealRuntimeResult.UnhandledException report ->
+                failwith $"%s{case}: real runtime terminated with an unhandled exception:\n%s{report}"
+            | RealRuntimeResult.FailFast report -> failwith $"%s{case}: real runtime called FailFast:\n%s{report}"
+
+        let expected =
+            (byteFromRealRuntime 0)
+            ||| ((byteFromRealRuntime 1) <<< 8)
+            ||| ((byteFromRealRuntime 2) <<< 16)
+            ||| ((byteFromRealRuntime 3) <<< 24)
 
         let actual = runUnderPawPrint case image
 
