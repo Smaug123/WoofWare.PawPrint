@@ -1,5 +1,7 @@
 namespace WoofWare.PawPrint.Test
 
+open FsCheck
+open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
@@ -798,3 +800,369 @@ module TestEvalStack =
 
         if not (EvalStackValueComparisons.cltUn projected alsoProjected) then
             failwith "Expected clt.un to order two identically-projected string byrefs by index"
+
+    // ---------------------------------------------------------------------------
+    // Narrowing integer conversions of pointer-shaped values.
+    //
+    // `conv.i1` / `conv.i2` / `conv.i4` and their unsigned counterparts narrow to a
+    // destination smaller than a pointer, so the result cannot be a pointer and the
+    // honest answer is the source's bits — synthesised from the pointer's identity
+    // when PawPrint models no address for it. These tests pin that the synthesis
+    // happens at the conversion, is stable, and is reached identically whether the
+    // pointer arrives in the native-int slot or already widened to int64.
+    // ---------------------------------------------------------------------------
+
+    /// One of the six unchecked narrowing conversions, normalised so a single
+    /// property can range over all of them: the four sub-32-bit conversions return
+    /// `int32 option`, and `conv.i4` / `conv.u4` return an `EvalStackValue`, so both
+    /// are reduced to the int32 the opcode pushes.
+    type private NarrowingConv =
+        {
+            Name : string
+            /// Width of the destination in bits, for the cross-width coherence property.
+            DestinationBits : int
+            Apply : EvalStackValue -> PointerHashCounters -> int32 * PointerHashCounters
+        }
+
+    let private ofOptionReturning
+        (name : string)
+        (destinationBits : int)
+        (f : EvalStackValue -> PointerHashCounters -> (int32 * PointerHashCounters) option)
+        : NarrowingConv
+        =
+        {
+            Name = name
+            DestinationBits = destinationBits
+            Apply =
+                fun value counters ->
+                    match f value counters with
+                    | Some result -> result
+                    | None -> failwith $"%s{name}: conversion returned None for %O{value}"
+        }
+
+    let private ofEvalStackReturning
+        (name : string)
+        (f : EvalStackValue -> PointerHashCounters -> EvalStackValue * PointerHashCounters)
+        : NarrowingConv
+        =
+        {
+            Name = name
+            DestinationBits = 32
+            Apply =
+                fun value counters ->
+                    match f value counters with
+                    | EvalStackValue.Int32 (Int32Source.Verbatim i), counters -> i, counters
+                    | other, _ -> failwith $"%s{name}: expected a verbatim int32, got %O{other}"
+        }
+
+    let private narrowingConversions : NarrowingConv list =
+        [
+            ofOptionReturning "conv.i1" 8 EvalStackValue.convToInt8
+            ofOptionReturning "conv.u1" 8 EvalStackValue.convToUInt8
+            ofOptionReturning "conv.i2" 16 EvalStackValue.convToInt16
+            ofOptionReturning "conv.u2" 16 EvalStackValue.convToUInt16
+            ofEvalStackReturning "conv.i4" EvalStackValue.convToInt32
+            ofEvalStackReturning "conv.u4" EvalStackValue.convToUInt32
+        ]
+
+    /// Pointer-shaped `NativeIntSource`s that `materialiseHashBits` can canonicalise,
+    /// spanning the interesting axes: a MethodTable-keyed shape and the TypeHandle
+    /// encoding that aliases it, a TypeDesc-keyed shape and the TypeDescPtr that
+    /// shares its identity but not its tag, a tagged GC handle, and the opaque
+    /// integer- and string-keyed handle families.
+    ///
+    /// `FunctionPointer` is absent because constructing one needs a whole
+    /// `WoofWare.PawPrint.MethodInfo`; `PerInstInfoPtr` / `PerInstDictPtr` and the
+    /// generic-parameter `MethodTablePtr` targets are absent because
+    /// `materialiseHashBits` refuses them by design.
+    let private genPointerShapedSource : Gen<NativeIntSource> =
+        Gen.oneof
+            [
+                Gen.choose (0, 5)
+                |> Gen.map (fun n ->
+                    NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete n))
+                )
+                Gen.choose (0, 5)
+                |> Gen.map (fun n ->
+                    NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete n))
+                )
+                Gen.choose (0, 5)
+                |> Gen.map (fun n ->
+                    NativeIntSource.TypeHandlePtr (
+                        RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref (ConcreteTypeHandle.Concrete n))
+                    )
+                )
+                Gen.choose (0, 5)
+                |> Gen.map (fun n ->
+                    NativeIntSource.TypeDescPtr (
+                        RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Pointer (ConcreteTypeHandle.Concrete n))
+                    )
+                )
+                Gen.choose (0, 5)
+                |> Gen.map (fun n ->
+                    NativeIntSource.MethodTableAuxiliaryDataPtr (
+                        RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete n)
+                    )
+                )
+                Gen.choose64 (0L, 40L) |> Gen.map NativeIntSource.MethodHandlePtr
+                Gen.choose64 (0L, 40L) |> Gen.map NativeIntSource.FieldHandlePtr
+                Gen.zip (Gen.choose (0, 5)) (Gen.choose64 (0L, 3L))
+                |> Gen.map (fun (addr, tag) -> NativeIntSource.GcHandlePtr (GcHandleAddress.GcHandleAddress addr, tag))
+                Gen.choose64 (0L, 40L) |> Gen.map NativeIntSource.EventPipeProviderPtr
+                Gen.choose64 (0L, 40L) |> Gen.map NativeIntSource.EventPipeEventPtr
+                Gen.elements [ "A" ; "B" ; "C" ] |> Gen.map NativeIntSource.AssemblyHandle
+                Gen.elements [ "M1" ; "M2" ] |> Gen.map NativeIntSource.ModuleHandle
+                Gen.elements [ "I1" ; "I2" ] |> Gen.map NativeIntSource.MetadataImportHandle
+            ]
+
+    let private genConversionAndSource : Gen<NarrowingConv * NativeIntSource> =
+        Gen.zip (Gen.elements narrowingConversions) genPointerShapedSource
+
+    let private narrowingPropertyConfig : Config =
+        Config.QuickThrowOnFailure.WithMaxTest 500
+
+    [<Test>]
+    let ``narrowing a widened pointer equals narrowing its materialised bits`` () : unit =
+        // The oracle for the whole feature: the widened-native-int arm introduces no
+        // truncation logic of its own, it only materialises and then defers to the
+        // arm that already handled synthesised bits.
+        let property ((conv, src) : NarrowingConv * NativeIntSource) : unit =
+            let viaWidened, countersAfter =
+                conv.Apply (EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, true))) PointerHashCounters.empty
+
+            let bits, expectedCounters =
+                PointerHashSynthesis.materialiseHashBits "oracle" src PointerHashCounters.empty
+
+            let viaHashBits, _ =
+                conv.Apply (EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits)) expectedCounters
+
+            if viaWidened <> viaHashBits then
+                failwith
+                    $"%s{conv.Name} of widened %O{src} gave %i{viaWidened}, but of its materialised bits gave %i{viaHashBits}"
+
+            countersAfter.Assigned |> shouldEqual expectedCounters.Assigned
+            countersAfter.NextCounter |> shouldEqual expectedCounters.NextCounter
+
+        Check.One (narrowingPropertyConfig, Prop.forAll (Arb.fromGen genConversionAndSource) property)
+
+    [<Test>]
+    let ``both spellings of narrowing a pointer agree`` () : unit =
+        // `(int)ptr` and `(int)(long)ptr` are one guest operation; CoreLib picks
+        // between the spellings by `#if TARGET_64BIT` inside `IntPtr.GetHashCode`.
+        let property ((conv, src) : NarrowingConv * NativeIntSource) : unit =
+            let direct, directCounters =
+                conv.Apply (EvalStackValue.NativeInt src) PointerHashCounters.empty
+
+            let widened, widenedCounters =
+                conv.Apply (EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, true))) PointerHashCounters.empty
+
+            if direct <> widened then
+                failwith $"%s{conv.Name} of %O{src} gave %i{direct} in the native-int slot but %i{widened} once widened"
+
+            directCounters.Assigned |> shouldEqual widenedCounters.Assigned
+
+            // Signedness of the widening is a property of the int64 slot, not of the
+            // pointer, so it cannot change the bits.
+            let widenedUnsigned, _ =
+                conv.Apply (EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, false))) PointerHashCounters.empty
+
+            widenedUnsigned |> shouldEqual widened
+
+        Check.One (narrowingPropertyConfig, Prop.forAll (Arb.fromGen genConversionAndSource) property)
+
+    [<Test>]
+    let ``narrowing the same pointer twice is stable and assigns no second counter`` () : unit =
+        let property ((conv, src) : NarrowingConv * NativeIntSource) : unit =
+            let first, counters =
+                conv.Apply (EvalStackValue.NativeInt src) PointerHashCounters.empty
+
+            let second, counters' = conv.Apply (EvalStackValue.NativeInt src) counters
+
+            second |> shouldEqual first
+            counters'.NextCounter |> shouldEqual counters.NextCounter
+            counters'.Assigned |> shouldEqual counters.Assigned
+
+        Check.One (narrowingPropertyConfig, Prop.forAll (Arb.fromGen genConversionAndSource) property)
+
+    [<Test>]
+    let ``distinct pointers narrow to distinct int32s`` () : unit =
+        // The counter scheme stores `(n + 1) <<< 2`, so distinctness survives
+        // truncation to 32 bits for any counter count PawPrint can reach. Sub-32-bit
+        // widths deliberately make no such claim: a byte cannot hold 2^30 identities.
+        let property ((a, b) : NativeIntSource * NativeIntSource) : unit =
+            let bitsA, counters =
+                PointerHashSynthesis.materialiseHashBits "oracle" a PointerHashCounters.empty
+
+            let bitsB, _ = PointerHashSynthesis.materialiseHashBits "oracle" b counters
+
+            // Only claim distinctness when the two sources really are distinct
+            // identities; `MethodTablePtr (Closed h)` and `TypeHandlePtr (Closed h)`
+            // alias deliberately, and share bits.
+            if bitsA <> bitsB then
+                let narrowedA, counters =
+                    EvalStackValue.convToInt32 (EvalStackValue.NativeInt a) PointerHashCounters.empty
+
+                let narrowedB, _ = EvalStackValue.convToInt32 (EvalStackValue.NativeInt b) counters
+
+                if narrowedA = narrowedB then
+                    failwith $"conv.i4 collapsed distinct pointers %O{a} and %O{b} onto %O{narrowedA}"
+
+        Check.One (
+            narrowingPropertyConfig,
+            Prop.forAll (Arb.fromGen (Gen.zip genPointerShapedSource genPointerShapedSource)) property
+        )
+
+    [<Test>]
+    let ``narrow widths are the low bytes of the int32 narrowing`` () : unit =
+        let property (src : NativeIntSource) : unit =
+            let asInt32, _ =
+                EvalStackValue.convToInt32 (EvalStackValue.NativeInt src) PointerHashCounters.empty
+
+            let full =
+                match asInt32 with
+                | EvalStackValue.Int32 (Int32Source.Verbatim i) -> i
+                | other -> failwith $"expected verbatim int32, got %O{other}"
+
+            for conv in narrowingConversions do
+                let narrowed, _ =
+                    conv.Apply (EvalStackValue.NativeInt src) PointerHashCounters.empty
+
+                let mask =
+                    if conv.DestinationBits = 32 then
+                        -1
+                    else
+                        (1 <<< conv.DestinationBits) - 1
+
+                if (narrowed &&& mask) <> (full &&& mask) then
+                    failwith
+                        $"%s{conv.Name} of %O{src} gave %i{narrowed}, whose low %i{conv.DestinationBits} bits disagree with conv.i4's %i{full}"
+
+        Check.One (narrowingPropertyConfig, Prop.forAll (Arb.fromGen genPointerShapedSource) property)
+
+    [<Test>]
+    let ``narrowing refuses a byref whose address is not modelled`` () : unit =
+        let byref =
+            ManagedPointerSource.Byref (ByrefRoot.HeapValue (ManagedHeapAddress.ManagedHeapAddress 21), [])
+
+        // At 32 bits the byref survives as a narrowed pointer rather than becoming a
+        // number: a mask against it is still answerable, which is what managed code
+        // narrowing an address is usually about.
+        for value in
+            [
+                EvalStackValue.NativeInt (NativeIntSource.ManagedPointer byref)
+                EvalStackValue.Int64 (Int64Source.WidenedNativeInt (NativeIntSource.ManagedPointer byref, true))
+            ] do
+            for conv, expected in
+                [
+                    EvalStackValue.convToInt32, "conv.i4"
+                    EvalStackValue.convToUInt32, "conv.u4"
+                ] do
+                match conv value PointerHashCounters.empty with
+                | EvalStackValue.Int32 (Int32Source.NarrowedManagedPointer p), counters ->
+                    p |> shouldEqual byref
+                    // No identity was registered: a byref is not a synthesisable handle.
+                    counters |> shouldEqual PointerHashCounters.empty
+                | other, _ -> failwith $"%s{expected} of %O{value} should keep byref provenance, got %O{other}"
+
+            // Below 32 bits there is no representation for a narrowed byref, so the
+            // conversion must refuse rather than invent bits.
+            for conv in narrowingConversions |> List.filter (fun c -> c.DestinationBits < 32) do
+                let exn =
+                    Assert.Throws<System.Exception> (fun () -> conv.Apply value PointerHashCounters.empty |> ignore)
+
+                exn.Message |> shouldContainText "refusing"
+
+    [<Test>]
+    let ``narrowing refuses a cross-array offset`` () : unit =
+        let offset =
+            SyntheticCrossArrayOffset.make
+                (ByteStorageIdentity.Array (ManagedHeapAddress 1))
+                0L
+                (ByteStorageIdentity.Array (ManagedHeapAddress 2))
+                0L
+
+        for conv in narrowingConversions do
+            let exn =
+                Assert.Throws<System.Exception> (fun () ->
+                    conv.Apply
+                        (EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset offset))
+                        PointerHashCounters.empty
+                    |> ignore
+                )
+
+            exn.Message |> shouldContainText "cross-array offset"
+
+    [<Test>]
+    let ``narrowing a verbatim native int assigns no counter`` () : unit =
+        // Controls for the properties above: a value whose bits PawPrint knows
+        // exactly must not be routed through counter assignment, or every ordinary
+        // arithmetic narrowing would perturb the synthesised-bit sequence.
+        let property (i : int64) : unit =
+            for conv in narrowingConversions do
+                for value in
+                    [
+                        EvalStackValue.NativeInt (NativeIntSource.Verbatim i)
+                        EvalStackValue.Int64 (Int64Source.Verbatim i)
+                    ] do
+                    let _, counters = conv.Apply value PointerHashCounters.empty
+                    counters |> shouldEqual PointerHashCounters.empty
+
+        Check.One (narrowingPropertyConfig, Prop.forAll (ArbMap.defaults |> ArbMap.arbitrary<int64>) property)
+
+    [<Test>]
+    let ``narrowing a native-int placeholder truncates its own bits`` () : unit =
+        // `Unsafe.AsRef<T>((void*)bits)` placeholders ARE bit patterns rather than
+        // addresses, so they narrow verbatim and register no identity. All three of
+        // `Int64Source.widenedNativeInt`, the float-conversion helper, and
+        // `materialiseHashBits` have to agree about this, because a placeholder can
+        // arrive already-widened or straight from the native-int slot.
+        let property (bits : int64) : unit =
+            let placeholder =
+                NativeIntSource.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits)
+
+            let narrowed, counters =
+                EvalStackValue.convToInt32 (EvalStackValue.NativeInt placeholder) PointerHashCounters.empty
+
+            narrowed
+            |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim (int32 (uint32 (uint64 bits)))))
+
+            counters |> shouldEqual PointerHashCounters.empty
+
+            let viaHash, hashCounters =
+                PointerHashSynthesis.materialiseHashBits "placeholder" placeholder PointerHashCounters.empty
+
+            viaHash |> shouldEqual bits
+            hashCounters |> shouldEqual PointerHashCounters.empty
+
+        Check.One (narrowingPropertyConfig, Prop.forAll (ArbMap.defaults |> ArbMap.arbitrary<int64>) property)
+
+    [<Test>]
+    let ``Int64 GetHashCode of a method handle xors two halves of one materialisation`` () : unit =
+        // The guest shape this change exists for. `RuntimeMethodInfo.GetHashCode` ->
+        // `IntPtr.GetHashCode` -> `Int64.GetHashCode`, which on 64-bit is
+        // `(int)l ^ (int)(l >> 32)` (Int64.cs:106-109). Both halves must derive from
+        // the *same* materialisation, or the hash would not be a function of the handle.
+        let handle = NativeIntSource.MethodHandlePtr 17L
+        let widened = EvalStackValue.Int64 (Int64Source.WidenedNativeInt (handle, true))
+
+        // `(int)l`
+        let low, counters = EvalStackValue.convToInt32 widened PointerHashCounters.empty
+
+        // `(int)(l >> 32)`
+        let shifted, counters =
+            Int64Source.shr "GetHashCode" (Int64Source.WidenedNativeInt (handle, true)) 32 counters
+
+        let high, counters =
+            EvalStackValue.convToInt32 (EvalStackValue.Int64 shifted) counters
+
+        // One identity registered across all three steps.
+        counters.Assigned.Count |> shouldEqual 1
+
+        let expectedBits, _ =
+            PointerHashSynthesis.materialiseHashBits "oracle" handle PointerHashCounters.empty
+
+        low
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim (int32 (uint32 (uint64 expectedBits)))))
+
+        high
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim (int32 (uint32 (uint64 (expectedBits >>> 32))))))

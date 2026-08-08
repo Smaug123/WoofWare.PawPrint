@@ -178,6 +178,14 @@ module PointerHashSynthesis =
         match src with
         | NativeIntSource.Verbatim n -> n, counters
         | NativeIntSource.ManagedPointer ManagedPointerSource.Null -> 0L, counters
+        | NativeIntSource.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits) ->
+            // An `Unsafe.AsRef<T>((void*)bits)` placeholder IS a bit pattern rather
+            // than an address, so its bits are known exactly and no counter is
+            // needed. `Int64Source.widenedNativeInt` and
+            // `nativeIntBitsForFloatConversion` treat it the same way; all three
+            // must agree, because a placeholder can reach synthesis either
+            // already-widened or straight from the native-int slot.
+            bits, counters
         | NativeIntSource.ManagedPointer _ ->
             failwith
                 $"PointerHashSynthesis.materialiseHashBits (%s{reason}): refusing to synthesise bits for managed pointer %O{src} (would erase byref provenance)"

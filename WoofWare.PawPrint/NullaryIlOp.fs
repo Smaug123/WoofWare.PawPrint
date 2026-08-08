@@ -2110,13 +2110,15 @@ module NullaryIlOp =
             (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Conv_I1 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
-            let converted = EvalStackValue.convToInt8 popped
+            let converted = EvalStackValue.convToInt8 popped state.PointerHashCounters
 
             let state =
                 match converted with
                 | None -> failwith "TODO: Conv_I1 conversion failure unimplemented"
-                | Some conv ->
-                    state
+                | Some (conv, counters) ->
+                    { state with
+                        PointerHashCounters = counters
+                    }
                     |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim conv)) currentThread
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
@@ -2124,13 +2126,15 @@ module NullaryIlOp =
             (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Conv_I2 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
-            let converted = EvalStackValue.convToInt16 popped
+            let converted = EvalStackValue.convToInt16 popped state.PointerHashCounters
 
             let state =
                 match converted with
                 | None -> failwith "TODO: Conv_I2 conversion failure unimplemented"
-                | Some conv ->
-                    state
+                | Some (conv, counters) ->
+                    { state with
+                        PointerHashCounters = counters
+                    }
                     |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim conv)) currentThread
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
@@ -2139,9 +2143,14 @@ module NullaryIlOp =
         | Conv_I4 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
 
+            let converted, counters =
+                EvalStackValue.convToInt32 popped state.PointerHashCounters
+
             let state =
-                state
-                |> IlMachineState.pushToEvalStack' (EvalStackValue.convToInt32 popped) currentThread
+                { state with
+                    PointerHashCounters = counters
+                }
+                |> IlMachineState.pushToEvalStack' converted currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
 
             (state, WhatWeDid.Executed) |> ExecutionResult.stepped
@@ -2224,13 +2233,15 @@ module NullaryIlOp =
             (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Conv_U1 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
-            let converted = EvalStackValue.convToUInt8 popped
+            let converted = EvalStackValue.convToUInt8 popped state.PointerHashCounters
 
             let state =
                 match converted with
                 | None -> failwith "TODO: Conv_U1 conversion failure unimplemented"
-                | Some conv ->
-                    state
+                | Some (conv, counters) ->
+                    { state with
+                        PointerHashCounters = counters
+                    }
                     |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim conv)) currentThread
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
@@ -2238,13 +2249,15 @@ module NullaryIlOp =
             (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Conv_U2 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
-            let converted = EvalStackValue.convToUInt16 popped
+            let converted = EvalStackValue.convToUInt16 popped state.PointerHashCounters
 
             let state =
                 match converted with
                 | None -> failwith "TODO: Conv_U2 conversion failure unimplemented"
-                | Some conv ->
-                    state
+                | Some (conv, counters) ->
+                    { state with
+                        PointerHashCounters = counters
+                    }
                     |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim conv)) currentThread
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
@@ -2253,9 +2266,14 @@ module NullaryIlOp =
         | Conv_U4 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
 
+            let converted, counters =
+                EvalStackValue.convToUInt32 popped state.PointerHashCounters
+
             let state =
-                state
-                |> IlMachineState.pushToEvalStack' (EvalStackValue.convToUInt32 popped) currentThread
+                { state with
+                    PointerHashCounters = counters
+                }
+                |> IlMachineState.pushToEvalStack' converted currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
 
             (state, WhatWeDid.Executed) |> ExecutionResult.stepped
