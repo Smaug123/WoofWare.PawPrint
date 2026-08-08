@@ -53,6 +53,18 @@ module TestFSharpPureCases =
     let private dllPath =
         Path.Combine (publishDir, "WoofWare.PawPrint.Test.FSharpPureCases.dll")
 
+    // The real-runtime oracle runs the app out of process, so it needs the apphost rather than the
+    // managed image: this is a self-contained publish, whose dependencies (FSharp.Core among them)
+    // live beside the dll and are only resolvable from that directory.
+    let private exePath =
+        Path.Combine (
+            publishDir,
+            if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+                "WoofWare.PawPrint.Test.FSharpPureCases.exe"
+            else
+                "WoofWare.PawPrint.Test.FSharpPureCases"
+        )
+
     let private publishOnce : Lazy<unit> =
         lazy
             if not (File.Exists projectFile) then
@@ -161,7 +173,7 @@ module TestFSharpPureCases =
         use peImage = new MemoryStream (image)
 
         try
-            let realResult = RealRuntime.executeWithRealRuntime [| testCaseName |] image
+            let realResult = RealRuntime.executePublishedApp [| testCaseName |] exePath
 
             let pawPrintResult =
                 Program.run
@@ -192,6 +204,9 @@ module TestFSharpPureCases =
             | RealRuntimeResult.NormalExit exitCode, RunOutcome.GuestUnhandledException (_, _, exn) ->
                 failwith
                     $"Real runtime exited normally with code %d{exitCode}, but PawPrint threw unhandled exception: %O{exn.ExceptionObject}"
+            | RealRuntimeResult.FailFast report, _ ->
+                failwith
+                    $"Real runtime called Environment.FailFast for %s{testCaseName}; this fixture does not exercise FailFast:\n%s{report}"
             | RealRuntimeResult.UnhandledException realExn, RunOutcome.NormalExit (terminalState, terminatingThread) ->
                 let pawPrintExitCode =
                     match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
@@ -200,7 +215,7 @@ module TestFSharpPureCases =
                     | _ -> None
 
                 failwith
-                    $"Real runtime threw unhandled %s{realExn.GetType().Name}, but PawPrint exited normally (code: %O{pawPrintExitCode})"
+                    $"Real runtime terminated with an unhandled exception, but PawPrint exited normally (code: %O{pawPrintExitCode}):\n%s{realExn}"
             | _, RunOutcome.FailFast _ ->
                 failwith
                     "PawPrint called Environment.FailFast; the real runtime can't have done so or the test harness would be gone"
@@ -334,12 +349,15 @@ module TestFSharpPureCases =
 
     [<TestCaseSource(nameof unimplemented)>]
     let ``Unimplemented F# tests have correct real-runtime behaviour`` (testCaseName : string) =
-        let image = loadImage ()
+        // This case never runs PawPrint, so it needs the publish rather than the image.
+        publishOnce.Force ()
 
         let expectedExitCode =
             customExitCodes |> Map.tryFind testCaseName |> Option.defaultValue 0
 
-        match RealRuntime.executeWithRealRuntime [| testCaseName |] image with
+        match RealRuntime.executePublishedApp [| testCaseName |] exePath with
         | RealRuntimeResult.NormalExit exitCode -> exitCode |> shouldEqual expectedExitCode
-        | RealRuntimeResult.UnhandledException exn ->
-            failwith $"Real runtime threw unhandled %s{exn.GetType().Name} for %s{testCaseName}: %s{exn.Message}"
+        | RealRuntimeResult.UnhandledException report ->
+            failwith $"Real runtime terminated with an unhandled exception for %s{testCaseName}:\n%s{report}"
+        | RealRuntimeResult.FailFast report ->
+            failwith $"Real runtime called Environment.FailFast for %s{testCaseName}:\n%s{report}"

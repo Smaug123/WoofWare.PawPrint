@@ -97,7 +97,7 @@ try { nil(1); }
 catch (NullReferenceException) { /* PawPrint: reached. CoreCLR: process is already dead. */ }
 ```
 
-**Testing note**: This divergence is why the case cannot be a `sourcesPure` comparison test — running the real runtime in-process would take the test host down. It is covered by a PawPrint-only test, `calli through a null function pointer throws NullReferenceException` in `TestPureCases.fs`.
+**Testing note**: This cannot be a `sourcesPure` comparison test, because the two runtimes genuinely disagree about the outcome. The oracle cannot describe the fault: a process killed by a signal is reported by `Process.ExitCode` as `128 + signo`, indistinguishable from a guest that simply returned that number, so the oracle would call SIGSEGV a normal exit with code 139. It is covered by a PawPrint-only test, `calli through a null function pointer throws NullReferenceException` in `TestPureCases.fs`.
 
 **Where this lives in code**: `UnaryMetadataCallOps.executeCalli`.
 

@@ -73,6 +73,18 @@ type private RealRuntimeResult =
     | NormalExit of exitCode : int
     | UnhandledException of exn : Exception
 
+/// A deliberately in-process runner, and NOT the differential oracle.
+///
+/// `WoofWare.PawPrint.Test`'s `RealRuntime` runs guests out of process, because in-process the
+/// guest shares CoreCLR's process-global latched exit code with its host, and `Environment.Exit`
+/// or an escaped exception terminates the host outright. None of that matters here: this is a
+/// BenchmarkDotNet harness whose real-runtime arm exists to give PawPrint's timings something to
+/// be compared against, no assertion depends on the exit code, and its guests are fixed and
+/// well-behaved. Spawning a process per iteration would instead add roughly 27ms of runtime
+/// startup to every measurement, which is the same order as the guest work being measured.
+///
+/// Do not promote this into a correctness oracle. If a comparison ever needs to be asserted on
+/// here, use the out-of-process runner rather than relaxing this one.
 [<RequireQualifiedAccess>]
 module private RealRuntime =
     let executeWithRealRuntime (args : string[]) (assemblyBytes : byte array) : RealRuntimeResult =

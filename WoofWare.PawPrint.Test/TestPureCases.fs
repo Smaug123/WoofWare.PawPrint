@@ -141,6 +141,9 @@ module TestPureCases =
                 | RealRuntimeResult.NormalExit exitCode, RunOutcome.GuestUnhandledException (_, _, exn) ->
                     failwith
                         $"Real runtime exited normally with code %d{exitCode}, but PawPrint threw unhandled exception: %O{exn.ExceptionObject}"
+                | RealRuntimeResult.FailFast report, _ ->
+                    failwith
+                        $"Real runtime called Environment.FailFast for %s{case.FileName}; this fixture does not exercise FailFast:\n%s{report}"
                 | RealRuntimeResult.UnhandledException realExn,
                   RunOutcome.NormalExit (terminalState, terminatingThread) ->
                     let pawPrintExitCode =
@@ -150,7 +153,7 @@ module TestPureCases =
                         | _ -> None
 
                     failwith
-                        $"Real runtime threw unhandled %s{realExn.GetType().Name}, but PawPrint exited normally (code: %O{pawPrintExitCode})"
+                        $"Real runtime terminated with an unhandled exception, but PawPrint exited normally (code: %O{pawPrintExitCode}):\n%s{realExn}"
                 | _, RunOutcome.FailFast (_, _, message) ->
                     let m = message |> Option.defaultValue "<no message>"
 
@@ -649,8 +652,10 @@ class Program
 
         match RealRuntime.executeWithRealRuntime [||] image with
         | RealRuntimeResult.NormalExit exitCode -> exitCode |> shouldEqual expectedExitCode
-        | RealRuntimeResult.UnhandledException exn ->
-            failwith $"Real runtime threw unhandled %s{exn.GetType().Name} for %s{fileName}: %s{exn.Message}"
+        | RealRuntimeResult.UnhandledException report ->
+            failwith $"Real runtime terminated with an unhandled exception for %s{fileName}:\n%s{report}"
+        | RealRuntimeResult.FailFast report ->
+            failwith $"Real runtime called Environment.FailFast for %s{fileName}:\n%s{report}"
 
     [<TestCaseSource(nameof unimplemented)>]
     [<Explicit>]

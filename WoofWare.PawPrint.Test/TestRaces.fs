@@ -71,8 +71,10 @@ module TestRaces =
     let private runRealRuntime (sourceName : string) (image : byte[]) : int =
         match RealRuntime.executeWithRealRuntime [||] image with
         | RealRuntimeResult.NormalExit exitCode -> exitCode
-        | RealRuntimeResult.UnhandledException exn ->
-            failwith $"%s{sourceName} threw unhandled exception under the real runtime: %O{exn}"
+        | RealRuntimeResult.UnhandledException report ->
+            failwith $"%s{sourceName} terminated with an unhandled exception under the real runtime:\n%s{report}"
+        | RealRuntimeResult.FailFast report ->
+            failwith $"%s{sourceName} called Environment.FailFast under the real runtime:\n%s{report}"
 
     // Seed sweep used to characterise PCT coverage. The first 30 splitmix64
     // outputs already hit both interleavings of ReadWriteRace; running 64

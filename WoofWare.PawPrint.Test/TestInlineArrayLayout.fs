@@ -21,9 +21,11 @@ open WoofWare.PawPrint.Test
 /// is for: it varies the element's size, alignment, GC content and nesting, and `Pack`, and
 /// requires the two runtimes to agree for every combination.
 ///
-/// Each generated program packs four measured sizes into its exit code, so one compilation and one
-/// run per runtime covers N = 1, 2 and 3 plus the element's placement inside a larger struct. On
-/// disagreement the assertion message decodes both sides, so a failure names the shape.
+/// Each generated program measures four sizes — N = 1, 2 and 3, plus the element's placement inside
+/// a larger struct — from a single compilation. PawPrint returns all four packed into one int32,
+/// which is read directly off the evaluation stack; the real runtime is a real process, whose exit
+/// code on Unix is only 8 bits, so it is run once per measurement. On disagreement the assertion
+/// message decodes both sides, so a failure names the shape.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestInlineArrayLayout =
@@ -147,25 +149,44 @@ public class TestInlineArrayLayoutSweep
         int s3 = Unsafe.SizeOf<B3>();
         int h = Unsafe.SizeOf<Holder>();
 
-        // Keep every measurement inside one byte so all four fit in the exit code; every shape in
-        // the sweep is far below this, so tripping it means the layout is wrong by orders of
-        // magnitude rather than that the encoding is too tight.
-        if (s1 < 0 || s1 > 127 || s2 < 0 || s2 > 127 || s3 < 0 || s3 > 127 || h < 0 || h > 127) return -1;
+        // Keep every measurement inside one byte; every shape in the sweep is far below this, so
+        // tripping it means the layout is wrong by orders of magnitude rather than that the
+        // encoding is too tight.
+        bool oversized = s1 < 0 || s1 > 127 || s2 < 0 || s2 > 127 || s3 < 0 || s3 > 127 || h < 0 || h > 127;
 
-        return s1 | (s2 << 8) | (s3 << 16) | (h << 24);
+        // With no argument, report all four measurements packed into the return value. Only
+        // PawPrint calls it this way, because PawPrint's result is read straight off the
+        // evaluation stack as a full int32.
+        if (argv.Length == 0) return oversized ? -1 : (s1 | (s2 << 8) | (s3 << 16) | (h << 24));
+
+        // A Unix process exit code is 8 bits, so a real process cannot return the packed value at
+        // all; it reports one measurement per run instead, selected here. 255 is the oversized
+        // sentinel, unambiguous because every real measurement is at most 127.
+        if (oversized) return 255;
+
+        switch (argv[0])
+        {{
+            case "0": return s1;
+            case "1": return s2;
+            case "2": return s3;
+            case "3": return h;
+            // Unreachable: the sweep passes 0..3. Falling back to one of the measurements would
+            // let a mis-indexed caller read a plausible-looking size for the wrong slot, so make
+            // it loud; the oracle reports the crash and the test names it.
+            default: throw new ArgumentOutOfRangeException(nameof(argv), argv[0], "unknown measurement selector");
+        }}
     }}
 }}
 """
 
+    /// Both oversized sentinels are rejected before this is reached, so every value it sees is four
+    /// packed measurements.
     let private decode (packed : int) : string =
-        if packed = -1 then
-            "<a measured size did not fit in one byte>"
-        else
-            let s1 = packed &&& 0xFF
-            let s2 = (packed >>> 8) &&& 0xFF
-            let s3 = (packed >>> 16) &&& 0xFF
-            let h = (packed >>> 24) &&& 0xFF
-            $"sizeof B1=%d{s1}, B2=%d{s2}, B3=%d{s3}, Holder=%d{h}"
+        let s1 = packed &&& 0xFF
+        let s2 = (packed >>> 8) &&& 0xFF
+        let s3 = (packed >>> 16) &&& 0xFF
+        let h = (packed >>> 24) &&& 0xFF
+        $"sizeof B1=%d{s1}, B2=%d{s2}, B3=%d{s3}, Holder=%d{h}"
 
     let private assy = typeof<RunResult>.Assembly
 
@@ -220,16 +241,29 @@ public class TestInlineArrayLayoutSweep
         let text = source elementShapes.[elementKey] packAttributes.[packKey]
         let image = Roslyn.compile [ text ]
 
-        let expected =
-            match RealRuntime.executeWithRealRuntime [||] image with
+        // The oracle runs the guest as a real process, whose exit code on Unix is 8 bits, so it can
+        // carry one measurement per run rather than all four packed. Taking four runs on that side
+        // and one on PawPrint's is the cheap way round: a guest process costs tens of milliseconds
+        // and a PawPrint run of this sweep costs seconds.
+        let measure (index : int) : int =
+            match RealRuntime.executeWithRealRuntime [| string index |] image with
+            | RealRuntimeResult.NormalExit 255 ->
+                failwith $"%s{case}: the real runtime reported a size too large to encode; the sweep needs widening"
             | RealRuntimeResult.NormalExit exitCode -> exitCode
-            | RealRuntimeResult.UnhandledException exn ->
-                failwith $"%s{case}: real runtime threw unhandled %s{exn.GetType().Name}: %s{exn.Message}"
+            | RealRuntimeResult.UnhandledException report ->
+                failwith $"%s{case}: real runtime terminated with an unhandled exception:\n%s{report}"
+            | RealRuntimeResult.FailFast report -> failwith $"%s{case}: real runtime called FailFast:\n%s{report}"
 
-        if expected = -1 then
-            failwith $"%s{case}: the real runtime reported a size too large to encode; the sweep needs widening"
+        let expected =
+            (measure 0)
+            ||| ((measure 1) <<< 8)
+            ||| ((measure 2) <<< 16)
+            ||| ((measure 3) <<< 24)
 
         let actual = runUnderPawPrint case image
+
+        if actual = -1 then
+            failwith $"%s{case}: PawPrint reported a size too large to encode; the sweep needs widening"
 
         if actual <> expected then
             failwith
