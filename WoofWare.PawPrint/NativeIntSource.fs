@@ -176,6 +176,19 @@ type NativeIntSource =
     /// `Verbatim 0L`, so the BCL's "create failed → throw" check does not fire
     /// for a successfully-minted handle.
     | WaitHandlePtr of WaitHandleId
+    /// Address of the runtime-synthesised struct-marshalling stub for the named type, as
+    /// returned by CoreCLR's `MarshalNative_TryGetStructMarshalStub` (marshalnative.cpp:118)
+    /// for a type that has layout but is not blittable. CoreCLR synthesises IL and hands back
+    /// its entry address; PawPrint has neither IL synthesis nor code addresses, so the "address"
+    /// is the identity of the type whose image is to be written, and `calli` on it runs
+    /// `StructMarshalStub.executeStubCall` instead of pushing a frame.
+    ///
+    /// Structural equality of the payload gives the pointer the identity CoreCLR's per-
+    /// MethodTable stub cache has: one stub per type, and two stubs for the same type are the
+    /// same pointer. It is never null — CoreLib branches on `structMarshalStub != null` to
+    /// choose between the stub and the blittable memmove path, so `isZero` must answer `false`
+    /// or the guest silently memmoves a type whose native image is not its managed one.
+    | StructMarshalStub of ConcreteTypeHandle
     /// Returned by `Unsafe.ByteOffset` or managed-pointer subtraction for two byrefs into distinct byte-addressed
     /// storage containers.
     | SyntheticCrossArrayOffset of SyntheticCrossArrayOffset
@@ -215,6 +228,7 @@ type NativeIntSource =
         | NativeIntSource.EventPipeEventPtr id -> $"<EventPipe event #%i{id}>"
         | NativeIntSource.LowLevelMonitorPtr id -> $"%O{id}"
         | NativeIntSource.WaitHandlePtr id -> $"%O{id}"
+        | NativeIntSource.StructMarshalStub ty -> $"<struct-marshal stub for type %O{ty}>"
         | NativeIntSource.SyntheticCrossArrayOffset _ -> "<synthetic cross-storage byte offset>"
         | NativeIntSource.OpaqueHashBits bits -> $"<opaque hash bits (native int) 0x%x{bits}>"
 
@@ -244,6 +258,7 @@ type NativeIntSource =
             | NativeIntSource.EventPipeEventPtr left, NativeIntSource.EventPipeEventPtr right -> left = right
             | NativeIntSource.LowLevelMonitorPtr left, NativeIntSource.LowLevelMonitorPtr right -> left = right
             | NativeIntSource.WaitHandlePtr left, NativeIntSource.WaitHandlePtr right -> left = right
+            | NativeIntSource.StructMarshalStub left, NativeIntSource.StructMarshalStub right -> left = right
             | NativeIntSource.SyntheticCrossArrayOffset left, NativeIntSource.SyntheticCrossArrayOffset right ->
                 left = right
             | NativeIntSource.OpaqueHashBits left, NativeIntSource.OpaqueHashBits right -> left = right
@@ -266,6 +281,7 @@ type NativeIntSource =
             | NativeIntSource.EventPipeEventPtr _, _
             | NativeIntSource.LowLevelMonitorPtr _, _
             | NativeIntSource.WaitHandlePtr _, _
+            | NativeIntSource.StructMarshalStub _, _
             | NativeIntSource.SyntheticCrossArrayOffset _, _
             | NativeIntSource.OpaqueHashBits _, _ -> false
         | _ -> false
@@ -300,6 +316,7 @@ type NativeIntSource =
         | NativeIntSource.OpaqueHashBits bits -> HashCode.Combine (15, bits)
         | NativeIntSource.LowLevelMonitorPtr id -> HashCode.Combine (16, id)
         | NativeIntSource.WaitHandlePtr id -> HashCode.Combine (17, id)
+        | NativeIntSource.StructMarshalStub ty -> HashCode.Combine (21, ty)
 
 /// CoreCLR's `TypeHandle` is a tagged pointer: it wraps either a `MethodTable*`
 /// or a `TypeDesc*`, and distinguishes them by setting bit 1 in the TypeDesc
@@ -388,6 +405,7 @@ module NativeIntSource =
         | NativeIntSource.EventPipeEventPtr _
         | NativeIntSource.LowLevelMonitorPtr _
         | NativeIntSource.WaitHandlePtr _
+        | NativeIntSource.StructMarshalStub _
         | NativeIntSource.AssemblyHandle _
         | NativeIntSource.MetadataImportHandle _
         | NativeIntSource.ModuleHandle _ -> false
@@ -417,6 +435,7 @@ module NativeIntSource =
         | NativeIntSource.EventPipeEventPtr _
         | NativeIntSource.LowLevelMonitorPtr _
         | NativeIntSource.WaitHandlePtr _
+        | NativeIntSource.StructMarshalStub _
         | NativeIntSource.AssemblyHandle _
         | NativeIntSource.MetadataImportHandle _
         | NativeIntSource.ModuleHandle _ -> true
@@ -480,6 +499,7 @@ module NativeIntSource =
         | NativeIntSource.EventPipeEventPtr f1, NativeIntSource.EventPipeEventPtr f2 -> f1 = f2
         | NativeIntSource.LowLevelMonitorPtr f1, NativeIntSource.LowLevelMonitorPtr f2 -> f1 = f2
         | NativeIntSource.WaitHandlePtr f1, NativeIntSource.WaitHandlePtr f2 -> f1 = f2
+        | NativeIntSource.StructMarshalStub f1, NativeIntSource.StructMarshalStub f2 -> f1 = f2
         | NativeIntSource.Verbatim f1, NativeIntSource.Verbatim f2 -> f1 = f2
         | NativeIntSource.SyntheticCrossArrayOffset _, NativeIntSource.SyntheticCrossArrayOffset _
         | NativeIntSource.Verbatim _, NativeIntSource.SyntheticCrossArrayOffset _
@@ -536,7 +556,9 @@ module NativeIntSource =
         | NativeIntSource.OpaqueHashBits _, NativeIntSource.LowLevelMonitorPtr _
         | NativeIntSource.LowLevelMonitorPtr _, NativeIntSource.OpaqueHashBits _
         | NativeIntSource.OpaqueHashBits _, NativeIntSource.WaitHandlePtr _
-        | NativeIntSource.WaitHandlePtr _, NativeIntSource.OpaqueHashBits _ ->
+        | NativeIntSource.WaitHandlePtr _, NativeIntSource.OpaqueHashBits _
+        | NativeIntSource.OpaqueHashBits _, NativeIntSource.StructMarshalStub _
+        | NativeIntSource.StructMarshalStub _, NativeIntSource.OpaqueHashBits _ ->
             failwith
                 $"TODO (CEQ): synthesised hash bits vs handle pointer requires materialising the handle's bits through PointerHashCounters; got {a} vs {b}"
         // CoreCLR's TypeHandle wraps either a MethodTable* (when !IsTypeDesc) or a tagged
@@ -632,7 +654,9 @@ module NativeIntSource =
         | NativeIntSource.LowLevelMonitorPtr _, _
         | _, NativeIntSource.LowLevelMonitorPtr _
         | NativeIntSource.WaitHandlePtr _, _
-        | _, NativeIntSource.WaitHandlePtr _ -> false
+        | _, NativeIntSource.WaitHandlePtr _
+        | NativeIntSource.StructMarshalStub _, _
+        | _, NativeIntSource.StructMarshalStub _ -> false
         // OpaqueHashBits vs ManagedPointer: every other OpaqueHashBits
         // pairing is handled above (vs Verbatim/OpaqueHashBits, vs
         // SyntheticCrossArrayOffset, and vs the various handle kinds);

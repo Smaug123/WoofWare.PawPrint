@@ -1229,6 +1229,15 @@ module internal UnaryMetadataCallOps =
                 )
             | k -> failwith $"calli: expected a StandaloneSignature metadata token describing the call site, got %O{k}"
 
+        // A struct-marshal stub is a callable that has no `MethodInfo` behind it — the runtime
+        // synthesises it, so there is nothing to push a frame for. It is recognised (and driven)
+        // entirely from the evaluation stack, which is also how a part-completed one is resumed,
+        // so this fork has to happen before the "top of stack is a function pointer" check below.
+        // See `StructMarshalStub` for why the sequence is driven by re-executing this `calli`.
+        match StructMarshalStub.tryRecognise (state.ThreadState.[thread].MethodState.EvaluationStack.Values) with
+        | Some stubCall -> StructMarshalStub.executeStubCall loggerFactory baseClassTypes stubCall thread state
+        | None ->
+
         // Peek rather than pop: `loadClass` below may suspend this instruction for class
         // initialisation, in which case the PC is not advanced and the whole `calli` is
         // re-executed later. Popping here would lose the function pointer on that retry.

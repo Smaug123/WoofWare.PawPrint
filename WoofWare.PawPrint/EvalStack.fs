@@ -43,6 +43,8 @@ module EvalStackValue =
             failwith $"%s{operation}: refusing to convert managed pointer %O{ptr} to an integer"
         | NativeIntSource.FunctionPointer methodInfo ->
             failwith $"%s{operation}: refusing to convert function pointer %O{methodInfo} to an integer"
+        | NativeIntSource.StructMarshalStub ty ->
+            failwith $"%s{operation}: refusing to convert struct-marshal stub for %O{ty} to an integer"
         | NativeIntSource.TypeHandlePtr typeHandle ->
             failwith $"%s{operation}: refusing to convert RuntimeTypeHandle pointer %O{typeHandle} to an integer"
         | NativeIntSource.TypeDescPtr typeHandle ->
@@ -239,6 +241,8 @@ module EvalStackValue =
             | NativeIntSource.ManagedPointer ptr -> UnsignedNativeIntSource.FromManagedPointer ptr |> Some
             | NativeIntSource.FunctionPointer methodInfo ->
                 failwith $"Conv_U: refusing to convert function pointer %O{methodInfo} to unsigned native int"
+            | NativeIntSource.StructMarshalStub ty ->
+                failwith $"Conv_U: refusing to convert struct-marshal stub for %O{ty} to unsigned native int"
             | NativeIntSource.FieldHandlePtr handle ->
                 failwith $"Conv_U: refusing to convert RuntimeFieldHandle pointer %d{handle} to unsigned native int"
             | NativeIntSource.MethodHandlePtr handle ->
@@ -621,6 +625,8 @@ module EvalStackValue =
                     | NativeIntSource.SyntheticCrossArrayOffset _ -> failwith "TODO"
                     | NativeIntSource.ManagedPointer ptr -> failwith "TODO"
                     | NativeIntSource.FunctionPointer f -> failwith $"TODO: {f}"
+                    | NativeIntSource.StructMarshalStub ty ->
+                        failwith $"refusing to store struct-marshal stub for {ty} in an int64 location"
                     | NativeIntSource.FieldHandlePtr f -> failwith $"TODO: {f}"
                     | NativeIntSource.MethodHandlePtr f -> failwith $"TODO: {f}"
                     | NativeIntSource.TypeHandlePtr f -> failwith $"TODO: {f}"
@@ -759,6 +765,8 @@ module EvalStackValue =
                 | NativeIntSource.SyntheticCrossArrayOffset _ ->
                     failwith "refusing to interpret synthetic cross-storage byte offset as a pointer"
                 | NativeIntSource.FunctionPointer _ -> failwith "TODO"
+                | NativeIntSource.StructMarshalStub _ ->
+                    failwith "refusing to interpret struct-marshal stub as an object ref"
                 | NativeIntSource.TypeHandlePtr _ -> failwith "refusing to interpret type handle ID as an object ref"
                 | NativeIntSource.TypeDescPtr _ -> failwith "refusing to interpret TypeDesc pointer as an object ref"
                 | NativeIntSource.MethodTablePtr _ ->
@@ -821,6 +829,12 @@ module EvalStackValue =
                 | NativeIntSource.ManagedPointer src -> src |> CliRuntimePointer.Managed |> CliType.RuntimePointer
                 | NativeIntSource.FunctionPointer methodInfo ->
                     CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer methodInfo))
+                // Same treatment as a function pointer, and for the same reason: CoreLib holds
+                // the stub in a `delegate*<...>`-typed local, so it lands here on `stloc`, but
+                // there is no `CliRuntimePointer` shape that could carry it and `calli` reads it
+                // back off the eval stack as a native int.
+                | NativeIntSource.StructMarshalStub ty ->
+                    CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.StructMarshalStub ty))
                 | NativeIntSource.TypeHandlePtr typeHandle ->
                     CliType.RuntimePointer (CliRuntimePointer.TypeHandlePtr typeHandle)
                 | NativeIntSource.TypeDescPtr typeHandle ->

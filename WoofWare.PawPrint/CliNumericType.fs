@@ -359,6 +359,7 @@ type CliNumericType =
             | NativeIntSource.FieldHandlePtr _ -> failwith "refusing to express FieldHandlePtr as bytes"
             | NativeIntSource.MethodHandlePtr _ -> failwith "refusing to express MethodHandlePtr as bytes"
             | NativeIntSource.FunctionPointer _ -> failwith "refusing to express FunctionPointer as bytes"
+            | NativeIntSource.StructMarshalStub _ -> failwith "refusing to express StructMarshalStub as bytes"
             | NativeIntSource.TypeHandlePtr _ -> failwith "refusing to express TypeHandlePtr as bytes"
             | NativeIntSource.TypeDescPtr _ -> failwith "refusing to express TypeDescPtr as bytes"
             | NativeIntSource.MethodTablePtr _ -> failwith "refusing to express MethodTablePtr as bytes"

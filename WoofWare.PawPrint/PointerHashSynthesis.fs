@@ -120,6 +120,12 @@ module PointerHashSynthesis =
         | NativeIntSource.AssemblyHandle name -> CanonicalPointerKey.AssemblyHandle name
         | NativeIntSource.ModuleHandle name -> CanonicalPointerKey.ModuleHandle name
         | NativeIntSource.MetadataImportHandle name -> CanonicalPointerKey.MetadataImportHandle name
+        | NativeIntSource.StructMarshalStub ty ->
+            // A code address, not a data pointer: the guest only compares it against null and
+            // `calli`s it, and it is never stored anywhere a hash could be taken of it. Minting
+            // synthesised bits for it would make that reachable silently, so refuse instead.
+            failwith
+                $"PointerHashSynthesis.canonicalKey: struct-marshal stub for %O{ty} is a synthesised code address; nothing should be hashing it"
         | NativeIntSource.Verbatim _
         | NativeIntSource.ManagedPointer _
         | NativeIntSource.SyntheticCrossArrayOffset _

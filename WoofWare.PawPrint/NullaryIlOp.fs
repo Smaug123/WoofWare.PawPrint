@@ -315,6 +315,7 @@ module NullaryIlOp =
                 failwith "Localloc: refusing to use synthetic pointer delta as a byte count"
             | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer _)
             | EvalStackValue.NativeInt (NativeIntSource.FunctionPointer _)
+            | EvalStackValue.NativeInt (NativeIntSource.StructMarshalStub _)
             | EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr _)
             | EvalStackValue.NativeInt (NativeIntSource.TypeDescPtr _)
             | EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr _)
@@ -466,6 +467,7 @@ module NullaryIlOp =
             | NativeIntSource.ManagedPointer ptr -> failwith $"Neg: refusing to negate managed pointer %O{ptr}"
             | NativeIntSource.FunctionPointer methodInfo ->
                 failwith $"Neg: refusing to negate function pointer %O{methodInfo}"
+            | NativeIntSource.StructMarshalStub ty -> failwith $"Neg: refusing to negate struct-marshal stub for %O{ty}"
             | NativeIntSource.TypeHandlePtr typeHandle ->
                 failwith $"Neg: refusing to negate RuntimeTypeHandle pointer %O{typeHandle}"
             | NativeIntSource.TypeDescPtr typeHandle ->
@@ -834,6 +836,8 @@ module NullaryIlOp =
             | NativeIntSource.OpaqueHashBits _ -> Ok src
             | NativeIntSource.FunctionPointer methodInfo ->
                 failwith $"Conv_ovf_u: refusing to convert function pointer %O{methodInfo} to unsigned native int"
+            | NativeIntSource.StructMarshalStub ty ->
+                failwith $"Conv_ovf_u: refusing to convert struct-marshal stub for %O{ty} to unsigned native int"
             | NativeIntSource.FieldHandlePtr handle ->
                 failwith $"Conv_ovf_u: refusing to convert RuntimeFieldHandle pointer %d{handle} to unsigned native int"
             | NativeIntSource.MethodHandlePtr handle ->
@@ -927,6 +931,8 @@ module NullaryIlOp =
             | NativeIntSource.OpaqueHashBits _ -> Ok src
             | NativeIntSource.FunctionPointer methodInfo ->
                 failwith $"Conv_ovf_i: refusing to convert function pointer %O{methodInfo} to signed native int"
+            | NativeIntSource.StructMarshalStub ty ->
+                failwith $"Conv_ovf_i: refusing to convert struct-marshal stub for %O{ty} to signed native int"
             | NativeIntSource.FieldHandlePtr handle ->
                 failwith $"Conv_ovf_i: refusing to convert RuntimeFieldHandle pointer %d{handle} to signed native int"
             | NativeIntSource.MethodHandlePtr handle ->
@@ -1183,6 +1189,7 @@ module NullaryIlOp =
             | EvalStackValue.NativeInt src ->
                 match src with
                 | NativeIntSource.FunctionPointer _
+                | NativeIntSource.StructMarshalStub _
                 | NativeIntSource.FieldHandlePtr _
                 | NativeIntSource.MethodHandlePtr _
                 | NativeIntSource.TypeHandlePtr _
@@ -1281,6 +1288,7 @@ module NullaryIlOp =
             | EvalStackValue.NativeInt src ->
                 match src with
                 | NativeIntSource.FunctionPointer _
+                | NativeIntSource.StructMarshalStub _
                 | NativeIntSource.FieldHandlePtr _
                 | NativeIntSource.MethodHandlePtr _
                 | NativeIntSource.TypeHandlePtr _

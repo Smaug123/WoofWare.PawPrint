@@ -91,6 +91,7 @@ module private ByteAddressabilityClassifier =
         | NativeIntSource.ManagedPointer ManagedPointerSource.Null -> CliByteAddressability.ByteAddressable
         | NativeIntSource.ManagedPointer _
         | NativeIntSource.FunctionPointer _
+        | NativeIntSource.StructMarshalStub _
         | NativeIntSource.TypeHandlePtr _
         | NativeIntSource.TypeDescPtr _
         | NativeIntSource.MethodTablePtr _
@@ -690,6 +691,29 @@ and CliValueTypeStorage =
     | Fields of CliFieldBackedStorage
     /// Raw storage is used only for fieldless custom-layout value types.
     | RawBytes of byte[]
+
+/// Where one declared field of a value type lands in that type's *unmanaged* (marshalled)
+/// image, as computed by <see cref="CliValueType.TryComputeMarshalLayout"/>.
+///
+/// This is the per-field detail that <see cref="CliValueType.TryComputeMarshalSize"/> derives
+/// and then discards. Anything that needs to *write* the unmanaged image (as opposed to
+/// merely sizing it) must consume these placements rather than re-deriving offsets, or the
+/// two walks can disagree on an individual field while still agreeing on the total.
+///
+/// Note the shape assumes one contiguous native range per managed field. That holds for every
+/// case we currently support, but it is not obviously universal: CoreCLR's `NFT_DECIMAL` field
+/// marshaller, for instance, repositions a `System.Decimal` relative to its managed form. Treat
+/// the one-to-one assumption as provisional, and expect to revisit the shape — not merely add a
+/// case to the consumer's classification — if a marshaller needs several native ranges.
+and MarshalFieldPlacement =
+    {
+        /// The managed field this placement describes.
+        Field : CliField
+        /// Byte offset of the field's native form within the unmanaged image.
+        NativeOffset : int
+        /// Size and alignment the field's native form contributes.
+        NativeSize : SizeofResult
+    }
 
 and CliValueType =
     private
@@ -2070,18 +2094,26 @@ and CliValueType =
                 else
                     CliValueType.TryComputeMarshalSize concreteTypes assemblies corelib vt
 
-    /// Compute the unmanaged size of a value type as `Marshal.SizeOf` would. Lays fields out
-    /// using the declaring type's `Layout` (sequential or explicit) and packing, but with each
-    /// field sized via `TryFieldMarshalSize` so `[MarshalAs(ByValTStr/ByValArray)]` fields
-    /// contribute their unmanaged byte cost rather than the managed CLI size. Type-system
-    /// context is required so descriptors that depend on the field's nominal type (e.g.
-    /// `ByValTStr` requires `System.String`) can be validated.
-    static member TryComputeMarshalSize
+    /// Compute the unmanaged size of a value type as `Marshal.SizeOf` would, *and* where each
+    /// declared field lands in that unmanaged image. See `TryComputeMarshalSize` for the
+    /// size-only entry point, which is this function with the placements dropped.
+    ///
+    /// Lays fields out using the declaring type's `Layout` (sequential or explicit) and packing,
+    /// but with each field sized via `TryFieldMarshalSize` so
+    /// `[MarshalAs(ByValTStr/ByValArray)]` fields contribute their unmanaged byte cost rather
+    /// than the managed CLI size. Type-system context is required so descriptors that depend on
+    /// the field's nominal type (e.g. `ByValTStr` requires `System.String`) can be validated.
+    ///
+    /// A `RawBytes`-backed value type has no declared fields, so it yields an empty placement
+    /// list alongside a non-zero size. That is not "nothing to marshal": consumers that write
+    /// the image field by field must reject `RawBytes` storage explicitly rather than reading
+    /// an empty list as an empty struct.
+    static member TryComputeMarshalLayout
         (concreteTypes : AllConcreteTypes)
         (assemblies : LoadedAssemblies)
         (corelib : BaseClassTypes<DumpedAssembly>)
         (vt : CliValueType)
-        : Result<SizeofResult, MarshalSizeError>
+        : Result<SizeofResult * MarshalFieldPlacement list, MarshalSizeError>
         =
         // Mirror CoreCLR's `IsStructMarshalable` (fieldmarshaler.cpp:288): a type with
         // `LayoutKind.Auto` reports `HasLayout() == false`, so `Marshal.SizeOf<T>()` throws an
@@ -2096,11 +2128,13 @@ and CliValueType =
 
         match vt._Storage with
         | CliValueTypeStorage.RawBytes bytes ->
-            Result.Ok
+            Result.Ok (
                 {
                     Size = bytes.Length
                     Alignment = 1
-                }
+                },
+                []
+            )
         | CliValueTypeStorage.Fields storage ->
             let minimumSize, packingSize =
                 match vt.Layout with
@@ -2142,6 +2176,52 @@ and CliValueType =
             let seqFields, nonSeqFields =
                 storage.Fields |> List.partition (fun field -> field.ConfiguredOffset.IsNone)
 
+            // Accumulator for both folds: placements so far (reversed), the running
+            // offset/extent, and the widest alignment seen. Placements are recorded by the same
+            // step that consumes the offset, so the two can never drift apart.
+            let placeField
+                (field : CliConcreteField)
+                (offsetOf : int -> int -> int)
+                (acc : Result<MarshalFieldPlacement list * int * int, MarshalSizeError>)
+                : Result<MarshalFieldPlacement list * int * int, MarshalSizeError>
+                =
+                match acc with
+                | Result.Error _ -> acc
+                | Result.Ok (placed, running, maxAlign) ->
+                    match
+                        CliValueType.TryFieldMarshalSize
+                            concreteTypes
+                            assemblies
+                            corelib
+                            vt.CharSet
+                            field.MarshallingDescriptor
+                            field.Type
+                            field.Contents
+                    with
+                    | Result.Error err -> Result.Error (MarshalSizeError.prefixField field.Name err)
+                    | Result.Ok size ->
+                        let alignmentCap = min size.Alignment packingSize
+                        let offset = offsetOf running alignmentCap
+
+                        let placement =
+                            {
+                                Field = CliConcreteField.ToCliField field
+                                NativeOffset = offset
+                                NativeSize = size
+                            }
+
+                        // Sequential layout advances the cursor past this field; explicit layout
+                        // instead tracks the furthest extent, because fields may be declared out
+                        // of offset order and may overlap.
+                        Result.Ok (placement :: placed, max running (offset + size.Size), max maxAlign alignmentCap)
+
+            let finish
+                (acc : Result<MarshalFieldPlacement list * int * int, MarshalSizeError>)
+                : Result<SizeofResult * MarshalFieldPlacement list, MarshalSizeError>
+                =
+                acc
+                |> Result.map (fun (placed, extent, align) -> computeFinal extent align, List.rev placed)
+
             match seqFields, nonSeqFields with
             | [], [] ->
                 Result.Ok (
@@ -2149,68 +2229,49 @@ and CliValueType =
                         {
                             Size = minimumSize
                             Alignment = 1
-                        }
+                        },
+                    []
                 )
             | _ :: _, [] ->
-                (Result.Ok (0, 0), seqFields)
+                (Result.Ok ([], 0, 0), seqFields)
                 ||> List.fold (fun acc field ->
-                    match acc with
-                    | Result.Error _ -> acc
-                    | Result.Ok (currentOffset, maxAlign) ->
-                        match
-                            CliValueType.TryFieldMarshalSize
-                                concreteTypes
-                                assemblies
-                                corelib
-                                vt.CharSet
-                                field.MarshallingDescriptor
-                                field.Type
-                                field.Contents
-                        with
-                        | Result.Error err -> Result.Error (MarshalSizeError.prefixField field.Name err)
-                        | Result.Ok size ->
-                            let alignmentCap = min size.Alignment packingSize
+                    placeField
+                        field
+                        (fun currentOffset alignmentCap ->
+                            if alignmentCap = 0 then
+                                currentOffset
+                            else
+                                let err = currentOffset % alignmentCap
 
-                            let alignedOffset =
-                                if alignmentCap = 0 then
+                                if err = 0 then
                                     currentOffset
                                 else
-                                    let err = currentOffset % alignmentCap
-
-                                    if err = 0 then
-                                        currentOffset
-                                    else
-                                        currentOffset + (alignmentCap - err)
-
-                            Result.Ok (alignedOffset + size.Size, max maxAlign alignmentCap)
+                                    currentOffset + (alignmentCap - err)
+                        )
+                        acc
                 )
-                |> Result.map (fun (off, align) -> computeFinal off align)
+                |> finish
             | [], _ :: _ ->
-                (Result.Ok (0, 0), nonSeqFields)
-                ||> List.fold (fun acc field ->
-                    match acc with
-                    | Result.Error _ -> acc
-                    | Result.Ok (maxEnd, maxAlign) ->
-                        match
-                            CliValueType.TryFieldMarshalSize
-                                concreteTypes
-                                assemblies
-                                corelib
-                                vt.CharSet
-                                field.MarshallingDescriptor
-                                field.Type
-                                field.Contents
-                        with
-                        | Result.Error err -> Result.Error (MarshalSizeError.prefixField field.Name err)
-                        | Result.Ok size ->
-                            let alignmentCap = min size.Alignment packingSize
-                            let fieldEnd = field.Offset + size.Size
-                            Result.Ok (max maxEnd fieldEnd, max maxAlign alignmentCap)
-                )
-                |> Result.map (fun (off, align) -> computeFinal off align)
+                (Result.Ok ([], 0, 0), nonSeqFields)
+                ||> List.fold (fun acc field -> placeField field (fun _ _ -> field.Offset) acc)
+                |> finish
             | _ :: _, _ :: _ ->
                 MarshalSizeError.NotMarshalable "unexpectedly mixed explicit and automatic field offsets"
                 |> Result.Error
+
+    /// Compute the unmanaged size of a value type as `Marshal.SizeOf` would. This is
+    /// `TryComputeMarshalLayout` with the per-field placements dropped; see there for the layout
+    /// rules and for why callers that write the unmanaged image must use the placements rather
+    /// than deriving their own offsets.
+    static member TryComputeMarshalSize
+        (concreteTypes : AllConcreteTypes)
+        (assemblies : LoadedAssemblies)
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (vt : CliValueType)
+        : Result<SizeofResult, MarshalSizeError>
+        =
+        CliValueType.TryComputeMarshalLayout concreteTypes assemblies corelib vt
+        |> Result.map fst
 
     /// Sets the value of the specified field, *without* touching any overlapping fields.
     /// `DereferenceField` handles resolving conflicts between overlapping fields.
