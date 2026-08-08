@@ -130,12 +130,6 @@ module TestImpureCases =
                 // The motivating case for host-seeded AppContext: a BCL feature switch,
                 // declared in `runtimeconfig.json` and latched by `EventSource` on first
                 // read. Impure for the same reason as the case below.
-                //
-                // Reaching `Main` needed the seeding; getting through `EventSource`'s
-                // manifest handling additionally needed `clt.un` to order two byrefs into
-                // the same string, which it used to refuse as having "no common root".
-                // `unsigned comparisons order two byrefs into the same string by character
-                // index` in `TestEvalStack.fs` covers that directly.
                 FileName = "EventSourceDisabled.cs"
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
