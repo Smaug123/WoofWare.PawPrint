@@ -204,6 +204,76 @@ module NativeRuntimeAssembly =
                         $"TODO: %s{operation} does not support assembly-forwarded manifest resource %s{actualResourceName} in %s{assemblyFullName} forwarded to %s{assemblyReference.Name.FullName}"
 
             NativeHandlerResult.completed state |> Some
+        | "AssemblyNative_GetCodeBase",
+          "System.Private.CoreLib",
+          "System.Reflection",
+          "RuntimeAssembly",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "QCallAssembly",
+                                              qCallAssemblyGenerics)
+            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "StringHandleOnStack",
+                                              stringHandleGenerics) ],
+          // `[return: MarshalAs(UnmanagedType.Bool)]` over a native `BOOL`, so the signature
+          // the interpreter sees is Int32-returning rather than Boolean-returning.
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
+            qCallAssemblyGenerics.IsEmpty && stringHandleGenerics.IsEmpty
+            ->
+            let operation = "AssemblyNative_GetCodeBase"
+
+            if instruction.Arguments.Length <> 2 then
+                failwith $"%s{operation}: expected two native arguments, got %d{instruction.Arguments.Length}"
+
+            let assemblyFullName =
+                instruction.Arguments.[0]
+                |> NativeCall.qCallAssemblyToAssemblyFullName operation state
+
+            // Decoded and checked to keep the handler honest about its input, even though
+            // the answer below does not depend on which assembly this is.
+            state.LoadedAssembly' assemblyFullName
+            |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
+            |> ignore<DumpedAssembly>
+
+            let retString =
+                NativeCall.stringHandleOnStackTarget operation state "retString" instruction.Arguments.[1]
+
+            // `PEAssembly::GetCodeBase` takes its `else` branch — set the empty string,
+            // return FALSE — for an image that is in a bundle or is external data. PawPrint
+            // reports every assembly that way.
+            //
+            // This is a *narrower* claim than the empty `Location` that
+            // `AssemblyNative_GetLocation` reports, not the same one restated: CoreCLR's
+            // pathless images do not all behave alike here. An `Assembly.Load(byte[])` image
+            // is built by `PEImage::CreateFromByteArray` with a null path but no probe
+            // extension, so it is neither bundled nor external and takes the *first* branch,
+            // returning TRUE with an empty string. Both shapes report `Location == ""`, so
+            // that observation alone does not decide this one; we are choosing the
+            // single-file/bundle shape specifically. `docs/divergences.md` records why.
+            //
+            // Note the string is written on *both* of CoreCLR's branches — `retString.Set`
+            // sits outside the `if` — so a false return does not mean "left untouched". The
+            // managed wrapper discards the written value and returns null when the bool is
+            // false, which is what makes `AssemblyName.CodeBase` null and the public
+            // `Assembly.CodeBase` throw `NotSupportedException`, exactly as for a
+            // single-file-published app.
+            let emptyAddr, state =
+                IlMachineState.internCanonicalEmptyString ctx.LoggerFactory ctx.BaseClassTypes state
+
+            let state =
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    retString
+                    (CliType.ObjectRef (Some emptyAddr))
+
+            // FALSE. The BCL marshals this back to `bool`, so any non-zero value would read
+            // as "there is a code base" and hand the guest the empty string as if it were one.
+            let state =
+                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 0)) ctx.Thread state
+
+            NativeHandlerResult.completed state |> Some
         // Declared on `Assembly` itself rather than `RuntimeAssembly` — the `LibraryImport`
         // lives in `Assembly.CoreCLR.cs`, next to `GetEntryAssemblyInternal` which is its only
         // caller.
