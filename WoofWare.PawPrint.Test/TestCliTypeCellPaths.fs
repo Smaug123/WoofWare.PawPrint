@@ -220,6 +220,25 @@ module TestCliTypeCellPaths =
         CliType.CellPathsExactlyCovering 0 0 value |> shouldEqual []
         CliType.CellPathsExactlyCovering 0 -4 value |> shouldEqual []
 
+    /// The offset is guest-controlled: it accumulates `Unsafe.Add`/`Unsafe.AddByteOffset`
+    /// arithmetic, which the guest may drive to either end of the range. Such a range names nothing,
+    /// and must *say* so — this file compiles under `open Checked`, so computing the range's end
+    /// point would raise `OverflowException` out of a lookup documented to return `[]`.
+    [<Test>]
+    let ``a range whose end point does not fit in an int names nothing`` () : unit =
+        let value =
+            ofFields [ cliField "A" (CliType.Numeric (CliNumericType.Int32 0)) None int32Handle ]
+
+        CliType.CellPathsExactlyCovering System.Int32.MaxValue 4 value |> shouldEqual []
+
+        CliType.CellPathsExactlyCovering (System.Int32.MaxValue - 1) 8 value
+        |> shouldEqual []
+
+        CliType.CellPathsExactlyCovering System.Int32.MinValue 4 value |> shouldEqual []
+
+        CliType.CellPathsExactlyCovering System.Int32.MinValue System.Int32.MaxValue value
+        |> shouldEqual []
+
     /// `f.Size` is set from `SizeOf(f.Contents)` when a value is built, but `WithFieldSetById`
     /// replaces `Contents` without recomputing it — so a field record can be made inconsistent, and
     /// a cell whose recorded extent disagrees with what it now holds must not be named. Reached

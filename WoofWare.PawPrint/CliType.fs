@@ -507,12 +507,21 @@ type CliType =
         | CliType.ValueType vt ->
             let fields = CliValueType.TryAllFields vt
 
+            // Widened to 64 bits because `offset` is guest-controlled — it accumulates
+            // `Unsafe.Add`/`Unsafe.AddByteOffset` arithmetic — so the range's end point need not
+            // fit in an `int`. This file compiles under `open Checked`, so computing it narrowly
+            // would raise `OverflowException` out of a lookup whose contract is to return `[]`.
+            // Field offsets and sizes come from a laid-out type and are small; only the range is
+            // suspect.
+            let rangeStart = int64 offset
+            let rangeEnd = int64 offset + int64 size
+
             // The range must sit inside a single field for any cell to name it. Under explicit
             // layout several fields can contain it, in which case a write through one would strand
             // the others, so we refuse rather than pick.
             let containing =
                 fields
-                |> List.filter (fun f -> f.Offset <= offset && offset + size <= f.Offset + f.Size)
+                |> List.filter (fun f -> int64 f.Offset <= rangeStart && rangeEnd <= int64 f.Offset + int64 f.Size)
 
             match containing with
             | [ f ] ->
@@ -520,8 +529,8 @@ type CliType =
                     fields
                     |> List.exists (fun g ->
                         not (FieldId.exactlyEqual g.Id f.Id)
-                        && g.Offset < offset + size
-                        && offset < g.Offset + g.Size
+                        && int64 g.Offset < rangeEnd
+                        && rangeStart < int64 g.Offset + int64 g.Size
                     )
 
                 if aliased then
