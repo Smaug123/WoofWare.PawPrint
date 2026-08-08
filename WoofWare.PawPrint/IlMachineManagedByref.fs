@@ -2576,29 +2576,33 @@ module IlMachineManagedByref =
                 | None -> state
                 | Some updatedRoot -> writeRootValue state root updatedRoot
 
-            // Phase B nested-wrapper writes (storage is itself a transparent
-            // offset-0 single-field wrapper of the same primitive as the
-            // reinterpret target's only field, e.g. CoreLib's
-            // `Unsafe.As<TaskAwaiter<T>, TaskAwaiter>` motif) reach the
-            // bytes-or-typed-cell writer via the byte-addressable roots
-            // (HeapValue/HeapObjectField/ArrayElement). Its precise-write
-            // helpers reject the cross-constructor write (`ValueType`
-            // storage, `ObjectRef` payload) and the byte-scatter fallback
-            // hits `CliType.ToBytes` on the ObjectRef — which refuses.
-            // Re-route only these transparent-wrapper cases to the structural writer,
-            // whose `transparentWrapperFastPath` handles it via the
-            // classifier's `ElideAsStorageInnerField` outcome. Phase A and
-            // NotTransparent stay on the existing precise-write path: for
-            // Phase A, both paths work; for NotTransparent (e.g.
-            // `Unsafe.As<object, StructWithMultipleFields>(ref h.Field).Obj
-            // = x`), only the precise-write path succeeds because the
-            // structural writer would fall through to
-            // `reinterpretStorageBytes` on byte-unaddressable storage.
-            // Phase B requires storage to be a typed `ValueType` wrapper, so
-            // raw byte roots (`StackMemoryByte`, `NativeMemoryByte`) can
-            // never trigger it; `readRootValue` would also throw for them
-            // when no typed cell covers the root offset, so we must not
-            // probe those roots here.
+            // Transparent-wrapper writes (Phase A, where the storage *is* the
+            // wrapper's only field; and Phase B, where the storage is itself a
+            // transparent offset-0 single-field wrapper of the same primitive,
+            // e.g. CoreLib's `Unsafe.As<TaskAwaiter<T>, TaskAwaiter>` motif)
+            // reach the bytes-or-typed-cell writer via the byte-addressable
+            // roots (HeapValue/HeapObjectField/ArrayElement). Its precise-write
+            // helpers reject a cross-constructor write (`ValueType` storage,
+            // `ObjectRef` payload) and the byte-scatter fallback then hits
+            // `CliType.ToBytes` on a live reference — which refuses. Re-route
+            // both elidable outcomes to the structural writer, whose
+            // `transparentWrapperFastPath` serves them from the same
+            // classifier. Where the byte path also works (Phase A over a bare
+            // `ObjectRef`) the two agree, so routing on the classifier's answer
+            // rather than on which storage shapes the byte writer happens to
+            // cope with keeps this decision in one place.
+            //
+            // `NotTransparent` must stay on the precise-write path: for e.g.
+            // `Unsafe.As<object, StructWithMultipleFields>(ref h.Field).Obj = x`
+            // only that path succeeds, because the structural writer would fall
+            // through to `reinterpretStorageBytes` on byte-unaddressable
+            // storage.
+            //
+            // The classifier requires a typed `ValueType` reinterpret target, so
+            // raw byte roots (`StackMemoryByte`, `NativeMemoryByte`) can never
+            // reach it; `readRootValue` would also throw for them when no typed
+            // cell covers the root offset, so we must not probe those roots
+            // here.
             //
             // The same argument applies unchanged to the no-`Field` shapes
             // `[ReinterpretAs T]` and `[ReinterpretAs T; ByteOffset n]` over
@@ -2620,8 +2624,8 @@ module IlMachineManagedByref =
                     let storageValue = readRootValue state root
 
                     match classifyTransparentWrapper bct state storageValue reinterpretTy field with
-                    | TransparentWrapperOutcome.ElideAsStorageInnerField _ -> true
                     | TransparentWrapperOutcome.ElideAsField _
+                    | TransparentWrapperOutcome.ElideAsStorageInnerField _ -> true
                     | TransparentWrapperOutcome.NotTransparent -> false
                 | Some bct,
                   (ByrefRoot.HeapValue _ | ByrefRoot.HeapObjectField _ | ByrefRoot.ArrayElement _),

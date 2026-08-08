@@ -37,6 +37,31 @@ public class TestReinterpretWrapperWholeValueCellWrite
         Elem viaWrapper = Unsafe.As<Elem, Wrapper>(ref e).Value;
         if (viaWrapper.Tag != 8 || viaWrapper.Payload != null) return 6;
 
+        // The same write with the storage rooted at a class field rather than a local. The root
+        // decides which writer the access is dispatched to, so each root is its own case.
+        Holder holder = new Holder();
+        Unsafe.As<Elem, Wrapper>(ref holder.E).Value = new Elem { Tag = 9, Payload = new Box { V = 90 } };
+
+        if (holder.E.Tag != 9) return 7;
+        if (holder.E.Payload == null || holder.E.Payload.V != 90) return 8;
+
+        // And rooted at a managed array element.
+        Elem[] elems = new Elem[2];
+        Unsafe.As<Elem, Wrapper>(ref elems[1]).Value = new Elem { Tag = 11, Payload = new Box { V = 110 } };
+
+        if (elems[1].Tag != 11) return 9;
+        if (elems[1].Payload == null || elems[1].Payload.V != 110) return 10;
+        if (elems[0].Tag != 0 || elems[0].Payload != null) return 11;
+
+        // Reads through the wrapper on those same two roots.
+        Elem viaField = Unsafe.As<Elem, Wrapper>(ref holder.E).Value;
+        if (viaField.Tag != 9 || viaField.Payload == null || viaField.Payload.V != 90) return 12;
+
+        Elem viaElement = Unsafe.As<Elem, Wrapper>(ref elems[1]).Value;
+        if (viaElement.Tag != 11 || viaElement.Payload == null || viaElement.Payload.V != 110) return 13;
+
         return 0;
     }
+
+    private sealed class Holder { public Elem E; }
 }
