@@ -128,3 +128,33 @@ long r = ((delegate*<int, long>)p)(3);  // CoreCLR: r == 3. PawPrint: refused at
 **Testing note**: Cannot be a `sourcesPure` comparison test, since CoreCLR succeeds and PawPrint deliberately does not. Covered by the PawPrint-only tests `calli refuses a punned return type at the faulting instruction` and `calli refuses a punned parameter type at the faulting instruction` in `TestPureCases.fs`.
 
 **Where this lives in code**: `UnaryMetadataCallOps.executeCalli`, and the `CalliStackKind` classifier above it.
+
+## `Assembly.Location` is empty for every assembly
+
+**CoreCLR**: Returns `pAssembly->GetPEAssembly()->GetPath()` (`assemblynative.cpp`, `AssemblyNative_GetLocation`) — the path the assembly was loaded from. For an app launched as `dotnet app.dll`, both the app's own assembly and every framework assembly report a real absolute path. The empty string is reserved for assemblies with no file backing: byte-array loads (`Assembly.Load(byte[])`), dynamic assemblies, and single-file-published apps.
+
+**PawPrint**: Returns the empty string for *every* assembly, which is that no-file-backing state.
+
+**Spec status**: Compliant. `Location` returning an empty string is a documented, first-class CoreCLR state that the BCL itself handles — see the suppression justification above `AppContext.GetBaseDirectoryCore`, "Single File apps should always set APP_CONTEXT_BASE_DIRECTORY therefore code handles Assembly.Location equals null". PawPrint is structurally exactly that shape of app.
+
+**Why we chose this**: A guest under PawPrint has no filesystem, so there is no path it could open. The two alternatives are both worse:
+
+* *Report the host's real path.* The framework assemblies resolve from `HostConfig.DotnetRuntimeDirs`, so a guest would observe the developer's `/nix/store/...` layout, and a recorded trace would depend on the machine that produced it. That is the determinism leak the whole `EmulatedKernel` design exists to prevent.
+* *Synthesise a plausible path.* Deterministic, but a fiction: nothing is there, the guest cannot act on it, and it would become actively wrong once an emulated filesystem exists and does not contain that file.
+
+The empty string is simply true, and it is what the runtime already reports for an app with no assembly files to point at.
+
+**Knock-on effect**: `AppContext.BaseDirectory` is likewise empty. Its fallback `GetBaseDirectoryCore()` computes `Path.GetDirectoryName(Assembly.GetEntryAssembly()?.Location)`, and `GetDirectoryName("")` returns `null`, so the fallback returns `string.Empty`. Note this is only the *fallback*: on a real host `BaseDirectory` never reaches it, because `hostpolicy` always supplies the `APP_CONTEXT_BASE_DIRECTORY` property (see CoreCLR's own comment in `gcheaputilities.cpp`, "The APP_CONTEXT_BASE_DIRECTORY is always set by the host"). PawPrint does not yet populate that property; when it does, guests will see a real directory there by the same route a real host uses, and this entry will cover only `Location` itself.
+
+**Observable example**:
+
+```csharp
+// dotnet app.dll:  "/path/to/app.dll", then "/path/to/"
+// PawPrint:        "",                 then ""
+Console.WriteLine(typeof(Program).Assembly.Location);
+Console.WriteLine(AppContext.BaseDirectory);
+```
+
+**Testing note**: Cannot be a `sourcesPure` comparison test, since the real runtime is launched from a real `.dll` and reports its path — there is no cross-runtime fact to assert. Covered by the PawPrint-only `sourcesImpure/AssemblyLocationEmpty.cs`, which asserts the empty `Location` for both the guest's own assembly and a framework assembly, the resulting empty `AppContext.BaseDirectory`, and `ReferenceEquals(asm.Location, string.Empty)` — CoreCLR's `StringObject::NewString` hands back the shared empty-string instance for a zero-length string, so allocating a fresh empty string here would be observably wrong.
+
+**Where this lives in code**: `NativeRuntimeAssembly.tryExecuteQCall`, the `AssemblyNative_GetLocation` case.
