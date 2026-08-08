@@ -1029,6 +1029,30 @@ public static class StreamVersionLibrary
 
     /// Asserts that `addr` is a genuine `System.String` heap object carrying `expected`,
     /// rather than merely a side-table entry.
+    /// Runs `AssemblyNative_GetFullName` for `assemblyFullName` and reads back the string it
+    /// wrote. Unlike the other `StringHandleOnStack` entry points in this family the answer is
+    /// compared as a whole string rather than asserted piecewise, so it is read out rather
+    /// than checked in place.
+    let private invokeGetFullName
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (prepared : Program.PreparedProgram)
+        (state : IlMachineState)
+        (assemblyFullName : string)
+        : IlMachineState * string
+        =
+        let state, written =
+            invokeStringQCall loggerFactory prepared "AssemblyNative_GetFullName" state assemblyFullName
+
+        let addr =
+            written
+            |> Option.defaultWith (fun () -> failwith "handler left the StringHandleOnStack at null")
+
+        let contents =
+            ManagedHeap.getStringContents addr state.ManagedHeap
+            |> Option.defaultWith (fun () -> failwith "handler wrote something that is not a string")
+
+        state, contents
+
     let private assertIsString
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -2166,3 +2190,385 @@ public static class StreamVersionLibrary
             )
 
         exn.Message |> shouldContainText "READYTORUN_FLAG_PLATFORM_NEUTRAL_SOURCE"
+
+    /// Builds a minimal assembly carrying exactly the manifest-row columns given. Hand-built
+    /// rather than compiled because the display name is a function of all five columns and no
+    /// compiler will emit most of these: there is no way to ask Roslyn for a processor
+    /// architecture field, a `65535` major version, or a simple name containing a quote.
+    let private displayNameImage
+        (simpleName : string)
+        (version : System.Version)
+        (culture : string)
+        (flags : int)
+        (publicKey : byte[])
+        : byte[]
+        =
+        let metadata = MetadataBuilder ()
+
+        metadata.AddModule (
+            0,
+            metadata.GetOrAddString (simpleName + ".dll"),
+            metadata.GetOrAddGuid (System.Guid "0f9d8c7b-6a5e-4d3c-2b1a-0f9e8d7c6b5a"),
+            Unchecked.defaultof<GuidHandle>,
+            Unchecked.defaultof<GuidHandle>
+        )
+        |> ignore<ModuleDefinitionHandle>
+
+        metadata.AddAssembly (
+            metadata.GetOrAddString simpleName,
+            version,
+            (if System.String.IsNullOrEmpty culture then
+                 Unchecked.defaultof<StringHandle>
+             else
+                 metadata.GetOrAddString culture),
+            (if isNull publicKey then
+                 Unchecked.defaultof<BlobHandle>
+             else
+                 metadata.GetOrAddBlob publicKey),
+            enum<System.Reflection.AssemblyFlags> flags,
+            System.Reflection.AssemblyHashAlgorithm.Sha1
+        )
+        |> ignore<AssemblyDefinitionHandle>
+
+        // The real runtime declines to load an image with no `<Module>` type row, and it is
+        // the oracle here, so give it one.
+        metadata.AddTypeDefinition (
+            Unchecked.defaultof<System.Reflection.TypeAttributes>,
+            Unchecked.defaultof<StringHandle>,
+            metadata.GetOrAddString "<Module>",
+            Unchecked.defaultof<EntityHandle>,
+            MetadataTokens.FieldDefinitionHandle 1,
+            MetadataTokens.MethodDefinitionHandle 1
+        )
+        |> ignore<TypeDefinitionHandle>
+
+        let peBuilder =
+            ManagedPEBuilder (
+                PEHeaderBuilder (imageCharacteristics = (Characteristics.ExecutableImage ||| Characteristics.Dll)),
+                MetadataRootBuilder metadata,
+                BlobBuilder (),
+                null,
+                null,
+                null,
+                null,
+                0,
+                Unchecked.defaultof<MethodDefinitionHandle>,
+                (if isNull publicKey then
+                     CorFlags.ILOnly
+                 else
+                     CorFlags.ILOnly ||| CorFlags.StrongNameSigned)
+            )
+
+        let peImage = BlobBuilder ()
+        peBuilder.Serialize peImage |> ignore<BlobContentId>
+        peImage.ToArray ()
+
+    /// The display name the *real* runtime reports for this image, or `None` if it declines to
+    /// load it at all.
+    ///
+    /// This is the oracle these tests are built on, and it is the genuine article:
+    /// `Assembly.FullName` goes straight to the QCall under test here, so a fixture's expected
+    /// value is CoreCLR's own answer rather than a restatement of the implementation. That
+    /// matters more than usual because the tempting wrong answer — `AssemblyName.FullName` —
+    /// agrees with the right one on everything a compiler emits.
+    ///
+    /// Loaded into a collectible context so the test host is not permanently populated with
+    /// these fixtures. Collectibility is guest-observable and so disqualifies a context from
+    /// hosting a differential *execution* oracle, but nothing here executes: the assembly is
+    /// only asked for its name.
+    let private realRuntimeDisplayName (image : byte[]) : string option =
+        let context =
+            System.Runtime.Loader.AssemblyLoadContext ("displayNameOracle", isCollectible = true)
+
+        try
+            try
+                use peImage = new MemoryStream (image)
+                let assembly = context.LoadFromStream peImage
+                Some assembly.FullName
+            with
+            | :? System.BadImageFormatException
+            | :? System.IO.FileLoadException -> None
+        finally
+            context.Unload ()
+
+    /// Every column combination that changes the display name, each flagged with whether
+    /// `AssemblyName.FullName` — the display name PawPrint already holds, and the tempting
+    /// implementation — agrees with CoreCLR there. Distinct simple names throughout, because
+    /// PawPrint registers an assembly under its display name and same-named fixtures would
+    /// displace one another.
+    let private displayNameCases : (string * byte[] * bool) list =
+        let v = System.Version (4, 3, 2, 1)
+
+        [
+            "plain", displayNameImage "WoofWare.DnPlain" v null 0x0 null, false
+            // The culture column is reported verbatim, where `AssemblyName.CultureName`
+            // normalises it to `en-GB`. First of the three reasons `Name.FullName` cannot
+            // stand in for this QCall.
+            "cultureRawCasing", displayNameImage "WoofWare.DnCulture" v "EN-gb" 0x0 null, true
+            // Second reason: `AssemblyName.FullName` omits `processorArchitecture` altogether,
+            // whatever the column says — so every one of these six diverges.
+            "paMsil", displayNameImage "WoofWare.DnPaMsil" v null 0x10 null, true
+            "paX86", displayNameImage "WoofWare.DnPaX86" v null 0x20 null, true
+            "paAmd64", displayNameImage "WoofWare.DnPaAmd64" v null 0x40 null, true
+            // `afPA_Mask` is a three-bit field, but CoreCLR bit-tests it in priority order, so
+            // values overlapping a lower-numbered test answer to that instead. These three are
+            // the whole reason the mapping is transcribed rather than reasoned out: 0x30 is
+            // nominally IA64, 0x50 ARM and 0x60 ARM64, and none of them says so.
+            "paIa64ReportsMsil", displayNameImage "WoofWare.DnPaIa64" v null 0x30 null, true
+            "paArmReportsMsil", displayNameImage "WoofWare.DnPaArm" v null 0x50 null, true
+            "paArm64ReportsX86", displayNameImage "WoofWare.DnPaArm64" v null 0x60 null, true
+            "retargetable", displayNameImage "WoofWare.DnRetarget" v null 0x100 null, false
+            // A `65535` major suppresses the entire `Version=` segment. It is a real value of
+            // the row's `USHORT` column, not an impossible sentinel — and both renderers agree
+            // on suppressing it.
+            "majorVersion65535",
+            displayNameImage "WoofWare.DnMaxVer" (System.Version (65535, 1, 2, 3)) null 0x0 null,
+            false
+            // Third reason: CoreCLR quotes with whichever of ' or " the name does not contain
+            // and leaves that quote unescaped, where the BCL always double-quotes and
+            // backslash-escapes.
+            "nameWithDoubleQuote", displayNameImage "WoofWare.Dn\"Quote" v null 0x0 null, true
+            "nameWithSingleQuote", displayNameImage "WoofWare.Dn'Quote" v null 0x0 null, true
+            // The escapes the two renderers do agree on, so that the quoting cases above are
+            // pinned as specifically about quotes rather than about escaping in general.
+            "nameWithComma", displayNameImage "WoofWare.Dn,Comma" v null 0x0 null, false
+            "nameWithTrailingSpace", displayNameImage "WoofWare.DnSpace " v null 0x0 null, false
+        ]
+
+    [<Test>]
+    let ``GetFullName matches the real runtime for every column that changes the answer`` () : unit =
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let image =
+            Roslyn.compileAssembly guestAssemblyName OutputKind.ConsoleApplication [] [ guestSource ]
+
+        let prepared = prepareGuest loggerFactory image
+        let mutable state = prepared.State
+
+        for label, fixtureImage, _ in displayNameCases do
+            let expected =
+                realRuntimeDisplayName fixtureImage
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"the real runtime declined to load the %s{label} fixture, so it cannot be the oracle for it"
+                )
+
+            let loaded, next = withLoadedAssembly loggerFactory fixtureImage state
+
+            let next, actual =
+                invokeGetFullName loggerFactory prepared next loaded.Name.FullName
+
+            state <- next
+
+            if actual <> expected then
+                failwith $"%s{label}: expected %s{expected} but got %s{actual}"
+
+    [<Test>]
+    let ``GetFullName is not AssemblyName.FullName`` () : unit =
+        // Guards the reason the implementation reads raw columns rather than reusing the
+        // display name PawPrint already has in hand, and keeps the fixture list honest in both
+        // directions. A case marked as diverging that stopped diverging would quietly weaken
+        // the test above — it could then be satisfied by the wrong implementation — and a case
+        // marked as agreeing that started diverging would mean the fixture set had drifted
+        // from what it claims to cover.
+        for label, fixtureImage, expectedToDiverge in displayNameCases do
+            let coreClr =
+                realRuntimeDisplayName fixtureImage
+                |> Option.defaultWith (fun () -> failwith $"the real runtime declined to load the %s{label} fixture")
+
+            use peImage = new MemoryStream (fixtureImage)
+            use peReader = new PEReader (peImage)
+
+            let managed =
+                peReader.GetMetadataReader().GetAssemblyDefinition().GetAssemblyName().FullName
+
+            if expectedToDiverge && coreClr = managed then
+                failwith
+                    $"%s{label} is listed as a case where CoreCLR and AssemblyName disagree, but both now say %s{coreClr}"
+
+            if not expectedToDiverge && coreClr <> managed then
+                failwith
+                    $"%s{label} is listed as a case where they agree, but CoreCLR says %s{coreClr} and AssemblyName says %s{managed}"
+
+    [<Test>]
+    let ``GetFullName reports the display name of a real assembly`` () : unit =
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let image =
+            Roslyn.compileAssembly guestAssemblyName OutputKind.ConsoleApplication [] [ guestSource ]
+
+        let prepared = prepareGuest loggerFactory image
+        let guest = prepared.State.ActiveAssembly prepared.EntryThread
+
+        let state, guestName =
+            invokeGetFullName loggerFactory prepared prepared.State guest.Name.FullName
+
+        // The guest is unsigned and culture-neutral, so its display name is the four segments
+        // every image has. Version comes from the `[assembly: AssemblyVersion]` in the source.
+        guestName
+        |> shouldEqual $"%s{guestAssemblyName}, Version=4.3.2.1, Culture=neutral, PublicKeyToken=null"
+
+        // Corelib is the strong-named case, and its token is derived from the key rather than
+        // stored: the manifest row carries the full 160-byte key.
+        let corelib = prepared.BaseClassTypes.Corelib
+        corelib.PublicKey.Length |> shouldEqual 160
+
+        let _state, corelibName =
+            invokeGetFullName loggerFactory prepared state corelib.Name.FullName
+
+        corelibName |> shouldContainText ", PublicKeyToken=7cec85d7bea7798e"
+        corelibName |> shouldContainText "System.Private.CoreLib, Version="
+
+    [<Test>]
+    let ``GetFullName reports a WindowsRuntime content type`` () : unit =
+        // The one segment with no real-runtime oracle: CoreCLR refuses to *load* a
+        // WindowsRuntime assembly at all ("The given assembly name was invalid"), so the
+        // expectation is written down from `TextualIdentityParser::ToString` rather than
+        // observed. PawPrint's loader has no such check, so a guest can reach it here.
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let winRt =
+            displayNameImage "WoofWare.DnWinRt" (System.Version (4, 3, 2, 1)) null 0x200 null
+
+        realRuntimeDisplayName winRt |> shouldEqual None
+
+        let image =
+            Roslyn.compileAssembly guestAssemblyName OutputKind.ConsoleApplication [] [ guestSource ]
+
+        let prepared = prepareGuest loggerFactory image
+        let loaded, state = withLoadedAssembly loggerFactory winRt prepared.State
+
+        let _state, actual =
+            invokeGetFullName loggerFactory prepared state loaded.Name.FullName
+
+        actual
+        |> shouldEqual
+            "WoofWare.DnWinRt, Version=4.3.2.1, Culture=neutral, PublicKeyToken=null, ContentType=WindowsRuntime"
+
+    [<Test>]
+    let ``GetFullName on an unloaded assembly fails loudly`` () : unit =
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let image =
+            Roslyn.compileAssembly guestAssemblyName OutputKind.ConsoleApplication [] [ guestSource ]
+
+        let prepared = prepareGuest loggerFactory image
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () ->
+                invokeGetFullName
+                    loggerFactory
+                    prepared
+                    prepared.State
+                    "NotLoaded, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null"
+                |> ignore<IlMachineState * string>
+            )
+
+        exn.Message |> shouldContainText "is not loaded"
+
+    [<Test>]
+    let ``GetFullName reports nothing at all for an empty simple name`` () : unit =
+        // `TextualIdentityParser::ToString` clears its output and returns as soon as the
+        // simple name is empty, so the display name is the empty string — not the remaining
+        // segments with the name missing, which is what an implementation that simply appended
+        // an empty name would produce.
+        //
+        // Like the WindowsRuntime case this has no real-runtime oracle: CoreCLR refuses to
+        // load such an image at all. PawPrint's loader has no such check, so a guest can reach
+        // it, and the expectation is read off upstream rather than observed.
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let nameless = displayNameImage "" (System.Version (4, 3, 2, 1)) "EN-gb" 0x110 null
+
+        realRuntimeDisplayName nameless |> shouldEqual None
+
+        let image =
+            Roslyn.compileAssembly guestAssemblyName OutputKind.ConsoleApplication [] [ guestSource ]
+
+        let prepared = prepareGuest loggerFactory image
+        let loaded, state = withLoadedAssembly loggerFactory nameless prepared.State
+
+        // Deliberately a fixture that would otherwise have plenty to say — a culture, a
+        // processor architecture and the retargetable bit — so "empty" cannot be mistaken for
+        // "nothing to report".
+        let state, firstAddr =
+            invokeStringQCall loggerFactory prepared "AssemblyNative_GetFullName" state loaded.Name.FullName
+
+        let firstAddr =
+            firstAddr
+            |> Option.defaultWith (fun () -> failwith "handler left the StringHandleOnStack at null")
+
+        assertIsString prepared.BaseClassTypes state firstAddr ""
+
+        // `StringHandleOnStack::Set` goes through `StringObject::NewString`, which returns the
+        // *shared* empty-string instance for a zero-length string. So two calls must hand back
+        // the same reference here, where for any other length they must not — CoreCLR does not
+        // intern QCall results, and a guest can see the difference with `ReferenceEquals`.
+        let state, secondAddr =
+            invokeStringQCall loggerFactory prepared "AssemblyNative_GetFullName" state loaded.Name.FullName
+
+        secondAddr |> shouldEqual (Some firstAddr)
+
+        // The contrast, on an assembly whose display name is not empty: freshly allocated each
+        // time, so this pair must differ.
+        let guest = state.ActiveAssembly prepared.EntryThread
+
+        let state, guestFirst =
+            invokeStringQCall loggerFactory prepared "AssemblyNative_GetFullName" state guest.Name.FullName
+
+        let _state, guestSecond =
+            invokeStringQCall loggerFactory prepared "AssemblyNative_GetFullName" state guest.Name.FullName
+
+        guestFirst |> shouldNotEqual guestSecond
+
+    [<Test>]
+    let ``an assembly with a malformed public key never loads`` () : unit =
+        // `publicKeyToken` hashes its blob without reproducing CoreCLR's
+        // `StrongNameIsValidPublicKey` precondition, whose failure CoreCLR turns into a thrown
+        // `CORSEC_E_INVALID_PUBLICKEY`. That is only sound because no such blob can reach it,
+        // and this is what says so: PawPrint registers an assembly under its display name, and
+        // computing that derives a token and rejects a key it cannot parse.
+        //
+        // Checked with the `afPublicKey` bit both set and clear, because CoreCLR force-sets it
+        // for any non-empty AssemblyDef blob — so a flag-clear manifest is not a way to have
+        // the blob treated as an already-computed token and skip the derivation.
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        // Not a well-formed `PublicKeyBlob`: no signature/hash algorithm identifiers and no
+        // `PUBLICKEYBLOB` magic byte.
+        let garbage = Array.init 32 byte
+
+        let guestImage =
+            Roslyn.compileAssembly guestAssemblyName OutputKind.ConsoleApplication [] [ guestSource ]
+
+        let prepared = prepareGuest loggerFactory guestImage
+
+        for label, flags in [ "flag clear", 0x0 ; "flag set", 0x1 ] do
+            let image =
+                displayNameImage
+                    $"WoofWare.DnGarbage%s{label.Replace (' ', '-')}"
+                    (System.Version (1, 0, 0, 0))
+                    null
+                    flags
+                    garbage
+
+            // The real runtime declines it too, so this is not a place the two disagree.
+            realRuntimeDisplayName image |> shouldEqual None
+
+            // Through `withLoadedAssembly`, which is the interpreter's own path: `Assembly.read`
+            // by itself is lazy about the manifest row and does not look at the blob, so it is
+            // deriving the *registration key* that rejects this — exactly the claim being
+            // pinned.
+            let exn =
+                Assert.Throws<System.Security.SecurityException> (fun () ->
+                    withLoadedAssembly loggerFactory image prepared.State
+                    |> ignore<DumpedAssembly * IlMachineState>
+                )
+
+            exn.Message |> shouldContainText "public key"
