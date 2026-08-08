@@ -67,27 +67,69 @@ module TestElementOffsetOverflow =
 
     let private propertyConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 500
 
-    /// Element index and offset whose sum stays inside int32, so the walk has an exact answer that
-    /// PawPrint can represent. Deliberately spans the whole int32 range rather than plausible array
-    /// sizes: the wrap this guards against only shows up near the extremes.
+    /// Uniform over the whole int32 range, with extra weight on the boundary values themselves.
+    /// FsCheck's default `int` arbitrary is *size-bounded* — under `Quick` it stays roughly within
+    /// [-100, 100] — so drawing from it would never approach the limits this property is about.
+    let private genFullRangeInt32 : Gen<int> =
+        Gen.frequency
+            [
+                3, Gen.choose (System.Int32.MinValue, System.Int32.MaxValue)
+                1,
+                Gen.elements
+                    [
+                        System.Int32.MinValue
+                        System.Int32.MinValue + 1
+                        -1
+                        0
+                        1
+                        System.Int32.MaxValue - 1
+                        System.Int32.MaxValue
+                    ]
+            ]
+
+    /// Element index and offset whose sum stays inside int32 *by construction*: the offset is drawn
+    /// from exactly the interval that keeps `index + offset` representable, rather than by
+    /// generating freely and filtering or folding. Filtering here would bias the sample towards
+    /// small indices — precisely the region where no wrap can ever happen.
     let private genRepresentableCase : Gen<int * int> =
         gen {
-            let! index = ArbMap.defaults |> ArbMap.generate<int>
-            let! offset = ArbMap.defaults |> ArbMap.generate<int>
+            let! index = genFullRangeInt32
 
-            let sum = int64<int> index + int64<int> offset
+            // Computed in int64 so the endpoints themselves cannot wrap; each clamps back into
+            // int32 because one side of every `max`/`min` already is an int32 bound.
+            let lo =
+                max (int64<int> System.Int32.MinValue) (int64<int> System.Int32.MinValue - int64<int> index)
 
-            if sum < int64<int> System.Int32.MinValue || sum > int64<int> System.Int32.MaxValue then
-                // Fold the pair back into range rather than discarding it, so the generator keeps
-                // producing extreme-magnitude inputs instead of drifting towards small ones.
-                return index, -offset
-            else
-                return index, offset
+            let hi =
+                min (int64<int> System.Int32.MaxValue) (int64<int> System.Int32.MaxValue - int64<int> index)
+
+            let! offset = Gen.choose (int32<int64> lo, int32<int64> hi)
+            return index, offset
         }
 
     [<Test>]
     let ``in-range element walk lands on index plus offset`` () : unit =
+        // The property is only meaningful if it actually visits sums near the int32 boundary: that
+        // is where an unchecked `i + offset` would wrap, and where a guard that clamped too
+        // aggressively would start refusing valid walks. Count what the generator really produced
+        // and assert the distribution rather than trusting it.
+        let mutable extremeIndex = 0
+        let mutable extremeSum = 0
+        let mutable total = 0
+
+        // 2^30: comfortably "near the boundary" without making the assertion below a coin flip.
+        let extreme = 1073741824L
+
         let property ((index, offset) : int * int) : unit =
+            let sum = int64<int> index + int64<int> offset
+            total <- total + 1
+
+            if abs (int64<int> index) > extreme then
+                extremeIndex <- extremeIndex + 1
+
+            if abs sum > extreme then
+                extremeSum <- extremeSum + 1
+
             let arr, st = allocateIntArray 4 (state ())
 
             let result =
@@ -96,7 +138,7 @@ module TestElementOffsetOverflow =
 
             // The int64 oracle: the walk is plain integer addition on the element index, and the
             // generator has already established the answer is representable.
-            let expected = int32<int64> (int64<int> index + int64<int> offset)
+            let expected = int32<int64> sum
 
             result
             |> shouldEqual (
@@ -104,6 +146,16 @@ module TestElementOffsetOverflow =
             )
 
         Check.One (propertyConfig, Prop.forAll (Arb.fromGen genRepresentableCase) property)
+
+        // A uniform draw over int32 puts just over half the mass beyond ±2^30, so a generator that
+        // had silently reverted to FsCheck's size-bounded default would fail these outright.
+        if extremeIndex * 4 < total then
+            failwith
+                $"generator explored too few extreme indices: %d{extremeIndex} of %d{total} exceeded 2^30, so the property is not testing the boundary it claims to"
+
+        if extremeSum * 4 < total then
+            failwith
+                $"generator explored too few extreme sums: %d{extremeSum} of %d{total} exceeded 2^30, so a wrap near the int32 limit could go unnoticed"
 
     [<Test>]
     let ``element walk refuses an index that overflows int32`` () : unit =
