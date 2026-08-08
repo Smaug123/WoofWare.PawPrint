@@ -64,6 +64,28 @@ module NativeRuntimeMethodHandle =
     let isGenericMethodDefinition (methodGenericParamCount : int) (handleInstantiationCount : int) : bool =
         methodGenericParamCount > 0 && handleInstantiationCount = 0
 
+    /// CoreCLR's `MethodDesc::HasMethodInstantiation` (method.hpp:3812), which
+    /// `RuntimeMethodHandle::HasMethodInstantiation` (runtimehandles.cpp:1722) returns verbatim:
+    ///
+    ///     mcInstantiated == GetClassification() && AsInstantiatedMethodDesc()->IMD_HasMethodInstantiation()
+    ///
+    /// Despite the name this asks whether the method *declares* type parameters, not whether any are
+    /// bound to the handle in hand. `mcInstantiated` is the classification given to methods with
+    /// method-level generics (method.hpp:172), and `IMD_HasMethodInstantiation` (method.hpp:3520)
+    /// returns TRUE outright for a generic method *definition*, falling back to
+    /// `m_pPerInstInfo != NULL` otherwise -- so both the typical form and every instantiation of it
+    /// answer true. `RuntimeMethodInfo.IsGenericMethod` is this predicate verbatim
+    /// (RuntimeMethodInfo.CoreCLR.cs:471), and an open generic method is `IsGenericMethod = true`,
+    /// which settles it.
+    ///
+    /// So the sole input is the method's declared generic-parameter count -- the same
+    /// `methodGenericParamCount` that `isGenericMethodDefinition` above takes, and deliberately not
+    /// the handle's `MethodGenerics.Length`. The two predicates are related but distinct: a generic
+    /// method definition has a method instantiation *and* is a generic method definition, which is
+    /// why `RuntimeType.GetMethodBase` (RuntimeType.CoreCLR.cs:1940) needs both to decide between
+    /// `Cache.GetGenericMethodInfo` and `Cache.GetMethod`.
+    let hasMethodInstantiation (methodGenericParamCount : int) : bool = methodGenericParamCount > 0
+
     /// The predicate behind CoreCLR's `MethodDesc::IsNoMetadata` (method.hpp:1932), which
     /// `RuntimeMethodHandle::IsDynamicMethod` (runtimehandles.cpp:1746) returns verbatim:
     /// `FC_RETURN_BOOL(pMethod->IsNoMetadata())`.
@@ -1123,6 +1145,28 @@ module NativeRuntimeMethodHandle =
         | "System.Private.CoreLib",
           "System",
           "RuntimeMethodHandle",
+          "HasMethodInstantiation",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System",
+                                              "RuntimeMethodHandleInternal",
+                                              generics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) when generics.IsEmpty ->
+            // CoreCLR (runtimehandles.cpp:1722): FC_RETURN_BOOL(pMethod->HasMethodInstantiation()).
+            // See `hasMethodInstantiation` above for the predicate, and in particular for why the
+            // handle's own instantiation is not what it consults.
+            let operation = "RuntimeMethodHandle.HasMethodInstantiation"
+
+            let methodInfo =
+                resolveMethodInfoFromHandleArg operation state instruction.Arguments.[0]
+
+            let result = hasMethodInstantiation methodInfo.Generics.Length
+
+            let state = IlMachineState.pushToEvalStack (CliType.ofBool result) ctx.Thread state
+
+            NativeHandlerResult.completed state |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeMethodHandle",
           "IsConstructor",
           [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
                                               "System",
@@ -1176,7 +1220,10 @@ module NativeRuntimeMethodHandle =
                 NativeCall.methodHandleIdOfRuntimeMethodHandleInternal operation instruction.Arguments.[0]
                 |> Option.defaultWith (fun () -> failwith $"%s{operation}: null RuntimeMethodHandleInternal")
 
-            let hasMethodInstantiation = not methodInfo.Generics.IsEmpty
+            // Same CoreCLR predicate the `HasMethodInstantiation` FCall returns, so it is spelled
+            // once: `GetStubIfNeededInternal`'s condition opens with `pMethod->HasMethodInstantiation()`
+            // (runtimehandles.cpp:1901).
+            let methodHasInstantiation = hasMethodInstantiation methodInfo.Generics.Length
 
             let state = IlMachineState.loadArgument ctx.Thread 1 state
             let runtimeTypeRef, state = IlMachineState.popEvalStack ctx.Thread state
@@ -1188,7 +1235,7 @@ module NativeRuntimeMethodHandle =
                 stubDeclaringTypeOfTarget operation ctx.BaseClassTypes state target
 
             let returnsOriginalHandle =
-                fastPathReturnsOriginal hasMethodInstantiation declaringType
+                fastPathReturnsOriginal methodHasInstantiation declaringType
 
             let returnValue =
                 if returnsOriginalHandle then

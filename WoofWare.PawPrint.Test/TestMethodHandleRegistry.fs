@@ -509,9 +509,18 @@ public static class GenericMethodHolder
         let runtimeMethodHandleType =
             requiredTopLevelType baseClassTypes.Corelib "System" "RuntimeMethodHandle"
 
+        // Some of these natives share a name and arity with a managed wrapper that forwards to them:
+        // `HasMethodInstantiation(IRuntimeMethodInfo)` calls
+        // `HasMethodInstantiation(RuntimeMethodHandleInternal)` (RuntimeHandles.cs:1241-1245). It is
+        // the InternalCall these tests mean to drive -- the wrapper is ordinary IL and would not
+        // reach a native handler at all -- so select on that rather than on arity alone.
         let rawMethod =
             runtimeMethodHandleType.Methods
-            |> List.filter (fun method -> method.Name = methodName && method.Parameters.Length = 1)
+            |> List.filter (fun method ->
+                method.Name = methodName
+                && method.Parameters.Length = 1
+                && method.ImplAttributes.HasFlag System.Reflection.MethodImplAttributes.InternalCall
+            )
             |> function
                 | [ method ] -> method
                 | [] -> failwith $"RuntimeMethodHandle.%s{methodName} native method not found"
@@ -578,6 +587,9 @@ public static class GenericMethodHolder
     let private invokeGetMethodTable = invokeRuntimeMethodHandleFCall "GetMethodTable"
 
     let private invokeIsConstructor = invokeRuntimeMethodHandleFCall "IsConstructor"
+
+    let private invokeHasMethodInstantiation =
+        invokeRuntimeMethodHandleFCall "HasMethodInstantiation"
 
     /// Register `method`'s (non-generic) declaring type in `state.ConcreteTypes` and hand back the
     /// `ConcreteType` the method-handle registry needs. `findDeclaringConcreteType` above only
@@ -919,3 +931,116 @@ public static class GenericMethodHolder
             op
             (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
         |> shouldEqual None
+
+    /// Source carrying a non-generic method and a generic one, for the `HasMethodInstantiation`
+    /// cases below.
+    let private methodInstantiationFixtureSource : string =
+        """
+public static class InstantiationHolder
+{
+    public static int Plain()
+    {
+        return 1;
+    }
+
+    public static T Identity<T>(T t)
+    {
+        return t;
+    }
+}
+"""
+
+    [<Test>]
+    let ``HasMethodInstantiation is false for a non-generic method`` () : unit =
+        let loggerFactory, baseClassTypes, assembly, state =
+            loadAssemblyFromSource "HasMethodInstantiationPlainAssembly" methodInstantiationFixtureSource
+
+        let targetMethod = assembly |> findMethod "InstantiationHolder" "Plain"
+
+        let state, declaringType =
+            concretizeDeclaringType loggerFactory baseClassTypes assembly targetMethod state
+
+        let internalHandle, registry =
+            MethodHandleRegistry.getOrAllocateInternalHandle
+                baseClassTypes
+                state.ConcreteTypes
+                declaringType
+                targetMethod
+                state.MethodHandles
+
+        let state =
+            { state with
+                MethodHandles = registry
+            }
+
+        invokeHasMethodInstantiation loggerFactory baseClassTypes (CliType.ValueType internalHandle) state
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+
+    [<Test>]
+    let ``HasMethodInstantiation is true for a generic method definition handle`` () : unit =
+        // The unbound/typical form: the method declares `T`, and this handle binds nothing.
+        // CoreCLR's `IMD_HasMethodInstantiation` (method.hpp:3524) returns TRUE for exactly this
+        // case, and `RuntimeMethodInfo.IsGenericMethod` is the FCall verbatim -- an open generic
+        // method is `IsGenericMethod = true`. Reading the FCall as "this handle has type arguments
+        // bound" would answer false here.
+        let loggerFactory, baseClassTypes, assembly, state =
+            loadAssemblyFromSource "HasMethodInstantiationDefinitionAssembly" methodInstantiationFixtureSource
+
+        let targetMethod = assembly |> findMethod "InstantiationHolder" "Identity"
+
+        let state, declaringType =
+            concretizeDeclaringType loggerFactory baseClassTypes assembly targetMethod state
+
+        let internalHandle, registry =
+            MethodHandleRegistry.getOrAllocateInternalHandle
+                baseClassTypes
+                state.ConcreteTypes
+                declaringType
+                targetMethod
+                state.MethodHandles
+
+        // `getOrAllocateInternalHandle` mints the definition: empty MethodGenerics.
+        match MethodHandleRegistry.resolveMethodFromId 1L registry with
+        | Some (MethodHandle.FromMetadata identity) -> identity.GetMethodGenerics () |> shouldEqual []
+        | None -> failwith "expected the freshly minted handle to resolve"
+
+        let state =
+            { state with
+                MethodHandles = registry
+            }
+
+        invokeHasMethodInstantiation loggerFactory baseClassTypes (CliType.ValueType internalHandle) state
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 1))
+
+    [<Test>]
+    let ``HasMethodInstantiation is true for a bound generic method handle`` () : unit =
+        let loggerFactory, baseClassTypes, assembly, state =
+            loadAssemblyFromSource "HasMethodInstantiationBoundAssembly" methodInstantiationFixtureSource
+
+        let targetMethod = assembly |> findMethod "InstantiationHolder" "Identity"
+
+        let state, concretized, _ =
+            ExecutionConcretization.concretizeMethodWithTypeGenerics
+                loggerFactory
+                baseClassTypes
+                ImmutableArray.Empty
+                targetMethod
+                (Some (ImmutableArray.Create (TypeDefn.PrimitiveType PrimitiveType.Int32)))
+                assembly.Name
+                ImmutableArray.Empty
+                state
+
+        let internalHandle, registry =
+            MethodHandleRegistry.getOrAllocateConcreteInternalHandle
+                baseClassTypes
+                state.ConcreteTypes
+                concretized
+                state.MethodHandles
+
+        let state =
+            { state with
+                MethodHandles = registry
+            }
+
+        invokeHasMethodInstantiation loggerFactory baseClassTypes (CliType.ValueType internalHandle) state
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 1))

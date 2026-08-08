@@ -9,12 +9,12 @@ open NUnit.Framework
 open WoofWare.PawPrint
 
 /// Tests for the pure cores of the `RuntimeMethodHandle` natives (NativeRuntimeMethodHandle.fs):
-/// `isGenericMethodDefinition` (behind the `IsGenericMethodDefinition` InternalCall),
-/// `methodInstantiationTargets` (behind the `RuntimeMethodHandle_GetMethodInstantiation` QCall), and
-/// `methodTableOfDeclaringType` (behind the `GetMethodTable` InternalCall).
-/// Each has partial end-to-end coverage in `sourcesPure/`; these tests pin the arms that are not
-/// yet reachable end-to-end, plus the ordering and fail-loud behaviour that a passing end-to-end
-/// case would not distinguish.
+/// the predicates and projections those FCalls and QCalls return, each named after and documented
+/// against the CoreCLR function it ports. Most have only partial end-to-end coverage in
+/// `sourcesPure/` -- several are unreachable in isolation, being consecutive statements of one BCL
+/// method -- so these tests pin the arms an end-to-end case cannot reach, plus the ordering and
+/// fail-loud behaviour a passing one would not distinguish. Each section below cites its CoreCLR
+/// source and says what it is for; there is deliberately no index here to fall out of date.
 ///
 /// The end-to-end coverage lives in `sourcesPure/MethodIsGenericMethodDefinition.cs`, which pins
 /// two of the predicate's three arms: a generic method definition, and a plain non-generic
@@ -520,3 +520,76 @@ module TestNativeRuntimeMethodHandle =
                 not (NativeRuntimeMethodHandle.isConstructorOrClassConstructor (withRtSpecialName attrs) name)
 
         Check.One (propertyConfig, Prop.forAll (Arb.fromGen (Gen.zip methodAttributes candidateNames)) property)
+
+    // ---------------------------------------------------------------------------------------
+    // `hasMethodInstantiation`: CoreCLR's `MethodDesc::HasMethodInstantiation` (method.hpp:3812),
+    // which the `RuntimeMethodHandle.HasMethodInstantiation` FCall (runtimehandles.cpp:1722)
+    // returns verbatim.
+    //
+    // The trap this set of properties exists to catch: the name suggests "this handle has type
+    // arguments bound to it", but CoreCLR's is `mcInstantiated == GetClassification() &&
+    // IMD_HasMethodInstantiation()`, and `IMD_HasMethodInstantiation` (method.hpp:3520) returns
+    // TRUE for a generic method *definition*. `RuntimeMethodInfo.IsGenericMethod` is this predicate
+    // verbatim (RuntimeMethodInfo.CoreCLR.cs:471), and that is true of an open definition. So the
+    // question is "does this method declare type parameters", not "are they bound".
+    // ---------------------------------------------------------------------------------------
+
+    [<Test>]
+    let ``HasMethodInstantiation: declared arity decides it, bound or not`` () : unit =
+        NativeRuntimeMethodHandle.hasMethodInstantiation 0 |> shouldEqual false
+        NativeRuntimeMethodHandle.hasMethodInstantiation 1 |> shouldEqual true
+        NativeRuntimeMethodHandle.hasMethodInstantiation 3 |> shouldEqual true
+
+    [<Test>]
+    let ``property: a generic method definition always has a method instantiation`` () : unit =
+        // `IMD_HasMethodInstantiation` returns TRUE outright for the definition (method.hpp:3524),
+        // so the two predicates cannot disagree in this direction. Reading the FCall as "arguments
+        // are bound to this handle" breaks exactly here, which is what this catches.
+        let property (declaredCount : int, handleInstantiation : ConcreteTypeHandle list) : bool =
+            if NativeRuntimeMethodHandle.isGenericMethodDefinition declaredCount handleInstantiation.Length then
+                NativeRuntimeMethodHandle.hasMethodInstantiation declaredCount
+            else
+                true
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen consistentInstantiation) property)
+
+    [<Test>]
+    let ``property: no method instantiation implies no generic method definition`` () : unit =
+        let property (declaredCount : int, handleInstantiation : ConcreteTypeHandle list) : bool =
+            if NativeRuntimeMethodHandle.hasMethodInstantiation declaredCount then
+                true
+            else
+                not (NativeRuntimeMethodHandle.isGenericMethodDefinition declaredCount handleInstantiation.Length)
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen consistentInstantiation) property)
+
+    [<Test>]
+    let ``property: has a method instantiation exactly when the reported instantiation is non-empty`` () : unit =
+        // `MethodInfo.GetGenericArguments()` is served by `methodInstantiationTargets` and
+        // `IsGenericMethod` by this predicate, so a guest that sees `IsGenericMethod = true` must
+        // get a non-empty argument array, and vice versa. Pinning the two against each other is
+        // what keeps that guest-visible pair coherent.
+        let property (declaredCount : int, handleInstantiation : ConcreteTypeHandle list) : bool =
+            let reported = targetsFor declaredCount handleInstantiation
+
+            let hasInstantiation =
+                NativeRuntimeMethodHandle.hasMethodInstantiation declaredCount
+
+            hasInstantiation = not reported.IsEmpty
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen consistentInstantiation) property)
+
+    [<Test>]
+    let ``property: the generic-method-info branch is taken exactly for bound generic methods`` () : unit =
+        // `RuntimeType.GetMethodBase` (RuntimeType.CoreCLR.cs:1940) routes to
+        // `Cache.GetGenericMethodInfo` when `HasMethodInstantiation && !IsGenericMethodDefinition`,
+        // and to `Cache.GetMethod` otherwise. That conjunction should hold exactly for a handle of
+        // a generic method with its arguments bound.
+        let property (declaredCount : int, handleInstantiation : ConcreteTypeHandle list) : bool =
+            let genericMethodInfoBranch =
+                NativeRuntimeMethodHandle.hasMethodInstantiation declaredCount
+                && not (NativeRuntimeMethodHandle.isGenericMethodDefinition declaredCount handleInstantiation.Length)
+
+            genericMethodInfoBranch = (declaredCount > 0 && not handleInstantiation.IsEmpty)
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen consistentInstantiation) property)
