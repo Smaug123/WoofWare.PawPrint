@@ -802,27 +802,38 @@ module internal MethodTableProjection =
             | RuntimeTypeHandleTarget.GenericParameter _
             | RuntimeTypeHandleTarget.MethodGenericParameter _ -> false
 
-        // A byref-like type is always a nominal value type, so it never has a component size and
-        // never appears as a structural handle. Managed code consults this through
-        // `RuntimeType.IsByRefLike`, and several BCL guards are phrased entirely in terms of it —
-        // `RuntimeType.CreateInstanceDefaultCtor` throws `NotSupportedException` for a ref struct
-        // there, *after* the activation QCall has deliberately allowed it through
-        // (`allowByRefLike: true`). Leaving the flag clear does not merely lose information: it
-        // makes that guard pass and hands the guest a boxed ref struct, which is not a legal heap
-        // representation at all.
+        // Managed code consults this through `RuntimeType.IsByRefLike`, and several BCL guards
+        // are phrased entirely in terms of it — `RuntimeType.CreateInstanceDefaultCtor` throws
+        // `NotSupportedException` for a ref struct there, *after* the activation QCall has
+        // deliberately allowed it through (`allowByRefLike: true`). Leaving the flag clear does
+        // not merely lose information: it makes that guard pass and hands the guest a boxed ref
+        // struct, which is not a legal heap representation at all.
+        //
+        // `DumpedAssembly.isByRefLike` is the classification, attribute presence gated on the
+        // type being a value class exactly as CoreCLR gates it; this is only the projection of
+        // that answer onto the MethodTable.
+        //
+        // An open generic definition carries the flag too: `typeof(R<>).IsByRefLike` is true for
+        // a `ref struct R<T>` (measured against .NET 10). A generic *parameter* does not, because
+        // `RuntimeType.IsByRefLike` short-circuits on `IsTypeDesc` before reaching a MethodTable
+        // at all.
         let isByRefLike =
-            match methodTableFor with
-            | RuntimeTypeHandleTarget.Closed handle ->
-                match AllConcreteTypes.lookup handle state.ConcreteTypes with
-                | None -> false
-                | Some concreteType ->
-                    state._LoadedAssemblies
-                        .ByDefinitionName(concreteType.Identity.AssemblyFullName)
-                        .TypeDefs.[concreteType.Identity.TypeDefinition.Get]
-                    |> DumpedAssembly.isByRefLike baseClassTypes state._LoadedAssemblies
-            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
-            | RuntimeTypeHandleTarget.GenericParameter _
-            | RuntimeTypeHandleTarget.MethodGenericParameter _ -> false
+            let identity =
+                match methodTableFor with
+                | RuntimeTypeHandleTarget.Closed handle ->
+                    AllConcreteTypes.lookup handle state.ConcreteTypes
+                    |> Option.map (fun concreteType -> concreteType.Identity)
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity -> Some identity
+                | RuntimeTypeHandleTarget.GenericParameter _
+                | RuntimeTypeHandleTarget.MethodGenericParameter _ -> None
+
+            match identity with
+            | None -> false
+            | Some identity ->
+                state._LoadedAssemblies
+                    .ByDefinitionName(identity.AssemblyFullName)
+                    .TypeDefs.[identity.TypeDefinition.Get]
+                |> DumpedAssembly.isByRefLike baseClassTypes state._LoadedAssemblies
 
         let containsGcPointers, state =
             containsGcPointersForRuntimeTypeHandleTarget loggerFactory baseClassTypes state methodTableFor

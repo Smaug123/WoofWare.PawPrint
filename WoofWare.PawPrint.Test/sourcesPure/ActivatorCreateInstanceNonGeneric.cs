@@ -90,6 +90,11 @@ namespace ActivatorCreateInstanceNonGenericTest
         public int N;
     }
 
+    public ref struct GenericRefStruct<T>
+    {
+        public int X;
+    }
+
     public enum SomeEnum
     {
         Zero = 0,
@@ -304,42 +309,67 @@ namespace ActivatorCreateInstanceNonGenericTest
                 return 24;
             }
 
-            // --- generics and exception wrapping ---
-
-            if (Classify(() => Activator.CreateInstance(typeof(GenericHolder<int>))) != "GenericHolder`1")
+            // A generic ref struct is byref-like both closed and open. The open form matters
+            // because it is a different MethodTable with no `ConcreteType` behind it, so the flag
+            // has to be projected from the type definition rather than from an instantiation.
+            if (Classify(() => Activator.CreateInstance(typeof(GenericRefStruct<int>))) != "NotSupportedException")
             {
                 return 25;
             }
 
-            if (Classify(() => Activator.CreateInstance(typeof(ThrowingCtor))) != "TargetInvocationException")
+            if (!typeof(GenericRefStruct<>).IsByRefLike)
             {
                 return 26;
+            }
+
+            // ... and the flag must not leak onto types that are not byref-like at all, which is
+            // what stops "project it for everything" from passing the rows above.
+            if (typeof(PlainStruct).IsByRefLike)
+            {
+                return 27;
+            }
+
+            if (typeof(ImplicitCtor).IsByRefLike)
+            {
+                return 28;
+            }
+
+            // --- generics and exception wrapping ---
+
+            if (Classify(() => Activator.CreateInstance(typeof(GenericHolder<int>))) != "GenericHolder`1")
+            {
+                return 29;
+            }
+
+            if (Classify(() => Activator.CreateInstance(typeof(ThrowingCtor))) != "TargetInvocationException")
+            {
+                return 30;
             }
 
             // --- the activation cache is reused, and the cached pointers still work ---
 
             if (((ImplicitCtor)Activator.CreateInstance(typeof(ImplicitCtor))).Value != 7)
             {
-                return 27;
+                return 31;
             }
 
             // --- allocation does not run the type initialiser ---
 
             if (CctorWitness.Ran != 0)
             {
-                return 28;
+                return 32;
             }
 
             StructWithCctor withCctor = (StructWithCctor)Activator.CreateInstance(typeof(StructWithCctor));
 
             if (withCctor.X != 0)
             {
-                return 29;
+                return 33;
             }
 
             if (CctorWitness.Ran != 0)
             {
-                return 30;
+                return 34;
             }
 
             return 0;
