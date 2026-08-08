@@ -882,23 +882,25 @@ module NativeRuntimeTypeFCall =
                 failwith
                     $"%s{operation}: byref already held a null RuntimeMethodHandleInternal; the BCL's IntroducedMethodEnumerator only calls GetNextIntroducedMethod when the current handle is non-null"
 
-            let methodHandle =
-                MethodHandleRegistry.resolveMethodFromId currentId state.MethodHandles
-                |> Option.defaultWith (fun () ->
-                    failwith $"%s{operation}: registry id %d{currentId} did not resolve to a known MethodHandle"
-                )
+            // The iterator walks method-table slots, every one of which is a metadata method
+            // definition; a no-metadata (`DynamicMethod`) handle could never have been produced by
+            // `GetFirstIntroducedMethod`, so there is nothing sensible to resume from here.
+            let identity =
+                match MethodHandleRegistry.resolveMethodFromId currentId state.MethodHandles with
+                | Some (MethodHandle.FromMetadata identity) -> identity
+                | None -> failwith $"%s{operation}: registry id %d{currentId} did not resolve to a known MethodHandle"
 
             // The registry only stores handles whose declaring type was Concrete (GetFirst emits
             // the null sentinel for TypeDesc handles), so `None` here would mean the iterator was
             // resumed against a handle whose declaring type can no longer produce methods.
             let declaringType, methods =
-                introducedMethodsOfClosed operation state methodHandle.DeclaringType
+                introducedMethodsOfClosed operation state (identity.GetDeclaringType ())
                 |> Option.defaultWith (fun () ->
                     failwith
-                        $"%s{operation}: registry handle %d{currentId} resolves to declaring type %O{methodHandle.DeclaringType}, which does not enumerate introduced methods"
+                        $"%s{operation}: registry handle %d{currentId} resolves to declaring type %O{identity.GetDeclaringType ()}, which does not enumerate introduced methods"
                 )
 
-            let currentMetadataHandle = methodHandle.GetMethodDefinitionHandle ()
+            let currentMetadataHandle = identity.GetMethodDefinitionHandle ()
 
             let nextValue, state =
                 let rec findNext (xs : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> list) =
