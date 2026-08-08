@@ -64,7 +64,7 @@
     <Compile Include="TestNativeSignature.fs" />
     <Compile Include="TestNativeCustomAttribute.fs" />
     <Compile Include="TestManifestResources.fs" />
-    <Compile Include="TestAssemblyNativeSimpleName.fs" />
+    <Compile Include="TestAssemblyNativeQCalls.fs" />
     <Compile Include="TestNativeEnum.fs" />
     <Compile Include="TestMethodHandleRegistry.fs" />
     <Compile Include="TestMethodReturnType.fs" />
