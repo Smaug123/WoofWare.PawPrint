@@ -526,6 +526,14 @@ module TestRuntimeConfig =
             "an array-valued property", Text.Encoding.UTF8.GetBytes (document """{ "P": [] }"""), false
             "an object-valued property", Text.Encoding.UTF8.GetBytes (document """{ "P": {} }"""), false
             "invalid UTF-8 in a value", documentWithRawBytes (asciiBytes "P") invalidUtf8, false
+            // The overflow is a *parse* fault, not a rendering one: rapidjson never reaches the
+            // point of deciding which duplicate wins, so shadowing the offending occurrence does
+            // not save the document. Measured on .NET 10: this file exits 147, where
+            // `{ "P": 1.5, "P": "final" }` — a fault only in the *rendering* of a shadowed
+            // occurrence — launches with P="final".
+            "an overflowing number in an occurrence a later duplicate shadows",
+            Text.Encoding.UTF8.GetBytes (document """{ "P": 1e400, "P": "final" }"""),
+            true
         ]
 
     [<Test>]

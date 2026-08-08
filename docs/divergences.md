@@ -163,7 +163,7 @@ Console.WriteLine(AppContext.BaseDirectory);
 
 **CoreCLR**: `hostpolicy` parses the whole file with rapidjson, which rejects the *entire document* for faults anywhere in it — a numeric token too large to store in a double (`kParseErrorNumberTooBig`, so `1e400`), an unpaired `\uD800` surrogate escape (`kParseErrorStringUnicodeSurrogateInvalid`), and the rest of its error surface. A fault in a section nobody reads is still fatal: for the main config the app does not launch, and for `runtimeconfig.dev.json` the whole sidecar is ignored.
 
-**PawPrint**: parses with `System.Text.Json`, whose accepted grammar is not rapidjson's. It takes `1e400` (yielding an infinity) and an unpaired surrogate escape (throwing only if you ask for the text), so a document faulty *only* in a part PawPrint never inspects is accepted here and refused there. Where the fault is in a property PawPrint does read, it is caught: an overflowing number is classified `HostWouldReject`, so it behaves as a real host's rejection does.
+**PawPrint**: parses with `System.Text.Json`, whose accepted grammar is not rapidjson's. It takes `1e400` (yielding an infinity) and an unpaired surrogate escape (throwing only if you ask for the text), so a document faulty *only* in a part PawPrint never inspects is accepted here and refused there. Where the fault is in a `configProperties` value, it is caught: an overflowing number is classified `HostWouldReject`, so it behaves as a real host's rejection does. That check asks every *occurrence* of a property, including one a later duplicate shadows, because this fault stops rapidjson before it reaches the question of which duplicate wins — `{ "P": 1e400, "P": "final" }` does not launch on CoreCLR, where `{ "P": 1.5, "P": "final" }`, whose shadowed occurrence is merely unrenderable, launches with `P="final"`.
 
 **Spec status**: Both parsers implement RFC 8259, which constrains neither the range an implementation must accept for a number nor what it does with a lone surrogate escape. Two conforming parsers may differ here, and these two do.
 
@@ -183,7 +183,7 @@ One consequence is visible in that classification. An unpaired surrogate escape 
 // PawPrint: launches, with Switch seeded to "on".
 ```
 
-**Where this lives in code**: `parseRootValue` and `renderValue` in `RuntimeConfig.fs`; the overflow check is the `Double.IsInfinity` branch, and `classificationCases` in `TestRuntimeConfig.fs` pins which faults land in which case.
+**Where this lives in code**: `parseRootValue` and `renderValue` in `RuntimeConfig.fs`; the overflow check is `rejectUnparseableNumbers`, run over every occurrence before duplicate resolution, and `classificationCases` in `TestRuntimeConfig.fs` pins which faults land in which case.
 
 ## The host-populated `AppContext` properties are absent
 

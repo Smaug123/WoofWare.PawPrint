@@ -259,6 +259,55 @@ module RuntimeConfig =
                 $"runtimeconfig.json %s{describe} is not valid UTF-8. A real host does not validate the encoding either, and launches the app with CoreCLR substituting U+FFFD for the offending bytes; PawPrint does not reproduce that substitution exactly (for `ED A0 80` a real host yields two replacement characters where .NET's decoder yields three), and seeding an approximation would silently give the guest a different string from the one it would see on CoreCLR. Write the file as valid UTF-8."
             |> Error
 
+    /// Refuse a `configProperties` value that no real host could have parsed in the first
+    /// place, wherever among the properties it sits.
+    ///
+    /// rapidjson stores every number as an int64, a uint64 or a double, and fails the *whole
+    /// document* with kParseErrorNumberTooBig when it fits in none of them. `Utf8JsonReader`
+    /// has no such limit — it accepts the token and hands back an infinity — so the check has
+    /// to be explicit. `HostWouldReject` rather than `NotReproducible`, because this is a file
+    /// a real host refuses to read at all rather than one whose values we merely decline to
+    /// render, and the difference decides whether a dev sidecar may be ignored.
+    ///
+    /// Checked across *every* occurrence, before duplicate resolution discards any, because
+    /// the fault stops rapidjson before it ever reaches the question of which duplicate wins:
+    /// `{ "P": 1e400, "P": "final" }` is a file a real host refuses (measured: exit 147), even
+    /// though the occurrence at fault is one whose rendering we would have thrown away.
+    /// Contrast `{ "P": 1.5, "P": "final" }` — a *rendering* fault in a shadowed occurrence,
+    /// which a real host launches with P="final" and which the two-pass resolution in `parse`
+    /// duly accepts.
+    ///
+    /// By position rather than by name, because a name that is not valid UTF-8 is something a
+    /// real host reads happily: materialising one here could fail, and would then report a
+    /// `NotReproducible` in place of the `HostWouldReject` that actually governs the file.
+    ///
+    /// Underflow is not this case: rapidjson reports no error for `1e-400`, it simply stores
+    /// zero, so that stays an ordinary unrenderable real.
+    ///
+    /// This deliberately does not look inside arrays and objects, and does not look outside
+    /// `configProperties` at all. Those are places PawPrint never reads far enough into to
+    /// claim anything about; the wider gap — a fault anywhere in the document, including
+    /// sections nothing reads — stands, and is recorded in docs/divergences.md.
+    let private rejectUnparseableNumbers (configProperties : JsonElement) : Result<unit, RuntimeConfigError> =
+        configProperties.EnumerateObject ()
+        |> Seq.indexed
+        |> Seq.tryPick (fun (index, property) ->
+            let value = property.Value
+
+            if value.ValueKind <> JsonValueKind.Number then
+                None
+            else
+
+            match value.TryGetDouble () with
+            | true, d when Double.IsInfinity d ->
+                RuntimeConfigError.HostWouldReject
+                    $"the configProperties entry at position %i{index + 1} of runtimeconfig.json has the numeric value %s{value.GetRawText ()}, which is too large for the double a real host would store it in. rapidjson fails the entire document with 'Number too big to be stored in double', so this configuration does not launch on CoreCLR at all."
+                |> Some
+            | _ -> None
+        )
+        |> Option.map Error
+        |> Option.defaultValue (Ok ())
+
     /// Render one `configProperties` value the way `hostpolicy` does.
     ///
     /// `runtime_config.cpp` takes `GetString()` for a JSON string and otherwise re-serialises
@@ -294,23 +343,11 @@ module RuntimeConfig =
             // its value is.
             let raw = value.GetRawText ()
 
-            // Before anything else: rapidjson stores every number as an int64, a uint64 or a
-            // double, and fails the *whole document* with kParseErrorNumberTooBig when it fits
-            // in none of them. `Utf8JsonReader` has no such limit — it accepts the token and
-            // hands back an infinity — so a magnitude past double's range is a file a real
-            // host refuses to read at all, not a value we merely decline to render. The
-            // difference matters: a dev sidecar a real host rejects outright is one it
-            // ignores and launches without.
-            //
-            // Underflow is not the same case. rapidjson reports no error for `1e-400`, it just
-            // stores zero, so that stays an ordinary unrenderable real below.
-            match value.TryGetDouble () with
-            | true, d when Double.IsInfinity d ->
-                RuntimeConfigError.HostWouldReject
-                    $"runtimeconfig.json property '%s{name}' has the numeric value %s{raw}, which is too large for the double a real host would store it in. rapidjson fails the entire document with 'Number too big to be stored in double', so this configuration does not launch on CoreCLR at all."
-                |> Error
-            | _ ->
-
+            // A magnitude past double's range never reaches here: `rejectUnparseableNumbers`
+            // has already refused the whole file, because that fault stops a real host
+            // *parsing* rather than rendering. So `TryGetInt64`/`TryGetUInt64` failing below
+            // means the value is genuinely wider than a 64-bit integer while still fitting a
+            // double, which is a rendering problem and classified as one.
             let looksIntegral = not (raw.Contains '.' || raw.Contains 'e' || raw.Contains 'E')
 
             if not looksIntegral then
@@ -480,6 +517,13 @@ module RuntimeConfig =
                 $"runtimeconfig.json 'runtimeOptions.configProperties' must be an object, but found %O{configProperties.ValueKind}"
             |> Error
         else
+
+        // Before any of the rendering work: a number a real host cannot even parse refuses the
+        // file outright, and does so regardless of which duplicate would have won, so it is
+        // asked of every occurrence rather than of the surviving ones.
+        match rejectUnparseableNumbers configProperties with
+        | Error e -> Error e
+        | Ok () ->
 
         // Resolve duplicates *before* rendering, in two passes, because hostpolicy's loop
         // body is `m_properties[name] = render(value)`: it renders every occurrence but only
