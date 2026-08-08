@@ -142,6 +142,81 @@ module TestRuntimeConfig =
         |> shouldContainText "Bad"
 
     // ------------------------------------------------------------------
+    // Names the hosting layer owns.
+    // ------------------------------------------------------------------
+
+    /// Populated by `hostpolicy_context.cpp` *before* it walks `configProperties`, so a config
+    /// entry reusing one of these names makes `coreclr_property_bag_t::add` return false and
+    /// the launch fail with `LibHostDuplicateProperty` — plus `HOST_RUNTIME_CONTRACT`, which
+    /// is added afterwards but checked the same way.
+    let private hostOwnedNames : string list =
+        [
+            "TRUSTED_PLATFORM_ASSEMBLIES"
+            "NATIVE_DLL_SEARCH_DIRECTORIES"
+            "PLATFORM_RESOURCE_ROOTS"
+            "APP_CONTEXT_BASE_DIRECTORY"
+            "APP_CONTEXT_DEPS_FILES"
+            "FX_DEPS_FILE"
+            "PROBING_DIRECTORIES"
+            "RUNTIME_IDENTIFIER"
+            "HOST_RUNTIME_CONTRACT"
+        ]
+
+    [<Test>]
+    let ``a property the hosting layer owns is refused`` () =
+        // Accepting one would run a configuration that cannot launch on a real runtime, and
+        // would hand the guest a forged built-in: PawPrint populates none of these itself
+        // (see docs/divergences.md), so there is nothing to collide with and the value would
+        // simply be believed.
+        for name in hostOwnedNames do
+            let err = parseError (document $"""{{ "{name}": "forged" }}""")
+            err |> shouldContainText name
+
+    [<Test>]
+    let ``the comparison is case-sensitive, as the host's is`` () =
+        // `coreclr_property_bag_t::add` looks the key up in an `unordered_map` with default
+        // equality, so only the exact spelling collides. A lowercased name is an ordinary
+        // property to a real host, and must be one here.
+        parseOk (document """{ "trusted_platform_assemblies": "not the real one" }""")
+        |> shouldEqual (Map.ofList [ "trusted_platform_assemblies", "not the real one" ])
+
+    [<Test>]
+    let ``STARTUP_HOOKS is not host-owned`` () =
+        // Deliberately not in the list: hostpolicy adds it *after* the config loop, ignores
+        // `add`'s result, and explicitly reads a config-supplied value back via `try_get` so
+        // it can append the environment's hooks to it. Config is a supported source here.
+        parseOk (document """{ "STARTUP_HOOKS": "/hooks/one.dll" }""")
+        |> shouldEqual (Map.ofList [ "STARTUP_HOOKS", "/hooks/one.dll" ])
+
+    [<Test>]
+    let ``APP_PATHS is host-owned only when the SetAppPaths switch asks for it`` () =
+        // The conditional case: `APP_PATHS` is added after the loop and only when
+        // `Microsoft.NETCore.DotNetHostPolicy.SetAppPaths` is true, so on its own it is a
+        // perfectly ordinary property and only the pair is fatal.
+        parseOk (document """{ "APP_PATHS": "/somewhere" }""")
+        |> shouldEqual (Map.ofList [ "APP_PATHS", "/somewhere" ])
+
+        let err =
+            parseError (
+                document """{ "APP_PATHS": "/somewhere", "Microsoft.NETCore.DotNetHostPolicy.SetAppPaths": "true" }"""
+            )
+
+        err |> shouldContainText "APP_PATHS"
+
+        // The switch is compared case-insensitively in both key and value (`pal::strcasecmp`),
+        // and anything other than "true" leaves APP_PATHS alone.
+        parseError (
+            document """{ "APP_PATHS": "/somewhere", "microsoft.netcore.dotnethostpolicy.setapppaths": "TRUE" }"""
+        )
+        |> shouldContainText "APP_PATHS"
+
+        parseOk (
+            document """{ "APP_PATHS": "/somewhere", "Microsoft.NETCore.DotNetHostPolicy.SetAppPaths": "false" }"""
+        )
+        |> Map.containsKey "APP_PATHS"
+        |> shouldEqual true
+
+    // ------------------------------------------------------------------
     // Document structure.
     // ------------------------------------------------------------------
 
@@ -334,6 +409,36 @@ module TestRuntimeConfig =
             |> Array.ofList
 
         parseBytesOk bytes |> shouldEqual (Map.ofList [ "P", "v" ])
+
+    [<Test>]
+    let ``invalid UTF-8 in an ignored member's name is nobody's business either`` () =
+        // Not just ignored *values*: locating `runtimeOptions` must not transcode the names it
+        // walks past, or a sibling member nobody reads takes the launch down. Comparing a name
+        // without materialising it is what `JsonProperty.NameEquals` is for.
+        let bytes =
+            [
+                yield! Text.Encoding.UTF8.GetBytes "{ \"ignored"
+                yield! invalidUtf8
+                yield!
+                    Text.Encoding.UTF8.GetBytes
+                        "\": 1, \"runtimeOptions\": { \"configProperties\": { \"P\": \"v\" } } }"
+            ]
+            |> Array.ofList
+
+        parseBytesOk bytes |> shouldEqual (Map.ofList [ "P", "v" ])
+
+    [<Test>]
+    let ``an escaped section name still matches`` () =
+        // Comparing raw bytes must not cost us escape handling: rapidjson decodes escapes in
+        // names, so `runtimeOptions` is `runtimeOptions` to a real host, and a section
+        // spelled that way has to keep working here.
+        // Both section names carry their leading letter as a JSON `\u` escape: a spelling no
+        // SDK emits, but one every JSON parser must treat as the plain name.
+        let r = "\\u0072"
+        let c = "\\u0063"
+
+        parseOk $$"""{ "{{r}}untimeOptions": { "{{c}}onfigProperties": { "P": "v" } } }"""
+        |> shouldEqual (Map.ofList [ "P", "v" ])
 
     [<Test>]
     let ``a UTF-8 BOM is skipped`` () =
