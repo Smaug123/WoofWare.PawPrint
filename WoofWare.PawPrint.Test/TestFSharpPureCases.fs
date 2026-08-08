@@ -133,10 +133,9 @@ module TestFSharpPureCases =
                 // (`IsDynamicMethod`, then `GetDeclaringType`, whose body is
                 // `GetRuntimeType(GetMethodTable(method))`, then `IsConstructor`, then
                 // `HasMethodInstantiation`). It stops at the unimplemented
-                // `RuntimeMethodHandle.IsConstructor`
-                // (`System.RuntimeMethodHandle::IsConstructor(RuntimeMethodHandleInternal) -> bool`,
-                // runtimehandles.cpp:2135), reached at RuntimeType.CoreCLR.cs:1934, with
-                // `HasMethodInstantiation` (runtimehandles.cpp:1722) behind it on the method branch.
+                // `RuntimeMethodHandle.HasMethodInstantiation`
+                // (`System.RuntimeMethodHandle::HasMethodInstantiation(RuntimeMethodHandleInternal)
+                // -> bool`, runtimehandles.cpp:1722), the last of those.
                 //
                 // Being consecutive statements of one BCL method, none of those natives can be
                 // pinned alone by any guest source; `TestMethodHandleRegistry.fs` drives each
