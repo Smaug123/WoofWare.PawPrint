@@ -514,6 +514,42 @@ public static class MaskedFlags
 
         state, written
 
+    /// Runs `AssemblyNative_GetCodeBase`, which is the only one in this family that answers
+    /// with *both* a written string and a return value, so both come back here: the address
+    /// it wrote into the `StringHandleOnStack` (None if it left the slot at its
+    /// preinitialised null) and the marshalled `BOOL`.
+    let private invokeGetCodeBase
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (prepared : Program.PreparedProgram)
+        (state : IlMachineState)
+        (assemblyFullName : string)
+        : IlMachineState * ManagedHeapAddress option * int
+        =
+        let baseClassTypes = prepared.BaseClassTypes
+
+        let qCallAssembly, state =
+            qCallAssemblyValue loggerFactory baseClassTypes assemblyFullName state
+
+        let stringHandle, target, state =
+            stringHandleOnStackValue loggerFactory baseClassTypes state
+
+        let state =
+            invokeQCall loggerFactory prepared "AssemblyNative_GetCodeBase" [ qCallAssembly ; stringHandle ] state
+
+        let returned, state = IlMachineState.popEvalStack prepared.EntryThread state
+
+        let returned =
+            match returned with
+            | EvalStackValue.Int32 (Int32Source.Verbatim value) -> value
+            | other -> failwith $"expected a verbatim Int32 return from AssemblyNative_GetCodeBase, got %O{other}"
+
+        let written =
+            match IlMachineState.readManagedByref baseClassTypes state target with
+            | CliType.ObjectRef maybeAddr -> maybeAddr
+            | other -> failwith $"expected StringHandleOnStack target to contain an object ref, got %O{other}"
+
+        state, written, returned
+
     let private invokeGetLocale
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
         (prepared : Program.PreparedProgram)
@@ -1155,3 +1191,90 @@ public static class MaskedFlags
 
         let afPublicKey = 0x1
         flags |> shouldEqual afPublicKey
+
+    [<Test>]
+    let ``GetCodeBase reports no code base, and still writes the string`` () : unit =
+        // PawPrint takes `PEAssembly::GetCodeBase`'s `else` branch for every assembly — the
+        // one for an image in a bundle or external data, with no path to turn into a
+        // `file://` URL. See docs/divergences.md; it is the same no-file-backing position
+        // `AssemblyNative_GetLocation` already takes.
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let image =
+            Roslyn.compileAssembly guestAssemblyName OutputKind.ConsoleApplication [] [ guestSource ]
+
+        let prepared = prepareGuest loggerFactory image
+        let baseClassTypes = prepared.BaseClassTypes
+        let guest = prepared.State.ActiveAssembly prepared.EntryThread
+
+        let state, written, returned =
+            invokeGetCodeBase loggerFactory prepared prepared.State guest.Name.FullName
+
+        // FALSE: the BCL marshals this to `bool` and returns null for the code base when it
+        // is false. Any non-zero value would instead hand the guest the empty string as if
+        // it were a real code base.
+        returned |> shouldEqual 0
+
+        // CoreCLR's `retString.Set(codebase)` sits *outside* its `if`, so the string is
+        // written on the false branch too. A handler that skipped the write would leave the
+        // caller's local at null — which happens to reach the same managed answer here, but
+        // is not what the primitive does, and would be wrong the moment the bool is true.
+        let addr =
+            written
+            |> Option.defaultWith (fun () -> failwith "handler left the StringHandleOnStack at null")
+
+        assertIsString baseClassTypes state addr ""
+
+        // The shared empty-string instance, as `StringObject::NewString` returns for a
+        // zero-length string.
+        let canonicalEmpty, _state =
+            IlMachineState.internCanonicalEmptyString loggerFactory baseClassTypes state
+
+        addr |> shouldEqual canonicalEmpty
+
+    [<Test>]
+    let ``GetCodeBase reports no code base for a framework assembly too`` () : unit =
+        // Corelib resolves from the host's runtime directories, so this is the case where
+        // reporting a real path would leak the developer's machine into a replay.
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let image =
+            Roslyn.compileAssembly guestAssemblyName OutputKind.ConsoleApplication [] [ guestSource ]
+
+        let prepared = prepareGuest loggerFactory image
+        let baseClassTypes = prepared.BaseClassTypes
+
+        let state, written, returned =
+            invokeGetCodeBase loggerFactory prepared prepared.State baseClassTypes.Corelib.Name.FullName
+
+        returned |> shouldEqual 0
+
+        let addr =
+            written
+            |> Option.defaultWith (fun () -> failwith "handler left the StringHandleOnStack at null")
+
+        assertIsString baseClassTypes state addr ""
+
+    [<Test>]
+    let ``GetCodeBase on an unloaded assembly fails loudly`` () : unit =
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let image =
+            Roslyn.compileAssembly guestAssemblyName OutputKind.ConsoleApplication [] [ guestSource ]
+
+        let prepared = prepareGuest loggerFactory image
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () ->
+                invokeGetCodeBase
+                    loggerFactory
+                    prepared
+                    prepared.State
+                    "NotLoaded, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null"
+                |> ignore<IlMachineState * ManagedHeapAddress option * int>
+            )
+
+        exn.Message |> shouldContainText "is not loaded"

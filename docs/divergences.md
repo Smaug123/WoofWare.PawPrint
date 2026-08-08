@@ -159,6 +159,44 @@ Console.WriteLine(AppContext.BaseDirectory);
 
 **Where this lives in code**: `NativeRuntimeAssembly.tryExecuteQCall`, the `AssemblyNative_GetLocation` case.
 
+## `Assembly.CodeBase` throws, and `AssemblyName.CodeBase` is null
+
+**CoreCLR**: `AssemblyNative_GetCodeBase` returns the assembly's path as a `file://` URL, and returns `TRUE`. It takes its other branch — set the empty string, return `FALSE` — only for an image that `IsInBundle` or `IsExternalData` (`PEAssembly::GetCodeBase`, `peassembly.cpp`). The managed wrapper turns a `FALSE` return into `null`, which makes `AssemblyName.CodeBase` null and the public `Assembly.CodeBase` throw `NotSupportedException` (`SR.NotSupported_CodeBase`).
+
+**PawPrint**: reports every assembly the bundle/external way — empty string, `FALSE`.
+
+**This is a narrower claim than the empty `Location` above, not the same one restated.** CoreCLR's pathless images do not all behave alike here, so `Location == ""` does not determine what `CodeBase` does:
+
+| shape | `Location` | `GetCodeBase` | `AssemblyName.CodeBase` | `Assembly.CodeBase` |
+| --- | --- | --- | --- | --- |
+| loaded from a file | the path | `TRUE`, a `file://` URL | that URL | that URL |
+| `Assembly.Load(byte[])` | `""` | `TRUE`, `""` | `""` | CoreLib's code base¹ |
+| single-file / bundled | `""` | `FALSE` | `null` | throws `NotSupportedException` |
+
+¹ `Assembly.CodeBase` substitutes `typeof(object).Assembly.CodeBase` when the answer is empty — "for backward compatibility, return CoreLib codebase for assemblies loaded from memory".
+
+A byte-array image is built by `PEImage::CreateFromByteArray` with a null path but no probe extension, so it is neither bundled nor external and takes the *first* branch. PawPrint therefore had to pick between the last two rows, and picks the single-file one.
+
+**Spec status**: Compliant. This is the state a single-file-published app is in, which the BCL handles as a first-class case — `Assembly.CodeBase` is `[Obsolete]` precisely because it cannot be answered for such apps.
+
+**Why we chose this**: the guest has no filesystem at all, so "there is no code base, and asking for one is not supported" is the truthful answer; `NotSupportedException` says exactly that. The byte-array row would instead answer "the code base is the empty string", and then route callers through the CoreLib-substituting back-compat branch — which under PawPrint yields the empty string anyway, so the guest learns nothing truer and the fiction is longer. It also keeps `Location` and `CodeBase` telling one consistent story about what kind of app this is.
+
+**Note the empty string is still written.** CoreCLR's `retString.Set(codebase)` sits *outside* the `if`, so both branches write; only the returned `BOOL` distinguishes them. PawPrint writes it too. Skipping the write happens to reach the same managed answer — the wrapper discards the string when the bool is false — but it is not what the primitive does, and would be wrong the moment a caller reads the string on a true return.
+
+**Observable example**:
+
+```csharp
+// dotnet app.dll:  "file:///path/to/app.dll", then "file:///path/to/app.dll"
+// PawPrint:        null,                      then a NotSupportedException
+// (GetName() first: reading Assembly.CodeBase throws, so it has to come last.)
+Console.WriteLine(typeof(Program).Assembly.GetName().CodeBase ?? "<null>");
+Console.WriteLine(typeof(Program).Assembly.CodeBase);
+```
+
+**Testing note**: Cannot be a `sourcesPure` comparison test, for the same reason as the entry above. Covered by the PawPrint-only tests `GetCodeBase reports no code base, and still writes the string` and `GetCodeBase reports no code base for a framework assembly too` in `TestAssemblyNativeQCalls.fs`, which pin the `FALSE` return, the written canonical empty string, and both an ordinary and a framework assembly.
+
+**Where this lives in code**: `NativeRuntimeAssembly.tryExecuteQCall`, the `AssemblyNative_GetCodeBase` case.
+
 ## A `runtimeconfig.json` is validated only where PawPrint reads it
 
 **CoreCLR**: `hostpolicy` parses the whole file with rapidjson, which rejects the *entire document* for faults anywhere in it — a numeric token too large to store in a double (`kParseErrorNumberTooBig`, so `1e400`), an unpaired `\uD800` surrogate escape (`kParseErrorStringUnicodeSurrogateInvalid`), and the rest of its error surface. A fault in a section nobody reads is still fatal: for the main config the app does not launch, and for `runtimeconfig.dev.json` the whole sidecar is ignored.
