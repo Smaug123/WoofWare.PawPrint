@@ -427,56 +427,60 @@ type CliType =
         // only cost of a false "changed" is one redundant write of an identical value.
         | _ -> before <> after
 
-    /// If the byte range `[offset, offset + size)` of `value` is exactly one field's extent, and no
-    /// other field overlaps that range, return that field's id and its contents. Otherwise `None`.
+    /// The extents `(offset, size)`, relative to `value`, of the nested storage cells that contain
+    /// byte `byteOffset`. Outermost first, so sizes descend.
     ///
-    /// This is what makes eliding a reinterpret sound: the byref addresses precisely that field's
-    /// cell, so reading it returns the field and writing it disturbs nothing else. Both conditions
-    /// are load-bearing, and only the second is about explicit layout:
+    /// This is a *candidate generator*, not an answer: it navigates the layout and performs none of
+    /// `CellPathsExactlyCovering`'s aliasing or padding checks, so an extent it reports may name no
+    /// cell at all. It exists for callers that must discover a byte range before they can ask
+    /// whether that range names a cell — a bulk copy stepping through a buffer knows where its
+    /// cursor is but not how wide the next move should be. Such a caller proposes from here and
+    /// disposes with `CellPathsExactlyCovering`, which remains the sole authority on nameability.
+    /// Correctness therefore never rests on this function: an extent it invents is thrown out by
+    /// the validator, and an extent it fails to report costs the caller only the fallback route it
+    /// would have taken anyway.
     ///
-    ///   * a range that is *part* of a field, or that spans two, has no single cell to name;
-    ///   * a range that exactly covers one field but is *aliased* by another (an 8-byte field at 0
-    ///     and a 4-byte field at 4, under explicit layout) would leave the alias stale on write, so
-    ///     it must keep going through the byte-view path. Two fields declared at the same offset
-    ///     are each the other's overlapping sibling, so that shape is refused too.
-    ///
-    /// This is deliberately a *structural* query and does not look at what the field contains, so
-    /// callers must apply their own compatibility rule to the returned contents. It also walks
-    /// fields rather than bytes, so — like `WithZeroedRangeIfChanged` — it stays defined on storage
-    /// that has no byte rendering at all, which is exactly the reference-containing case its
-    /// callers need. Raw-bytes storage has no fields, so it never answers.
-    static member TryFieldExactlyCovering (offset : int) (size : int) (value : CliType) : (FieldId * CliType) option =
-        if size <= 0 then
-            None
+    /// It is nonetheless *complete* for the anchored queries `CellAwareMemOps` makes of it — every
+    /// width the validator would accept at a given anchor byte is proposed here — and that is what
+    /// makes proposing from one endpoint enough. `CellPathsExactlyCovering` reaches a cell only by
+    /// descending through the unique unaliased field containing the whole range; any field
+    /// containing the range contains every byte of it, so each cell it names lies on the
+    /// containment chain of every byte in the range, which is precisely what this walks. Where this
+    /// stops early — several fields containing the byte, or none, the latter meaning the byte is
+    /// padding — the validator necessarily declines too: a second field containing the byte
+    /// overlaps the range and trips the alias check, and a range whose bytes no field contains has
+    /// no containing field either. Only the whole value survives those cases, and it is always
+    /// proposed. `TestCliTypeCellPaths` pins this against a brute-force enumeration of every width.
+    static member CandidateCellExtentsContainingByte (byteOffset : int) (value : CliType) : (int * int) list =
+        let size = CliType.SizeOf(value).Size
+
+        if byteOffset < 0 || byteOffset >= size then
+            []
         else
+
+        let here = 0, size
 
         match value with
         | CliType.ValueType vt ->
-            let fields = CliValueType.TryAllFields vt
-
-            let covering =
-                fields
-                |> List.filter (fun f -> f.Offset = offset && f.Size = size && f.Size = CliType.SizeOf(f.Contents).Size)
-
-            match covering with
+            match
+                CliValueType.TryAllFields vt
+                |> List.filter (fun f -> f.Offset <= byteOffset && byteOffset < f.Offset + f.Size)
+            with
             | [ f ] ->
-                let aliased =
-                    fields
-                    |> List.exists (fun g ->
-                        not (FieldId.exactlyEqual g.Id f.Id)
-                        && g.Offset < offset + size
-                        && offset < g.Offset + g.Size
-                    )
-
-                if aliased then None else Some (f.Id, f.Contents)
-            | _ -> None
-        | _ -> None
+                here
+                :: (CliType.CandidateCellExtentsContainingByte (byteOffset - f.Offset) f.Contents
+                    |> List.map (fun (offset, size) -> f.Offset + offset, size))
+            // Either several fields contain the byte (explicit layout can overlap them), in which
+            // case there is no single one to descend into, or none does and the byte is padding.
+            // Both times the whole value is the only candidate.
+            | _ -> [ here ]
+        | _ -> [ here ]
 
     /// Every storage cell of `value` whose extent is exactly the byte range
     /// `[offset, offset + size)`, as a path of `FieldId`s from `value` down to the cell, paired
     /// with the cell's contents. Ordered outermost first. Empty if the range names no cell.
     ///
-    /// This is `TryFieldExactlyCovering` made total over depth. Naming a cell is what lets the
+    /// Naming a cell is what lets the
     /// byref layer serve an access whose storage has no byte rendering at all — a value type
     /// containing object references — since there the bytewise path cannot run and the cell is the
     /// only thing left to read or write. A range that is *part* of a cell, that spans two, or that
@@ -489,10 +493,10 @@ type CliType =
     /// type-compatible one gets the shallowest cell that will do — the one that disturbs least on
     /// write.
     ///
-    /// Like `TryFieldExactlyCovering`, this is deliberately *structural*: it does not look at what
-    /// a cell contains, so callers must apply their own compatibility rule to the contents. It
-    /// walks fields rather than bytes, so it stays defined precisely where the byte path is not.
-    /// Raw-bytes storage has no fields, so it never answers.
+    /// This is deliberately *structural*: it does not look at what a cell contains, so callers must
+    /// apply their own compatibility rule to the contents. It walks fields rather than bytes, so it
+    /// stays defined precisely where the byte path is not. Raw-bytes storage has no fields, so it
+    /// never answers.
     static member CellPathsExactlyCovering
         (offset : int)
         (size : int)
@@ -552,15 +556,6 @@ type CliType =
                     deeper
             | _ -> []
         | _ -> []
-
-    /// If `value` is a value type holding exactly one field, laid out at offset 0 and spanning
-    /// the whole value, return that field's id and its contents. Otherwise `None`.
-    ///
-    /// Such a value type is *transparent*: it has no representation of its own beyond the field's.
-    /// That is `TryFieldExactlyCovering` over the whole value, which additionally rules out padding
-    /// around the field (the covering field's size must equal the value's).
-    static member TrySingleWholeValueField (value : CliType) : (FieldId * CliType) option =
-        CliType.TryFieldExactlyCovering 0 (CliType.SizeOf(value).Size) value
 
     /// Zero the byte range `[offset, offset + count)` of `value`, returning `None` if that would
     /// leave it unchanged.
@@ -3014,6 +3009,22 @@ module CliType =
         | CliType.ObjectRef managedHeapAddressOption -> failwith "todo"
         | CliType.RuntimePointer cliRuntimePointer -> failwith "todo"
         | CliType.ValueType cvt -> CliValueType.DereferenceFieldById field cvt
+
+    /// Read the cell a `CellPathsExactlyCovering` path names. An empty path is the value itself.
+    let rec getCellAtPath (path : FieldId list) (value : CliType) : CliType =
+        match path with
+        | [] -> value
+        | field :: rest -> getCellAtPath rest (getFieldById field value)
+
+    /// Replace the cell a `CellPathsExactlyCovering` path names, rebuilding each enclosing value on
+    /// the way back out so that nothing outside the cell's own extent is disturbed. An empty path
+    /// replaces the value itself.
+    let rec withCellAtPathSet (path : FieldId list) (cell : CliType) (value : CliType) : CliType =
+        match path with
+        | [] -> cell
+        | field :: rest ->
+            let child = getFieldById field value
+            withFieldSetById field (withCellAtPathSet rest cell child) value
 
     /// Returns the offset and size.
     let getFieldLayout (field : string) (value : CliType) : int * int =

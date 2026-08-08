@@ -34,7 +34,6 @@
     <Compile Include="TestNativeIntSource.fs" />
     <Compile Include="TestPointerHashSynthesis.fs" />
     <Compile Include="TestCliTypeBytes.fs" />
-    <Compile Include="TestCliTypeSingleWholeField.fs" />
     <Compile Include="TestCliTypeCellPaths.fs" />
     <Compile Include="TestInlineArrayStorage.fs" />
     <Compile Include="TestStructLayout.fs" />
@@ -66,6 +65,7 @@
     <Compile Include="TestNativeSignature.fs" />
     <Compile Include="TestNativeCustomAttribute.fs" />
     <Compile Include="TestManifestResources.fs" />
+    <Compile Include="TestAssemblyNativeSimpleName.fs" />
     <Compile Include="TestNativeEnum.fs" />
     <Compile Include="TestMethodHandleRegistry.fs" />
     <Compile Include="TestMethodReturnType.fs" />
@@ -117,6 +117,8 @@
     <Compile Include="TestNativeRuntimeMethodHandle.fs" />
     <Compile Include="TestLinuxCoreLibFlavour.fs" />
     <Compile Include="TestInlineArrayLayout.fs" />
+    <Compile Include="TestReinterpretCellAccess.fs" />
+    <Compile Include="TestBulkMoveCellAccess.fs" />
     <Compile Include="TestPureCases.fs" />
     <Compile Include="TestFSharpPureCases.fs" />
     <Compile Include="TestImpureCases.fs" />

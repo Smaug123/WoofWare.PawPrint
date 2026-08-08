@@ -97,8 +97,9 @@ module NativeBuffer =
     /// `Array.Copy` of reference-typed arrays, the reflection-cache growth
     /// path, etc.) hand in byrefs that land on non-byte-addressable cells
     /// (object references, value types containing object references);
-    /// `CellAwareMemOps.copy` detects cell-aligned ranges via
-    /// `tryWholeCellMoveAt` and moves whole typed cells through
+    /// `CellAwareMemOps.copy` names the cell each endpoint's cursor addresses
+    /// — which may be a *field* of the storage rather than the whole of it,
+    /// as it is for one slot of an `[InlineArray(N)]` — and moves it through
     /// `readManagedByref` / `writeManagedByrefWithBase` so the dest cell's
     /// CLI shape and the stored ObjectRef provenance are preserved.
     let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =

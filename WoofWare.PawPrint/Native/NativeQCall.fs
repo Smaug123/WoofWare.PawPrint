@@ -89,6 +89,7 @@ module NativeQCall =
             "AssemblyNative_GetEntryAssembly", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetEntryAssembly"
             "AssemblyNative_GetLocation", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetLocation"
             "AssemblyNative_GetResource", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetResource"
+            "AssemblyNative_GetSimpleName", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetSimpleName"
             "AssemblyNative_GetTypeCore", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetTypeCore"
             "AssemblyNative_IsApplyUpdateSupported",
             NativeMetadataUpdater.tryExecuteQCall "AssemblyNative_IsApplyUpdateSupported"

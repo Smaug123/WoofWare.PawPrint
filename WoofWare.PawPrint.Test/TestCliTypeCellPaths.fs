@@ -197,6 +197,35 @@ module TestCliTypeCellPaths =
         CliType.CellPathsExactlyCovering 0 8 value |> shouldEqual []
         CliType.CellPathsExactlyCovering 4 4 value |> shouldEqual []
 
+    /// Two fields declared at the *same* offset are each the other's alias, so neither may be
+    /// named. Distinct from the case above, where one field strictly contains the range.
+    [<Test>]
+    let ``a union of two same-width fields names nothing`` () : unit =
+        let value =
+            ofFieldsSized
+                4
+                [
+                    cliField "AsInt" (CliType.Numeric (CliNumericType.Int32 0)) (Some 0) int32Handle
+                    cliField "AlsoInt" (CliType.Numeric (CliNumericType.Int32 0)) (Some 0) int32Handle
+                ]
+
+        CliType.CellPathsExactlyCovering 0 4 value |> shouldEqual []
+
+    /// A narrower field overlapping the start of a wider one: the wider field contains the range
+    /// exactly, but the narrow sibling aliases part of it, so naming the wider one would leave the
+    /// narrow one stale on write.
+    [<Test>]
+    let ``a narrower overlapping sibling blocks the field that covers the range`` () : unit =
+        let value =
+            ofFieldsSized
+                4
+                [
+                    cliField "AsInt" (CliType.Numeric (CliNumericType.Int32 0)) (Some 0) int32Handle
+                    cliField "Byte0" (CliType.Numeric (CliNumericType.UInt8 0uy)) (Some 0) byteHandle
+                ]
+
+        CliType.CellPathsExactlyCovering 0 4 value |> shouldEqual []
+
     /// An *abutting* sibling must not block: otherwise no field past the first could ever be named.
     /// This is the boundary case of the aliasing rule.
     [<Test>]
@@ -270,6 +299,39 @@ module TestCliTypeCellPaths =
     [<Test>]
     let ``a non-value-type names nothing`` () : unit =
         CliType.CellPathsExactlyCovering 0 8 (CliType.ObjectRef None) |> shouldEqual []
+
+    // ----------------------------------------------------------------------------------------
+    // Reading and writing through a path
+    // ----------------------------------------------------------------------------------------
+
+    [<Test>]
+    let ``getting and setting a depth-2 cell touches only that cell`` () : unit =
+        let value = buffer ()
+        let path = [ FieldId.named "_item[1]" ; FieldId.named "Tag" ]
+
+        CliType.getCellAtPath path value
+        |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 0uy))
+
+        let updated =
+            CliType.withCellAtPathSet path (CliType.Numeric (CliNumericType.UInt8 9uy)) value
+
+        CliType.getCellAtPath path updated
+        |> shouldEqual (CliType.Numeric (CliNumericType.UInt8 9uy))
+
+        // The sibling slot, and the sibling field within the same slot, are untouched.
+        CliType.getCellAtPath [ FieldId.named "_item" ] updated
+        |> shouldEqual (CliType.getCellAtPath [ FieldId.named "_item" ] value)
+
+        CliType.getCellAtPath [ FieldId.named "_item[1]" ; FieldId.named "Payload" ] updated
+        |> shouldEqual (CliType.ObjectRef None)
+
+    [<Test>]
+    let ``an empty path is the value itself`` () : unit =
+        let value = buffer ()
+        CliType.getCellAtPath [] value |> shouldEqual value
+
+        let replacement = elem ()
+        CliType.withCellAtPathSet [] replacement value |> shouldEqual replacement
 
     // ----------------------------------------------------------------------------------------
     // Properties
@@ -437,6 +499,211 @@ module TestCliTypeCellPaths =
                         let viaBytes = CliType.ofBytesLike cell (CliType.BytesAt abs size value)
                         CliType.ToBytes viaBytes = CliType.ToBytes cell
                     )
+            )
+
+        Check.One (config, Prop.forAll (Arb.fromGen shapeGen) property)
+
+    /// The *leaves* of a value — the cells that hold data rather than further cells. These carry
+    /// the observable content; an enclosing value type is bookkeeping around them.
+    let private leavesOf (value : CliType) : (FieldId list * CliType) list =
+        enumerateCells [] 0 value
+        |> List.choose (fun (path, _, contents) ->
+            match contents with
+            | CliType.ValueType _ -> None
+            | leaf -> Some (path, leaf)
+        )
+
+    /// Setting a cell to what it already holds leaves every leaf reading back as it did.
+    ///
+    /// Deliberately stated over leaves rather than over the whole value, for two reasons that both
+    /// bite: `withFieldSetById` stamps a write timestamp on the field it touches, so even a
+    /// semantically-null write yields a structurally different value; and writing a nested cell
+    /// necessarily rebuilds every value that *contains* it, so ancestors differ by construction.
+    /// Neither is observable to a guest. Over-reporting a change is safe for the write path — it
+    /// costs one redundant store — so the law worth pinning is about content, not representation.
+    [<Test>]
+    let ``setting a cell to its current contents preserves every leaf`` () : unit =
+        let property (shape : Shape) : bool =
+            let value, _ = buildShape "r" (Shape.Struct [ shape ])
+            let before = leavesOf value
+
+            enumerateCells [] 0 value
+            |> List.forall (fun (path, _, contents) ->
+                CliType.getCellAtPath path value = contents
+                && leavesOf (CliType.withCellAtPathSet path contents value) = before
+            )
+
+        Check.One (config, Prop.forAll (Arb.fromGen shapeGen) property)
+
+    /// Writing a cell changes that cell and leaves every other cell alone — the property the write
+    /// path depends on when it elides a reinterpret onto a named cell.
+    [<Test>]
+    let ``writing a cell disturbs no other cell`` () : unit =
+        let property (shape : Shape) : bool =
+            let value, _ = buildShape "r" (Shape.Struct [ shape ])
+            let cells = enumerateCells [] 0 value
+
+            cells
+            |> List.forall (fun (path, _, contents) ->
+                // A value distinguishable from the zero the tree was built with.
+                let replacement =
+                    match contents with
+                    | CliType.Numeric (CliNumericType.UInt8 _) -> Some (CliType.Numeric (CliNumericType.UInt8 3uy))
+                    | CliType.Numeric (CliNumericType.UInt16 _) -> Some (CliType.Numeric (CliNumericType.UInt16 3us))
+                    | CliType.Numeric (CliNumericType.Int32 _) -> Some (CliType.Numeric (CliNumericType.Int32 3))
+                    | CliType.Numeric (CliNumericType.Int64 _) ->
+                        Some (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 3L)))
+                    | _ -> None
+
+                match replacement with
+                | None -> true
+                | Some replacement ->
+
+                let updated = CliType.withCellAtPathSet path replacement value
+
+                CliType.getCellAtPath path updated = replacement
+                && cells
+                   |> List.forall (fun (otherPath, _, otherContents) ->
+                       // Cells on the path to the written one legitimately change (they contain it);
+                       // everything else must not.
+                       let isAncestorOrSelf =
+                           List.length otherPath <= List.length path
+                           && List.truncate (List.length otherPath) path = otherPath
+
+                       let isDescendant =
+                           List.length otherPath > List.length path
+                           && List.truncate (List.length path) otherPath = path
+
+                       isAncestorOrSelf
+                       || isDescendant
+                       || CliType.getCellAtPath otherPath updated = otherContents
+                   )
+            )
+
+        Check.One (config, Prop.forAll (Arb.fromGen shapeGen) property)
+
+    // ----------------------------------------------------------------------------------------
+    // `CandidateCellExtentsContainingByte`
+    // ----------------------------------------------------------------------------------------
+    //
+    // The subordinate half of the pair. `CellAwareMemOps` steps a copy cursor through a byte range
+    // and must decide how wide the next move should be *before* it can ask whether that width names
+    // a cell; this generator proposes the widths and `CellPathsExactlyCovering` disposes of them.
+    // Because the validator has the last word, the only thing that can actually go wrong here is
+    // under-reporting — a width the validator would have accepted but which is never offered to it,
+    // which silently costs the caller a route it should have had. That is what the completeness
+    // property below is for, and it is stated against a brute-force enumeration of every width
+    // rather than against a second hand-written walk.
+
+    [<Test>]
+    let ``candidate extents are reported outermost first and rebased through nesting`` () : unit =
+        let value = buffer ()
+
+        // Byte 8 is `Tag` inside slot 0: the whole buffer, then the slot, then the byte itself.
+        CliType.CandidateCellExtentsContainingByte 8 value
+        |> shouldEqual [ 0, 32 ; 0, 16 ; 8, 1 ]
+
+        // Byte 16 opens slot 1, whose own `Payload` starts there too — so both are rebased by 16.
+        CliType.CandidateCellExtentsContainingByte 16 value
+        |> shouldEqual [ 0, 32 ; 16, 16 ; 16, 8 ]
+
+    [<Test>]
+    let ``a byte in padding stops the descent at the enclosing cell`` () : unit =
+        let value = buffer ()
+
+        // `Elem` is `{ Box Payload@0; byte Tag@8 }` padded to 16, so bytes 9..15 belong to no
+        // field. The slot is still a cell and is still reported; there is nothing below it.
+        CliType.CandidateCellExtentsContainingByte 9 value
+        |> shouldEqual [ 0, 32 ; 0, 16 ]
+
+    [<Test>]
+    let ``a byte outside the value proposes nothing`` () : unit =
+        let value = buffer ()
+        CliType.CandidateCellExtentsContainingByte -1 value |> shouldEqual []
+        CliType.CandidateCellExtentsContainingByte 32 value |> shouldEqual []
+
+    [<Test>]
+    let ``overlapping fields stop the descent`` () : unit =
+        // Explicit layout, two fields sharing byte 0: there is no single field to descend into.
+        let value =
+            ofFieldsSized
+                8
+                [
+                    cliField "a" (CliType.Numeric (CliNumericType.Int32 0)) (Some 0) int32Handle
+                    cliField "b" (CliType.Numeric (CliNumericType.Int32 0)) (Some 0) int32Handle
+                ]
+
+        CliType.CandidateCellExtentsContainingByte 0 value |> shouldEqual [ 0, 8 ]
+
+    /// Every extent proposed genuinely lies within the value and contains the byte asked about.
+    /// Weak on its own — the validator would catch a violation — but it keeps the generator from
+    /// drifting into nonsense that happens to be harmless.
+    [<Test>]
+    let ``every proposed extent contains the byte it was asked about`` () : unit =
+        let property (shape : Shape) : bool =
+            let value, _ = buildShape "r" (Shape.Struct [ shape ])
+            let size = CliType.SizeOf(value).Size
+
+            [ 0 .. size - 1 ]
+            |> List.forall (fun byteOffset ->
+                CliType.CandidateCellExtentsContainingByte byteOffset value
+                |> List.forall (fun (offset, width) ->
+                    offset >= 0
+                    && width > 0
+                    && offset + width <= size
+                    && offset <= byteOffset
+                    && byteOffset < offset + width
+                )
+            )
+
+        Check.One (config, Prop.forAll (Arb.fromGen shapeGen) property)
+
+    /// The property the design rests on: **the generator is complete**. `CellAwareMemOps` proposes
+    /// widths from one endpoint only, so a width the validator would have accepted but which was
+    /// never proposed is a move silently lost.
+    ///
+    /// The oracle is brute force — every width from 1 to the value's size, asked of
+    /// `CellPathsExactlyCovering` directly — which is the implementation the caller would have if
+    /// it did not have this generator. Both anchorings are checked, since the copy loop runs
+    /// forwards (the cursor is the move's first byte) and backwards (its last).
+    [<Test>]
+    let ``every width the validator accepts at an anchor is proposed`` () : unit =
+        let property (shape : Shape) : bool =
+            let value, _ = buildShape "r" (Shape.Struct [ shape ])
+            let size = CliType.SizeOf(value).Size
+
+            // Mirrors `CellAwareMemOps.namedCells`: the validator reports *fields*, so the range
+            // being the whole value is the caller's own base case rather than something it returns.
+            let namesACell (start : int) (width : int) : bool =
+                (start = 0 && width = size)
+                || not (List.isEmpty (CliType.CellPathsExactlyCovering start width value))
+
+            [ 0 .. size - 1 ]
+            |> List.forall (fun byteOffset ->
+                [ false ; true ]
+                |> List.forall (fun backwards ->
+                    let proposed =
+                        CliType.CandidateCellExtentsContainingByte byteOffset value
+                        |> List.filter (fun (offset, width) ->
+                            if backwards then
+                                offset + width = byteOffset + 1
+                            else
+                                offset = byteOffset
+                        )
+                        |> List.map snd
+                        |> Set.ofList
+
+                    let accepted =
+                        [ 1..size ]
+                        |> List.filter (fun width ->
+                            let start = if backwards then byteOffset - width + 1 else byteOffset
+
+                            start >= 0 && start + width <= size && namesACell start width
+                        )
+                        |> Set.ofList
+
+                    Set.isSubset accepted proposed
+                )
             )
 
         Check.One (config, Prop.forAll (Arb.fromGen shapeGen) property)
