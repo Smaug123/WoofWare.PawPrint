@@ -19,14 +19,32 @@ module HostRuntimeConfig =
     /// parse makes `ensure_parsed` emit a verbose trace and carry on, and a `runtimeOptions`
     /// of the wrong shape has `parse_opts`' return value discarded at the call site. A dev
     /// config is a developer convenience, and a broken one does not stop the app launching.
+    ///
+    /// "Every failure" includes failing to read the bytes at all. hostpolicy draws no
+    /// distinction there — a file it cannot mmap and a file it cannot parse are both
+    /// `parse_file` returning false — so neither may we, and losing the app to a stray
+    /// permission bit would be a fragility of ours alone.
     let private devPropertiesFor (dllPath : string) : AppContextProperties =
         let devPath = RuntimeConfig.devPathForAssembly dllPath
 
-        if not (File.Exists devPath) then
-            AppContextProperties.empty
-        else
+        let contents =
+            try
+                if File.Exists devPath then
+                    Some (File.ReadAllBytes devPath)
+                else
+                    None
+            with _ ->
+                // Deliberately catching everything: the point is that no way of failing to
+                // obtain these bytes is fatal, and an enumeration of exception types is a
+                // list to get wrong. Note that `File.Exists` above is a check-then-use, so
+                // the file may also simply have vanished in between.
+                None
 
-        match RuntimeConfig.parse (File.ReadAllBytes devPath) with
+        match contents with
+        | None -> AppContextProperties.empty
+        | Some bytes ->
+
+        match RuntimeConfig.parse bytes with
         | Ok properties -> properties
         | Error _ -> AppContextProperties.empty
 

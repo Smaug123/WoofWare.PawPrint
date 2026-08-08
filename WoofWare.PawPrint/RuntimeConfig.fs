@@ -187,6 +187,23 @@ module RuntimeConfig =
     /// recognises.
     let private utf8Bom : byte[] = [| 0xEFuy ; 0xBBuy ; 0xBFuy |]
 
+    /// How deeply a `runtimeconfig.json` may nest before we refuse it.
+    ///
+    /// This is not a limit hostpolicy has. rapidjson parses by recursive descent with no
+    /// configured maximum, so it accepts nesting far past `Utf8JsonReader`'s default of 64 —
+    /// and at that default we would refuse a file a real host reads without comment, which is
+    /// the same mistake as rejecting trailing content would have been.
+    ///
+    /// It is finite anyway, because unlimited is worse than generous here. `JsonDocument` is
+    /// iterative, so depth costs no stack (measured: a million levels parses, no overflow),
+    /// but its cost is quadratic in the depth — measured at 266ms for 10k levels, 3.1s for
+    /// 100k, 12.7s for 200k — so an unbounded limit turns a pathological file into an
+    /// apparent hang rather than an error. This ceiling keeps the worst case a fraction of a
+    /// second while sitting some three orders of magnitude above anything a build tool emits;
+    /// the SDK's own configs are four deep.
+    [<Literal>]
+    let private MaxJsonDepth = 10_000
+
     /// Read one JSON value from the head of `contents`, ignoring anything after it.
     ///
     /// Bytes rather than a string, because that is what the host has: `parse_file` mmaps the
@@ -212,7 +229,8 @@ module RuntimeConfig =
                 // The host parses with `kParseCommentsFlag` (json_parser.cpp), so a config
                 // with comments is one a real runtime accepts. It does *not* pass
                 // `kParseTrailingCommasFlag`, and neither do we (that is the default).
-                CommentHandling = JsonCommentHandling.Skip
+                CommentHandling = JsonCommentHandling.Skip,
+                MaxDepth = MaxJsonDepth
             )
 
         try

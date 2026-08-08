@@ -257,6 +257,31 @@ module TestRuntimeConfig =
         |> shouldEqual (Map.ofList [ "P", "v" ])
 
     [<Test>]
+    let ``nesting we never look at does not make a document invalid`` () =
+        // The same argument as trailing content, in a different guise: `Utf8JsonReader`
+        // defaults to a maximum depth of 64, and rapidjson has no configured depth limit at
+        // all, so at the default we would refuse a file that a real host parses without
+        // comment. Depth here is well past 64 and sits under a section we ignore entirely.
+        let deep = String.replicate 200 "[" + String.replicate 200 "]"
+
+        let json =
+            $$"""{ "runtimeOptions": { "ignoredSection": {{deep}}, "configProperties": { "P": "v" } } }"""
+
+        parseOk json |> shouldEqual (Map.ofList [ "P", "v" ])
+
+    [<Test>]
+    let ``but nesting is still bounded, and exceeding it is a clean error`` () =
+        // The bound is ours rather than hostpolicy's, and it exists because `JsonDocument`'s
+        // cost is quadratic in the depth: without it a pathological file is an apparent hang
+        // instead of a refusal. Deliberately not asserting the exact ceiling — what matters is
+        // that one exists, and that reaching it yields an `Error` rather than an escaping
+        // exception or a wait.
+        let deep = String.replicate 100_000 "[" + String.replicate 100_000 "]"
+
+        parseError $$"""{ "runtimeOptions": { "ignoredSection": {{deep}} } }"""
+        |> shouldContainText "depth"
+
+    [<Test>]
     let ``a UTF-8 BOM is skipped`` () =
         // `parse_file` steps over exactly these three bytes and parses the rest.
         let bom = [| 0xEFuy ; 0xBBuy ; 0xBFuy |]
@@ -506,6 +531,63 @@ module TestRuntimeConfig =
                     |> AppContextProperties.toMap
                     |> shouldEqual (Map.ofList [ "P", "v" ])
                 )
+
+    /// Strip every permission bit from `path`, and report whether that actually made it
+    /// unreadable — it does not for root, who bypasses the mode entirely.
+    let private makeUnreadable (path : string) : bool =
+        File.SetUnixFileMode (path, UnixFileMode.None)
+
+        try
+            File.ReadAllBytes path |> ignore
+            false
+        with _ ->
+            true
+
+    [<Test>]
+    let ``an unreadable dev config is not fatal`` () =
+        // hostpolicy does not distinguish "will not open" from "will not parse": both are
+        // `parse_file` returning false, and for the dev config `ensure_parsed` merely traces
+        // that and carries on. So a dev sidecar we cannot read must be as harmless as a dev
+        // sidecar full of nonsense — losing the app to a stray permission bit or a deletion
+        // race would be ours alone.
+        if OperatingSystem.IsWindows () then
+            Assert.Ignore "file modes are a Unix concept"
+
+        withSidecars
+            (Some (document """{ "P": "v" }"""))
+            (Some (document """{ "DevOnly": "dev" }"""))
+            (fun dll ->
+                if not (makeUnreadable (RuntimeConfig.devPathForAssembly dll)) then
+                    Assert.Ignore "could not make the file unreadable; running as root?"
+
+                HostRuntimeConfig.forAssembly dll
+                |> AppContextProperties.toMap
+                |> shouldEqual (Map.ofList [ "P", "v" ])
+            )
+
+    [<Test>]
+    let ``an unreadable main config is fatal`` () =
+        // The other side of the asymmetry above, pinned so that nobody tidies the two into
+        // agreement: for the main config `ensure_parsed` propagates `parse_file`'s failure,
+        // and the app does not launch. Running the guest with its feature switches silently
+        // dropped is the failure this whole change exists to avoid.
+        if OperatingSystem.IsWindows () then
+            Assert.Ignore "file modes are a Unix concept"
+
+        withSidecars
+            (Some (document """{ "P": "v" }"""))
+            None
+            (fun dll ->
+                if not (makeUnreadable (RuntimeConfig.pathForAssembly dll)) then
+                    Assert.Ignore "could not make the file unreadable; running as root?"
+
+                // The exact exception is the filesystem's business (macOS and Linux differ on
+                // whether this is an `UnauthorizedAccessException` or an `IOException`); what
+                // this test pins is that it escapes rather than being swallowed.
+                let exn = Assert.Catch (fun () -> HostRuntimeConfig.forAssembly dll |> ignore)
+
+                exn.Message |> shouldContainText "App.runtimeconfig.json"
+            )
 
     [<Test>]
     let ``a broken main config is fatal`` () =
