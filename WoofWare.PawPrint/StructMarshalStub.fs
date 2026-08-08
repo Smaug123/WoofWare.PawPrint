@@ -394,6 +394,23 @@ module StructMarshalStub =
     /// anything about somebody else's: the stub frame starts empty and nothing but this code ever
     /// pushes to it. That is the same marker idiom `NativeRuntimeTypeQCall` uses, and it is sound
     /// here for the same reason — an owned, initially empty stack.
+    /// A conversion helper that returns *void* is not handled by this counting discipline: it
+    /// pushes nothing, the count never advances, and the stub would re-enter forever. CoreLib has
+    /// several such marshallers (`CSTRMarshaler.ConvertFixedToNative`, `FixedWSTRMarshaler`), so
+    /// this will need addressing before any of them is implemented. What the owned frame buys is
+    /// that the fix is *available* — push a sentinel of our own alongside or instead of a result,
+    /// since writing bookkeeping to our own stack corrupts nobody — where a design counting values
+    /// on the caller's stack could not have done so at all. Admitting the fix and implementing it
+    /// are different things, and only the first is done here.
+    ///
+    /// The theorem this rests on, stated once because it is the load-bearing half of the argument:
+    /// result *i* is attributed to conversion *i* of a plan that is **recomputed on every pass**,
+    /// so the attribution is only sound while the plan's step order is a deterministic function of
+    /// inputs that cannot change between passes. It is — the order comes from the type's field
+    /// layout, which further assembly loads and concretizations can only extend and never reorder,
+    /// and from the source box, which nothing but the guest's own code can reach and which no
+    /// conversion helper is given a reference to. A future step order derived from anything a
+    /// callee could perturb would break this without breaking any test that runs today.
     let private completedConversions (frame : MethodState) : float list =
         frame.EvaluationStack.Values
         |> List.map (fun v ->

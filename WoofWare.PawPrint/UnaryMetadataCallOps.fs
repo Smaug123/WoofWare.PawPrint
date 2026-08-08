@@ -1375,19 +1375,22 @@ module internal UnaryMetadataCallOps =
                     $"calli: declaring type %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name} of the target method is not registered in AllConcreteTypes"
             )
 
-        // Calling a method runs its declaring type's initialiser first — but a *synthesised*
-        // method is not a member of the type it names. CoreCLR puts a struct-marshal stub in its
-        // own `ILStubClass` precisely so that it is not; the declaring type here is an identity,
-        // chosen so the stub is one-per-marshalled-type, not an owner. Initialising it would be a
-        // guest-visible side effect the real runtime does not have: verified against the real
-        // runtime, a struct with an explicit static constructor keeps it dormant across
-        // `Marshal.StructureToPtr`, and `sourcesPure/MarshalStructureToPtrStaticCtorDormant.cs`
-        // pins that.
+        // Calling a method runs its declaring type's initialiser first — but for a *synthesised*
+        // method the declaring type is the subject rather than the owner, so whether that follows
+        // is per-kind and `SynthesisedMethod.initialisesDeclaringType` is where the question is
+        // answered. A struct-marshal stub answers no: verified against the real runtime, a struct
+        // with an explicit static constructor keeps it dormant across `Marshal.StructureToPtr`,
+        // and `sourcesPure/MarshalStructureToPtrStaticCtorDormant.cs` pins that.
         let classInitialisation =
-            match methodToCall with
-            | MethodInfo.Synthesised _ -> StateLoadResult.NothingToDo state
-            | MethodInfo.Metadata _ ->
+            let required =
+                match methodToCall with
+                | MethodInfo.Metadata _ -> true
+                | MethodInfo.Synthesised (_, kind) -> SynthesisedMethod.initialisesDeclaringType kind
+
+            if required then
                 IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state
+            else
+                StateLoadResult.NothingToDo state
 
         match classInitialisation with
         | NothingToDo state ->
