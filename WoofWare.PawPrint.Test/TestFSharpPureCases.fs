@@ -130,17 +130,19 @@ module TestFSharpPureCases =
             [
                 // `sprintf` reflects over the format's argument types, which walks
                 // `RuntimeType.GetMethodBase` and then asks the resulting `MethodBase` for its
-                // parameters. `GetMethodBase` itself completes; the case stops in
-                // `RuntimeMethodInfo.Signature`, at the `Signature_Init` QCall
-                // (NativeSignature.fs:223) called with a non-null `RuntimeMethodHandleInternal`:
+                // parameters. `GetMethodBase` completes, and so now does the `Signature_Init` QCall
+                // that builds the `MethodBase`'s `Signature` (its method arm landed with
+                // `sourcesPure/ReflectionMethodSignature.cs`, which covers the `ReturnType` and
+                // `CallingConvention` that arm makes readable).
                 //
-                //   TODO: Signature_Init method signature parsing is not implemented;
-                //   got non-null Numeric (NativeInt (MethodHandlePtr 25L))
-                //
-                // The handler implements the *field* arm only — `requireNullMethodHandle`
-                // (NativeSignature.fs:95) is the guard that rejects the method arm — so what is
-                // missing is parsing a MethodDef signature blob into the `Signature` object's
-                // `_returnTypeORfieldType` / `_arguments` / `_sig` fields, which is its own change.
+                // What remains is `MethodBase.GetParameters()`, which needs two further primitives,
+                // in this order:
+                //   1. `RuntimeMethodHandle.GetMethodDef` (InternalCall; CoreCLR returns
+                //      `pMethod->GetMemberDef()`), reached from `RuntimeParameterInfo.GetParameters`
+                //      via `NativeCall.failUnimplemented`;
+                //   2. with that spiked, `MetadataImport.Enum` for token type 0x08000000 (mdtParamDef)
+                //      with a MethodDef parent -- i.e. `EnumParams` -- which fails in
+                //      `NativeMetadataImport.tryExecuteQCall` with "does not yet support token type".
                 //
                 // `sourcesPure/MakeGenericMethodConstraintSatisfied.cs` covers the `GetMethodBase`
                 // walk itself and passes; it does not go on to read parameters.
