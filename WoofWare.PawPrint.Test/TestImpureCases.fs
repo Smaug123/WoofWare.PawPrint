@@ -381,6 +381,20 @@ module TestImpureCases =
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
+            {
+                // `Assembly.Location` is empty for every assembly, because under
+                // PawPrint no assembly has a file the guest could reach — the
+                // same state CoreCLR reports for a byte-array load or a
+                // single-file-published app. Deliberately not a differential
+                // case: the real runtime is launched from a real .dll and
+                // reports its path, so there is no cross-runtime fact here.
+                // Recorded in docs/divergences.md.
+                FileName = "AssemblyLocationEmpty.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
         ]
 
     let runTest (case : EndToEndTestCase) : unit =
