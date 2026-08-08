@@ -107,7 +107,7 @@ public static class Entry
         let rawMethod =
             runtimeAssemblyType.Methods
             |> List.filter (fun method ->
-                match method.NativeImport with
+                match method.TryNativeImport with
                 | Some import ->
                     import.ModuleName = "QCall"
                     && import.EntryPointName = "AssemblyNative_GetResource"

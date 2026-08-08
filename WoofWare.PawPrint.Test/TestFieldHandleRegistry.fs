@@ -517,7 +517,7 @@ public class GenericHolder<T>
         let rawMethod =
             runtimeTypeHandleType.Methods
             |> List.filter (fun method ->
-                match method.NativeImport with
+                match method.TryNativeImport with
                 | Some import ->
                     import.ModuleName = "QCall"
                     && import.EntryPointName = "RuntimeTypeHandle_GetFields"
@@ -555,7 +555,7 @@ public class GenericHolder<T>
 
         let rawMethod =
             runtimeFieldHandleType.Methods
-            |> List.filter (fun method -> method.Name = "GetAttributes" && method.Parameters.Length = 1)
+            |> List.filter (fun method -> method.Name = "GetAttributes" && (MethodInfo.arity method) = 1)
             |> function
                 | [ method ] -> method
                 | [] -> failwith "RuntimeFieldHandle.GetAttributes native method not found"

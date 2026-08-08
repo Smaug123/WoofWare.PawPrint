@@ -435,12 +435,11 @@ module IlFormatting =
         let generics = formatGenericsClause method.Generics
 
         let paramTypes =
-            method.RawSignature.ParameterTypes
+            method.Signature.ParameterTypes
             |> List.map (renderTypeDefn assembly scope)
             |> String.concat ", "
 
-        let returnType =
-            renderMethodReturnType assembly scope method.RawSignature.ReturnType
+        let returnType = renderMethodReturnType assembly scope method.Signature.ReturnType
 
         let header =
             $"// %s{qualifiedTypeName}::%s{staticStr}%s{method.Name}%s{generics}(%s{paramTypes}) : %s{returnType}"

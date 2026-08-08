@@ -49,7 +49,7 @@ type SignalHandler =
         hash (
             this.Method.DeclaringType.Identity,
             this.Method.DeclaringType.Generics,
-            this.Method.Handle,
+            this.Method.IdentityKey,
             this.Method.Generics
         )
 

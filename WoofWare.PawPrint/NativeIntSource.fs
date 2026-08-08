@@ -279,7 +279,7 @@ type NativeIntSource =
                 2,
                 methodDefinition.DeclaringType.Identity,
                 methodDefinition.DeclaringType.Generics,
-                methodDefinition.Handle,
+                methodDefinition.IdentityKey,
                 methodDefinition.Generics
             )
         | NativeIntSource.TypeHandlePtr ptr -> HashCode.Combine (3, ptr)

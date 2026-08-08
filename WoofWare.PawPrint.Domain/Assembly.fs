@@ -733,7 +733,17 @@ module Assembly =
         // TODO: this probably misses any methods out which aren't associated with a type definition?
         let methods =
             typeDefs
-            |> Seq.collect (fun (KeyValue (_, ty)) -> ty.Methods |> List.map (fun mi -> KeyValuePair (mi.Handle, mi)))
+            |> Seq.collect (fun (KeyValue (_, ty)) ->
+                ty.Methods
+                // Keyed by MethodDef token, so only metadata-backed methods belong in it. Nothing
+                // synthesised exists at read time — this dictionary is built straight out of the
+                // PE image — but the match keeps the key honest rather than inventing a token.
+                |> List.choose (fun mi ->
+                    match mi with
+                    | MethodInfo.Metadata (_, facts) -> Some (KeyValuePair (facts.Handle, mi))
+                    | MethodInfo.Synthesised _ -> None
+                )
+            )
             |> ImmutableDictionary.CreateRange
 
         let methodSpecs =
@@ -1119,7 +1129,7 @@ module Assembly =
             Console.WriteLine $"\nType: %s{typ.Namespace}.%s{typ.Name}"
 
             for method in typ.Methods do
-                if method.Handle = main then
+                if method.TryMetadata |> Option.map _.Handle = Some main then
                     Console.WriteLine "Entry point!"
 
                 Console.WriteLine $"\nMethod: %s{method.Name}"
