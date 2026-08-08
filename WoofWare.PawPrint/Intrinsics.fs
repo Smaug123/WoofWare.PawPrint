@@ -1671,29 +1671,7 @@ module Intrinsics =
             let arg = Seq.exactlyOne methodToCall.Generics
 
             let state, result =
-                // Some types appear circular, because they're hardcoded in the runtime. We have to special-case them.
-                match arg with
-                | ConcreteChar state.ConcreteTypes -> state, false
-                | _ ->
-
-                let generic = AllConcreteTypes.lookup arg state.ConcreteTypes
-
-                let generic =
-                    match generic with
-                    | None -> failwith "somehow have not already concretised type in IsReferenceOrContainsReferences"
-                    | Some generic -> generic
-
-                let td =
-                    state.LoadedAssembly generic.Assembly
-                    |> Option.get
-                    |> fun a -> a.TypeDefs.[generic.Definition.Get]
-
-                if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies td then
-                    td
-                    |> TypeInfo.mapGeneric (fun (par, _) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
-                    |> typeInfoContainsReferences loggerFactory baseClassTypes state
-                else
-                    state, true
+                concreteTypeContainsReferences loggerFactory baseClassTypes state arg
 
             let state =
                 state
