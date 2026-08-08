@@ -161,17 +161,25 @@ module NativeMarshal =
             // has three branches: blittable (memmove fast path, *stub = NULL, *size = native
             // size, return TRUE), has-layout-non-blittable (synthesised IL stub, return TRUE),
             // and no-layout (return FALSE so managed Marshal throws ArgumentException).
-            // This implementation handles the no-layout arm (AutoLayout types, which covers
-            // `System.Object` and ordinary classes without `[StructLayout]`, as well as value
-            // types explicitly marked `[StructLayout(LayoutKind.Auto)]`), and the first arm
-            // for the strict subset we are confident matches CoreCLR exactly: structs whose
-            // fields are recursively plain numeric (Int8..Float64), excluding host-known
-            // field-only special cases (DateTime, Decimal) that CoreCLR's `MarshalInfo`
-            // diverts to stub synthesis (`MARSHAL_TYPE_DATE`, `NFT_DECIMAL`). Anything else —
-            // enums, [MarshalAs] descriptors, Bool/Char/ObjectRef fields,
-            // has-layout-non-blittable structs, etc. — surfaces a host TODO. Each future
-            // widening wants its own motivating PawPrint test before being added to the
-            // classifier.
+            // All three are implemented, but the middle one only for the shapes
+            // `StructMarshalStub.tryComputePlan` admits.
+            //
+            // - No-layout: AutoLayout types, which covers `System.Object` and ordinary classes
+            //   without `[StructLayout]`, as well as value types explicitly marked
+            //   `[StructLayout(LayoutKind.Auto)]`.
+            // - Blittable: the strict subset we are confident matches CoreCLR exactly — structs
+            //   whose fields are recursively plain numeric (Int8..Float64), excluding the
+            //   host-known field-only special cases (DateTime, Decimal) that CoreCLR's
+            //   `MarshalInfo` diverts to stub synthesis (`MARSHAL_TYPE_DATE`, `NFT_DECIMAL`).
+            // - Has-layout-non-blittable: a `NativeIntSource.StructMarshalStub` pointer, which
+            //   `calli` executes via `StructMarshalStub.executeStubCall`. Today that means a
+            //   struct whose only non-blittable fields are `DateTime`.
+            //
+            // Everything else — `[MarshalAs]` descriptors, Bool/Char/ObjectRef fields, Decimal,
+            // nested composites needing a recursive plan, and reference types (which reach us as
+            // `CliType.ObjectRef` and so classify non-blittable, though CoreCLR would memmove a
+            // sequential class) — surfaces a host TODO. Each future widening wants its own
+            // motivating PawPrint test before being added to the classifier or the plan.
 
             if CliValueType.IsAutoLayoutHandle state.ConcreteTypes state._LoadedAssemblies typeHandle then
                 // No-layout branch: write *stub = NULL, *size = 0, return FALSE so the
@@ -251,9 +259,21 @@ module NativeMarshal =
             match
                 StructMarshalStub.tryComputePlan state.ConcreteTypes state._LoadedAssemblies ctx.BaseClassTypes zero
             with
-            | Result.Error reason ->
+            // The two error cases are kept apart because they call for different eventual
+            // handling, and flattening them to a string would destroy the distinction the sibling
+            // `MarshalNative_SizeOfHelper` arm above relies on. Both still fail the host today:
+            // CoreCLR reports an unmarshalable *field* by throwing from stub synthesis
+            // (`CreateStructMarshalILStub`), and which exception reaches the guest is not
+            // something we should guess — `Marshal.StructureToPtr`'s own `ArgumentException` is
+            // reachable only via the no-layout arm returning FALSE, which is a different
+            // rejection. Establishing what CoreCLR actually throws here wants a differential
+            // test, and that is its own change; until then, say which kind of refusal this is.
+            | Result.Error (MarshalSizeError.NotMarshalable reason) ->
                 failwith
-                    $"TODO %s{operation}: type %O{typeHandle} has layout but is not blittable, and PawPrint cannot marshal it: %s{reason}"
+                    $"TODO %s{operation}: type %O{typeHandle} has layout, but CoreCLR would reject it as unmarshalable too: %s{reason}. PawPrint does not yet model the guest-visible exception CoreCLR raises for this"
+            | Result.Error (MarshalSizeError.NotImplemented reason) ->
+                failwith
+                    $"TODO %s{operation}: type %O{typeHandle} has layout but is not blittable, and PawPrint has not implemented its marshalling: %s{reason}"
             | Result.Ok _plan ->
 
             let state =

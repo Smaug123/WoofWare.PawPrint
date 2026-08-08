@@ -1241,9 +1241,20 @@ module internal UnaryMetadataCallOps =
             // stack positionally, and a call site of any other shape would have it read the wrong
             // slots. This is the same guard the `MethodInfo` path gets from its slot-count and
             // return-shape checks below.
+            // Same correction the ordinary path applies below: under EXPLICITTHIS the receiver is
+            // already the first entry in ParameterTypes, so counting it again would reject a call
+            // site that path would accept.
+            let stubHeader = callSiteSignature.Header.Get
+
             let callSiteArity =
                 callSiteSignature.ParameterTypes.Length
-                + (if callSiteSignature.Header.Get.IsInstance then 1 else 0)
+                + (if
+                       stubHeader.IsInstance
+                       && not (stubHeader.Attributes.HasFlag SignatureAttributes.ExplicitThis)
+                   then
+                       1
+                   else
+                       0)
 
             if callSiteArity <> 4 then
                 failwith

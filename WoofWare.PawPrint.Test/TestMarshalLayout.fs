@@ -67,15 +67,24 @@ module TestMarshalLayout =
     /// here would pass vacuously on a `NotMarshalable` result.
     let private declaredHandle : ConcreteTypeHandle = handleOf bct.TypedReference
 
-    let private cliField (name : string) (contents : CliType) (ty : ConcreteTypeHandle) : CliField =
+    let private cliFieldAt
+        (name : string)
+        (contents : CliType)
+        (ty : ConcreteTypeHandle)
+        (offset : int option)
+        : CliField
+        =
         {
             Id = FieldId.named name
             Name = name
             Contents = contents
-            Offset = None
+            Offset = offset
             Type = ty
             MarshallingDescriptor = None
         }
+
+    let private cliField (name : string) (contents : CliType) (ty : ConcreteTypeHandle) : CliField =
+        cliFieldAt name contents ty None
 
     /// A `System.DateTime`-typed field: structurally one `ulong _dateData`, but declared as
     /// corelib's `DateTime`, which is what `IsHostKnownDateTime` keys on.
@@ -131,6 +140,32 @@ module TestMarshalLayout =
                 |> List.mapi (fun i (kindName, make, ty, width) ->
                     {
                         Field = cliField $"f%d{i}_%s{kindName}" (make (i + 1)) ty
+                        NativeWidth = width
+                    }
+                )
+        }
+
+    /// Explicit-layout fields: every field carries a `[FieldOffset]`, and the offsets are
+    /// deliberately *not* in declaration order.
+    ///
+    /// The explicit arm of the layout fold is a different code path from the sequential one — it
+    /// ignores the running cursor and records the declared offset — and none of the sequential
+    /// properties can reach it, because they only ever generate `Offset = None`. Shuffling the
+    /// offsets is what makes the coverage bite: an arm that fell back to the aligned cursor, or
+    /// that read a neighbouring field's offset, would produce ascending offsets and agree on the
+    /// total, so only the declared-offset comparison below catches it.
+    let private genExplicitFields : Gen<GeneratedField list> =
+        gen {
+            let! count = Gen.choose (1, 5)
+            let! kinds = Gen.listOfLength count (Gen.elements fieldKinds)
+            // Distinct 8-byte slots, so no two fields overlap whatever widths are drawn.
+            let! slots = Gen.shuffle [ 0 .. count - 1 ]
+
+            return
+                List.zip kinds (List.ofArray slots)
+                |> List.mapi (fun i ((kindName, make, ty, width), slot) ->
+                    {
+                        Field = cliFieldAt $"f%d{i}_%s{kindName}" (make (i + 1)) ty (Some (slot * 8))
                         NativeWidth = width
                     }
                 )
@@ -244,6 +279,25 @@ module TestMarshalLayout =
                 )
 
         Prop.forAll (Arb.fromGen (Gen.zip genFields genLayout)) (fun (f, l) -> property f l)
+        |> Check.QuickThrowOnFailure
+
+    [<Test>]
+    let ``An explicitly-laid-out field is placed at the offset it declares`` () : unit =
+        let property (fields : GeneratedField list) (layout : Layout) : unit =
+            let size, placements = layoutOf layout fields
+
+            placements
+            |> List.map (fun p -> p.Field.Name, p.NativeOffset)
+            |> shouldEqual (fields |> List.map (fun f -> f.Field.Name, f.Field.Offset |> Option.get))
+
+            for generated, placement in List.zip fields placements do
+                placement.NativeSize.Size |> shouldEqual generated.NativeWidth
+
+                if placement.NativeOffset + placement.NativeSize.Size > size.Size then
+                    failwith
+                        $"field %s{placement.Field.Name} runs to %d{placement.NativeOffset + placement.NativeSize.Size}, past the type's %d{size.Size}-byte unmanaged image"
+
+        Prop.forAll (Arb.fromGen (Gen.zip genExplicitFields genLayout)) (fun (f, l) -> property f l)
         |> Check.QuickThrowOnFailure
 
     [<Test>]

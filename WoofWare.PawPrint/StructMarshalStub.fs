@@ -75,16 +75,17 @@ module StructMarshalStub =
         : bool
         =
         match t with
-        // `NativeInt` cells carry provenance under PawPrint (e.g. `TypeHandlePtr` from
-        // `typeof(T).TypeHandle.Value`). CoreCLR memmoves the integer-width bits regardless, but
-        // PawPrint's byte model rejects non-`Verbatim` provenance because `CliNumericType.ToBytes`
-        // cannot serialise it. We accept `IntPtr`/`UIntPtr` here because the blittable arm returns
-        // a null stub, instructing CoreLib to call `SpanHelpers.Memmove(ref byte, ref byte, nuint)`
-        // — which PawPrint intercepts and routes through `CellAwareMemOps.copy`, preserving
-        // whole-cell provenance when both endpoints anchor on cell-aware roots. The hazard that
-        // remains is value-level: a struct holding a non-`Verbatim` `IntPtr` marshalled to
-        // `AllocHGlobal`'d native memory (a byte-only endpoint) still falls back to the byte walk
-        // and surfaces the `validateByteAddressableCell` failure there, not here.
+        // `NativeInt` cells carry provenance under PawPrint (e.g. a pointer from
+        // `Marshal.AllocHGlobal`, or `TypeHandlePtr` from `typeof(T).TypeHandle.Value`). CoreCLR
+        // memmoves the integer-width bits regardless; PawPrint cannot, because
+        // `CliNumericType.ToBytes` refuses to serialise provenance. We accept `IntPtr`/`UIntPtr`
+        // anyway because neither caller flattens such a cell to bytes: the blittable arm returns a
+        // null stub, so CoreLib's `SpanHelpers.Memmove` is intercepted and routed through
+        // `CellAwareMemOps.copy`; and the stub path reads the source struct structurally
+        // (`readSource`) and writes each field as a typed value, so a pointer cell survives into
+        // the destination intact. What a guest cannot then do is *read the destination back*
+        // through a byte view — `Marshal.ReadIntPtr` over such a cell is refused by
+        // `executeLdind` — but that is a gap in reading native memory, not in classifying fields.
         | CliType.Numeric (CliNumericType.NativeInt _) -> true
         | CliType.Numeric _ -> true
         | CliType.Bool _
@@ -160,7 +161,7 @@ module StructMarshalStub =
         (assemblies : LoadedAssemblies)
         (corelib : BaseClassTypes<DumpedAssembly>)
         (value : CliType)
-        : Result<StructMarshalPlan, string>
+        : Result<StructMarshalPlan, MarshalSizeError>
         =
         match value with
         | CliType.ValueType vt ->
@@ -168,12 +169,13 @@ module StructMarshalStub =
             | CliValueTypeStorage.RawBytes _ ->
                 // `TryComputeMarshalLayout` reports no placements for raw-byte storage because
                 // there are no declared fields — which is not the same as "nothing to write".
-                Result.Error
+                MarshalSizeError.NotImplemented
                     "the type has raw-byte storage rather than declared fields, so there are no per-field placements to marshal"
+                |> Result.Error
             | CliValueTypeStorage.Fields _ ->
 
             match CliValueType.TryComputeMarshalLayout concreteTypes assemblies corelib vt with
-            | Result.Error err -> Result.Error err.Reason
+            | Result.Error err -> Result.Error err
             | Result.Ok (nativeSize, placements) ->
 
             // A `CopyBytes` step writes the managed value itself at the native offset, so it is
@@ -199,15 +201,33 @@ module StructMarshalStub =
                 |> List.map (fun placement ->
                     let contents = placement.Field.Contents
 
-                    if isCopyableVerbatim contents then
+                    // A `[MarshalAs]` descriptor selects the field's native type, and CoreCLR
+                    // rejects most pairings outright: `Int32` admits only `I4`/`U4`
+                    // (`IDS_EE_BADMARSHAL_*`), and a `DateTime` field admits only DEFAULT and
+                    // STRUCT (mlinfo.cpp:1747-1754, `IDS_EE_BADMARSHAL_DATETIME`). Width alone
+                    // does not separate the legal pairings from the illegal ones —
+                    // `[MarshalAs(UnmanagedType.R4)] int` is four bytes either way, and
+                    // `[MarshalAs(UnmanagedType.I8)] DateTime` is eight — so classifying on
+                    // width would silently marshal types the real runtime refuses to load.
+                    // Refuse the lot until a motivating test makes it worth modelling which
+                    // pairings CoreCLR accepts and what each one writes.
+                    if placement.Field.MarshallingDescriptor.IsSome then
+                        MarshalSizeError.NotImplemented
+                            $"field %s{placement.Field.Name} carries a [MarshalAs] descriptor, and PawPrint does not model which native types a field's declared type may legally pair with, nor what each pairing writes"
+                        |> Result.Error
+                    else if
+
+                        isCopyableVerbatim contents
+                    then
                         // Necessary condition on top of the shape restriction above: a field
                         // whose native width differs from its managed one cannot be written by
                         // copying the managed value, whatever its interior looks like.
                         let managedSize = CliType.SizeOf contents
 
                         if managedSize.Size <> placement.NativeSize.Size then
-                            Result.Error
+                            MarshalSizeError.NotImplemented
                                 $"field %s{placement.Field.Name} occupies %d{managedSize.Size} managed byte(s) but %d{placement.NativeSize.Size} native one(s), so its managed image cannot be copied verbatim"
+                            |> Result.Error
                         else
                             Result.Ok
                                 {
@@ -226,11 +246,13 @@ module StructMarshalStub =
                                 Kind = StructMarshalFieldKind.OADate
                             }
                     | _ when isBlittableField concreteTypes assemblies corelib contents ->
-                        Result.Error
-                            $"TODO: field %s{placement.Field.Name} is a nested composite whose fields are individually blittable, but writing it verbatim would assume its managed and unmanaged interiors coincide; that needs a recursive marshal plan"
+                        MarshalSizeError.NotImplemented
+                            $"field %s{placement.Field.Name} is a nested composite whose fields are individually blittable, but writing it verbatim would assume its managed and unmanaged interiors coincide; that needs a recursive marshal plan"
+                        |> Result.Error
                     | _ ->
-                        Result.Error
+                        MarshalSizeError.NotImplemented
                             $"field %s{placement.Field.Name} is neither blittable nor a marshalling case PawPrint implements (contents %O{contents})"
+                        |> Result.Error
                 )
 
             let failures =
@@ -252,10 +274,12 @@ module StructMarshalStub =
                             |> List.map (fun step ->
                                 match step with
                                 | Result.Ok step -> step
-                                | Result.Error err -> failwith $"unreachable: %s{err}"
+                                | Result.Error err -> failwith $"unreachable: %s{err.Reason}"
                             )
                     }
-        | _ -> Result.Error $"only value types have a struct-marshal plan; got %O{value}"
+        | _ ->
+            MarshalSizeError.NotImplemented $"only value types have a struct-marshal plan; got %O{value}"
+            |> Result.Error
 
     /// `MarshalOperation` (stubgen.h:26): the third argument CoreLib passes to the stub.
     [<RequireQualifiedAccess>]
@@ -334,7 +358,7 @@ module StructMarshalStub =
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        : IlMachineState * MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+        : IlMachineState * MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> * ConcreteTypeHandle
         =
         let declaringType =
             baseClassTypes.Corelib.TypeDefs
@@ -355,7 +379,7 @@ module StructMarshalStub =
                 failwith $"%s{operation}: System.StubHelpers.DateMarshaler.ConvertToNative(DateTime) not found"
             )
 
-        let state, concretized, _declaringTypeHandle =
+        let state, concretized, declaringTypeHandle =
             ExecutionConcretization.concretizeMethodWithAllGenerics
                 loggerFactory
                 baseClassTypes
@@ -364,7 +388,48 @@ module StructMarshalStub =
                 ImmutableArray.Empty
                 state
 
-        state, concretized
+        state, concretized, declaringTypeHandle
+
+    /// Read the struct the stub is to marshal, given the byref CoreLib passed as the stub's first
+    /// argument.
+    ///
+    /// That byref is always `RuntimeHelpers.GetRawData(box)` — `Marshal.StructureToPtr` boxes its
+    /// argument and hands the stub a `ref byte` onto the box's payload (Marshal.CoreCLR.cs:264,
+    /// :275) — so the value wanted is the boxed payload itself, read *structurally*.
+    ///
+    /// The distinction is load-bearing rather than stylistic. Reading through the `ref byte` view
+    /// flattens every cell to bytes, and a struct may legally hold a value that has no byte
+    /// rendering: an `IntPtr` field assigned from `Marshal.AllocHGlobal` is a managed pointer with
+    /// provenance, which `CliNumericType.ToBytes` refuses. Such a struct marshals fine — the
+    /// destination write preserves the pointer cell — but only if the read does not destroy it
+    /// first. Only the *destination* is bytes; the source is a value.
+    ///
+    /// Any other byref shape falls back to the byte-image read. Nothing produces one today; the
+    /// fallback exists so an unforeseen shape gets a typed read rather than a match failure.
+    let private readSource
+        (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (typeHandle : ConcreteTypeHandle)
+        (source : ManagedPointerSource)
+        (state : IlMachineState)
+        : CliType
+        =
+        let addressesWholeValue (projections : ByrefProjection list) : bool =
+            // A whole-value view is the empty chain, or a type view over the whole payload —
+            // optionally with an explicit zero byte offset, which is the same address.
+            match List.rev projections with
+            | []
+            | [ ByrefProjection.ReinterpretAs _ ]
+            | [ ByrefProjection.ByteOffset 0 ; ByrefProjection.ReinterpretAs _ ] -> true
+            | _ -> false
+
+        match source with
+        | ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, projections) when addressesWholeValue projections ->
+            CliType.ValueType (ManagedHeap.get addr state.ManagedHeap).Contents
+        | _ ->
+            let template, _ = IlMachineState.cliTypeZeroOfHandle state baseClassTypes typeHandle
+
+            IlMachineState.readManagedByrefBytesAs baseClassTypes state source template
 
     /// Execute (or continue executing) a `calli` whose target is a struct-marshal stub. The
     /// caller has already established, via `tryRecognise`, that the stub pointer is on the eval
@@ -411,35 +476,72 @@ module StructMarshalStub =
 
             IlMachineState.advanceProgramCounter thread state, WhatWeDid.Executed
 
+        /// The plan for the stub's type, derived from `value`. `nativeSizeOnly` callers pass the
+        /// type's zero because they need only the total.
+        let planFor (value : CliType) : StructMarshalPlan =
+            match tryComputePlan state.ConcreteTypes state._LoadedAssemblies baseClassTypes value with
+            | Result.Ok plan -> plan
+            | Result.Error reason ->
+                // Unreachable in practice: the QCall only mints a stub pointer for a type whose
+                // plan it has already computed, from that type's zero value. Reaching it means
+                // the plan is not a function of the type alone, which would be a bug worth
+                // seeing.
+                failwith
+                    $"%s{operation}: type %O{call.TypeHandle} has no marshal plan at stub-execution time, though the QCall minted a stub for it: %s{reason.Reason}"
+
+        /// Zero the whole unmanaged image, which is what CoreCLR's stub does with `initblk` at
+        /// the top of its Marshal stream (dllimport.cpp:1290) and at the end of its Cleanup
+        /// stream (dllimport.cpp:1319). Both matter to a guest that can see the buffer:
+        /// padding bytes and, after a cleanup, released field ranges must read as zero rather
+        /// than as whatever the buffer held before.
+        let clearImage (nativeSize : int) (state : IlMachineState) : IlMachineState =
+            CellAwareMemOps.clear baseClassTypes operation state destination nativeSize
+
         match op with
         | Operation.Cleanup ->
             // CoreLib calls the stub with `Cleanup` before `Marshal` when `fDeleteOld` is set, to
-            // free whatever the previous contents owned. Every field kind we support owns nothing
-            // — a copied byte image and an OADate double both live entirely inside the
-            // destination buffer — so there is nothing to release. A field kind that *did* own
-            // native memory (a `ByValTStr`, an allocated array) would have to be released here,
-            // and `tryComputePlan` refuses every such kind today.
-            finish state
+            // release whatever the previous contents owned. Every field kind we support owns
+            // nothing — a copied value and an OADate double both live entirely inside the
+            // destination buffer — so there is nothing to release, and a field kind that *did*
+            // own native memory (a `ByValTStr`, an allocated array) would have to release it
+            // here; `tryComputePlan` refuses every such kind today.
+            //
+            // The zeroing, though, is not optional: CoreCLR clears the native image after the
+            // per-field release "so we don't leave anything dangling", and a guest calling
+            // `DestroyStructure` and then reading the buffer sees that. The type's zero value is
+            // enough here, because only the plan's total size is wanted.
+            let zero, state =
+                IlMachineState.cliTypeZeroOfHandle state baseClassTypes call.TypeHandle
+
+            finish (clearImage (planFor zero).NativeSize.Size state)
         | Operation.Unmarshal ->
             failwith
                 $"TODO %s{operation}: native-to-managed direction (MarshalOperation.Unmarshal, reached via Marshal.PtrToStructure) is not implemented for type %O{call.TypeHandle}"
         | Operation.Marshal ->
 
-        let template, state =
-            IlMachineState.cliTypeZeroOfHandle state baseClassTypes call.TypeHandle
+        let sourceValue = readSource operation baseClassTypes call.TypeHandle source state
 
-        let sourceValue =
-            IlMachineState.readManagedByrefBytesAs baseClassTypes state source template
+        match sourceValue with
+        | CliType.ValueType vt when vt.Declared = call.TypeHandle -> ()
+        | other ->
+            failwith
+                $"%s{operation}: expected the source reference to address a value of type %O{call.TypeHandle}, which is the type the stub was minted for, but read %O{other}"
 
-        let plan =
-            match tryComputePlan state.ConcreteTypes state._LoadedAssemblies baseClassTypes sourceValue with
-            | Result.Ok plan -> plan
-            | Result.Error reason ->
-                // Unreachable in practice: the QCall only mints a stub pointer for a type whose
-                // plan it has already computed. Reaching it means the plan is not a function of
-                // the type alone, which would be a bug worth seeing.
-                failwith
-                    $"%s{operation}: type %O{call.TypeHandle} has no marshal plan at stub-execution time, though the QCall minted a stub for it: %s{reason}"
+        let plan = planFor sourceValue
+
+        // CoreCLR opens its Marshal stream by zeroing the whole native image (dllimport.cpp:1290,
+        // "so we can do a partial cleanup if marshalling fails"), and only then writes fields. We
+        // must too, or padding — bytes 12..15 of `{DateTime; int; DateTime}`, say — keeps whatever
+        // the guest's buffer held before, which a guest reading the image can see.
+        //
+        // This runs on *every* pass of the re-executing `calli`, not just the first. Zeroing is
+        // idempotent and nothing else can write to the buffer in between, so the repetition costs
+        // only time — and it is what makes a throwing conversion agree with CoreCLR. There, a
+        // conversion that throws part way lands in the catch trampoline, which branches to the
+        // Cleanup stream and re-zeroes (dllimport.cpp:1319); here, the buffer was zeroed on the
+        // pass that pushed the conversion and we never write on the pass that throws. Both leave
+        // a zeroed image, including when the guest handed us a dirty buffer.
+        let state = clearImage plan.NativeSize.Size state
 
         let conversions =
             plan.Steps
@@ -458,11 +560,30 @@ module StructMarshalStub =
             // counter where it is so this whole `calli` re-executes with one more result in hand.
             let next = conversions.[completedCount]
 
-            let state, convertToNative =
+            let state, convertToNative, convertToNativeDeclaringType =
                 dateConvertToNative operation loggerFactory baseClassTypes state
+
+            // Run the helper's class initialiser first, exactly as every other call site does.
+            // `callMethodWithCommitment` cannot do it for us: its `SuspendedForClassInit` outcome
+            // comes only from the `Activator.CreateInstance<T>()` intrinsic, so a plain static
+            // CoreLib method would otherwise be entered with its statics uninitialised, and the
+            // cross-thread `Blocked` protocol would be bypassed. `DateMarshaler` has no `.cctor`
+            // today, which is why this was invisible; a future conversion helper's might.
+            //
+            // Nothing has been pushed yet, and none of these outcomes advances our program
+            // counter, so the `calli` simply re-executes and re-derives everything.
+            match
+                IlMachineStateExecution.loadClass loggerFactory baseClassTypes convertToNativeDeclaringType thread state
+            with
+            | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
+            | ThrowingTypeInitializationException state -> state, WhatWeDid.ThrowingTypeInitializationException
+            | Blocked (state, blockedBy) -> state, WhatWeDid.BlockedOnClassInit blockedBy
+            | NothingToDo state ->
 
             let depthBeforeArgument =
                 (IlMachineState.getFrame thread frameId state).EvaluationStack.Values.Length
+
+            let ilOpIndexBeforeCall = (IlMachineState.getFrame thread frameId state).IlOpIndex
 
             let state =
                 IlMachineState.pushToEvalStack next.Placement.Field.Contents thread state
@@ -488,7 +609,23 @@ module StructMarshalStub =
                     state
 
             match commitment with
-            | IlMachineStateExecution.CallCommitment.Committed -> state, WhatWeDid.Executed
+            | IlMachineStateExecution.CallCommitment.Committed ->
+                // The whole scheme rests on this `calli` running again, which rests in turn on
+                // `advanceProgramCounterOfCaller = false` having been honoured. It is not honoured
+                // universally: the intrinsic arm of `callMethodWithCommitment` reports `Committed`
+                // for a callee its handler serviced inline, and those handlers advance the caller
+                // unconditionally. No conversion callee is `[Intrinsic]` today, so this is an
+                // assumption rather than a hazard — which is exactly why it should be checked
+                // rather than trusted. Left unchecked, an intrinsic callee would silently skip the
+                // write and strand the stub pointer, the results and the four arguments on the
+                // frame, corrupting every later pop in `Marshal.StructureToPtr`.
+                let ilOpIndexNow = (IlMachineState.getFrame thread frameId state).IlOpIndex
+
+                if ilOpIndexNow <> ilOpIndexBeforeCall then
+                    failwith
+                        $"%s{operation}: the conversion callee advanced this frame's program counter from %d{ilOpIndexBeforeCall} to %d{ilOpIndexNow}, so the calli will not re-execute and the marshal would never complete"
+
+                state, WhatWeDid.Executed
             | IlMachineStateExecution.CallCommitment.Raised ->
                 // The callee raised instead of running; exception dispatch unwinds through this
                 // frame, so the stub pointer and arguments below us are the dispatcher's problem,
