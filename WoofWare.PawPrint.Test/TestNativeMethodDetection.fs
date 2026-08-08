@@ -32,7 +32,7 @@ module TestNativeMethodDetection =
         match
             typeInfo.Methods
             |> List.filter (fun m ->
-                match m.NativeImport with
+                match m.TryNativeImport with
                 | Some import -> import.ModuleName = "QCall" && import.EntryPointName = entryPoint
                 | None -> false
             )

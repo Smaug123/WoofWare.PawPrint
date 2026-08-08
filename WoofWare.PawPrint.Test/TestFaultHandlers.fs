@@ -36,7 +36,7 @@ module TestFaultHandlers =
         =
         let objectConstructor =
             bct.Object.Methods
-            |> List.find (fun method -> method.Name = ".ctor" && method.Parameters.IsEmpty)
+            |> List.find (fun method -> method.Name = ".ctor" && (MethodInfo.arity method = 0))
 
         let state, signature =
             TypeMethodSignature.map

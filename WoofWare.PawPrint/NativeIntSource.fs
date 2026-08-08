@@ -162,7 +162,7 @@ type FunctionPointerTarget =
                 0,
                 methodDefinition.DeclaringType.Identity,
                 methodDefinition.DeclaringType.Generics,
-                methodDefinition.Handle,
+                methodDefinition.IdentityKey,
                 methodDefinition.Generics
             )
         | FunctionPointerTarget.RuntimeAllocator -> HashCode.Combine 1

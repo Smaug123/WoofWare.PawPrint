@@ -107,10 +107,21 @@ module PointerHashSynthesis =
         | NativeIntSource.TypeDescPtr target -> CanonicalPointerKey.TypeHandle target
         | NativeIntSource.MethodTableAuxiliaryDataPtr target -> CanonicalPointerKey.MethodTableAuxiliaryData target
         | NativeIntSource.FunctionPointer (FunctionPointerTarget.Managed methodInfo) ->
+            // The key is a MethodDef token, so only a declared method has one. A function pointer
+            // to a synthesised method is possible — a struct-marshal stub is exactly that — but
+            // nothing hashes one: the guest only compares it against null and calls through it.
+            // Widening the key to admit synthesised methods is work for whichever consumer first
+            // needs it, so refuse rather than mint bits that would then have to stay stable.
+            match methodInfo.TryMetadata with
+            | None ->
+                failwith
+                    $"PointerHashSynthesis.canonicalKey: %O{methodInfo} is synthesised by the runtime, so it has no MethodDef token to key on"
+            | Some facts ->
+
             CanonicalPointerKey.FunctionPointer (
                 methodInfo.DeclaringType.Identity,
                 List.ofSeq methodInfo.DeclaringType.Generics,
-                ComparableMethodDefinitionHandle.Make methodInfo.Handle,
+                ComparableMethodDefinitionHandle.Make facts.Handle,
                 List.ofSeq methodInfo.Generics
             )
         | NativeIntSource.FunctionPointer FunctionPointerTarget.RuntimeAllocator ->

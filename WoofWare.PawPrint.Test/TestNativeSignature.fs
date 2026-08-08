@@ -224,7 +224,7 @@ public sealed class MethodSignatureHost
         let rawMethod =
             signatureType.Methods
             |> List.filter (fun method ->
-                match method.NativeImport with
+                match method.TryNativeImport with
                 | Some import -> import.ModuleName = "QCall" && import.EntryPointName = "Signature_Init"
                 | None -> false
             )

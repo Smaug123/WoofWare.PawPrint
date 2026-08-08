@@ -206,7 +206,7 @@ public static class HasMethod
             }
 
         let token =
-            MetadataToken.MethodDef targetMethod.Handle
+            MetadataToken.MethodDef (MethodInfo.requireMetadata "test" targetMethod).Handle
             |> SourcedMetadataToken.make assembly.Name
 
         let state, whatWeDid =
@@ -249,7 +249,7 @@ public class GenericHasMethod<T>
             installFrameForMethod loggerFactory baseClassTypes assembly state currentMethod
 
         let token =
-            MetadataToken.MethodDef targetMethod.Handle
+            MetadataToken.MethodDef (MethodInfo.requireMetadata "test" targetMethod).Handle
             |> SourcedMetadataToken.make assembly.Name
 
         let ex =
@@ -298,7 +298,7 @@ public static class GenericMethodHolder
             installFrameForMethod loggerFactory baseClassTypes assembly state currentMethod
 
         let token =
-            MetadataToken.MethodDef targetMethod.Handle
+            MetadataToken.MethodDef (MethodInfo.requireMetadata "test" targetMethod).Handle
             |> SourcedMetadataToken.make assembly.Name
 
         let ex =
@@ -382,7 +382,7 @@ public static class GenericMethodHolder
             | None -> failwith $"registry id %d{registryId} did not resolve"
 
         resolved.GetMethodDefinitionHandle ()
-        |> shouldEqual (ComparableMethodDefinitionHandle.Make targetMethod.Handle)
+        |> shouldEqual (ComparableMethodDefinitionHandle.Make (MethodInfo.requireMetadata "test" targetMethod).Handle)
 
         // Open-form registration intentionally records empty MethodGenerics: the iterator
         // surfaces method-table slots, i.e. method definitions, not specific instantiations.

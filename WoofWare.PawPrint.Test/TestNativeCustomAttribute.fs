@@ -248,7 +248,7 @@ public sealed class CctorAttribute : System.Attribute
         =
         customAttributeType.Methods
         |> List.filter (fun method ->
-            match method.NativeImport with
+            match method.TryNativeImport with
             | Some import ->
                 import.ModuleName = "QCall"
                 && import.EntryPointName = "CustomAttribute_CreateCustomAttributeInstance"

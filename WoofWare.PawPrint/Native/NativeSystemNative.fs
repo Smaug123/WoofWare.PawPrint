@@ -5,7 +5,7 @@ open System.Collections.Immutable
 [<RequireQualifiedAccess>]
 module NativeSystemNative =
     let private trySystemNativeEntryPoint (ctx : NativeCallContext) : string option =
-        match ctx.Instruction.ExecutingMethod.NativeImport with
+        match ctx.Instruction.ExecutingMethod.TryNativeImport with
         | Some import when import.ModuleName = "libSystem.Native" -> Some import.EntryPointName
         | _ -> None
 
