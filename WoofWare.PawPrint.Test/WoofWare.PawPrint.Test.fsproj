@@ -37,6 +37,7 @@
     <Compile Include="TestCliTypeCellPaths.fs" />
     <Compile Include="TestInlineArrayStorage.fs" />
     <Compile Include="TestStructLayout.fs" />
+    <Compile Include="TestMarshalLayout.fs" />
     <Compile Include="TestManagedHeap.fs" />
     <Compile Include="TestBinaryArithmetic.fs" />
     <Compile Include="TestContextSwitchPrior.fs" />
@@ -65,7 +66,7 @@
     <Compile Include="TestNativeSignature.fs" />
     <Compile Include="TestNativeCustomAttribute.fs" />
     <Compile Include="TestManifestResources.fs" />
-    <Compile Include="TestAssemblyNativeSimpleName.fs" />
+    <Compile Include="TestAssemblyNativeQCalls.fs" />
     <Compile Include="TestNativeEnum.fs" />
     <Compile Include="TestMethodHandleRegistry.fs" />
     <Compile Include="TestMethodReturnType.fs" />

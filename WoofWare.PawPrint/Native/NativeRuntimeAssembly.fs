@@ -303,6 +303,68 @@ module NativeRuntimeAssembly =
                     (CliType.ObjectRef (Some emptyAddr))
 
             NativeHandlerResult.completed state |> Some
+        | "AssemblyNative_GetLocale",
+          "System.Private.CoreLib",
+          "System.Reflection",
+          "RuntimeAssembly",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "QCallAssembly",
+                                              qCallAssemblyGenerics)
+            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "StringHandleOnStack",
+                                              stringHandleGenerics) ],
+          MethodReturnType.Void when qCallAssemblyGenerics.IsEmpty && stringHandleGenerics.IsEmpty ->
+            let operation = "AssemblyNative_GetLocale"
+
+            if instruction.Arguments.Length <> 2 then
+                failwith $"%s{operation}: expected two native arguments, got %d{instruction.Arguments.Length}"
+
+            let assemblyFullName =
+                instruction.Arguments.[0]
+                |> NativeCall.qCallAssemblyToAssemblyFullName operation state
+
+            let assembly =
+                state.LoadedAssembly' assemblyFullName
+                |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
+
+            let retString =
+                NativeCall.stringHandleOnStackTarget operation state "retString" instruction.Arguments.[1]
+
+            // CoreCLR answers `pAssembly->GetPEAssembly()->GetLocale()`, which is
+            // `md.szLocale` — the manifest row's `Culture` column verbatim. Note
+            // `DumpedAssembly.CultureName` rather than `Name.CultureName`: the latter
+            // has been through `CultureInfo` normalisation and would hand the guest
+            // "en-GB" for a column reading "EN-gb".
+            let locale = assembly.CultureName
+
+            // CoreCLR guards its write with `if (pLocale)`, leaving the caller's
+            // preinitialised `string? locale = null` in place when the pointer is
+            // null. That cannot happen for an image we could have loaded: the
+            // pointer comes from the `#Strings` heap, and a nil `Culture` index
+            // resolves to the empty string there rather than to null (a bad index
+            // makes `GetAssemblyProps` fail, which `PEAssembly::GetLocale` throws
+            // on). So the write below is unconditional, and a culture-neutral
+            // assembly takes the guest's `CultureInfo.GetCultureInfo("")` path —
+            // which yields the invariant culture — rather than its `locale == null`
+            // fallback, exactly as on CoreCLR.
+            let localeAddr, state =
+                if System.String.IsNullOrEmpty locale then
+                    // `StringObject::NewString` returns the shared empty-string
+                    // instance for a zero-length string; see AssemblyNative_GetLocation.
+                    IlMachineState.internCanonicalEmptyString ctx.LoggerFactory ctx.BaseClassTypes state
+                else
+                    IlMachineState.allocateManagedString ctx.LoggerFactory ctx.BaseClassTypes locale state
+
+            let state =
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    retString
+                    (CliType.ObjectRef (Some localeAddr))
+
+            NativeHandlerResult.completed state |> Some
         | "AssemblyNative_GetSimpleName",
           "System.Private.CoreLib",
           "System.Reflection",
@@ -366,6 +428,87 @@ module NativeRuntimeAssembly =
                     state
                     retSimpleName
                     (CliType.ObjectRef (Some nameAddr))
+
+            NativeHandlerResult.completed state |> Some
+        | "AssemblyNative_GetVersion",
+          "System.Private.CoreLib",
+          "System.Reflection",
+          "RuntimeAssembly",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "QCallAssembly",
+                                              qCallAssemblyGenerics)
+            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
+            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
+            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
+            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ],
+          MethodReturnType.Void when qCallAssemblyGenerics.IsEmpty ->
+            let operation = "AssemblyNative_GetVersion"
+
+            if instruction.Arguments.Length <> 5 then
+                failwith $"%s{operation}: expected five native arguments, got %d{instruction.Arguments.Length}"
+
+            let assemblyFullName =
+                instruction.Arguments.[0]
+                |> NativeCall.qCallAssemblyToAssemblyFullName operation state
+
+            let assembly =
+                state.LoadedAssembly' assemblyFullName
+                |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
+
+            // CoreCLR reads the four `USHORT` columns of the manifest's single
+            // `Assembly` metadata row (`PEAssembly::GetVersion` ->
+            // `GetAssemblyProps(TokenFromRid(1, mdtAssembly), ..., &md, ...)`) and
+            // widens each to `INT32`. PawPrint's `DumpedAssembly.Name` is
+            // `AssemblyDefinition.GetAssemblyName()` over that same row, and its
+            // `Version` is built from those same four columns, so reading it here
+            // is the same four numbers by construction.
+            let version = assembly.Name.Version
+
+            if isNull version then
+                failwith $"%s{operation}: assembly %s{assemblyFullName} has no version in its Assembly metadata row"
+
+            // `AssemblyName.Version` from metadata is always four-component, because
+            // the metadata row always carries all four columns. A `System.Version`
+            // built with fewer reports -1 for the missing tail, which would be a
+            // value CoreCLR can never produce here (its columns are unsigned), so
+            // treat it as a parse bug rather than widening it into the guest.
+            let components =
+                [
+                    "major", version.Major
+                    "minor", version.Minor
+                    "build", version.Build
+                    "revision", version.Revision
+                ]
+
+            for name, value in components do
+                if value < 0 then
+                    failwith
+                        $"%s{operation}: assembly %s{assemblyFullName} has no %s{name} version component (got %d{value})"
+
+                // The metadata columns are `USHORT`, so CoreCLR's widening to `INT32`
+                // can never exceed `UInt16.MaxValue`. Anything larger means we read
+                // the version from somewhere other than the Assembly row.
+                if value > int System.UInt16.MaxValue then
+                    failwith
+                        $"%s{operation}: assembly %s{assemblyFullName} has %s{name} version component %d{value}, which does not fit the metadata row's UInt16 column"
+
+            let writeComponent (argIndex : int) (argName : string) (value : int) (state : IlMachineState) =
+                let target =
+                    NativeCall.managedPointerOfPointerArgument operation argName instruction.Arguments.[argIndex]
+
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    target
+                    (CliType.Numeric (CliNumericType.Int32 value))
+
+            let state =
+                state
+                |> writeComponent 1 "majVer" version.Major
+                |> writeComponent 2 "minVer" version.Minor
+                |> writeComponent 3 "buildNum" version.Build
+                |> writeComponent 4 "revNum" version.Revision
 
             NativeHandlerResult.completed state |> Some
         | "AssemblyNative_GetTypeCore",
