@@ -281,6 +281,60 @@ module TestRuntimeConfig =
         parseError $$"""{ "runtimeOptions": { "ignoredSection": {{deep}} } }"""
         |> shouldContainText "depth"
 
+    /// A one-property document whose name and value bytes are spliced in raw, so that a test
+    /// can put bytes there which no `string` could have held.
+    let private documentWithRawBytes (nameBytes : byte list) (valueBytes : byte list) : byte[] =
+        [
+            yield! Text.Encoding.UTF8.GetBytes "{ \"runtimeOptions\": { \"configProperties\": { \""
+            yield! nameBytes
+            yield! Text.Encoding.UTF8.GetBytes "\": \""
+            yield! valueBytes
+            yield! Text.Encoding.UTF8.GetBytes "\" } } }"
+        ]
+        |> Array.ofList
+
+    /// `C0 AF` is an overlong encoding of `/`: a JSON string token as far as the reader is
+    /// concerned, but not valid UTF-8.
+    let private invalidUtf8 : byte list = [ 0xC0uy ; 0xAFuy ]
+
+    let private asciiBytes (s : string) : byte list =
+        Text.Encoding.UTF8.GetBytes s |> List.ofArray
+
+    [<Test>]
+    let ``invalid UTF-8 in a value is refused, not thrown`` () =
+        // `Utf8JsonReader` accepts the token without validating its encoding and `JsonDocument`
+        // transcodes lazily, so this surfaces as an `InvalidOperationException` out of
+        // `GetString()` — long after parsing "succeeded". `parse` promises a `Result`, and a
+        // caller that treats a bad file as non-fatal (the dev config) depends on that promise.
+        let err = parseBytesError (documentWithRawBytes (asciiBytes "P") invalidUtf8)
+        err |> shouldContainText "P"
+        err |> shouldContainText "UTF-8"
+
+    [<Test>]
+    let ``invalid UTF-8 in a name is refused, not thrown`` () =
+        // Same failure, reached through `JsonProperty.Name` instead. The diagnostic cannot
+        // quote the name — materialising it is precisely what fails — so it must locate the
+        // property some other way.
+        let err =
+            parseBytesError (documentWithRawBytes (asciiBytes "Good" @ invalidUtf8) (asciiBytes "v"))
+
+        err |> shouldContainText "UTF-8"
+
+    [<Test>]
+    let ``invalid UTF-8 elsewhere in the document is nobody's business`` () =
+        // hostpolicy does not validate encoding either (rapidjson is not given
+        // `kParseValidateEncodingFlag`), so bytes we never materialise into a property must
+        // not condemn a file that a real host reads without complaint.
+        let bytes =
+            [
+                yield! Text.Encoding.UTF8.GetBytes "{ \"runtimeOptions\": { \"ignoredSection\": { \"k\": \""
+                yield! invalidUtf8
+                yield! Text.Encoding.UTF8.GetBytes "\" }, \"configProperties\": { \"P\": \"v\" } } }"
+            ]
+            |> Array.ofList
+
+        parseBytesOk bytes |> shouldEqual (Map.ofList [ "P", "v" ])
+
     [<Test>]
     let ``a UTF-8 BOM is skipped`` () =
         // `parse_file` steps over exactly these three bytes and parses the rest.
@@ -588,6 +642,32 @@ module TestRuntimeConfig =
 
                 exn.Message |> shouldContainText "App.runtimeconfig.json"
             )
+
+    [<Test>]
+    let ``a dev config with invalid UTF-8 is not fatal`` () =
+        // The failure mode this guards is a joint one: `parse` must contain the transcoding
+        // failure as an `Error` *and* this caller must treat that error as survivable. If the
+        // former regresses, the exception sails straight through the latter.
+        let dir =
+            Path.Combine (Path.GetTempPath (), $"pawprint-runtimeconfig-%s{Path.GetRandomFileName ()}")
+
+        Directory.CreateDirectory dir |> ignore
+
+        try
+            let dll = Path.Combine (dir, "App.dll")
+            File.WriteAllText (dll, "not a real assembly; nothing here opens it")
+            File.WriteAllText (RuntimeConfig.pathForAssembly dll, document """{ "P": "v" }""")
+
+            File.WriteAllBytes (
+                RuntimeConfig.devPathForAssembly dll,
+                documentWithRawBytes (asciiBytes "DevOnly") invalidUtf8
+            )
+
+            HostRuntimeConfig.forAssembly dll
+            |> AppContextProperties.toMap
+            |> shouldEqual (Map.ofList [ "P", "v" ])
+        finally
+            Directory.Delete (dir, true)
 
     [<Test>]
     let ``a broken main config is fatal`` () =
