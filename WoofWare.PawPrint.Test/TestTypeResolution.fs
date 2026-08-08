@@ -31,6 +31,46 @@ module TestTypeResolution =
         |> shouldEqual [| typeof<ResolvedTypeIdentity> ; typeof<SignatureTypeKind> |]
 
     [<Test>]
+    let ``NominallyEqual sees through distinct AssemblyName instances`` () : unit =
+        // `NominallyEqual` compares assemblies by display name, but takes a reference-equality
+        // fast path first because the two sides are almost always the same `AssemblyName`
+        // object. They are not *always*: `MethodInfo.read` mints a fresh `AssemblyName` for
+        // every method it reads, so two `TypeInfo`s denoting the same type can carry different
+        // instances. This pins that the fast path falls through rather than reporting a
+        // spurious mismatch — the failure mode if the `||` were ever dropped.
+        let corelib = baseClassTypes ()
+        let stringType = corelib.String
+
+        let rehomed =
+            { stringType with
+                Assembly = System.Reflection.AssemblyName (stringType.Assembly.FullName)
+            }
+
+        System.Object.ReferenceEquals (stringType.Assembly, rehomed.Assembly)
+        |> shouldEqual false
+
+        rehomed.Assembly.FullName |> shouldEqual stringType.Assembly.FullName
+
+        TypeInfo.NominallyEqual stringType rehomed |> shouldEqual true
+        TypeInfo.NominallyEqual rehomed stringType |> shouldEqual true
+
+    [<Test>]
+    let ``NominallyEqual still separates identical rows in different assemblies`` () : unit =
+        // The mirror of the above: the same TypeDef row number in a different assembly must not
+        // compare equal. Without the display-name comparison behind it, the reference-equality
+        // fast path would be a silent identity collapse across assemblies.
+        let corelib = baseClassTypes ()
+        let stringType = corelib.String
+
+        let elsewhere =
+            { stringType with
+                Assembly = System.Reflection.AssemblyName "Some.Other.Assembly"
+            }
+
+        TypeInfo.NominallyEqual stringType elsewhere |> shouldEqual false
+        TypeInfo.NominallyEqual elsewhere stringType |> shouldEqual false
+
+    [<Test>]
     let ``nested type refs across assemblies resolve through the TypeRef parent chain`` () =
         let definingBytes =
             compileLibrary
