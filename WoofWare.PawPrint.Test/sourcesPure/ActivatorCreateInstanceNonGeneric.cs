@@ -76,6 +76,20 @@ namespace ActivatorCreateInstanceNonGenericTest
         public byte Tag;
     }
 
+    // Byref-like types. The activation QCall deliberately permits these — CoreCLR passes
+    // `allowByRefLike: true` — and the rejection happens later, in managed
+    // `RuntimeType.CreateInstanceDefaultCtor`, which reads the MethodTable's `IsByRefLike` flag.
+    public ref struct RefStruct
+    {
+        public int X;
+    }
+
+    public ref struct RefStructWithSpan
+    {
+        public Span<int> Items;
+        public int N;
+    }
+
     public enum SomeEnum
     {
         Zero = 0,
@@ -269,42 +283,63 @@ namespace ActivatorCreateInstanceNonGenericTest
                 return 22;
             }
 
-            // --- generics and exception wrapping ---
+            // --- byref-like types are rejected by *managed* code, not by the QCall ---
 
-            if (Classify(() => Activator.CreateInstance(typeof(GenericHolder<int>))) != "GenericHolder`1")
+            // The unmanaged activation layer deliberately lets a ref struct through
+            // (`allowByRefLike: true`); `CreateInstanceDefaultCtor` is what throws, and it does
+            // so by reading `RuntimeType.IsByRefLike`, which is a MethodTable *flag*. Nothing
+            // else on this path consults it, so if the flag is not projected the guard simply
+            // passes and the caller is handed a boxed ref struct — which is not a legal heap
+            // representation at all. That makes this row the only thing standing between the
+            // allocator and a silently illegal object.
+            if (Classify(() => Activator.CreateInstance(typeof(RefStruct))) != "NotSupportedException")
             {
                 return 23;
             }
 
-            if (Classify(() => Activator.CreateInstance(typeof(ThrowingCtor))) != "TargetInvocationException")
+            // The same, for a ref struct that holds a reference: the flag has to come from the
+            // type's own metadata rather than being inferred from its field shape.
+            if (Classify(() => Activator.CreateInstance(typeof(RefStructWithSpan))) != "NotSupportedException")
             {
                 return 24;
+            }
+
+            // --- generics and exception wrapping ---
+
+            if (Classify(() => Activator.CreateInstance(typeof(GenericHolder<int>))) != "GenericHolder`1")
+            {
+                return 25;
+            }
+
+            if (Classify(() => Activator.CreateInstance(typeof(ThrowingCtor))) != "TargetInvocationException")
+            {
+                return 26;
             }
 
             // --- the activation cache is reused, and the cached pointers still work ---
 
             if (((ImplicitCtor)Activator.CreateInstance(typeof(ImplicitCtor))).Value != 7)
             {
-                return 25;
+                return 27;
             }
 
             // --- allocation does not run the type initialiser ---
 
             if (CctorWitness.Ran != 0)
             {
-                return 26;
+                return 28;
             }
 
             StructWithCctor withCctor = (StructWithCctor)Activator.CreateInstance(typeof(StructWithCctor));
 
             if (withCctor.X != 0)
             {
-                return 27;
+                return 29;
             }
 
             if (CctorWitness.Ran != 0)
             {
-                return 28;
+                return 30;
             }
 
             return 0;

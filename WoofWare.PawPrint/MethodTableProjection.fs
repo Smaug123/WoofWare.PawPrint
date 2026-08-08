@@ -11,6 +11,13 @@ module internal MethodTableProjection =
     let private containsGcPointersFlag : int32 = 0x01000000
     let private containsGenericVariablesFlag : int32 = 0x20000000
 
+    /// CoreCLR's `enum_flag_IsByRefLike`. It lives in the low 16 bits, which a MethodTable with
+    /// a component size uses for that size instead — which is why CoreLib reads it as
+    /// `(Flags &amp; (HasComponentSize | IsByRefLike)) == IsByRefLike` rather than as a plain
+    /// mask. We only ever set it for types that have no component size, so the two never
+    /// collide here.
+    let private isByRefLikeFlag : int32 = 0x00001000
+
     let private genericsMaskNonGeneric : int32 = 0x00000000
     let private genericsMaskGenericInst : int32 = 0x00000010
     let private genericsMaskTypicalInst : int32 = 0x00000030
@@ -795,6 +802,28 @@ module internal MethodTableProjection =
             | RuntimeTypeHandleTarget.GenericParameter _
             | RuntimeTypeHandleTarget.MethodGenericParameter _ -> false
 
+        // A byref-like type is always a nominal value type, so it never has a component size and
+        // never appears as a structural handle. Managed code consults this through
+        // `RuntimeType.IsByRefLike`, and several BCL guards are phrased entirely in terms of it —
+        // `RuntimeType.CreateInstanceDefaultCtor` throws `NotSupportedException` for a ref struct
+        // there, *after* the activation QCall has deliberately allowed it through
+        // (`allowByRefLike: true`). Leaving the flag clear does not merely lose information: it
+        // makes that guard pass and hands the guest a boxed ref struct, which is not a legal heap
+        // representation at all.
+        let isByRefLike =
+            match methodTableFor with
+            | RuntimeTypeHandleTarget.Closed handle ->
+                match AllConcreteTypes.lookup handle state.ConcreteTypes with
+                | None -> false
+                | Some concreteType ->
+                    state._LoadedAssemblies
+                        .ByDefinitionName(concreteType.Identity.AssemblyFullName)
+                        .TypeDefs.[concreteType.Identity.TypeDefinition.Get]
+                    |> DumpedAssembly.isByRefLike baseClassTypes state._LoadedAssemblies
+            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+            | RuntimeTypeHandleTarget.GenericParameter _
+            | RuntimeTypeHandleTarget.MethodGenericParameter _ -> false
+
         let containsGcPointers, state =
             containsGcPointersForRuntimeTypeHandleTarget loggerFactory baseClassTypes state methodTableFor
 
@@ -813,6 +842,7 @@ module internal MethodTableProjection =
             categoryFlagsForRuntimeTypeHandleTarget baseClassTypes state methodTableFor
             ||| componentSizeBits
             ||| (if hasComponentSize then hasComponentSizeFlag else 0)
+            ||| (if isByRefLike then isByRefLikeFlag else 0)
             ||| (if containsGcPointers then containsGcPointersFlag else 0)
             ||| (if hasComponentSize then
                      0
