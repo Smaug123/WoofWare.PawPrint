@@ -303,6 +303,71 @@ module NativeRuntimeAssembly =
                     (CliType.ObjectRef (Some emptyAddr))
 
             NativeHandlerResult.completed state |> Some
+        | "AssemblyNative_GetSimpleName",
+          "System.Private.CoreLib",
+          "System.Reflection",
+          "RuntimeAssembly",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "QCallAssembly",
+                                              qCallAssemblyGenerics)
+            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "StringHandleOnStack",
+                                              stringHandleGenerics) ],
+          MethodReturnType.Void when qCallAssemblyGenerics.IsEmpty && stringHandleGenerics.IsEmpty ->
+            let operation = "AssemblyNative_GetSimpleName"
+
+            if instruction.Arguments.Length <> 2 then
+                failwith $"%s{operation}: expected two native arguments, got %d{instruction.Arguments.Length}"
+
+            let assemblyFullName =
+                instruction.Arguments.[0]
+                |> NativeCall.qCallAssemblyToAssemblyFullName operation state
+
+            let assembly =
+                state.LoadedAssembly' assemblyFullName
+                |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
+
+            let retSimpleName =
+                NativeCall.stringHandleOnStackTarget operation state "retSimpleName" instruction.Arguments.[1]
+
+            // CoreCLR answers `pAssembly->GetPEAssembly()->GetSimpleName()`, which
+            // reads the `Name` column of the manifest's single `Assembly` metadata
+            // row (`GetAssemblyProps(TokenFromRid(1, mdtAssembly), ...)`) — *not*
+            // the file name, and not a prefix of the display name. PawPrint's
+            // `DumpedAssembly.Name` is `AssemblyDefinition.GetAssemblyName()` over
+            // that same row, so its `Name` is the same string by construction.
+            //
+            // The distinction matters: the assembly is keyed here by its *full*
+            // name, which additionally carries version, culture and public key
+            // token. Splitting that display name back apart would have to undo
+            // ECMA-335's quoting of simple names containing ',' or '"', so read
+            // the metadata field rather than reparsing.
+            let simpleName = assembly.Name.Name
+
+            // CoreCLR only yields "" for an image whose metadata import failed —
+            // which its own `_ASSERTE` calls a corrupted image — so an empty or
+            // absent name here means we mis-parsed the manifest, not that the
+            // guest asked something unusual.
+            if System.String.IsNullOrEmpty simpleName then
+                failwith $"%s{operation}: assembly %s{assemblyFullName} has no simple name in its Assembly metadata row"
+
+            // `StringObject::NewString` hands back the shared empty-string instance
+            // for a zero-length string, but every other length allocates afresh:
+            // CoreCLR does not intern QCall results, so two `GetSimpleName` calls
+            // on one assembly return reference-distinct strings there and here.
+            let nameAddr, state =
+                IlMachineState.allocateManagedString ctx.LoggerFactory ctx.BaseClassTypes simpleName state
+
+            let state =
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    retSimpleName
+                    (CliType.ObjectRef (Some nameAddr))
+
+            NativeHandlerResult.completed state |> Some
         | "AssemblyNative_GetTypeCore",
           "System.Private.CoreLib",
           "System.Reflection",
