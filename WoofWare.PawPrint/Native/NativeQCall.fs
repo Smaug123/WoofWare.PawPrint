@@ -91,6 +91,7 @@ module NativeQCall =
             "Signature_GetCustomModifiersAtOffset",
             NativeSignature.tryExecuteQCall "Signature_GetCustomModifiersAtOffset"
             "Array_CreateInstance", NativeArray.tryExecuteQCall "Array_CreateInstance"
+            "GCInterface_AllocateNewArray", NativeGc.tryExecuteQCall "GCInterface_AllocateNewArray"
             "Enum_GetValuesAndNames", NativeEnum.tryExecuteQCall "Enum_GetValuesAndNames"
             "MetadataImport_Enum", NativeMetadataImport.tryExecuteQCall "MetadataImport_Enum"
             "AssemblyNative_GetCodeBase", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetCodeBase"
