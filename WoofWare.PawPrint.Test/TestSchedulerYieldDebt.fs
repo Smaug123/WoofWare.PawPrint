@@ -429,9 +429,11 @@ module TestSchedulerYieldDebt =
         withPeer |> shouldEqual expected
 
     [<Test>]
-    let ``a Pct run with no yields consumes the RNG exactly as before`` () : unit =
-        // Property 4 from the plan: the filter itself must draw nothing, so a guest that never
-        // yields replays bit-identically against seeds recorded before this change.
+    let ``a Pct run with no yields consumes no RNG`` () : unit =
+        // The fairness filter draws nothing of its own: only an honoured yield consults the
+        // policy's coin. So a guest that never yields consumes the seed at exactly the rate
+        // `chooseNext` alone would, and its schedule is a function of the seed and the guest,
+        // not of whether the filter exists.
         let state =
             baseState () |> withThreads (runnable 3) |> IlMachineState.withPctSeed 99UL
 
