@@ -248,6 +248,28 @@ public class Program
         }
     }
 
+    // --- custom modifiers on a virtual signature ------------------------------------------------
+    // `in int` is `modreq(InAttribute) int32&`. Slot matching normalises signatures by
+    // concretising them, and concretisation looks *through* a modifier -- so the modifiers are
+    // gathered and compared separately. That comparison must not be syntactic: the override spells
+    // `InAttribute` through its own assembly's TypeRef, so the two `TypeDefn`s are not equal even
+    // though the modifier is the same. This override must therefore still land on the base's slot.
+    public class Mod1
+    {
+        public virtual string In (in int x)
+        {
+            return "mod1";
+        }
+    }
+
+    public class Mod2 : Mod1
+    {
+        public override string In (in int x)
+        {
+            return "mod2";
+        }
+    }
+
     private const BindingFlags All =
         BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static;
 
@@ -441,6 +463,14 @@ public class Program
 
         if (CcOf (typeof (B2), "V", "A2") != "VarArgs, HasThis")
             return 30;
+
+        // A modifier-carrying override still lands on the base's slot, so the base declaration is
+        // deduped away.
+        if (Count (typeof (Mod2), "In") != 1)
+            return 31;
+
+        if (OwnerOf (typeof (Mod2), "In") != "Mod2")
+            return 32;
 
         return 0;
     }
