@@ -432,3 +432,38 @@ module TestSchedulerYieldDebt =
             ||> List.fold (fun s tid -> Scheduler.onStepOutcome tid WhatWeDid.Executed s)
 
         after.Scheduling |> shouldEqual (SchedulerState.Pct (PctState.ofSeed 99UL))
+
+    [<Test>]
+    let ``a terminating thread is pruned from every outstanding debt`` () : unit =
+        // A thread's final step is its bottom-frame `Ret`, which the driver routes through
+        // `onThreadTerminated` rather than `onStepOutcome` — so the one step that most
+        // conclusively satisfies "I am waiting to see you run" is the one step that would
+        // otherwise discharge nothing.
+        //
+        // Correctness does not depend on this (a Terminated thread is never in the Runnable
+        // set, so `candidates` ignores it either way, and the two assertions on `chooseNext`
+        // below pass with or without the pruning). Cost does: a debt that keeps a
+        // permanently-unrunnable member never goes empty, so its owner misses the `IsEmpty`
+        // fast path in `debtDischarged` for the rest of the run and scans the runnable list on
+        // every scheduling decision. Assert on the debt itself, not just on the choice, or the
+        // regression is invisible.
+        let state = baseState () |> withThreads (runnable 3)
+
+        let state =
+            Scheduler.onStepOutcome (ThreadId 0) (WhatWeDid.VoluntaryYield false) state
+
+        debtOf (ThreadId 0) state
+        |> shouldEqual (Set.ofList [ ThreadId 1 ; ThreadId 2 ])
+
+        let state = Scheduler.onThreadTerminated (ThreadId 1) state
+
+        debtOf (ThreadId 0) state |> shouldEqual (Set.ofList [ ThreadId 2 ])
+
+        // Thread 2 still owes a step, so thread 0 stays excluded; once it runs, the debt is
+        // empty rather than merely ignorable.
+        Scheduler.chooseNext (ThreadId 2) state
+        |> snd
+        |> shouldEqual (Some (ThreadId 2))
+
+        let state = Scheduler.onStepOutcome (ThreadId 2) WhatWeDid.Executed state
+        debtOf (ThreadId 0) state |> shouldEqual Set.empty

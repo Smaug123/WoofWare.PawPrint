@@ -69,8 +69,13 @@ module Scheduler =
 
     /// Is `thread`'s yield debt discharged, given the currently-Runnable set? A debt member
     /// that is no longer Runnable has left the run queue and cannot be waited for, so it stops
-    /// counting; this is what makes the debt self-clearing across park/wake and termination,
-    /// with no cleanup pass anywhere.
+    /// counting; this is what makes the debt self-clearing across a park/wake cycle, with no
+    /// hook in any wake path.
+    ///
+    /// The `IsEmpty` test is not merely a fast path for its own sake — it is the common case,
+    /// and keeping it reachable is why `onThreadTerminated` prunes rather than relying on this
+    /// filter alone. A debt holding a permanently-unrunnable member would answer correctly
+    /// here forever while scanning the whole runnable list to do it.
     let private debtDischarged (runnable : ThreadId list) (ts : ThreadState) : bool =
         ts.YieldDebt.IsEmpty
         || not (runnable |> List.exists (fun tid -> ts.YieldDebt |> Set.contains tid))
@@ -568,10 +573,26 @@ module Scheduler =
             | SchedulerState.RoundRobin -> SchedulerState.RoundRobin
             | SchedulerState.Pct pct -> SchedulerState.Pct (PctState.removeThread terminated pct)
 
-        { state with
-            ThreadState = threadState
-            Scheduling = scheduling
-        }
+        let state =
+            { state with
+                ThreadState = threadState
+                Scheduling = scheduling
+            }
+
+        // Discharge `terminated` from every outstanding yield debt. A thread's *final* step is
+        // its bottom-frame `Ret`, which the driver surfaces as `ExecutionResult.Terminated` and
+        // routes here rather than through `onStepOutcome` — so without this, the one step that
+        // most conclusively satisfies "I am waiting to see you run" would be the one step that
+        // never discharges anything.
+        //
+        // Not needed for correctness: `candidates` intersects each debt with the live Runnable
+        // set, and a Terminated thread is never in it, so a stale member could not hold anyone
+        // out. It is needed for cost. A debt containing a terminated id never becomes empty, so
+        // its owner permanently misses the `IsEmpty` fast path in `debtDischarged` and pays a
+        // scan of the runnable list on every scheduling decision for the rest of the run —
+        // turning candidate selection from O(R) into O(R²) once a few threads have yielded and
+        // a peer has exited. Pruning here keeps the fast path reachable.
+        dischargeYieldDebts terminated state
 
     /// Apply the init outcome of a freshly-spawned worker to its own ThreadStatus.
     /// Called once from `Thread.StartInternal` after `ensureTypeInitialised` has run

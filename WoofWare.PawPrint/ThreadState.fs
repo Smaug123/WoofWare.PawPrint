@@ -351,10 +351,14 @@ type ThreadState =
         /// Bounded and self-clearing by construction, which is the whole point of the
         /// representation. The set only ever shrinks: members are removed as they run, and
         /// `Scheduler.candidates` additionally intersects it with the live Runnable set at
-        /// read time, so a member that blocks, parks or terminates stops counting without any
-        /// cleanup pass — in particular there is nothing to prune in
-        /// `Scheduler.onThreadTerminated` (contrast `PctState.removeThread`, which exists
-        /// precisely because a map keyed on live threads *does* need pruning).
+        /// read time, so for *correctness* a member that blocks, parks or terminates stops
+        /// counting with no cleanup pass at all.
+        ///
+        /// `Scheduler.onThreadTerminated` nonetheless prunes the terminated thread, for cost
+        /// rather than correctness: a debt that retains a permanently-unrunnable member never
+        /// becomes empty, so its owner misses the cheap `IsEmpty` test forever after and pays
+        /// a runnable-set scan on every scheduling decision. See that function for the
+        /// argument in full.
         ///
         /// The consequence worth stating explicitly, because the obvious alternative design
         /// gets it wrong: a peer that never yields *discharges* the debt by running. A rule
