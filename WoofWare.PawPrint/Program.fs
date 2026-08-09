@@ -376,7 +376,7 @@ module Program =
             { prepared with
                 State =
                     state.MapKernel (fun kernel ->
-                        // `EmulatedKernel.instructionCostTicks` of virtual time per scheduler
+                        // `EmulatedKernel.InstructionCostTicks` of virtual time per scheduler
                         // tick — see that constant for the rate and why it is what it is.
                         // Bumping in lock-step with `StepCounter` keeps both clocks pure
                         // functions of "how many scheduler ticks have elapsed", which is what
@@ -390,7 +390,7 @@ module Program =
                             StepCounter = kernel.StepCounter + 1L
                         }
                         |> EmulatedKernel.withVirtualClockTicks (
-                            kernel.VirtualClockTicks + EmulatedKernel.instructionCostTicks
+                            kernel.VirtualClockTicks + kernel.InstructionCostTicks
                         )
                     )
             }

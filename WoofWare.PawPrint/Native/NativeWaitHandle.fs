@@ -336,7 +336,7 @@ module NativeWaitHandle =
             // against the virtual clock. The guest's timeout is in
             // milliseconds and the clock counts 100 ns ticks, so it is scaled
             // by `ticksPerMillisecond` on the way in. `VirtualClockTicks`
-            // advances by `instructionCostTicks` per scheduler tick (per
+            // advances by `InstructionCostTicks` per scheduler tick (per
             // `Program.stepPrepared`), and the
             // driver loop fires `WaitHandle.fireTimeout` when the clock
             // reaches or passes a parked thread's deadline; if no other

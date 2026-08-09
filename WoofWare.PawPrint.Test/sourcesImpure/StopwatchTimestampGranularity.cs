@@ -33,11 +33,11 @@ namespace HelloWorldApp
 
             long first = Stopwatch.GetTimestamp();
 
-            if (first % 1_000_000L != 0) return 2;
+            if (first % 100L != 0) return 2;
 
-            // The virtual clock advances 1ms per scheduler tick from zero, so
-            // by the time the guest reaches here the reading is positive but
-            // nowhere near a day's worth of simulated uptime. The generous
+            // The virtual clock advances from zero at a fixed cost per scheduler
+            // tick, so by the time the guest reaches here the reading is positive
+            // but nowhere near a day's worth of simulated uptime. The generous
             // headroom means this cannot be tripped merely by the interpreter
             // taking more steps than it does today.
             if (first <= 0) return 3;
@@ -47,18 +47,26 @@ namespace HelloWorldApp
             // later: elapsed-time polling loops in guest code terminate.
             long second = Stopwatch.GetTimestamp();
             if (second <= first) return 5;
-            if (second % 1_000_000L != 0) return 6;
+            if (second % 100L != 0) return 6;
 
             // `Environment.TickCount64` (SystemNative_GetLowResolutionTimestamp)
             // and `Stopwatch` (SystemNative_GetTimestamp) are two views of one
             // clock, exactly as they are upstream. Read the low-resolution one
-            // between two high-resolution ones and it must fall between them.
+            // between two high-resolution ones and its *millisecond bucket* must
+            // overlap the interval they bracket.
+            //
+            // Not "must fall between them": that is a theorem only for a clock whose
+            // granularity is the millisecond the low-resolution view reports, and this
+            // one is finer, so the reading generally floors to strictly below `before`.
+            // Expanding it to the millisecond it stands for is the honest statement, and
+            // still catches the failures worth catching: the two entry points reading
+            // different clocks, or disagreeing by more than the low-resolution quantum.
             long before = Stopwatch.GetTimestamp();
             long ticks = Environment.TickCount64;
             long after = Stopwatch.GetTimestamp();
 
-            if (ticks * 1_000_000L < before) return 7;
-            if (ticks * 1_000_000L > after) return 8;
+            if (ticks * 1_000_000L > after) return 7;
+            if (ticks * 1_000_000L + 1_000_000L <= before) return 8;
 
             return 0;
         }
