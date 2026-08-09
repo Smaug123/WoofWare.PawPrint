@@ -114,6 +114,7 @@
          RuntimeTypeHandle QCalls. -->
     <Compile Include="Native\NativeRuntimeMethodHandle.fs" />
     <Compile Include="Native\NativeSignature.fs" />
+    <Compile Include="Native\NativeReflectionInvocation.fs" />
     <Compile Include="Native\NativeRuntimeTypeQCall.fs" />
     <Compile Include="Native\NativeRuntimeTypeFCall.fs" />
     <Compile Include="Native\NativeRuntimeType.fs" />
