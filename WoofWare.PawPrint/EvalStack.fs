@@ -340,7 +340,7 @@ module EvalStackValue =
     /// `conv.i1`.
     ///
     /// The narrowing integer conversions (`conv.i1` / `conv.i2` / `conv.i4` and
-    /// their unsigned counterparts) take `PointerHashCounters` because a
+    /// their unsigned counterparts) take `PointerHashState` because a
     /// pointer-shaped source must be materialised into bits before it can be
     /// truncated. The destination is narrower than a pointer, so the result cannot
     /// be a pointer and the honest answer is the source's bits;
@@ -354,7 +354,7 @@ module EvalStackValue =
     /// `(sbyte)(long)ptr` agree by construction rather than by coincidence.
     /// CoreLib chooses between those spellings with `#if TARGET_64BIT` inside
     /// `IntPtr.GetHashCode` (IntPtr.cs:90-97), so they have to.
-    let convToInt8 (value : EvalStackValue) (counters : PointerHashCounters) : int32 * PointerHashCounters =
+    let convToInt8 (value : EvalStackValue) (counters : PointerHashState) : int32 * PointerHashState =
         match value with
         | EvalStackValue.Int32 int32Source ->
             let i = Int32Source.value "Conv_I1" int32Source
@@ -372,8 +372,8 @@ module EvalStackValue =
         | EvalStackValue.ObjectRef _
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_I1" value
 
-    /// `conv.i2`. See `convToInt8` for why this takes `PointerHashCounters`.
-    let convToInt16 (value : EvalStackValue) (counters : PointerHashCounters) : int32 * PointerHashCounters =
+    /// `conv.i2`. See `convToInt8` for why this takes `PointerHashState`.
+    let convToInt16 (value : EvalStackValue) (counters : PointerHashState) : int32 * PointerHashState =
         match value with
         | EvalStackValue.Int32 int32Source ->
             let i = Int32Source.value "Conv_I2" int32Source
@@ -396,8 +396,8 @@ module EvalStackValue =
     let private narrowByrefTo32 (truncate : int64 -> int32) (ptr : ManagedPointerSource) : EvalStackValue =
         Int32Source.narrowManagedPointer truncate ptr |> EvalStackValue.Int32
 
-    /// `conv.i4`. See `convToInt8` for why this takes `PointerHashCounters`.
-    let convToInt32 (value : EvalStackValue) (counters : PointerHashCounters) : EvalStackValue * PointerHashCounters =
+    /// `conv.i4`. See `convToInt8` for why this takes `PointerHashState`.
+    let convToInt32 (value : EvalStackValue) (counters : PointerHashState) : EvalStackValue * PointerHashState =
         match value with
         // Identity, narrowed byrefs included: re-truncating a value that is
         // already 32 bits wide changes nothing.
@@ -467,8 +467,8 @@ module EvalStackValue =
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_U8" value
 
     /// `conv.u1`, then truncates to int32. See `convToInt8` for why this takes
-    /// `PointerHashCounters`.
-    let convToUInt8 (value : EvalStackValue) (counters : PointerHashCounters) : int32 * PointerHashCounters =
+    /// `PointerHashState`.
+    let convToUInt8 (value : EvalStackValue) (counters : PointerHashState) : int32 * PointerHashState =
         match value with
         | EvalStackValue.Int32 int32Source ->
             let i = Int32Source.value "Conv_U1" int32Source
@@ -487,8 +487,8 @@ module EvalStackValue =
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_U1" value
 
     /// `conv.u2`, then truncates to int32. See `convToInt8` for why this takes
-    /// `PointerHashCounters`.
-    let convToUInt16 (value : EvalStackValue) (counters : PointerHashCounters) : int32 * PointerHashCounters =
+    /// `PointerHashState`.
+    let convToUInt16 (value : EvalStackValue) (counters : PointerHashState) : int32 * PointerHashState =
         match value with
         | EvalStackValue.Int32 int32Source ->
             let i = Int32Source.value "Conv_U2" int32Source
@@ -507,8 +507,8 @@ module EvalStackValue =
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_U2" value
 
     /// `conv.u4`, then truncates to int32. See `convToInt8` for why this takes
-    /// `PointerHashCounters`.
-    let convToUInt32 (value : EvalStackValue) (counters : PointerHashCounters) : EvalStackValue * PointerHashCounters =
+    /// `PointerHashState`.
+    let convToUInt32 (value : EvalStackValue) (counters : PointerHashState) : EvalStackValue * PointerHashState =
         match value with
         // A narrowed byref is already 32 bits wide, and `conv.u4` only reinterprets
         // those bits; it neither discards any nor makes the value knowable.
@@ -607,7 +607,7 @@ module EvalStackValue =
     /// two exactly-known pointer bit patterns (`Null`, and the `NativeIntPlaceholder`
     /// produced by `Unsafe.AsRef<T>((void*)bits)`), and already-synthesised hash bits all
     /// have bits to report. A real pointer or handle does not: reporting one means
-    /// assigning it a `PointerHashCounters` identity, which is a side effect a caller may
+    /// assigning it a `PointerHashState` identity, which is a side effect a caller may
     /// have no business causing — so those, and cross-array offsets, return `ValueNone`
     /// and leave the caller to refuse with its own diagnostic.
     let rec tryExactIntegerBits (value : EvalStackValue) : int64 voption =

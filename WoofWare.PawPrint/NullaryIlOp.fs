@@ -240,8 +240,8 @@ module NullaryIlOp =
     let private xorNativeIntSources
         (i1 : NativeIntSource)
         (i2 : NativeIntSource)
-        (counters : PointerHashCounters)
-        : NativeIntSource * PointerHashCounters
+        (counters : PointerHashState)
+        : NativeIntSource * PointerHashState
         =
         match i1, i2 with
         | NativeIntSource.Verbatim a, NativeIntSource.Verbatim b -> NativeIntSource.Verbatim (a ^^^ b), counters
@@ -278,15 +278,15 @@ module NullaryIlOp =
     /// Note that a handle-shaped source does not survive a double complement as
     /// itself: `~~handle` comes back as `OpaqueHashBits`, so comparing that against
     /// the original handle hits `equalsForCli`'s "synthesised hash bits vs handle
-    /// pointer" refusal (CEQ has no `PointerHashCounters` with which to materialise
+    /// pointer" refusal (CEQ has no `PointerHashState` with which to materialise
     /// the handle). That is a property of the hash-synthesis design rather than of
     /// `not`: `xorNativeIntSources` loses handle provenance the same way, so
     /// `(handle ^ 0) ^ 0 == handle` already fails identically. The failure is loud,
     /// and the complemented bits themselves are correct and deterministic.
     let private notNativeIntSource
         (source : NativeIntSource)
-        (counters : PointerHashCounters)
-        : NativeIntSource * PointerHashCounters
+        (counters : PointerHashState)
+        : NativeIntSource * PointerHashState
         =
         match source with
         | NativeIntSource.Verbatim i -> NativeIntSource.Verbatim ~~~i, counters
@@ -439,11 +439,7 @@ module NullaryIlOp =
     let private negInt64Unchecked (value : int64) : int64 =
         0UL - uint64<int64> value |> int64<uint64>
 
-    let private negValue
-        (value : EvalStackValue)
-        (counters : PointerHashCounters)
-        : EvalStackValue * PointerHashCounters
-        =
+    let private negValue (value : EvalStackValue) (counters : PointerHashState) : EvalStackValue * PointerHashState =
         match value with
         | EvalStackValue.Int32 int32Source ->
             let value = Int32Source.value "Neg" int32Source
@@ -1812,11 +1808,11 @@ module NullaryIlOp =
                     let i = Int32Source.value "Shr" int32Source
                     i >>> shift |> Int32Source.Verbatim |> EvalStackValue.Int32, state
                 | EvalStackValue.Int64 i ->
-                    let r, counters = Int64Source.shr "Shr" i shift state.PointerHashCounters
+                    let r, counters = Int64Source.shr "Shr" i shift state.PointerHashState
 
                     EvalStackValue.Int64 r,
                     { state with
-                        PointerHashCounters = counters
+                        PointerHashState = counters
                     }
                 | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) ->
                     (i >>> shift) |> NativeIntSource.Verbatim |> EvalStackValue.NativeInt, state
@@ -1852,11 +1848,11 @@ module NullaryIlOp =
                     |> EvalStackValue.Int32,
                     state
                 | EvalStackValue.Int64 i ->
-                    let r, counters = Int64Source.shrUn "Shr_un" i shift state.PointerHashCounters
+                    let r, counters = Int64Source.shrUn "Shr_un" i shift state.PointerHashState
 
                     EvalStackValue.Int64 r,
                     { state with
-                        PointerHashCounters = counters
+                        PointerHashState = counters
                     }
                 | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) ->
                     (uint64<int64> i >>> shift |> int64<uint64>)
@@ -1890,11 +1886,11 @@ module NullaryIlOp =
                     let i = Int32Source.value "Shl" int32Source
                     i <<< shift |> Int32Source.Verbatim |> EvalStackValue.Int32, state
                 | EvalStackValue.Int64 i ->
-                    let r, counters = Int64Source.shl "Shl" i shift state.PointerHashCounters
+                    let r, counters = Int64Source.shl "Shl" i shift state.PointerHashState
 
                     EvalStackValue.Int64 r,
                     { state with
-                        PointerHashCounters = counters
+                        PointerHashState = counters
                     }
                 | EvalStackValue.NativeInt (NativeIntSource.Verbatim i) ->
                     (i <<< shift) |> NativeIntSource.Verbatim |> EvalStackValue.NativeInt, state
@@ -1939,11 +1935,11 @@ module NullaryIlOp =
                 | EvalStackValue.Int32 (Int32Source.Verbatim mask), EvalStackValue.ManagedPointer ptr ->
                     int64<int32> mask |> andManagedPointerAddressBits state ptr, state
                 | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 ->
-                    let r, counters = Int64Source.bitAnd "And" v1 v2 state.PointerHashCounters
+                    let r, counters = Int64Source.bitAnd "And" v1 v2 state.PointerHashState
 
                     EvalStackValue.Int64 r,
                     { state with
-                        PointerHashCounters = counters
+                        PointerHashState = counters
                     }
                 | EvalStackValue.Int64 mask, EvalStackValue.ManagedPointer ptr -> failwith "TODO"
                 // andManagedPointerAddressBits state ptr mask
@@ -2019,11 +2015,11 @@ module NullaryIlOp =
                 | EvalStackValue.Int32 _, EvalStackValue.NativeInt _ ->
                     failwith $"can't do binary operation on non-verbatim native int {v2}"
                 | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 ->
-                    let r, counters = Int64Source.bitOr "Or" v1 v2 state.PointerHashCounters
+                    let r, counters = Int64Source.bitOr "Or" v1 v2 state.PointerHashState
 
                     EvalStackValue.Int64 r,
                     { state with
-                        PointerHashCounters = counters
+                        PointerHashState = counters
                     }
                 | EvalStackValue.NativeInt (NativeIntSource.Verbatim v1), EvalStackValue.Int32 (Int32Source.Verbatim v2) ->
                     v1 ||| int64<int32> v2 |> NativeIntSource.Verbatim |> EvalStackValue.NativeInt, state
@@ -2057,22 +2053,22 @@ module NullaryIlOp =
                 | EvalStackValue.Int32 _, EvalStackValue.NativeInt _ ->
                     failwith $"can't do binary operation on non-verbatim native int {v2}"
                 | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 ->
-                    let r, counters = Int64Source.bitXor "Xor" v1 v2 state.PointerHashCounters
+                    let r, counters = Int64Source.bitXor "Xor" v1 v2 state.PointerHashState
 
                     EvalStackValue.Int64 r,
                     { state with
-                        PointerHashCounters = counters
+                        PointerHashState = counters
                     }
                 | EvalStackValue.NativeInt (NativeIntSource.Verbatim v1), EvalStackValue.Int32 (Int32Source.Verbatim v2) ->
                     v1 ^^^ int64<int32> v2 |> NativeIntSource.Verbatim |> EvalStackValue.NativeInt, state
                 | EvalStackValue.NativeInt _, EvalStackValue.Int32 _ ->
                     failwith $"can't do binary operation on non-verbatim native int {v1}"
                 | EvalStackValue.NativeInt src1, EvalStackValue.NativeInt src2 ->
-                    let r, counters = xorNativeIntSources src1 src2 state.PointerHashCounters
+                    let r, counters = xorNativeIntSources src1 src2 state.PointerHashState
 
                     EvalStackValue.NativeInt r,
                     { state with
-                        PointerHashCounters = counters
+                        PointerHashState = counters
                     }
                 | _, _ -> failwith $"refusing to do binary operation on {v1} and {v2}"
 
@@ -2107,11 +2103,11 @@ module NullaryIlOp =
             (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Conv_I1 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
-            let conv, counters = EvalStackValue.convToInt8 popped state.PointerHashCounters
+            let conv, counters = EvalStackValue.convToInt8 popped state.PointerHashState
 
             let state =
                 { state with
-                    PointerHashCounters = counters
+                    PointerHashState = counters
                 }
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim conv)) currentThread
 
@@ -2120,11 +2116,11 @@ module NullaryIlOp =
             (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Conv_I2 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
-            let conv, counters = EvalStackValue.convToInt16 popped state.PointerHashCounters
+            let conv, counters = EvalStackValue.convToInt16 popped state.PointerHashState
 
             let state =
                 { state with
-                    PointerHashCounters = counters
+                    PointerHashState = counters
                 }
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim conv)) currentThread
 
@@ -2134,12 +2130,11 @@ module NullaryIlOp =
         | Conv_I4 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
 
-            let converted, counters =
-                EvalStackValue.convToInt32 popped state.PointerHashCounters
+            let converted, counters = EvalStackValue.convToInt32 popped state.PointerHashState
 
             let state =
                 { state with
-                    PointerHashCounters = counters
+                    PointerHashState = counters
                 }
                 |> IlMachineState.pushToEvalStack' converted currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
@@ -2212,11 +2207,11 @@ module NullaryIlOp =
             (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Conv_U1 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
-            let conv, counters = EvalStackValue.convToUInt8 popped state.PointerHashCounters
+            let conv, counters = EvalStackValue.convToUInt8 popped state.PointerHashState
 
             let state =
                 { state with
-                    PointerHashCounters = counters
+                    PointerHashState = counters
                 }
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim conv)) currentThread
 
@@ -2225,11 +2220,11 @@ module NullaryIlOp =
             (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Conv_U2 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
-            let conv, counters = EvalStackValue.convToUInt16 popped state.PointerHashCounters
+            let conv, counters = EvalStackValue.convToUInt16 popped state.PointerHashState
 
             let state =
                 { state with
-                    PointerHashCounters = counters
+                    PointerHashState = counters
                 }
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim conv)) currentThread
 
@@ -2239,12 +2234,11 @@ module NullaryIlOp =
         | Conv_U4 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
 
-            let converted, counters =
-                EvalStackValue.convToUInt32 popped state.PointerHashCounters
+            let converted, counters = EvalStackValue.convToUInt32 popped state.PointerHashState
 
             let state =
                 { state with
-                    PointerHashCounters = counters
+                    PointerHashState = counters
                 }
                 |> IlMachineState.pushToEvalStack' converted currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
@@ -2741,11 +2735,11 @@ module NullaryIlOp =
                 |> ExecutionResult.stepped
         | Neg ->
             let val1, state = IlMachineState.popEvalStack currentThread state
-            let result, counters = negValue val1 state.PointerHashCounters
+            let result, counters = negValue val1 state.PointerHashState
 
             let state =
                 { state with
-                    PointerHashCounters = counters
+                    PointerHashState = counters
                 }
 
             state
@@ -2762,21 +2756,21 @@ module NullaryIlOp =
                     let i = Int32Source.value "Not" int32Source
                     ~~~i |> Int32Source.Verbatim |> EvalStackValue.Int32, state
                 | EvalStackValue.Int64 i ->
-                    let r, counters = Int64Source.bitNot "Not" i state.PointerHashCounters
+                    let r, counters = Int64Source.bitNot "Not" i state.PointerHashState
 
                     EvalStackValue.Int64 r,
                     { state with
-                        PointerHashCounters = counters
+                        PointerHashState = counters
                     }
                 | EvalStackValue.NativeInt src ->
                     // ECMA-335 III.3.35: `not` is defined on native ints. The BCL reaches
                     // this through the unrolled loops that round a count down to a multiple
                     // of a power of two, e.g. `numElements & ~(nuint)7` in SpanHelpers.Fill.
-                    let r, counters = notNativeIntSource src state.PointerHashCounters
+                    let r, counters = notNativeIntSource src state.PointerHashState
 
                     EvalStackValue.NativeInt r,
                     { state with
-                        PointerHashCounters = counters
+                        PointerHashState = counters
                     }
                 | EvalStackValue.ManagedPointer _
                 | EvalStackValue.NullObjectRef

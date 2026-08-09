@@ -981,7 +981,7 @@ module BinaryArithmetic =
     /// Apply a binary arithmetic operation. Returns the result together with
     /// the (possibly updated) machine state — the WidenedNativeInt arms that
     /// materialise synthesised pointer-hash bits register new
-    /// `PointerHashCounters` entries on `state`; every other arm returns
+    /// `PointerHashState` assignments on `state`; every other arm returns
     /// `state` unchanged. Callers MUST use the returned state, not the input
     /// state, when pushing the result.
     let execute
@@ -1031,7 +1031,7 @@ module BinaryArithmetic =
                 EvalStackValue.Int64 (Int64Source.widenedNativeInt (NativeIntSource.ManagedPointer ptr) signed)
             | Choice2Of2 i -> EvalStackValue.Int64 (Int64Source.Verbatim i)
 
-        let materialise (src : NativeIntSource) (counters : PointerHashCounters) : int64 * PointerHashCounters =
+        let materialise (src : NativeIntSource) (counters : PointerHashState) : int64 * PointerHashState =
             PointerHashSynthesis.materialiseHashBits $"BinaryArithmetic.%s{op.Name}" src counters
 
         let withState (esv : EvalStackValue) : EvalStackValue * IlMachineState = esv, state
@@ -1125,40 +1125,40 @@ module BinaryArithmetic =
         // handles, etc.). Result is tagged OpaqueHashBits so it can't
         // round-trip back to a pointer via `conv.u` / `conv.i`.
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)), EvalStackValue.Int64 (Int64Source.Verbatim val2) ->
-            let val1, counters = materialise src state.PointerHashCounters
+            let val1, counters = materialise src state.PointerHashState
 
             let state =
                 { state with
-                    PointerHashCounters = counters
+                    PointerHashState = counters
                 }
 
             op.Int64Int64 val1 val2 |> Int64Source.OpaqueHashBits |> EvalStackValue.Int64, state
         | EvalStackValue.Int64 (Int64Source.Verbatim val1), EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
-            let val2, counters = materialise src state.PointerHashCounters
+            let val2, counters = materialise src state.PointerHashState
 
             let state =
                 { state with
-                    PointerHashCounters = counters
+                    PointerHashState = counters
                 }
 
             op.Int64Int64 val1 val2 |> Int64Source.OpaqueHashBits |> EvalStackValue.Int64, state
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)),
           EvalStackValue.Int64 (Int64Source.OpaqueHashBits val2) ->
-            let val1, counters = materialise src state.PointerHashCounters
+            let val1, counters = materialise src state.PointerHashState
 
             let state =
                 { state with
-                    PointerHashCounters = counters
+                    PointerHashState = counters
                 }
 
             op.Int64Int64 val1 val2 |> Int64Source.OpaqueHashBits |> EvalStackValue.Int64, state
         | EvalStackValue.Int64 (Int64Source.OpaqueHashBits val1),
           EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
-            let val2, counters = materialise src state.PointerHashCounters
+            let val2, counters = materialise src state.PointerHashState
 
             let state =
                 { state with
-                    PointerHashCounters = counters
+                    PointerHashState = counters
                 }
 
             op.Int64Int64 val1 val2 |> Int64Source.OpaqueHashBits |> EvalStackValue.Int64, state
@@ -1175,12 +1175,12 @@ module BinaryArithmetic =
                 failwith
                     $"TODO: BinaryArithmetic %s{op.Name} on (WidenedNativeInt %O{src1}) and (WidenedNativeInt %O{src2}): one side is a managed pointer, the other isn't"
             | _ ->
-                let val1, counters = materialise src1 state.PointerHashCounters
+                let val1, counters = materialise src1 state.PointerHashState
                 let val2, counters = materialise src2 counters
 
                 let state =
                     { state with
-                        PointerHashCounters = counters
+                        PointerHashState = counters
                     }
 
                 op.Int64Int64 val1 val2 |> Int64Source.OpaqueHashBits |> EvalStackValue.Int64, state

@@ -590,7 +590,7 @@ module NativeIntSource =
         // round-trips the handle's materialised bits into an
         // OpaqueHashBits carrier, so the answer depends on whether those
         // bits equal the handle's synthesised address. Resolving correctly
-        // requires reading the `PointerHashCounters` map, which `ceq` does
+        // requires reading the assignments held in `PointerHashState`, which `ceq` does
         // not thread today. Fail loudly rather than fall through to the
         // handle-kind catch-all (which would return a fixed `false` even
         // for the same handle). Mirrors the Int64
@@ -630,7 +630,7 @@ module NativeIntSource =
         | NativeIntSource.OpaqueHashBits _, NativeIntSource.WaitHandlePtr _
         | NativeIntSource.WaitHandlePtr _, NativeIntSource.OpaqueHashBits _ ->
             failwith
-                $"TODO (CEQ): synthesised hash bits vs handle pointer requires materialising the handle's bits through PointerHashCounters; got {a} vs {b}"
+                $"TODO (CEQ): synthesised hash bits vs handle pointer requires materialising the handle's bits through PointerHashState; got {a} vs {b}"
         // CoreCLR's TypeHandle wraps either a MethodTable* (when !IsTypeDesc) or a tagged
         // TypeDesc*; for non-TypeDesc handles the inner pointer IS the MethodTable address.
         // Patterns like `RuntimeHelpers.GetMethodTable(obj) == TypeHandleOf<T>().AsMethodTable()`

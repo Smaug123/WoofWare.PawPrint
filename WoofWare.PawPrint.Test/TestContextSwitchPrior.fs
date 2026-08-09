@@ -102,7 +102,7 @@ module TestContextSwitchPrior =
         ]
 
     /// Ops whose only effect is on interpreter-internal mutable bookkeeping
-    /// (`PointerHashCounters` or `ManagedHeap.Arrays` reads via the byte-view
+    /// (`PointerHashState` or `ManagedHeap.Arrays` reads via the byte-view
     /// anchor path). Guest IL has no opcode that directly addresses these
     /// structures.
     let private nullaryInterpreterOnly : NullaryIlOp list =

@@ -10,7 +10,7 @@ namespace WoofWare.PawPrint
 ///
 /// The motivation is that under a strict one-sided POR contract, nearly
 /// every op in this interpreter ends up classified as visible (because the
-/// interpreter mutates internal bookkeeping — `PointerHashCounters`,
+/// interpreter mutates internal bookkeeping — `PointerHashState`,
 /// `ConcreteTypes`, the runtime-handle cache — from ops the guest can't
 /// directly address). PCT decouples "could in principle have a cross-thread
 /// effect" from "almost always has one", and lets the scheduler spend its
@@ -28,7 +28,7 @@ type ContextSwitchPrior =
     /// pure comparisons, non-trapping non-pointer conversions, branches.
     | Never
     /// Touches only interpreter-internal mutable bookkeeping
-    /// (`PointerHashCounters`, the concretisation cache, the interning
+    /// (`PointerHashState`, the concretisation cache, the interning
     /// table). Guest IL has no opcode that directly addresses these
     /// structures; the only path to guest visibility is through opaque
     /// hash bits / handle identities, which are usually deterministic
@@ -89,7 +89,7 @@ module ContextSwitchPrior =
         | NullaryIlOp.LdcI4_m1
         | NullaryIlOp.LdNull
         // Comparisons read both operands but don't materialise pointer-hash
-        // bits, so they don't mutate `PointerHashCounters`.
+        // bits, so they don't mutate `PointerHashState`.
         | NullaryIlOp.Ceq
         | NullaryIlOp.Cgt
         | NullaryIlOp.Cgt_un
@@ -129,7 +129,7 @@ module ContextSwitchPrior =
         // ---- InterpreterOnly: bookkeeping mutation ----
         // Arithmetic on a `WidenedNativeInt` operand materialises hash bits
         // via `PointerHashSynthesis.materialiseHashBits`, which mutates
-        // `state.PointerHashCounters`. The counter assignment is observable
+        // `state.PointerHashState`. The counter assignment is observable
         // by another thread that subsequently consumes a `OpaqueHashBits`
         // value derived from the same pointer, but only through that
         // indirect channel. In typical numeric code these operands aren't
