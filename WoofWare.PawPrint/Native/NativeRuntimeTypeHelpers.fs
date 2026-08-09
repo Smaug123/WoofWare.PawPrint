@@ -654,8 +654,8 @@ module NativeRuntimeTypeHelpers =
             DeclaredBy : ConcreteType<ConcreteTypeHandle>
         }
 
-    /// The custom modifiers (`modreq`/`modopt`) a signature element carries, collected in traversal
-    /// order and paired with `true` for required.
+    /// The custom modifiers (`modreq`/`modopt`) a signature element carries: each paired with
+    /// `true` for required and with the *path* through the type tree at which it sits.
     ///
     /// These have to be compared separately because concretisation deliberately looks *through* a
     /// modifier -- runtime type identity and storage shape follow the unmodified type -- so
@@ -664,16 +664,21 @@ module NativeRuntimeTypeHelpers =
     /// through its own assembly's TypeRef, so a derived type's `in int` is not the same `TypeDefn`
     /// as the base's even though it is the same modifier. Concretising the modifier type itself is
     /// what makes the two comparable.
+    ///
+    /// The path matters because CoreCLR distinguishes a modifier attached to a pointer from the same
+    /// modifier attached to its pointee; a flat traversal-order list would make those compare equal.
     let rec private collectModifiers
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (assembly : AssemblyName)
         (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (path : string list)
         (state : IlMachineState)
         (ty : TypeDefn)
-        : IlMachineState * (bool * ConcreteTypeHandle) list
+        : IlMachineState * (string list * bool * ConcreteTypeHandle) list
         =
-        let recurse = collectModifiers loggerFactory baseClassTypes assembly typeGenerics
+        let recurse (step : string) =
+            collectModifiers loggerFactory baseClassTypes assembly typeGenerics (step :: path)
 
         match ty with
         | TypeDefn.Modified m ->
@@ -687,21 +692,34 @@ module NativeRuntimeTypeHelpers =
                     ImmutableArray.Empty
                     m.Modifier
 
-            let state, inner = recurse state m.Unmodified
-            state, (m.IsRequired, modifierHandle) :: inner
-        | TypeDefn.Byref inner
-        | TypeDefn.Pointer inner
-        | TypeDefn.Pinned inner
-        | TypeDefn.OneDimensionalArrayLowerBoundZero inner
-        | TypeDefn.Array (inner, _) ->
-            // A modifier can sit under a structural constructor -- `in int` is
-            // `modreq(InAttribute) int32&` -- so the walk has to descend rather than peel only at
-            // the top.
-            recurse state inner
+            let state, inner = recurse "mod" state m.Unmodified
+            state, (List.rev path, m.IsRequired, modifierHandle) :: inner
+        | TypeDefn.Byref inner -> recurse "byref" state inner
+        | TypeDefn.Pointer inner -> recurse "ptr" state inner
+        | TypeDefn.Pinned inner -> recurse "pinned" state inner
+        | TypeDefn.OneDimensionalArrayLowerBoundZero inner -> recurse "szarray" state inner
+        | TypeDefn.Array (inner, rank) -> recurse $"array%i{rank}" state inner
         | TypeDefn.GenericInstantiation (generic, args) ->
-            ((state, []), generic :: List.ofSeq args)
-            ||> List.fold (fun (state, acc) arg ->
-                let state, mods = recurse state arg
+            let state, fromGeneric = recurse "generic" state generic
+
+            ((state, fromGeneric), List.indexed (List.ofSeq args))
+            ||> List.fold (fun (state, acc) (i, arg) ->
+                let state, mods = recurse $"arg%i{i}" state arg
+                state, acc @ mods
+            )
+        | TypeDefn.FunctionPointer signature ->
+            // The unmanaged calling convention of a `delegate* unmanaged[Cdecl]` is carried as
+            // custom modifiers *inside* the function pointer's own signature, so two overloads can
+            // differ only there. Concretisation collapses a function pointer to one handle, so
+            // without this descent those overloads would be indistinguishable.
+            let state, fromReturn =
+                match signature.ReturnType with
+                | MethodReturnType.Void -> state, []
+                | MethodReturnType.Returns ty -> recurse "fnptr-ret" state ty
+
+            ((state, fromReturn), List.indexed signature.ParameterTypes)
+            ||> List.fold (fun (state, acc) (i, ty) ->
+                let state, mods = recurse $"fnptr-arg%i{i}" state ty
                 state, acc @ mods
             )
         | TypeDefn.PrimitiveType _
@@ -709,7 +727,6 @@ module NativeRuntimeTypeHelpers =
         | TypeDefn.FromDefinition _
         | TypeDefn.GenericTypeParameter _
         | TypeDefn.GenericMethodParameter _
-        | TypeDefn.FunctionPointer _
         | TypeDefn.Void -> state, []
 
     /// Concretise a method's parameter and return types in its declaring type's generic context, so
@@ -725,8 +742,8 @@ module NativeRuntimeTypeHelpers =
         (state : IlMachineState)
         (slot : VtableSlot)
         : IlMachineState *
-          (ConcreteTypeHandle * (bool * ConcreteTypeHandle) list) list *
-          (ConcreteTypeHandle * (bool * ConcreteTypeHandle) list) option
+          (ConcreteTypeHandle * (string list * bool * ConcreteTypeHandle) list) list *
+          (ConcreteTypeHandle * (string list * bool * ConcreteTypeHandle) list) option
         =
         if not slot.Method.Generics.IsEmpty then
             // Concretisation substitutes method generic parameters positionally from a supplied
@@ -745,7 +762,7 @@ module NativeRuntimeTypeHelpers =
         let element
             (state : IlMachineState)
             (ty : TypeDefn)
-            : IlMachineState * (ConcreteTypeHandle * (bool * ConcreteTypeHandle) list)
+            : IlMachineState * (ConcreteTypeHandle * (string list * bool * ConcreteTypeHandle) list)
             =
             let state, handle =
                 IlMachineState.concretizeType
@@ -758,7 +775,7 @@ module NativeRuntimeTypeHelpers =
                     ty
 
             let state, modifiers =
-                collectModifiers loggerFactory baseClassTypes assembly typeGenerics state ty
+                collectModifiers loggerFactory baseClassTypes assembly typeGenerics [] state ty
 
             state, (handle, modifiers)
 
@@ -915,20 +932,41 @@ module NativeRuntimeTypeHelpers =
                     // leaves `A`'s alone. Slots are appended as the walk descends, so the
                     // most-derived matching slot is the one with the largest index; the fold above
                     // prepends, so `matched` is already in descending index order.
-                    // "Most derived" can only order slots introduced at *different* levels. If two
-                    // matching slots are held by methods of the same type, that type declared two
-                    // virtuals this candidate cannot be told apart from -- illegal metadata unless
-                    // the signatures differ somewhere the normalisation above still cannot see.
-                    // Rather than pick one and be silently wrong, name it.
-                    let distinctOwners =
-                        matched
-                        |> List.map (fun i -> (List.item i slots).DeclaredBy.Identity)
-                        |> List.distinct
-                        |> List.length
+                    // A candidate legitimately matching several slots is the `new virtual` case
+                    // above, where the tie is real and most-derived is the answer. But a tie can
+                    // also be an *artifact* of matching closed signatures: CoreCLR lays slots out on
+                    // the generic definition, where `A<T>.M(T)` and `B<T>.M(string)` are distinct
+                    // methods, whereas concretising at `T = string` first makes them identical. In
+                    // that case most-derived silently picks the wrong slot -- measured: .NET reports
+                    // `C<string>.M` and `B.M`, and matching closed signatures yields `A.M` instead.
+                    //
+                    // The two are separable. A tie can only be an artifact if some generic
+                    // substitution actually happened, so when several slots match and any type
+                    // involved is generic, fail rather than guess. A single match is always safe:
+                    // the definition-level match is still among the candidates, so if only one slot
+                    // matches at all, it is that one.
+                    if List.length matched > 1 then
+                        let genericsInvolved =
+                            not concreteTypeInfo.Generics.IsEmpty
+                            || matched
+                               |> List.exists (fun i -> not (List.item i slots).DeclaredBy.Generics.IsEmpty)
 
-                    if distinctOwners <> List.length matched then
-                        failwith
-                            $"%s{operation}: virtual method %s{method.Name} on %O{concreteTypeInfo} matches %i{List.length matched} base vtable slots held by the same type, so the most-derived rule cannot order them; the signatures must differ somewhere PawPrint's slot-matching normalisation does not distinguish"
+                        if genericsInvolved then
+                            failwith
+                                $"TODO: %s{operation}: virtual method %s{method.Name} on %O{concreteTypeInfo} matches %i{List.length matched} base vtable slots that are only identical once the declaring types' generic arguments are substituted; CoreCLR lays out slots on the generic definition, which PawPrint cannot yet walk (see the open-generic TODO in `numVirtuals`)"
+
+                        // Same-type ties are not orderable by derivation either: one type declaring
+                        // two virtuals this candidate cannot be told apart from is illegal metadata
+                        // unless the signatures differ somewhere the normalisation cannot see.
+                        let distinctOwners =
+                            matched
+                            |> List.map (fun i -> (List.item i slots).DeclaredBy.Identity)
+                            |> List.distinct
+                            |> List.length
+
+                        if distinctOwners <> List.length matched then
+                            failwith
+                                $"%s{operation}: virtual method %s{method.Name} on %O{concreteTypeInfo} matches %i{List.length matched} base vtable slots held by the same type, so the most-derived rule cannot order them; the signatures must differ somewhere PawPrint's slot-matching normalisation does not distinguish"
 
                     match matched with
                     | mostDerived :: _ ->
