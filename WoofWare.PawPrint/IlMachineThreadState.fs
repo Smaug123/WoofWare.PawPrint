@@ -298,6 +298,7 @@ module IlMachineThreadState =
                 NextManagedThreadId = 2
                 PointerHashState = PointerHashState.empty
                 Kernel = EmulatedKernel.initial
+                FrozenStackTraces = Map.empty
                 Scheduling = SchedulerState.RoundRobin
             }
 

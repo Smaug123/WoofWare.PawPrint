@@ -966,6 +966,136 @@ module IlMachineRuntimeMetadata =
             | None, _
             | _, None -> state
 
+    /// The concrete field id of `System.Exception._stackTrace`, given the concrete handle of
+    /// `System.Exception` itself. The field is declared on `Exception`, so it must be resolved
+    /// against that type and not against whatever derived exception the object actually is.
+    let private stackTraceFieldId
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (exceptionHandle : ConcreteTypeHandle)
+        : FieldId
+        =
+        FieldIdentity.requiredOwnInstanceField baseClassTypes.Exception "_stackTrace"
+        |> FieldIdentity.fieldId exceptionHandle
+
+    /// Read the frozen-stack-trace token out of `exceptionAddr`'s `_stackTrace`. `None` means the
+    /// exception has never been thrown, which is a legitimate state and not an error.
+    ///
+    /// Fails if the field holds a token PawPrint did not mint: every writer goes through
+    /// `recordThrownStackTrace`, so anything else means a second writer has appeared and any
+    /// later decode of the token would silently misread it.
+    let frozenStackTraceToken
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (exceptionAddr : ManagedHeapAddress)
+        (state : IlMachineState)
+        : ManagedHeapAddress option
+        =
+        let exceptionObj =
+            match state.ManagedHeap.NonArrayObjects |> Map.tryFind exceptionAddr with
+            | Some obj -> obj
+            | None ->
+                failwith
+                    $"frozenStackTraceToken: exception @ %O{exceptionAddr} is not a non-array heap object; this is an interpreter bug"
+
+        match
+            AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Exception.Identity
+        with
+        | None ->
+            failwith
+                "frozenStackTraceToken: System.Exception has no concrete type handle, but an exception object exists on the heap; this is an interpreter bug"
+        | Some exceptionHandle ->
+
+        match
+            AllocatedNonArrayObject.DereferenceFieldById (stackTraceFieldId baseClassTypes exceptionHandle) exceptionObj
+        with
+        | CliType.ObjectRef None -> None
+        | CliType.ObjectRef (Some tokenAddr) ->
+            if state.FrozenStackTraces |> Map.containsKey tokenAddr then
+                Some tokenAddr
+            else
+                failwith
+                    $"frozenStackTraceToken: exception @ %O{exceptionAddr} holds a _stackTrace token @ %O{tokenAddr} that is not registered in FrozenStackTraces; this is an interpreter bug"
+        | other -> failwith $"frozenStackTraceToken: expected ObjectRef in Exception._stackTrace, got %O{other}"
+
+    /// Record that `exceptionAddr` has been thrown, with `stackTrace` as the frames behind it:
+    /// mint a fresh token object, register `token -> frames` in `IlMachineState.FrozenStackTraces`,
+    /// and store the token in the exception's `_stackTrace`.
+    ///
+    /// Deliberately a separate function from `setExceptionStackTraceString` rather than folded
+    /// into it: that one is a pure string projection and is also called from
+    /// `IlMachineStateExecution`, where a literal empty list means "I have nothing to say about
+    /// this cached exception"; this one is a claim about dispatch, and only the four
+    /// dispatch-conclusion sites in `ExceptionDispatching` make it.
+    ///
+    /// `_stackTrace` is what CoreLib's `Exception.HasBeenThrown` tests, so without this an
+    /// exception PawPrint has dispatched still claims never to have been thrown, and
+    /// `Exception.Source` silently answers null where the real runtime names the assembly.
+    /// See `FrozenStackTraces` for why the token is opaque.
+    ///
+    /// An empty frame list mints no token, which matters more than it looks. `HasBeenThrown`
+    /// being true is what sends `Exception.StackTrace` down `GetStackTrace()` and into the
+    /// structured decoder, so a token with no frames would promise an answer PawPrint cannot
+    /// give and turn a readable `null` trace into a crash at the unimplemented
+    /// `StackTrace_GetStackFramesInternal`. That is not hypothetical: a `.cctor` that throws
+    /// under `Activator.CreateInstance<T>()` hits both the `WasInitialisingType` and
+    /// `WrapExceptionInTargetInvocation` wraps on one frame, and the second sees the freshly
+    /// synthesised `TypeInitializationException` before any frame has been appended to it.
+    /// Populating those synthesised wrappers with real frames is issue #865's business; until
+    /// then, claiming less is the honest move.
+    let recordThrownStackTrace
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (exceptionAddr : ManagedHeapAddress)
+        (stackTrace : ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> list)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        match stackTrace with
+        | [] -> state
+        | _ :: _ ->
+
+        // Mirrors `setExceptionStackTraceString`: skeletal states in low-level dispatch tests may
+        // lack either piece, and there is nothing to project into in that case.
+        match
+            state.ManagedHeap.NonArrayObjects |> Map.tryFind exceptionAddr,
+            AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Exception.Identity
+        with
+        | Some _, Some exceptionHandle ->
+            let state, sbyteHandle =
+                DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.SByte
+                |> IlMachineTypeResolution.concretizeType
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    baseClassTypes.Corelib.Name
+                    ImmutableArray.Empty
+                    ImmutableArray.Empty
+
+            // Zero-length: the token carries no data of its own, only identity. CoreCLR's real
+            // array is an `I1Array`, hence `sbyte[]` rather than `byte[]`.
+            let tokenAddr, state =
+                IlMachineThreadState.allocateArray
+                    (ConcreteTypeHandle.OneDimArrayZero sbyteHandle)
+                    (fun () -> CliType.Numeric (CliNumericType.Int8 0y))
+                    0
+                    state
+
+            if state.FrozenStackTraces |> Map.containsKey tokenAddr then
+                failwith
+                    $"recordThrownStackTrace: freshly allocated token %O{tokenAddr} is already registered in FrozenStackTraces; heap addresses must never be reused. This is an interpreter bug."
+
+            let state =
+                { state with
+                    FrozenStackTraces = state.FrozenStackTraces |> Map.add tokenAddr stackTrace
+                }
+
+            IlMachineThreadState.setInstanceFieldById
+                exceptionAddr
+                (stackTraceFieldId baseClassTypes exceptionHandle)
+                (CliType.ObjectRef (Some tokenAddr))
+                state
+        | None, _
+        | _, None -> state
+
     /// Return the managed `System.Threading.Thread` heap object corresponding to the given guest
     /// thread, allocating it on first request and caching the address thereafter so that repeated
     /// calls yield reference-identical objects. Populates only the fields whose zero-initialised

@@ -116,8 +116,85 @@ module TestImpureCases =
 
         ]
 
+    /// Is this the concrete handle for `System.Runtime.ExceptionServices.ExceptionDispatchInfo`?
+    let private isExceptionDispatchInfo (state : IlMachineState) (handle : ConcreteTypeHandle) : bool =
+        match AllConcreteTypes.lookup handle state.ConcreteTypes with
+        | None -> false
+        | Some ct ->
+            ct.Assembly.Name = "System.Private.CoreLib"
+            && ct.Namespace = "System.Runtime.ExceptionServices"
+            && ct.Name = "ExceptionDispatchInfo"
+            && ct.Generics.IsEmpty
+
+    /// The contract `ExceptionNative_GetFrozenStackTrace` has to satisfy, stated where it can
+    /// actually be observed. See `sourcesImpure/ExceptionDispatchInfoCaptureState.cs` for why
+    /// the differential test cannot carry this.
+    ///
+    /// Walks `ExceptionDispatchInfo._dispatchState.StackTrace` — the field the QCall writes
+    /// through its second `ObjectHandleOnStack` — and requires that it holds a token registered
+    /// in `IlMachineState.FrozenStackTraces` whose frames are the guest's real ones. A handler
+    /// that wrote null, or that minted a fresh object instead of returning `_stackTrace`, fails
+    /// here.
+    let private assertCapturedFrozenStackTrace (state : IlMachineState) : unit =
+        let ediObjects =
+            state.ManagedHeap.NonArrayObjects
+            |> Map.toList
+            |> List.filter (fun (_, object) -> isExceptionDispatchInfo state object.ConcreteType)
+
+        let _ediAddr, ediObject =
+            match ediObjects with
+            | [ single ] -> single
+            | other ->
+                failwith
+                    $"expected exactly one ExceptionDispatchInfo on the heap, got %d{other.Length}; the guest parks exactly one in a static"
+
+        let dispatchStateField =
+            IlMachineState.requiredOwnInstanceFieldId state ediObject.ConcreteType "_dispatchState"
+
+        let dispatchState =
+            match AllocatedNonArrayObject.DereferenceFieldById dispatchStateField ediObject with
+            | CliType.ValueType vt -> vt
+            | other -> failwith $"expected ExceptionDispatchInfo._dispatchState to be a value type, got %O{other}"
+
+        let stackTraceField =
+            IlMachineState.requiredOwnInstanceFieldId state dispatchState.Declared "StackTrace"
+
+        let token =
+            match CliValueType.DereferenceFieldById stackTraceField dispatchState with
+            | CliType.ObjectRef (Some token) -> token
+            | CliType.ObjectRef None ->
+                failwith
+                    "DispatchState.StackTrace is null after capturing a thrown exception: GetFrozenStackTrace did not return the exception's frozen trace"
+            | other -> failwith $"expected DispatchState.StackTrace to be an ObjectRef, got %O{other}"
+
+        let frames =
+            match state.FrozenStackTraces |> Map.tryFind token with
+            | Some frames -> frames
+            | None ->
+                failwith
+                    $"DispatchState.StackTrace holds @ %O{token}, which is not a token PawPrint minted; GetFrozenStackTrace must return the exception's own _stackTrace, not a fresh object"
+
+        // The frames must be the guest's, not an empty placeholder: the throwing method and the
+        // method that caught it both appear in the trace PawPrint built during unwind.
+        let methodNames = frames |> List.map (fun frame -> frame.Method.Name)
+
+        methodNames |> List.contains "Thrower" |> shouldEqual true
+        methodNames |> List.contains "Main" |> shouldEqual true
+
     let cases : EndToEndTestCase list =
         [
+            {
+                // Pins the PawPrint-side contract of `ExceptionNative_GetFrozenStackTrace`.
+                // Impure because the claim is about interpreter state (the token and the frame
+                // table behind it), which the real runtime has no analogue of — its equivalent
+                // is a native `StackTraceArray` of `MethodDesc*`.
+                FileName = "ExceptionDispatchInfoCaptureState.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = Some assertCapturedFrozenStackTrace
+            }
             // The default current directory is part of PawPrint's replay
             // contract: a guest that resolves a relative path must get the same
             // answer on every machine, so the default has to be a fixed value

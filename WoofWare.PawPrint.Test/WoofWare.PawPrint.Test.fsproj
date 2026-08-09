@@ -40,6 +40,7 @@
     <Compile Include="TestCliTypeCellPaths.fs" />
     <Compile Include="TestFieldIdDiagnostics.fs" />
     <Compile Include="TestFieldIdAgreement.fs" />
+    <Compile Include="TestDispatchesVirtually.fs" />
     <Compile Include="TestProjectionByteOffset.fs" />
     <Compile Include="TestInlineArrayStorage.fs" />
     <Compile Include="TestStructLayout.fs" />
@@ -66,6 +67,7 @@
     <Compile Include="TestCrossAssemblyIsAssignableFrom.fs" />
     <Compile Include="TestCrossAssemblyLdsflda.fs" />
     <Compile Include="TestCrossAssemblyFieldScope.fs" />
+    <Compile Include="TestCrossAssemblyEnumAttribute.fs" />
     <Compile Include="TestNativeMethodDetection.fs" />
     <Compile Include="TestUnsafeAccessorRead.fs" />
     <Compile Include="TestNativeKernel32.fs" />

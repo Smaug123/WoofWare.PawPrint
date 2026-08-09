@@ -9,9 +9,9 @@ open System.Reflection.Metadata
 /// </summary>
 /// <remarks>
 /// Not all <c>CorSerializationType</c> values are represented yet:
-/// <c>TYPE</c> (0x50), <c>TAGGED_OBJECT</c> (0x51), and <c>ENUM</c> (0x55) will
-/// be added when a caller needs them. The current set covers attributes whose
-/// ctors take primitives, strings, and SZARRAYs of those.
+/// <c>TYPE</c> (0x50) and <c>TAGGED_OBJECT</c> (0x51) will be added when a caller
+/// needs them. The current set covers attributes whose ctors take primitives,
+/// strings, enums, and SZARRAYs of those.
 /// </remarks>
 [<RequireQualifiedAccess>]
 type CustomAttribFixedArg =
@@ -36,6 +36,95 @@ type CustomAttribFixedArg =
     /// The element type is fixed by the ctor parameter and is not redundantly
     /// recorded here.
     | Array of CustomAttribFixedArg list option
+    /// An enum-typed argument, carrying the decoded value of the enum's underlying type.
+    ///
+    /// The payload is always one of the integral variants above. The decoder reaches this case
+    /// only via <c>CustomAttribArgShape.Enum</c>, whose payload is an
+    /// <see cref="T:WoofWare.PawPrint.EnumUnderlyingType"/> and therefore cannot name a
+    /// non-integral type; so <c>Enum (String _)</c> and <c>Enum (Enum _)</c>, while expressible,
+    /// are not decodable.
+    ///
+    /// Which enum it was is *not* recorded: that is the caller's own
+    /// <c>CustomAttribArgShape</c> input, so a caller that wants the enum's identity (to render
+    /// a member name, say) zips the decoded args against the shapes it supplied.
+    | Enum of underlying : CustomAttribFixedArg
+
+/// <summary>
+/// The types ECMA-335 II.14.3 admits as an enum's underlying type: "the underlying type shall be
+/// a built-in integer type". This exists so that <c>CustomAttribArgShape.Enum</c> cannot name a
+/// width that no enum can have — the decoder's enum arm is then total, with no error branch for
+/// a case the caller could not have constructed.
+/// </summary>
+[<RequireQualifiedAccess>]
+type EnumUnderlyingType =
+    | Boolean
+    | Char
+    | SByte
+    | Byte
+    | Int16
+    | UInt16
+    | Int32
+    | UInt32
+    | Int64
+    | UInt64
+
+[<RequireQualifiedAccess>]
+module EnumUnderlyingType =
+    /// <c>None</c> for any primitive that cannot underlie an enum. Callers reading a real
+    /// <c>value__</c> field out of metadata should fail loudly on <c>None</c>: only hand-crafted
+    /// IL can produce such a type, and the CLR type loader would not admit it either.
+    let ofPrimitive (primitive : PrimitiveType) : EnumUnderlyingType option =
+        match primitive with
+        | PrimitiveType.Boolean -> Some EnumUnderlyingType.Boolean
+        | PrimitiveType.Char -> Some EnumUnderlyingType.Char
+        | PrimitiveType.SByte -> Some EnumUnderlyingType.SByte
+        | PrimitiveType.Byte -> Some EnumUnderlyingType.Byte
+        | PrimitiveType.Int16 -> Some EnumUnderlyingType.Int16
+        | PrimitiveType.UInt16 -> Some EnumUnderlyingType.UInt16
+        | PrimitiveType.Int32 -> Some EnumUnderlyingType.Int32
+        | PrimitiveType.UInt32 -> Some EnumUnderlyingType.UInt32
+        | PrimitiveType.Int64 -> Some EnumUnderlyingType.Int64
+        | PrimitiveType.UInt64 -> Some EnumUnderlyingType.UInt64
+        | PrimitiveType.Single
+        | PrimitiveType.Double
+        | PrimitiveType.String
+        | PrimitiveType.TypedReference
+        | PrimitiveType.IntPtr
+        | PrimitiveType.UIntPtr
+        | PrimitiveType.Object -> None
+
+    let toPrimitive (underlying : EnumUnderlyingType) : PrimitiveType =
+        match underlying with
+        | EnumUnderlyingType.Boolean -> PrimitiveType.Boolean
+        | EnumUnderlyingType.Char -> PrimitiveType.Char
+        | EnumUnderlyingType.SByte -> PrimitiveType.SByte
+        | EnumUnderlyingType.Byte -> PrimitiveType.Byte
+        | EnumUnderlyingType.Int16 -> PrimitiveType.Int16
+        | EnumUnderlyingType.UInt16 -> PrimitiveType.UInt16
+        | EnumUnderlyingType.Int32 -> PrimitiveType.Int32
+        | EnumUnderlyingType.UInt32 -> PrimitiveType.UInt32
+        | EnumUnderlyingType.Int64 -> PrimitiveType.Int64
+        | EnumUnderlyingType.UInt64 -> PrimitiveType.UInt64
+
+/// <summary>
+/// How to decode one fixed argument from a <c>CustomAttrib</c> blob: the ctor's declared parameter
+/// type, resolved to the point where the bytes can be read.
+/// </summary>
+/// <remarks>
+/// The blob is not self-describing in its fixed-args section (ECMA-335 II.23.3): an enum argument
+/// is encoded as a bare value of its underlying type, with nothing to say how wide that is. So the
+/// decoder cannot work from the ctor's <c>TypeDefn</c>s alone — resolving those needs assembly
+/// lookup, which the parser deliberately does not have. Callers resolve first and hand the decoder
+/// this plan instead, which is decodable by construction.
+///
+/// <c>TYPE</c> (0x50) and <c>TAGGED_OBJECT</c> (0x51) arguments have no variant here yet; a caller
+/// that meets one fails when building the plan, which is where the diagnostic belongs.
+/// </remarks>
+[<RequireQualifiedAccess>]
+type CustomAttribArgShape =
+    | Primitive of PrimitiveType
+    | Enum of underlying : EnumUnderlyingType
+    | SzArray of elements : CustomAttribArgShape
 
 /// <summary>
 /// Represents a custom attribute applied to a type, method, field, or other metadata entity.
@@ -282,12 +371,34 @@ module CustomAttribute =
                     Ok (Some s, bodyStart + length)
 
     /// <summary>
+    /// The part of shape resolution that needs no type resolution at all: primitives, and SZARRAYs
+    /// whose element type is itself resolvable this way. <c>None</c> for any parameter whose shape
+    /// depends on identifying a named type — an enum, a <c>System.Type</c>, an <c>object</c>.
+    /// </summary>
+    /// <remarks>
+    /// Callers that can resolve types use this first and fall back to resolution only on
+    /// <c>None</c>, so that the attributes which decode today keep costing exactly what they cost
+    /// today. Callers that cannot resolve types (the IL dumper) treat <c>None</c> as "cannot
+    /// decode this blob".
+    /// </remarks>
+    let rec tryShapeWithoutResolution (paramType : TypeDefn) : CustomAttribArgShape option =
+        match paramType with
+        | TypeDefn.PrimitiveType pt -> Some (CustomAttribArgShape.Primitive pt)
+        | TypeDefn.OneDimensionalArrayLowerBoundZero elt ->
+            tryShapeWithoutResolution elt |> Option.map CustomAttribArgShape.SzArray
+        | _ -> None
+
+    /// <summary>
     /// Decode the fixed-args section of a <c>CustomAttrib</c> blob (ECMA-335 II.23.3).
     /// The blob must start with the two-byte prolog <c>0x0001</c>, followed by one
-    /// fixed-arg value for each entry in <paramref name="paramTypes"/> (in declared order),
+    /// fixed-arg value for each entry in <paramref name="paramShapes"/> (in declared order),
     /// encoded per ECMA-335 II.23.3 / <c>CorSerializationType</c>.
     /// </summary>
-    /// <param name="paramTypes">The constructor's parameter types in declaration order.</param>
+    /// <param name="paramShapes">
+    /// The constructor's parameter types in declaration order, already resolved to
+    /// <see cref="T:WoofWare.PawPrint.CustomAttribArgShape"/>. See that type for why the raw
+    /// <c>TypeDefn</c>s are not enough.
+    /// </param>
     /// <param name="blob">The raw <c>CustomAttrib</c> blob.</param>
     /// <returns>
     /// On success: the decoded fixed-arg values in declaration order, and the offset of the
@@ -299,7 +410,7 @@ module CustomAttribute =
     /// (<c>customattribute.cpp:900</c>), which dispatches via <c>GetDataFromBlob</c>.
     /// </remarks>
     let readFixedArgs
-        (paramTypes : TypeDefn list)
+        (paramShapes : CustomAttribArgShape list)
         (blob : ImmutableArray<byte>)
         : Result<CustomAttribFixedArg list * int, string>
         =
@@ -344,145 +455,154 @@ module CustomAttribute =
 
                 Ok (v, offset + 4)
 
-        let rec readOne (paramType : TypeDefn) (offset : int) : Result<CustomAttribFixedArg * int, string> =
-            match paramType with
-            | TypeDefn.PrimitiveType pt ->
-                match pt with
-                | PrimitiveType.Boolean -> readPrimitive 1 offset (fun b o -> CustomAttribFixedArg.Bool (b.[o] <> 0uy))
-                | PrimitiveType.Char ->
-                    readPrimitive
-                        2
-                        offset
-                        (fun b o ->
-                            let v = uint16 b.[o] ||| (uint16 b.[o + 1] <<< 8)
-                            CustomAttribFixedArg.Char (char v)
-                        )
-                | PrimitiveType.SByte -> readPrimitive 1 offset (fun b o -> CustomAttribFixedArg.I1 (sbyte b.[o]))
-                | PrimitiveType.Byte -> readPrimitive 1 offset (fun b o -> CustomAttribFixedArg.U1 b.[o])
-                | PrimitiveType.Int16 ->
-                    readPrimitive
-                        2
-                        offset
-                        (fun b o ->
-                            let v = uint16 b.[o] ||| (uint16 b.[o + 1] <<< 8)
-                            CustomAttribFixedArg.I2 (int16 v)
-                        )
-                | PrimitiveType.UInt16 ->
-                    readPrimitive
-                        2
-                        offset
-                        (fun b o ->
-                            let v = uint16 b.[o] ||| (uint16 b.[o + 1] <<< 8)
-                            CustomAttribFixedArg.U2 v
-                        )
-                | PrimitiveType.Int32 ->
-                    readPrimitive
-                        4
-                        offset
-                        (fun b o ->
-                            let v =
-                                uint32 b.[o]
-                                ||| (uint32 b.[o + 1] <<< 8)
-                                ||| (uint32 b.[o + 2] <<< 16)
-                                ||| (uint32 b.[o + 3] <<< 24)
-
-                            CustomAttribFixedArg.I4 (int32 v)
-                        )
-                | PrimitiveType.UInt32 ->
-                    readPrimitive
-                        4
-                        offset
-                        (fun b o ->
-                            let v =
-                                uint32 b.[o]
-                                ||| (uint32 b.[o + 1] <<< 8)
-                                ||| (uint32 b.[o + 2] <<< 16)
-                                ||| (uint32 b.[o + 3] <<< 24)
-
-                            CustomAttribFixedArg.U4 v
-                        )
-                | PrimitiveType.Int64 ->
-                    readPrimitive
-                        8
-                        offset
-                        (fun b o ->
-                            let lo =
-                                uint32 b.[o]
-                                ||| (uint32 b.[o + 1] <<< 8)
-                                ||| (uint32 b.[o + 2] <<< 16)
-                                ||| (uint32 b.[o + 3] <<< 24)
-
-                            let hi =
-                                uint32 b.[o + 4]
-                                ||| (uint32 b.[o + 5] <<< 8)
-                                ||| (uint32 b.[o + 6] <<< 16)
-                                ||| (uint32 b.[o + 7] <<< 24)
-
-                            CustomAttribFixedArg.I8 (int64 (uint64 lo ||| (uint64 hi <<< 32)))
-                        )
-                | PrimitiveType.UInt64 ->
-                    readPrimitive
-                        8
-                        offset
-                        (fun b o ->
-                            let lo =
-                                uint32 b.[o]
-                                ||| (uint32 b.[o + 1] <<< 8)
-                                ||| (uint32 b.[o + 2] <<< 16)
-                                ||| (uint32 b.[o + 3] <<< 24)
-
-                            let hi =
-                                uint32 b.[o + 4]
-                                ||| (uint32 b.[o + 5] <<< 8)
-                                ||| (uint32 b.[o + 6] <<< 16)
-                                ||| (uint32 b.[o + 7] <<< 24)
-
-                            CustomAttribFixedArg.U8 (uint64 lo ||| (uint64 hi <<< 32))
-                        )
-                | PrimitiveType.Single ->
-                    readPrimitive
-                        4
-                        offset
-                        (fun b o ->
-                            let bits =
-                                uint32 b.[o]
-                                ||| (uint32 b.[o + 1] <<< 8)
-                                ||| (uint32 b.[o + 2] <<< 16)
-                                ||| (uint32 b.[o + 3] <<< 24)
-
-                            CustomAttribFixedArg.R4 (System.BitConverter.Int32BitsToSingle (int32 bits))
-                        )
-                | PrimitiveType.Double ->
-                    readPrimitive
-                        8
-                        offset
-                        (fun b o ->
-                            let lo =
-                                uint32 b.[o]
-                                ||| (uint32 b.[o + 1] <<< 8)
-                                ||| (uint32 b.[o + 2] <<< 16)
-                                ||| (uint32 b.[o + 3] <<< 24)
-
-                            let hi =
-                                uint32 b.[o + 4]
-                                ||| (uint32 b.[o + 5] <<< 8)
-                                ||| (uint32 b.[o + 6] <<< 16)
-                                ||| (uint32 b.[o + 7] <<< 24)
-
-                            let bits = uint64 lo ||| (uint64 hi <<< 32)
-                            CustomAttribFixedArg.R8 (System.BitConverter.Int64BitsToDouble (int64 bits))
-                        )
-                | PrimitiveType.String ->
-                    match readSerString blob offset with
-                    | Error e -> Error e
-                    | Ok (s, next) -> Ok (CustomAttribFixedArg.String s, next)
-                | other ->
-                    Error (
-                        sprintf
-                            "CustomAttrib blob: TODO: primitive type %O is not yet supported as a CustomAttrib fixed-arg"
-                            other
+        let readPrimitiveValue (pt : PrimitiveType) (offset : int) : Result<CustomAttribFixedArg * int, string> =
+            match pt with
+            | PrimitiveType.Boolean -> readPrimitive 1 offset (fun b o -> CustomAttribFixedArg.Bool (b.[o] <> 0uy))
+            | PrimitiveType.Char ->
+                readPrimitive
+                    2
+                    offset
+                    (fun b o ->
+                        let v = uint16 b.[o] ||| (uint16 b.[o + 1] <<< 8)
+                        CustomAttribFixedArg.Char (char v)
                     )
-            | TypeDefn.OneDimensionalArrayLowerBoundZero eltType ->
+            | PrimitiveType.SByte -> readPrimitive 1 offset (fun b o -> CustomAttribFixedArg.I1 (sbyte b.[o]))
+            | PrimitiveType.Byte -> readPrimitive 1 offset (fun b o -> CustomAttribFixedArg.U1 b.[o])
+            | PrimitiveType.Int16 ->
+                readPrimitive
+                    2
+                    offset
+                    (fun b o ->
+                        let v = uint16 b.[o] ||| (uint16 b.[o + 1] <<< 8)
+                        CustomAttribFixedArg.I2 (int16 v)
+                    )
+            | PrimitiveType.UInt16 ->
+                readPrimitive
+                    2
+                    offset
+                    (fun b o ->
+                        let v = uint16 b.[o] ||| (uint16 b.[o + 1] <<< 8)
+                        CustomAttribFixedArg.U2 v
+                    )
+            | PrimitiveType.Int32 ->
+                readPrimitive
+                    4
+                    offset
+                    (fun b o ->
+                        let v =
+                            uint32 b.[o]
+                            ||| (uint32 b.[o + 1] <<< 8)
+                            ||| (uint32 b.[o + 2] <<< 16)
+                            ||| (uint32 b.[o + 3] <<< 24)
+
+                        CustomAttribFixedArg.I4 (int32 v)
+                    )
+            | PrimitiveType.UInt32 ->
+                readPrimitive
+                    4
+                    offset
+                    (fun b o ->
+                        let v =
+                            uint32 b.[o]
+                            ||| (uint32 b.[o + 1] <<< 8)
+                            ||| (uint32 b.[o + 2] <<< 16)
+                            ||| (uint32 b.[o + 3] <<< 24)
+
+                        CustomAttribFixedArg.U4 v
+                    )
+            | PrimitiveType.Int64 ->
+                readPrimitive
+                    8
+                    offset
+                    (fun b o ->
+                        let lo =
+                            uint32 b.[o]
+                            ||| (uint32 b.[o + 1] <<< 8)
+                            ||| (uint32 b.[o + 2] <<< 16)
+                            ||| (uint32 b.[o + 3] <<< 24)
+
+                        let hi =
+                            uint32 b.[o + 4]
+                            ||| (uint32 b.[o + 5] <<< 8)
+                            ||| (uint32 b.[o + 6] <<< 16)
+                            ||| (uint32 b.[o + 7] <<< 24)
+
+                        CustomAttribFixedArg.I8 (int64 (uint64 lo ||| (uint64 hi <<< 32)))
+                    )
+            | PrimitiveType.UInt64 ->
+                readPrimitive
+                    8
+                    offset
+                    (fun b o ->
+                        let lo =
+                            uint32 b.[o]
+                            ||| (uint32 b.[o + 1] <<< 8)
+                            ||| (uint32 b.[o + 2] <<< 16)
+                            ||| (uint32 b.[o + 3] <<< 24)
+
+                        let hi =
+                            uint32 b.[o + 4]
+                            ||| (uint32 b.[o + 5] <<< 8)
+                            ||| (uint32 b.[o + 6] <<< 16)
+                            ||| (uint32 b.[o + 7] <<< 24)
+
+                        CustomAttribFixedArg.U8 (uint64 lo ||| (uint64 hi <<< 32))
+                    )
+            | PrimitiveType.Single ->
+                readPrimitive
+                    4
+                    offset
+                    (fun b o ->
+                        let bits =
+                            uint32 b.[o]
+                            ||| (uint32 b.[o + 1] <<< 8)
+                            ||| (uint32 b.[o + 2] <<< 16)
+                            ||| (uint32 b.[o + 3] <<< 24)
+
+                        CustomAttribFixedArg.R4 (System.BitConverter.Int32BitsToSingle (int32 bits))
+                    )
+            | PrimitiveType.Double ->
+                readPrimitive
+                    8
+                    offset
+                    (fun b o ->
+                        let lo =
+                            uint32 b.[o]
+                            ||| (uint32 b.[o + 1] <<< 8)
+                            ||| (uint32 b.[o + 2] <<< 16)
+                            ||| (uint32 b.[o + 3] <<< 24)
+
+                        let hi =
+                            uint32 b.[o + 4]
+                            ||| (uint32 b.[o + 5] <<< 8)
+                            ||| (uint32 b.[o + 6] <<< 16)
+                            ||| (uint32 b.[o + 7] <<< 24)
+
+                        let bits = uint64 lo ||| (uint64 hi <<< 32)
+                        CustomAttribFixedArg.R8 (System.BitConverter.Int64BitsToDouble (int64 bits))
+                    )
+            | PrimitiveType.String ->
+                match readSerString blob offset with
+                | Error e -> Error e
+                | Ok (s, next) -> Ok (CustomAttribFixedArg.String s, next)
+            | other ->
+                Error (
+                    sprintf
+                        "CustomAttrib blob: TODO: primitive type %O is not yet supported as a CustomAttrib fixed-arg"
+                        other
+                )
+
+        let rec readOne (shape : CustomAttribArgShape) (offset : int) : Result<CustomAttribFixedArg * int, string> =
+            match shape with
+            | CustomAttribArgShape.Primitive pt -> readPrimitiveValue pt offset
+            | CustomAttribArgShape.Enum underlying ->
+                // ECMA-335 II.23.3: "if the parameter kind is an enum, ... the value is stored
+                // using the underlying type of the enum". There is no tag; the width comes
+                // entirely from `underlying`, which is why the caller has to resolve it.
+                match readPrimitiveValue (EnumUnderlyingType.toPrimitive underlying) offset with
+                | Error e -> Error e
+                | Ok (value, next) -> Ok (CustomAttribFixedArg.Enum value, next)
+            | CustomAttribArgShape.SzArray eltShape ->
                 match readUInt32 offset with
                 | Error e -> Error e
                 | Ok (0xFFFFFFFFu, next) -> Ok (CustomAttribFixedArg.Array None, next)
@@ -496,22 +616,16 @@ module CustomAttribute =
                         if remaining = 0 then
                             Ok (List.rev acc, cursor)
                         else
-                            match readOne eltType cursor with
+                            match readOne eltShape cursor with
                             | Error e -> Error e
                             | Ok (value, after) -> readElems (remaining - 1) after (value :: acc)
 
                     match readElems (int numElem) next [] with
                     | Error e -> Error e
                     | Ok (elts, after) -> Ok (CustomAttribFixedArg.Array (Some elts), after)
-            | other ->
-                Error (
-                    sprintf
-                        "CustomAttrib blob: TODO: non-primitive parameter type %O is not yet supported as a CustomAttrib fixed-arg (need TYPE/ENUM/TAGGED_OBJECT decoders)"
-                        other
-                )
 
         let rec loop
-            (remaining : TypeDefn list)
+            (remaining : CustomAttribArgShape list)
             (offset : int)
             (acc : CustomAttribFixedArg list)
             : Result<CustomAttribFixedArg list * int, string>
@@ -523,4 +637,4 @@ module CustomAttribute =
                 | Error e -> Error e
                 | Ok (value, next) -> loop tail next (value :: acc)
 
-        loop paramTypes 2 []
+        loop paramShapes 2 []

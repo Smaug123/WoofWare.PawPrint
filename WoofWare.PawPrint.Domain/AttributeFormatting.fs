@@ -269,6 +269,10 @@ module AttributeFormatting =
         | CustomAttribFixedArg.Array (Some elts) ->
             let inner = elts |> List.map formatFixedArg |> String.concat ", "
             sprintf "{ %s }" inner
+        // Renders as the underlying integer, since the enum's identity is not carried on the
+        // decoded arg. Unreachable today: this dumper cannot resolve a parameter type to an enum,
+        // so such blobs take the hex-dump path in `tryDecodeBlob` and never get here.
+        | CustomAttribFixedArg.Enum underlying -> formatFixedArg underlying
 
     /// Dump the attribute's raw <c>Value</c> blob as space-separated hex bytes.
     /// Used when the structured decoder can't make progress.
@@ -288,7 +292,25 @@ module AttributeFormatting =
         match tryConstructorParamTypes assembly attr with
         | None -> Error "unresolved ctor"
         | Some paramTypes ->
-            match CustomAttribute.readFixedArgs paramTypes attr.Value with
+
+        // The dumper has no cross-assembly resolution and no `BaseClassTypes`, so it cannot decide
+        // whether a named parameter type is an enum. Those blobs fall back to the hex dump, exactly
+        // as they did when `readFixedArgs` itself rejected the parameter type.
+        let shapes =
+            paramTypes
+            |> List.fold
+                (fun acc paramType ->
+                    match acc, CustomAttribute.tryShapeWithoutResolution paramType with
+                    | Some acc, Some shape -> Some (shape :: acc)
+                    | _, _ -> None
+                )
+                (Some [])
+            |> Option.map List.rev
+
+        match shapes with
+        | None -> Error "unresolvable ctor parameter type"
+        | Some shapes ->
+            match CustomAttribute.readFixedArgs shapes attr.Value with
             | Error msg -> Error msg
             | Ok (args, offset) ->
                 let numNamed =
