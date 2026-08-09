@@ -707,3 +707,423 @@ module TestCliTypeCellPaths =
             )
 
         Check.One (config, Prop.forAll (Arb.fromGen shapeGen) property)
+
+    // ----------------------------------------------------------------------------------------
+    // Padding runs
+    // ----------------------------------------------------------------------------------------
+
+    // The complement of cell naming. `CellPathsExactlyCovering` names the bytes that *are* a cell;
+    // `TryPaddingRunAt` names the bytes that are no cell at all, which alignment filler between
+    // fields and trailing filler at the end of a struct both are. A bulk move whose range starts or
+    // ends inside a reference-containing struct puts its cursor on exactly those bytes, and there
+    // neither route works: no cell begins there, and the struct around them has no byte image, so
+    // `BytesAt` refuses the whole of it.
+    //
+    // The oracle below is deliberately built the other way round from the implementation. The
+    // implementation *descends*, stepping through the single field containing the byte;
+    // `enumerateCells` *enumerates* what is there. A byte covered by a leaf cell — a primitive or a
+    // reference, the things that hold content — is data, and every other byte is padding. Agreement
+    // between a search and an enumeration is a real check rather than the same code twice.
+
+    /// Every byte covered by a leaf cell, i.e. every byte that holds content rather than filler.
+    let private oracleDataBytes (value : CliType) : Set<int> =
+        enumerateCells [] 0 value
+        |> List.collect (fun (_, abs, contents) ->
+            match contents with
+            | CliType.ValueType _ -> []
+            | leaf -> [ abs .. abs + CliType.SizeOf(leaf).Size - 1 ]
+        )
+        |> Set.ofList
+
+    /// The deepest value type containing the byte — the struct whose filler this byte is. `None`
+    /// for a byte that only the whole value contains. A run cannot cross from one owner to another,
+    /// because the two live in different values' preserved byte images.
+    let private oracleOwner (value : CliType) (b : int) : FieldId list option =
+        enumerateCells [] 0 value
+        |> List.filter (fun (_, abs, contents) ->
+            match contents with
+            | CliType.ValueType _ -> abs <= b && b < abs + CliType.SizeOf(contents).Size
+            | _ -> false
+        )
+        |> List.sortByDescending (fun (path, _, _) -> List.length path)
+        |> List.tryHead
+        |> Option.map (fun (path, _, _) -> path)
+
+    let private oracleRunAt (value : CliType) (b : int) : (int * int) option =
+        let size = CliType.SizeOf(value).Size
+        let data = oracleDataBytes value
+
+        if b < 0 || b >= size || data.Contains b then
+            None
+        else
+
+        let owner = oracleOwner value b
+
+        let inRun (b' : int) : bool =
+            b' >= 0 && b' < size && not (data.Contains b') && oracleOwner value b' = owner
+
+        let mutable start = b
+
+        while inRun (start - 1) do
+            start <- start - 1
+
+        let mutable endExclusive = b + 1
+
+        while inRun endExclusive do
+            endExclusive <- endExclusive + 1
+
+        Some (start, endExclusive - start)
+
+    /// Padding and data partition the value: every byte is one or the other, never both and never
+    /// neither. This is what makes the padding step and the cell step jointly total over a struct's
+    /// bytes, which is what the copy driver needs of them.
+    [<Test>]
+    let ``padding is exactly the bytes no leaf cell covers`` () : unit =
+        let property (shape : Shape) : bool =
+            let value, _ = buildShape "r" (Shape.Struct [ shape ])
+            let size = CliType.SizeOf(value).Size
+            let data = oracleDataBytes value
+
+            [ 0 .. size - 1 ]
+            |> List.forall (fun b -> (CliType.TryPaddingRunAt b value |> Option.isSome) = not (data.Contains b))
+
+        Check.One (config, Prop.forAll (Arb.fromGen shapeGen) property)
+
+    /// Each run is the maximal stretch of padding around the byte that belongs to the same struct.
+    /// Maximality is not needed for correctness — a caller taking one byte at a time would still
+    /// move the right bytes — but a run that were merely *some* padding around the byte could
+    /// silently have the wrong extent, so pinning it exactly is what makes the accessors'
+    /// preconditions mean anything.
+    [<Test>]
+    let ``a padding run is the maximal stretch of its owner's filler`` () : unit =
+        let property (shape : Shape) : bool =
+            let value, _ = buildShape "r" (Shape.Struct [ shape ])
+            let size = CliType.SizeOf(value).Size
+
+            [ 0 .. size - 1 ]
+            |> List.forall (fun b -> CliType.TryPaddingRunAt b value = oracleRunAt value b)
+
+        Check.One (config, Prop.forAll (Arb.fromGen shapeGen) property)
+
+    /// Every byte of a run reports that same run, so a cursor anywhere inside it sees one answer.
+    [<Test>]
+    let ``every byte of a run reports the same run`` () : unit =
+        let property (shape : Shape) : bool =
+            let value, _ = buildShape "r" (Shape.Struct [ shape ])
+            let size = CliType.SizeOf(value).Size
+
+            [ 0 .. size - 1 ]
+            |> List.forall (fun b ->
+                match CliType.TryPaddingRunAt b value with
+                | None -> true
+                | Some (start, length) ->
+                    [ start .. start + length - 1 ]
+                    |> List.forall (fun b' -> CliType.TryPaddingRunAt b' value = Some (start, length))
+            )
+
+        Check.One (config, Prop.forAll (Arb.fromGen shapeGen) property)
+
+    let private paddingPayload (length : int) : byte[] =
+        Array.init length (fun i -> byte ((0xA5 + i) % 256))
+
+    /// Writing padding round-trips, and touches nothing that holds content. The second half is the
+    /// load-bearing one: the copy driver writes the *whole* enclosing cell back afterwards, so a
+    /// padding write that disturbed a field would corrupt live data rather than filler.
+    [<Test>]
+    let ``writing a padding run round-trips and disturbs no leaf`` () : unit =
+        let property (shape : Shape) : bool =
+            let value, _ = buildShape "r" (Shape.Struct [ shape ])
+            let size = CliType.SizeOf(value).Size
+            let before = leavesOf value
+
+            [ 0 .. size - 1 ]
+            |> List.forall (fun b ->
+                match CliType.TryPaddingRunAt b value with
+                | None -> true
+                | Some (start, length) ->
+                    let payload = paddingPayload length
+
+                    let updated =
+                        CliType.WithPaddingBytesAtIfChanged start payload value
+                        |> Option.defaultValue value
+
+                    CliType.PaddingBytesAt start length updated = payload
+                    && leavesOf updated = before
+                    && CliType.TryPaddingRunAt b updated = Some (start, length)
+            )
+
+        Check.One (config, Prop.forAll (Arb.fromGen shapeGen) property)
+
+    /// The outside oracle. Wherever the value *can* be rendered as bytes, the structural padding
+    /// accessors and the byte path must be the same operation — otherwise the copy driver would
+    /// have two ways to move the same bytes that disagree, with only one of them tested. Checkable
+    /// on exactly the values the incumbent byte path already handles, which is why the shapes
+    /// carrying a reference are skipped rather than worked around.
+    [<Test>]
+    let ``padding access agrees with the byte path wherever bytes are defined`` () : unit =
+        let property (shape : Shape) : bool =
+            let value, _ = buildShape "r" (Shape.Struct [ shape ])
+
+            match CliType.ByteAddressability value with
+            | CliByteAddressability.Rejected _ -> true
+            | CliByteAddressability.ByteAddressable ->
+
+            let size = CliType.SizeOf(value).Size
+
+            [ 0 .. size - 1 ]
+            |> List.forall (fun b ->
+                match CliType.TryPaddingRunAt b value with
+                | None -> true
+                | Some (start, length) ->
+                    let payload = paddingPayload length
+
+                    let viaPadding =
+                        CliType.WithPaddingBytesAtIfChanged start payload value
+                        |> Option.defaultValue value
+
+                    let viaBytes =
+                        CliType.WithBytesAtIfChanged start payload value |> Option.defaultValue value
+
+                    CliType.PaddingBytesAt start length value = CliType.BytesAt start length value
+                    && CliType.ToBytes viaPadding = CliType.ToBytes viaBytes
+            )
+
+        Check.One (config, Prop.forAll (Arb.fromGen shapeGen) property)
+
+    /// Rewriting a run with what it already holds reports no change, so the copy driver's
+    /// "`None` means nothing to store" contract does not quietly rewrite storage on every step.
+    [<Test>]
+    let ``rewriting a padding run with its current bytes reports no change`` () : unit =
+        let property (shape : Shape) : bool =
+            let value, _ = buildShape "r" (Shape.Struct [ shape ])
+            let size = CliType.SizeOf(value).Size
+
+            [ 0 .. size - 1 ]
+            |> List.forall (fun b ->
+                match CliType.TryPaddingRunAt b value with
+                | None -> true
+                | Some (start, length) ->
+                    let current = CliType.PaddingBytesAt start length value
+                    CliType.WithPaddingBytesAtIfChanged start current value = None
+            )
+
+        Check.One (config, Prop.forAll (Arb.fromGen shapeGen) property)
+
+    // ----------------------------------------------------------------------------------------
+    // Padding: shapes the generator cannot reach
+    //
+    // `shapeGen` builds only alias-free sequential layout whose fields exactly fill their recorded
+    // extents, so the three ways `TryPaddingRunAt` declines other than "the byte holds content"
+    // have no generated coverage at all. Each is reachable through the public API, and each is
+    // pinned by hand below.
+    // ----------------------------------------------------------------------------------------
+
+    /// Explicit layout can put two fields over one byte. There is then no single field to descend
+    /// through, so the byte cannot be classified — the same refusal `CellPathsExactlyCovering`
+    /// makes for an aliased range. Crucially it must not be *mistaken* for padding: those bytes
+    /// hold two fields' worth of live content.
+    [<Test>]
+    let ``an aliased byte is not padding`` () : unit =
+        let value =
+            ofFieldsSized
+                16
+                [
+                    cliField "Obj" (CliType.ObjectRef None) (Some 0) objectHandle
+                    cliField
+                        "Alias"
+                        (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L)))
+                        (Some 0)
+                        int64Handle
+                    cliField "Tail" (CliType.Numeric (CliNumericType.Int32 0)) (Some 8) int32Handle
+                ]
+
+        // Bytes 0..7 are covered by two fields at once.
+        for b in 0..7 do
+            CliType.TryPaddingRunAt b value |> shouldEqual None
+
+        // Bytes 8..11 hold `Tail`.
+        for b in 8..11 do
+            CliType.TryPaddingRunAt b value |> shouldEqual None
+
+        // Bytes 12..15 are covered by nothing, so they are filler.
+        for b in 12..15 do
+            CliType.TryPaddingRunAt b value |> shouldEqual (Some (12, 4))
+
+    /// Explicit layout can also place a reference at an offset real CoreCLR would reject at type
+    /// load. PawPrint takes `[FieldOffset(n)]` verbatim, so the shape exists here and the padding
+    /// rule has to cope with it rather than assume pointer alignment.
+    [<Test>]
+    let ``filler either side of a misaligned reference is padding`` () : unit =
+        let value =
+            ofFieldsSized 16 [ cliField "Obj" (CliType.ObjectRef None) (Some 3) objectHandle ]
+
+        for b in 0..2 do
+            CliType.TryPaddingRunAt b value |> shouldEqual (Some (0, 3))
+
+        for b in 3..10 do
+            CliType.TryPaddingRunAt b value |> shouldEqual None
+
+        for b in 11..15 do
+            CliType.TryPaddingRunAt b value |> shouldEqual (Some (11, 5))
+
+        // The runs are readable and writable even though the value as a whole has no byte image,
+        // which is the entire reason the primitive exists.
+        match CliType.ByteAddressability value with
+        | CliByteAddressability.ByteAddressable -> failwith "expected a reference-containing value to be rejected"
+        | CliByteAddressability.Rejected _ -> ()
+
+        let updated =
+            CliType.WithPaddingBytesAtIfChanged 11 [| 1uy ; 2uy ; 3uy ; 4uy ; 5uy |] value
+            |> Option.get
+
+        CliType.PaddingBytesAt 11 5 updated
+        |> shouldEqual [| 1uy ; 2uy ; 3uy ; 4uy ; 5uy |]
+
+        CliType.getCellAtPath [ FieldId.named "Obj" ] updated
+        |> shouldEqual (CliType.ObjectRef None)
+
+    /// A nested field's filler is only *its* filler where nothing else claims those bytes. Explicit
+    /// layout can put a sibling over part of the nested field's extent, and `ToBytes` awards the
+    /// overlap to whichever field wrote last — so a run reported across the sibling would have a
+    /// caller read and write the nested field's preserved image for bytes the sibling owns. A bulk
+    /// copy would then leave the destination sibling untouched while believing it had moved them.
+    ///
+    /// Found by review with a differential repro, not by the properties above: `shapeGen` builds
+    /// only alias-free layout, so it cannot pose the question at all.
+    [<Test>]
+    let ``a nested run stops where an overlapping sibling begins`` () : unit =
+        // `Inner` is 16 bytes with filler at [1, 8): `Tag` at 0, `V` needing 8-byte alignment.
+        let inner =
+            ofFields
+                [
+                    cliField "Tag" (CliType.Numeric (CliNumericType.UInt8 0uy)) None byteHandle
+                    cliField "V" (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))) None int64Handle
+                ]
+
+        CliType.SizeOf(inner).Size |> shouldEqual 16
+        CliType.TryPaddingRunAt 1 inner |> shouldEqual (Some (1, 7))
+
+        // `Alias` sits over [4, 8) of the same bytes `Inner`'s filler occupies.
+        let value =
+            ofFieldsSized
+                16
+                [
+                    cliField "A" inner (Some 0) declaredHandle
+                    cliField "Alias" (CliType.Numeric (CliNumericType.Int32 0)) (Some 4) int32Handle
+                ]
+
+        // Bytes [1, 4) really are `A`'s filler and nothing else's.
+        for b in 1..3 do
+            CliType.TryPaddingRunAt b value |> shouldEqual (Some (1, 3))
+
+        // Bytes [4, 8) belong to `Alias`, so they are not filler at all — two fields contain them,
+        // and the byte path is what serves those.
+        for b in 4..7 do
+            CliType.TryPaddingRunAt b value |> shouldEqual None
+
+    /// `withFieldSetById` replaces a field's `Contents` without recomputing its recorded `Size`, so
+    /// a field can be left claiming an extent that disagrees with what it now holds. Descending
+    /// through such a field is what the guard in `TryDescendableFieldAt` refuses, and this is why
+    /// it has to: the padding run comes back in the *contents'* coordinates, so a field whose
+    /// contents are larger than its extent can report a run that runs off the end of the field and
+    /// across a sibling. A caller would then write the sibling's bytes believing they were filler.
+    ///
+    /// Reached through the public API rather than asserted unreachable, because that is the only
+    /// way the state arises — and mutation-testing the guard showed nothing else covers it.
+    [<Test>]
+    let ``a field whose extent disagrees with its contents yields no padding run`` () : unit =
+        // Two 4-byte fields exactly filling 8 bytes, so there is no padding to begin with.
+        let value =
+            ofFields
+                [
+                    cliField "A" (CliType.Numeric (CliNumericType.Int32 0)) None int32Handle
+                    cliField "B" (CliType.Numeric (CliNumericType.Int32 0)) None int32Handle
+                ]
+
+        CliType.SizeOf(value).Size |> shouldEqual 8
+
+        for b in 0..7 do
+            CliType.TryPaddingRunAt b value |> shouldEqual None
+
+        // A 16-byte struct whose own filler is bytes [1, 8): far wider than the 4-byte extent the
+        // field it is about to be dropped into records.
+        let oversized =
+            ofFields
+                [
+                    cliField "Tag" (CliType.Numeric (CliNumericType.UInt8 0uy)) None byteHandle
+                    cliField "Wide" (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))) None int64Handle
+                ]
+
+        CliType.SizeOf(oversized).Size |> shouldEqual 16
+        CliType.TryPaddingRunAt 1 oversized |> shouldEqual (Some (1, 7))
+
+        // A now claims four bytes but holds sixteen. Descending into it would report the run
+        // `(1, 7)` in the *outer* value's coordinates, which covers bytes [4, 8) — all of B.
+        let inconsistent = CliType.withFieldSetById (FieldId.named "A") oversized value
+
+        CliType.SizeOf(inconsistent).Size |> shouldEqual 8
+
+        for b in 0..7 do
+            CliType.TryPaddingRunAt b inconsistent |> shouldEqual None
+
+        // The other direction — contents narrower than the recorded extent — is refused too. There
+        // the value is unrenderable rather than mis-attributed: `ToBytes` overlays the field's own
+        // image across its full `Size` and runs off the end of it.
+        let narrowed =
+            CliType.withFieldSetById (FieldId.named "A") (CliType.Numeric (CliNumericType.UInt8 0uy)) value
+
+        for b in 0..7 do
+            CliType.TryPaddingRunAt b narrowed |> shouldEqual None
+
+    /// A raw-bytes value type is all bytes and no fields, so there is nothing for filler to sit
+    /// between; the ordinary byte path already serves every offset of it.
+    [<Test>]
+    let ``a raw-bytes value type has no padding`` () : unit =
+        let value = ofFieldsSized 8 []
+
+        for b in 0..7 do
+            CliType.TryPaddingRunAt b value |> shouldEqual None
+
+    [<Test>]
+    let ``a non-value-type has no padding`` () : unit =
+        CliType.TryPaddingRunAt 0 (CliType.ObjectRef None) |> shouldEqual None
+
+        CliType.TryPaddingRunAt 0 (CliType.Numeric (CliNumericType.Int32 0))
+        |> shouldEqual None
+
+        CliType.TryPaddingRunAt 0 (CliType.Bool 0uy) |> shouldEqual None
+
+    [<Test>]
+    let ``a byte outside the value is not padding`` () : unit =
+        let value =
+            ofFieldsSized 16 [ cliField "Obj" (CliType.ObjectRef None) (Some 3) objectHandle ]
+
+        CliType.TryPaddingRunAt -1 value |> shouldEqual None
+        CliType.TryPaddingRunAt 16 value |> shouldEqual None
+
+    /// The accessors are partial in the same way, and say so rather than answering about bytes the
+    /// caller never established were filler.
+    [<Test>]
+    let ``the padding accessors refuse a range that is not wholly one run`` () : unit =
+        let value =
+            ofFieldsSized 16 [ cliField "Obj" (CliType.ObjectRef None) (Some 3) objectHandle ]
+
+        // Offset 3 holds the reference, not filler.
+        let notPadding =
+            Assert.Throws<exn> (fun () -> CliType.PaddingBytesAt 3 1 value |> ignore<byte[]>)
+
+        notPadding.Message |> shouldContainText "is not padding"
+
+        // The run at 0 is only three bytes long.
+        let overrun =
+            Assert.Throws<exn> (fun () -> CliType.PaddingBytesAt 0 4 value |> ignore<byte[]>)
+
+        overrun.Message |> shouldContainText "leaves the padding run [0, 3)"
+
+        let overrunWrite =
+            Assert.Throws<exn> (fun () ->
+                CliType.WithPaddingBytesAtIfChanged 0 [| 0uy ; 0uy ; 0uy ; 0uy |] value
+                |> ignore<CliType option>
+            )
+
+        overrunWrite.Message |> shouldContainText "leaves the padding run [0, 3)"

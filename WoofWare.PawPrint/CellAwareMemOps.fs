@@ -21,8 +21,14 @@ type internal CellAwareCopyPolicy =
 /// cannot simply be replayed byte by byte: cells that are not byte-addressable
 /// (object references, runtime pointers, non-`Verbatim` `NativeIntSource`
 /// provenance) have no byte rendering to walk. Every operation here therefore
-/// prefers whole-cell typed steps when the endpoints anchor cell-aware roots,
-/// and falls back to the byte walk for genuinely flat storage.
+/// prefers structural steps when the endpoints anchor cell-aware roots, and
+/// falls back to the byte walk for genuinely flat storage.
+///
+/// A struct's bytes split in two: those some field covers, which
+/// `tryWholeCellMoveAt` moves as a typed cell, and those none does — alignment
+/// filler — which `tryPaddingMoveAt` moves as bytes out of the preserved image.
+/// Together they are total over a struct, which is what lets a move whose range
+/// starts or ends *inside* a reference-containing element make progress at all.
 [<RequireQualifiedAccess>]
 module internal CellAwareMemOps =
     let private byteTemplate : CliType = CliType.Numeric (CliNumericType.UInt8 0uy)
@@ -553,6 +559,117 @@ module internal CellAwareMemOps =
                 Some (newState, width)
         | _ -> None
 
+    /// Attempt to move a run of *padding* bytes across, with the copy cursor sitting at byte `i` of
+    /// the requested range. The same contract as `tryWholeCellMoveAt`: `Some (state, width)` means
+    /// the caller advances by `width`, `None` means fall back to a single byte step.
+    ///
+    /// Padding is the bytes a value type's fields do not cover — alignment filler between them and
+    /// at the tail. It belongs to no cell, so `tryWholeCellMoveAt` can propose no width anchored on
+    /// it; and inside a value type holding object references it has no byte rendering either, since
+    /// `BytesAt` refuses the whole of such a value. A cursor there has nowhere to go, and the copy
+    /// stops with "refusing byte view over value type containing object references".
+    ///
+    /// That state is only reachable when a move starts or ends *inside* an element, because a walk
+    /// beginning on an element boundary takes the whole element as one cell and carries its interior
+    /// padding along untouched. `Buffer.BulkMoveWithWriteBarrier` produces exactly that: above
+    /// 16384 bytes it splits the move into 16384-byte chunks, which for any element size that does
+    /// not divide 16384 leaves every chunk after the first starting mid-element.
+    ///
+    /// The bytes are *copied*, not skipped. For storage that is byte-addressable the single-byte
+    /// fallback copies them today, so skipping would be an outright regression there; and
+    /// `PreservedBytes` is already the authoritative home for bytes no field covers, so carrying
+    /// them costs nothing but the read and the write.
+    ///
+    /// Both endpoints must land on padding. When only one does — the source's filler lines up with
+    /// a live field of the destination, say — the honest move is a byte write into that field, which
+    /// is the byte path's job; taking a padding step there would silently write the destination's
+    /// *filler* instead and lose the bytes. Declining leaves the byte path to serve it, or to fail
+    /// loudly if it cannot, which is the right outcome for a shape this odd.
+    ///
+    /// The overlap-safety argument documented on `tryWholeCellMoveAt` carries over verbatim: this
+    /// step also reads its whole source range before writing its destination range, and advances
+    /// the cursor by exactly the width moved, so the direction the driver chose still holds.
+    let private tryPaddingMoveAt
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (src : ManagedPointerSource)
+        (dest : ManagedPointerSource)
+        (bytesRemaining : int)
+        (backwards : bool)
+        : (IlMachineState * int) option
+        =
+        if not (byrefAnchorsCellAwareRoot src && byrefAnchorsCellAwareRoot dest) then
+            None
+        else
+
+        match inCellOffsetAndStripByteView src, inCellOffsetAndStripByteView dest with
+        | Some (srcPlain, srcInCell), Some (destPlain, destInCell) ->
+            let srcCell = IlMachineState.readManagedByref baseClassTypes state srcPlain
+            let destCell = IlMachineState.readManagedByref baseClassTypes state destPlain
+
+            match CliType.TryPaddingRunAt srcInCell srcCell, CliType.TryPaddingRunAt destInCell destCell with
+            | Some (srcStart, srcLength), Some (destStart, destLength) ->
+                // Bytes the cursor can consume within its own run: forwards, to the run's end;
+                // backwards, back to the run's start (the cursor byte is the move's *last*).
+                let available (inCell : int) (start : int) (length : int) : int =
+                    if backwards then
+                        inCell - start + 1
+                    else
+                        start + length - inCell
+
+                let width =
+                    List.min
+                        [
+                            available srcInCell srcStart srcLength
+                            available destInCell destStart destLength
+                            bytesRemaining
+                        ]
+
+                // A run contains the byte it was asked about, so each `available` is at least one,
+                // and the driver never calls with fewer than one byte left. A zero would return a
+                // non-advancing "success" and spin the caller's loop forever.
+                if width <= 0 then
+                    failwith
+                        $"tryPaddingMoveAt: chose a non-advancing move of width %d{width} at src offset %d{srcInCell} of run [%d{srcStart}, %d{srcStart + srcLength}), dest offset %d{destInCell} of run [%d{destStart}, %d{destStart + destLength}), with %d{bytesRemaining} byte(s) remaining (this is an interpreter bug)"
+
+                // Where a move of `width` bytes anchored at this cursor begins.
+                let startOf (inCell : int) : int =
+                    if backwards then inCell - width + 1 else inCell
+
+                let bytes = CliType.PaddingBytesAt (startOf srcInCell) width srcCell
+
+                let state =
+                    match CliType.WithPaddingBytesAtIfChanged (startOf destInCell) bytes destCell with
+                    | None -> state
+                    | Some updated ->
+                        // Written through the *outer* pointer with no field path appended, because
+                        // padding is reachable by no field path. Only bytes no field covers differ,
+                        // so the destination cell's CLI shape — and every cell named within it — is
+                        // exactly what it was; there is no shape to check compatibility of, which is
+                        // why this needs no analogue of `cellsHaveCompatibleShape`.
+                        IlMachineState.writeManagedByrefWithBase baseClassTypes state destPlain updated
+
+                Some (state, width)
+            | _ -> None
+        | _ -> None
+
+    /// One step of the copy loop: prefer a whole typed cell, then a padding run, and let the caller
+    /// fall back to a single byte. The two structural steps are disjoint by construction — a byte is
+    /// either covered by some field or it is not — so their order is a matter of which question is
+    /// cheaper to ask, not of which answer wins.
+    let private tryStructuralMoveAt
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (src : ManagedPointerSource)
+        (dest : ManagedPointerSource)
+        (bytesRemaining : int)
+        (backwards : bool)
+        : (IlMachineState * int) option
+        =
+        match tryWholeCellMoveAt baseClassTypes state src dest bytesRemaining backwards with
+        | Some result -> Some result
+        | None -> tryPaddingMoveAt baseClassTypes state src dest bytesRemaining backwards
+
     /// Attempt to zero a single whole cell, starting at byte offset `i` in the
     /// buffer. Returns `Some (newState, cellSize)` when the cell-aware path
     /// applied and the caller must advance `i` by `cellSize` bytes; `None` when
@@ -634,12 +751,13 @@ module internal CellAwareMemOps =
 
         state
 
-    /// Copy `byteCount` bytes from `src` to `dest`, preferring whole-cell
-    /// typed moves through `tryWholeCellMoveAt` and falling back to
-    /// byte-by-byte stepping otherwise. The whole-cell path is the only
-    /// correct option for non-byte-addressable cells (object references,
-    /// runtime pointers, value-types containing those) and preserves the
-    /// dest cell's CLI shape and provenance.
+    /// Copy `byteCount` bytes from `src` to `dest`, preferring the structural
+    /// steps through `tryStructuralMoveAt` — a whole typed cell, or a run of a
+    /// struct's alignment filler — and falling back to byte-by-byte stepping
+    /// otherwise. The structural path is the only correct option for
+    /// non-byte-addressable storage (object references, runtime pointers,
+    /// value-types containing those) and preserves the dest cell's CLI shape
+    /// and provenance.
     ///
     /// `policy` controls direction: `Memmove` walks backwards when src/dest
     /// alias the same flat byte storage with src strictly before dest, so
@@ -680,7 +798,7 @@ module internal CellAwareMemOps =
                 // for a whole-cell move to be safe; the move covers bytes
                 // `[i - cellSize + 1, i]` and advances `i` backwards by
                 // `cellSize`.
-                match tryWholeCellMoveAt baseClassTypes state srcAtI destAtI (i + 1) true with
+                match tryStructuralMoveAt baseClassTypes state srcAtI destAtI (i + 1) true with
                 | Some (newState, cellSize) ->
                     state <- newState
                     i <- i - cellSize
@@ -698,7 +816,7 @@ module internal CellAwareMemOps =
                 let destAtI =
                     ManagedPointerByteView.addByteOffset baseClassTypes state byteConcreteType i dest
 
-                match tryWholeCellMoveAt baseClassTypes state srcAtI destAtI (byteCount - i) false with
+                match tryStructuralMoveAt baseClassTypes state srcAtI destAtI (byteCount - i) false with
                 | Some (newState, cellSize) ->
                     state <- newState
                     i <- i + cellSize
