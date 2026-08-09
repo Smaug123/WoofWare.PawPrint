@@ -404,7 +404,7 @@ module NativeRuntimeMethodHandle =
         )
 
     /// The metadata `MethodInfo` the given identity's MethodDef token names.
-    let private methodInfoOfMetadataIdentity
+    let methodInfoOfMetadataIdentity
         (operation : string)
         (state : IlMachineState)
         (identity : MetadataMethodIdentity)
@@ -431,7 +431,7 @@ module NativeRuntimeMethodHandle =
     /// needs one of these, and none of them has an answer for a no-metadata (`DynamicMethod`)
     /// handle -- so when that case lands, this match is one of the sites that must decide what to
     /// do rather than silently reading a token that does not exist.
-    let private resolveMetadataIdentityFromArg
+    let resolveMetadataIdentityFromArg
         (operation : string)
         (state : IlMachineState)
         (arg : CliType)

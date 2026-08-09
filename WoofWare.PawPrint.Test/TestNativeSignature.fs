@@ -21,6 +21,21 @@ public sealed class GenericFieldHost<T>
 {
     public T Payload;
 }
+
+public sealed class MethodSignatureHost
+{
+    public static int Twice (int x, string s) => x * 2;
+
+    public void Instance (double d)
+    {
+    }
+
+    public static void Nothing ()
+    {
+    }
+
+    public static T Generic<T> (T t) => t;
+}
 """
 
     type private SignatureFixture =
@@ -106,6 +121,7 @@ public sealed class GenericFieldHost<T>
                  baseClassTypes.RuntimeFieldHandle
                  baseClassTypes.RuntimeFieldHandleInternal
                  baseClassTypes.RuntimeFieldInfoStub
+                 baseClassTypes.RuntimeMethodHandleInternal
              ])
             ||> List.fold (fun state typeInfo -> concretizeTypeInfo loggerFactory baseClassTypes state typeInfo |> fst)
 
@@ -340,7 +356,7 @@ public sealed class GenericFieldHost<T>
         (pCorSig : CliType)
         (cCorSig : CliType)
         (fieldHandleOverride : CliType option)
-        (methodHandle : CliType)
+        (methodHandle : IlMachineState -> CliType * IlMachineState)
         : ManagedHeapAddress * ConcreteTypeHandle * IlMachineState
         =
         let fieldHandleInternal, expectedFieldTypeHandle, state =
@@ -348,6 +364,8 @@ public sealed class GenericFieldHost<T>
 
         let fieldHandleInternal =
             fieldHandleOverride |> Option.defaultValue fieldHandleInternal
+
+        let methodHandle, state = methodHandle state
 
         let state, signatureType, signatureTypeHandle, signatureInitMethod =
             signatureInitMethod fixture state
@@ -413,7 +431,108 @@ public sealed class GenericFieldHost<T>
     let private nullPCorSig : CliType =
         CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null)
 
-    let private nullMethodHandle : CliType = CliType.ObjectRef None
+    /// The `RuntimeMethodHandleInternal` null sentinel. `Signature_Init`'s fourth parameter is a
+    /// struct (`default(RuntimeMethodHandleInternal)`, i.e. `m_handle == IntPtr.Zero`), unlike the
+    /// pre-.NET-10 `Signature.GetSignature` InternalCall whose corresponding argument is an
+    /// `IRuntimeMethodInfo` reference and so is null as an object reference.
+    let private nullMethodHandle (state : IlMachineState) : CliType * IlMachineState =
+        CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L), state
+
+    let private methodSignatureHost (fixture : SignatureFixture) : TypeInfo<GenericParamFromMetadata, TypeDefn> =
+        requiredTopLevelType fixture.Assembly "" "MethodSignatureHost"
+
+    let private requiredHostMethod
+        (fixture : SignatureFixture)
+        (methodName : string)
+        : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>
+        =
+        (methodSignatureHost fixture).Methods
+        |> List.filter (fun method -> method.Name = methodName)
+        |> function
+            | [ method ] -> method
+            | [] -> failwith $"method %s{methodName} not found on MethodSignatureHost"
+            | methods ->
+                failwith $"method %s{methodName} was ambiguous on MethodSignatureHost: %d{methods.Length} matches"
+
+    /// A `RuntimeMethodHandleInternal` naming a fully-closed method on `MethodSignatureHost`, as
+    /// `RuntimeMethodInfo`'s handle would be by the time it reaches `Signature_Init`.
+    let private closedMethodHandle
+        (fixture : SignatureFixture)
+        (methodName : string)
+        (state : IlMachineState)
+        : CliType * IlMachineState
+        =
+        let state, _ =
+            concretizeTypeInfo fixture.LoggerFactory fixture.BaseClassTypes state (methodSignatureHost fixture)
+
+        let state, concretised, _ =
+            ExecutionConcretization.concretizeMethodWithTypeGenerics
+                fixture.LoggerFactory
+                fixture.BaseClassTypes
+                ImmutableArray.Empty
+                (requiredHostMethod fixture methodName)
+                None
+                fixture.Assembly.Name
+                ImmutableArray.Empty
+                state
+
+        let handle, methodHandles =
+            MethodHandleRegistry.getOrAllocateConcreteInternalHandle
+                fixture.BaseClassTypes
+                state.ConcreteTypes
+                concretised
+                state.MethodHandles
+
+        CliType.ValueType handle,
+        { state with
+            MethodHandles = methodHandles
+        }
+
+    /// A `RuntimeMethodHandleInternal` naming a generic method *definition* -- the shape
+    /// `RuntimeTypeHandle.GetFirstIntroducedMethod` mints, whose `MethodGenerics` is empty even
+    /// though the method declares type parameters.
+    let private openMethodHandle
+        (fixture : SignatureFixture)
+        (methodName : string)
+        (state : IlMachineState)
+        : CliType * IlMachineState
+        =
+        let state, hostHandle =
+            concretizeTypeInfo fixture.LoggerFactory fixture.BaseClassTypes state (methodSignatureHost fixture)
+
+        let declaringType =
+            AllConcreteTypes.lookup hostHandle state.ConcreteTypes
+            |> Option.defaultWith (fun () -> failwith "MethodSignatureHost was not concretized")
+
+        let handle, methodHandles =
+            MethodHandleRegistry.getOrAllocateInternalHandle
+                fixture.BaseClassTypes
+                state.ConcreteTypes
+                declaringType
+                (requiredHostMethod fixture methodName)
+                state.MethodHandles
+
+        CliType.ValueType handle,
+        { state with
+            MethodHandles = methodHandles
+        }
+
+    /// Every spelling `default(RuntimeFieldHandleInternal)` can reach a QCall as. A real guest
+    /// calling `new Signature(IRuntimeMethodInfo, RuntimeType)` produces the last of these, so a
+    /// classifier that recognises only the verbatim zeros throws on the shape that actually
+    /// arrives -- which is how `Signature_Init` broke while every unit test still passed.
+    let nullFieldHandleSpellings : CliType list =
+        [
+            CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L)
+            CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null)
+            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
+            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null))
+        ]
+
+    /// The `RuntimeFieldHandleInternal` null sentinel in the shape a real guest produces, so that
+    /// `Signature_Init` dispatches on the method handle rather than refusing both-handles-non-null.
+    let private nullFieldHandle : CliType =
+        CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null))
 
     [<Test>]
     let ``Signature_Init stores field RuntimeType into _returnTypeORfieldType`` () : unit =
@@ -459,13 +578,12 @@ public sealed class GenericFieldHost<T>
         |> shouldContainText "TODO: Signature_Init pCorSig blob parsing is not implemented"
 
     [<Test>]
-    let ``Signature_Init rejects mixed field handle and method handle inputs`` () : unit =
+    let ``Signature_Init rejects a field handle and a method handle together`` () : unit =
+        // CoreCLR's Signature_Init would silently prefer the method (`if (pMethodDesc != NULL) ...
+        // else if (pFieldDesc != NULL)`), but no managed Signature constructor passes both, so a
+        // value arriving here would be a PawPrint bug. Refusing is deliberately stricter than
+        // upstream: preferring one input would hide it.
         let fixture = makeSignatureFixture ()
-
-        // requireNullMethodHandle accepts ObjectRef None / null pointers / NativeInt 0; any
-        // non-null primitive triggers the TODO.
-        let nonNullMethodHandle =
-            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 1L))
 
         let ex =
             Assert.Throws<System.Exception> (fun () ->
@@ -474,12 +592,12 @@ public sealed class GenericFieldHost<T>
                     nullPCorSig
                     (CliType.Numeric (CliNumericType.Int32 0))
                     None
-                    nonNullMethodHandle
+                    (closedMethodHandle fixture "Twice")
                 |> ignore
             )
 
         ex.Message
-        |> shouldContainText "TODO: Signature_Init method signature parsing is not implemented"
+        |> shouldContainText "Signature_Init: got both a field handle and a method handle"
 
     [<Test>]
     let ``Signature_Init rejects mixed field handle and non-zero cCorSig`` () : unit =
@@ -516,3 +634,231 @@ public sealed class GenericFieldHost<T>
 
         ex.Message
         |> shouldContainText "TODO: Signature_Init non-field signature parsing is not implemented; fieldHandle was null"
+
+    /// Concretize a `TypeDefn` in `state` so it can be compared against a `RuntimeType` the QCall
+    /// allocated. Concretization is idempotent, so this recovers the handle the QCall used rather
+    /// than minting a second one.
+    let private expectedTarget
+        (fixture : SignatureFixture)
+        (state : IlMachineState)
+        (defn : TypeDefn)
+        : RuntimeTypeHandleTarget
+        =
+        let _, handle =
+            IlMachineState.concretizeType
+                fixture.LoggerFactory
+                fixture.BaseClassTypes
+                state
+                fixture.Assembly.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                defn
+
+        RuntimeTypeHandleTarget.Closed handle
+
+    let private runtimeTypeTargetOfField
+        (state : IlMachineState)
+        (signatureAddr : ManagedHeapAddress)
+        (fieldName : string)
+        : RuntimeTypeHandleTarget
+        =
+        match signatureField state signatureAddr fieldName with
+        | CliType.ObjectRef (Some addr) ->
+            NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef
+                $"Signature_Init test (%s{fieldName})"
+                state
+                (EvalStackValue.ObjectRef addr)
+        | other -> failwith $"Expected %s{fieldName} to be a RuntimeType object ref, got %O{other}"
+
+    let private argumentTargets
+        (state : IlMachineState)
+        (signatureAddr : ManagedHeapAddress)
+        : RuntimeTypeHandleTarget list
+        =
+        let arrayAddr =
+            match signatureField state signatureAddr "_arguments" with
+            | CliType.ObjectRef (Some addr) -> addr
+            | CliType.ObjectRef None ->
+                failwith
+                    "Expected _arguments to be an allocated RuntimeType[]; CoreCLR allocates it even for a nullary method, and the managed Signature.Arguments getter asserts it is non-null"
+            | other -> failwith $"Expected _arguments to be a RuntimeType[] object ref, got %O{other}"
+
+        let array =
+            match state.ManagedHeap.Arrays.TryGetValue arrayAddr with
+            | true, array -> array
+            | false, _ -> failwith $"_arguments pointed at %O{arrayAddr}, which is not an array"
+
+        [
+            for index in 0 .. array.Length - 1 do
+                match IlMachineState.getArrayValue arrayAddr index state with
+                | CliType.ObjectRef (Some addr) ->
+                    NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef
+                        "Signature_Init test (_arguments)"
+                        state
+                        (EvalStackValue.ObjectRef addr)
+                | other -> failwith $"Expected _arguments[%d{index}] to be a RuntimeType object ref, got %O{other}"
+        ]
+
+    let private invokeMethodArm
+        (fixture : SignatureFixture)
+        (methodName : string)
+        : ManagedHeapAddress * IlMachineState
+        =
+        let signatureAddr, _, state =
+            invokeSignatureInit
+                fixture
+                nullPCorSig
+                (CliType.Numeric (CliNumericType.Int32 0))
+                (Some nullFieldHandle)
+                (closedMethodHandle fixture methodName)
+
+        signatureAddr, state
+
+    [<Test>]
+    let ``Signature_Init fills the method arm's return type and arguments`` () : unit =
+        let fixture = makeSignatureFixture ()
+        let signatureAddr, state = invokeMethodArm fixture "Twice"
+
+        runtimeTypeTargetOfField state signatureAddr "_returnTypeORfieldType"
+        |> shouldEqual (expectedTarget fixture state (TypeDefn.PrimitiveType PrimitiveType.Int32))
+
+        // Order matters: `SetArgument(i, ...)` fills index i with the i'th fixed argument, so a
+        // reversed fill would still produce a two-element array of the right types.
+        argumentTargets state signatureAddr
+        |> shouldEqual
+            [
+                expectedTarget fixture state (TypeDefn.PrimitiveType PrimitiveType.Int32)
+                expectedTarget fixture state (TypeDefn.PrimitiveType PrimitiveType.String)
+            ]
+
+    [<Test>]
+    let ``Signature_Init gives a void nullary method System.Void and an empty argument array`` () : unit =
+        let fixture = makeSignatureFixture ()
+        let signatureAddr, state = invokeMethodArm fixture "Nothing"
+
+        let voidTarget =
+            let _, _, handle =
+                NativeRuntimeTypeHelpers.concretizeNonGenericCorelibType
+                    fixture.LoggerFactory
+                    fixture.BaseClassTypes
+                    state
+                    "System"
+                    "Void"
+
+            RuntimeTypeHandleTarget.Closed handle
+
+        // CoreCLR's `msig.GetRetTypeHandleThrowing()` yields System.Void's TypeHandle for a void
+        // return rather than a null one, and the QCall asserts `_returnTypeORfieldType != NULL` on
+        // the way out.
+        runtimeTypeTargetOfField state signatureAddr "_returnTypeORfieldType"
+        |> shouldEqual voidTarget
+
+        argumentTargets state signatureAddr |> shouldEqual []
+
+    [<TestCase("Twice", 0x1)>]
+    [<TestCase("Instance", 0x21)>]
+    let ``Signature_Init translates the calling convention rather than storing the raw byte``
+        (methodName : string)
+        (expected : int)
+        : unit
+        =
+        // SignatureNative::SetCallingConvention (runtimehandles.h:455) maps the ECMA
+        // calling-convention byte onto the managed CallingConventions bits: everything that is not
+        // IMAGE_CEE_CS_CALLCONV_VARARG becomes CALLCONV_Standard (0x1), plus 0x20 for HASTHIS.
+        // Storing the raw byte would give 0x0 / 0x20 here, since IMAGE_CEE_CS_CALLCONV_DEFAULT is 0.
+        let fixture = makeSignatureFixture ()
+        let signatureAddr, state = invokeMethodArm fixture methodName
+
+        match signatureField state signatureAddr "_managedCallingConventionAndArgIteratorFlags" with
+        | CliType.Numeric (CliNumericType.Int32 actual) -> actual |> shouldEqual expected
+        | other -> failwith $"Expected _managedCallingConventionAndArgIteratorFlags to be Int32, got %O{other}"
+
+    [<Test>]
+    let ``Signature_Init points _sig at the MethodDef signature blob`` () : unit =
+        let fixture = makeSignatureFixture ()
+        let signatureAddr, state = invokeMethodArm fixture "Twice"
+
+        let expectedHandle =
+            ComparableMethodDefinitionHandle.Make (requiredHostMethod fixture "Twice").Handle
+
+        let expectedSize =
+            let mdReader = fixture.Assembly.PeReader.GetMetadataReader ()
+            let methodDef = mdReader.GetMethodDefinition expectedHandle.Get
+            mdReader.GetBlobReader(methodDef.Signature).Length
+
+        let peByteRange =
+            match signatureField state signatureAddr "_sig" |> CliType.unwrapPrimitiveLikeDeep with
+            | CliType.RuntimePointer (CliRuntimePointer.Managed (ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange,
+                                                                                             _))) -> peByteRange
+            | other -> failwith $"Expected _sig to be a byref over a PE byte range, got %O{other}"
+
+        peByteRange.Source
+        |> shouldEqual (PeByteRangePointerSource.MethodSignatureBlob expectedHandle)
+
+        peByteRange.Size |> shouldEqual expectedSize
+
+        // CoreCLR asserts `cCorSig > 0` on the way out, and every downstream reader
+        // (GetParameterOffsetInternal, GetCustomModifiersAtOffset) cross-checks `_csig` against the
+        // real blob length before walking it.
+        match signatureField state signatureAddr "_csig" with
+        | CliType.Numeric (CliNumericType.Int32 csig) -> csig |> shouldEqual expectedSize
+        | other -> failwith $"Expected _csig to be Int32, got %O{other}"
+
+    [<Test>]
+    let ``Signature_Init stores the method handle into _pMethod`` () : unit =
+        // `_pMethod` is what SignatureNative::GetTypeContext branches on to decide whether a
+        // signature's type context carries a method instantiation, so it has to survive the QCall.
+        let fixture = makeSignatureFixture ()
+        let expectedHandle, _ = closedMethodHandle fixture "Twice" fixture.State
+        let signatureAddr, state = invokeMethodArm fixture "Twice"
+
+        signatureField state signatureAddr "_pMethod"
+        |> CliType.unwrapPrimitiveLikeDeep
+        |> shouldEqual (CliType.unwrapPrimitiveLikeDeep expectedHandle)
+
+    [<Test>]
+    let ``Signature_Init refuses a generic method definition`` () : unit =
+        // The handle the introduced-method iterator mints for `Generic<T>` has empty MethodGenerics
+        // even though the method declares one type parameter. CoreCLR resolves the signature
+        // against the typical instantiation, whose method generic parameters a ConcreteTypeHandle
+        // cannot represent (the same limit that parks MakeGenericMethodOpenArgument.cs), so this
+        // must fail loudly rather than substitute something plausible for T.
+        let fixture = makeSignatureFixture ()
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () ->
+                invokeSignatureInit
+                    fixture
+                    nullPCorSig
+                    (CliType.Numeric (CliNumericType.Int32 0))
+                    (Some nullFieldHandle)
+                    (openMethodHandle fixture "Generic")
+                |> ignore
+            )
+
+        ex.Message
+        |> shouldContainText "TODO: Signature_Init on generic method definition Generic"
+
+        ex.Message |> shouldContainText "declares 1 generic parameter"
+
+    [<TestCaseSource(nameof nullFieldHandleSpellings)>]
+    let ``Signature_Init reaches the method arm for every spelling of a null field handle``
+        (nullFieldHandle : CliType)
+        : unit
+        =
+        // The four-way dispatch classifies *both* handles before choosing an arm, so the field
+        // classifier has to answer "no field handle" for whichever zero shape the guest's
+        // `default(RuntimeFieldHandleInternal)` happens to be, rather than throwing on the ones it
+        // does not list.
+        let fixture = makeSignatureFixture ()
+
+        let signatureAddr, _, state =
+            invokeSignatureInit
+                fixture
+                nullPCorSig
+                (CliType.Numeric (CliNumericType.Int32 0))
+                (Some nullFieldHandle)
+                (closedMethodHandle fixture "Twice")
+
+        runtimeTypeTargetOfField state signatureAddr "_returnTypeORfieldType"
+        |> shouldEqual (expectedTarget fixture state (TypeDefn.PrimitiveType PrimitiveType.Int32))

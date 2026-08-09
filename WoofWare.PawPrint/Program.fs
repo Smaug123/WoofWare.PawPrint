@@ -177,15 +177,15 @@ module Program =
     let private fireExpiredDeadlines (state : IlMachineState) : IlMachineState =
         let now = state.Kernel.VirtualClockMs
 
+        // `Map.foldBack` visits keys in descending order, so the resulting list is sorted by
+        // thread ID.
         let expired =
-            state.ThreadState
-            |> Map.toSeq
-            |> Seq.choose (fun (tid, ts) ->
+            (state.ThreadState, [])
+            ||> Map.foldBack (fun tid ts acc ->
                 match waitDeadline ts.Status with
-                | Some (kind, deadline) when deadline <= now -> Some (tid, kind)
-                | _ -> None
+                | Some (kind, deadline) when deadline <= now -> (tid, kind) :: acc
+                | _ -> acc
             )
-            |> Seq.toList
 
         let monitorQueuePosition (LowLevelMonitorId mid as monitorId : LowLevelMonitorId) (thread : ThreadId) : int =
             let monitor = Map.find monitorId state.Kernel.LowLevelMonitors
