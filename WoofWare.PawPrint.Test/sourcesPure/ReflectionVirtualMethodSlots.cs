@@ -272,9 +272,11 @@ public class Program
 
     // --- generic owners whose ties are NOT substitution artifacts -------------------------------
     // Slot ties among generic types are only suspicious when substitution could have created them.
-    // In `Ga`/`Gb`/`Gc` no signature mentions the type parameter at all; in `Ha`/`Hb`/`Hc` both
-    // signatures mention it identically. Either way the tie exists at the generic *definition*
-    // level, so most-derived is the right answer and PawPrint must not refuse to lay these out.
+    // No signature here mentions the type parameter at all, so no substitution can have changed a
+    // comparison: the tie exists at the generic *definition* level, most-derived is the right
+    // answer, and PawPrint must not refuse to lay this out merely because the owners are generic.
+    // (The case where the signatures *do* mention the parameter is parked -- see
+    // `ReflectionVirtualSlotsGenericDefinitionLayout.cs`.)
     public class Ga<T>
     {
         public virtual string M ()
@@ -296,30 +298,6 @@ public class Program
         public override string M ()
         {
             return "gc";
-        }
-    }
-
-    public class Ha<T>
-    {
-        public virtual string M (T x)
-        {
-            return "ha";
-        }
-    }
-
-    public class Hb<T> : Ha<T>
-    {
-        public new virtual string M (T x)
-        {
-            return "hb";
-        }
-    }
-
-    public class Hc<T> : Hb<T>
-    {
-        public override string M (T x)
-        {
-            return "hc";
         }
     }
 
@@ -534,16 +512,6 @@ public class Program
 
         if (CountOwnedBy (typeof (Gc<int>), "M", "Ga`1") != 1)
             return 35;
-
-        // Generic owners whose signatures mention the parameter identically: still a genuine tie.
-        if (Count (typeof (Hc<int>), "M") != 2)
-            return 36;
-
-        if (CountOwnedBy (typeof (Hc<int>), "M", "Hc`1") != 1)
-            return 37;
-
-        if (CountOwnedBy (typeof (Hc<int>), "M", "Ha`1") != 1)
-            return 38;
 
         return 0;
     }

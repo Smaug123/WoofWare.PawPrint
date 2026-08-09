@@ -684,29 +684,29 @@ module NativeRuntimeTypeHelpers =
     let private rawSignature (slot : VtableSlot) : TypeDefn list * MethodReturnType<TypeDefn> =
         slot.Method.Signature.ParameterTypes, slot.Method.Signature.ReturnType
 
-    /// Could substitution have made these two slots' signatures coincide when the definition-level
-    /// signatures differ? Only if they are not already identical *and* a generic parameter appears
-    /// somewhere in them.
+    /// Could substituting the declaring types' generic arguments have created this tie, rather than
+    /// the two slots being genuinely the same at the generic-definition level?
+    ///
+    /// Answered conservatively, because the exact question is not decidable from what a closed
+    /// walk carries. It is tempting to say "the raw signatures are syntactically equal, so the tie
+    /// is genuine" -- but a raw `!0` is scoped to the type that wrote it, and two types' `!0` need
+    /// not denote the same thing at a shared instantiation. Measured: with `Ka<T>.M(T)`,
+    /// `Kb&lt;T&gt; : Ka&lt;string&gt;` declaring `M(T)`, and `Kc&lt;T&gt; : Kb&lt;T&gt;` overriding `M(string)`, both
+    /// inherited signatures are raw `[!0]` yet .NET replaces Ka's slot and reports `Kc`/`Kb`;
+    /// trusting the syntactic equality picks Kb's slot and reports `Kc`/`Ka`.
+    ///
+    /// So: if no compared signature mentions a generic parameter at all, no substitution can have
+    /// changed anything and the tie is genuine (any raw difference is then just the same type
+    /// spelled as a TypeDef in one assembly and a TypeRef in another). Otherwise, refuse to guess.
     let private tieCouldBeSubstitutionArtifact (a : VtableSlot) (b : VtableSlot) : bool =
-        if rawSignature a = rawSignature b then
-            // Identical before substitution, so the tie is genuine -- `A<T>.M()` shadowed by
-            // `B<T>.M()` is the same shape as the non-generic `new virtual` case, and the fact that
-            // the declaring types happen to be generic is irrelevant when no signature uses the
-            // parameter.
-            false
-        else
-            // They differ syntactically. That is either a real definition-level difference that
-            // substitution erased, or merely the same type spelled as a TypeDef in one assembly and
-            // a TypeRef in another. Only the former can involve a generic parameter, so use that to
-            // tell them apart rather than crying wolf on every cross-assembly shadow.
-            let types (slot : VtableSlot) =
-                let parameters, ret = rawSignature slot
+        let types (slot : VtableSlot) =
+            let parameters, ret = rawSignature slot
 
-                match ret with
-                | MethodReturnType.Void -> parameters
-                | MethodReturnType.Returns ty -> ty :: parameters
+            match ret with
+            | MethodReturnType.Void -> parameters
+            | MethodReturnType.Returns ty -> ty :: parameters
 
-            (types a @ types b) |> List.exists mentionsGenericParameter
+        (types a @ types b) |> List.exists mentionsGenericParameter
 
     /// The custom modifiers (`modreq`/`modopt`) a signature element carries: each paired with
     /// `true` for required and with the *path* through the type tree at which it sits.
