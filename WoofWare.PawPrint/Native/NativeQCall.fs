@@ -24,6 +24,7 @@ module NativeQCall =
             "Buffer_MemMove", NativeBuffer.tryExecuteQCall "Buffer_MemMove"
             "ExceptionNative_GetMessageFromNativeResources",
             NativeException.tryExecuteQCall "ExceptionNative_GetMessageFromNativeResources"
+            "ExceptionNative_GetFrozenStackTrace", NativeException.tryExecuteQCall "ExceptionNative_GetFrozenStackTrace"
             "RuntimeTypeHandle_ConstructName", NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_ConstructName"
             "RuntimeTypeHandle_CreateInstanceForAnotherGenericParameter",
             NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_CreateInstanceForAnotherGenericParameter"

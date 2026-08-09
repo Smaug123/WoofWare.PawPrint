@@ -465,6 +465,11 @@ module ExceptionDispatching =
                     cliException.ExceptionObject
                     cliException.StackTrace
                     state
+                |> IlMachineState.recordThrownStackTrace
+                    loggerFactory
+                    corelib
+                    cliException.ExceptionObject
+                    cliException.StackTrace
 
             state,
             enterHandlerAtSearchPC
@@ -503,6 +508,11 @@ module ExceptionDispatching =
                     cliException.ExceptionObject
                     cliException.StackTrace
                     state
+                |> IlMachineState.recordThrownStackTrace
+                    loggerFactory
+                    corelib
+                    cliException.ExceptionObject
+                    cliException.StackTrace
 
             ExceptionDispatchResult.ExceptionUnhandled (state, cliException)
         | Some returnState ->
@@ -533,6 +543,11 @@ module ExceptionDispatching =
                         cliException.ExceptionObject
                         cliException.StackTrace
                         state
+                    |> IlMachineState.recordThrownStackTrace
+                        loggerFactory
+                        corelib
+                        cliException.ExceptionObject
+                        cliException.StackTrace
 
                 let tieAddr, tieType, state =
                     IlMachineState.synthesizeTypeInitializationException
@@ -573,6 +588,11 @@ module ExceptionDispatching =
                         cliException.ExceptionObject
                         cliException.StackTrace
                         state
+                    |> IlMachineState.recordThrownStackTrace
+                        loggerFactory
+                        corelib
+                        cliException.ExceptionObject
+                        cliException.StackTrace
 
                 let tieAddr, tieType, state =
                     IlMachineState.synthesizeTargetInvocationException
