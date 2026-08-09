@@ -206,4 +206,38 @@ module NativeException =
             let state = IlMachineState.pushToEvalStack (CliType.ofBool false) ctx.Thread state
 
             NativeHandlerResult.completed state |> Some
+        | "System.Private.CoreLib", "System", "Exception", "PrepareForForeignExceptionRaise", [], MethodReturnType.Void ->
+            // The last primitive `Exception.RestoreDispatchState` needs, and so the last gate on
+            // `ExceptionDispatchInfo.Throw()`. CoreCLR sets a one-shot per-thread flag
+            // (`SetRaisingForeignException`, comutilnative.cpp:75) which the *next* throw on that
+            // thread reads twice:
+            //
+            //  * `IL_Throw` (jithelpers.cpp:814) nulls only `_stackTraceString`, leaving
+            //    `_stackTrace` in place — where an ordinary `throw ex` would call
+            //    `ClearStackTracePreservingRemoteStackTrace` and drop the frames entirely. This is
+            //    what lets the restored trace survive the rethrow and be appended to.
+            //  * the first `StackTraceInfo::AppendElement` afterwards (excep.cpp:3016-3017) reads
+            //    and *resets* the flag, and marks the last already-present frame
+            //    `STEF_LAST_FRAME_FROM_FOREIGN_STACK_TRACE`, which is what renders as
+            //    "--- End of stack trace from previous location ---".
+            //
+            // PawPrint does not model that flag, so this is a no-op and a rethrow through
+            // `ExceptionDispatchInfo.Throw()` behaves like an ordinary one: `recordThrownStackTrace`
+            // mints a fresh token at the next dispatch and the trace restarts at the rethrow site,
+            // losing the original frames and the boundary annotation. That is a real, now-reachable
+            // divergence rather than a shrug — it is written up in `docs/divergences.md` and
+            // tracked as issue #876, which is where the flag gets modelled and consumed.
+            //
+            // A no-op is nonetheless the right shape for *this* change. The alternative is not
+            // "crash instead of diverging": failing here would block `ExceptionDispatchInfo.Throw`
+            // outright, and with it all Task fault propagation, which is a strictly worse answer
+            // than a documented gap in trace text. Nothing observable depends on the flag until
+            // something consumes it.
+            let operation = "System.Exception.PrepareForForeignExceptionRaise"
+
+            if not instruction.Arguments.IsEmpty then
+                failwith
+                    $"%s{operation}: expected no arguments after matching signature, got %d{instruction.Arguments.Length}"
+
+            NativeHandlerResult.completed state |> Some
         | _ -> None
