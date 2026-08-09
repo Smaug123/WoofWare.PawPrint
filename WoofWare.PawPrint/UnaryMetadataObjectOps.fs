@@ -456,14 +456,11 @@ module internal UnaryMetadataObjectOps =
         (state : IlMachineState)
         : ManagedHeapAddress * IlMachineState
         =
-        let targetType =
-            AllConcreteTypes.lookup typeHandle state.ConcreteTypes
+        let targetType, defn =
+            AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes typeHandle
             |> Option.defaultWith (fun () ->
                 failwith $"boxValueType: ConcreteTypeHandle %O{typeHandle} is not registered in AllConcreteTypes"
             )
-
-        let defn =
-            state._LoadedAssemblies.[targetType.Assembly].TypeDefs.[targetType.Definition.Get]
 
         if not (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies defn) then
             failwith
@@ -954,12 +951,9 @@ module internal UnaryMetadataObjectOps =
                 $"Unbox_Any: type token denotes byref/pointer/function-pointer type %O{targetConcreteTypeHandle}, which is not a boxable type as ECMA-335 III.4.33 requires; this is invalid IL"
         | ConcreteTypeHandle.Concrete _ ->
 
-        let targetConcreteType =
-            AllConcreteTypes.lookup targetConcreteTypeHandle state.ConcreteTypes
+        let targetConcreteType, targetDefn =
+            AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes targetConcreteTypeHandle
             |> Option.get
-
-        let targetDefn =
-            state._LoadedAssemblies.[targetConcreteType.Assembly].TypeDefs.[targetConcreteType.Definition.Get]
 
         let isNullable =
             InternalTypeKind.kind baseClassTypes targetConcreteType = InternalTypeKind.Nullable

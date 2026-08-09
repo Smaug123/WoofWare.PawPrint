@@ -1436,15 +1436,14 @@ module IlMachineRuntimeMetadata =
         (concreteType : ConcreteTypeHandle)
         : (ConcreteType<ConcreteTypeHandle> * TypeInfo<GenericParamFromMetadata, TypeDefn>) option
         =
+        // Deliberately not just `AllConcreteTypes.tryTypeInfo`: this distinguishes the two
+        // reasons that returns `None`. A structural handle is an ordinary answer of "no nominal
+        // type here", but a `Concrete` handle with no row is a broken invariant and is raised.
         match concreteType with
         | ConcreteTypeHandle.Concrete _ ->
-            match AllConcreteTypes.lookup concreteType state.ConcreteTypes with
+            match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes concreteType with
             | None -> failwith $"ConcreteTypeHandle {concreteType} not found in AllConcreteTypes"
-            | Some concreteType ->
-                let assembly =
-                    state._LoadedAssemblies.ByDefinitionName concreteType.Identity.AssemblyFullName
-
-                Some (concreteType, assembly.TypeDefs.[concreteType.Identity.TypeDefinition.Get])
+            | resolved -> resolved
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _
         | ConcreteTypeHandle.Byref _
