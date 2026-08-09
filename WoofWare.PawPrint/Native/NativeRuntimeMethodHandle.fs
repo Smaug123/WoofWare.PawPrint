@@ -1096,17 +1096,27 @@ module NativeRuntimeMethodHandle =
             // `NativeRuntimeTypeHelpers.vtableOfClosed` for the rule and for why MethodImpls are
             // not consulted.
             //
-            // The BCL calls this only for a method whose metadata carries MethodAttributes.Virtual
-            // (RuntimeType.CoreCLR.cs:683), and on a class or value type such a method always
-            // occupies an instance vtable slot: CoreCLR rejects static+virtual outside interfaces
-            // with a TypeLoadException, and `PopulateMethods` routes interfaces down a branch that
-            // never reaches here. So "not in the vtable" is a contract violation, not a shape to
-            // paper over -- with one exception worth recording, because it is the answer to "what
-            // would CoreCLR have returned": for a value type, the MethodTable builder duplicates
-            // every virtual, leaving the unboxing stub in the vtable slot and giving the unboxed
-            // copy a slot beyond GetNumVirtuals. Those duplicates are MethodDesc-level artifacts
-            // that live in the MethodDescChunks; PawPrint enumerates metadata MethodDefs once, so
-            // it never sees them.
+            // Every caller that can reach this today asks only about a method whose metadata carries
+            // MethodAttributes.Virtual (`PopulateMethods`, RuntimeType.CoreCLR.cs:683), and on a
+            // class or value type such a method always occupies an instance vtable slot: CoreCLR
+            // rejects static+virtual outside interfaces with a TypeLoadException, and
+            // `PopulateMethods` routes interfaces down a branch that never reaches here.
+            //
+            // Two shapes would land outside the vtable, and neither is reachable yet. Both are
+            // recorded because they are the answer to "what would CoreCLR have returned":
+            //
+            //  - `PopulateProperties` (RuntimeType.CoreCLR.cs:1358) calls this on a property's
+            //    accessor with *no* Virtual guard, testing `slot < numVirtuals` afterwards, so an
+            //    ordinary non-virtual getter reaches it and CoreCLR answers with a non-vtable slot.
+            //    PawPrint cannot enumerate properties at all -- `MetadataImport.Enum` does not
+            //    support the Property token type -- so `GetProperties` fails well before this
+            //    point. Whoever implements property enumeration will need the non-vtable region.
+            //
+            //  - For a value type, the MethodTable builder duplicates every virtual, leaving the
+            //    unboxing stub in the vtable slot and giving the unboxed copy a slot beyond
+            //    GetNumVirtuals. Those duplicates are MethodDesc-level artifacts living in the
+            //    MethodDescChunks; PawPrint enumerates metadata MethodDefs once, so it never sees
+            //    them.
             let operation = "RuntimeMethodHandle.GetSlot"
 
             let identity =
@@ -1133,7 +1143,7 @@ module NativeRuntimeMethodHandle =
                 )
                 |> Option.defaultWith (fun () ->
                     failwith
-                        $"TODO: %s{operation}: method %s{methodInfo.Name} occupies no slot in the vtable of its declaring type %O{declaringType}; CoreCLR would answer with a slot in the non-vtable region beyond GetNumVirtuals, which PawPrint does not model"
+                        $"TODO: %s{operation}: method %s{methodInfo.Name} occupies no slot in the vtable of its declaring type %O{declaringType}; CoreCLR would answer with a slot in the non-vtable region beyond GetNumVirtuals, which PawPrint does not model. If you have arrived here from property enumeration, that is the expected next step: see the comment above this handler"
                 )
 
             let state =
