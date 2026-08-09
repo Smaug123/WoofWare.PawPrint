@@ -65,4 +65,63 @@ module NativeException =
                     (CliType.ObjectRef (Some messageAddr))
 
             NativeHandlerResult.completed state |> Some
+        | "ExceptionNative_GetFrozenStackTrace",
+          "System.Private.CoreLib",
+          "System",
+          "Exception",
+          "GetFrozenStackTrace",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "ObjectHandleOnStack",
+                                              exceptionGenerics)
+            ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "ObjectHandleOnStack",
+                                              stackTraceGenerics) ],
+          MethodReturnType.Void when exceptionGenerics.IsEmpty && stackTraceGenerics.IsEmpty ->
+            // Reached from `ExceptionDispatchInfo.Capture` via `Exception.CaptureDispatchState`
+            // (Exception.CoreCLR.cs:229-237). CoreCLR fetches the exception's `StackTraceArray`,
+            // marks it frozen, and hands it back (comutilnative.cpp:81-118). "Frozen" means
+            // copy-on-write: a later append clones rather than mutating, so the captured trace
+            // cannot be rewritten by continued propagation of the same exception object.
+            //
+            // PawPrint gets that for free. `_stackTrace` holds a token minted afresh by each
+            // dispatch (`IlMachineRuntimeMetadata.recordThrownStackTrace`), standing for an
+            // immutable frame list in `IlMachineState.FrozenStackTraces`, so there is nothing
+            // to freeze and nothing that could later mutate. This handler is therefore exactly
+            // CoreCLR's remaining behaviour: hand back whatever `_stackTrace` holds.
+            //
+            // Null is a legitimate answer, not a failure: an exception that has never been
+            // thrown has no trace, and CoreCLR returns null for it too (`ret.Set` of a NULL
+            // array). `ExceptionDispatchInfo.Capture(new Exception())` is legal and depends on
+            // that round-tripping as null, so this must not fail on a null trace. It *does*
+            // fail on a null exception, which CoreCLR likewise asserts against
+            // (comutilnative.cpp:88).
+            let operation = "ExceptionNative_GetFrozenStackTrace"
+
+            if instruction.Arguments.Length <> 2 then
+                failwith
+                    $"%s{operation}: expected two native arguments after matching signature, got %d{instruction.Arguments.Length}"
+
+            let exceptionPtr =
+                NativeCall.objectHandleOnStackTarget operation state "exception" instruction.Arguments.[0]
+
+            let exceptionAddr =
+                match IlMachineState.readManagedByref ctx.BaseClassTypes state exceptionPtr with
+                | CliType.ObjectRef (Some addr) -> addr
+                | CliType.ObjectRef None ->
+                    failwith $"%s{operation}: ObjectHandleOnStack pointed to a null Exception reference"
+                | other -> failwith $"%s{operation}: expected ObjectRef in ObjectHandleOnStack, got %O{other}"
+
+            let retStackTrace =
+                NativeCall.objectHandleOnStackTarget operation state "stackTrace" instruction.Arguments.[1]
+
+            let frozenTrace =
+                IlMachineState.frozenStackTraceToken ctx.BaseClassTypes exceptionAddr state
+                |> CliType.ObjectRef
+
+            let state =
+                IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state retStackTrace frozenTrace
+
+            NativeHandlerResult.completed state |> Some
         | _ -> None

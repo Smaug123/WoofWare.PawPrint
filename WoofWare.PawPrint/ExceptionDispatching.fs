@@ -458,6 +458,18 @@ module ExceptionDispatching =
 
         match handlerResult with
         | Some (handler, _isFinally) ->
+            // `_isFinally` is ignored, so this fires on cleanup handlers too, and there
+            // `cliException.StackTrace` holds only the frames unwound so far: PawPrint
+            // interleaves handler search with cleanup rather than completing a first pass
+            // first, as CoreCLR does. Managed code running in a `finally` therefore sees a
+            // truncated trace — measured, and pre-dating the frozen-trace token: the same
+            // partial list already reached `_stackTraceString` here. Issue #865 tracks giving
+            // dispatch a real two-pass structure, which is what fixes both sinks at once.
+            //
+            // Recording the partial trace is nonetheless right, rather than skipping the write
+            // for cleanup handlers: `Exception.HasBeenThrown` keys off `_stackTrace` being
+            // non-null, and the exception genuinely has been thrown by this point. Skipping
+            // would trade an incomplete trace for a wrong answer to a different question.
             let state =
                 IlMachineState.setExceptionStackTraceString
                     loggerFactory
@@ -465,6 +477,11 @@ module ExceptionDispatching =
                     cliException.ExceptionObject
                     cliException.StackTrace
                     state
+                |> IlMachineState.recordThrownStackTrace
+                    loggerFactory
+                    corelib
+                    cliException.ExceptionObject
+                    cliException.StackTrace
 
             state,
             enterHandlerAtSearchPC
@@ -503,6 +520,11 @@ module ExceptionDispatching =
                     cliException.ExceptionObject
                     cliException.StackTrace
                     state
+                |> IlMachineState.recordThrownStackTrace
+                    loggerFactory
+                    corelib
+                    cliException.ExceptionObject
+                    cliException.StackTrace
 
             ExceptionDispatchResult.ExceptionUnhandled (state, cliException)
         | Some returnState ->
@@ -533,6 +555,11 @@ module ExceptionDispatching =
                         cliException.ExceptionObject
                         cliException.StackTrace
                         state
+                    |> IlMachineState.recordThrownStackTrace
+                        loggerFactory
+                        corelib
+                        cliException.ExceptionObject
+                        cliException.StackTrace
 
                 let tieAddr, tieType, state =
                     IlMachineState.synthesizeTypeInitializationException
@@ -573,6 +600,11 @@ module ExceptionDispatching =
                         cliException.ExceptionObject
                         cliException.StackTrace
                         state
+                    |> IlMachineState.recordThrownStackTrace
+                        loggerFactory
+                        corelib
+                        cliException.ExceptionObject
+                        cliException.StackTrace
 
                 let tieAddr, tieType, state =
                     IlMachineState.synthesizeTargetInvocationException
