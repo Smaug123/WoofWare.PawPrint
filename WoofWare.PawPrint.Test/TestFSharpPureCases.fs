@@ -128,24 +128,28 @@ module TestFSharpPureCases =
     let unimplemented : Set<string> =
         Set.ofList
             [
-                // `sprintf` reflects over the format's argument types, which walks
-                // `RuntimeType.GetMethodBase` and then asks the resulting `MethodBase` for its
-                // parameters. `GetMethodBase` completes, and so now does the `Signature_Init` QCall
-                // that builds the `MethodBase`'s `Signature` (its method arm landed with
-                // `sourcesPure/ReflectionMethodSignature.cs`, which covers the `ReturnType` and
-                // `CallingConvention` that arm makes readable).
+                // `sprintf` reflects over the format's argument types and then *invokes* the
+                // capture method it selects: `FormatParser.buildCaptureFunc` calls
+                // `MakeGenericMethod(...).Invoke(null, new object[1] { ... })`.
                 //
-                // What remains is `MethodBase.GetParameters()`, which needs two further primitives,
-                // in this order:
-                //   1. `RuntimeMethodHandle.GetMethodDef` (InternalCall; CoreCLR returns
-                //      `pMethod->GetMemberDef()`), reached from `RuntimeParameterInfo.GetParameters`
-                //      via `NativeCall.failUnimplemented`;
-                //   2. with that spiked, `MetadataImport.Enum` for token type 0x08000000 (mdtParamDef)
-                //      with a MethodDef parent -- i.e. `EnumParams` -- which fails in
-                //      `NativeMetadataImport.tryExecuteQCall` with "does not yet support token type".
+                // An earlier version of this comment claimed the blocker was
+                // `MethodBase.GetParameters()`, needing `RuntimeMethodHandle.GetMethodDef` and then
+                // `MetadataImport`'s mdtParamDef enumeration. That is no longer true, and was
+                // written from a spike rather than a run: `MethodBase.Invoke` takes its argument
+                // types from `Signature._arguments`, which the `Signature_Init` method arm now
+                // fills, so sprintf never reaches `ParameterInfo` at all. Un-park and run before
+                // trusting any claim here.
                 //
-                // `sourcesPure/MakeGenericMethodConstraintSatisfied.cs` covers the `GetMethodBase`
-                // walk itself and passes; it does not go on to read parameters.
+                // The one primitive left is the `RuntimeMethodHandle_InvokeMethod` QCall
+                // (`reflectioninvocation.cpp`), reached via
+                // `MethodBaseInvoker.InterpretedInvoke_Method`. It must unmarshal the `void**`
+                // buffer of byrefs its caller built on the stack, invoke the target method, and box
+                // the result into an `ObjectHandleOnStack`.
+                //
+                // `sourcesPure/StructLocalPointerArithmetic.cs` covers the pointer arithmetic that
+                // builds that buffer (`(IntPtr*)&byrefs + i`), and
+                // `sourcesPure/ReflectionMethodSignature.cs` covers the `Signature` fields the
+                // QCall will read; neither goes on to invoke anything.
                 "SprintfBasic"
             ]
 

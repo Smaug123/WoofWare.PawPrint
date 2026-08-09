@@ -16,6 +16,13 @@ type private ArithmeticTarget =
     | ArrayTarget of ManagedHeapAddress * int
     | StringTarget of ManagedHeapAddress * int
     | FieldTarget of FieldContainer * FieldId
+    /// A byref that addresses one whole typed storage slot — `&local`, `&arg`,
+    /// `&staticField`, or a box's interior pointer — rather than a byte, an
+    /// element, or a field. A zero offset leaves such a byref exactly as it is;
+    /// any other offset turns it into a byte cursor over the slot, because
+    /// moving an address must not also choose a type view (the access width
+    /// belongs to the later `ldind`/`stind`).
+    | WholeValueTarget of ptr : ManagedPointerSource
     /// A byref ending in `ReinterpretAs T [; ByteOffset n]`. Pointer arithmetic
     /// walks the byte cursor rather than the underlying storage. `prefixProjs`
     /// is whatever came before the reinterpret.
@@ -58,7 +65,29 @@ module private ArithmeticTarget =
                     $"ByteOffset %d{n} without a preceding ReinterpretAs in projection chain: {ptr} (this is an interpreter bug)"
             | ByrefProjection.ReinterpretAs ty :: revRest ->
                 ArithmeticTarget.ByteViewTarget (root, List.rev revRest, ty, 0)
-            | [] -> failwith $"refusing to do pointer arithmetic on a bare stack slot address: {ptr}"
+            | [] ->
+                match root with
+                | ByrefRoot.LocalVariable _
+                | ByrefRoot.Argument _
+                | ByrefRoot.StaticField _
+                | ByrefRoot.HeapValue _ -> ArithmeticTarget.WholeValueTarget ptr
+                | ByrefRoot.PeByteRange range ->
+                    // A PE byte range is byte-addressed, so offsetting it wants a byte cursor
+                    // rather than field resolution. Nothing asks for it yet, and inventing a
+                    // field-shaped answer for byte-shaped storage would be a lie.
+                    failwith
+                        $"refusing to do pointer arithmetic on the whole PE byte range %O{range}: offsetting a byte-addressed range needs a byte cursor, which no caller has needed yet"
+                | ByrefRoot.ExposedClassObject target ->
+                    // One objref cache cell, with no interior structure to offset into.
+                    failwith
+                        $"refusing to do pointer arithmetic on the RuntimeType cache cell for %O{target}: the cell holds a single object reference and has no interior to address"
+                | ByrefRoot.StackMemoryByte _
+                | ByrefRoot.NativeMemoryByte _
+                | ByrefRoot.ArrayElement _
+                | ByrefRoot.StringCharAt _
+                | ByrefRoot.HeapObjectField _ ->
+                    failwith
+                        $"byref %O{ptr} has a byte-, element- or field-addressed root and no projections, which the arms above already match (this is an interpreter bug)"
 
     let getFieldContainerValue
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -315,6 +344,40 @@ module ArithmeticOperation =
                         ManagedPointerSource.appendProjection (ByrefProjection.Field newField) parentPtr
 
                 Choice1Of2 newPtr
+        | ArithmeticTarget.WholeValueTarget ptr ->
+            if v = 0 then
+                // `p + 0` is `p`, structurally and not merely by address.
+                //
+                // Equality is *not* the reason: `ceqNormalised` strips a trailing `ReinterpretAs`,
+                // so a zero-length byte cursor would compare equal to the bare pointer and no
+                // guest could tell the two apart with `ceq` or `Unsafe.AreSame`. The write path is
+                // the reason. A slot whose value has no byte image — a struct of byrefs, which is
+                // exactly what `MethodBaseInvoker`'s `StackAllocatedByRefs` is — can be written
+                // whole but not through a byte cursor, and `stobj` through `&byrefs + 0` has to
+                // keep working. `TestBinaryArithmetic` pins that directly, since no C# guest can
+                // express a pointer to a struct of byrefs.
+                Choice1Of2 ptr
+            else
+
+            // A byte cursor, never a resolved field. Advancing a raw pointer moves an address; it
+            // does not choose a type view, and the access width only arrives later with the
+            // `ldind`/`stind` that dereferences it. Resolving to whichever field begins at this
+            // offset would decide that width early and get it wrong two ways:
+            //   * `*(int*)((byte*)&v + 4)` over four `byte` fields at offsets 4..7 would read one
+            //     byte instead of spanning all four;
+            //   * `(p + n) - n` would come back as the field at offset 0 rather than as `p`, so a
+            //     round trip would compare unequal to where it started.
+            // Both are silent wrong answers rather than loud failures. The byte cursor normalises
+            // `ByteOffset 0` away on the way back, so the round trip really does return.
+            //
+            // A slot whose value has no byte image produces a cursor that fails when it is read or
+            // written rather than here; that is the byte-scatter walks' report to make, and a loud
+            // failure there beats a plausible answer here.
+            let byteType = byteConcreteType baseClassTypes state
+
+            ptr
+            |> ManagedPointerByteView.addByteOffset baseClassTypes state byteType v
+            |> Choice1Of2
         | ArithmeticTarget.ByteViewTarget _ ->
             // Walk the byte cursor under the trailing reinterpret. The reinterpret
             // stays (it's the type view the caller set up); the byte offset
@@ -411,6 +474,20 @@ module ArithmeticOperation =
     /// model's own limits are enforced by `checkedAddInt32`, which fails
     /// loudly (an interpreter limitation) rather than throwing
     /// OverflowException into the guest.
+    /// Whether both pointers reach into the *same* argument slot.
+    ///
+    /// Argument-rooted pointers are otherwise refused outright by subtraction: two different
+    /// argument slots are separate storage with no byte distance between them, and an argument
+    /// paired with anything else has none either. Two pointers into one argument slot do have a
+    /// distance, which is what `&arg + n` now produces, so that pair is let through to the
+    /// ordinary decomposition.
+    let private sameArgumentRoot (ptr1 : ManagedPointerSource) (ptr2 : ManagedPointerSource) : bool =
+        match ptr1, ptr2 with
+        | ManagedPointerSource.Byref (ByrefRoot.Argument (thread1, frame1, index1), _),
+          ManagedPointerSource.Byref (ByrefRoot.Argument (thread2, frame2, index2), _) ->
+            thread1 = thread2 && frame1 = frame2 && index1 = index2
+        | _ -> false
+
     let private subManagedPtrManagedPtr
         (behaviour : OverflowBehaviour)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -440,7 +517,7 @@ module ArithmeticOperation =
         | _, ManagedPointerSource.NativeIntPlaceholder _ ->
             failwith $"refusing to subtract through fake non-null byref placeholder: %O{ptr1} and %O{ptr2}"
         | ManagedPointerSource.Byref (ByrefRoot.Argument _, _), _
-        | _, ManagedPointerSource.Byref (ByrefRoot.Argument _, _) ->
+        | _, ManagedPointerSource.Byref (ByrefRoot.Argument _, _) when not (sameArgumentRoot ptr1 ptr2) ->
             failwith $"refusing to operate on pointers to arguments: %O{ptr1} and %O{ptr2}"
         | ManagedPointerSource.Byref _, ManagedPointerSource.Byref _ ->
             match ArithmeticTarget.decompose ptr1, ArithmeticTarget.decompose ptr2 with
@@ -621,6 +698,27 @@ module ArithmeticOperation =
                 // delta regardless of which `ReinterpretAs` type was used
                 // on each side (the view is address-preserving).
                 int64 off1 - int64 off2 |> verbatimInt64 |> Choice2Of2
+            // A whole-slot byref and a byte cursor over that same slot. `&slot + n` produces
+            // exactly this pair, so `int* q = p + n; q - p;` reaches here; without these arms
+            // advancing a whole-slot pointer would work while measuring the advance would not.
+            // The slot's own address is byte offset zero, so the delta is just the cursor's.
+            | ArithmeticTarget.ByteViewTarget (root1, [], _, off1), ArithmeticTarget.WholeValueTarget slot2 when
+                ManagedPointerSource.Byref (root1, []) = slot2
+                ->
+                int64 off1 |> verbatimInt64 |> Choice2Of2
+            | ArithmeticTarget.WholeValueTarget slot1, ArithmeticTarget.ByteViewTarget (root2, [], _, off2) when
+                slot1 = ManagedPointerSource.Byref (root2, [])
+                ->
+                -(int64 off2) |> verbatimInt64 |> Choice2Of2
+            | ArithmeticTarget.WholeValueTarget slot1, ArithmeticTarget.WholeValueTarget slot2 ->
+                if slot1 <> slot2 then
+                    // Two distinct slots have no byte distance to report: locals, arguments,
+                    // statics and boxes are separate storage here, not offsets into one address
+                    // space. Refuse rather than invent a number.
+                    failwith
+                        $"refusing to subtract pointers to two distinct whole storage slots: %O{slot1} vs %O{slot2}"
+
+                verbatimInt64 0L |> Choice2Of2
             | ArithmeticTarget.StackMemoryTarget _, _
             | _, ArithmeticTarget.StackMemoryTarget _ ->
                 failwith $"refusing to subtract localloc byte pointer from incompatible pointer: %O{ptr1} vs %O{ptr2}"

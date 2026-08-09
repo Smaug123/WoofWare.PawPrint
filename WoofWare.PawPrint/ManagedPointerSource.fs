@@ -624,10 +624,17 @@ module ManagedPointerSource =
                 | ByrefProjection.ReinterpretAs _, (ByrefProjection.ReinterpretAs _) :: revRest ->
                     List.rev revRest @ [ projection ]
                 | ByrefProjection.ByteOffset n, ByrefProjection.ByteOffset m :: revRest ->
-                    if n = -m then
+                    // Test the sum for zero rather than `n = -m`: this module is `Checked`, so
+                    // negating `Int32.MinValue` throws a *host* OverflowException even when the
+                    // sum is perfectly representable (`Int32.MinValue + 1`). The two conditions
+                    // are equivalent — offsets cancel exactly when their sum is zero, which
+                    // cannot itself overflow — so the sum is the total one.
+                    let total = m + n
+
+                    if total = 0 then
                         List.rev revRest
                     else
-                        List.rev revRest @ [ ByrefProjection.ByteOffset (m + n) ]
+                        List.rev revRest @ [ ByrefProjection.ByteOffset total ]
                 | ByrefProjection.ByteOffset 0, _ -> projs
                 | ByrefProjection.ByteOffset _, ByrefProjection.ReinterpretAs _ :: _ -> projs @ [ projection ]
                 | ByrefProjection.ByteOffset n, _ ->
