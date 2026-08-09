@@ -1180,6 +1180,83 @@ module internal UnaryMetadataCallOps =
         | Some ka, Some kb -> ka <> kb
         | _ -> false
 
+    /// `calli` through `FunctionPointerTarget.RuntimeAllocator`: the JIT's `newobj`
+    /// allocation helper, handed to managed code by `RuntimeTypeHandle_GetActivationInfo` and
+    /// invoked by `RuntimeType.ActivatorCache.CreateUninitializedObject`. Managed signature
+    /// `MethodTable* -> object`.
+    ///
+    /// This is a synchronous runtime primitive, not a managed call: no frame is pushed, so it
+    /// never suspends, and the peek-don't-pop retry dance the managed path needs does not
+    /// apply here.
+    ///
+    /// Per CoreCLR (`reflectioninvocation.cpp`, "This method will not run the type's static
+    /// cctor"), allocation does *not* initialise the type. That is observable: a struct with a
+    /// static constructor and no instance constructor is activated through this helper plus a
+    /// no-op ctor stub, so its `.cctor` never runs at all. Hence no `loadClass` here.
+    let private executeAllocatorCalli
+        (ctx : UnaryMetadataIlOpContext)
+        (callSiteSignature : TypeMethodSignature<TypeDefn>)
+        (state : IlMachineState)
+        : IlMachineState * WhatWeDid
+        =
+        let operation = "calli (runtime newobj allocator)"
+        let thread = ctx.Thread
+
+        // The allocator's signature is known exactly, so check the call site against all of
+        // it rather than merely counting slots as the managed path has to.
+        let callSiteHeader = callSiteSignature.Header.Get
+
+        if callSiteHeader.IsInstance then
+            failwith $"%s{operation}: call site declares an instance signature, but the allocation helper is static"
+
+        match callSiteSignature.ParameterTypes with
+        | [ paramTy ] ->
+            match stripCustomModifiers paramTy with
+            | TypeDefn.Pointer _
+            | TypeDefn.PrimitiveType PrimitiveType.IntPtr
+            | TypeDefn.PrimitiveType PrimitiveType.UIntPtr -> ()
+            | other ->
+                failwith
+                    $"%s{operation}: call site declares its parameter as %O{other}, but the allocation helper takes a MethodTable*"
+        | other ->
+            failwith
+                $"%s{operation}: call site declares %d{other.Length} parameters, but the allocation helper takes exactly one (the MethodTable*)"
+
+        match callSiteSignature.ReturnType with
+        | MethodReturnType.Returns retTy ->
+            match calliStackKind (stripCustomModifiers retTy) with
+            | Some CalliStackKind.ObjectRef -> ()
+            | _ ->
+                failwith
+                    $"%s{operation}: call site declares a return type of %O{retTy}, but the allocation helper returns an object reference"
+        | MethodReturnType.Void ->
+            failwith $"%s{operation}: call site returns void, but the allocation helper returns an object reference"
+
+        // The pointer sits above its argument, so it comes off first.
+        let _fnPtr, state = IlMachineState.popEvalStack thread state
+        let methodTableArg, state = IlMachineState.popEvalStack thread state
+
+        let typeHandle = EvalStackValue.requireMethodTable operation methodTableArg
+
+        // `ActivatorCache` substitutes its own `ReturnNull` stub for `Nullable<T>` — CoreCLR
+        // hands back a *null* allocator for it — so the helper is never legitimately invoked
+        // with a Nullable MethodTable. That matters beyond tidiness: `Box` never boxes
+        // `Nullable<T>` as itself, and the unbox reader relies on it, so allocating one here
+        // would put a heap object on the heap that no reader is prepared for.
+        match AllConcreteTypes.lookup typeHandle state.ConcreteTypes with
+        | Some ct when InternalTypeKind.kind ctx.BaseClassTypes ct = InternalTypeKind.Nullable ->
+            failwith
+                $"%s{operation}: invoked with a Nullable<T> MethodTable (%O{typeHandle}); CoreCLR returns a null allocator for Nullable and ActivatorCache substitutes its own null-returning stub, so this pointer should never have been called"
+        | _ -> ()
+
+        let addr, state =
+            IlMachineState.allocateUninitialisedInstance ctx.LoggerFactory ctx.BaseClassTypes typeHandle state
+
+        state
+        |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some addr)) thread
+        |> IlMachineState.advanceProgramCounter thread
+        |> Tuple.withRight WhatWeDid.Executed
+
     /// `calli` (ECMA-335 III.3.20). The function pointer sits on top of the eval stack,
     /// above the arguments; the metadata token is a StandaloneSignature describing the
     /// *call site*, not the callee.
@@ -1237,10 +1314,10 @@ module internal UnaryMetadataCallOps =
         // A function pointer is recognised by its `FunctionPointer` provenance; anything
         // that is semantically zero is a null pointer. The `FunctionPointer` case must be
         // matched first — `NativeIntSource.isZero` has no answer for it (and says so).
-        let methodToCall =
+        let target =
             match fnPtr with
             | None -> failwith "calli: eval stack was empty; expected a function pointer on top"
-            | Some (EvalStackValue.NativeInt (NativeIntSource.FunctionPointer mi)) -> Some mi
+            | Some (EvalStackValue.NativeInt (NativeIntSource.FunctionPointer target)) -> Some target
             | Some (EvalStackValue.NativeInt src) when NativeIntSource.isZero src ->
                 // Every spelling of a null function pointer lands here, not just
                 // `Verbatim 0L`: `ldnull; conv.i` yields
@@ -1254,7 +1331,7 @@ module internal UnaryMetadataCallOps =
                 // way, calling through it would be a guess.
                 failwith $"calli: expected a function pointer on top of the eval stack, got %O{other}"
 
-        match methodToCall with
+        match target with
         | None ->
             // ECMA-335 III.3.20: calli throws NullReferenceException if the function
             // pointer is null. Don't advance the PC; exception dispatch needs the
@@ -1265,7 +1342,8 @@ module internal UnaryMetadataCallOps =
                 baseClassTypes.NullReferenceException
                 thread
                 state
-        | Some methodToCall ->
+        | Some FunctionPointerTarget.RuntimeAllocator -> executeAllocatorCalli ctx callSiteSignature state
+        | Some (FunctionPointerTarget.Managed methodToCall) ->
 
         // Slots this call consumes: the callee's declared parameters, plus `this` when the
         // callee is an instance method. Arity comes from the signature, not the Param table:

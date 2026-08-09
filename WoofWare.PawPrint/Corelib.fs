@@ -54,6 +54,8 @@ module Corelib =
         let single = findCorelibType corelib "System" "Single"
         let double = findCorelibType corelib "System" "Double"
         let delegateType = findCorelibType corelib "System" "Delegate"
+
+        let multicastDelegateType = findCorelibType corelib "System" "MulticastDelegate"
         let runtimeMethodHandleType = findCorelibType corelib "System" "RuntimeMethodHandle"
 
         let runtimeMethodInfoStubType =
@@ -164,6 +166,7 @@ module Corelib =
             Enum = enumType
             ValueType = valueType
             DelegateType = delegateType
+            MulticastDelegateType = multicastDelegateType
             Object = objType
             RuntimeTypeHandle = runtimeTypeHandleType
             RuntimeMethodHandle = runtimeMethodHandleType

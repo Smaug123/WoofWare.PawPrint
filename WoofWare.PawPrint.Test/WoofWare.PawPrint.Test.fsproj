@@ -133,6 +133,7 @@
     <Compile Include="TestImpureCases.fs" />
     <Compile Include="TestRaces.fs" />
     <Compile Include="TestConcurrencyBugs.fs" />
+    <Compile Include="TestBoxedAllocationParity.fs" />
     <Compile Include="TestCalliSuspensionOutcome.fs" />
   </ItemGroup>
   <ItemGroup>

@@ -1764,4 +1764,175 @@ module NativeRuntimeTypeQCall =
                         (CliType.ObjectRef (Some arrayAddr))
 
                 NativeHandlerResult.completed state |> Some
+        | "RuntimeTypeHandle_GetActivationInfo",
+          "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "GetActivationInfo",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "ObjectHandleOnStack",
+                                              objectHandleGenerics)
+            ConcretePointer (ConcreteFunctionPointer _)
+            ConcretePointer (ConcretePointer (ConcreteVoid state.ConcreteTypes))
+            ConcretePointer (ConcreteFunctionPointer _)
+            ConcretePointer (ConcreteFunctionPointer _)
+            ConcretePointer (ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "", "BOOL", boolGenerics)) ],
+          MethodReturnType.Void when objectHandleGenerics.IsEmpty && boolGenerics.IsEmpty ->
+            // CoreCLR: `RuntimeTypeHandle_GetActivationInfo`, reflectioninvocation.cpp. Describes
+            // how `RuntimeType.ActivatorCache` should activate a type via `calli`: an allocator
+            // plus its first argument, a boxed-receiver constructor, an unboxed-receiver
+            // constructor, and whether that constructor is public. It runs no constructor and,
+            // deliberately, no class initialiser.
+            //
+            // Only argument 0 is an `ObjectHandleOnStack`; the other five are raw out-pointers
+            // to locals in the managed shim (RuntimeHandles.cs).
+            let operation = "RuntimeTypeHandle.GetActivationInfo"
+
+            if instruction.Arguments.Length <> 6 then
+                failwith $"%s{operation}: expected six native arguments, got %d{instruction.Arguments.Length}"
+
+            let runtimeTypePtr =
+                NativeCall.objectHandleOnStackTarget operation state "pRuntimeType" instruction.Arguments.[0]
+
+            let outAllocator =
+                NativeCall.managedPointerOfPointerArgument operation "ppfnAllocator" instruction.Arguments.[1]
+
+            let outAllocatorFirstArg =
+                NativeCall.managedPointerOfPointerArgument operation "pvAllocatorFirstArg" instruction.Arguments.[2]
+
+            let outRefCtor =
+                NativeCall.managedPointerOfPointerArgument operation "ppfnRefCtor" instruction.Arguments.[3]
+
+            let outValueCtor =
+                NativeCall.managedPointerOfPointerArgument operation "ppfnValueCtor" instruction.Arguments.[4]
+
+            let outCtorIsPublic =
+                NativeCall.managedPointerOfPointerArgument operation "pfCtorIsPublic" instruction.Arguments.[5]
+
+            let target =
+                NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef
+                    operation
+                    state
+                    (IlMachineState.readManagedByref ctx.BaseClassTypes state runtimeTypePtr
+                     |> EvalStackValue.ofCliType)
+
+            let state, activation =
+                ActivationInfo.classify ctx.LoggerFactory ctx.BaseClassTypes operation target state
+
+            // A null pointer must be written as something `NativeIntSource.isZero` agrees is
+            // zero, never as a `FunctionPointer`: `ActivatorCache` decides whether to substitute
+            // its no-op stubs by comparing each pointer against null, and a `FunctionPointer`
+            // never compares equal to zero. `RuntimePointer` rather than a `NativeInt` because
+            // these out-params address pointer-typed slots, whose own zero is this shape.
+            let nullPointer =
+                CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null)
+
+            let allocatorPointer =
+                CliType.Numeric (
+                    CliNumericType.NativeInt (NativeIntSource.FunctionPointer FunctionPointerTarget.RuntimeAllocator)
+                )
+
+            // `Interop.BOOL` is int32-backed (`FALSE = 0`, `TRUE = 1`).
+            let boolValue (b : bool) : CliType =
+                CliType.Numeric (CliNumericType.Int32 (if b then 1 else 0))
+
+            let writeAll
+                (allocator : CliType)
+                (allocatorFirstArg : CliType)
+                (refCtor : CliType)
+                (valueCtor : CliType)
+                (ctorIsPublic : bool)
+                (state : IlMachineState)
+                : IlMachineState
+                =
+                let write ptr value state =
+                    IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state ptr value
+
+                state
+                |> write outAllocator allocator
+                |> write outAllocatorFirstArg allocatorFirstArg
+                |> write outRefCtor refCtor
+                |> write outValueCtor valueCtor
+                |> write outCtorIsPublic (boolValue ctorIsPublic)
+
+            // `pvAllocatorFirstArg` addresses a `void*` slot, so the MethodTable pointer goes in
+            // as a `RuntimePointer`; the guest copies that slot into `ActivatorCache`'s own
+            // `void*` field, and a `NativeInt`-shaped value there would force that copy down the
+            // byte-image path, which a pointer cell has no byte image for.
+            let methodTablePointer (handle : ConcreteTypeHandle) : CliType =
+                CliType.RuntimePointer (CliRuntimePointer.MethodTablePtr (RuntimeTypeHandleTarget.Closed handle))
+
+            match activation with
+            | ActivationInfo.Rejected rejection ->
+                let exnType =
+                    match rejection with
+                    | ActivationRejection.Delegate -> ctx.BaseClassTypes.ArgumentException
+                    | ActivationRejection.UnsupportedShape _
+                    | ActivationRejection.VariableLength
+                    | ActivationRejection.Interface
+                    | ActivationRejection.AbstractClass
+                    | ActivationRejection.NoDefaultConstructor -> ctx.BaseClassTypes.MissingMethodException
+
+                // Nothing is written on the throwing path, matching CoreCLR: the shim's locals
+                // stay at the zero the managed wrapper gave them.
+                NativeHandlerResult.raiseException exnType state |> Some
+            | ActivationInfo.Nullable ->
+                // CoreCLR returns a null allocator for Nullable<T> and ActivatorCache
+                // substitutes its own null-returning stub, which is how
+                // `Activator.CreateInstance(typeof(int?))` comes back null. "No ctor call
+                // needed" is reported as public.
+                writeAll nullPointer nullPointer nullPointer nullPointer true state
+                |> NativeHandlerResult.completed
+                |> Some
+            | ActivationInfo.ValueTypeWithoutConstructor methodTable ->
+                // A boxed `default(T)` needs no constructor call at all, so both ctor pointers
+                // are null and ActivatorCache installs its no-op stubs.
+                writeAll allocatorPointer (methodTablePointer methodTable) nullPointer nullPointer true state
+                |> NativeHandlerResult.completed
+                |> Some
+            | ActivationInfo.WithConstructor (methodTable, ctor, isPublic, isValueType) ->
+                let declaringType =
+                    AllConcreteTypes.lookup methodTable state.ConcreteTypes
+                    |> Option.defaultWith (fun () ->
+                        failwith $"%s{operation}: ConcreteTypeHandle %O{methodTable} not found in AllConcreteTypes"
+                    )
+
+                if isValueType then
+                    // CoreCLR hands back the ctor's *boxed* entry point in `ppfnRefCtor` and its
+                    // unboxed entry point in `ppfnValueCtor` — the same MethodDesc reached two
+                    // ways. PawPrint's function pointers carry no entry-point flavour, and
+                    // `CreateInstanceDefaultCtor` calls the boxed one, so we would have to invoke
+                    // a value-type instance method with an ObjectRef receiver. Coercing that into
+                    // a byref `this` risks constructing into a copy of the box's payload and
+                    // silently discarding the result, so refuse instead.
+                    let typeInfo =
+                        state._LoadedAssemblies
+                            .ByDefinitionName(declaringType.Identity.AssemblyFullName)
+                            .TypeDefs.[declaringType.Identity.TypeDefinition.Get]
+
+                    failwith
+                        $"TODO: %s{operation} for value type %s{typeInfo.Namespace}.%s{typeInfo.Name}, which declares an explicit parameterless constructor; CoreCLR returns that ctor's boxed entry point, which PawPrint's function-pointer representation cannot express"
+
+                let state, concretizedCtor, _declaringTypeHandle =
+                    ExecutionConcretization.concretizeMethodWithAllGenerics
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        declaringType.Generics
+                        ctor
+                        ImmutableArray.Empty
+                        state
+
+                let refCtorPointer =
+                    CliType.Numeric (
+                        CliNumericType.NativeInt (
+                            NativeIntSource.FunctionPointer (FunctionPointerTarget.Managed concretizedCtor)
+                        )
+                    )
+
+                // A reference type has no value ctor: CoreCLR asserts `*ppfnValueCtor == NULL`
+                // for one.
+                writeAll allocatorPointer (methodTablePointer methodTable) refCtorPointer nullPointer isPublic state
+                |> NativeHandlerResult.completed
+                |> Some
         | _ -> None

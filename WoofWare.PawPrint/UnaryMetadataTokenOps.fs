@@ -147,7 +147,9 @@ module internal UnaryMetadataTokenOps =
 
         state
         |> IlMachineState.pushToEvalStack'
-            (EvalStackValue.NativeInt (NativeIntSource.FunctionPointer concretizedMethod))
+            (EvalStackValue.NativeInt (
+                NativeIntSource.FunctionPointer (FunctionPointerTarget.Managed concretizedMethod)
+            ))
             thread
         |> IlMachineState.advanceProgramCounter thread
         |> Tuple.withRight WhatWeDid.Executed

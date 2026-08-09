@@ -513,6 +513,48 @@ module IlMachineRuntimeMetadata =
 
             state, baseFields @ ownFields
 
+    /// Allocate a zeroed heap instance of <paramref name="concreteType"/> and return its address.
+    /// No constructor runs, and — deliberately — no class initialiser either: callers that need
+    /// the type initialised must arrange that themselves.
+    ///
+    /// For a value type this is the *boxed* representation, structurally identical to what
+    /// `Box` writes for `default(T)`: both route the type's own non-static fields through
+    /// `InlineArrayStorage.expand` and the same `CliValueType.OfFields`, and the base-chain walk
+    /// contributes nothing for a value type (`ValueType`/`Object` declare no instance fields).
+    /// `TestBoxedAllocationParity` pins that parity.
+    let allocateUninitialisedInstance
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (concreteType : ConcreteTypeHandle)
+        (state : IlMachineState)
+        : ManagedHeapAddress * IlMachineState
+        =
+        let ct =
+            AllConcreteTypes.lookup concreteType state.ConcreteTypes
+            |> Option.defaultWith (fun () ->
+                failwith
+                    $"allocateUninitialisedInstance: ConcreteTypeHandle %O{concreteType} not found in AllConcreteTypes"
+            )
+
+        let typeInfo =
+            state._LoadedAssemblies
+                .ByDefinitionName(ct.Identity.AssemblyFullName)
+                .TypeDefs.[ct.Identity.TypeDefinition.Get]
+
+        let state, allFields =
+            collectAllInstanceFields loggerFactory baseClassTypes state concreteType
+
+        let fields =
+            CliValueType.OfFields
+                baseClassTypes
+                state.ConcreteTypes
+                concreteType
+                typeInfo.Layout
+                (CharSetMetadata.ofTypeAttributes typeInfo.TypeAttributes)
+                allFields
+
+        IlMachineThreadState.allocateManagedObject concreteType fields state
+
     /// Allocate a new System.String managed object on the heap with the given contents.
     /// Does NOT intern the string: every call returns a fresh heap object.  The Ldstr opcode
     /// wraps this with its own interning cache (see UnaryStringTokenIlOp); runtime-generated

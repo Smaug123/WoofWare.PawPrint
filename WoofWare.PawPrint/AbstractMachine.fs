@@ -141,7 +141,8 @@ module AbstractMachine =
                     |> AllocatedNonArrayObject.DereferenceFieldById (delegateFieldId "_methodPtr")
                     |> CliType.unwrapPrimitiveLike
                 with
-                | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer mi)) -> mi
+                | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer target)) ->
+                    FunctionPointerTarget.requireManaged "delegate invocation" target
                 | d -> failwith $"unexpectedly not a method pointer in delegate invocation: {d}"
 
             let methodGenerics = instruction.ExecutingMethod.Generics
