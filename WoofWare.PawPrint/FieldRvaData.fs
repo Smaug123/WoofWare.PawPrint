@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint
 
+open System.Collections.Immutable
 open Microsoft.Extensions.Logging
 
 /// PawPrint's stand-in for CoreCLR's `RuntimeFieldHandle::GetRVAFieldInfo`
@@ -50,12 +51,20 @@ module internal FieldRvaData =
         =
         let assembly, fieldInfo = fieldForHandle operation fieldHandle state
 
-        // RVA fields live on non-generic declaring types — `[FieldOffset]`/RVA
-        // initialisers cannot reference a generic typedef parameter. With the
-        // canonical FieldHandle declaring type model, "non-generic" means
-        // `Closed` (a generic declaring type would be `OpenGenericTypeDefinition`,
-        // for which RVA layout is not even definable). Reject other shapes
-        // loudly rather than silently fabricating empty generics.
+        // Sizing the field means concretising its signature, which needs the declaring type's
+        // instantiation. CoreCLR's `GetRVAFieldInfo` asks for no such thing — it only tests
+        // `FieldDesc::IsRVA` — and nothing forbids an RVA static on a generic type: the type
+        // loader rejects only RVA-plus-thread-static and RVA-plus-GC-references
+        // (methodtablebuilder.cpp:4129 and :4500). So an `OpenGenericTypeDefinition` declaring
+        // type has to be sized, not rejected.
+        //
+        // It can be. An RVA static is one blob at a fixed spot in the image, resolved from the
+        // module rather than from a per-instantiation static block (`FieldDesc::
+        // GetStaticAddressHandle`, field.cpp:247), so every instantiation shares the same bytes
+        // and the field's type cannot depend on the type arguments. That makes the empty
+        // instantiation the right context to size it in — and the guard below turns an image
+        // that violates the premise into a diagnosis rather than an index-out-of-range from
+        // deep inside `TypeResolution`.
         let typeGenerics =
             match fieldHandle.GetDeclaringTypeHandle () with
             | RuntimeTypeHandleTarget.Closed declaringTypeHandle ->
@@ -64,8 +73,18 @@ module internal FieldRvaData =
                 | None ->
                     failwith
                         $"%s{operation}: declaring type handle %O{declaringTypeHandle} was not concretized, so RVA field size cannot be computed"
+            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> ImmutableArray.Empty
             | other ->
                 failwith
-                    $"%s{operation}: RVA field's declaring type is %O{other}; expected a Closed concrete type. RVA fields cannot live on a generic typedef."
+                    $"%s{operation}: RVA field's declaring type is %O{other}; expected a concrete type or an open generic type definition. A field cannot be declared on a generic parameter."
+
+        if
+            IlMachineTypeResolution.containsUnboundGenericParameter
+                typeGenerics
+                ImmutableArray.Empty
+                fieldInfo.Signature
+        then
+            failwith
+                $"%s{operation}: RVA field %s{fieldInfo.Name} on %s{assembly.Name.Name} has a signature mentioning a generic parameter its declaring type supplies no argument for. An RVA static is shared by every instantiation, so its type cannot legally depend on the type arguments."
 
         IlMachineState.peByteRangeForFieldRva loggerFactory baseClassTypes assembly fieldInfo typeGenerics state
