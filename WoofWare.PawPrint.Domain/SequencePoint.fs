@@ -69,11 +69,6 @@ type MethodSequencePoints =
 [<RequireQualifiedAccess>]
 module MethodSequencePoints =
 
-    let empty : MethodSequencePoints =
-        {
-            _Points = ImmutableArray.Empty
-        }
-
     /// <summary>
     /// Index the supplied points for lookup. Sorting is stable, so where several points share an
     /// IL offset the input order decides which one <c>resolve</c> reports.
@@ -124,9 +119,37 @@ module MethodSequencePoints =
 [<RequireQualifiedAccess>]
 module PortablePdb =
 
+    let private describe (originalPath : string option) : string =
+        match originalPath with
+        | None -> "<in-memory image>"
+        | Some path -> path
+
+    /// <summary>
+    /// The one side-by-side PDB path PawPrint will consider for an assembly read from
+    /// <paramref name="assemblyPath" />: the conventional <c>.pdb</c> beside it, which is what
+    /// the SDK's default <c>DebugType=portable</c> emits.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Deliberately a single fixed path rather than a search. It is also the assembly parse
+    /// cache's notion of "the symbols for this assembly" (see <c>AssemblyFileCacheKey</c>), and
+    /// that cache can only stay honest about symbols changing underneath it if the set of files
+    /// that could have been read is exactly this one. Deriving the path from the image's
+    /// CodeView entry instead — which is what a debugger does — would be more faithful, but the
+    /// cache key is computed from a path alone and cannot open the image to find out.
+    /// </para>
+    /// <para>
+    /// The cost of that trade is an assembly file renamed after it was built: its CodeView entry
+    /// still names the original PDB, we look for one matching the new name, and it silently
+    /// loses its symbols. An embedded PDB travels with the image and is unaffected.
+    /// </para>
+    /// </remarks>
+    let sidecarPath (assemblyPath : string) : string =
+        Path.GetFullPath (Path.ChangeExtension (assemblyPath, ".pdb"))
+
     /// <summary>
     /// Open this image's portable PDB, if it has one: a PDB embedded in the PE itself, or —
-    /// when we know where the image was read from — a side-by-side <c>.pdb</c> beside it.
+    /// when we know where the image was read from — the side-by-side <c>.pdb</c> beside it.
     /// </summary>
     let private tryOpenReaderProvider
         (logger : ILogger)
@@ -145,16 +168,30 @@ module PortablePdb =
         match originalPath with
         | None -> None
         | Some path ->
+            let wanted = sidecarPath path
+
             // TryOpenAssociatedPortablePdb checks that the PDB it finds actually belongs to this
             // image (the CodeView GUID must match), so a stale .pdb left beside a rebuilt
             // assembly is rejected rather than silently misattributing every line in it.
             let opener =
                 Func<string, Stream> (fun candidate ->
                     try
-                        File.OpenRead candidate :> Stream
-                    with :? IOException ->
-                        // "No PDB beside the assembly" is the overwhelmingly common case, not an
-                        // error: returning null tells SRM to carry on looking.
+                        // SRM offers several candidates, among them the *absolute path recorded
+                        // in the image's own CodeView entry* — which names the machine that built
+                        // it. Accept only the conventional sidecar: PawPrint has no business
+                        // opening files at paths chosen by a third-party binary, and the parse
+                        // cache cannot account for any path but this one.
+                        if String.Equals (Path.GetFullPath candidate, wanted, StringComparison.Ordinal) then
+                            File.OpenRead candidate :> Stream
+                        else
+                            null
+                    with
+                    | :? IOException
+                    | :? UnauthorizedAccessException
+                    | :? ArgumentException
+                    | :? NotSupportedException ->
+                        // "No readable PDB beside the assembly" is the overwhelmingly common
+                        // case, not an error: null tells SRM to carry on to the next candidate.
                         null
                 )
 
@@ -174,29 +211,13 @@ module PortablePdb =
     /// with no lifetime relationship to <paramref name="peReader" />: it stays valid after the
     /// <c>DumpedAssembly</c> holding it — and hence its <c>PEReader</c> — has been disposed.
     /// </remarks>
-    let readSequencePoints
+    let private readCore
         (logger : ILogger)
         (peReader : PEReader)
         (originalPath : string option)
         : ImmutableDictionary<ComparableMethodDefinitionHandle, MethodSequencePoints>
         =
-        let provider =
-            try
-                tryOpenReaderProvider logger peReader originalPath
-            with :? BadImageFormatException as e ->
-                // Malformed debug information must not stop us running an assembly that the real
-                // runtime would happily run: symbols are a diagnostic aid, not a prerequisite.
-                logger.LogDebug (
-                    "Ignoring malformed debug directory for assembly at {AssemblyPath}: {DebugDirectoryError}",
-                    (match originalPath with
-                     | None -> "<in-memory image>"
-                     | Some p -> p),
-                    e.Message
-                )
-
-                None
-
-        match provider with
+        match tryOpenReaderProvider logger peReader originalPath with
         | None -> ImmutableDictionary.Empty
         | Some provider ->
 
@@ -248,3 +269,59 @@ module PortablePdb =
                     result.Add (ComparableMethodDefinitionHandle.Make (handle.ToDefinitionHandle ()), points)
 
         result.ToImmutable ()
+
+    /// <summary>
+    /// Sequence points for every method in this image that has any, keyed by method definition
+    /// handle. Empty when the image carries no debug information, which is the normal case for
+    /// the shared framework.
+    /// </summary>
+    /// <remarks>
+    /// Parses eagerly and closes the PDB before returning, so the result is plain immutable data
+    /// with no lifetime relationship to <paramref name="peReader" />: it stays valid after the
+    /// <c>DumpedAssembly</c> holding it — and hence its <c>PEReader</c> — has been disposed.
+    /// </remarks>
+    let readSequencePoints
+        (logger : ILogger)
+        (peReader : PEReader)
+        (originalPath : string option)
+        : ImmutableDictionary<ComparableMethodDefinitionHandle, MethodSequencePoints>
+        =
+        // Symbols are a diagnostic aid, never a prerequisite, and `Assembly.read` calls this
+        // unconditionally. Damaged or unreadable debug information must therefore cost us the
+        // symbols and nothing else: failing here would refuse an assembly that the real runtime
+        // runs perfectly well, which is a far worse outcome than an unattributed stack frame.
+        //
+        // The guard has to span the parse and not merely the open. A PDB whose header and
+        // CodeView GUID are intact but whose heaps are damaged opens cleanly and then throws
+        // from `GetDocumentName` part-way through enumeration.
+        // Logged at Warning, unlike the far more common "this assembly has no PDB at all", which
+        // stays at Debug: symbols that are present but unusable are rare, are never what the
+        // author intended, and are exactly what someone asking "why has this frame no line
+        // number?" needs to be told.
+        try
+            readCore logger peReader originalPath
+        with
+        | :? BadImageFormatException as e ->
+            logger.LogWarning (
+                "Ignoring malformed debug information for assembly at {AssemblyPath}: {DebugInfoError}",
+                describe originalPath,
+                e.Message
+            )
+
+            ImmutableDictionary.Empty
+        | :? IOException as e ->
+            logger.LogWarning (
+                "Could not read debug information for assembly at {AssemblyPath}: {DebugInfoError}",
+                describe originalPath,
+                e.Message
+            )
+
+            ImmutableDictionary.Empty
+        | :? UnauthorizedAccessException as e ->
+            logger.LogWarning (
+                "Not permitted to read debug information for assembly at {AssemblyPath}: {DebugInfoError}",
+                describe originalPath,
+                e.Message
+            )
+
+            ImmutableDictionary.Empty

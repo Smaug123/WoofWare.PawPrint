@@ -3,6 +3,7 @@ namespace WoofWare.PawPrint.Test
 open System
 open System.IO
 open System.Reflection.Metadata
+open System.Text
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
@@ -173,6 +174,134 @@ module TestSequencePoints =
         peReaderIsUnusable |> shouldEqual true
 
         assy.TryResolveSourceLocation handle 0 |> Option.isSome |> shouldEqual true
+
+    /// Materialise an assembly, and optionally its sidecar PDB, into a directory of its own.
+    /// Fresh per call because `Assembly.readFile`'s parse cache is process-wide and keyed by
+    /// path: reusing a path would have one test observing another's cache entry.
+    let private writeTempAssembly (image : byte[]) (pdb : byte[] option) : string =
+        let unique = Guid.NewGuid().ToString "N"
+        let dir = Path.Combine (Path.GetTempPath (), $"pawprint-pdb-%s{unique}")
+
+        Directory.CreateDirectory dir |> ignore<DirectoryInfo>
+
+        // Named for the assembly it contains, as every real build names it: PawPrint looks for
+        // `<assembly file>.pdb` and ignores the file name recorded in the image's CodeView entry
+        // (see `PortablePdb.sidecarPath`), so a file renamed after compilation finds no symbols.
+        let dll = Path.Combine (dir, "PawPrintTestAssembly.dll")
+        File.WriteAllBytes (dll, image)
+
+        match pdb with
+        | Some pdb -> File.WriteAllBytes (Path.ChangeExtension (dll, ".pdb"), pdb)
+        | None -> ()
+
+        dll
+
+    let private readFile (path : string) : DumpedAssembly =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        AssemblyApi.readFile loggerFactory path
+
+    [<Test>]
+    let ``a side-by-side pdb supplies sequence points`` () : unit =
+        let image, pdb = Roslyn.compileWithSidecarSymbols [ source ]
+        let assy = readFile (writeTempAssembly image (Some pdb))
+
+        assy.SequencePoints.Count |> shouldBeGreaterThan 0
+
+        match assy.TryResolveSourceLocation (tripleHandle assy) 0 with
+        | None -> failwith "expected a source location for Triple's first instruction"
+        | Some loc -> loc.StartLine |> shouldEqual 4
+
+    /// Locate a named stream within a standalone portable PDB by walking the metadata root.
+    /// A hard-coded offset would quietly stop pointing at the heap the moment a compiler changed
+    /// its layout, and the test built on it would go vacuous rather than fail.
+    let private streamOffset (name : string) (pdb : byte[]) : int =
+        let mutable p = 12
+        let versionLength = BitConverter.ToInt32 (pdb, p)
+        p <- p + 4 + ((versionLength + 3) / 4) * 4
+        p <- p + 2 // Flags
+        let streamCount = int (BitConverter.ToUInt16 (pdb, p))
+        p <- p + 2
+
+        let mutable found = -1
+
+        for _ in 1..streamCount do
+            let offset = BitConverter.ToInt32 (pdb, p)
+            p <- p + 8
+            let nameStart = p
+
+            while pdb.[p] <> 0uy do
+                p <- p + 1
+
+            let thisName = Encoding.ASCII.GetString (pdb, nameStart, p - nameStart)
+            p <- nameStart + ((p - nameStart + 1 + 3) / 4) * 4
+
+            if thisName = name then
+                found <- offset
+
+        if found < 0 then
+            failwith $"portable PDB has no %s{name} stream"
+
+        found
+
+    let private readFileLogging (path : string) : (unit -> LogLine list) * DumpedAssembly =
+        let logs, loggerFactory = LoggerFactory.makeTest ()
+        logs, AssemblyApi.readFile loggerFactory path
+
+    /// Both damage tests assert that the *guard* fired, not merely that no symbols came back.
+    /// Without that, either would also pass against an implementation that quietly failed to
+    /// find the PDB at all — which is precisely how an earlier version of this test went vacuous.
+    let private shouldHaveReportedUnusableSymbols (logs : unit -> LogLine list) : unit =
+        logs ()
+        |> List.exists (fun line -> line.Message.Contains "malformed debug information")
+        |> shouldEqual true
+
+    /// Symbols are a diagnostic aid, so damaged ones must cost us the symbols and nothing else.
+    /// This damage spares the header, the `#Pdb` id and the `#GUID` stream, so the PDB opens and
+    /// is still accepted as belonging to this image; it fails part-way through *enumeration*,
+    /// which is a different code path from failing to open.
+    [<Test>]
+    let ``a side-by-side pdb with a damaged heap costs symbols, not the assembly`` () : unit =
+        let image, pdb = Roslyn.compileWithSidecarSymbols [ source ]
+        let damaged = Array.copy pdb
+        let blobHeap = streamOffset "#Blob" pdb
+
+        // The front of the blob heap is where the document-name and sequence-point blobs live.
+        for i in blobHeap .. min (blobHeap + 200) (damaged.Length - 1) do
+            damaged.[i] <- 0xFFuy
+
+        let logs, assy = readFileLogging (writeTempAssembly image (Some damaged))
+
+        assy.SequencePoints.Count |> shouldEqual 0
+        // The assembly itself must have parsed perfectly well.
+        assy.Methods.Count |> shouldBeGreaterThan 0
+        shouldHaveReportedUnusableSymbols logs
+
+    /// The sibling of the test above, for the other arm of the guard: this PDB fails as it is
+    /// opened rather than as it is enumerated.
+    [<Test>]
+    let ``a truncated side-by-side pdb costs symbols, not the assembly`` () : unit =
+        let image, pdb = Roslyn.compileWithSidecarSymbols [ source ]
+
+        let logs, assy =
+            readFileLogging (writeTempAssembly image (Some pdb.[0 .. pdb.Length / 2]))
+
+        assy.SequencePoints.Count |> shouldEqual 0
+        assy.Methods.Count |> shouldBeGreaterThan 0
+        shouldHaveReportedUnusableSymbols logs
+
+    /// The parse cache is keyed on the assembly file, but a cached entry carries the *symbols*
+    /// that were beside it at the time. Adding a PDB to an already-cached assembly must
+    /// therefore miss the cache, or the first caller's lack of symbols is served forever.
+    [<Test>]
+    let ``adding a side-by-side pdb invalidates the cached parse`` () : unit =
+        let image, pdb = Roslyn.compileWithSidecarSymbols [ source ]
+        let dll = writeTempAssembly image None
+
+        (readFile dll).SequencePoints.Count |> shouldEqual 0
+
+        File.WriteAllBytes (Path.ChangeExtension (dll, ".pdb"), pdb)
+
+        (readFile dll).SequencePoints.Count |> shouldBeGreaterThan 0
 
     let private domainAssembly () : DumpedAssembly =
         let _, loggerFactory = LoggerFactory.makeTest ()

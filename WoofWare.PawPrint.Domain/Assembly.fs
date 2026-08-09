@@ -965,6 +965,20 @@ module Assembly =
             FullPath : string
             Length : int64
             LastWriteTimeUtc : DateTime
+
+            /// <summary>
+            /// Length and last-write time of the side-by-side <c>.pdb</c>, or <c>None</c> when
+            /// there isn't one. A cached parse carries that PDB's sequence points, so a PDB
+            /// added, removed or rebuilt without the assembly changing must miss the cache —
+            /// otherwise the first caller's symbols (or lack of them) are served forever.
+            /// </summary>
+            /// <remarks>
+            /// Sound only because <c>PortablePdb.sidecarPath</c> is the single path a read will
+            /// consider: were symbols searched for, this key could not describe what was found.
+            /// An embedded PDB needs no such treatment, being part of the image already covered
+            /// by <c>Length</c> and <c>LastWriteTimeUtc</c>.
+            /// </remarks>
+            SidecarPdb : (int64 * DateTime) option
         }
 
     /// Process-lifetime cache for explicit file-backed reads. The parsed metadata is
@@ -1194,11 +1208,17 @@ module Assembly =
 
     let private fileCacheKey (path : string) : AssemblyFileCacheKey =
         let fileInfo = FileInfo path
+        let pdbInfo = FileInfo (PortablePdb.sidecarPath fileInfo.FullName)
 
         {
             FullPath = fileInfo.FullName
             Length = fileInfo.Length
             LastWriteTimeUtc = fileInfo.LastWriteTimeUtc
+            SidecarPdb =
+                if pdbInfo.Exists then
+                    Some (pdbInfo.Length, pdbInfo.LastWriteTimeUtc)
+                else
+                    None
         }
 
     let private withLogger
