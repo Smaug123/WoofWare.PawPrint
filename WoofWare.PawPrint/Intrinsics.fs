@@ -2287,7 +2287,8 @@ module Intrinsics =
                     int32<int64> i
                 | _ -> failwith $"TODO: Unsafe.Add: expected Int32 or Verbatim NativeInt offset, got %O{offset}"
 
-            let ptr, state = offsetManagedPointerByElements baseClassTypes state t offset src
+            let ptr, state =
+                offsetManagedPointerByElements baseClassTypes state t (int64<int> offset) src
 
             state
             |> IlMachineState.pushToEvalStack' ptr currentThread
@@ -2652,7 +2653,7 @@ module Intrinsics =
                     failwith $"%s{spanTypeName}.get_Item expected _reference to be a managed byref, got %O{other}"
 
             let ptr, state =
-                offsetManagedPointerByElements baseClassTypes state elementType index reference
+                offsetManagedPointerByElements baseClassTypes state elementType (int64<int> index) reference
 
             state
             |> IlMachineState.pushToEvalStack' ptr currentThread
@@ -2720,7 +2721,7 @@ module Intrinsics =
                 (state, seq { 0 .. length - 1 })
                 ||> Seq.fold (fun state i ->
                     let ptr, state =
-                        offsetManagedPointerByElements baseClassTypes state elementType i reference
+                        offsetManagedPointerByElements baseClassTypes state elementType (int64<int> i) reference
 
                     let byrefSrc =
                         match ptr with
