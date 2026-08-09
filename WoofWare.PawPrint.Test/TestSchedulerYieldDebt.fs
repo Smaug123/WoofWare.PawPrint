@@ -1,6 +1,7 @@
 namespace WoofWare.PawPrint.Test
 
 open System.Collections.Immutable
+open Microsoft.FSharp.Reflection
 open FsCheck
 open FsCheck.FSharp
 open FsUnitTyped
@@ -72,6 +73,21 @@ module TestSchedulerYieldDebt =
     let private runnable (n : int) : (ThreadId * ThreadStatus) list =
         List.init n (fun i -> ThreadId i, ThreadStatus.Runnable)
 
+    /// Mirror of what the driver does when a thread retires a step: discharge every yield debt
+    /// naming the runner, then apply the consequences specific to the outcome. The two halves
+    /// live in different places on purpose — the discharge is applied once at
+    /// `Program.stepPrepared`'s single `executeOneStep` seam so that it cannot be forgotten for
+    /// an outcome, while `onStepOutcome` sees only the `Stepped` family — so a test that wants
+    /// to model "a step happened" has to compose them.
+    ///
+    /// Note what this helper cannot catch: it re-implements the driver, so it stays green if
+    /// the driver itself stops discharging. `TestSchedulerYieldFairness` closes that gap by
+    /// asserting the invariant against a real run.
+    let private retireStep (ran : ThreadId) (outcome : WhatWeDid) (state : IlMachineState) : IlMachineState =
+        state
+        |> Scheduler.dischargeYieldDebts ran
+        |> Scheduler.onStepOutcome ran outcome
+
     // ---------------- Charging ----------------
 
     [<Test>]
@@ -87,8 +103,7 @@ module TestSchedulerYieldDebt =
                     ThreadId 2, ThreadStatus.BlockedOnJoin (ThreadId 0, None)
                 ]
 
-        let after =
-            Scheduler.onStepOutcome (ThreadId 0) (WhatWeDid.VoluntaryYield false) state
+        let after = retireStep (ThreadId 0) (WhatWeDid.VoluntaryYield false) state
 
         debtOf (ThreadId 0) after |> shouldEqual (Set.ofList [ ThreadId 1 ])
         debtOf (ThreadId 1) after |> shouldEqual Set.empty
@@ -107,8 +122,7 @@ module TestSchedulerYieldDebt =
                     ThreadId 1, ThreadStatus.BlockedOnSleep (Some 100L)
                 ]
 
-        let after =
-            Scheduler.onStepOutcome (ThreadId 0) (WhatWeDid.VoluntaryYield false) state
+        let after = retireStep (ThreadId 0) (WhatWeDid.VoluntaryYield false) state
 
         debtOf (ThreadId 0) after |> shouldEqual Set.empty
 
@@ -118,8 +132,7 @@ module TestSchedulerYieldDebt =
     let ``a thread with outstanding debt is not chosen`` () : unit =
         let state = baseState () |> withThreads (runnable 3)
 
-        let state =
-            Scheduler.onStepOutcome (ThreadId 0) (WhatWeDid.VoluntaryYield false) state
+        let state = retireStep (ThreadId 0) (WhatWeDid.VoluntaryYield false) state
 
         // Round-robin from `lastRan = 2` would wrap to thread 0; the debt must override that.
         Scheduler.chooseNext (ThreadId 2) state
@@ -130,20 +143,19 @@ module TestSchedulerYieldDebt =
     let ``debt is discharged by its members running, re-admitting the yielder`` () : unit =
         let state = baseState () |> withThreads (runnable 3)
 
-        let state =
-            Scheduler.onStepOutcome (ThreadId 0) (WhatWeDid.VoluntaryYield false) state
+        let state = retireStep (ThreadId 0) (WhatWeDid.VoluntaryYield false) state
 
         debtOf (ThreadId 0) state
         |> shouldEqual (Set.ofList [ ThreadId 1 ; ThreadId 2 ])
 
-        let state = Scheduler.onStepOutcome (ThreadId 1) WhatWeDid.Executed state
+        let state = retireStep (ThreadId 1) WhatWeDid.Executed state
         debtOf (ThreadId 0) state |> shouldEqual (Set.ofList [ ThreadId 2 ])
         // Still excluded: thread 2 has not had its turn.
         Scheduler.chooseNext (ThreadId 2) state
         |> snd
         |> shouldEqual (Some (ThreadId 1))
 
-        let state = Scheduler.onStepOutcome (ThreadId 2) WhatWeDid.Executed state
+        let state = retireStep (ThreadId 2) WhatWeDid.Executed state
         debtOf (ThreadId 0) state |> shouldEqual Set.empty
 
         Scheduler.chooseNext (ThreadId 2) state
@@ -157,8 +169,7 @@ module TestSchedulerYieldDebt =
         // out anyway, or thread 0 waits on a thread that will never satisfy it.
         let state = baseState () |> withThreads (runnable 2)
 
-        let state =
-            Scheduler.onStepOutcome (ThreadId 0) (WhatWeDid.VoluntaryYield false) state
+        let state = retireStep (ThreadId 0) (WhatWeDid.VoluntaryYield false) state
 
         debtOf (ThreadId 0) state |> shouldEqual (Set.ofList [ ThreadId 1 ])
 
@@ -177,8 +188,7 @@ module TestSchedulerYieldDebt =
         // machine when the sole runnable thread has just yielded.
         let state = baseState () |> withThreads (runnable 2)
 
-        let state =
-            Scheduler.onStepOutcome (ThreadId 0) (WhatWeDid.VoluntaryYield false) state
+        let state = retireStep (ThreadId 0) (WhatWeDid.VoluntaryYield false) state
 
         let state = Scheduler.blockOnJoin (ThreadId 1) (ThreadId 0) None state
 
@@ -200,7 +210,7 @@ module TestSchedulerYieldDebt =
             let choice = Option.get choice
             chosen.Add choice
             lastRan <- choice
-            state <- Scheduler.onStepOutcome choice (WhatWeDid.VoluntaryYield false) s
+            state <- retireStep choice (WhatWeDid.VoluntaryYield false) s
 
         chosen
         |> List.ofSeq
@@ -269,7 +279,7 @@ module TestSchedulerYieldDebt =
                         else
                             WhatWeDid.Executed
 
-                state <- Scheduler.onStepOutcome choice outcome s
+                state <- retireStep choice outcome s
 
                 // Everyone that has already had a turn must have had one within the last `n`
                 // decisions. Threads not yet chosen at all are covered by the end-state check.
@@ -333,7 +343,7 @@ module TestSchedulerYieldDebt =
                         | Behaviour.NeverYields -> WhatWeDid.Executed
                         | _ -> WhatWeDid.VoluntaryYield false
 
-                    state <- Scheduler.onStepOutcome choice outcome s
+                    state <- retireStep choice outcome s
 
         Check.One (config, Prop.forAll (Arb.fromGen scheduleGen) property)
 
@@ -363,7 +373,7 @@ module TestSchedulerYieldDebt =
         let state =
             baseState () |> withThreads (runnable 2) |> IlMachineState.withPctSeed seed
 
-        Scheduler.onStepOutcome (ThreadId 0) (WhatWeDid.VoluntaryYield false) state
+        retireStep (ThreadId 0) (WhatWeDid.VoluntaryYield false) state
         |> debtOf (ThreadId 0)
 
     [<Test>]
@@ -384,8 +394,7 @@ module TestSchedulerYieldDebt =
         // through a shared sampling path with p = 1.0.
         let state = baseState () |> withThreads (runnable 2)
 
-        let after =
-            Scheduler.onStepOutcome (ThreadId 0) (WhatWeDid.VoluntaryYield false) state
+        let after = retireStep (ThreadId 0) (WhatWeDid.VoluntaryYield false) state
 
         debtOf (ThreadId 0) after |> shouldEqual (Set.ofList [ ThreadId 1 ])
         after.Scheduling |> shouldEqual SchedulerState.RoundRobin
@@ -399,8 +408,7 @@ module TestSchedulerYieldDebt =
             let state =
                 baseState () |> withThreads threads |> IlMachineState.withPctSeed 12345UL
 
-            let after =
-                Scheduler.onStepOutcome (ThreadId 0) (WhatWeDid.VoluntaryYield false) state
+            let after = retireStep (ThreadId 0) (WhatWeDid.VoluntaryYield false) state
 
             match after.Scheduling with
             | SchedulerState.Pct pct -> pct.Rng
@@ -434,28 +442,30 @@ module TestSchedulerYieldDebt =
         after.Scheduling |> shouldEqual (SchedulerState.Pct (PctState.ofSeed 99UL))
 
     [<Test>]
-    let ``a terminating thread is pruned from every outstanding debt`` () : unit =
-        // A thread's final step is its bottom-frame `Ret`, which the driver routes through
-        // `onThreadTerminated` rather than `onStepOutcome` — so the one step that most
-        // conclusively satisfies "I am waiting to see you run" is the one step that would
-        // otherwise discharge nothing.
+    let ``a terminating thread is discharged from every outstanding debt`` () : unit =
+        // A thread's final step is its bottom-frame `Ret`, which reaches the driver as
+        // `ExecutionResult.Terminated` rather than `Stepped` — so the one step that most
+        // conclusively satisfies "I am waiting to see you run" is the one that is easiest to
+        // forget. It is discharged at the seam, like every other retired step, so the sequence
+        // modelled here is "the step was retired, *and* it happened to be a termination".
         //
-        // Correctness does not depend on this (a Terminated thread is never in the Runnable
-        // set, so `candidates` ignores it either way, and the two assertions on `chooseNext`
-        // below pass with or without the pruning). Cost does: a debt that keeps a
-        // permanently-unrunnable member never goes empty, so its owner misses the `IsEmpty`
-        // fast path in `debtDischarged` for the rest of the run and scans the runnable list on
-        // every scheduling decision. Assert on the debt itself, not just on the choice, or the
-        // regression is invisible.
+        // Correctness does not depend on it (a Terminated thread is never in the Runnable set,
+        // so `candidates` ignores it either way, and the two `chooseNext` assertions below pass
+        // regardless). Cost does: a debt keeping a permanently-unrunnable member never goes
+        // empty, so its owner misses the `IsEmpty` fast path in `debtDischarged` for the rest of
+        // the run and scans the runnable list on every scheduling decision. Assert on the debt
+        // itself, not just on the choice, or the regression is invisible.
         let state = baseState () |> withThreads (runnable 3)
 
-        let state =
-            Scheduler.onStepOutcome (ThreadId 0) (WhatWeDid.VoluntaryYield false) state
+        let state = retireStep (ThreadId 0) (WhatWeDid.VoluntaryYield false) state
 
         debtOf (ThreadId 0) state
         |> shouldEqual (Set.ofList [ ThreadId 1 ; ThreadId 2 ])
 
-        let state = Scheduler.onThreadTerminated (ThreadId 1) state
+        let state =
+            state
+            |> Scheduler.dischargeYieldDebts (ThreadId 1)
+            |> Scheduler.onThreadTerminated (ThreadId 1)
 
         debtOf (ThreadId 0) state |> shouldEqual (Set.ofList [ ThreadId 2 ])
 
@@ -465,5 +475,60 @@ module TestSchedulerYieldDebt =
         |> snd
         |> shouldEqual (Some (ThreadId 2))
 
-        let state = Scheduler.onStepOutcome (ThreadId 2) WhatWeDid.Executed state
+        let state = retireStep (ThreadId 2) WhatWeDid.Executed state
         debtOf (ThreadId 0) state |> shouldEqual Set.empty
+
+    [<Test>]
+    let ``mapState reaches the state of every ExecutionResult variant`` () : unit =
+        // The seam's totality is the enforcement mechanism: `Program.stepPrepared` discharges by
+        // mapping over whatever `executeOneStep` returned, so an outcome whose state `mapState`
+        // failed to touch would silently skip the per-step bookkeeping. The compiler catches a
+        // *missing* variant; this catches one that is present but wired to the wrong field, and
+        // pins that no variant is deliberately exempted later.
+        let marked = baseState () |> withThreads (runnable 1)
+
+        let mark (_ : IlMachineState) : IlMachineState = marked
+
+        let sentinel = baseState ()
+        let thread = ThreadId 0
+
+        let guestException : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> =
+            {
+                ExceptionObject = ManagedHeapAddress 1
+                StackTrace = []
+            }
+
+        let variants : ExecutionResult list =
+            [
+                ExecutionResult.Terminated (sentinel, thread)
+                ExecutionResult.ProcessExit (sentinel, thread)
+                ExecutionResult.FailFast (sentinel, thread, Some "m")
+                ExecutionResult.SignalTerminated (sentinel, Signal.SIGINT)
+                ExecutionResult.Stepped (sentinel, WhatWeDid.Executed, StepEffect.NoEffect)
+                ExecutionResult.UnhandledException (sentinel, thread, guestException)
+            ]
+
+        // The table above is hand-written, so it can fall behind the type — which is the exact
+        // failure this test would then hide, since a variant that is never constructed is never
+        // checked no matter how thoroughly the assertions below are written. Tie the two
+        // together: adding a variant to `ExecutionResult` fails here until it is listed.
+        FSharpType.GetUnionCases typeof<ExecutionResult>
+        |> Array.length
+        |> shouldEqual variants.Length
+
+        for variant in variants do
+            let mapped = ExecutionResult.mapState mark variant
+
+            let state =
+                match mapped with
+                | ExecutionResult.Terminated (s, _)
+                | ExecutionResult.ProcessExit (s, _)
+                | ExecutionResult.FailFast (s, _, _)
+                | ExecutionResult.SignalTerminated (s, _)
+                | ExecutionResult.Stepped (s, _, _)
+                | ExecutionResult.UnhandledException (s, _, _) -> s
+
+            // Reference equality would be ideal but `IlMachineState` is a large record; the
+            // thread map is enough to tell the marked state from the sentinel.
+            state.ThreadState.Count |> shouldEqual marked.ThreadState.Count
+            state.ThreadState.Count |> shouldNotEqual sentinel.ThreadState.Count

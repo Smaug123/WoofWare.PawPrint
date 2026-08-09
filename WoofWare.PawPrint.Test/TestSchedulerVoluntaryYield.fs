@@ -103,12 +103,12 @@ module TestSchedulerVoluntaryYield =
 
     [<Test>]
     let ``VoluntaryYield wakes match Executed exactly, and only the wakes`` () : unit =
-        // VoluntaryYield used to be *wholly* identical to Executed; it no longer is, because
-        // a yield now also charges the yielder a `YieldDebt`. What must stay identical is the
-        // class-init wake behaviour: yielding is still forward progress, so the same threads
-        // wake either way. Pinning both halves separately is the point — the wake logic must
-        // not drift, and the debt must be the *only* difference, so a future change that
-        // (say) parked the yielder would fail here rather than passing a statuses-only check.
+        // VoluntaryYield differs from Executed in exactly one respect: it also charges the
+        // yielder a `YieldDebt`. The class-init wake behaviour must be identical, because
+        // yielding is forward progress just as an ordinary step is, so the same threads wake
+        // either way. Pinning both halves separately is the point — the wake logic must not
+        // drift, and the debt must be the *only* difference, so a change that (say) parked the
+        // yielder would fail here rather than passing a statuses-only check.
         //
         // Snapshot all three threads' statuses to keep the wake assertion total rather than
         // spot-checking.

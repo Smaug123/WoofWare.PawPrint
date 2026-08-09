@@ -503,6 +503,32 @@ module ExecutionResult =
     let steppedWith (effect : StepEffect) ((state, whatWeDid) : IlMachineState * WhatWeDid) : ExecutionResult =
         ExecutionResult.Stepped (state, whatWeDid, effect)
 
+    /// Apply `f` to the machine state carried by any outcome, preserving the variant and its
+    /// other payload.
+    ///
+    /// Every `ExecutionResult` carries a state because every one of them describes a step that
+    /// was actually retired — that is the whole reason this function can be total. It exists so
+    /// that per-step bookkeeping which must happen *whatever the step turned out to be* can be
+    /// written once, at the driver's single call site of `AbstractMachine.executeOneStep`,
+    /// rather than being repeated in each arm of the driver's match on the outcome.
+    ///
+    /// The match is deliberately written out rather than expressed with a wildcard: adding a
+    /// variant must fail to compile here, so that whoever adds it has to decide whether their
+    /// new outcome represents a retired step. That compile error is the enforcement mechanism —
+    /// the reason to prefer this over a hand-written call in each arm, where a new arm silently
+    /// inherits nothing.
+    let mapState (f : IlMachineState -> IlMachineState) (result : ExecutionResult) : ExecutionResult =
+        match result with
+        | ExecutionResult.Terminated (state, terminatingThread) ->
+            ExecutionResult.Terminated (f state, terminatingThread)
+        | ExecutionResult.ProcessExit (state, exitingThread) -> ExecutionResult.ProcessExit (f state, exitingThread)
+        | ExecutionResult.FailFast (state, abortingThread, message) ->
+            ExecutionResult.FailFast (f state, abortingThread, message)
+        | ExecutionResult.SignalTerminated (state, signal) -> ExecutionResult.SignalTerminated (f state, signal)
+        | ExecutionResult.Stepped (state, whatWeDid, effect) -> ExecutionResult.Stepped (f state, whatWeDid, effect)
+        | ExecutionResult.UnhandledException (state, terminatingThread, exn) ->
+            ExecutionResult.UnhandledException (f state, terminatingThread, exn)
+
 [<RequireQualifiedAccess>]
 module NativeHandlerResult =
     /// Native handler completed normally with no externally-observable effect.

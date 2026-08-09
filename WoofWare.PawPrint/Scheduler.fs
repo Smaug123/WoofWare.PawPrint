@@ -122,13 +122,29 @@ module Scheduler =
         | _ -> eligible
 
     /// Remove `ran` from every outstanding yield debt: it has taken its step, so anyone waiting
-    /// to see it run has been satisfied. Called for every step outcome, since every step
-    /// discharges, not just yields.
+    /// to see it run has been satisfied.
     ///
-    /// Short-circuits on the common path the way the `BlockedOnClassInit` wake scan next door
-    /// does: this runs once per interpreted IL instruction and almost never has anything to do,
-    /// because outstanding debts exist only during yield bursts.
-    let private dischargeYieldDebts (ran : ThreadId) (state : IlMachineState) : IlMachineState =
+    /// **This must be applied to every retired step, whatever that step turned out to be**, and
+    /// there is exactly one caller: the driver applies it to the result of
+    /// `AbstractMachine.executeOneStep` via `ExecutionResult.mapState`, before it looks at which
+    /// outcome it got. Do not add a second call site, and in particular do not move it into the
+    /// driver's per-outcome arms. Two outcomes there do not look like "a thread ran" and are
+    /// easy to overlook:
+    ///
+    ///   * a thread's *final* step leaves the driver as `ExecutionResult.Terminated`, though it
+    ///     is the step that most conclusively satisfies "I am waiting to see you run";
+    ///   * the entry thread's synthetic `onlyRet` frame reports `NormalExit` even in the
+    ///     pre-`Main` pump, after which that same thread is resurrected and keeps running.
+    ///
+    /// Missing either does not break correctness, because `candidates` filters debts against the
+    /// live Runnable set — but it breaks the discharge lemma that `candidates`' non-emptiness
+    /// proof rests on, and missing the first also makes the `IsEmpty` fast path below
+    /// permanently unreachable for any thread that yielded before a peer exited.
+    ///
+    /// Short-circuits on the common path the way the `BlockedOnClassInit` wake scan does: this
+    /// runs once per interpreted IL instruction and almost never has anything to do, because
+    /// outstanding debts exist only during yield bursts.
+    let dischargeYieldDebts (ran : ThreadId) (state : IlMachineState) : IlMachineState =
         let anyDebtNames =
             state.ThreadState |> Map.exists (fun _ ts -> ts.YieldDebt |> Set.contains ran)
 
@@ -573,26 +589,13 @@ module Scheduler =
             | SchedulerState.RoundRobin -> SchedulerState.RoundRobin
             | SchedulerState.Pct pct -> SchedulerState.Pct (PctState.removeThread terminated pct)
 
-        let state =
-            { state with
-                ThreadState = threadState
-                Scheduling = scheduling
-            }
-
-        // Discharge `terminated` from every outstanding yield debt. A thread's *final* step is
-        // its bottom-frame `Ret`, which the driver surfaces as `ExecutionResult.Terminated` and
-        // routes here rather than through `onStepOutcome` — so without this, the one step that
-        // most conclusively satisfies "I am waiting to see you run" would be the one step that
-        // never discharges anything.
-        //
-        // Not needed for correctness: `candidates` intersects each debt with the live Runnable
-        // set, and a Terminated thread is never in it, so a stale member could not hold anyone
-        // out. It is needed for cost. A debt containing a terminated id never becomes empty, so
-        // its owner permanently misses the `IsEmpty` fast path in `debtDischarged` and pays a
-        // scan of the runnable list on every scheduling decision for the rest of the run —
-        // turning candidate selection from O(R) into O(R²) once a few threads have yielded and
-        // a peer has exited. Pruning here keeps the fast path reachable.
-        dischargeYieldDebts terminated state
+        // No yield-debt pruning here: the driver has already discharged `terminated` at the
+        // seam, because a thread's final `Ret` is a retired step like any other. See
+        // `dischargeYieldDebts`.
+        { state with
+            ThreadState = threadState
+            Scheduling = scheduling
+        }
 
     /// Apply the init outcome of a freshly-spawned worker to its own ThreadStatus.
     /// Called once from `Thread.StartInternal` after `ensureTypeInitialised` has run
@@ -713,13 +716,11 @@ module Scheduler =
 
         state, true
 
+    /// Apply the consequences that depend on *which* outcome the step produced. The
+    /// consequences that apply to every retired step regardless — currently just discharging
+    /// yield debts — deliberately do not live here, because this function only sees the
+    /// `Stepped` family of outcomes; they live at the driver seam. See `dischargeYieldDebts`.
     let onStepOutcome (ran : ThreadId) (outcome : WhatWeDid) (state : IlMachineState) : IlMachineState =
-        // Every step discharges, whatever else it did: `ran` has taken its turn, so any thread
-        // waiting to see it run is satisfied. Must happen for all outcomes, including the
-        // blocking ones — a thread that blocks has still run, and `candidates`' non-emptiness
-        // proof depends on that being true without exception.
-        let state = dischargeYieldDebts ran state
-
         // A yielder made forward progress just as an ordinary `Executed` step does, so both
         // wake any thread parked BlockedOnClassInit on `ran`. They diverge only afterwards:
         // a yield additionally goes to the back of the run queue.
