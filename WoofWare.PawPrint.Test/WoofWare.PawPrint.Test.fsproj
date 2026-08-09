@@ -46,7 +46,6 @@
     <Compile Include="TestMarshalLayout.fs" />
     <Compile Include="TestManagedHeap.fs" />
     <Compile Include="TestBinaryArithmetic.fs" />
-    <Compile Include="TestContextSwitchPrior.fs" />
     <Compile Include="TestNullaryIlOp.fs" />
     <Compile Include="TestStackMemoryPool.fs" />
     <Compile Include="TestNativeMemoryPool.fs" />
@@ -126,6 +125,7 @@
     <Compile Include="TestSchedulerYieldDebt.fs" />
     <Compile Include="TestSchedulerYieldFairness.fs" />
     <Compile Include="TestSchedulerSleepFairness.fs" />
+    <Compile Include="TestSchedulerNonYieldingSpinner.fs" />
     <Compile Include="TestSchedulerPct.fs" />
     <Compile Include="TestVariableSizeNewobj.fs" />
     <Compile Include="TestNativeMdUtf8String.fs" />

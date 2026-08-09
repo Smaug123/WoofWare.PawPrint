@@ -81,10 +81,8 @@ module TestConcurrencyBugs =
             Bad : BadOutcome
             /// PCT seeds to sweep. The first match wins; the test fails
             /// only if every seed in the list produced a non-matching
-            /// outcome. The default `defaultSeeds` (4096 seeds) is sized
-            /// to catch one-shot races at the current `P_BASE = 0.01`
-            /// preemption density -- shrink for scenarios whose bad
-            /// interleaving is common, widen for ones rarer than that.
+            /// outcome. See `defaultSeeds` for how the default 4096 is
+            /// sized against the measured per-scenario hit densities.
             Seeds : uint64 list
         }
 
@@ -113,6 +111,13 @@ module TestConcurrencyBugs =
         /// process before Main got to run. The wrapped string is the
         /// pre-Main `RunOutcome` collapsed to its textual classifier.
         | CompletedBeforeMain of summary : string
+        /// The run was abandoned after `stepBudget` scheduler steps without
+        /// terminating. This is a real outcome, not an error: a guest can have
+        /// a genuinely non-terminating interleaving, and a scheduler whose job
+        /// is to explore interleavings will eventually pick one. It never
+        /// satisfies a `BadOutcome`, so a scenario that only ever exhausts the
+        /// budget fails rather than passing vacuously.
+        | StepBudgetExhausted
 
     let private assy = typeof<RunResult>.Assembly
 
@@ -176,12 +181,42 @@ module TestConcurrencyBugs =
         | RunOutcome.FailFast (_, _, message) -> RunSummary.FailFast (Option.defaultValue "<no message>" message)
         | RunOutcome.SignalTerminated (_, signal) -> RunSummary.Signal (sprintf "%O" signal)
 
+    /// Scheduler steps after which a run is abandoned as non-terminating.
+    ///
+    /// This bound is not a performance knob; without it the fixture does not
+    /// terminate. These guests are deliberately unsynchronized, and some admit
+    /// interleavings under which a thread never makes its exit condition true
+    /// again. `SimultaneousCounter.cs` is the worked example: `counter` only
+    /// ever increases, `Worker1` retires as soon as it observes `counter >= 2`,
+    /// and `Worker2` returns only on observing `counter == 3` immediately after
+    /// its own increment -- so any schedule that carries the counter past 3
+    /// without `Worker2` catching it leaves `Worker2` spinning forever. That is
+    /// a legitimate execution which a real machine can also produce; the bug
+    /// would be for the harness to run it unboundedly.
+    ///
+    /// The budget is picked from measurement, not taste: over a 2048-seed sweep
+    /// of every scenario, the slowest *terminating* run took 16,990 steps
+    /// (`JustABoolNotAMutex.cs`), and four of the six finish inside 1,200. Two
+    /// million leaves two orders of magnitude of headroom over the worst
+    /// terminating run, while capping a divergent seed at about two seconds --
+    /// the seven divergent seeds of `SimultaneousCounter.cs` are what makes the
+    /// difference between a 49-second sweep and one that never finishes.
+    /// Widening a scenario's sweep because it started reporting
+    /// `StepBudgetExhausted` would be assuming the conclusion -- re-measure the
+    /// terminating cost first.
+    let private stepBudget : int = 2_000_000
+
     /// Run the guest under one PCT seed, returning a host-level summary of
     /// where it ended up. Drives `Program.stepPrepared` directly instead of
     /// `Program.run` so that `ProgramStepOutcome.Deadlocked` surfaces as a
     /// classifier-friendly `RunSummary.Deadlock` rather than the
     /// `failwith "Deadlock: ..."` that `pumpPrepared` would raise.
-    let private runOne (sourceName : string) (image : byte[]) (seed : uint64) : RunSummary =
+    ///
+    /// Bounded by `budget` scheduler steps: a run that has not terminated by
+    /// then is reported as `RunSummary.StepBudgetExhausted`. Every scenario
+    /// sweep passes `stepBudget`; the parameter exists so the bound itself can
+    /// be tested without a two-million-step run.
+    let private runOneWithBudget (sourceName : string) (image : byte[]) (seed : uint64) (budget : int) : RunSummary =
         let _messages, loggerFactory =
             LoggerFactory.makeTestWithProperties [ "source_file", sourceName ; "pct_seed", string seed ]
 
@@ -211,14 +246,22 @@ module TestConcurrencyBugs =
             let inner = classifyRunOutcome outcome
             RunSummary.CompletedBeforeMain (sprintf "%A" inner)
         | Program.ProgramStartResult.Ready prepared ->
-            let rec loop (prepared : Program.PreparedProgram) : RunSummary =
+            let rec loop (prepared : Program.PreparedProgram) (steps : int) : RunSummary =
+                if steps >= budget then
+                    RunSummary.StepBudgetExhausted
+                else
+
                 match Program.stepPrepared loggerFactory logger prepared with
                 | Program.ProgramStepOutcome.Completed outcome -> classifyRunOutcome outcome
                 | Program.ProgramStepOutcome.Deadlocked (_, stuck) -> RunSummary.Deadlock stuck
-                | Program.ProgramStepOutcome.InstructionStepped (p, _, _) -> loop p
-                | Program.ProgramStepOutcome.WorkerTerminated (p, _) -> loop p
+                | Program.ProgramStepOutcome.InstructionStepped (p, _, _) -> loop p (steps + 1)
+                | Program.ProgramStepOutcome.WorkerTerminated (p, _) -> loop p (steps + 1)
 
-            loop prepared
+            loop prepared 0
+
+    /// Run the guest under one PCT seed and the standard `stepBudget`.
+    let private runOne (sourceName : string) (image : byte[]) (seed : uint64) : RunSummary =
+        runOneWithBudget sourceName image seed stepBudget
 
     let private matches (bad : BadOutcome) (summary : RunSummary) : bool =
         match bad, summary with
@@ -245,13 +288,21 @@ module TestConcurrencyBugs =
         | BadOutcome.UnhandledException _, _
         | BadOutcome.FailFast, _ -> false
 
-    /// Reasonable default sweep, sized to catch one-shot two-thread
-    /// races (e.g. a single-iteration shared-counter `++`) at the
-    /// current `P_BASE = 0.01` preemption density. Sweeps short-circuit
-    /// on the first matching seed via `List.tryFind`, so widening this
-    /// is cheap for scenarios whose bad interleaving is common; the
-    /// 4096-seed cap matters only when the scenario never reaches the
-    /// bad outcome.
+    /// Reasonable default sweep, sized to catch one-shot two-thread races
+    /// (e.g. a single-iteration shared-counter `++`).
+    ///
+    /// It is sized against the *rarest* scenario, not the typical one. Measured
+    /// over a 2048-seed window, hit density ranges from about 1% -- 21 seeds for
+    /// `TwoCountersSeparated.cs`, 27 for `QueueIsNotThreadSafe.cs`, 32 for
+    /// `LostUpdate.cs` -- up to 92% for `SimultaneousCounter.cs`. At 1% a
+    /// 4096-seed sweep misses only with probability around `0.99^4096`, which is
+    /// negligible, and the sweeps short-circuit on the first match, so the cap
+    /// costs nothing except when a scenario genuinely never reaches its bad
+    /// outcome.
+    ///
+    /// Widening this because a scenario started failing would be assuming the
+    /// conclusion: re-measure its density first, since a real loss of hit rate
+    /// is exactly what such a failure reports.
     let defaultSeeds : uint64 list = [ 0UL .. 4095UL ]
 
     // -------------------------------------------------------------------
@@ -390,3 +441,32 @@ module TestConcurrencyBugs =
 
     [<TestCaseSource(nameof scenarios)>]
     let ``PCT exhibits the bad interleaving`` (scenario : Scenario) : unit = demonstrate scenario
+
+    /// The budget has to bind on a run that would not terminate, and has to stay
+    /// clear of runs that would. Only the first property keeps the sweep finite,
+    /// but a budget tight enough to cut healthy runs short would silently turn
+    /// real outcomes into non-results, so both directions are asserted here
+    /// rather than trusting the constant.
+    [<Test>]
+    let ``step budget binds, and only on a run that overruns it`` () : unit =
+        let image = compileImage "LostUpdate.cs"
+
+        // Measured over a 2048-seed sweep, every LostUpdate.cs run terminates within
+        // 486 steps -- so 50 steps must bind, and the real budget must not.
+        let bounded = runOneWithBudget "LostUpdate.cs" image 0UL 50
+        Assert.That (bounded, Is.EqualTo RunSummary.StepBudgetExhausted)
+
+        let unbounded = runOneWithBudget "LostUpdate.cs" image 0UL stepBudget
+        Assert.That (unbounded, Is.Not.EqualTo RunSummary.StepBudgetExhausted)
+
+    /// Exhausting the budget must never satisfy a scenario's `BadOutcome`. If it
+    /// did, a scenario every one of whose seeds diverged would report success
+    /// while having demonstrated nothing at all.
+    [<Test>]
+    let ``an exhausted budget never counts as finding the bug`` () : unit =
+        for scenario in scenarios do
+            Assert.That (
+                matches scenario.Bad RunSummary.StepBudgetExhausted,
+                Is.False,
+                sprintf "%s treated a budget exhaustion as its bad outcome" scenario.SourceName
+            )

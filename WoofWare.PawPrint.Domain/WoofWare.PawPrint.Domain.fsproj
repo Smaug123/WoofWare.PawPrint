@@ -23,7 +23,6 @@
         <Compile Include="Tokens.fs" />
         <Compile Include="TypeRef.fs" />
         <Compile Include="IlOp.fs" />
-        <Compile Include="ContextSwitchPrior.fs" />
         <Compile Include="AssemblyReference.fs" />
         <Compile Include="EventDefn.fs" />
         <Compile Include="ComparableTypeDefinitionHandle.fs" />

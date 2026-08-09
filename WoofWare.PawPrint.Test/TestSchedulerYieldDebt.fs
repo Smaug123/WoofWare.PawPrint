@@ -27,10 +27,12 @@ open WoofWare.PawPrint
 ///     clear debt in every wake path, membership is filtered against the live Runnable set at
 ///     read time, so a member that stops being Runnable stops counting.
 ///
-/// `chooseNext`'s `Pct` branch calls `ThreadState.peekNextOp`, which needs a live frame, so
-/// the properties here drive `RoundRobin` (whose choice rule is total over frameless stubs)
-/// and cover `Pct` through `onStepOutcome`, which touches no frames. That split mirrors
-/// `TestSchedulerPct`.
+/// The properties here drive `RoundRobin` and cover `Pct` through `onStepOutcome`. The split
+/// was once forced -- `chooseNext`'s `Pct` branch inspected the running thread's next opcode
+/// and so needed a live frame, which frameless stubs cannot supply -- but demotion is now a
+/// flat per-step rate that reads no frame. What the split still buys is that `RoundRobin`'s
+/// choice rule is deterministic, so a fairness property can assert *which* thread runs next
+/// rather than a distribution over threads. That mirrors `TestSchedulerPct`.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestSchedulerYieldDebt =

@@ -14,13 +14,16 @@ open WoofWare.PawPrint
 ///     These cover the math (uniform-in-[0,1), monotonic Rng advance, lazy
 ///     insert, idempotent remove) without needing real method frames.
 ///   * Scheduler integration — paths through `Scheduler.chooseNext` and
-///     `Scheduler.onThreadTerminated` that do not require `ThreadState.peekNextOp`
-///     to consult a live frame: empty-runnable, hasAnyRunnable agreement,
-///     termination lifecycle.
+///     `Scheduler.onThreadTerminated`: empty-runnable, hasAnyRunnable
+///     agreement, termination lifecycle.
 ///
-/// The "weight=1.0 demotion frequency" property and the full argmax/Bernoulli
-/// path are covered by the end-to-end reproducibility test in the same file
-/// (a real DLL is the cheapest way to get a live frame for `peekNextOp`).
+/// The full argmax/Bernoulli path is covered by the end-to-end reproducibility
+/// test in the same file. That used to be a necessity rather than a choice:
+/// `chooseNext` once inspected the running thread's next opcode to weight its
+/// demotion probability, so exercising it at all required a live method frame
+/// and hence a real DLL. Demotion is now a flat per-step rate that reads no
+/// frame, so the end-to-end test earns its place by covering the composition
+/// rather than by being the only way in.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestSchedulerPct =
@@ -52,8 +55,14 @@ module TestSchedulerPct =
     let ``resamplePriority overwrites an existing entry`` () : unit =
         // Two consecutive resamples produce two distinct entries (with
         // overwhelming probability — but more importantly, the *latter*
-        // is what `Priorities.[tid]` returns), which is the demotion
-        // contract: a demoted thread's stale priority must not survive.
+        // is what `Priorities.[tid]` returns).
+        //
+        // This pins the function's documented behaviour, not a demotion
+        // contract: demotion goes through `demoteToBottom`, which assigns from
+        // `DemotionFloor` and draws nothing. In production `resamplePriority`
+        // is reached only via `ensurePriorityFor`, which calls it exactly when
+        // there is no existing entry to overwrite — so if this test ever fails,
+        // the bug is in the helper rather than in any scheduling decision.
         let s = PctState.ofSeed 1UL |> PctState.resamplePriority (ThreadId 0)
         let p1 = Map.find (ThreadId 0) s.Priorities
         let s = PctState.resamplePriority (ThreadId 0) s
@@ -129,7 +138,7 @@ module TestSchedulerPct =
         let s' = PctState.removeThread (ThreadId 99) s
         s' |> shouldEqual s
 
-    // ---------------- Scheduler integration (no peekNextOp paths) ----------------
+    // ---------------- Scheduler integration ----------------
 
     let private corelib : DumpedAssembly =
         let corelibPath = typeof<obj>.Assembly.Location
@@ -140,10 +149,10 @@ module TestSchedulerPct =
         let _, loggerFactory = LoggerFactory.makeTest ()
         IlMachineState.initial loggerFactory ImmutableArray.Empty corelib
 
-    /// Frame-less stub thread state. `Scheduler.chooseNext`'s Pct branch only
-    /// calls `peekNextOp` for the *winning* thread, so a test that uses no
-    /// Runnable threads (the empty-runnable path) never hits the sentinel
-    /// FrameId. Mirrors `TestSchedulerVoluntaryYield.stubThreadState`.
+    /// Frame-less stub thread state: the sentinel `FrameId -1` names no real frame.
+    /// Safe because `Scheduler.chooseNext` reads only `Status` and `YieldDebt` --
+    /// it stopped inspecting the running thread's next opcode when demotion became
+    /// a flat per-step rate. Mirrors `TestSchedulerVoluntaryYield.stubThreadState`.
     let private stubThreadState (status : ThreadStatus) : ThreadState =
         {
             MethodStates = Map.empty
@@ -228,8 +237,9 @@ module TestSchedulerPct =
             |> IlMachineState.withPctSeed 7UL
 
         // Manually populate priorities to mimic a state that has already passed
-        // through ensurePriorityFor; building this through chooseNext would
-        // require live frames (peekNextOp).
+        // through ensurePriorityFor. Driving chooseNext to populate them instead
+        // would make the test depend on the demotion draw, which is not what is
+        // under test here.
         let initial =
             match initial.Scheduling with
             | SchedulerState.Pct pct ->

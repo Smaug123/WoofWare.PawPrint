@@ -3,9 +3,11 @@ namespace WoofWare.PawPrint
 /// State owned by the schedule-fuzzing PCT (Probabilistic Concurrency Testing)
 /// policy: a deterministic splitmix64 RNG state plus the current
 /// per-thread priority assignment. Burckhardt et al.'s original PCT
-/// algorithm uses a fixed switch budget `d`; we instead drive demotion
-/// from per-step `ContextSwitchPrior` weights, so the priority map is
-/// resampled lazily rather than constructed up-front.
+/// algorithm samples a fixed number of priority-change points from a known
+/// total step count; PawPrint's runs are open-ended, so there is no such
+/// count to sample from and demotion is instead a per-step Bernoulli at a
+/// flat rate. That costs the paper's probabilistic bug-finding bound and
+/// keeps everything else, demotion-below-everyone included.
 ///
 /// Each thread is sampled uniformly into `[0, 1)` on the first
 /// `chooseNext` call that sees it Runnable. Sampling lazily — rather
@@ -17,8 +19,8 @@ namespace WoofWare.PawPrint
 /// dense in the alive-thread set; the `chooseNext` Pct branch always
 /// runs `ensurePriorityFor` before consulting `Priorities`.
 ///
-/// Demotion resamples the running thread's priority; the next chosen
-/// thread is whichever Runnable thread has the maximum priority.
+/// Demotion drops the running thread below every other thread; the next
+/// chosen thread is whichever Runnable thread has the maximum priority.
 /// `Map<ThreadId, double>` keeps this purely functional so that
 /// schedule replay is bit-exact.
 type PctState =
@@ -32,11 +34,28 @@ type PctState =
         /// Priority assigned to each thread the scheduler has observed
         /// Runnable. Entries are inserted lazily by `chooseNext`'s
         /// `ensurePriorityFor` pass, removed on termination via
-        /// `Scheduler.onThreadTerminated`, and resampled in place on
-        /// demotion. Threads not present here are not currently
+        /// `Scheduler.onThreadTerminated`, and lowered on demotion by
+        /// `demoteToBottom`. Threads not present here are not currently
         /// Runnable from the scheduler's point of view (or have never
         /// been seen Runnable yet).
+        ///
+        /// Initial priorities are uniform on `[0, 1)`; demoted ones are the strictly negative
+        /// values `DemotionFloor` hands out, so a demoted thread sorts below every thread that
+        /// has not been demoted since, and a newly-created thread sorts above all of them —
+        /// which is how Burckhardt et al.'s PCT treats late arrivals.
         Priorities : Map<ThreadId, double>
+        /// The next priority `demoteToBottom` will assign, decreasing by one each time.
+        ///
+        /// Monotone by construction, and deliberately *not* recomputed as the minimum of
+        /// `Priorities`: a demoted thread that then terminates would raise that minimum, so a
+        /// later demotion could land above a thread demoted earlier and silently break the
+        /// ordering the policy depends on.
+        ///
+        /// Drift is not a practical concern. Demotions happen at about `P_BASE` per step, so
+        /// after `n` steps the floor is near `-n/100`, and `double` represents integers exactly
+        /// to 2^53 — about 9e17 steps. The virtual clock's own horizon faults some five orders
+        /// of magnitude earlier than that.
+        DemotionFloor : double
     }
 
 /// The scheduling policy in effect for the current run. `RoundRobin` is
@@ -64,18 +83,51 @@ module PctState =
         {
             Rng = seed
             Priorities = Map.empty
+            DemotionFloor = 0.0
         }
 
     /// Sample a fresh uniform-on-`[0, 1)` priority for `thread`, advancing
-    /// the Rng one step. Overwrites any existing entry — used both for the
-    /// lazy first-observation insert and for demotion (which resamples the
-    /// running thread's priority).
+    /// the Rng one step. Overwrites any existing entry. Used only for the lazy
+    /// first-observation insert; demotion goes through `demoteToBottom`, which draws nothing.
     let resamplePriority (thread : ThreadId) (state : PctState) : PctState =
         let priority, rng = NonCryptoRandom.nextDouble state.Rng
 
-        {
+        { state with
             Rng = rng
             Priorities = state.Priorities |> Map.add thread priority
+        }
+
+    /// Demote `thread` below every other thread the scheduler currently knows about, by handing
+    /// it the next `DemotionFloor` value and lowering the floor.
+    ///
+    /// This is PCT's demotion as Burckhardt et al. specify it, and the distinction from "resample
+    /// uniformly" is the whole point: a uniform resample lands above the other `n-1` threads
+    /// about `1/n` of the time, so a demoted thread keeps winning the argmax and residency is a
+    /// heavy-tailed random walk rather than a rotation. Measured on issue #844's guest, a single
+    /// spinner took a sixth to a quarter of all steps under uniform resampling while a thread
+    /// doing real work got 1%.
+    ///
+    /// Draws no random numbers: the demotion target is determined, and only the decision *to*
+    /// demote is stochastic. That keeps `chooseNext`'s consumption at exactly one `nextDouble`
+    /// per call.
+    ///
+    /// Known cost, deliberately accepted. Because the floor only ever descends, the priority
+    /// order among permanently-runnable threads is a rotation fixed by the initial draw: a run
+    /// with `n` such threads contains exactly `n` distinct hand-off pairs, so an interleaving
+    /// like "A is preempted by B and resumes before C runs" is unreachable at *every* seed
+    /// rather than merely rare. All pairs stay reachable across seeds, and blocking, waking and
+    /// thread creation all perturb the cycle in real guests. Splitting the draw between demotion
+    /// and a uniform resample was measured as a fix and rejected: over 2048 seeds of each of the
+    /// six `TestConcurrencyBugs` scenarios it left hit density statistically unchanged (and
+    /// slightly worse on `JustABoolNotAMutex.cs`) while costing 2.3x the sweep time. The real
+    /// remedy is PCT's own change-point budget -- switch `d-1` times per run at pre-drawn step
+    /// counts, instead of at a flat per-step rate forever -- which is tracked separately.
+    let demoteToBottom (thread : ThreadId) (state : PctState) : PctState =
+        let priority = state.DemotionFloor - 1.0
+
+        { state with
+            Priorities = state.Priorities |> Map.add thread priority
+            DemotionFloor = priority
         }
 
     /// Ensure every thread in `threads` has a priority entry, sampling

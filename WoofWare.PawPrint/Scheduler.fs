@@ -18,14 +18,23 @@ namespace WoofWare.PawPrint
 [<RequireQualifiedAccess>]
 module Scheduler =
 
-    /// Base per-step demotion probability when the imminent op is classified
-    /// `AlwaysGuestVisible` (weight 1.0). Lower bands scale this down linearly
-    /// via `ContextSwitchPrior.weight`: `RarelyGuestVisible` (0.1) gives 0.1%,
-    /// `InterpreterOnly` (0.01) gives 0.01%, `Never` (0.0) gives 0%. The 1% cap
-    /// is a calibration choice: high enough that a multi-thousand-step run
-    /// reliably exercises interleaving, low enough that bursty native-step
-    /// sequences don't churn the schedule on every dispatch. Tuned empirically;
-    /// surface as a knob if a future harness needs to fuzz the constant itself.
+    /// Per-step probability that the `Pct` policy demotes the running thread.
+    ///
+    /// A flat rate, deliberately. It was once scaled by a per-opcode "how interesting is it to
+    /// interleave here" weight, which made expected residency inversely proportional to how
+    /// interesting a thread's instructions were — so the policy spent least of its exploration
+    /// budget on the threads whose interleavings it most wanted to perturb. A compute-bound loop
+    /// over locals and arithmetic came out roughly twenty times stickier than a call-heavy
+    /// thread, and in the limit a thread whose every op scored zero — `while (true) { }` is one
+    /// `br` — could not be demoted at all, so it held the machine until the process was killed.
+    ///
+    /// Biasing the *site* of a switch towards guest-visible ops was the appealing part of that
+    /// scheme, and it turns out to buy nothing: preempting at an op no other thread can observe
+    /// is indistinguishable, in the resulting interleaving of visible operations, from
+    /// preempting at the next visible op instead.
+    ///
+    /// The 1% rate is a calibration: high enough that a multi-thousand-step run explores
+    /// interleaving, low enough that the schedule does not churn on every dispatch.
     let private P_BASE : double = 0.01
 
     /// Probability that the `Pct` policy honours a guest yield (`Thread.Yield()`,
@@ -236,34 +245,21 @@ module Scheduler =
                 // in which they were created.
                 let pct = PctState.ensurePriorityFor runnable pct
 
-                // Deterministic argmax over `eligible`. F#'s `List.maxBy` keeps
-                // the first element on ties (it uses strict `>`); `eligible`
-                // is sorted by ThreadId ascending, so ties resolve to the
-                // lowest id — purely for reproducibility, since with `nextDouble`
-                // sampling from a 53-bit mantissa a tie is astronomically rare.
-                // `Map.find` is total here: `eligible` is a subset of `runnable`,
-                // which `ensurePriorityFor` has just covered.
+                // Deterministic argmax over `eligible`. F#'s `List.maxBy` keeps the first
+                // element on ties (it uses strict `>`); `eligible` is sorted by ThreadId
+                // ascending, so ties resolve to the lowest id — purely for reproducibility,
+                // since with `nextDouble` sampling from a 53-bit mantissa a tie between two
+                // initial priorities is astronomically rare, and demoted priorities are
+                // distinct by construction. `Map.find` is total here: `eligible` is a subset of
+                // `runnable`, which `ensurePriorityFor` has just covered.
                 let argmax (priorities : Map<ThreadId, double>) : ThreadId =
                     eligible |> List.maxBy (fun tid -> Map.find tid priorities)
 
                 let current = argmax pct.Priorities
 
-                // Classify the imminent op of `current` to weight the demotion
-                // probability. `None` (the active frame is native — InternalCall,
-                // PInvoke, or RuntimeProvided) is treated as AlwaysGuestVisible
-                // (weight 1.0): a native step runs as one atomic block from the
-                // scheduler's viewpoint and almost always has observable effects,
-                // so it's the most interesting interleaving point we can see.
-                let weight =
-                    match ThreadState.peekNextOp (Map.find current state.ThreadState) with
-                    | Some op -> ContextSwitchPrior.weight (ContextSwitchPrior.ofIlOp op)
-                    | None -> 1.0
-
-                // Single weighted-Bernoulli draw against `weight * P_BASE`. We
-                // always burn one RNG step here, regardless of weight, so
-                // `Pct` schedules consume the seed at a predictable rate
-                // (one `nextDouble` per `chooseNext` call) and `weight = 0.0`
-                // is correctly a no-op without a branch that skips the draw.
+                // Exactly one draw per call, whatever we decide to do with it, so that a
+                // schedule's RNG consumption depends only on how many decisions were taken and
+                // not on what was decided.
                 let sample, rng = NonCryptoRandom.nextDouble pct.Rng
 
                 let pct =
@@ -271,32 +267,28 @@ module Scheduler =
                         Rng = rng
                     }
 
-                if sample < weight * P_BASE then
-                    // Demote: resample `current`'s priority and recompute the
-                    // argmax. The new priority is uniform-on-[0, 1), so demotion
-                    // may yield a higher value than the old one (in which case
-                    // `current` wins again) — by design, since the per-step
-                    // weight system is a Bernoulli "consider switching here"
-                    // signal, not a guaranteed switch. The effective switch
-                    // rate is `weight * P_BASE * P(some other thread now has
-                    // a higher priority)`, which the PCT statistics naturally
-                    // approach asymptotically.
-                    let pct = PctState.resamplePriority current pct
-                    let chosen = argmax pct.Priorities
+                let pct, chosen =
+                    if sample < P_BASE then
+                        // Demote below everyone and re-run the argmax. Unlike a uniform
+                        // resample this hands the machine to a different thread whenever any
+                        // other one is eligible, so the effective switch rate *is* `P_BASE`
+                        // rather than `P_BASE` times the chance the resample happened to land
+                        // low. With `current` the only candidate it necessarily wins again,
+                        // which is correct: there is nobody to switch to.
+                        let pct = PctState.demoteToBottom current pct
+                        pct, argmax pct.Priorities
+                    else
+                        // No demotion means `Priorities` is untouched, so the argmax cannot have
+                        // moved: reuse it rather than walking `eligible` a second time. This is
+                        // the 99% case on a path that runs once per interpreted instruction.
+                        pct, current
 
-                    let state =
-                        { state with
-                            Scheduling = SchedulerState.Pct pct
-                        }
+                let state =
+                    { state with
+                        Scheduling = SchedulerState.Pct pct
+                    }
 
-                    state, Some chosen
-                else
-                    let state =
-                        { state with
-                            Scheduling = SchedulerState.Pct pct
-                        }
-
-                    state, Some current
+                state, Some chosen
 
     /// Set `thread`'s status. Used by the LowLevelMonitor state machine, which
     /// owns the registry-side bookkeeping (queues, owner) but routes every

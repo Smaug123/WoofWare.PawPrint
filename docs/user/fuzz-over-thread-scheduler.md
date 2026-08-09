@@ -28,16 +28,27 @@ That is much closer than I was expecting to 50/50 at exhibiting the two possible
 
 The PCT scheduling algorithm as implemented in PawPrint is roughly as follows.
 
-Every running thread has a "priority", drawn randomly from `[0,1)`.
-
-Some IL ops are known to be uninteresting (like `Pop`, which has no observable side-effects on any other thread); some are extremely interesting (like `Stfld`, which mutates program-global state and is therefore very visible to other threads).
+Every thread has a "priority". A thread's initial priority is drawn randomly from `[0,1)`, the first time the scheduler sees it runnable.
 
 Repeatedly:
 
-* Find the highest-priority thread, and observe its pending IL op.
-* With high probability if the op is interesting, or low probability if the op is not interesting, do the following:
-  * assign the current thread a new priority, drawn at random from `[0, 1)`.
-* Select the highest-priority thread and execute its next IL op.
+* Find the highest-priority runnable thread.
+* With probability 1%, *demote* it: give it a priority strictly below that of every other thread the scheduler has ever demoted, and hence below every thread that has not been demoted more recently.
+* Select the highest-priority runnable thread and execute its next IL op.
 
-The overall effect is that if we're currently choosing to execute a thread, and its operation is uninteresting, we usually won't reassign its priority and so we will continue to execute it, until it hits an interesting op.
-On the other hand, if its operation is interesting, then we're more likely to reassign the current thread's priority, and that gives it a higher chance of being demoted in priority.
+So a thread runs until a demotion draw succeeds, at which point the machine goes to somebody else; a run of length *n* contains about *n*/100 context switches.
+Demotion is to the bottom rather than to a fresh random priority, which matters more than it sounds: a uniform redraw lands back above the other *n-1* threads about `1/n` of the time, so the thread that was just demoted often immediately wins again and residency becomes a heavy-tailed random walk instead of a rotation.
+
+Two deliberate departures from the paper are worth knowing about if you are reasoning about coverage.
+
+Burckhardt et al. sample a fixed number of priority-change points from a known total step count, which is what buys PCT its probabilistic bug-finding guarantee.
+PawPrint's runs are open-ended, so there is no such count to sample from, and demotion is a per-step coin flip instead. You get the algorithm's behaviour without its bound.
+
+Because the demotion floor only ever descends, the priority *order* among threads that are permanently runnable is a rotation fixed by the initial draw.
+A run with *n* such threads therefore contains exactly *n* distinct hand-off pairs: within a single seed you will not see both "A is preempted by B" and "B is preempted by A".
+All such pairs remain reachable across different seeds, and in real guests blocking, waking, and thread creation all perturb the cycle — but if you are fuzzing, vary the seed rather than lengthening one run.
+
+Note also what the scheduler no longer does.
+It used to inspect each thread's pending IL op and scale the demotion probability by how "interesting" that op looked, on the theory that switching at a `Stfld` explores more than switching at a `Pop`.
+That made expected residency inversely proportional to how interesting a thread's instructions were — precisely backwards — and a thread executing nothing but branches (`while (true) { }` compiles to a single `br`) could never be demoted at all, so it kept the machine indefinitely.
+Choosing the *site* of a switch also turns out to buy nothing: preempting at an op no other thread can observe gives the same interleaving of visible operations as preempting at the next visible op instead.
