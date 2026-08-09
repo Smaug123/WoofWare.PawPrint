@@ -17,6 +17,16 @@ module TestPointerHashSynthesis =
         PointerHashSynthesis.materialiseHashBits "test" src counters
 
     [<Test>]
+    let ``a fresh fixture assigns bits by first-touch order`` () : unit =
+        // Pins which rule `empty` selects. Vacuous while `PointerHashAssignment` has
+        // one case; it earns its keep the moment a second lands, because the choice of
+        // default is part of the replay contract — switching it silently would change
+        // every synthesised pointer value the guest observes. The rule this names is
+        // what the `registration order assigns counters in order` test below spells out.
+        PointerHashCounters.empty.Assignment
+        |> shouldEqual PointerHashAssignment.SequentialFirstTouch
+
+    [<Test>]
     let ``same source materialised twice returns same bits and bumps counter only once`` () : unit =
         let src =
             NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete 42))

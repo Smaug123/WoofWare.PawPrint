@@ -41,14 +41,42 @@ type CanonicalPointerKey =
     | ModuleHandle of string
     | MetadataImportHandle of string
 
-/// Counter-based assignment of synthesised bits to canonical pointer keys.
-/// The first time a key is materialised, it is assigned counter `n` and stores
-/// address bits `(n + 1) <<< 2`. Subsequent materialisations of the same key
-/// return those same stored bits. Tag bits are NOT stored: they are a view over
-/// the identity, so `materialiseHashBits` OR-s them on per source, which is what
-/// lets two differently-tagged views of one identity (a `TypeHandlePtr` and the
-/// `TypeDescPtr` masked out of it; an untagged and a tagged GC handle) share
-/// address bits and differ only in the low region.
+/// How a canonical pointer key that has not been seen before acquires its
+/// synthesised address bits.
+///
+/// This is a *choice* PawPrint has made, not a fact about CoreCLR, and it is
+/// recorded as a DU so that the choice is visible at the point it is made and so
+/// that adding a second case cannot compile until every site that has to decide
+/// between them has been updated. There is exactly one case today.
+///
+/// The known alternative is a keyed scheme — derive the bits by hashing the
+/// `CanonicalPointerKey` itself, with no counter and no assignment order at all.
+/// Its advantage is that it is immune to first-touch-order desync: under
+/// `SequentialFirstTouch`, a change that materialises one extra key early in a run
+/// shifts the bits of every key materialised after it, so two nearly-identical
+/// runs diverge in every synthesised pointer value rather than in the one that
+/// actually changed. That is a real cost when diffing runs (mutation testing,
+/// delta debugging). It is not the default because the correlation between
+/// assignment order and address order is load-bearing: CoreCLR's cast-cache
+/// pipeline hashes real pointer bits whose ordering is an artefact of allocation
+/// order, and `SequentialFirstTouch` reproduces that shape where a hash of the
+/// identity would not. A keyed scheme would also have to establish
+/// collision-freedom explicitly, which the counter gets by construction.
+[<RequireQualifiedAccess>]
+type PointerHashAssignment =
+    /// The nth distinct key to be materialised is assigned counter `n` and stores
+    /// address bits `(n + 1) <<< 2`, so bits follow first-touch order and distinct
+    /// keys cannot collide. `PointerHashCounters.NextCounter` holds the live `n`.
+    | SequentialFirstTouch
+
+/// Assignment of synthesised bits to canonical pointer keys, under the rule named
+/// by `Assignment`. Under the only rule that exists today, the first time a key is
+/// materialised it is assigned counter `n` and stores address bits `(n + 1) <<< 2`.
+/// Subsequent materialisations of the same key return those same stored bits. Tag
+/// bits are NOT stored: they are a view over the identity, so `materialiseHashBits`
+/// OR-s them on per source, which is what lets two differently-tagged views of one
+/// identity (a `TypeHandlePtr` and the `TypeDescPtr` masked out of it; an untagged
+/// and a tagged GC handle) share address bits and differ only in the low region.
 ///
 /// Distinct keys get distinct bit patterns by construction (no collisions),
 /// and the assignment order is deterministic given a fixed program and
@@ -57,6 +85,10 @@ type CanonicalPointerKey =
 /// CoreCLR cast-cache pipeline.
 type PointerHashCounters =
     {
+        /// Rule used to mint bits for a key not already in `Assigned`. Fixed for
+        /// the lifetime of a run, and part of that run's replay contract: changing
+        /// it changes every synthesised pointer value the guest observes.
+        Assignment : PointerHashAssignment
         NextCounter : uint64
         Assigned : Map<CanonicalPointerKey, uint64>
     }
@@ -65,6 +97,7 @@ type PointerHashCounters =
 module PointerHashCounters =
     let empty : PointerHashCounters =
         {
+            Assignment = PointerHashAssignment.SequentialFirstTouch
             NextCounter = 0UL
             Assigned = Map.empty
         }
@@ -181,10 +214,10 @@ module PointerHashSynthesis =
     /// helper — those should have been handled by the caller before they
     /// got here.
     ///
-    /// Determinism: bits depend only on the canonical key and the order
-    /// in which keys are first registered. The result is stable for a
-    /// given execution trace and reproducible across runs with the same
-    /// scheduler.
+    /// Determinism: under `PointerHashAssignment.SequentialFirstTouch`, bits
+    /// depend only on the canonical key and the order in which keys are first
+    /// registered. The result is stable for a given execution trace and
+    /// reproducible across runs with the same scheduler.
     ///
     /// Returned as `int64` to match `Int64Source.OpaqueHashBits` storage;
     /// the conversion from the uint64 bit pattern is an unchecked
@@ -229,13 +262,15 @@ module PointerHashSynthesis =
             match Map.tryFind key counters.Assigned with
             | Some bits -> Operators.int64 (bits ||| tagBits), counters
             | None ->
-                let n = counters.NextCounter
-                let bits = (n + 1UL) <<< 2
+                match counters.Assignment with
+                | PointerHashAssignment.SequentialFirstTouch ->
+                    let n = counters.NextCounter
+                    let bits = (n + 1UL) <<< 2
 
-                let counters' =
-                    {
-                        NextCounter = n + 1UL
-                        Assigned = Map.add key bits counters.Assigned
-                    }
+                    let counters' =
+                        { counters with
+                            NextCounter = n + 1UL
+                            Assigned = Map.add key bits counters.Assigned
+                        }
 
-                Operators.int64 (bits ||| tagBits), counters'
+                    Operators.int64 (bits ||| tagBits), counters'
