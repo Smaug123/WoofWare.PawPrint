@@ -322,6 +322,43 @@ module IntrinsicMethodKeys =
             // `call`, where ECMA-335 dispatches statically to this body and .NET throws too.
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Type.cs#L467-L471
             pattern "System.Private.CoreLib" "System.Type" "get_TypeHandle" []
+            // `Type.IsPrimitive`'s getter is `[Intrinsic]` only so the JIT can constant-fold
+            // `typeof(X).IsPrimitive` when the receiver is a literal `ldtoken`
+            // (`NI_System_Type_get_IsPrimitive`, importercalls.cpp:4046, alongside `IsEnum` /
+            // `IsValueType` / `IsByRefLike` / `IsGenericType`). When the receiver is not a
+            // known `typeof`, the JIT emits the ordinary call, so the managed body is the
+            // semantic definition rather than a placeholder, and every primitive it bottoms
+            // out in is already modelled:
+            //
+            //   Type::get_IsPrimitive        `ldarg.0; callvirt Type::IsPrimitiveImpl(); ret`
+            //   RuntimeType::IsPrimitiveImpl `ldarg.0; call RuntimeTypeHandle::IsPrimitive; ret`
+            //   RuntimeTypeHandle::IsPrimitive  `RuntimeHelpers.IsPrimitiveType(type.GetCorElementType())`
+            //   RuntimeType::GetCorElementType  the `TypeHandle_GetCorElementType` QCall,
+            //                                   implemented in NativeRuntimeTypeQCall.fs
+            //
+            // and `RuntimeHelpers.IsPrimitiveType` is a plain bit test of the element type
+            // against 0x03003FFC — I1,U1,I2,U2,I4,U4,I8,U8,R4,R8,I,U,CHAR,BOOLEAN.
+            //
+            // Interpreting the body rather than hand-writing an arm in `Intrinsics.call` is
+            // what keeps the `callvirt` on line 1 a real virtual dispatch. `IsPrimitiveImpl`
+            // is abstract on `Type`, so a receiver that is not a `RuntimeType` — a
+            // `TypeDelegator`, or any guest `Type` subclass — answers from its own override.
+            // An arm keyed on `Type::get_IsPrimitive` would intercept ahead of that dispatch
+            // and then fail trying to read `m_handle` off a type that does not declare it,
+            // which is exactly what the hand-written `Type.get_IsValueType` arm does today.
+            //
+            // It also keeps `GetCorElementType` the single place that classifies a runtime
+            // type handle, so `IsPrimitive` cannot drift from it. In particular an enum is
+            // *not* primitive even though its underlying type is: CoreCLR categorises it
+            // `PrimitiveValueType`, and `MethodTable::GetSignatureCorElementType`
+            // (methodtable.cpp:5113) maps that whole category to ELEMENT_TYPE_VALUETYPE
+            // rather than to the underlying element type.
+            //
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Type.cs#L129-L134
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/RuntimeType.cs#L272
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L133-L136
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.cs#L109-L111
+            pattern "System.Private.CoreLib" "System.Type" "get_IsPrimitive" []
             // .NET 10 added [Intrinsic] to RuntimeTypeHandle.ToIntPtr; the IL body delegates
             // to the Value getter which reads RuntimeType.m_handle, a field PawPrint already
             // populates with NativeIntSource.TypeHandlePtr. Executing the IL is safe and
