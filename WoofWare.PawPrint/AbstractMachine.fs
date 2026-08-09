@@ -77,15 +77,22 @@ module AbstractMachine =
                 // the native frame on the stack so the dispatch loop runs the callee, then
                 // re-enters this native method on a future step.
                 ExecutionResult.Stepped (state, WhatWeDid.SuspendedForManagedCall, effect)
-            | NativeHandlerResult.RaiseException (state, exnType, effect) ->
+            | NativeHandlerResult.RaiseException (state, exnType, message, effect) ->
                 // The handler wants to raise `exnType`. Allocate the exception, call its
-                // parameterless ctor, and arm dispatch-on-return; leave the native frame
+                // parameterless ctor (overwriting `_message` afterwards if the handler
+                // supplied one), and arm dispatch-on-return; leave the native frame
                 // on the stack so exception dispatch can unwind through it on the ctor's
                 // `Ret`. The handler is never re-entered. We surface
                 // SuspendedForManagedCall because, from the Scheduler's point of view, a
                 // managed callee (the ctor) has been pushed on top of the native frame.
                 let state, _whatWeDid =
-                    IlMachineStateExecution.raiseRuntimeException loggerFactory baseClassTypes exnType thread state
+                    IlMachineStateExecution.raiseRuntimeExceptionWithMessage
+                        loggerFactory
+                        baseClassTypes
+                        exnType
+                        message
+                        thread
+                        state
 
                 ExecutionResult.Stepped (state, WhatWeDid.SuspendedForManagedCall, effect)
             | NativeHandlerResult.SuspendedForClassInit (state, effect) ->
