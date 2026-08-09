@@ -1470,6 +1470,42 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Float64 result)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
+        | "System.Private.CoreLib", "Math", "Ceiling" when intrinsicKey.DeclaringTypeFullName = "System.Math" ->
+            // Declared like the four above -- `[Intrinsic]` + `MethodImplOptions.InternalCall`,
+            // no IL body -- so it likewise cannot be allowlisted in `safeIntrinsics`. The JIT
+            // lowers it to `roundsd`/`frintp` where the hardware has them and to the platform
+            // C library's `ceil` otherwise.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/coreclr/System.Private.CoreLib/src/System/Math.CoreCLR.cs#L51-L53
+            //
+            // This is the `Math.Sqrt` situation taken further: `roundToIntegralTowardPositive`
+            // is not merely correctly rounded but exact, so there is one right answer for
+            // every argument and every conforming implementation returns it. Computing it
+            // in-tree therefore changes nothing about the result, and is about the guarantee
+            // being this runtime's own; `DeterministicMath.ceiling` also gives the tests an
+            // exact oracle, which the `pow`/`sin`/`cos` arms above lack.
+            //
+            // The `decimal` overload of `Math.Ceiling` never arrives here: it is not marked
+            // `[Intrinsic]` and has an ordinary IL body, so it runs as managed code. The guard
+            // on `DeclaringTypeFullName` keeps this arm off any other type that happens to
+            // have a `Ceiling`, and the signature check below rejects anything else.
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteDouble state.ConcreteTypes ], MethodReturnType.Returns (ConcreteDouble state.ConcreteTypes) ->
+                ()
+            | _ -> failwith $"Math.Ceiling: unexpected signature %s{formatMethodKey intrinsicKey}"
+
+            let argument, state = IlMachineState.popEvalStack currentThread state
+
+            let argument =
+                match argument with
+                | EvalStackValue.Float f -> f
+                | _ -> failwith $"Math.Ceiling: unexpected eval stack value: %O{argument}"
+
+            let result = DeterministicMath.ceiling argument
+
+            state
+            |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Float64 result)) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> IntrinsicResult.Completed
         | "System.Private.CoreLib", "String", "Equals" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteString state.ConcreteTypes ; ConcreteString state.ConcreteTypes ],
