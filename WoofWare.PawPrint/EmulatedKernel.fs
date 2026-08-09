@@ -973,14 +973,43 @@ module EmulatedKernel =
     /// The bound is *tighter* than `maxWallClockTicks` by a factor of about
     /// 27, so there is a band of clock readings from which `DateTime.UtcNow`
     /// and `Environment.TickCount64` are derivable but `Stopwatch.GetTimestamp`
-    /// is not. Nothing bounds `VirtualClockTicks` at its write sites, so each
-    /// clock-derived PAL entry enforces its own ceiling lazily, at the moment
-    /// the guest reads that particular clock — `systemTimeAsTicks` has the same
-    /// shape. Bounding the field centrally at the scheduler, its sole writer,
-    /// would collapse these into one invariant and fault at the wait that
-    /// pushed time past the horizon rather than at an arbitrary later read.
+    /// is not. `withVirtualClockTicks` bounds the field centrally at the
+    /// scheduler, its sole writer, using *this* ceiling because it is the
+    /// tightest; the per-reader guards remain because a kernel assembled by
+    /// record-copy can bypass the writer, and `systemTimeAsTicks` has the same
+    /// shape for the same reason.
     [<Literal>]
     let maxMonotonicTimestampClockTicks : int64 = 92233720368547758L
+
+    /// Advance the virtual clock to `ticks`, which must not move it backwards and must keep it
+    /// inside the range every clock-derived reading can be computed from.
+    ///
+    /// The bound is `maxMonotonicTimestampClockTicks` — the tightest of the per-reader ceilings
+    /// — so this is deliberately stricter than any individual reader requires. Enforcing it at
+    /// the writer means a guest that runs the clock off the end faults at the wait that did it,
+    /// naming the operation responsible, rather than at whichever unlucky later `Stopwatch` read
+    /// happens to trip over the value.
+    ///
+    /// It also keeps deadline arithmetic total. A finite deadline is
+    /// `clock + timeoutMs * ticksPerMillisecond`, and `Thread.Sleep(Int32.MaxValue)` contributes
+    /// about 2.1e13 ticks; with the clock bounded at 9.2e16 the sum cannot approach
+    /// `Int64.MaxValue`, so the seven deadline sites need no checked arithmetic of their own.
+    /// Without the bound they would need it: the deadline jump advances the clock to a deadline
+    /// *without* retiring a step, so a loop of `Sleep(Int32.MaxValue)` reaches the wrap in about
+    /// 430,000 iterations — a few million interpreted instructions, which is minutes rather than
+    /// the unreachable 4.3 billion jumps the millisecond-denominated clock required.
+    let withVirtualClockTicks (ticks : int64) (kernel : EmulatedKernel) : EmulatedKernel =
+        if ticks < kernel.VirtualClockTicks then
+            failwith
+                $"virtual clock would move backwards, from %d{kernel.VirtualClockTicks} to %d{ticks} ticks; it is monotonic by construction and every guest-visible clock derives from it"
+
+        if ticks > maxMonotonicTimestampClockTicks then
+            failwith
+                $"simulated uptime has reached %d{ticks} ticks (100 ns each), past the %d{maxMonotonicTimestampClockTicks} from which a monotonic nanosecond timestamp can still be derived — about 292 years. The guest has almost certainly been jumping the clock with long timed waits; PawPrint cannot represent time beyond this."
+
+        { kernel with
+            VirtualClockTicks = ticks
+        }
 
     /// Monotonic time since the simulated process booted, in nanoseconds:
     /// exactly what `SystemNative_GetTimestamp` returns, and hence what

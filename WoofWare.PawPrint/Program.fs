@@ -376,19 +376,22 @@ module Program =
             { prepared with
                 State =
                     state.MapKernel (fun kernel ->
+                        // `EmulatedKernel.instructionCostTicks` of virtual time per scheduler
+                        // tick — see that constant for the rate and why it is what it is.
+                        // Bumping in lock-step with `StepCounter` keeps both clocks pure
+                        // functions of "how many scheduler ticks have elapsed", which is what
+                        // tests rely on when driving the strategies without a real driver.
+                        //
+                        // Through `withVirtualClockTicks` so that the horizon is enforced at
+                        // the writer; this path cannot realistically reach it (it would take
+                        // ~9.2e12 retired instructions) but going around the validating setter
+                        // would leave the invariant true only by coincidence.
                         { kernel with
                             StepCounter = kernel.StepCounter + 1L
-                            // `EmulatedKernel.instructionCostTicks` of virtual
-                            // time per scheduler tick — see that constant for
-                            // the rate and why it is what it is. Bumping in
-                            // lock-step with
-                            // `StepCounter` keeps both clocks pure
-                            // functions of "how many scheduler ticks
-                            // have elapsed", which is what tests rely
-                            // on when driving the strategies without a
-                            // real driver.
-                            VirtualClockTicks = kernel.VirtualClockTicks + EmulatedKernel.instructionCostTicks
                         }
+                        |> EmulatedKernel.withVirtualClockTicks (
+                            kernel.VirtualClockTicks + EmulatedKernel.instructionCostTicks
+                        )
                     )
             }
 
@@ -455,10 +458,14 @@ module Program =
                 | None -> state
                 | Some target ->
                     let state =
-                        state.MapKernel (fun kernel ->
-                            { kernel with
-                                VirtualClockTicks = max kernel.VirtualClockTicks target
-                            }
+                        // The path that *can* reach the horizon: this jumps the clock straight
+                        // to a deadline without retiring a step, so a guest looping on
+                        // `Thread.Sleep(Int32.MaxValue)` advances it ~2.1e13 ticks per cheap
+                        // iteration. `withVirtualClockTicks` faults here, naming the wait that
+                        // ran time off the end, instead of letting the addition wrap and hand
+                        // some later sleeper a negative deadline that fires immediately.
+                        state.MapKernel (
+                            EmulatedKernel.withVirtualClockTicks (max state.Kernel.VirtualClockTicks target)
                         )
 
                     advanceUntilRunnableOrQuiescent (fireExpiredDeadlines state)

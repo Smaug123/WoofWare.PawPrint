@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint.Test
 
+open System
 open FsCheck
 open FsCheck.FSharp
 open FsUnitTyped
@@ -221,3 +222,44 @@ module TestMonotonicTimestamp =
             succeeds (fun () -> EmulatedKernel.monotonicTimestampNanos (kernelWith clockMs)) = derivable
 
         Check.One (propertyConfig, Prop.forAll int64s property)
+
+    [<Test>]
+    let ``the clock writer rejects moving past the representable horizon`` () : unit =
+        // Regression guard for an overflow the re-denomination made reachable. A finite deadline
+        // is `clock + timeoutMs * ticksPerMillisecond`; `Thread.Sleep(Int32.MaxValue)` adds about
+        // 2.1e13 ticks, and the driver's deadline jump advances the clock to a deadline *without*
+        // retiring a step. So a guest looping on that sleep reaches `Int64.MaxValue` in ~430,000
+        // cheap iterations, where the millisecond-denominated clock needed 4.3 billion. Wrapping
+        // would hand the next sleeper a negative deadline that fires immediately, and time would
+        // stop advancing — a silent wrong answer, so the writer faults instead.
+        let atHorizon =
+            { EmulatedKernel.initial with
+                VirtualClockTicks = EmulatedKernel.maxMonotonicTimestampClockTicks
+            }
+
+        // The horizon itself is legal: a reading can still be derived from it.
+        EmulatedKernel.monotonicTimestampNanos atHorizon |> shouldBeGreaterThan 0L
+
+        let beyond () =
+            EmulatedKernel.withVirtualClockTicks (EmulatedKernel.maxMonotonicTimestampClockTicks + 1L) atHorizon
+            |> ignore<EmulatedKernel>
+
+        Assert.Throws<Exception> (TestDelegate beyond) |> ignore<Exception>
+
+    [<Test>]
+    let ``the clock writer rejects moving backwards`` () : unit =
+        // Monotonicity is the one guarantee every derived clock rests on, and `MapKernel` makes
+        // it easy for a future caller to compute a smaller value by accident (a `min` for a
+        // `max`, say). Cheap to assert at the writer.
+        let kernel =
+            { EmulatedKernel.initial with
+                VirtualClockTicks = 5_000L
+            }
+
+        EmulatedKernel.withVirtualClockTicks 5_000L kernel
+        |> fun k -> k.VirtualClockTicks |> shouldEqual 5_000L
+
+        let backwards () =
+            EmulatedKernel.withVirtualClockTicks 4_999L kernel |> ignore<EmulatedKernel>
+
+        Assert.Throws<Exception> (TestDelegate backwards) |> ignore<Exception>
