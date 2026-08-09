@@ -96,7 +96,7 @@ class Program
             | Program.ProgramStepOutcome.Completed outcome -> outcome
             | Program.ProgramStepOutcome.Deadlocked (_, stuck) ->
                 failwith $"Prepared debugger stepper deadlocked: %s{stuck}"
-            | Program.ProgramStepOutcome.InstructionStepped (prepared, _, _)
+            | Program.ProgramStepOutcome.InstructionStepped (prepared, _, _, _)
             | Program.ProgramStepOutcome.WorkerTerminated (prepared, _) -> loop (remainingSteps - 1) prepared
 
         loop 5000 prepared

@@ -179,49 +179,173 @@ module AppProgram =
                 | [] -> failwith "Exiting thread returned void; expected an int32 exit code"
                 | other :: _ -> failwith $"Exiting thread had unexpected eval-stack top %O{other}; expected int32"
 
-            let drainStandardStreams (state : IlMachineState) : unit =
-                // The interpreter never writes to host stdout/stderr during
-                // execution; instead `SystemNative_Write` appends each call
-                // as an `OutputLogEntry` to `state.Kernel.OutputLog` (and
-                // emits a `StepEffect.WroteToFd` for any consumer that wants
-                // to stream). Here, at the end of the run, drain that log
-                // to the host's real standard streams so a user invoking
-                // `WoofWare.PawPrint.App` sees the guest's output in the
-                // exact write order the guest produced — including across
-                // stdout/stderr — so a `Write(2,…)` followed by a
-                // `Write(1,…)` is replayed as `err`-then-`out`, matching
-                // what a real shell sees under `2>&1`.
+            // Host-side sink for guest writes. `SystemNative_Write` appends each guest
+            // write to `EmulatedKernel.OutputLog` *and* reports it as a
+            // `StepEffect.WroteToFd`; we consume the effect so output reaches the host
+            // as the guest produces it.
+            //
+            // Streaming rather than draining the log once at the end is what makes
+            // output survive a run that never yields a `RunOutcome`: a livelocked guest,
+            // one killed from outside, or one this interpreter reports as `Deadlocked`.
+            // Draining only on a `RunOutcome` silently discarded everything such a guest
+            // had printed, which is precisely when the output is most wanted. That holds
+            // for everything the stepping loop below drives — see the `prepare` call site
+            // for the startup-phase writes it does not yet cover.
+            //
+            // It costs no determinism: the interpreter is untouched and still never
+            // performs I/O, the effect is a value it hands back, and this shell decides
+            // what to do with it.
+            use hostOut = System.Console.OpenStandardOutput ()
+            use hostErr = System.Console.OpenStandardError ()
+
+            // Count of `OutputLog` entries already written to the host. The invariant is
+            // that entries `[0, written)` have reached a real stream; `writeEntry`
+            // advances it and `drainRemaining` closes any gap. One `WroteToFd` effect is
+            // exactly one log entry, so consuming effects keeps the two in step.
+            let mutable written = 0
+
+            let writeEntry (role : FileDescriptorRole) (bytes : ImmutableArray<byte>) : unit =
+                let destination =
+                    match role with
+                    | FileDescriptorRole.StandardOutput -> hostOut
+                    | FileDescriptorRole.StandardError -> hostErr
+                    | FileDescriptorRole.StandardInput ->
+                        // Unreachable: `SystemNative_Write` rejects stdin with EBADF before
+                        // appending. Exhaustiveness is load-bearing here — a future writable
+                        // role (e.g. a regular file) will fail to compile until its
+                        // destination is decided.
+                        failwith "guest OutputLog contains a StandardInput entry (this is an interpreter bug)"
+
+                destination.Write (bytes.AsSpan ())
+
+                // Flush per guest write rather than at end of run. Without this the whole
+                // point is lost: a guest that prints and then hangs leaves its output in the
+                // host's stream buffer, and a `kill` discards it. Guest writes arrive at
+                // whatever granularity the guest's own `TextWriter` flushes (a line at a time
+                // for `Console.WriteLine`), not per byte, so this is cheap relative to
+                // interpreting the IL that produced them.
                 //
-                // Streaming during execution would couple the functional
-                // core to an imperative sink; leaving it until the end keeps
-                // the interpreter deterministic and replayable. Programs
-                // that crash partway will lose nothing because the log is
-                // what's drained regardless of which `RunOutcome`
-                // terminates the run.
+                // The two streams are written in guest write order, so a `Write(2,…)`
+                // followed by a `Write(1,…)` reaches the host as `err`-then-`out`, which is
+                // what a real shell sees under `2>&1`.
+                destination.Flush ()
+
+                written <- written + 1
+
+            // Write any log entries that never passed through `writeEntry`. Two cases reach
+            // this: writes performed inside `Program.prepare` (a `.cctor` that prints is
+            // pumped before our stepping loop begins), and any future path that appends to
+            // the log without surfacing a `StepEffect`. Normally a no-op.
+            let drainRemaining (state : IlMachineState) : unit =
                 let log = state.Kernel.OutputLog
 
-                if log.Length > 0 then
-                    use out = System.Console.OpenStandardOutput ()
-                    use err = System.Console.OpenStandardError ()
+                // The range is evaluated once, from `written` as it stands on entry, and
+                // `writeEntry` advances `written` by exactly one per entry — so this writes
+                // precisely the entries it indexes and leaves the invariant intact.
+                for i in written .. log.Length - 1 do
+                    writeEntry log.[i].Role log.[i].Bytes
 
-                    for entry in log do
-                        match entry.Role with
-                        | FileDescriptorRole.StandardOutput -> out.Write (entry.Bytes.AsSpan ())
-                        | FileDescriptorRole.StandardError -> err.Write (entry.Bytes.AsSpan ())
-                        | FileDescriptorRole.StandardInput ->
-                            // Unreachable: `SystemNative_Write` rejects stdin
-                            // with EBADF before appending. Exhaustiveness is
-                            // load-bearing here — a future writable role
-                            // (e.g. a regular file) will fail to compile
-                            // until its drain destination is decided.
-                            failwith
-                                "drainStandardStreams: OutputLog contains StandardInput entry (this is an interpreter bug)"
+            let onOutcome (outcome : RunOutcome) : int =
+                match outcome with
+                | RunOutcome.NormalExit (state, thread)
+                | RunOutcome.ProcessExit (state, thread) ->
+                    drainRemaining state
+                    exitCodeFromStack state thread
+                | RunOutcome.FailFast (state, _thread, message) ->
+                    // CoreCLR's Environment_FailFast calls HandleFatalError(COR_E_FAILFAST)
+                    // and on Windows terminates with 0x80131623; on Unix it aborts via
+                    // SIGABRT (exit code 128 + 6 = 134).
+                    drainRemaining state
+                    let msg = message |> Option.defaultValue "<no message>"
+                    logger.LogCritical ("Guest called Environment.FailFast: {FailFastMessage}", msg)
 
-                    out.Flush ()
-                    err.Flush ()
+                    if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+                        -2146232797
+                    else
+                        134
+                | RunOutcome.SignalTerminated (state, signal) ->
+                    // pal_signal.c's Terminate branch restores the original
+                    // sigaction and calls `kill(g_pid, signalCode)`, so the
+                    // host shell observes the process as having exited with
+                    // the POSIX-conventional code `128 + signo`. Mirror that
+                    // here so guests that install a signal handler and
+                    // forward to the default disposition observe the same
+                    // shell-level exit code as a real .NET process.
+                    drainRemaining state
+                    let signo = Signal.toLinuxSigno signal
+
+                    logger.LogInformation (
+                        "Guest terminated by POSIX signal {SignalName} (signo {Signo}); exiting with code {ExitCode}",
+                        sprintf "%O" signal,
+                        signo,
+                        128 + signo
+                    )
+
+                    128 + signo
+                | RunOutcome.GuestUnhandledException (state, _thread, exn) ->
+                    drainRemaining state
+
+                    let exceptionTypeName =
+                        match state.ManagedHeap.NonArrayObjects |> Map.tryFind exn.ExceptionObject with
+                        | Some obj ->
+                            match AllConcreteTypes.lookup obj.ConcreteType state.ConcreteTypes with
+                            | Some ti -> $"{ti.Namespace}.{ti.Name}"
+                            | None -> $"<unknown type %O{obj.ConcreteType}>"
+                        | None -> $"<heap address %O{exn.ExceptionObject}>"
+
+                    logger.LogCritical ("Unhandled exception in guest program: {ExceptionTypeName}", exceptionTypeName)
+
+                    // On Windows the .NET runtime exits with 0xE0434352 (SEH);
+                    // on Unix it aborts with SIGABRT (exit code 128 + 6 = 134).
+                    if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+                        -532462766
+                    else
+                        134
+
+            // The stepping loop is driven here rather than by calling `Program.run`,
+            // because `Program.run` hands back only a terminal `RunOutcome` and the
+            // per-step `StepEffect`s are what carry guest output. Consuming them here is
+            // the whole point: output reaches the host while the guest is still running.
+            //
+            // `Program.pumpPrepared` (which `Program.run` uses) additionally raises on
+            // `Deadlocked` rather than returning, so a deadlocked guest never reached the
+            // end-of-run drain at all and lost everything it had printed.
+            let logger = loggerFactory.CreateLogger "Program"
+
+            let rec pump (prepared : Program.PreparedProgram) : int =
+                match Program.stepPrepared loggerFactory logger prepared with
+                | Program.ProgramStepOutcome.InstructionStepped (prepared, _ranThread, _whatWeDid, effect) ->
+                    match effect with
+                    | StepEffect.WroteToFd (role, bytes) -> writeEntry role bytes
+                    | StepEffect.NoEffect -> ()
+
+                    pump prepared
+                | Program.ProgramStepOutcome.WorkerTerminated (prepared, _terminatingThread) -> pump prepared
+                | Program.ProgramStepOutcome.Completed outcome -> onOutcome outcome
+                | Program.ProgramStepOutcome.Deadlocked (prepared, stuck) ->
+                    // Every thread is blocked and the entry thread has not terminated, so
+                    // no further step is possible. Report it as a diagnostic rather than
+                    // letting it escape as an unhandled host exception: the guest's own
+                    // output has already been streamed, and a stack trace through the
+                    // interpreter says nothing about why the *guest* is stuck.
+                    drainRemaining prepared.State
+
+                    logger.LogCritical (
+                        "Guest deadlocked: no runnable threads and the entry thread has not terminated. Stuck: {StuckThreads}",
+                        stuck
+                    )
+
+                    // Same code the escaping host exception produced, so shell callers
+                    // observe no change. That is per-platform: an unhandled .NET exception
+                    // terminates with 0xE0434352 on Windows and SIGABRT (128 + 6) on Unix,
+                    // which is the same split the guest-unhandled-exception arm above uses.
+                    if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+                        -532462766
+                    else
+                        134
 
             match
-                Program.run
+                Program.prepare
                     loggerFactory
                     (Some dllPath)
                     fileStream
@@ -232,60 +356,23 @@ module AppProgram =
                         AppContext = HostRuntimeConfig.forAssembly dllPath
                     }
             with
-            | RunOutcome.NormalExit (state, thread)
-            | RunOutcome.ProcessExit (state, thread) ->
-                drainStandardStreams state
-                exitCodeFromStack state thread
-            | RunOutcome.FailFast (state, _thread, message) ->
-                // CoreCLR's Environment_FailFast calls HandleFatalError(COR_E_FAILFAST)
-                // and on Windows terminates with 0x80131623; on Unix it aborts via
-                // SIGABRT (exit code 128 + 6 = 134).
-                drainStandardStreams state
-                let msg = message |> Option.defaultValue "<no message>"
-                logger.LogCritical ("Guest called Environment.FailFast: {FailFastMessage}", msg)
-
-                if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
-                    -2146232797
-                else
-                    134
-            | RunOutcome.SignalTerminated (state, signal) ->
-                // pal_signal.c's Terminate branch restores the original
-                // sigaction and calls `kill(g_pid, signalCode)`, so the
-                // host shell observes the process as having exited with
-                // the POSIX-conventional code `128 + signo`. Mirror that
-                // here so guests that install a signal handler and
-                // forward to the default disposition observe the same
-                // shell-level exit code as a real .NET process.
-                drainStandardStreams state
-                let signo = Signal.toLinuxSigno signal
-
-                logger.LogInformation (
-                    "Guest terminated by POSIX signal {SignalName} (signo {Signo}); exiting with code {ExitCode}",
-                    sprintf "%O" signal,
-                    signo,
-                    128 + signo
-                )
-
-                128 + signo
-            | RunOutcome.GuestUnhandledException (state, _thread, exn) ->
-                drainStandardStreams state
-
-                let exceptionTypeName =
-                    match state.ManagedHeap.NonArrayObjects |> Map.tryFind exn.ExceptionObject with
-                    | Some obj ->
-                        match AllConcreteTypes.lookup obj.ConcreteType state.ConcreteTypes with
-                        | Some ti -> $"{ti.Namespace}.{ti.Name}"
-                        | None -> $"<unknown type %O{obj.ConcreteType}>"
-                    | None -> $"<heap address %O{exn.ExceptionObject}>"
-
-                logger.LogCritical ("Unhandled exception in guest program: {ExceptionTypeName}", exceptionTypeName)
-
-                // On Windows the .NET runtime exits with 0xE0434352 (SEH);
-                // on Unix it aborts with SIGABRT (exit code 128 + 6 = 134).
-                if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
-                    -532462766
-                else
-                    134
+            | Program.ProgramStartResult.CompletedBeforeMain outcome -> onOutcome outcome
+            | Program.ProgramStartResult.Ready prepared ->
+                // `prepare` pumps the entry type's `.cctor` before returning, so a static
+                // initialiser that printed has already appended to the log without passing
+                // through `pump`. Flush that before stepping Main.
+                //
+                // KNOWN GAP: this only recovers startup output once `prepare` *returns*.
+                // `prepare` drives two `pumpToReturn` loops of its own (the AppContext seed
+                // and the `.cctor` pump), and neither surfaces its steps, so a static
+                // initialiser that prints and then livelocks or deadlocks still loses its
+                // output — the very failure this streaming path exists to fix, confined to
+                // the startup phase. Closing it means making `prepare` resumable so the
+                // shell can step it too, which restructures a subtle three-phase startup
+                // path and wants its own change; the guest's `Main` (much the commoner
+                // case) is fully covered here.
+                drainRemaining prepared.State
+                pump prepared
 
         let runDebugger (dllPath : string) (pctSeed : uint64 option) (args : string list) : int =
             let dotnetRuntimes =

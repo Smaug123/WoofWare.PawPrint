@@ -144,6 +144,7 @@
     <Compile Include="TestConcurrencyBugs.fs" />
     <Compile Include="TestBoxedAllocationParity.fs" />
     <Compile Include="TestCalliSuspensionOutcome.fs" />
+    <Compile Include="TestStepEffectStreaming.fs" />
   </ItemGroup>
   <ItemGroup>
     <!--

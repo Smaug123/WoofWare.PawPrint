@@ -94,7 +94,7 @@ module TestSchedulerSleepFairness =
                     }
                 | Program.ProgramStepOutcome.Completed other -> failwith $"unexpected guest outcome: %A{other}"
                 | Program.ProgramStepOutcome.Deadlocked (_, stuck) -> failwith $"guest deadlocked: %s{stuck}"
-                | Program.ProgramStepOutcome.InstructionStepped (p, _, _)
+                | Program.ProgramStepOutcome.InstructionStepped (p, _, _, _)
                 | Program.ProgramStepOutcome.WorkerTerminated (p, _) ->
                     totalTicks <- totalTicks + 1L
 

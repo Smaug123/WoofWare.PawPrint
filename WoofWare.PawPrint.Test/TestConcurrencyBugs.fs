@@ -215,7 +215,7 @@ module TestConcurrencyBugs =
                 match Program.stepPrepared loggerFactory logger prepared with
                 | Program.ProgramStepOutcome.Completed outcome -> classifyRunOutcome outcome
                 | Program.ProgramStepOutcome.Deadlocked (_, stuck) -> RunSummary.Deadlock stuck
-                | Program.ProgramStepOutcome.InstructionStepped (p, _, _) -> loop p
+                | Program.ProgramStepOutcome.InstructionStepped (p, _, _, _) -> loop p
                 | Program.ProgramStepOutcome.WorkerTerminated (p, _) -> loop p
 
             loop prepared
