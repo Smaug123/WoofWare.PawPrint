@@ -18,11 +18,18 @@ type CanonicalPointerKey =
     /// MethodGenericParameter) keep distinct keys.
     | TypeHandle of RuntimeTypeHandleTarget
     | MethodTableAuxiliaryData of RuntimeTypeHandleTarget
+    /// A pointer to a managed method (`FunctionPointerTarget.Managed`). Projected onto
+    /// comparable components because `MethodInfo` itself is neither comparable nor
+    /// structurally equatable.
     | FunctionPointer of
         declaringTypeIdentity : ResolvedTypeIdentity *
         declaringTypeGenerics : ConcreteTypeHandle list *
         methodHandle : ComparableMethodDefinitionHandle *
         methodGenerics : ConcreteTypeHandle list
+    /// A pointer to the runtime's `newobj` allocation helper
+    /// (`FunctionPointerTarget.RuntimeAllocator`). Nullary, matching the source: the
+    /// helper carries no per-type identity, so every occurrence is the same address.
+    | RuntimeAllocatorFunctionPointer
     | MethodHandle of int64
     | FieldHandle of int64
     | GcHandle of GcHandleAddress
@@ -99,13 +106,15 @@ module PointerHashSynthesis =
         // never collapse to a `MethodTable` key.
         | NativeIntSource.TypeDescPtr target -> CanonicalPointerKey.TypeHandle target
         | NativeIntSource.MethodTableAuxiliaryDataPtr target -> CanonicalPointerKey.MethodTableAuxiliaryData target
-        | NativeIntSource.FunctionPointer methodInfo ->
+        | NativeIntSource.FunctionPointer (FunctionPointerTarget.Managed methodInfo) ->
             CanonicalPointerKey.FunctionPointer (
                 methodInfo.DeclaringType.Identity,
                 List.ofSeq methodInfo.DeclaringType.Generics,
                 ComparableMethodDefinitionHandle.Make methodInfo.Handle,
                 List.ofSeq methodInfo.Generics
             )
+        | NativeIntSource.FunctionPointer FunctionPointerTarget.RuntimeAllocator ->
+            CanonicalPointerKey.RuntimeAllocatorFunctionPointer
         | NativeIntSource.MethodHandlePtr id -> CanonicalPointerKey.MethodHandle id
         | NativeIntSource.FieldHandlePtr id -> CanonicalPointerKey.FieldHandle id
         // The canonical key is the handle's *identity*; its tag bits are a view

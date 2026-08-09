@@ -86,13 +86,110 @@ type UnsignedNativeIntSource =
     /// `docs/plans/2026-05-13-castcache-synthetic-hash-bits.md`.
     | FromOpaqueHashBits of int64
 
+/// What a `NativeIntSource.FunctionPointer` points at. Almost always a managed method,
+/// but the CLR also hands managed code the addresses of *runtime* helpers which have no
+/// managed `MethodInfo` at all: `RuntimeTypeHandle.GetActivationInfo` returns the JIT's
+/// `newobj` allocation helper (`CEEJitInfo::getHelperFtnStatic (getNewHelperStatic pMT)`,
+/// reflectioninvocation.cpp), and `RuntimeType.ActivatorCache` then invokes it through
+/// `calli`.
+///
+/// The two flavours share the `FunctionPointer` case rather than living in separate
+/// `NativeIntSource` cases because every site that merely *classifies* a function pointer
+/// — it is never null, it never aliases another kind of opaque handle, it cannot be
+/// rendered as bytes — gives the same answer for both. Only the sites that actually
+/// consume the target have to distinguish them, and those are exactly the sites that must
+/// decide what a non-managed target means.
+[<RequireQualifiedAccess>]
+[<CustomEquality>]
+[<NoComparison>]
+type FunctionPointerTarget =
+    /// The address of a managed method, as produced by `ldftn`/`ldvirtftn` or by a runtime
+    /// entry point handing back a `MethodDesc`'s code address.
+    | Managed of MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+
+    /// The JIT's `newobj` allocation helper, managed signature `MethodTable* -> object`:
+    /// allocate a zeroed instance of the type named by the argument (a *boxed*
+    /// `default(T)` when that type is a value type), run no constructor, and — per
+    /// `RuntimeTypeHandle_GetActivationInfo`'s contract — run no static constructor
+    /// either.
+    ///
+    /// Carries no payload, for two reasons.
+    ///
+    /// The argument is not baked in because CoreCLR's helper genuinely takes the
+    /// `MethodTable*` as its argument, and `ActivatorCache` passes it separately as
+    /// `_allocatorFirstArg`; reading the type off the call site keeps a single source of truth.
+    /// A per-type payload would also invert CoreCLR's identity semantics, where types
+    /// ordinarily *share* a helper address.
+    ///
+    /// Nor is a helper *flavour* encoded, which would be the way to reproduce the cases where
+    /// CoreCLR does hand back distinct addresses: `CEEInfo::getNewHelperStatic`
+    /// (jitinterface.cpp) sends a finalizable type, one whose base size reaches
+    /// `LARGE_OBJECT_SIZE`, and one requiring 8-byte alignment to different helpers from an
+    /// ordinary small type. The reason is that PawPrint cannot compute that partition honestly:
+    /// it models no finalization at all, has no byte-accurate base size to compare against
+    /// `LARGE_OBJECT_SIZE`, and no alignment requirement — so any partition it emitted would be
+    /// wrong under *every* real configuration.
+    ///
+    /// Collapsing them is at least right under some: the same selector also consults
+    /// `GCStress&lt;cfg_alloc&gt;::IsEnabled()` and `TrackAllocationsEnabled()`, and under either
+    /// of those every type takes the slow helper and they all share one address. That is a
+    /// diagnostics-on configuration rather than the default one, so this is a genuine
+    /// divergence and not a free lunch — see docs/divergences.md — but it is a divergence
+    /// towards an answer some real runtime gives, rather than towards one none does.
+    | RuntimeAllocator
+
+    override this.ToString () : string =
+        match this with
+        | FunctionPointerTarget.Managed methodDefinition ->
+            $"{methodDefinition.Name} in {methodDefinition.DeclaringType.Assembly.Name}"
+        | FunctionPointerTarget.RuntimeAllocator -> "the runtime's newobj allocation helper"
+
+    override this.Equals (other : obj) : bool =
+        match other with
+        | :? FunctionPointerTarget as other ->
+            match this, other with
+            | FunctionPointerTarget.Managed left, FunctionPointerTarget.Managed right ->
+                MethodInfo.NominallyEqual left right
+            | FunctionPointerTarget.RuntimeAllocator, FunctionPointerTarget.RuntimeAllocator -> true
+            | FunctionPointerTarget.Managed _, _
+            | FunctionPointerTarget.RuntimeAllocator, _ -> false
+        | _ -> false
+
+    override this.GetHashCode () : int =
+        match this with
+        | FunctionPointerTarget.Managed methodDefinition ->
+            HashCode.Combine (
+                0,
+                methodDefinition.DeclaringType.Identity,
+                methodDefinition.DeclaringType.Generics,
+                methodDefinition.Handle,
+                methodDefinition.Generics
+            )
+        | FunctionPointerTarget.RuntimeAllocator -> HashCode.Combine 1
+
+[<RequireQualifiedAccess>]
+module FunctionPointerTarget =
+    /// The managed method this pointer addresses, or a loud failure naming the operation
+    /// that needed one. Use this at sites which can only proceed by pushing a managed
+    /// frame; a runtime helper has no frame to push.
+    let requireManaged
+        (operation : string)
+        (target : FunctionPointerTarget)
+        : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+        =
+        match target with
+        | FunctionPointerTarget.Managed mi -> mi
+        | FunctionPointerTarget.RuntimeAllocator ->
+            failwith
+                $"%s{operation}: expected a pointer to a managed method, got a pointer to %O{target}, which has no managed method to call"
+
 [<RequireQualifiedAccess>]
 [<CustomEquality>]
 [<NoComparison>]
 type NativeIntSource =
     | Verbatim of int64
     | ManagedPointer of ManagedPointerSource
-    | FunctionPointer of MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+    | FunctionPointer of FunctionPointerTarget
     | TypeHandlePtr of RuntimeTypeHandleTarget
     /// `TypeDesc*` for a runtime type: the untagged half of a TypeDesc-shaped
     /// `TypeHandlePtr`, produced by CoreCLR's `TypeHandle.AsTypeDesc`
@@ -196,8 +293,7 @@ type NativeIntSource =
         match this with
         | NativeIntSource.Verbatim int64 -> $"%i{int64}"
         | NativeIntSource.ManagedPointer ptr -> $"<managed pointer {ptr}>"
-        | NativeIntSource.FunctionPointer methodDefinition ->
-            $"<pointer to {methodDefinition.Name} in {methodDefinition.DeclaringType.Assembly.Name}>"
+        | NativeIntSource.FunctionPointer target -> $"<pointer to %O{target}>"
         | NativeIntSource.TypeHandlePtr ptr -> $"<type ID %O{ptr}>"
         | NativeIntSource.TypeDescPtr ptr -> $"<TypeDesc of %O{ptr}>"
         | NativeIntSource.MethodTablePtr ptr -> $"<method table for type %O{ptr}>"
@@ -224,8 +320,7 @@ type NativeIntSource =
             match this, other with
             | NativeIntSource.Verbatim left, NativeIntSource.Verbatim right -> left = right
             | NativeIntSource.ManagedPointer left, NativeIntSource.ManagedPointer right -> left = right
-            | NativeIntSource.FunctionPointer left, NativeIntSource.FunctionPointer right ->
-                MethodInfo.NominallyEqual left right
+            | NativeIntSource.FunctionPointer left, NativeIntSource.FunctionPointer right -> left = right
             | NativeIntSource.TypeHandlePtr left, NativeIntSource.TypeHandlePtr right -> left = right
             | NativeIntSource.TypeDescPtr left, NativeIntSource.TypeDescPtr right -> left = right
             | NativeIntSource.MethodTablePtr left, NativeIntSource.MethodTablePtr right -> left = right
@@ -274,14 +369,7 @@ type NativeIntSource =
         match this with
         | NativeIntSource.Verbatim int64 -> HashCode.Combine (0, int64)
         | NativeIntSource.ManagedPointer ptr -> HashCode.Combine (1, ptr)
-        | NativeIntSource.FunctionPointer methodDefinition ->
-            HashCode.Combine (
-                2,
-                methodDefinition.DeclaringType.Identity,
-                methodDefinition.DeclaringType.Generics,
-                methodDefinition.Handle,
-                methodDefinition.Generics
-            )
+        | NativeIntSource.FunctionPointer target -> HashCode.Combine (2, target)
         | NativeIntSource.TypeHandlePtr ptr -> HashCode.Combine (3, ptr)
         | NativeIntSource.TypeDescPtr ptr -> HashCode.Combine (20, ptr)
         | NativeIntSource.MethodTablePtr ptr -> HashCode.Combine (4, ptr)
@@ -454,7 +542,7 @@ module NativeIntSource =
         let b = unwrapPlaceholder b
 
         match a, b with
-        | NativeIntSource.FunctionPointer f1, NativeIntSource.FunctionPointer f2 -> MethodInfo.NominallyEqual f1 f2
+        | NativeIntSource.FunctionPointer f1, NativeIntSource.FunctionPointer f2 -> f1 = f2
         | NativeIntSource.TypeHandlePtr f1, NativeIntSource.TypeHandlePtr f2 -> f1 = f2
         // A `TypeDescPtr` is the same base address as the `TypeHandlePtr` it was
         // masked from, but with the tag bit clear, so it must NOT alias one: in

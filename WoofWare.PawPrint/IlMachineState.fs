@@ -194,6 +194,9 @@ module IlMachineState =
 
     let collectAllInstanceFields = IlMachineRuntimeMetadata.collectAllInstanceFields
 
+    let allocateUninitialisedInstance =
+        IlMachineRuntimeMetadata.allocateUninitialisedInstance
+
     let allocateManagedString = IlMachineRuntimeMetadata.allocateManagedString
 
     let internCanonicalEmptyString = IlMachineRuntimeMetadata.internCanonicalEmptyString

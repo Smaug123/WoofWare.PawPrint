@@ -892,7 +892,7 @@ public unsafe struct PointerWrapper
             state ()
             |> methodWithSingleInstruction loggerFactory (IlOp.Nullary NullaryIlOp.Ret)
 
-        NativeIntSource.FunctionPointer method
+        NativeIntSource.FunctionPointer (FunctionPointerTarget.Managed method)
 
     let private taggedNativeIntSources () : NativeIntSource list =
         [

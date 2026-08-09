@@ -29,6 +29,29 @@ type EvalStackValue =
 
 [<RequireQualifiedAccess>]
 module EvalStackValue =
+    /// Decode a `MethodTable*` argument to the closed type it describes, or fail loudly.
+    /// Shared by every consumer of a MethodTable-shaped native argument — the QCall/InternalCall
+    /// boundary (`NativeCall.methodTableOfEvalStackValue`) and `calli` through the runtime's
+    /// allocation helper — so that all of them agree on what counts as a MethodTable pointer.
+    ///
+    /// Deliberately narrow: only a *closed* type has a MethodTable that can be allocated from
+    /// or reflected over here. An open generic definition and a generic parameter both have
+    /// non-`Closed` targets, and CoreCLR's TypeDescs have no MethodTable at all, so each is
+    /// refused with its own message rather than coerced into a closed handle.
+    let requireMethodTable (operation : string) (arg : EvalStackValue) : ConcreteTypeHandle =
+        match arg with
+        | EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed typeHandle))
+        | EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed typeHandle)) ->
+            typeHandle
+        | EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity))
+        | EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity)) ->
+            failwith $"%s{operation}: expected closed MethodTable pointer argument, got open generic %O{identity}"
+        | EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.GenericParameter _ as target))
+        | EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.MethodGenericParameter _ as target)) ->
+            failwith
+                $"%s{operation}: expected closed MethodTable pointer argument, got generic parameter %O{target} (TypeDescs have no MethodTable)"
+        | other -> failwith $"%s{operation}: expected MethodTable pointer argument, got %O{other}"
+
     /// Bits of a native-int-shaped value for `conv.r4` / `conv.r8` / `conv.r.un`.
     ///
     /// A float destination refuses every shape whose bits PawPrint does not model,

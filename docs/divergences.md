@@ -252,3 +252,50 @@ Console.WriteLine(AppContext.BaseDirectory);
 What PawPrint does *not* do is let a config file fill the hole itself: `RuntimeConfig.parse` refuses a `configProperties` entry that claims one of these names, exactly as a real host refuses to launch such a file. The absence above is a gap in what PawPrint can tell a guest; a forged `TRUSTED_PLATFORM_ASSEMBLIES` that the guest could not tell from the real thing would be worse than the gap.
 
 **Where this lives in code**: `AppContextProperties.empty` in `RuntimeConfig.fs` documents the gap; `hostOwnedNames` in the same file is the refusal; `HostConfig.AppContext` is where a host would supply values if it had any. Closing this would mean deciding what a simulated app's filesystem layout *is*, which is a larger question than the seeding change that surfaced it.
+
+## `Activator.CreateInstance` rejection messages
+
+**CoreCLR**: When `Activator.CreateInstance(Type)` refuses a type, the exception the guest catches carries a two-part message: `RuntimeType.ActivatorCache` catches whatever `RuntimeTypeHandle_GetActivationInfo` threw and rethrows the same exception *type* with `SR.Activator_CannotCreateInstance` formatted around the original message — so `Activator.CreateInstance(typeof(SomeAbstract))` reads "Cannot dynamically create an instance of type 'SomeAbstract'. Reason: Cannot create an abstract class.", the tail coming from the unmanaged layer's `Acc_CreateAbst`.
+
+**PawPrint**: The exception *type* is identical, and so is the outer sentence — that half is produced by ordinary managed code PawPrint interprets. The inner reason is not: PawPrint raises runtime-synthesised exceptions by allocating the type and calling its *parameterless* constructor (`IlMachineStateExecution.raiseRuntimeException`), so the inner message is the framework's default for that exception type rather than the specific reason. The guest sees "Reason: " followed by the wrong sentence.
+
+**Spec status**: Outside ECMA-335, which does not specify exception message text.
+
+**Why we chose this**: The exception type is what a `catch` clause selects on, and it is what a program can act on; the message is diagnostic prose. Carrying the reason across would mean teaching the native-handler boundary to construct exceptions through a message-taking constructor, and then reproducing CoreCLR's resource strings — a general change to the raise path plus a corpus of English text to keep in sync with a runtime we pin but do not build. This is a general property of every PawPrint-synthesised exception; it is recorded here rather than under `raiseRuntimeException` because `ActivatorCache`'s rewrap makes it unusually visible: the wrong sentence is embedded in a message the guest is likely to print, instead of merely being the message of an exception it caught.
+
+**Observable example**:
+
+```csharp
+try { Activator.CreateInstance(typeof(System.IDisposable)); }
+catch (MissingMethodException e) { Console.WriteLine(e.Message); }
+// CoreCLR:  "Cannot dynamically create an instance of type 'System.IDisposable'.
+//            Reason: Cannot create an instance of an interface."
+// PawPrint: same sentence, same exception type, different text after "Reason: ".
+```
+
+**Where this lives in code**: `ActivationInfo.classify` in `Native/NativeRuntimeTypeHelpers.fs` picks the exception type per CoreCLR's `ValidateTypeAbleToBeInstantiated`; `NativeHandlerResult.raiseException` is the boundary that cannot carry a message. `WoofWare.PawPrint.Test/sourcesPure/ActivatorCreateInstanceNonGeneric.cs` deliberately compares exception *types* only, for this reason.
+
+## The `newobj` allocation helper has one address for every type
+
+**CoreCLR**: `RuntimeTypeHandle_GetActivationInfo` hands `RuntimeType.ActivatorCache` the address of a JIT allocation helper, chosen by `CEEInfo::getNewHelperStatic` (`jitinterface.cpp`). That choice is not constant: `NEWFAST` is used for a type with a finalizer, for one whose base size reaches `LARGE_OBJECT_SIZE`, and for a COM object type, while ordinary small types get the `NEWSFAST` family (with `ALIGN8` variants where 64-bit alignment is required). So two activation caches can legitimately hold different `_pfnAllocator` values.
+
+**PawPrint**: One address for every type. `FunctionPointerTarget.RuntimeAllocator` is nullary, so any two allocator pointers compare equal and hash identically.
+
+**Spec status**: Outside ECMA-335 entirely — the identity of a JIT helper is an implementation detail of the CoreCLR/JIT pairing, not part of the CLI.
+
+**Why we chose this**: Primarily because PawPrint cannot compute CoreCLR's partition honestly. The default-configuration split depends on three things PawPrint does not model: whether the type has a finalizer (there is no finalization machinery anywhere in the interpreter), its base size measured against `LARGE_OBJECT_SIZE` (PawPrint models a heap object as named field cells, not a byte block of a definite size), and whether it requires 8-byte alignment. A partition emitted from guesses at those would be wrong under *every* real configuration.
+
+Collapsing them is at least right under some. The same `getNewHelperStatic` also consults `GCStress<cfg_alloc>::IsEnabled()` and `TrackAllocationsEnabled()`, and under either of those every type — finalizable or not, large or small — takes the slow helper and they all share one address. That is a diagnostics-on configuration rather than the default, so this is a real divergence and not a free lunch; but it is a divergence towards an answer some real runtime gives, rather than towards one none does. The observable is also close to nil: reaching `_pfnAllocator` at all requires reflecting into `RuntimeType`'s private activation caches and comparing the results as `IntPtr`s.
+
+The same reasoning is why the case carries no `MethodTable` payload. That would make every type's allocator distinct, which inverts the common CoreCLR answer rather than approximating it.
+
+**Observable example**:
+
+```csharp
+// Reachable only by reflecting into RuntimeType's private activation caches and reading
+// ActivatorCache._pfnAllocator as an IntPtr for two types.
+// CoreCLR:  a finalizable class and a small ordinary class can report different addresses.
+// PawPrint: always equal.
+```
+
+**Where this lives in code**: `FunctionPointerTarget.RuntimeAllocator` in `NativeIntSource.fs` carries the reasoning; `NativeRuntimeTypeQCall.fs` is the only producer, and `UnaryMetadataCallOps.executeAllocatorCalli` the only consumer. `CanonicalPointerKey.RuntimeAllocatorFunctionPointer` gives it a single synthesised hash-bit identity to match.

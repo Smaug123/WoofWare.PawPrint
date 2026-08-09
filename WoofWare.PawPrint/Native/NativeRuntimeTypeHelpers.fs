@@ -1092,19 +1092,24 @@ module NativeRuntimeTypeHelpers =
         (typeHandle : ConcreteTypeHandle)
         : ManagedHeapAddress * IlMachineState
         =
-        let state, allFields =
-            IlMachineState.collectAllInstanceFields loggerFactory baseClassTypes state typeHandle
+        // `typeInfo` is redundant with `typeHandle` — it is the TypeDef the handle resolves
+        // to — but callers here have it to hand already, so it stays in the signature and is
+        // checked against the handle rather than trusted.
+        let resolved =
+            AllConcreteTypes.lookup typeHandle state.ConcreteTypes
+            |> Option.defaultWith (fun () ->
+                failwith
+                    $"allocateManagedObjectOfConcreteType: ConcreteTypeHandle %O{typeHandle} not found in AllConcreteTypes"
+            )
 
-        let fields =
-            CliValueType.OfFields
-                baseClassTypes
-                state.ConcreteTypes
-                typeHandle
-                typeInfo.Layout
-                (CharSetMetadata.ofTypeAttributes typeInfo.TypeAttributes)
-                allFields
+        // Full identity, not just the TypeDef row: row numbers collide freely across assemblies,
+        // so comparing only the handle would let a `typeInfo` from an unrelated assembly through
+        // the check this claims to make.
+        if resolved.Identity <> typeInfo.Identity then
+            failwith
+                $"allocateManagedObjectOfConcreteType: handle %O{typeHandle} resolves to a different TypeDef than the supplied %s{typeInfo.Namespace}.%s{typeInfo.Name}"
 
-        IlMachineState.allocateManagedObject typeHandle fields state
+        IlMachineState.allocateUninitialisedInstance loggerFactory baseClassTypes typeHandle state
 
     /// Read one element of a `TypeHandle*` instantiation buffer and return the
     /// closed `ConcreteTypeHandle` it points to. Open generic type-parameter
@@ -1962,3 +1967,170 @@ module NativeRuntimeTypeHelpers =
             ]
             |> Some
         | other -> failwith $"%s{operation}: expected %s{argName} to hold an array reference, got %O{other}"
+
+/// Why `RuntimeTypeHandle_GetActivationInfo` refused to describe a type. Each case names the
+/// check in CoreCLR's `ValidateTypeAbleToBeInstantiated` (reflectioninvocation.cpp) that it
+/// corresponds to, and carries the guest exception CoreCLR throws for it. Message text is not
+/// carried: PawPrint's runtime-exception path constructs through a parameterless ctor, and
+/// `RuntimeType.ActivatorCache` rewraps the message with its own text regardless, so the
+/// guest-observable fact is the exception *type*.
+[<RequireQualifiedAccess>]
+type ActivationRejection =
+    /// Arrays and TypeDescs (byref, pointer, function pointer). CoreCLR:
+    /// `typeHandle.IsTypeDesc() || typeHandle.IsArray()` -> `MissingMethodException`.
+    | UnsupportedShape of ConcreteTypeHandle
+    /// `pMT->IsDelegate()` -> `ArgumentException`. True exactly of types whose *immediate*
+    /// base is `System.MulticastDelegate`, so `System.Delegate` and `MulticastDelegate`
+    /// itself fall through to the abstract check instead.
+    | Delegate
+    /// `pMT->HasComponentSize()` -> `MissingMethodException`. `System.String` is the only
+    /// variable-length type that reaches here; arrays were already rejected above.
+    | VariableLength
+    /// `pMT->IsAbstract()` and `pMT->IsInterface()` -> `MissingMethodException`.
+    | Interface
+    /// `pMT->IsAbstract()` -> `MissingMethodException`.
+    | AbstractClass
+    /// A reference type with no parameterless instance constructor at all -> CoreCLR's
+    /// `MissingMethodException(W("Arg_NoDefCTorWithoutTypeName"))`. Note this is *not* the
+    /// non-public-ctor case: that one is reported through `ctorIsPublic` and thrown by
+    /// managed `CreateInstanceDefaultCtor`.
+    | NoDefaultConstructor
+
+/// What `RuntimeTypeHandle_GetActivationInfo` should hand back for a type.
+[<RequireQualifiedAccess>]
+type ActivationInfo =
+    | Rejected of ActivationRejection
+    /// `Nullable<T>`: CoreCLR writes a null allocator and null ctors, and `ActivatorCache`
+    /// substitutes a stub that returns null. `Activator.CreateInstance(typeof(int?))` is null.
+    | Nullable
+    /// A value type with no explicit parameterless constructor. Allocation produces a boxed
+    /// `default(T)` and no constructor call is needed, so CoreCLR reports the (absent) ctor as
+    /// public.
+    | ValueTypeWithoutConstructor of methodTable : ConcreteTypeHandle
+    /// A type with a parameterless instance constructor. `isValueType` distinguishes the two
+    /// entry points CoreCLR would hand back: a reference type needs only the `object`-receiver
+    /// one, whereas a value type needs both a boxed and an unboxed entry point.
+    | WithConstructor of
+        methodTable : ConcreteTypeHandle *
+        ctor : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> *
+        isPublic : bool *
+        isValueType : bool
+
+[<RequireQualifiedAccess>]
+module ActivationInfo =
+    /// Reproduce CoreCLR's `RuntimeTypeHandle_GetActivationInfo` classification
+    /// (reflectioninvocation.cpp), including the order of `ValidateTypeAbleToBeInstantiated`'s
+    /// checks — the order is load-bearing where a type trips more than one, and CoreCLR throws
+    /// different exception types for different checks.
+    ///
+    /// Two of `ValidateTypeAbleToBeInstantiated`'s checks are unreachable here, because the only
+    /// managed caller (`RuntimeType.ActivatorCache`) runs `RuntimeType.CreateInstanceCheckThis`
+    /// first and that throws for them already: `void` (`NotSupportedException`) and open
+    /// generics / generic variables (`ArgumentException`). Both fail loudly here rather than
+    /// silently falling through. A third check, for generics instantiated over `__Canon`, has no
+    /// analogue at all: PawPrint has no shared generic instantiations.
+    ///
+    /// `ArgIterator` is *not* one of `ValidateTypeAbleToBeInstantiated`'s checks — it is rejected
+    /// only by managed `CreateInstanceCheckThis`, which PawPrint interprets rather than
+    /// reimplements, so there is nothing to reproduce here. (It is also byref-like, so even a
+    /// hypothetical bypass would end at `CreateInstanceDefaultCtor`'s `IsByRefLike` guard rather
+    /// than in a boxed `ArgIterator`.)
+    ///
+    /// Note that byref-like types are *permitted* here: CoreCLR passes `allowByRefLike: true`,
+    /// and the `NotSupportedException` for a ref struct is thrown later, by managed
+    /// `CreateInstanceDefaultCtor`, after it has consulted `CtorIsPublic`.
+    let classify
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (target : RuntimeTypeHandleTarget)
+        (state : IlMachineState)
+        : IlMachineState * ActivationInfo
+        =
+        let handle =
+            match target with
+            | RuntimeTypeHandleTarget.Closed handle -> handle
+            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+            | RuntimeTypeHandleTarget.GenericParameter _
+            | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
+                failwith
+                    $"%s{operation}: reached for %O{target}, which contains generic variables; RuntimeType.CreateInstanceCheckThis should have thrown ArgumentException (Acc_CreateGenericEx) before the QCall"
+
+        match handle with
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ ->
+            state, ActivationInfo.Rejected (ActivationRejection.UnsupportedShape handle)
+        | ConcreteTypeHandle.Concrete _ ->
+
+        let ct =
+            AllConcreteTypes.lookup handle state.ConcreteTypes
+            |> Option.defaultWith (fun () ->
+                failwith $"%s{operation}: ConcreteTypeHandle %O{handle} not found in AllConcreteTypes"
+            )
+
+        let typeInfo =
+            state._LoadedAssemblies
+                .ByDefinitionName(ct.Identity.AssemblyFullName)
+                .TypeDefs.[ct.Identity.TypeDefinition.Get]
+
+        if TypeInfo.NominallyEqual typeInfo baseClassTypes.Void then
+            failwith
+                $"%s{operation}: reached for System.Void; RuntimeType.CreateInstanceCheckThis should have thrown NotSupportedException (Acc_CreateVoid) before the QCall"
+
+        // `pMT->IsDelegate()`, before the abstract check, so a type that is both reports
+        // CoreCLR's ArgumentException rather than MissingMethodException. CoreCLR sets the flag
+        // exactly when the immediate parent is MulticastDelegate.
+        let state, directBase =
+            IlMachineState.resolveBaseConcreteType loggerFactory baseClassTypes state handle
+
+        let isDelegate =
+            match directBase with
+            | None -> false
+            | Some baseHandle ->
+                match AllConcreteTypes.lookup baseHandle state.ConcreteTypes with
+                | None -> false
+                | Some baseCt -> baseCt.Identity = baseClassTypes.MulticastDelegateType.Identity
+
+        if isDelegate then
+            state, ActivationInfo.Rejected ActivationRejection.Delegate
+        // `pMT->HasComponentSize()`: variable-length instances. Arrays were rejected above, so
+        // String is the only remaining one.
+        elif TypeInfo.NominallyEqual typeInfo baseClassTypes.String then
+            state, ActivationInfo.Rejected ActivationRejection.VariableLength
+        elif typeInfo.TypeAttributes.HasFlag TypeAttributes.Abstract then
+            if typeInfo.TypeAttributes.HasFlag TypeAttributes.Interface then
+                state, ActivationInfo.Rejected ActivationRejection.Interface
+            else
+                state, ActivationInfo.Rejected ActivationRejection.AbstractClass
+        else
+
+        match InternalTypeKind.kind baseClassTypes ct with
+        | InternalTypeKind.Nullable -> state, ActivationInfo.Nullable
+        | InternalTypeKind.Ordinary
+        | InternalTypeKind.NativeInt
+        | InternalTypeKind.NativeUInt ->
+
+        let isValueType =
+            DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo
+
+        // Visibility-blind, matching CoreCLR's `HasDefaultConstructor` / `GetDefaultConstructor`:
+        // a private parameterless ctor *is* found, and its publicness is reported separately so
+        // that managed `CreateInstanceDefaultCtor` can throw for `publicOnly`.
+        let ctor =
+            typeInfo.Methods
+            |> List.tryFind (fun m -> m.Name = ".ctor" && not m.IsStatic && MethodInfo.arity m = 0)
+
+        match ctor with
+        | Some ctor ->
+            let isPublic =
+                (ctor.MethodAttributes &&& MethodAttributes.MemberAccessMask) = MethodAttributes.Public
+
+            state, ActivationInfo.WithConstructor (handle, ctor, isPublic, isValueType)
+        | None ->
+            if isValueType then
+                state, ActivationInfo.ValueTypeWithoutConstructor handle
+            else
+                state, ActivationInfo.Rejected ActivationRejection.NoDefaultConstructor

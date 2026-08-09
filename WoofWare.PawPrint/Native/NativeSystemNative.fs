@@ -1212,7 +1212,8 @@ module NativeSystemNative =
 
             let mi =
                 match CliType.unwrapPrimitiveLikeDeep instruction.Arguments.[0] with
-                | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer mi)) -> mi
+                | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer target)) ->
+                    FunctionPointerTarget.requireManaged operation target
                 | other ->
                     failwith
                         $"%s{operation}: expected FunctionPointer argument (from Ldftn on the managed signal callback), got %O{other}"
