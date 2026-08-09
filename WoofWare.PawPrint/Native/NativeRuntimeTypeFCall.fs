@@ -909,7 +909,11 @@ module NativeRuntimeTypeFCall =
                         failwith
                             $"%s{operation}: current method (token %O{currentMetadataHandle}) was not found in declaring type's introduced-methods list"
                     | head :: tail ->
-                        if ComparableMethodDefinitionHandle.Make head.Handle = currentMetadataHandle then
+                        if
+                            head.TryMetadata
+                            |> Option.map (fun facts -> ComparableMethodDefinitionHandle.Make facts.Handle) = Some
+                                currentMetadataHandle
+                        then
                             tail
                         else
                             findNext tail

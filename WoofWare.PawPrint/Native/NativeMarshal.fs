@@ -161,17 +161,26 @@ module NativeMarshal =
             // has three branches: blittable (memmove fast path, *stub = NULL, *size = native
             // size, return TRUE), has-layout-non-blittable (synthesised IL stub, return TRUE),
             // and no-layout (return FALSE so managed Marshal throws ArgumentException).
-            // This implementation handles the no-layout arm (AutoLayout types, which covers
-            // `System.Object` and ordinary classes without `[StructLayout]`, as well as value
-            // types explicitly marked `[StructLayout(LayoutKind.Auto)]`), and the first arm
-            // for the strict subset we are confident matches CoreCLR exactly: structs whose
-            // fields are recursively plain numeric (Int8..Float64), excluding host-known
-            // field-only special cases (DateTime, Decimal) that CoreCLR's `MarshalInfo`
-            // diverts to stub synthesis (`MARSHAL_TYPE_DATE`, `NFT_DECIMAL`). Anything else —
-            // enums, [MarshalAs] descriptors, Bool/Char/ObjectRef fields,
-            // has-layout-non-blittable structs, etc. — surfaces a host TODO. Each future
-            // widening wants its own motivating PawPrint test before being added to the
-            // classifier.
+            // All three are implemented, but the middle one only for the shapes
+            // `StructMarshalStub.tryComputePlan` admits.
+            //
+            // - No-layout: AutoLayout types, which covers `System.Object` and ordinary classes
+            //   without `[StructLayout]`, as well as value types explicitly marked
+            //   `[StructLayout(LayoutKind.Auto)]`.
+            // - Blittable: the strict subset we are confident matches CoreCLR exactly — structs
+            //   whose fields are recursively plain numeric (Int8..Float64), excluding the
+            //   host-known field-only special cases (DateTime, Decimal) that CoreCLR's
+            //   `MarshalInfo` diverts to stub synthesis (`MARSHAL_TYPE_DATE`, `NFT_DECIMAL`).
+            // - Has-layout-non-blittable: a function pointer to a synthesised method carrying
+            //   `RuntimeBehaviour.StructMarshalStub`, which `AbstractMachine` dispatches like any
+            //   other runtime-provided method. Today that means a struct whose only non-blittable
+            //   fields are `DateTime`.
+            //
+            // Everything else — `[MarshalAs]` descriptors, Bool/Char/ObjectRef fields, Decimal,
+            // nested composites needing a recursive plan, and reference types (which reach us as
+            // `CliType.ObjectRef` and so classify non-blittable, though CoreCLR would memmove a
+            // sequential class) — surfaces a host TODO. Each future widening wants its own
+            // motivating PawPrint test before being added to the classifier or the plan.
 
             if CliValueType.IsAutoLayoutHandle state.ConcreteTypes state._LoadedAssemblies typeHandle then
                 // No-layout branch: write *stub = NULL, *size = 0, return FALSE so the
@@ -195,102 +204,21 @@ module NativeMarshal =
             let zero, state =
                 IlMachineState.cliTypeZeroOfHandle state ctx.BaseClassTypes typeHandle
 
-            // The classifier is split into two functions to encode the top-level-vs-field
-            // distinction that CoreCLR's `MarshalInfo` makes. CoreCLR walks fields with
-            // `IsFieldBlittable`, which short-circuits DateTime to `MARSHAL_TYPE_DATE`
-            // (mlinfo.cpp:1747) and Decimal to marshal-stub synthesis (`NFT_DECIMAL` in
-            // fieldmarshaler.cpp); neither of those host-known types is byte-image compatible
-            // with its native form *when used as a field*, but their standalone byte images
-            // can coincide with the native form (Decimal's standalone is byte-identical;
-            // DateTime is filtered earlier by the AutoLayout gate). Top-level entry walks the
-            // outer struct's fields via `isBlittableField`; the field walker rejects the
-            // host-known special cases and recurses into nested structs via itself.
-            let rec isBlittableField (t : CliType) : bool =
-                match t with
-                // `NativeInt` cells carry provenance under PawPrint (e.g.
-                // `TypeHandlePtr` from `typeof(T).TypeHandle.Value`). CoreCLR
-                // memmoves the integer-width bits regardless, but PawPrint's
-                // byte model rejects non-`Verbatim` provenance because
-                // `CliNumericType.ToBytes` cannot serialise it. We accept
-                // `IntPtr`/`UIntPtr` here because the blittable arm returns a
-                // null stub, instructing CoreLib to call
-                // `SpanHelpers.Memmove(ref byte, ref byte, nuint)` — which
-                // PawPrint intercepts and routes through `CellAwareMemOps.copy`,
-                // preserving whole-cell provenance when both endpoints anchor
-                // on cell-aware roots. The hazard that remains is value-level:
-                // a struct holding a non-`Verbatim` `IntPtr` marshalled to
-                // `AllocHGlobal`'d native memory (a byte-only endpoint) still
-                // falls back to the byte walk and surfaces the
-                // `validateByteAddressableCell` failure there, not here.
-                | CliType.Numeric (CliNumericType.NativeInt _) -> true
-                | CliType.Numeric _ -> true
-                | CliType.Bool _
-                | CliType.Char _
-                | CliType.ObjectRef _
-                | CliType.RuntimePointer _ -> false
-                | CliType.ValueType vt ->
-                    // DateTime is structurally a single `ulong _dateData` and would otherwise
-                    // qualify as strictly numeric, but CoreCLR's `MarshalInfo` (mlinfo.cpp:1747)
-                    // special-cases DateTime fields as `MARSHAL_TYPE_DATE`: 8 bytes of OADate
-                    // (`dt.ToOADate()` as a little-endian IEEE-754 double), NOT the managed
-                    // `_dateData` byte image. The memmove fast path would silently emit the
-                    // wrong bytes, so reject here and let the outer arm surface the existing
-                    // TODO failwith. Implementing the OADate conversion belongs in a future
-                    // PR that synthesises the has-layout-non-blittable IL stub.
-                    let isDateTime =
-                        CliValueType.IsHostKnownDateTime
-                            state.ConcreteTypes
-                            state._LoadedAssemblies
-                            ctx.BaseClassTypes
-                            vt
-
-                    // Decimal is structurally four `Int32` fields (`flags`, `hi`, `lo`, `mid`)
-                    // and would otherwise recurse to true, but CoreCLR's `MarshalInfo` routes
-                    // Decimal fields through marshal-stub synthesis (`NFT_DECIMAL` in
-                    // fieldmarshaler.cpp): managed `Decimal` is 16 bytes with 4-byte field
-                    // alignment, native `DECIMAL` is 16 bytes with 8-byte alignment (its
-                    // `Lo64` union member is `ULONGLONG`). The outer struct's managed layout
-                    // therefore positions Decimal at a different offset than the native
-                    // layout — `{ int x; decimal d; }` is 20 bytes managed, 24 bytes native.
-                    // Memmoving would write into native padding. Reject here so the outer
-                    // arm surfaces the TODO failwith; real handling needs the Decimal
-                    // marshal stub and the matching 8-byte-aligned native layout.
-                    let isDecimal =
-                        CliValueType.IsHostKnownDecimal
-                            state.ConcreteTypes
-                            state._LoadedAssemblies
-                            ctx.BaseClassTypes
-                            vt
-
-                    if isDateTime || isDecimal then
-                        false
-                    else
-                        match vt._Storage with
-                        // RawBytes-backed value types are not the typical struct-with-fields
-                        // shape; conservatively reject so we don't quietly accept primitive
-                        // wrappers whose CoreCLR marshal size diverges from the byte image.
-                        | CliValueTypeStorage.RawBytes _ -> false
-                        | CliValueTypeStorage.Fields storage ->
-                            storage.Fields |> List.forall (fun field -> isBlittableField field.Contents)
-
+            // The classifier lives in `StructMarshalStub` so that this arm and the stub itself
+            // ask the same question. It encodes the top-level-vs-field distinction CoreCLR's
+            // `MarshalInfo` makes: CoreCLR walks fields with `IsFieldBlittable`, which
+            // short-circuits DateTime to `MARSHAL_TYPE_DATE` (mlinfo.cpp:1747) and Decimal to
+            // marshal-stub synthesis (`NFT_DECIMAL` in fieldmarshaler.cpp); neither of those
+            // host-known types is byte-image compatible with its native form *when used as a
+            // field*, but their standalone byte images can coincide with the native form
+            // (Decimal's standalone is byte-identical; DateTime is filtered earlier by the
+            // AutoLayout gate).
             let isStructStrictlyNumericBlittable (t : CliType) : bool =
-                match t with
-                | CliType.ValueType vt ->
-                    // Top-level: walk fields via the field-level classifier. Host-known
-                    // field-only rejections (Decimal) do not apply here because the outer
-                    // type's *own* declared type is what we're classifying. Top-level
-                    // DateTime is filtered earlier by `IsAutoLayoutHandle`; if it ever
-                    // reached us we'd want the same answer the field walker gives, so we
-                    // intentionally don't short-circuit it.
-                    match vt._Storage with
-                    | CliValueTypeStorage.RawBytes _ -> false
-                    | CliValueTypeStorage.Fields storage ->
-                        storage.Fields |> List.forall (fun field -> isBlittableField field.Contents)
-                | _ ->
-                    // Top-level primitive (e.g. `Marshal.StructureToPtr<int>`): defer to the
-                    // field walker. Primitives are unconditionally blittable; Bool/Char/etc.
-                    // are not — same semantics either way.
-                    isBlittableField t
+                StructMarshalStub.isStructStrictlyNumericBlittable
+                    state.ConcreteTypes
+                    state._LoadedAssemblies
+                    ctx.BaseClassTypes
+                    t
 
             if isStructStrictlyNumericBlittable zero then
                 // The eventual `*structMarshalStub` we write here is null: the blittable path
@@ -320,6 +248,61 @@ module NativeMarshal =
 
                 NativeHandlerResult.completed state |> Some
             else
+
+            // Has-layout-non-blittable branch (marshalnative.cpp:118): CoreCLR synthesises an IL
+            // stub, writes its entry address, writes *size = 0 (CoreLib ignores the size once the
+            // stub is non-null) and returns TRUE. PawPrint writes a `StructMarshalStub` pointer
+            // carrying the type's identity; `calli` on it runs `StructMarshalStub.executeStubCall`.
+            //
+            // The plan is computed *here*, and discarded, purely so an unsupported field shape is
+            // reported at the QCall — where the type is named and the guest has not yet committed
+            // to the stub path — rather than at the `calli`, which is several BCL frames away.
+            match
+                StructMarshalStub.tryComputePlan state.ConcreteTypes state._LoadedAssemblies ctx.BaseClassTypes zero
+            with
+            // The two error cases are kept apart because they call for different eventual
+            // handling, and flattening them to a string would destroy the distinction the sibling
+            // `MarshalNative_SizeOfHelper` arm above relies on. Both still fail the host today:
+            // CoreCLR reports an unmarshalable *field* by throwing from stub synthesis
+            // (`CreateStructMarshalILStub`), and which exception reaches the guest is not
+            // something we should guess — `Marshal.StructureToPtr`'s own `ArgumentException` is
+            // reachable only via the no-layout arm returning FALSE, which is a different
+            // rejection. Establishing what CoreCLR actually throws here wants a differential
+            // test, and that is its own change; until then, say which kind of refusal this is.
+            | Result.Error (MarshalSizeError.NotMarshalable reason) ->
                 failwith
-                    $"TODO %s{operation}: only strictly-numeric blittable structs are supported by this QCall today; type %O{typeHandle} has fields outside that allowlist (see comment for the deferred cases)"
+                    $"TODO %s{operation}: type %O{typeHandle} has layout, but CoreCLR would reject it as unmarshalable too: %s{reason}. PawPrint does not yet model the guest-visible exception CoreCLR raises for this"
+            | Result.Error (MarshalSizeError.NotImplemented reason) ->
+                failwith
+                    $"TODO %s{operation}: type %O{typeHandle} has layout but is not blittable, and PawPrint has not implemented its marshalling: %s{reason}"
+            | Result.Ok _plan ->
+
+            let state =
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    stubOutPtr
+                    (CliType.Numeric (
+                        CliNumericType.NativeInt (
+                            NativeIntSource.FunctionPointer (
+                                FunctionPointerTarget.Managed (
+                                    StructMarshalStub.synthesise operation ctx.BaseClassTypes state typeHandle
+                                )
+                            )
+                        )
+                    ))
+
+            // Exactly as CoreCLR does: the size is left at zero on this arm, because CoreLib only
+            // consults it on the blittable path.
+            let state =
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    sizeOutPtr
+                    (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 1)) ctx.Thread state
+
+            NativeHandlerResult.completed state |> Some
         | _ -> None

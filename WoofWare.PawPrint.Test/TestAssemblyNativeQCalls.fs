@@ -489,7 +489,7 @@ public static class StreamVersionLibrary
         let rawMethod =
             declaringType.Methods
             |> List.filter (fun method ->
-                match method.NativeImport with
+                match method.TryNativeImport with
                 | Some import -> import.ModuleName = "QCall" && import.EntryPointName = entryPoint
                 | None -> false
             )

@@ -258,7 +258,7 @@ public class TypesWithMembers
 
         let rawMethod =
             metadataImportType.Methods
-            |> List.filter (fun method -> method.Name = methodName && method.Parameters.Length = parameterCount)
+            |> List.filter (fun method -> method.Name = methodName && (MethodInfo.arity method) = parameterCount)
             |> function
                 | [ method ] -> method
                 | [] ->
@@ -299,7 +299,7 @@ public class TypesWithMembers
         let rawMethod =
             metadataImportType.Methods
             |> List.filter (fun method ->
-                match method.NativeImport with
+                match method.TryNativeImport with
                 | Some import -> import.ModuleName = "QCall" && import.EntryPointName = entryPointName
                 | None -> false
             )
@@ -822,7 +822,7 @@ public class TypesWithMembers
         =
         typeInfo.Methods
         |> List.tryFind (fun method -> method.Name = name)
-        |> Option.map (fun method -> method.Handle)
+        |> Option.map (fun method -> (MethodInfo.requireMetadata "test" method).Handle)
         |> Option.defaultWith (fun () -> failwith $"method %s{name} not found on %s{typeInfo.Name}")
 
     let private firstGenericParameterOfType
@@ -941,7 +941,7 @@ public class TypesWithMembers
 
         let methodHandle =
             match fixture.TargetType.Methods with
-            | method :: _ -> method.Handle
+            | method :: _ -> (MethodInfo.requireMetadata "test" method).Handle
             | [] -> failwith "expected at least one method on MetadataFields (implicit .ctor)"
 
         let returnValue, parent, _ =

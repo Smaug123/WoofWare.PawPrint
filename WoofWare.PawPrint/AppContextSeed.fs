@@ -133,7 +133,7 @@ module AppContextSeed =
         // failure loud (and correctly attributed) if a future CoreLib changes its shape.
         let candidates =
             appContext.Methods
-            |> List.filter (fun m -> m.Name = "Setup" && m.IsStatic && m.Parameters.Length = 3)
+            |> List.filter (fun m -> m.Name = "Setup" && m.IsStatic && MethodInfo.arity m = 3)
 
         match candidates with
         | [ single ] -> single

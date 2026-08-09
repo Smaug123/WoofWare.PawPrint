@@ -204,7 +204,7 @@ module AttributeFormatting =
         match attr.Constructor with
         | MetadataToken.MethodDef handle ->
             match assembly.Methods.TryGetValue handle with
-            | true, m -> Some m.RawSignature.ParameterTypes
+            | true, m -> Some m.Signature.ParameterTypes
             | false, _ -> None
         | MetadataToken.MemberReference handle ->
             match assembly.Members.TryGetValue handle with
@@ -365,12 +365,12 @@ module AttributeFormatting =
         let scope = GenericScope.ofMethod method
 
         let paramTypes =
-            method.RawSignature.ParameterTypes
+            method.Signature.ParameterTypes
             |> List.map (IlFormatting.renderTypeDefn assembly scope)
             |> String.concat ", "
 
         let returnType =
-            IlFormatting.renderMethodReturnType assembly scope method.RawSignature.ReturnType
+            IlFormatting.renderMethodReturnType assembly scope method.Signature.ReturnType
 
         sprintf "// method %s::%s%s%s(%s) : %s" qualifiedTypeName staticStr method.Name generics paramTypes returnType
 

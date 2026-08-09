@@ -1312,8 +1312,10 @@ module internal UnaryMetadataCallOps =
         let fnPtr = IlMachineState.peekEvalStack thread state
 
         // A function pointer is recognised by its `FunctionPointer` provenance; anything
-        // that is semantically zero is a null pointer. The `FunctionPointer` case must be
-        // matched first — `NativeIntSource.isZero` has no answer for it (and says so).
+        // that is semantically zero is a null pointer. Matching `FunctionPointer` first is
+        // not load-bearing for correctness — `NativeIntSource.isZero` answers `false` for
+        // it, because a function pointer is never null — but it keeps the two arms readable
+        // as "is it a pointer to something" then "is it null".
         let target =
             match fnPtr with
             | None -> failwith "calli: eval stack was empty; expected a function pointer on top"
@@ -1347,7 +1349,7 @@ module internal UnaryMetadataCallOps =
 
         // Slots this call consumes: the callee's declared parameters, plus `this` when the
         // callee is an instance method. Arity comes from the signature, not the Param table:
-        // see `MethodInfo.Parameters` for why `Parameters.Length` understates arity for
+        // see `MetadataMethodFacts.Parameters` for why `Parameters.Length` understates arity for
         // methods whose parameters carry no metadata.
         let calleeSlots =
             MethodInfo.arity methodToCall + (if methodToCall.IsStatic then 0 else 1)
@@ -1405,34 +1407,43 @@ module internal UnaryMetadataCallOps =
         // not comparable). For a generic target the raw signature still holds type parameters;
         // `calliStackKind` declines to classify those, so they are skipped rather than
         // spuriously rejected.
-        let calleeRaw = methodToCall.RawSignature
+        // Only a declared method has a raw signature. A synthesised target has none — there is no
+        // metadata form of a method the runtime supplies — so there is nothing to disagree with
+        // and the comparison is simply skipped. That is sound precisely because this check is a
+        // source of *refusals* and never of permission: declining to run it forfeits an error we
+        // might have caught, not a guarantee we were relying on. The slot-count and return-shape
+        // checks above, which are what guard frame integrity, apply to every target.
+        match methodToCall.TryMetadata with
+        | None -> ()
+        | Some facts ->
+            let calleeRaw = facts.RawSignature
 
-        // Positions only line up when both sides agree on who supplies `this`. When they do not
-        // (the EXPLICITTHIS / receiver-as-explicit-argument case described above) the lists are
-        // offset relative to each other and cannot be compared element-wise; the slot-count
-        // check above still guards frame integrity there.
-        let receiverConventionsAgree = callSiteHasImplicitThis = not methodToCall.IsStatic
+            // Positions only line up when both sides agree on who supplies `this`. When they do
+            // not (the EXPLICITTHIS / receiver-as-explicit-argument case described above) the
+            // lists are offset relative to each other and cannot be compared element-wise; the
+            // slot-count check above still guards frame integrity there.
+            let receiverConventionsAgree = callSiteHasImplicitThis = not methodToCall.IsStatic
 
-        if
-            receiverConventionsAgree
-            && callSiteSignature.ParameterTypes.Length = calleeRaw.ParameterTypes.Length
-        then
-            List.iteri2
-                (fun i (callSiteTy : TypeDefn) (calleeTy : TypeDefn) ->
-                    if calliKindsConflict callSiteTy calleeTy then
-                        failwith
-                            $"calli: call-site signature declares parameter %d{i} as %O{callSiteTy} but target %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}::%s{methodToCall.Name} declares it as %O{calleeTy}; these occupy different evaluation-stack representations, and PawPrint does not yet marshal calli arguments through the call-site signature"
-                )
-                callSiteSignature.ParameterTypes
-                calleeRaw.ParameterTypes
+            if
+                receiverConventionsAgree
+                && callSiteSignature.ParameterTypes.Length = calleeRaw.ParameterTypes.Length
+            then
+                List.iteri2
+                    (fun i (callSiteTy : TypeDefn) (calleeTy : TypeDefn) ->
+                        if calliKindsConflict callSiteTy calleeTy then
+                            failwith
+                                $"calli: call-site signature declares parameter %d{i} as %O{callSiteTy} but target %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}::%s{methodToCall.Name} declares it as %O{calleeTy}; these occupy different evaluation-stack representations, and PawPrint does not yet marshal calli arguments through the call-site signature"
+                    )
+                    callSiteSignature.ParameterTypes
+                    calleeRaw.ParameterTypes
 
-        match callSiteSignature.ReturnType, calleeRaw.ReturnType with
-        | MethodReturnType.Returns callSiteRet, MethodReturnType.Returns calleeRet when
-            calliKindsConflict callSiteRet calleeRet
-            ->
-            failwith
-                $"calli: call-site signature declares a return type of %O{callSiteRet} but target %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}::%s{methodToCall.Name} returns %O{calleeRet}; these occupy different evaluation-stack representations, and PawPrint does not yet marshal the calli result through the call-site signature"
-        | _ -> ()
+            match callSiteSignature.ReturnType, calleeRaw.ReturnType with
+            | MethodReturnType.Returns callSiteRet, MethodReturnType.Returns calleeRet when
+                calliKindsConflict callSiteRet calleeRet
+                ->
+                failwith
+                    $"calli: call-site signature declares a return type of %O{callSiteRet} but target %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}::%s{methodToCall.Name} returns %O{calleeRet}; these occupy different evaluation-stack representations, and PawPrint does not yet marshal the calli result through the call-site signature"
+            | _ -> ()
 
         let declaringTypeHandle =
             AllConcreteTypes.findExistingConcreteType
@@ -1444,7 +1455,24 @@ module internal UnaryMetadataCallOps =
                     $"calli: declaring type %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name} of the target method is not registered in AllConcreteTypes"
             )
 
-        match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
+        // Calling a method runs its declaring type's initialiser first — but for a *synthesised*
+        // method the declaring type is the subject rather than the owner, so whether that follows
+        // is per-kind and `SynthesisedMethod.initialisesDeclaringType` is where the question is
+        // answered. A struct-marshal stub answers no: verified against the real runtime, a struct
+        // with an explicit static constructor keeps it dormant across `Marshal.StructureToPtr`,
+        // and `sourcesPure/MarshalStructureToPtrStaticCtorDormant.cs` pins that.
+        let classInitialisation =
+            let required =
+                match methodToCall with
+                | MethodInfo.Metadata _ -> true
+                | MethodInfo.Synthesised (_, kind) -> SynthesisedMethod.initialisesDeclaringType kind
+
+            if required then
+                IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state
+            else
+                StateLoadResult.NothingToDo state
+
+        match classInitialisation with
         | NothingToDo state ->
             // Our own frame, so the restore below can target it by id: on the suspension path the
             // *active* frame is the class initialiser's, not ours.

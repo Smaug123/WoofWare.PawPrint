@@ -640,11 +640,7 @@ module NativeRuntimeTypeHelpers =
     /// here; static virtual methods (default interface methods) live outside the instance vtable.
     let numVirtualsOwn (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>) : int =
         typeInfo.Methods
-        |> List.filter (fun method ->
-            not method.IsStatic
-            && method.MethodAttributes.HasFlag System.Reflection.MethodAttributes.Virtual
-            && method.MethodAttributes.HasFlag System.Reflection.MethodAttributes.NewSlot
-        )
+        |> List.filter (fun method -> not method.IsStatic && method.IsVirtual && method.IsNewSlot)
         |> List.length
 
     /// Walks the type's inheritance chain (from the given handle up to the root, typically
@@ -1339,12 +1335,7 @@ module NativeRuntimeTypeHelpers =
                 false
             else
                 typeInfo.Methods
-                |> List.exists (fun m ->
-                    m.Name = ".ctor"
-                    && not m.IsStatic
-                    && MethodInfo.arity m = 0
-                    && (m.MethodAttributes &&& System.Reflection.MethodAttributes.MemberAccessMask) = System.Reflection.MethodAttributes.Public
-                )
+                |> List.exists (fun m -> m.Name = ".ctor" && not m.IsStatic && MethodInfo.arity m = 0 && m.IsPublic)
 
     /// True iff `arg` is a byref-like type (a C# `ref struct`), which may not be used as a generic
     /// argument unless the parameter carries `allows ref struct`. CoreCLR's `TypeHandle::IsByRefLike`
@@ -2124,11 +2115,7 @@ module ActivationInfo =
             |> List.tryFind (fun m -> m.Name = ".ctor" && not m.IsStatic && MethodInfo.arity m = 0)
 
         match ctor with
-        | Some ctor ->
-            let isPublic =
-                (ctor.MethodAttributes &&& MethodAttributes.MemberAccessMask) = MethodAttributes.Public
-
-            state, ActivationInfo.WithConstructor (handle, ctor, isPublic, isValueType)
+        | Some ctor -> state, ActivationInfo.WithConstructor (handle, ctor, ctor.IsPublic, isValueType)
         | None ->
             if isValueType then
                 state, ActivationInfo.ValueTypeWithoutConstructor handle

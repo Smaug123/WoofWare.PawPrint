@@ -41,9 +41,14 @@ module Program =
         let methodGroups =
             typeInfo.Methods
             |> List.filter (fun m -> memberNameMatches m.Name)
-            |> List.map (fun m ->
-                let header = AttributeFormatting.methodHeader assembly qualified m
-                AttributeFormatting.renderOwnerLines assembly header (MetadataToken.MethodDef m.Handle)
+            // IlDump reads an assembly off disk, so every method it sees is metadata-backed;
+            // `choose` keeps the token honest rather than asserting that.
+            |> List.choose (fun m ->
+                m.TryMetadata
+                |> Option.map (fun facts ->
+                    let header = AttributeFormatting.methodHeader assembly qualified m
+                    AttributeFormatting.renderOwnerLines assembly header (MetadataToken.MethodDef facts.Handle)
+                )
             )
 
         let fieldGroups =

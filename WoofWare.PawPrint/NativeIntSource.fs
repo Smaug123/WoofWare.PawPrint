@@ -162,7 +162,7 @@ type FunctionPointerTarget =
                 0,
                 methodDefinition.DeclaringType.Identity,
                 methodDefinition.DeclaringType.Generics,
-                methodDefinition.Handle,
+                methodDefinition.IdentityKey,
                 methodDefinition.Generics
             )
         | FunctionPointerTarget.RuntimeAllocator -> HashCode.Combine 1
@@ -480,7 +480,11 @@ module NativeIntSource =
         | NativeIntSource.MetadataImportHandle _
         | NativeIntSource.ModuleHandle _ -> false
         | NativeIntSource.OpaqueHashBits bits -> bits = 0L
-        | NativeIntSource.FunctionPointer _ -> failwith "TODO"
+        // A function pointer is never null. `ldftn` cannot produce one, and neither can the
+        // runtime synthesising a stub — CoreLib branches on `structMarshalStub != null` to choose
+        // between the stub and the blittable memmove path, so answering anything else here would
+        // silently send a non-blittable struct down the memmove path.
+        | NativeIntSource.FunctionPointer _ -> false
         | NativeIntSource.ManagedPointer src ->
             match src with
             | ManagedPointerSource.Null -> true

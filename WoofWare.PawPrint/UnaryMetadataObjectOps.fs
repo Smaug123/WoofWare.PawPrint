@@ -321,11 +321,16 @@ module internal UnaryMetadataObjectOps =
                 |> List.filter (fun candidate ->
                     candidate.Name = "Ctor"
                     && candidate.IsStatic
-                    && candidate.RawSignature.ParameterTypes = ctor.RawSignature.ParameterTypes
+                    && (MethodInfo.requireRawSignature "String ctor redirection" candidate).ParameterTypes = (MethodInfo.requireRawSignature
+                        "String ctor redirection"
+                        ctor)
+                        .ParameterTypes
                 )
 
             let describedSignature : string =
-                ctor.RawSignature.ParameterTypes |> List.map string |> String.concat ", "
+                (MethodInfo.requireRawSignature "String ctor redirection" ctor).ParameterTypes
+                |> List.map string
+                |> String.concat ", "
 
             let ctorImplementation =
                 match ctorImplementation with
@@ -337,7 +342,7 @@ module internal UnaryMetadataObjectOps =
                     failwith
                         $"newobj on System.String::.ctor(%s{describedSignature}) found several matching static String.Ctor overloads; the parameter signature should identify exactly one."
 
-            match ctorImplementation.RawSignature.ReturnType with
+            match (MethodInfo.requireRawSignature "String ctor redirection" ctorImplementation).ReturnType with
             | MethodReturnType.Returns (TypeDefn.PrimitiveType PrimitiveType.String) -> ()
             | other ->
                 failwith

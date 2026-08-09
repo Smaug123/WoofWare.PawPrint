@@ -129,7 +129,7 @@ public static class Entry
         let rawMethod =
             enumType.Methods
             |> List.filter (fun method ->
-                match method.NativeImport with
+                match method.TryNativeImport with
                 | Some import -> import.ModuleName = "QCall" && import.EntryPointName = "Enum_GetValuesAndNames"
                 | None -> false
             )

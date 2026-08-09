@@ -208,6 +208,8 @@ module AbstractMachine =
         match instruction.ExecutingMethod.Body with
         | MethodBody.RuntimeProvided RuntimeBehaviour.DelegateCtor -> dispatchDelegateCtor ()
         | MethodBody.RuntimeProvided RuntimeBehaviour.DelegateInvoke -> dispatchDelegateInvoke ()
+        | MethodBody.RuntimeProvided RuntimeBehaviour.StructMarshalStub ->
+            StructMarshalStub.executeStubCall loggerFactory baseClassTypes thread instruction state
         | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (kind, targetName)) ->
             let nameStr =
                 match targetName with

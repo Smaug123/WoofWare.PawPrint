@@ -832,7 +832,11 @@ module IlMachineRuntimeMetadata =
             match declaringAssembly with
             | None -> Array.empty
             | Some assy ->
-                match assy.Methods.TryGetValue frame.Method.Handle with
+                match frame.Method.TryMetadata with
+                | None -> Array.empty
+                | Some facts ->
+
+                match assy.Methods.TryGetValue facts.Handle with
                 | true, m -> m.Generics |> Seq.map (fun (gp, _) -> gp.Name) |> Seq.toArray
                 | false, _ -> Array.empty
 
@@ -847,16 +851,24 @@ module IlMachineRuntimeMetadata =
 
         // Metadata Parameters skip SequenceNumber=0 (`this` / ref return), so signature index `i`
         // pairs with the parameter whose SequenceNumber is `i + 1` regardless of static-ness.
+        // A synthesised method has no Param rows at all, so its frame renders positionally.
         let parameterByPosition =
-            frame.Method.Parameters
-            |> Seq.map (fun p -> p.SequenceNumber, p.Name)
-            |> Map.ofSeq
+            match frame.Method.TryMetadata with
+            | None -> Map.empty
+            | Some facts -> facts.Parameters |> Seq.map (fun p -> p.SequenceNumber, p.Name) |> Map.ofSeq
 
         // Walk the raw (TypeDefn) signature rather than the concretized one so
         // `GenericTypeParameter`/`GenericMethodParameter` references survive to render
         // as their formal names (`TC`, `TM`, etc.).
+        // A synthesised method has no raw signature to walk. CoreCLR's own IL stubs do appear in
+        // stack traces, so render the frame rather than refusing — just without parameter detail,
+        // which is the only part that needs the metadata form.
         let paramText =
-            frame.Method.RawSignature.ParameterTypes
+            match frame.Method.TryMetadata with
+            | None -> "…"
+            | Some facts ->
+
+            facts.RawSignature.ParameterTypes
             |> List.mapi (fun i ty ->
                 let typeStr =
                     renderTypeDefnForStackFrame state typeGenericNames methodGenericNames ty
