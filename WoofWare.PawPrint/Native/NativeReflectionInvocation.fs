@@ -1,6 +1,7 @@
 namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
+open System.Reflection
 open System.Reflection.Metadata
 open Microsoft.Extensions.Logging
 
@@ -272,16 +273,36 @@ module internal NativeReflectionInvocation =
             failwith
                 $"TODO: %s{operation} on %s{describe ()}, which PawPrint services as a JIT intrinsic; the intrinsic dispatcher advances the caller's program counter, and this QCall's frame has no IL to advance"
 
+        // A value-type receiver needs no handling here: CoreCLR forms `this` as `gc.target->UnBox()`
+        // (reflectioninvocation.cpp:502), a pointer into the payload of the box the caller passed,
+        // and `callMethodWithCommitment` already converts an `ObjectRef` receiver for a value-type
+        // method into exactly that — `Byref (ByrefRoot.HeapValue addr, [])`
+        // (IlMachineStateExecution.fs:2074). So a mutating struct method writes through to the
+        // caller's box, as it does on CoreCLR.
+        //
+        // Its two sibling branches do need rejecting, because both form a *different* `this`:
         if
             not target.Method.IsStatic
             && NativeRuntimeTypeHelpers.argumentIsValueType ctx.BaseClassTypes state target.DeclaringType
         then
-            // CoreCLR unboxes the target into a `this` pointer here, with a distinct branch for an
-            // unboxing stub and another that re-boxes a `Nullable<T>` receiver
-            // (reflectioninvocation.cpp:492-494). Neither is modelled, and passing the box itself
-            // as the receiver would mutate the wrong storage.
-            failwith
-                $"TODO: %s{operation} on %s{describe ()}, an instance method of a value type; CoreCLR unboxes the target to form `this`"
+            if NativeRuntimeTypeHelpers.argumentIsNullable ctx.BaseClassTypes state target.DeclaringType then
+                // CoreCLR allocates a fresh box and `Nullable::UnBox`es the target into it, then uses
+                // *that* buffer as `this` (reflectioninvocation.cpp:494-499) — so unlike every other
+                // struct, a mutation is not visible through the caller's box. Unboxing in place here
+                // would write somewhere CoreCLR does not.
+                failwith
+                    $"TODO: %s{operation} on %s{describe ()}, an instance method of Nullable<T>; CoreCLR unboxes into a freshly allocated true boxed Nullable rather than through the caller's box"
+
+            if target.Method.MethodAttributes.HasFlag MethodAttributes.Virtual then
+                // For a virtual struct method CoreCLR may hold the *unboxing stub*, whose `this` is
+                // the boxed object itself rather than its payload (reflectioninvocation.cpp:492).
+                // PawPrint models no such stub, so we cannot tell which of the two rules applies, and
+                // guessing would silently address the wrong storage. Unreachable today — `GetMethod`
+                // on a type declaring a virtual method stops at `RuntimeMethodHandle.GetSlot` first
+                // (see `sourcesPure/ReflectionInvokeVirtualMethod.cs`) — so this guard exists to keep
+                // that from becoming a silent divergence when `GetSlot` lands.
+                failwith
+                    $"TODO: %s{operation} on %s{describe ()}, a virtual instance method of a value type; CoreCLR may hold an unboxing stub here, whose `this` is the box rather than its payload, and PawPrint does not model unboxing stubs"
 
         let rejectParameterShape (index : int) (parameterType : ConcreteTypeHandle) : unit =
             match parameterType with
