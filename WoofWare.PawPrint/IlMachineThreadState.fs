@@ -275,6 +275,7 @@ module IlMachineThreadState =
             {
                 ConcreteTypes = AllConcreteTypes.Empty
                 Logger = logger
+                LoggerFactory = lf
                 NextThreadId = 0
                 NextCpuRotation = 0
                 // CallStack = []
