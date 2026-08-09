@@ -2182,6 +2182,10 @@ module Intrinsics =
             // produce undefined garbage in those cases; refusing is consistent
             // with PawPrint's deterministic byte model and with the user-facing
             // contract "between equal-sized unmanaged storage shapes".
+            //
+            // The one exception is `TFrom` and `TTo` naming the *same* concrete type,
+            // where no reinterpretation happens at all and the value can be moved
+            // across as it stands — see the equal-handle arm below.
             let fromHandle, toHandle =
                 match Seq.toList methodToCall.Generics with
                 | [ f ; t ] -> f, t
@@ -2233,15 +2237,38 @@ module Intrinsics =
             // above, and are NOT part of that guard: the BCL accepts those inputs
             // (`Unsafe.BitCast<IntPtr, long>` is legal .NET). Raising a guest exception for them
             // would make PawPrint throw where the real runtime succeeds, so they stay a host
-            // failure with a precise diagnostic. Because the value-type clause is checked first,
-            // what reaches them is only a *value* type whose provenance the byte model cannot
-            // render — the genuine PawPrint-only restriction.
+            // failure with a precise diagnostic. Because the value-type clause is checked first
+            // and the equal-handle arm intercepts the rest, what reaches them is only a genuine
+            // reinterpretation — two *distinct* value types, one of whose provenance the byte
+            // model cannot render — which is the real PawPrint-only restriction.
             if
                 fromSize <> toSize
                 || not (isValueTypeHandle fromHandle)
                 || not (isValueTypeHandle toHandle)
             then
                 IntrinsicResult.RaiseException (state, baseClassTypes.NotSupportedException, None)
+            elif fromHandle = toHandle then
+                // Identical concrete types: no reinterpretation, so nothing to render as bytes.
+                // The JIT agrees, and does not even emit a copy — "Handle matching handles,
+                // compatible struct layouts or integrals where we can simply return op1"
+                // (importercalls.cpp, `NI_SRCS_UNSAFE_BitCast`). Serving this arm without
+                // consulting `ByteAddressability` is what lets provenance-carrying value types
+                // (a `ReadOnlySpan<char>`, a struct holding a `RuntimeTypeHandle`) through: their
+                // contents travel intact rather than being laundered into a bit pattern.
+                //
+                // `AllConcreteTypes` deduplicates by (identity, generic arguments), so equal
+                // handles really do mean the same type — including when only one side spells it
+                // through a generic parameter, as CoreLib's `TChar`-generic formatting code does.
+                // Unequal handles may still denote types of the same *shape*; those keep the byte
+                // path, because moving between distinct types is exactly the reinterpretation
+                // this restriction is about.
+                //
+                // The BCL's value-type guard above still applies: `BitCast<string, string>`
+                // throws, so this arm deliberately sits after it rather than before.
+                state
+                |> IlMachineState.pushToEvalStack inputCli currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> IntrinsicResult.Completed
             elif not inputAddressable || not targetAddressable then
                 let reason =
                     if not inputAddressable then
