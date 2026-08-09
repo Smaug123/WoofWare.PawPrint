@@ -1083,6 +1083,62 @@ module NativeRuntimeMethodHandle =
         | "System.Private.CoreLib",
           "System",
           "RuntimeMethodHandle",
+          "GetSlot",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System",
+                                              "RuntimeMethodHandleInternal",
+                                              generics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when generics.IsEmpty ->
+            // CoreCLR (runtimehandles.cpp:1352): asserts non-null and returns
+            // (INT32)pMethod->GetSlot(), which is a bare read of the MethodDesc's slot number as
+            // assigned once by MethodTableBuilder::PlaceVirtualMethods. PawPrint has no persisted
+            // slot number, so the layout is recomputed from the declaring type's chain; see
+            // `NativeRuntimeTypeHelpers.vtableOfClosed` for the rule and for why MethodImpls are
+            // not consulted.
+            //
+            // The BCL calls this only for a method whose metadata carries MethodAttributes.Virtual
+            // (RuntimeType.CoreCLR.cs:683), and on a class or value type such a method always
+            // occupies an instance vtable slot: CoreCLR rejects static+virtual outside interfaces
+            // with a TypeLoadException, and `PopulateMethods` routes interfaces down a branch that
+            // never reaches here. So "not in the vtable" is a contract violation, not a shape to
+            // paper over -- with one exception worth recording, because it is the answer to "what
+            // would CoreCLR have returned": for a value type, the MethodTable builder duplicates
+            // every virtual, leaving the unboxing stub in the vtable slot and giving the unboxed
+            // copy a slot beyond GetNumVirtuals. Those duplicates are MethodDesc-level artifacts
+            // that live in the MethodDescChunks; PawPrint enumerates metadata MethodDefs once, so
+            // it never sees them.
+            let operation = "RuntimeMethodHandle.GetSlot"
+
+            let identity =
+                resolveMetadataIdentityFromArg operation state instruction.Arguments.[0]
+
+            let methodInfo = methodInfoOfMetadataIdentity operation state identity
+
+            let declaringType = identity.GetDeclaringType ()
+
+            let state, vtable =
+                NativeRuntimeTypeHelpers.vtableOfClosed
+                    ctx.LoggerFactory
+                    ctx.BaseClassTypes
+                    operation
+                    state
+                    declaringType
+
+            let slot =
+                vtable
+                |> List.tryFindIndex (fun slot -> slot.Method.IdentityKey = methodInfo.IdentityKey)
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"%s{operation}: method %s{methodInfo.Name} occupies no slot in the vtable of its declaring type %O{declaringType}; the BCL only asks for the slot of a method whose metadata says Virtual, and on a class or value type such a method is always in the instance vtable"
+                )
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 slot)) ctx.Thread state
+
+            NativeHandlerResult.completed state |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeMethodHandle",
           "IsGenericMethodDefinition",
           [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
                                               "System",

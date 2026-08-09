@@ -134,6 +134,7 @@
     <Compile Include="TestVariableSizeNewobj.fs" />
     <Compile Include="TestNativeMdUtf8String.fs" />
     <Compile Include="TestNativeRuntimeMethodHandle.fs" />
+    <Compile Include="TestVirtualMethodSlots.fs" />
     <Compile Include="TestLinuxCoreLibFlavour.fs" />
     <Compile Include="TestInlineArrayLayout.fs" />
     <Compile Include="TestReinterpretCellAccess.fs" />
