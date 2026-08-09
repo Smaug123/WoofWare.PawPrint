@@ -86,7 +86,15 @@ module internal MethodTableProjection =
         | Some concreteType when concreteType.Generics.IsEmpty -> concreteType.Identity = baseClassTypes.String.Identity
         | Some _ -> false
 
-    let private isTruePrimitive
+    /// CoreCLR's `MethodTable::SetIsTruePrimitive` predicate: the value types in the `System`
+    /// namespace of corelib that `CorTypeInfo::FindPrimitiveType` names (cortypeinfo.h), i.e.
+    /// `ELEMENT_TYPE_BOOLEAN` through `ELEMENT_TYPE_R8` plus `ELEMENT_TYPE_I`/`ELEMENT_TYPE_U`.
+    ///
+    /// This is narrower than `MethodTable::IsPrimitive`, which is the *category* test and so
+    /// additionally admits enums (normalised to their underlying integer) and the handle structs
+    /// CoreCLR normalises to `ELEMENT_TYPE_I`. Callers that want `IsPrimitive` must say so
+    /// explicitly by composing those in; see `RuntimeHelpers.InitializeArray` in `Intrinsics`.
+    let isTruePrimitive
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
         : bool

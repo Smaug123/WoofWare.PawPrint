@@ -64,6 +64,7 @@
     <Compile Include="IlMachineManagedByref.fs" />
     <Compile Include="IlMachineRuntimeMetadata.fs" />
     <Compile Include="IlMachineState.fs" />
+    <Compile Include="FieldRvaData.fs" />
     <Compile Include="CustomAttribValueLowering.fs" />
     <Compile Include="MethodTableProjection.fs" />
     <Compile Include="RawArrayDataProjection.fs" />
