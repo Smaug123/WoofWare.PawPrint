@@ -535,6 +535,20 @@ module Scheduler =
         // can branch here without a wider refactor.
         | WhatWeDid.Executed
         | WhatWeDid.VoluntaryYield ->
+            // This runs on every scheduler tick (once per interpreted IL instruction),
+            // and almost never has anything to do, so short-circuit first.
+            let anyBlockedOnRan =
+                state.ThreadState
+                |> Map.exists (fun _ ts ->
+                    match ts.Status with
+                    | ThreadStatus.BlockedOnClassInit blocker -> blocker = ran
+                    | _ -> false
+                )
+
+            if not anyBlockedOnRan then
+                state
+            else
+
             let threadState =
                 state.ThreadState
                 |> Map.map (fun _ ts ->
