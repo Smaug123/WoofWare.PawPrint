@@ -227,6 +227,18 @@ module internal NativeReflectionInvocation =
                 // caller's byref, which is `MethodBaseInvoker.CopyBack`'s half of the contract.
                 failwith
                     $"TODO: %s{operation} on %s{describe ()}: parameter %d{index} is a byref, whose copy-back semantics are not modelled"
+            | ConcreteTypeHandle.Pointer _
+            | ConcreteTypeHandle.FunctionPointer _ ->
+                // `InvokerArgFlags.IsValueType` is set for a pointer parameter
+                // (`MethodInvokerCommon.Initialize`), so the caller's byref addresses the payload of
+                // a boxed `IntPtr` rather than an `object?` slot — reachable with a plain `null`
+                // argument, which `CheckValue` converts to `IntPtr.Zero`. `argumentIsValueType` says
+                // false for a structural pointer handle, so `readArgument` would take its
+                // reference-type branch and misread the payload. Reject here instead: the read
+                // needs a pointer-width payload path of its own, and a `System.Reflection.Pointer`
+                // argument needs unwrapping besides.
+                failwith
+                    $"TODO: %s{operation} on %s{describe ()}: parameter %d{index} is a pointer or function pointer, whose argument buffer entry addresses a boxed IntPtr payload rather than an object slot"
             | _ ->
 
             if NativeRuntimeTypeHelpers.argumentIsNullable ctx.BaseClassTypes state parameterType then
@@ -249,6 +261,17 @@ module internal NativeReflectionInvocation =
                 // one. PawPrint's call path returns the byref itself.
                 failwith
                     $"TODO: %s{operation} on %s{describe ()}: a byref return must be dereferenced and boxed before it leaves the QCall"
+            | ConcreteTypeHandle.Pointer _
+            | ConcreteTypeHandle.FunctionPointer _ ->
+                // The callee leaves a native int on the eval stack, not an object reference, so the
+                // reference-return branch below could not take it. CoreCLR does not hand the raw
+                // value back either: `InvokeUtil::CreateObjectAfterInvoke` wraps an
+                // `ELEMENT_TYPE_PTR` return in a `System.Reflection.Pointer` (which also carries the
+                // pointed-to Type, so `Pointer.Unbox` and `GetPointerType` work), and boxes a
+                // function pointer as an `IntPtr`. Constructing a `Pointer` is its own piece of
+                // work; reject rather than invent a representation.
+                failwith
+                    $"TODO: %s{operation} on %s{describe ()}: a pointer return must be boxed as System.Reflection.Pointer, and a function-pointer return as IntPtr, before it leaves the QCall"
             | _ ->
 
             if NativeRuntimeTypeHelpers.argumentIsNullable ctx.BaseClassTypes state returnType then
