@@ -7,6 +7,17 @@ module internal IntrinsicHelpers =
     /// under PawPrint's current scalar-only virtual hardware profile.
     val scalarOnlyFalseIsSupportedIntrinsics : Set<string>
 
+    /// CoreCLR's `MethodTable::IsValueTypeImpl`, as the reflection surface sees it: byrefs,
+    /// pointers, function pointers and arrays are TypeDescs and answer false, and everything
+    /// else is asked of its metadata. `operation` names the caller in the diagnostic raised
+    /// when a nominal handle turns out to have no row in `AllConcreteTypes`.
+    val isValueTypeHandleAsCoreClr :
+        baseClassTypes : BaseClassTypes<DumpedAssembly> ->
+        state : IlMachineState ->
+        operation : string ->
+        handle : ConcreteTypeHandle ->
+            bool
+
     /// Walk a value-type's fields to decide whether its storage contains any managed references
     /// (object references or by-refs), hiding the cycle-detection memo table used by the
     /// implementation. The walk is in the concrete domain, so a field typed `T` is resolved

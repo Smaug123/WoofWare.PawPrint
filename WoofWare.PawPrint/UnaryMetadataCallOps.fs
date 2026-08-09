@@ -879,10 +879,11 @@ module internal UnaryMetadataCallOps =
                         $"constrained.callvirt: unexpected handle kind %O{tHandle}; pointers, byrefs and fnptrs cannot be generic type arguments"
                 | ConcreteTypeHandle.Concrete _ ->
 
-                let tConcrete = AllConcreteTypes.lookup tHandle state.ConcreteTypes |> Option.get
+                let tConcrete, tDefn =
+                    AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes tHandle
+                    |> Option.get
 
                 let tAssy = state._LoadedAssemblies.[tConcrete.Assembly]
-                let tDefn = tAssy.TypeDefs.[tConcrete.Definition.Get]
 
                 let tIsValueType =
                     DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies tDefn
