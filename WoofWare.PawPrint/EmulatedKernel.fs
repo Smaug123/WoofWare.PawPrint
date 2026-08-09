@@ -753,10 +753,18 @@ module EmulatedKernel =
     let ticksPerMillisecond : int64 = 10_000L
 
     /// Largest legal wall-clock reading, in 100 ns ticks since the Unix epoch:
-    /// `maxWallClockEpochMs` expressed in the clock's own unit. `DateTime`
-    /// cannot name an instant beyond it.
+    /// `DateTime.MaxValue.Ticks - DateTime.UnixEpoch.Ticks`. `DateTime` cannot
+    /// name an instant beyond it.
+    ///
+    /// Deliberately *not* `maxWallClockEpochMs * ticksPerMillisecond`, which is
+    /// 9,999 ticks smaller. The two differ because they bound different things:
+    /// `maxWallClockEpochMs` is the last whole millisecond, which is the right
+    /// ceiling for `KernelConfig.WallClockEpochMs` because that knob is
+    /// denominated in milliseconds, while the clock resolves every 100 ns tick
+    /// up to the end of `DateTime`'s range. Deriving this one from the other
+    /// would reject the final sub-millisecond of representable time.
     [<Literal>]
-    let maxWallClockTicks : int64 = 2534023007999990000L
+    let maxWallClockTicks : int64 = 2534023007999999999L
 
     /// Virtual time charged for one retired IL instruction, in 100 ns ticks.
     ///

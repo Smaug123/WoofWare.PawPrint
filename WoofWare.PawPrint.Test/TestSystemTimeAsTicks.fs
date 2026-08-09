@@ -72,6 +72,26 @@ module TestSystemTimeAsTicks =
         |> shouldEqual (DateTime (9999, 12, 31, 23, 59, 59, 999, DateTimeKind.Utc))
 
     [<Test>]
+    let ``maxWallClockTicks is the last tick DateTime can represent`` () =
+        // Also pinned against the BCL. The tempting derivation
+        // `maxWallClockEpochMs * ticksPerMillisecond` is wrong by 9,999 ticks:
+        // that is the last whole *millisecond*, and the clock resolves finer
+        // than that, so deriving it would reject the finalsub-millisecond of
+        // representable time.
+        DateTime.MaxValue.Ticks - DateTime.UnixEpoch.Ticks
+        |> shouldEqual EmulatedKernel.maxWallClockTicks
+
+        EmulatedKernel.maxWallClockTicks
+        - maxEpochMs * EmulatedKernel.ticksPerMillisecond
+        |> shouldEqual (EmulatedKernel.ticksPerMillisecond - 1L)
+
+        // The last representable instant really is accepted, not rejected one
+        // sub-millisecond early: this is the exact case the derived ceiling got
+        // wrong, so assert the boundary itself rather than only the constant.
+        guestUtcNow (kernelWith maxEpochMs (EmulatedKernel.ticksPerMillisecond - 1L))
+        |> shouldEqual DateTime.MaxValue
+
+    [<Test>]
     let ``a default kernel boots at the Unix epoch`` () =
         // The replay contract: change this and every recorded trace's timestamps
         // change with it.
@@ -188,7 +208,8 @@ module TestSystemTimeAsTicks =
         let property (epochSeed : int64, overshootSeed : int64) : bool =
             let epochMs = intoRange maxEpochMs epochSeed
 
-            let headroom = (maxEpochMs - epochMs) * EmulatedKernel.ticksPerMillisecond
+            let headroom =
+                EmulatedKernel.maxWallClockTicks - epochMs * EmulatedKernel.ticksPerMillisecond
             // Strictly past the representable end of time.
             let clockTicks = headroom + 1L + intoRange 1_000_000L overshootSeed
 
