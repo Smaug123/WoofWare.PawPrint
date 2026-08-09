@@ -936,8 +936,11 @@ module TestEvalStack =
                 failwith
                     $"%s{conv.Name} of widened %O{src} gave %i{viaWidened}, but of its materialised bits gave %i{viaHashBits}"
 
-            countersAfter.Assigned |> shouldEqual expectedCounters.Assigned
-            countersAfter.NextCounter |> shouldEqual expectedCounters.NextCounter
+            PointerHashTestHelpers.assigned countersAfter
+            |> shouldEqual (PointerHashTestHelpers.assigned expectedCounters)
+
+            PointerHashTestHelpers.nextCounter countersAfter
+            |> shouldEqual (PointerHashTestHelpers.nextCounter expectedCounters)
 
         Check.One (narrowingPropertyConfig, Prop.forAll (Arb.fromGen genConversionAndSource) property)
 
@@ -955,7 +958,8 @@ module TestEvalStack =
             if direct <> widened then
                 failwith $"%s{conv.Name} of %O{src} gave %i{direct} in the native-int slot but %i{widened} once widened"
 
-            directCounters.Assigned |> shouldEqual widenedCounters.Assigned
+            PointerHashTestHelpers.assigned directCounters
+            |> shouldEqual (PointerHashTestHelpers.assigned widenedCounters)
 
             // Signedness of the widening is a property of the int64 slot, not of the
             // pointer, so it cannot change the bits.
@@ -975,8 +979,12 @@ module TestEvalStack =
             let second, counters' = conv.Apply (EvalStackValue.NativeInt src) counters
 
             second |> shouldEqual first
-            counters'.NextCounter |> shouldEqual counters.NextCounter
-            counters'.Assigned |> shouldEqual counters.Assigned
+
+            PointerHashTestHelpers.nextCounter counters'
+            |> shouldEqual (PointerHashTestHelpers.nextCounter counters)
+
+            PointerHashTestHelpers.assigned counters'
+            |> shouldEqual (PointerHashTestHelpers.assigned counters)
 
         Check.One (narrowingPropertyConfig, Prop.forAll (Arb.fromGen genConversionAndSource) property)
 
@@ -1152,7 +1160,7 @@ module TestEvalStack =
             EvalStackValue.convToInt32 (EvalStackValue.Int64 shifted) counters
 
         // One identity registered across all three steps.
-        counters.Assigned.Count |> shouldEqual 1
+        PointerHashTestHelpers.assignedCount counters |> shouldEqual 1
 
         let expectedBits, _ =
             PointerHashSynthesis.materialiseHashBits "oracle" handle PointerHashCounters.empty

@@ -137,7 +137,7 @@ module TestIntrinsicValueArguments =
                 // A byref narrows to `NarrowedManagedPointer` instead: no synthesis, but
                 // also no number, which is why the helper still refuses it.
                 counters |> shouldEqual PointerHashCounters.empty
-            | _ -> counters.Assigned.Count |> shouldEqual 1
+            | _ -> PointerHashTestHelpers.assignedCount counters |> shouldEqual 1
 
         Check.One (propertyConfig, Prop.forAll (Arb.fromGen genPointerShapedValue) property)
 

@@ -1350,8 +1350,8 @@ module TestNullaryIlOp =
 
             // One identity assigned, and retained: a discarded counter map would leave
             // this at zero while still producing a plausible-looking number.
-            state.PointerHashCounters.NextCounter |> shouldEqual 1UL
-            state.PointerHashCounters.Assigned.Count |> shouldEqual 1
+            PointerHashTestHelpers.nextCounter state.PointerHashCounters |> shouldEqual 1UL
+            PointerHashTestHelpers.assignedCount state.PointerHashCounters |> shouldEqual 1
         | other -> failwith $"Expected %O{op} to step, got %O{other}"
 
     [<Test>]
@@ -1385,7 +1385,7 @@ module TestNullaryIlOp =
         if first = second then
             failwith $"Conv_I4 gave both method handles the same int32 %O{first}"
 
-        counters.Assigned.Count |> shouldEqual 2
+        PointerHashTestHelpers.assignedCount counters |> shouldEqual 2
 
         // And the first handle still narrows to what it did before: assignment is
         // memoised, not re-derived.

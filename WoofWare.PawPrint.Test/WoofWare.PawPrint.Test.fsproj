@@ -25,6 +25,7 @@
     <Compile Include="CrossAssemblyHarness.fs" />
     <Compile Include="TestCrossAssemblyOracle.fs" />
     <Compile Include="TypeIdentityTestHelpers.fs" />
+    <Compile Include="PointerHashTestHelpers.fs" />
     <Compile Include="AssemblyShape.fs" />
     <Compile Include="AssemblyGraphShape.fs" />
     <Compile Include="TestTypeResolution.fs" />

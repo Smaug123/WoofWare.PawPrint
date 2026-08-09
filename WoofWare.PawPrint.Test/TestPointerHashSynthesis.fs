@@ -17,14 +17,15 @@ module TestPointerHashSynthesis =
         PointerHashSynthesis.materialiseHashBits "test" src counters
 
     [<Test>]
-    let ``a fresh fixture assigns bits by first-touch order`` () : unit =
-        // Pins which rule `empty` selects. Vacuous while `PointerHashAssignment` has
-        // one case; it earns its keep the moment a second lands, because the choice of
-        // default is part of the replay contract — switching it silently would change
-        // every synthesised pointer value the guest observes. The rule this names is
-        // what the `registration order assigns counters in order` test below spells out.
-        PointerHashCounters.empty.Assignment
-        |> shouldEqual PointerHashAssignment.SequentialFirstTouch
+    let ``a fresh fixture assigns bits by first-touch order, with nothing assigned yet`` () : unit =
+        // Pins which rule `empty` selects, and that it starts from a clean slate.
+        // The rule choice is vacuous while `PointerHashCounters` has one case; it
+        // earns its keep the moment a second lands, because the default is part of
+        // the replay contract — switching it silently would change every synthesised
+        // pointer value the guest observes. The rule named here is what the
+        // `registration order assigns counters in order` test below spells out.
+        PointerHashCounters.empty
+        |> shouldEqual (PointerHashCounters.SequentialFirstTouch (0UL, Map.empty))
 
     [<Test>]
     let ``same source materialised twice returns same bits and bumps counter only once`` () : unit =
@@ -32,13 +33,15 @@ module TestPointerHashSynthesis =
             NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete 42))
 
         let bits1, counters1 = materialise src PointerHashCounters.empty
-        counters1.NextCounter |> shouldEqual 1UL
-        counters1.Assigned.Count |> shouldEqual 1
+        PointerHashTestHelpers.nextCounter counters1 |> shouldEqual 1UL
+        PointerHashTestHelpers.assignedCount counters1 |> shouldEqual 1
 
         let bits2, counters2 = materialise src counters1
         bits2 |> shouldEqual bits1
-        counters2.NextCounter |> shouldEqual 1UL
-        counters2.Assigned |> shouldEqual counters1.Assigned
+        PointerHashTestHelpers.nextCounter counters2 |> shouldEqual 1UL
+
+        PointerHashTestHelpers.assigned counters2
+        |> shouldEqual (PointerHashTestHelpers.assigned counters1)
 
     [<Test>]
     let ``distinct sources get distinct bits`` () : unit =
@@ -52,8 +55,8 @@ module TestPointerHashSynthesis =
         let bitsB, counters = materialise b counters
 
         bitsA |> shouldNotEqual bitsB
-        counters.NextCounter |> shouldEqual 2UL
-        counters.Assigned.Count |> shouldEqual 2
+        PointerHashTestHelpers.nextCounter counters |> shouldEqual 2UL
+        PointerHashTestHelpers.assignedCount counters |> shouldEqual 2
 
     [<Test>]
     let ``order-stable assignment - same sequence on two fresh fixtures produces same bits`` () : unit =
@@ -125,8 +128,8 @@ module TestPointerHashSynthesis =
         bitsMt |> shouldEqual bitsTh
         // The two encodings share a canonical key, so the second materialisation
         // must reuse the first counter — no new assignment.
-        counters.NextCounter |> shouldEqual 1UL
-        counters.Assigned.Count |> shouldEqual 1
+        PointerHashTestHelpers.nextCounter counters |> shouldEqual 1UL
+        PointerHashTestHelpers.assignedCount counters |> shouldEqual 1
 
     [<Test>]
     let ``MethodTablePtr and TypeHandlePtr(Closed _) alias for OneDimArrayZero shape`` () : unit =
@@ -141,7 +144,7 @@ module TestPointerHashSynthesis =
             materialise (NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed handle)) counters
 
         bitsMt |> shouldEqual bitsTh
-        counters.NextCounter |> shouldEqual 1UL
+        PointerHashTestHelpers.nextCounter counters |> shouldEqual 1UL
 
     [<Test>]
     let ``MethodTablePtr and TypeHandlePtr(Closed _) alias for Array shape`` () : unit =
@@ -156,7 +159,7 @@ module TestPointerHashSynthesis =
             materialise (NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed handle)) counters
 
         bitsMt |> shouldEqual bitsTh
-        counters.NextCounter |> shouldEqual 1UL
+        PointerHashTestHelpers.nextCounter counters |> shouldEqual 1UL
 
     [<Test>]
     let ``TypeHandlePtr(Closed Pointer _) does NOT alias to MethodTablePtr - distinct canonical keys`` () : unit =
@@ -174,7 +177,7 @@ module TestPointerHashSynthesis =
             materialise (NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed pointerHandle)) counters
 
         bitsMt |> shouldNotEqual bitsTh
-        counters.NextCounter |> shouldEqual 2UL
+        PointerHashTestHelpers.nextCounter counters |> shouldEqual 2UL
 
     [<Test>]
     let ``low bits are clear for MethodTablePtr`` () : unit =
@@ -260,7 +263,7 @@ module TestPointerHashSynthesis =
         tagged3 |> shouldEqual (untagged ||| 3L)
 
         // One identity, so only one counter was ever spent.
-        counters.NextCounter |> shouldEqual 1UL
+        PointerHashTestHelpers.nextCounter counters |> shouldEqual 1UL
 
     [<Test>]
     let ``a TypeDesc pointer differs from its type handle by exactly the tag bit`` () : unit =
@@ -281,7 +284,7 @@ module TestPointerHashSynthesis =
         typeDescBits |> shouldEqual (handleBits &&& ~~~2L)
 
         // One identity between them, so only one counter was spent.
-        counters.NextCounter |> shouldEqual 1UL
+        PointerHashTestHelpers.nextCounter counters |> shouldEqual 1UL
 
     [<Test>]
     let ``a MethodTable-shaped type handle has no tag to strip`` () : unit =
@@ -297,7 +300,7 @@ module TestPointerHashSynthesis =
 
         handleBits &&& 3L |> shouldEqual 0L
         methodTableBits |> shouldEqual handleBits
-        counters.NextCounter |> shouldEqual 1UL
+        PointerHashTestHelpers.nextCounter counters |> shouldEqual 1UL
 
     [<Test>]
     let ``low bits are clear for AssemblyHandle / ModuleHandle / MetadataImportHandle`` () : unit =
@@ -435,8 +438,8 @@ module TestPointerHashSynthesis =
         let _, counters = materialise mt counters
         let _, counters = materialise th counters
 
-        counters.NextCounter |> shouldEqual 1UL
-        counters.Assigned.Count |> shouldEqual 1
+        PointerHashTestHelpers.nextCounter counters |> shouldEqual 1UL
+        PointerHashTestHelpers.assignedCount counters |> shouldEqual 1
 
     [<Test>]
     let ``MethodTableAuxiliaryDataPtr is canonicalised distinctly from MethodTablePtr`` () : unit =
@@ -450,7 +453,7 @@ module TestPointerHashSynthesis =
         let bitsAux, counters = materialise aux counters
 
         bitsMt |> shouldNotEqual bitsAux
-        counters.NextCounter |> shouldEqual 2UL
+        PointerHashTestHelpers.nextCounter counters |> shouldEqual 2UL
 
     [<Test>]
     let ``EventPipeProviderPtr and EventPipeEventPtr with the same id are distinct canonical keys`` () : unit =
@@ -460,7 +463,7 @@ module TestPointerHashSynthesis =
         let bitsEvt, counters = materialise (NativeIntSource.EventPipeEventPtr 5L) counters
 
         bitsProv |> shouldNotEqual bitsEvt
-        counters.NextCounter |> shouldEqual 2UL
+        PointerHashTestHelpers.nextCounter counters |> shouldEqual 2UL
 
     [<Test>]
     let ``AssemblyHandle ModuleHandle MetadataImportHandle with same name are distinct canonical keys`` () : unit =
@@ -477,4 +480,4 @@ module TestPointerHashSynthesis =
         bitsAssy |> shouldNotEqual bitsMod
         bitsAssy |> shouldNotEqual bitsMid
         bitsMod |> shouldNotEqual bitsMid
-        counters.NextCounter |> shouldEqual 3UL
+        PointerHashTestHelpers.nextCounter counters |> shouldEqual 3UL
