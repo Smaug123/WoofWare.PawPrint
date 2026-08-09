@@ -654,6 +654,60 @@ module NativeRuntimeTypeHelpers =
             DeclaredBy : ConcreteType<ConcreteTypeHandle>
         }
 
+    /// Does this signature type mention a generic parameter anywhere? Used only to decide whether
+    /// substituting the declaring type's generic arguments could have changed a comparison.
+    let rec private mentionsGenericParameter (ty : TypeDefn) : bool =
+        match ty with
+        | TypeDefn.GenericTypeParameter _
+        | TypeDefn.GenericMethodParameter _ -> true
+        | TypeDefn.Array (element, _)
+        | TypeDefn.Pinned element
+        | TypeDefn.Pointer element
+        | TypeDefn.Byref element
+        | TypeDefn.OneDimensionalArrayLowerBoundZero element -> mentionsGenericParameter element
+        | TypeDefn.Modified m -> mentionsGenericParameter m.Unmodified || mentionsGenericParameter m.Modifier
+        | TypeDefn.GenericInstantiation (generic, args) ->
+            mentionsGenericParameter generic
+            || (args |> Seq.exists mentionsGenericParameter)
+        | TypeDefn.FunctionPointer signature ->
+            (match signature.ReturnType with
+             | MethodReturnType.Void -> false
+             | MethodReturnType.Returns ret -> mentionsGenericParameter ret)
+            || (signature.ParameterTypes |> List.exists mentionsGenericParameter)
+        | TypeDefn.PrimitiveType _
+        | TypeDefn.FromReference _
+        | TypeDefn.FromDefinition _
+        | TypeDefn.Void -> false
+
+    /// The raw, unsubstituted signature of a slot's occupant, for asking whether two slots were
+    /// already identical *before* their declaring types' generic arguments were substituted in.
+    let private rawSignature (slot : VtableSlot) : TypeDefn list * MethodReturnType<TypeDefn> =
+        slot.Method.Signature.ParameterTypes, slot.Method.Signature.ReturnType
+
+    /// Could substitution have made these two slots' signatures coincide when the definition-level
+    /// signatures differ? Only if they are not already identical *and* a generic parameter appears
+    /// somewhere in them.
+    let private tieCouldBeSubstitutionArtifact (a : VtableSlot) (b : VtableSlot) : bool =
+        if rawSignature a = rawSignature b then
+            // Identical before substitution, so the tie is genuine -- `A<T>.M()` shadowed by
+            // `B<T>.M()` is the same shape as the non-generic `new virtual` case, and the fact that
+            // the declaring types happen to be generic is irrelevant when no signature uses the
+            // parameter.
+            false
+        else
+            // They differ syntactically. That is either a real definition-level difference that
+            // substitution erased, or merely the same type spelled as a TypeDef in one assembly and
+            // a TypeRef in another. Only the former can involve a generic parameter, so use that to
+            // tell them apart rather than crying wolf on every cross-assembly shadow.
+            let types (slot : VtableSlot) =
+                let parameters, ret = rawSignature slot
+
+                match ret with
+                | MethodReturnType.Void -> parameters
+                | MethodReturnType.Returns ty -> ty :: parameters
+
+            (types a @ types b) |> List.exists mentionsGenericParameter
+
     /// The custom modifiers (`modreq`/`modopt`) a signature element carries: each paired with
     /// `true` for required and with the *path* through the type tree at which it sits.
     ///
@@ -946,12 +1000,18 @@ module NativeRuntimeTypeHelpers =
                     // the definition-level match is still among the candidates, so if only one slot
                     // matches at all, it is that one.
                     if List.length matched > 1 then
-                        let genericsInvolved =
-                            not concreteTypeInfo.Generics.IsEmpty
-                            || matched
-                               |> List.exists (fun i -> not (List.item i slots).DeclaredBy.Generics.IsEmpty)
+                        let matchedSlots = matched |> List.map (fun i -> List.item i slots)
 
-                        if genericsInvolved then
+                        let artifact =
+                            matchedSlots
+                            |> List.exists (fun a ->
+                                matchedSlots
+                                |> List.exists (fun b ->
+                                    not (obj.ReferenceEquals (a, b)) && tieCouldBeSubstitutionArtifact a b
+                                )
+                            )
+
+                        if artifact then
                             failwith
                                 $"TODO: %s{operation}: virtual method %s{method.Name} on %O{concreteTypeInfo} matches %i{List.length matched} base vtable slots that are only identical once the declaring types' generic arguments are substituted; CoreCLR lays out slots on the generic definition, which PawPrint cannot yet walk (see the open-generic TODO in `numVirtuals`)"
 

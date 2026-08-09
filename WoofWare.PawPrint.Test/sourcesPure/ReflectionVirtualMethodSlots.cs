@@ -270,6 +270,59 @@ public class Program
         }
     }
 
+    // --- generic owners whose ties are NOT substitution artifacts -------------------------------
+    // Slot ties among generic types are only suspicious when substitution could have created them.
+    // In `Ga`/`Gb`/`Gc` no signature mentions the type parameter at all; in `Ha`/`Hb`/`Hc` both
+    // signatures mention it identically. Either way the tie exists at the generic *definition*
+    // level, so most-derived is the right answer and PawPrint must not refuse to lay these out.
+    public class Ga<T>
+    {
+        public virtual string M ()
+        {
+            return "ga";
+        }
+    }
+
+    public class Gb<T> : Ga<T>
+    {
+        public new virtual string M ()
+        {
+            return "gb";
+        }
+    }
+
+    public class Gc<T> : Gb<T>
+    {
+        public override string M ()
+        {
+            return "gc";
+        }
+    }
+
+    public class Ha<T>
+    {
+        public virtual string M (T x)
+        {
+            return "ha";
+        }
+    }
+
+    public class Hb<T> : Ha<T>
+    {
+        public new virtual string M (T x)
+        {
+            return "hb";
+        }
+    }
+
+    public class Hc<T> : Hb<T>
+    {
+        public override string M (T x)
+        {
+            return "hc";
+        }
+    }
+
     private const BindingFlags All =
         BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static;
 
@@ -471,6 +524,26 @@ public class Program
 
         if (OwnerOf (typeof (Mod2), "In") != "Mod2")
             return 32;
+
+        // Generic owners, no signature using the parameter: an ordinary most-derived tie.
+        if (Count (typeof (Gc<int>), "M") != 2)
+            return 33;
+
+        if (CountOwnedBy (typeof (Gc<int>), "M", "Gc`1") != 1)
+            return 34;
+
+        if (CountOwnedBy (typeof (Gc<int>), "M", "Ga`1") != 1)
+            return 35;
+
+        // Generic owners whose signatures mention the parameter identically: still a genuine tie.
+        if (Count (typeof (Hc<int>), "M") != 2)
+            return 36;
+
+        if (CountOwnedBy (typeof (Hc<int>), "M", "Hc`1") != 1)
+            return 37;
+
+        if (CountOwnedBy (typeof (Hc<int>), "M", "Ha`1") != 1)
+            return 38;
 
         return 0;
     }
