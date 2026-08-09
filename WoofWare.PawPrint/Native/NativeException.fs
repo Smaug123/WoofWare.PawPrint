@@ -125,3 +125,85 @@ module NativeException =
 
             NativeHandlerResult.completed state |> Some
         | _ -> None
+
+    let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
+        let state = ctx.State
+        let instruction = ctx.Instruction
+
+        match
+            ctx.TargetAssembly.Name.Name,
+            ctx.TargetType.Namespace,
+            ctx.TargetType.Name,
+            instruction.ExecutingMethod.Name,
+            instruction.ExecutingMethod.Signature.ParameterTypes,
+            instruction.ExecutingMethod.Signature.ReturnType
+        with
+        | "System.Private.CoreLib",
+          "System",
+          "Exception",
+          "IsImmutableAgileException",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib", "System", "Exception", exceptionGenerics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) when
+            exceptionGenerics.IsEmpty
+            ->
+            // "Is this one of the runtime's *preallocated* exception objects?" — a reference-identity
+            // test against exactly three startup singletons: `OutOfMemoryException`,
+            // `StackOverflowException` and `ExecutionEngineException`
+            // (`CLRException::IsPreallocatedExceptionObject`, clrex.cpp:433). They must stay
+            // immutable because the runtime hands the same instance to every thread that needs one,
+            // which is why CoreLib gives them a read-only `Data` and skips restoring dispatch state
+            // onto them.
+            //
+            // PawPrint has no such singletons: every exception object it raises is freshly allocated
+            // by `ExceptionDispatching.allocateRuntimeException`, and it does not construct these
+            // three at all — the sites that would raise them are still `failwith` TODOs (e.g.
+            // `NativeString.fs:15`, `NullaryIlOp.fs:344`). So the answer is unconditionally false,
+            // and that is a fact about PawPrint's design rather than a convenient default. If a
+            // preallocated-singleton pool is ever introduced, this handler is where it must be
+            // consulted.
+            //
+            // Three near-misses, each a plausible way to get this wrong:
+            //
+            //  * PawPrint *does* cache a `TypeInitializationException` per failed type and rethrow
+            //    that same instance. Cached is not preallocated — the predicate is identity against
+            //    those three specific objects, and a TIE is not one of them.
+            //  * A guest-constructed `new OutOfMemoryException()` is an ordinary object: being of a
+            //    preallocated *type* is not being the preallocated *object*.
+            //  * Most usefully for whoever implements the OOM TODOs above: **an ordinary
+            //    allocation-too-large `OutOfMemoryException` is not the singleton either**, so those
+            //    TODOs will not invalidate this handler. `GetOutOfMemoryException` allocates a fresh
+            //    one and falls back to the preallocated instance only in its `EX_CATCH`
+            //    (clrex.cpp:525-540) — i.e. only when allocating the exception object *itself*
+            //    fails, which is genuine heap exhaustion rather than an oversized request. Measured
+            //    on .NET 10: two `new long[int.MaxValue]` attempts yield two *distinct* OOM objects,
+            //    and `IsImmutableAgileException` answers false for both.
+            //
+            // So the guest-observable reach of a `true` answer is narrower than it looks:
+            // `StackOverflowException` is not catchable at all in CoreCLR (the process dies, so no
+            // guest ever holds that instance), `ExecutionEngineException` is obsolete and no longer
+            // thrown, and the OOM singleton appears only under true exhaustion — a state PawPrint's
+            // unbounded in-memory heap has no notion of.
+            let operation = "System.Exception.IsImmutableAgileException"
+
+            if instruction.Arguments.Length <> 1 then
+                failwith
+                    $"%s{operation}: expected one argument after matching signature, got %d{instruction.Arguments.Length}"
+
+            // A null argument answers false rather than failing. The `ASSERT(pExceptionUNSAFE !=
+            // NULL)` above the comparison (comutilnative.cpp:53) is debug-only and compiled out of
+            // the shipping runtime, so it is not a precondition a guest can violate — and in any
+            // case null is not one of the three preallocated objects, which is all the identity
+            // comparison asks. No CoreLib caller can pass null (all three pass `this`), but this is
+            // a private static, so reflection can, and real .NET answers False when it does;
+            // `ImmutableAgileExceptionNullArgument.cs` pins that against both runtimes.
+            //
+            // A non-ObjectRef argument is a different matter: that means the interpreter built the
+            // call wrong, and there is no honest answer to give.
+            match instruction.Arguments.[0] |> CliType.unwrapPrimitiveLike with
+            | CliType.ObjectRef _ -> ()
+            | other -> failwith $"%s{operation}: expected an ObjectRef Exception argument, got %O{other}"
+
+            let state = IlMachineState.pushToEvalStack (CliType.ofBool false) ctx.Thread state
+
+            NativeHandlerResult.completed state |> Some
+        | _ -> None
