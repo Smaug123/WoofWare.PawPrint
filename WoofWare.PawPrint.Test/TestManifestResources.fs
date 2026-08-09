@@ -262,27 +262,34 @@ public static class Entry
         | CliType.Numeric (CliNumericType.UInt8 value) -> value
         | other -> failwith $"expected byte read, got %O{other}"
 
-    let private readZeroBytes
+    /// A zero-length payload has no readable byte at all, and that — not "a read of nothing
+    /// succeeds" — is the guarantee worth pinning.
+    ///
+    /// This used to read a hand-built zero-sized value type and assert it yielded `[||]`. No such
+    /// template exists any more: CoreCLR forbids zero-length value classes (`SetInstanceBytesSize`,
+    /// class.h:497, and methodtablebuilder.cpp:8568), and `CliValueType.SizeOfFieldStorage` now
+    /// models that floor, so every value type is at least one byte wide. The old template was in
+    /// any case a shape real metadata cannot produce — `TypeLayout.IsDefault` is true when size and
+    /// packing are both zero, so parsing never yields `Layout.Custom (0, 0)`; only a test could
+    /// construct it. Assert the real contract instead: the narrowest read there is gets rejected,
+    /// naming the empty range it was rejected against.
+    let private shouldRejectEveryRead
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (ptr : ManagedPointerSource)
-        : byte[]
+        : unit
         =
-        let zeroSizeDeclaredType =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Byte
+        let exn =
+            Assert.Throws<Exception> (fun () ->
+                IlMachineState.readManagedByrefBytesAs
+                    baseClassTypes
+                    state
+                    ptr
+                    (CliType.Numeric (CliNumericType.UInt8 0uy))
+                |> ignore
+            )
 
-        let zeroSizeTemplate =
-            CliValueType.OfFields
-                baseClassTypes
-                state.ConcreteTypes
-                zeroSizeDeclaredType
-                (Layout.Custom (size = 0, packingSize = 0))
-                CharSet.Ansi
-                []
-            |> CliType.ValueType
-
-        IlMachineState.readManagedByrefBytesAs baseClassTypes state ptr zeroSizeTemplate
-        |> CliType.ToBytes
+        exn.Message |> shouldContainText "outside byte range size 0"
 
     let private invokeAssemblyNativeGetResourceWithArguments
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
@@ -808,7 +815,7 @@ public static class Entry
         let state, emptyPtr =
             IlMachineState.peByteRangePointer loggerFactory baseClassTypes emptyPeByteRange state
 
-        readZeroBytes baseClassTypes state emptyPtr |> shouldEqual [||]
+        shouldRejectEveryRead baseClassTypes state emptyPtr
 
     [<Test>]
     let ``AssemblyNative_GetResource returns embedded resource byte range`` () : unit =
@@ -863,7 +870,7 @@ public static class Entry
             ManagedPointerSource.tryStableAddressBits ptr
             |> shouldEqual (Some (int64 emptyResource.PayloadRelativeVirtualAddress))
 
-            readZeroBytes prepared.BaseClassTypes state ptr |> shouldEqual [||]
+            shouldRejectEveryRead prepared.BaseClassTypes state ptr
         | other -> failwith $"expected managed resource pointer for empty manifest resource, got %O{other}"
 
         let state, length, ret =

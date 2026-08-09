@@ -430,11 +430,11 @@ module internal CellAwareMemOps =
     ///   strictly beyond the cursor — untouched. The backward loop is the mirror image. The
     ///   argument never mentions the width, so letting it vary changes nothing.
     /// - **A step always advances.** Widths are positive and at most `cap`, so the caller cannot
-    ///   spin. PawPrint gives fieldless default-layout structs `sizeOf = 0`, and a zero-sized cell
-    ///   would otherwise return a zero-width "success" and loop forever; that shape is rejected
-    ///   here rather than being left to the byte step, which would itself fail loudly — the
-    ///   intended outcome, since a positive byte copy anchored on a zero-sized cell is an
-    ///   interpreter-bug shape.
+    ///   spin. A zero-sized cell would return a zero-width "success" and loop forever, so it is
+    ///   rejected here rather than being left to the byte step. No value type should now be able
+    ///   to present that shape — `CliValueType.SizeOfFieldStorage` models CoreCLR's floor of one
+    ///   byte per value class — so this is a guard on the termination invariant rather than a
+    ///   live case, and it stays cheap enough to be worth keeping as one.
     ///
     /// Cells must additionally have compatible CLI shape (`cellsHaveCompatibleShape`), so that the
     /// wholesale typed write does not silently rewrite what the destination cell claims to hold.
@@ -588,7 +588,9 @@ module internal CellAwareMemOps =
 
             // `cellSize <= 0` is rejected for the same reason as on the copy
             // path: a zero-sized cell would advance the caller's cursor by
-            // zero and spin forever.
+            // zero and spin forever. As there, no value type should be able to
+            // present that shape now that `SizeOfFieldStorage` models CoreCLR's
+            // one-byte floor; the guard remains for the termination invariant.
             if cellSize <= 0 || cellSize > bytesRemaining then
                 None
             else
