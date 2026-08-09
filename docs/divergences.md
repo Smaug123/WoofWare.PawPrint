@@ -299,3 +299,59 @@ The same reasoning is why the case carries no `MethodTable` payload. That would 
 ```
 
 **Where this lives in code**: `FunctionPointerTarget.RuntimeAllocator` in `NativeIntSource.fs` carries the reasoning; `NativeRuntimeTypeQCall.fs` is the only producer, and `UnaryMetadataCallOps.executeAllocatorCalli` the only consumer. `CanonicalPointerKey.RuntimeAllocatorFunctionPointer` gives it a single synthesised hash-bit identity to match.
+
+## Simulated time advances per retired instruction
+
+**CoreCLR**: time is what the OS says it is. `Environment.TickCount64`, `Stopwatch` and
+`DateTime.UtcNow` read the kernel's clocks, which advance with the wall regardless of how much
+code the process runs. `Thread.Sleep(n)` blocks against an absolute deadline computed from
+`CLOCK_MONOTONIC` (`GetAbsoluteTimeout(..., fPreferMonotonicClock: TRUE)` in
+`pal/src/synchmgr/synchmanager.cpp`), and the OS wakes the thread some time at or after it —
+in practice noticeably after, since the sleep is quantised to the platform's timer granularity.
+
+**PawPrint**: the virtual clock advances `KernelConfig.InstructionCostTicks` — one 100 ns tick
+by default — for each IL instruction any thread retires, and by nothing else. A thread that is
+blocked, and a process in which nothing is runnable, experience no time at all except via the
+driver's jump to the next outstanding deadline. A `Thread.Sleep` wakes at *exactly* its
+deadline, never later.
+
+**Spec status**: outside ECMA-335, which says nothing about clocks. The .NET contract for
+`Thread.Sleep` is one-sided — "at least this long" — so waking exactly at the deadline is
+conformant. It is simply the most optimistic instant the contract permits, where a real
+scheduler is routinely far from it.
+
+**Why we chose this**: determinism is the whole point, and a clock that a replay can reproduce
+cannot be read from the host. Deriving time from retired instructions makes it a pure function
+of the execution, which is what lets a recorded trace replay bit-for-bit.
+
+The *rate* is a calibration, and the quantity it calibrates is the ratio between the shortest
+sleep a guest can express (1 ms) and the cost of one instruction — because that ratio decides
+whether the BCL's spin-then-sleep backoff does anything. Until #844 the ratio was 1:1, and
+`Thread.Sleep(1)` parked its caller for *zero* scheduling decisions: measured on that issue's
+repro, 81,886 parks and not one tick out of 800,000 at which any thread was observably
+asleep. One tick per instruction — a self-consistent 10 MIPS machine — puts the ratio at
+10,000:1, at which sleeping costs the sleeper a realistic share of the machine.
+
+Two consequences worth knowing. A guest that busy-polls a clock while another thread is
+runnable pays 10,000 interpreted instructions per simulated millisecond, and the driver's
+jump-to-deadline shortcut cannot help, because the poller is runnable. And relative timings
+between code paths are not modelled at all: every instruction costs the same, so a `call` and
+a `nop` take equally long.
+
+**Observable example**:
+
+```csharp
+// CoreCLR:  prints a number that is large and varies between runs; on Windows, a Sleep(1)
+//           typically takes ~15ms, so this is nowhere near 1.
+// PawPrint: prints exactly 1, every run, on every machine.
+long before = Environment.TickCount64;
+Thread.Sleep(1);
+Console.WriteLine(Environment.TickCount64 - before);
+```
+
+**Where this lives in code**: `EmulatedKernel.VirtualClockTicks` is the clock and
+`EmulatedKernel.InstructionCostTicks` the rate; `Program.stepPrepared` is its only writer, via
+the validating `EmulatedKernel.withVirtualClockTicks`. The three projections the guest sees are
+`systemTimeAsTicks`, `monotonicTimestampNanos` and `lowResolutionTimestampMs`, all in
+`EmulatedKernel.fs`. `TestSchedulerSleepFairness` pins that a sleeping thread is observably
+asleep.

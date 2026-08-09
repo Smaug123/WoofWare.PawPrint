@@ -717,7 +717,7 @@ module NativeThreading =
             // Elapsed time *is* observable to a PawPrint guest — that is what
             // `EmulatedKernel.VirtualClockTicks` is, and `Environment.TickCount64`
             // and `DateTime.UtcNow` both read it. But the driver loop advances
-            // it as a function of scheduler ticks (`instructionCostTicks` of
+            // it as a function of scheduler ticks (`InstructionCostTicks` of
             // virtual time per instruction retired), never as a function of what a given
             // instruction physically costs. So this handler doing no work does
             // not freeze the guest's clock: the `call` still retires, the clock
