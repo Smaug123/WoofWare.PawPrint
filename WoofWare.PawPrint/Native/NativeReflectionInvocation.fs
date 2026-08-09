@@ -476,11 +476,32 @@ module internal NativeReflectionInvocation =
                          readArgument ctx operation state buffer index parameterType
                      ))
 
-                // The re-entry marker. Its value is never read — only its presence distinguishes
-                // resumption from first entry — but it must be pushed *first*, because `callMethod`
-                // pops exactly `this` plus the arguments, leaving it as the bottom of this frame's
-                // eval stack for the resumption branch above to find beneath any return value.
-                let state = IlMachineState.pushToEvalStack (CliType.ObjectRef None) ctx.Thread state
+                // The re-entry marker. It must be pushed *first*, because `callMethod` pops exactly
+                // `this` plus the arguments, leaving it as the bottom of this frame's eval stack for
+                // the resumption branch below to find beneath any return value.
+                //
+                // Its *presence* distinguishes resumption from first entry, and its *shape* carries
+                // how the return value must be classified: a null reference for a void return, and
+                // otherwise a handle to the return type. That is a snapshot taken before the call,
+                // which is the point — CoreCLR reads `retTH` once, before `CallDescrWorkerWithHandler`
+                // (reflectioninvocation.cpp:439), and re-deriving it on resumption would instead make
+                // the classification a function of the `Signature` object as the *callee left it*.
+                // Nothing else in this branch is recoverable-but-mutable, so this is the whole of
+                // what has to be snapshotted.
+                //
+                // CoreCLR distinguishes the void case by the return TypeHandle being `System.Void`'s
+                // rather than by a separate marker shape. Two shapes are used here so the resumption
+                // match is exhaustive over the encoding and needs no handle lookup to interpret.
+                let state =
+                    let marker =
+                        match target.Method.Signature.ReturnType with
+                        | MethodReturnType.Void -> CliType.ObjectRef None
+                        | MethodReturnType.Returns returnType ->
+                            CliType.RuntimePointer (
+                                CliRuntimePointer.TypeHandlePtr (RuntimeTypeHandleTarget.Closed returnType)
+                            )
+
+                    IlMachineState.pushToEvalStack marker ctx.Thread state
 
                 let state =
                     match thisValue with
@@ -534,49 +555,48 @@ module internal NativeReflectionInvocation =
             | stack ->
                 // Resumption: the target has returned. `EvalStack.Values` is top-first, so a
                 // non-void return sits *above* the marker.
-                let state, target = resolveTarget ctx operation state
-
+                //
+                // The `Signature` is deliberately not re-read here; everything needed came from the
+                // marker the first-entry branch pushed. See there for why.
                 let returned, state =
-                    match target.Method.Signature.ReturnType with
-                    | MethodReturnType.Void ->
-                        match stack with
-                        | [ _marker ] -> ()
-                        | _ ->
-                            failwith
-                                $"%s{operation}: expected only the re-entry marker on the eval stack after a void-returning target, got %d{stack.Length} value(s): %A{stack}"
-
+                    match stack with
+                    | [ EvalStackValue.NullObjectRef ] ->
+                        // Void marker: the target returned nothing, and `MethodBase.Invoke` answers
+                        // null.
                         let _marker, state = IlMachineState.popEvalStack ctx.Thread state
                         CliType.ObjectRef None, state
-                    | MethodReturnType.Returns returnType ->
+                    | [ returnValue
+                        EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed returnType)) ] ->
+                        let _returnValue, state = IlMachineState.popEvalStack ctx.Thread state
+                        let _marker, state = IlMachineState.popEvalStack ctx.Thread state
 
-                    match stack with
-                    | [ _returnValue ; _marker ] -> ()
+                        if NativeRuntimeTypeHelpers.argumentIsValueType ctx.BaseClassTypes state returnType then
+                            // `InvokeUtil::CreateObjectAfterInvoke` (reflectioninvocation.cpp:678):
+                            // the QCall's contract is to hand back a boxed value.
+                            let addr, state =
+                                UnaryMetadataObjectOps.boxValueType
+                                    ctx.LoggerFactory
+                                    ctx.BaseClassTypes
+                                    returnType
+                                    returnValue
+                                    state
+
+                            CliType.ObjectRef (Some addr), state
+                        else
+                            match returnValue with
+                            | EvalStackValue.ObjectRef addr -> CliType.ObjectRef (Some addr), state
+                            | EvalStackValue.NullObjectRef -> CliType.ObjectRef None, state
+                            | other ->
+                                // Re-derive the target purely to name it: we are aborting anyway, so
+                                // the cost does not matter and a stale name could not affect any
+                                // result.
+                                let _state, target = resolveTarget ctx operation state
+
+                                failwith
+                                    $"%s{operation}: expected an object reference from the reference-typed return of %s{target.Method.DeclaringType.Namespace}.%s{target.Method.DeclaringType.Name}::%s{target.Method.Name}, got %O{other}"
                     | _ ->
                         failwith
-                            $"%s{operation}: expected a return value above the re-entry marker on the eval stack, got %d{stack.Length} value(s): %A{stack}"
-
-                    let returnValue, state = IlMachineState.popEvalStack ctx.Thread state
-                    let _marker, state = IlMachineState.popEvalStack ctx.Thread state
-
-                    if NativeRuntimeTypeHelpers.argumentIsValueType ctx.BaseClassTypes state returnType then
-                        // `InvokeUtil::CreateObjectAfterInvoke` (reflectioninvocation.cpp:678): the
-                        // QCall's contract is to hand back a boxed value.
-                        let addr, state =
-                            UnaryMetadataObjectOps.boxValueType
-                                ctx.LoggerFactory
-                                ctx.BaseClassTypes
-                                returnType
-                                returnValue
-                                state
-
-                        CliType.ObjectRef (Some addr), state
-                    else
-                        match returnValue with
-                        | EvalStackValue.ObjectRef addr -> CliType.ObjectRef (Some addr), state
-                        | EvalStackValue.NullObjectRef -> CliType.ObjectRef None, state
-                        | other ->
-                            failwith
-                                $"%s{operation}: expected an object reference from the reference-typed return of %s{target.Method.DeclaringType.Namespace}.%s{target.Method.DeclaringType.Name}::%s{target.Method.Name}, got %O{other}"
+                            $"%s{operation}: expected a re-entry marker on the eval stack, optionally beneath one return value, got %d{stack.Length} value(s): %A{stack}"
 
                 let state =
                     IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state resultPtr returned
