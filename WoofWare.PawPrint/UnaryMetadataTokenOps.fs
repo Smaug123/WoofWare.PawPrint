@@ -294,6 +294,28 @@ module internal UnaryMetadataTokenOps =
 
             let target = resolved |> Option.defaultValue callSiteMethod
 
+            // Known limit, inherited rather than introduced here. When the receiver is a boxed
+            // value type and the slot resolves to a struct instance method, CoreCLR hands back the
+            // *unboxing* entry point — `GetMethodDescOfVirtualizedCode` (method.cpp) passes
+            // `pTargetMT->IsValueType()` as `forceBoxedEntryPoint` to
+            // `FindOrCreateAssociatedMethodDesc` — whose address differs from `ldftn S::M`. A
+            // `FunctionPointerTarget.Managed` names only a method, and its equality is nominal, so
+            // the two collapse to one value here.
+            //
+            // Calling through the pointer is unaffected, which is why the boxed-receiver case in
+            // `LdvirtftnVirtualDispatch.cs` passes: `callMethodWithCommitment` converts an
+            // `ObjectRef` receiver to a byref into the box for a value-type callee, which is what
+            // an unboxing stub does. Only pointer *identity* is lost, and observing that needs two
+            // pointers to the same struct method obtained by different routes — which C# cannot
+            // express, since it offers no way to take `ldftn` of a struct method against an object
+            // receiver.
+            //
+            // This cannot be guarded the way the sealed-declaring-type case above is: that shape is
+            // unreachable from C#, whereas this one is ordinary code (`ICounter c = someStruct;
+            // Func<int> f = c.Count;`) that works correctly today, so refusing it would remove
+            // working behaviour to protect an unobservable distinction. It is the same missing
+            // entry-point flavour already parked against `ActivatorCreateInstanceStructCtor.cs`;
+            // both consumers close together when `FunctionPointerTarget` can name one.
             logger.LogDebug (
                 "Pushed pointer to virtual function {LdVirtFtnAssembly}.{LdVirtFtnType}.{LdVirtFtnMethodName}, dispatched from {LdVirtFtnCallSite}",
                 target.DeclaringType.Assembly.Name,
