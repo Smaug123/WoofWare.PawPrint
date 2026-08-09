@@ -127,13 +127,7 @@ module internal MethodTableProjection =
         (handle : ConcreteTypeHandle)
         : (ConcreteType<ConcreteTypeHandle> * TypeInfo<GenericParamFromMetadata, TypeDefn>) option
         =
-        match AllConcreteTypes.lookup handle state.ConcreteTypes with
-        | None -> None
-        | Some concreteType ->
-            let assembly =
-                state._LoadedAssemblies.ByDefinitionName concreteType.Identity.AssemblyFullName
-
-            Some (concreteType, assembly.TypeDefs.[concreteType.Identity.TypeDefinition.Get])
+        AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes handle
 
     let private concreteTypeInfoOrFail
         (state : IlMachineState)

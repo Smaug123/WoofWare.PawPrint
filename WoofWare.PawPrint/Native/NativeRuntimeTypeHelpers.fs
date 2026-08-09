@@ -2056,16 +2056,11 @@ module ActivationInfo =
             state, ActivationInfo.Rejected (ActivationRejection.UnsupportedShape handle)
         | ConcreteTypeHandle.Concrete _ ->
 
-        let ct =
-            AllConcreteTypes.lookup handle state.ConcreteTypes
+        let ct, typeInfo =
+            AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes handle
             |> Option.defaultWith (fun () ->
                 failwith $"%s{operation}: ConcreteTypeHandle %O{handle} not found in AllConcreteTypes"
             )
-
-        let typeInfo =
-            state._LoadedAssemblies
-                .ByDefinitionName(ct.Identity.AssemblyFullName)
-                .TypeDefs.[ct.Identity.TypeDefinition.Get]
 
         if TypeInfo.NominallyEqual typeInfo baseClassTypes.Void then
             failwith
