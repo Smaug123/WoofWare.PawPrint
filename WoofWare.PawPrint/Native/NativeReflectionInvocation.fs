@@ -21,43 +21,18 @@ module internal NativeReflectionInvocation =
             DeclaringType : ConcreteTypeHandle
         }
 
-    /// Decode the `Signature` object behind a `pSig` ObjectHandleOnStack, and concretize the method
-    /// it describes.
+    /// Read `Signature._pMethod` and return the method-registry id it names.
     ///
-    /// The method comes from the Signature's `_pMethod` (a `RuntimeMethodHandleInternal`), i.e. from
-    /// the *identity* CoreCLR's `pSig->GetMethod()` also uses. Its parameter and return types then
-    /// come from PawPrint's own parsed signature rather than from a second read of the `_arguments`
-    /// / `_returnTypeORfieldType` reflection objects: CoreCLR reads those (`SignatureNative`
-    /// accessors, runtimehandles.h:345), but under PawPrint they are a *view* that
-    /// `Signature_Init` derived from this same `MethodInfo.Signature`, and binding a call against a
-    /// view rather than an identity is what lets the two drift apart silently.
+    /// This is the one and only read of mutable heap state that decides *which* method the
+    /// invocation binds, and it happens exactly once, on first entry, before anything that could run
+    /// guest code. CoreCLR likewise reads `pMeth` once, at QCall entry
+    /// (reflectioninvocation.cpp:337), and never again.
     ///
-    /// Everything this reads is mutable heap state, so *when* it is called matters. CoreCLR reads
-    /// `pMeth` once, at QCall entry (reflectioninvocation.cpp:337), and never again. PawPrint does
-    /// not yet match that, in one specific way:
-    ///
-    ///  * The first-entry branch is itself re-entrant. `ensureTypeInitialised` there can report
-    ///    `SuspendedForClassInit` — which the `.cctor` case in `sourcesPure/ReflectionInvokeMethod.cs`
-    ///    really does hit — and re-entry finds the eval stack still empty and runs this again. So on
-    ///    a first invocation that triggers a `.cctor`, this runs once before that `.cctor` and again
-    ///    after it, and the *second* answer is the one used.
-    ///  * Between that final read and the call itself no guest code runs, and the return type it
-    ///    yields is snapshotted into the re-entry marker, so the post-call classification cannot
-    ///    drift. `resolveTarget`'s other call site, on resumption, is on a branch that is already
-    ///    `failwith`ing and only names the target in the message.
-    ///
-    /// The residue is therefore: a `.cctor` that overwrote `Signature._pMethod` would make PawPrint
-    /// invoke the newly-named method where CoreCLR invokes the originally-named one. That is
-    /// unreachable today — writing the field needs `FieldInfo.SetValue`, whose
-    /// `RuntimeFieldHandle_SetValue` QCall is unimplemented — but closing it properly means carrying
-    /// the resolved identity across the suspension rather than re-reading it, which changes the
-    /// re-entry protocol's shape. See the PR discussion.
-    let private resolveTarget
-        (ctx : NativeCallContext)
-        (operation : string)
-        (state : IlMachineState)
-        : IlMachineState * InvokeTarget
-        =
+    /// The *id* is what gets snapshotted onto the eval stack rather than the resolved method,
+    /// because a registry id is a plain int64 that a `NativeIntSource.MethodHandlePtr` can carry
+    /// there, and `MethodHandleRegistry` is append-only — so resolving the same id later cannot
+    /// yield a different method, however the guest may since have rewritten `_pMethod`.
+    let private readMethodHandleId (ctx : NativeCallContext) (operation : string) (state : IlMachineState) : int64 =
         let sigPtr =
             NativeCall.objectHandleOnStackTarget operation state "pSig" ctx.Instruction.Arguments.[2]
 
@@ -74,10 +49,36 @@ module internal NativeReflectionInvocation =
         let pMethodField =
             IlMachineState.requiredOwnInstanceFieldId state signatureObj.ConcreteType "_pMethod"
 
-        let pMethod = AllocatedNonArrayObject.DereferenceFieldById pMethodField signatureObj
+        AllocatedNonArrayObject.DereferenceFieldById pMethodField signatureObj
+        |> NativeCall.methodHandleIdOfRuntimeMethodHandleInternal operation
+        |> Option.defaultWith (fun () ->
+            failwith $"%s{operation}: null RuntimeMethodHandleInternal in Signature._pMethod"
+        )
 
+    /// Concretize the method a snapshotted method-registry id names.
+    ///
+    /// The id comes from the Signature's `_pMethod`, i.e. from the *identity* CoreCLR's
+    /// `pSig->GetMethod()` also uses. The method's parameter and return types then come from
+    /// PawPrint's own parsed signature rather than from a second read of the `_arguments` /
+    /// `_returnTypeORfieldType` reflection objects: CoreCLR reads those (`SignatureNative`
+    /// accessors, runtimehandles.h:345), but under PawPrint they are a *view* that `Signature_Init`
+    /// derived from this same `MethodInfo.Signature`, and binding a call against a view rather than
+    /// an identity is what lets the two drift apart silently.
+    ///
+    /// Taking the id as a parameter rather than reading `_pMethod` itself is what makes this safe to
+    /// call more than once: every call in a given invocation resolves the same id.
+    let private resolveTarget
+        (ctx : NativeCallContext)
+        (operation : string)
+        (methodHandleId : int64)
+        (state : IlMachineState)
+        : IlMachineState * InvokeTarget
+        =
         let identity =
-            NativeRuntimeMethodHandle.resolveMetadataIdentityFromArg operation state pMethod
+            match MethodHandleRegistry.resolveMethodFromId methodHandleId state.MethodHandles with
+            | Some (MethodHandle.FromMetadata identity) -> identity
+            | None ->
+                failwith $"%s{operation}: method-registry id %d{methodHandleId} did not resolve to a known MethodHandle"
 
         let methodInfo =
             NativeRuntimeMethodHandle.methodInfoOfMetadataIdentity operation state identity
@@ -441,16 +442,16 @@ module internal NativeReflectionInvocation =
             let resultPtr =
                 NativeCall.objectHandleOnStackTarget operation state "result" instruction.Arguments.[4]
 
-            match state.ThreadState.[ctx.Thread].MethodState.EvaluationStack.Values with
-            | [] ->
-                // First entry.
-                let state, target = resolveTarget ctx operation state
-                rejectUnsupportedShapes ctx operation state target
-
-                // CoreCLR's `pMeth->EnsureActive()`. Suspending here is safe to be re-entered
-                // through: the eval stack is still empty, so the handler re-runs from the top, and
-                // everything above this point is idempotent (concretization memoises into
-                // append-only registries rather than being free of state change).
+            // The tail shared by the two pre-call phases: initialise the declaring type, and
+            // once it is initialised, issue the call. Reached directly on first entry, and
+            // again on each re-entry while a `.cctor` this invocation triggered is still
+            // running.
+            let issueCall (target : InvokeTarget) (state : IlMachineState) : NativeHandlerResult option =
+                // CoreCLR's `pMeth->EnsureActive()`. This can suspend to run a `.cctor`, which is
+                // guest code: the `sourcesPure/ReflectionInvokeMethod.cs` class-init case really does
+                // take that path. Re-entry therefore arrives with the snapshot marker on the stack
+                // and resolves from the id it carries, so nothing the `.cctor` does can change which
+                // method this goes on to invoke.
                 let state, typeInit =
                     IlMachineStateExecution.ensureTypeInitialised
                         ctx.LoggerFactory
@@ -529,6 +530,13 @@ module internal NativeReflectionInvocation =
                 // rather than by a separate marker shape. Two shapes are used here so the resumption
                 // match is exhaustive over the encoding and needs no handle lookup to interpret.
                 let state =
+                    // Swap the snapshot marker in place: the method-registry id it carried has done
+                    // its job (nothing after this point can suspend before the call, so the identity
+                    // can no longer be disturbed), and the slot is now needed for the return type.
+                    // Swapping rather than pushing a second marker is what keeps "class init still
+                    // pending" and "called, returned void" — both one slot deep — apart.
+                    let _idMarker, state = IlMachineState.popEvalStack ctx.Thread state
+
                     let marker =
                         match target.Method.Signature.ReturnType with
                         | MethodReturnType.Void -> CliType.ObjectRef None
@@ -588,6 +596,39 @@ module internal NativeReflectionInvocation =
                     // fail loudly rather than silently answering with the marker.
                     failwith
                         $"TODO: %s{operation} on %s{target.Method.DeclaringType.Namespace}.%s{target.Method.DeclaringType.Name}::%s{target.Method.Name}: the call did not commit (%O{commitment}), which the re-entry protocol cannot represent"
+
+            // The re-entry protocol. This native frame's eval stack *is* the state machine, and its
+            // four shapes are told apart by depth, plus — where two shapes share a depth — by the
+            // marker's `NativeIntSource` case:
+            //
+            //   []                                     first entry
+            //   [MethodHandlePtr id]                   target snapshotted; a `.cctor` is running
+            //   [NullObjectRef]                        called; the target returned void
+            //   [ret; TypeHandlePtr returnType]        called; the target returned a value
+            //
+            // The marker occupies one slot throughout and is swapped as the phase advances, which is
+            // what keeps the middle two apart.
+            match state.ThreadState.[ctx.Thread].MethodState.EvaluationStack.Values with
+            | [] ->
+                // First entry: read `Signature._pMethod` exactly once, and snapshot the id it names
+                // before anything that could run guest code.
+                let methodHandleId = readMethodHandleId ctx operation state
+                let state, target = resolveTarget ctx operation methodHandleId state
+                rejectUnsupportedShapes ctx operation state target
+
+                let state =
+                    IlMachineState.pushToEvalStack
+                        (CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle methodHandleId))
+                        ctx.Thread
+                        state
+
+                issueCall target state
+            | [ EvalStackValue.NativeInt (NativeIntSource.MethodHandlePtr methodHandleId) ] ->
+                // Re-entered while a `.cctor` this invocation triggered runs. Resolve from the
+                // snapshotted id rather than re-reading `_pMethod`, which the `.cctor` may have
+                // changed; `MethodHandleRegistry` is append-only, so the id still names what it did.
+                let state, target = resolveTarget ctx operation methodHandleId state
+                issueCall target state
             | stack ->
                 // Resumption: the target has returned. `EvalStack.Values` is top-first, so a
                 // non-void return sits *above* the marker.
@@ -623,10 +664,12 @@ module internal NativeReflectionInvocation =
                             | EvalStackValue.ObjectRef addr -> CliType.ObjectRef (Some addr), state
                             | EvalStackValue.NullObjectRef -> CliType.ObjectRef None, state
                             | other ->
-                                // Re-derive the target purely to name it: we are aborting anyway, so
-                                // the cost does not matter and a stale name could not affect any
-                                // result.
-                                let _state, target = resolveTarget ctx operation state
+                                // Re-read `_pMethod` and re-derive the target purely to name it in
+                                // the message. This is the one place the snapshot is deliberately
+                                // bypassed: we are aborting anyway, so a stale name cannot affect
+                                // any result, and naming the method beats naming its return type.
+                                let methodHandleId = readMethodHandleId ctx operation state
+                                let _state, target = resolveTarget ctx operation methodHandleId state
 
                                 failwith
                                     $"%s{operation}: expected an object reference from the reference-typed return of %s{target.Method.DeclaringType.Namespace}.%s{target.Method.DeclaringType.Name}::%s{target.Method.Name}, got %O{other}"
