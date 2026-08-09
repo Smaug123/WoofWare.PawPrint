@@ -2294,6 +2294,47 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack' ptr currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
+        | "System.Private.CoreLib", "Unsafe", "Subtract" ->
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L812-L833
+            // The CORECLR managed body throws PlatformNotSupportedException; the JIT replaces it
+            // with `sizeof !!T; conv.i; mul; sub`, which is exactly the `Unsafe.Add<T>(ref T, int32)`
+            // lowering above with `add` swapped for `sub`. So this walks the same element-offset
+            // path with the offset negated, and every byref shape `Add` supports is supported here
+            // by construction rather than by a parallel implementation.
+            let t =
+                match Seq.toList methodToCall.Generics with
+                | [ t ] -> t
+                | _ -> failwith "bad generics Unsafe.Subtract"
+
+            // Only the `(ref T, int32)` overload. `(ref T, IntPtr)`, `(ref T, nuint)` and
+            // `(void*, int32)` are separate JIT intrinsics; the `nuint` one in particular cannot
+            // share this arm, because its element offset is *unsigned* and so does not negate the
+            // way a signed one does.
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteByref tFromParam ; ConcreteInt32 state.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteByref tFromRet) when tFromParam = t && tFromRet = t -> ()
+            | _ ->
+                failwith
+                    $"TODO: Unsafe.Subtract: only the (ref T, int32) overload is implemented; got params %A{methodToCall.Signature.ParameterTypes} and return %A{methodToCall.Signature.ReturnType}"
+
+            let offset, state = IlMachineState.popEvalStack currentThread state
+            let src, state = IlMachineState.popEvalStack currentThread state
+
+            let offset = int32ValueArgument "Unsafe.Subtract" offset
+
+            // Negate at native-int width, which is where the IL's `mul`/`sub` happen. Doing it in
+            // int32 would wrap `Int32.MinValue` back to itself and move the byref 2^32 elements the
+            // wrong way; and narrowing the result would refuse walks the element walk can represent
+            // perfectly well (`Subtract(ref a[-1], Int32.MinValue)` lands on `Int32.MaxValue`).
+            // Whether the destination is representable depends on the source byref's shape, so that
+            // judgement belongs to `offsetManagedPointerByElements`, which can see it.
+            let ptr, state =
+                offsetManagedPointerByElements baseClassTypes state t (-(int64<int32> offset)) src
+
+            state
+            |> IlMachineState.pushToEvalStack' ptr currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> IntrinsicResult.Completed
         | "System.Private.CoreLib", "Unsafe", "AddByteOffset" ->
             // CoreCLR's managed body throws PlatformNotSupportedException; the JIT replaces
             // the call with raw byref + native-int addition. Both overloads (IntPtr and
