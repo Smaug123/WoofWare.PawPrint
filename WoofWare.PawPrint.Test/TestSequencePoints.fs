@@ -183,10 +183,6 @@ module TestSequencePoints =
         let dir = Path.Combine (Path.GetTempPath (), $"pawprint-pdb-%s{unique}")
 
         Directory.CreateDirectory dir |> ignore<DirectoryInfo>
-
-        // Named for the assembly it contains, as every real build names it: PawPrint looks for
-        // `<assembly file>.pdb` and ignores the file name recorded in the image's CodeView entry
-        // (see `PortablePdb.sidecarPath`), so a file renamed after compilation finds no symbols.
         let dll = Path.Combine (dir, "PawPrintTestAssembly.dll")
         File.WriteAllBytes (dll, image)
 
@@ -210,6 +206,41 @@ module TestSequencePoints =
         match assy.TryResolveSourceLocation (tripleHandle assy) 0 with
         | None -> failwith "expected a source location for Triple's first instruction"
         | Some loc -> loc.StartLine |> shouldEqual 4
+
+    /// PawPrint looks for `<assembly file>.pdb` and pays no attention to the file name recorded
+    /// in the image's CodeView entry, so an assembly renamed after it was built keeps its symbols
+    /// as long as the PDB was renamed with it. Depending on the recorded name instead would also
+    /// mean deciding whether this filesystem is case-sensitive, and losing the symbols of any
+    /// assembly opened under casing that differs from what the compiler wrote down.
+    [<Test>]
+    let ``a renamed assembly finds the sidecar named after it`` () : unit =
+        let image, pdb = Roslyn.compileWithSidecarSymbols [ source ]
+
+        let unique = Guid.NewGuid().ToString "N"
+        let dir = Path.Combine (Path.GetTempPath (), $"pawprint-pdb-%s{unique}")
+        Directory.CreateDirectory dir |> ignore<DirectoryInfo>
+
+        // Deliberately *not* the assembly name the compiler recorded, which is
+        // PawPrintTestAssembly.
+        let dll = Path.Combine (dir, "SomethingElse.dll")
+        File.WriteAllBytes (dll, image)
+        File.WriteAllBytes (Path.ChangeExtension (dll, ".pdb"), pdb)
+
+        (readFile dll).SequencePoints.Count |> shouldBeGreaterThan 0
+
+    /// `originalPath` is whatever the caller was given, and for an in-memory image that may be a
+    /// descriptive label rather than a filename. Failing to interpret it must cost the symbols
+    /// and nothing else — certainly not the assembly.
+    [<TestCase "">]
+    [<TestCase "\000not a path">]
+    [<TestCase "<in-memory>">]
+    let ``an originalPath that is not a path costs symbols, not the assembly`` (label : string) : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use stream = new MemoryStream (Roslyn.compile [ source ], false)
+        let assy = AssemblyApi.read loggerFactory (Some label) stream
+
+        assy.SequencePoints.Count |> shouldEqual 0
+        assy.Methods.Count |> shouldBeGreaterThan 0
 
     /// Locate a named stream within a standalone portable PDB by walking the metadata root.
     /// A hard-coded offset would quietly stop pointing at the heap the moment a compiler changed

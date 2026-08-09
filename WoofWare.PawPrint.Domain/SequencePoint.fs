@@ -133,19 +133,22 @@ module PortablePdb =
     /// <para>
     /// Deliberately a single fixed path rather than a search. It is also the assembly parse
     /// cache's notion of "the symbols for this assembly" (see <c>AssemblyFileCacheKey</c>), and
-    /// that cache can only stay honest about symbols changing underneath it if the set of files
-    /// that could have been read is exactly this one. Deriving the path from the image's
-    /// CodeView entry instead — which is what a debugger does — would be more faithful, but the
-    /// cache key is computed from a path alone and cannot open the image to find out.
+    /// that cache can only stay honest about symbols changing underneath it if the file a read
+    /// could have consulted is exactly this one.
     /// </para>
     /// <para>
-    /// The cost of that trade is an assembly file renamed after it was built: its CodeView entry
-    /// still names the original PDB, we look for one matching the new name, and it silently
-    /// loses its symbols. An embedded PDB travels with the image and is unaffected.
+    /// <c>None</c> when <paramref name="assemblyPath" /> cannot be interpreted as a path at all.
+    /// Callers hand us whatever they were given, which for an in-memory image may be a
+    /// descriptive label rather than a filename; that must cost the symbols and nothing more.
     /// </para>
     /// </remarks>
-    let sidecarPath (assemblyPath : string) : string =
-        Path.GetFullPath (Path.ChangeExtension (assemblyPath, ".pdb"))
+    let sidecarPath (assemblyPath : string) : string option =
+        try
+            Some (Path.GetFullPath (Path.ChangeExtension (assemblyPath, ".pdb")))
+        with
+        | :? ArgumentException
+        | :? NotSupportedException
+        | :? PathTooLongException -> None
 
     /// <summary>
     /// Open this image's portable PDB, if it has one: a PDB embedded in the PE itself, or —
@@ -165,41 +168,46 @@ module PortablePdb =
         | Some entry -> Some (peReader.ReadEmbeddedPortablePdbDebugDirectoryData entry)
         | None ->
 
-        match originalPath with
-        | None -> None
-        | Some path ->
-            let wanted = sidecarPath path
+        match originalPath, Option.bind sidecarPath originalPath with
+        | None, _ -> None
+        | Some path, None ->
+            logger.LogDebug ("Not looking for symbols: {AssemblyPath} is not usable as a filesystem path", path)
 
-            // TryOpenAssociatedPortablePdb checks that the PDB it finds actually belongs to this
-            // image (the CodeView GUID must match), so a stale .pdb left beside a rebuilt
-            // assembly is rejected rather than silently misattributing every line in it.
-            let opener =
-                Func<string, Stream> (fun candidate ->
-                    try
-                        // SRM offers several candidates, among them the *absolute path recorded
-                        // in the image's own CodeView entry* — which names the machine that built
-                        // it. Accept only the conventional sidecar: PawPrint has no business
-                        // opening files at paths chosen by a third-party binary, and the parse
-                        // cache cannot account for any path but this one.
-                        if String.Equals (Path.GetFullPath candidate, wanted, StringComparison.Ordinal) then
-                            File.OpenRead candidate :> Stream
-                        else
-                            null
-                    with
-                    | :? IOException
-                    | :? UnauthorizedAccessException
-                    | :? ArgumentException
-                    | :? NotSupportedException ->
-                        // "No readable PDB beside the assembly" is the overwhelmingly common
-                        // case, not an error: null tells SRM to carry on to the next candidate.
+            None
+        | Some path, Some wanted ->
+
+        // TryOpenAssociatedPortablePdb checks that the PDB it is given actually belongs to this
+        // image (the CodeView GUID must match), so a stale .pdb left beside a rebuilt assembly is
+        // rejected rather than silently misattributing every line in it. That check is the whole
+        // reason to route through SRM rather than opening the file ourselves.
+        //
+        // Its *search*, on the other hand, we want no part of: it offers candidate paths derived
+        // from the image's own CodeView entry, including the absolute path on the machine that
+        // built it. So the provider ignores what it is asked for and answers with the one file we
+        // are willing to read. Filtering SRM's candidates by comparing paths would instead have
+        // to decide whether this filesystem is case-sensitive — and get it right, or lose the
+        // symbols of any assembly opened under different casing from the name the compiler
+        // recorded.
+        let opener =
+            Func<string, Stream> (fun _candidate ->
+                try
+                    if File.Exists wanted then
+                        File.OpenRead wanted :> Stream
+                    else
                         null
-                )
+                with
+                | :? IOException
+                | :? UnauthorizedAccessException ->
+                    // "No readable PDB beside the assembly" is the overwhelmingly common case,
+                    // not an error: null tells SRM there is nothing here.
+                    null
+            )
 
-            match peReader.TryOpenAssociatedPortablePdb (path, opener) with
-            | true, provider, _ when not (isNull provider) -> Some provider
-            | _ ->
-                logger.LogDebug ("No portable PDB found for assembly at {AssemblyPath}", path)
-                None
+        match peReader.TryOpenAssociatedPortablePdb (path, opener) with
+        | true, provider, _ when not (isNull provider) -> Some provider
+        | _ ->
+            logger.LogDebug ("No portable PDB found for assembly at {AssemblyPath}", path)
+            None
 
     /// <summary>
     /// Sequence points for every method in this image that has any, keyed by method definition
@@ -320,6 +328,25 @@ module PortablePdb =
         | :? UnauthorizedAccessException as e ->
             logger.LogWarning (
                 "Not permitted to read debug information for assembly at {AssemblyPath}: {DebugInfoError}",
+                describe originalPath,
+                e.Message
+            )
+
+            ImmutableDictionary.Empty
+        // `sidecarPath` has already rejected paths it cannot normalise, so these are a backstop
+        // rather than a known route: SRM validates the path it is handed too, and the invariant
+        // that matters is that *nothing* about optional symbols can refuse an assembly.
+        | :? ArgumentException as e ->
+            logger.LogWarning (
+                "Could not look for debug information for assembly at {AssemblyPath}: {DebugInfoError}",
+                describe originalPath,
+                e.Message
+            )
+
+            ImmutableDictionary.Empty
+        | :? NotSupportedException as e ->
+            logger.LogWarning (
+                "Could not look for debug information for assembly at {AssemblyPath}: {DebugInfoError}",
                 describe originalPath,
                 e.Message
             )

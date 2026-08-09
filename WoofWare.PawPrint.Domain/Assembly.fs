@@ -1208,17 +1208,18 @@ module Assembly =
 
     let private fileCacheKey (path : string) : AssemblyFileCacheKey =
         let fileInfo = FileInfo path
-        let pdbInfo = FileInfo (PortablePdb.sidecarPath fileInfo.FullName)
+
+        let pdbInfo = PortablePdb.sidecarPath fileInfo.FullName |> Option.map FileInfo
 
         {
             FullPath = fileInfo.FullName
             Length = fileInfo.Length
             LastWriteTimeUtc = fileInfo.LastWriteTimeUtc
             SidecarPdb =
-                if pdbInfo.Exists then
-                    Some (pdbInfo.Length, pdbInfo.LastWriteTimeUtc)
-                else
-                    None
+                match pdbInfo with
+                | Some pdbInfo when pdbInfo.Exists -> Some (pdbInfo.Length, pdbInfo.LastWriteTimeUtc)
+                | Some _
+                | None -> None
         }
 
     let private withLogger
