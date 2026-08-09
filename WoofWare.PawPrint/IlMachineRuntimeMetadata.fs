@@ -1020,16 +1020,27 @@ module IlMachineRuntimeMetadata =
     /// mint a fresh token object, register `token -> frames` in `IlMachineState.FrozenStackTraces`,
     /// and store the token in the exception's `_stackTrace`.
     ///
-    /// Deliberately *not* folded into `setExceptionStackTraceString`, which answers a different
-    /// question. That one asks "do I have frames worth rendering?" and correctly no-ops on an
-    /// empty list; this one asks "has this exception been thrown?", which an empty frame list does
-    /// not answer. Only the four dispatch-conclusion sites in `ExceptionDispatching` mean the
-    /// latter, so only they call this.
+    /// Deliberately a separate function from `setExceptionStackTraceString` rather than folded
+    /// into it: that one is a pure string projection and is also called from
+    /// `IlMachineStateExecution`, where a literal empty list means "I have nothing to say about
+    /// this cached exception"; this one is a claim about dispatch, and only the four
+    /// dispatch-conclusion sites in `ExceptionDispatching` make it.
     ///
     /// `_stackTrace` is what CoreLib's `Exception.HasBeenThrown` tests, so without this an
     /// exception PawPrint has dispatched still claims never to have been thrown, and
     /// `Exception.Source` silently answers null where the real runtime names the assembly.
     /// See `FrozenStackTraces` for why the token is opaque.
+    ///
+    /// An empty frame list mints no token, which matters more than it looks. `HasBeenThrown`
+    /// being true is what sends `Exception.StackTrace` down `GetStackTrace()` and into the
+    /// structured decoder, so a token with no frames would promise an answer PawPrint cannot
+    /// give and turn a readable `null` trace into a crash at the unimplemented
+    /// `StackTrace_GetStackFramesInternal`. That is not hypothetical: a `.cctor` that throws
+    /// under `Activator.CreateInstance<T>()` hits both the `WasInitialisingType` and
+    /// `WrapExceptionInTargetInvocation` wraps on one frame, and the second sees the freshly
+    /// synthesised `TypeInitializationException` before any frame has been appended to it.
+    /// Populating those synthesised wrappers with real frames is issue #865's business; until
+    /// then, claiming less is the honest move.
     let recordThrownStackTrace
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -1038,6 +1049,10 @@ module IlMachineRuntimeMetadata =
         (state : IlMachineState)
         : IlMachineState
         =
+        match stackTrace with
+        | [] -> state
+        | _ :: _ ->
+
         // Mirrors `setExceptionStackTraceString`: skeletal states in low-level dispatch tests may
         // lack either piece, and there is nothing to project into in that case.
         match

@@ -346,6 +346,34 @@ now carries a comment saying so — including why recording the partial trace st
 the write for cleanup handlers (`HasBeenThrown` would then be wrong, which is a worse answer to
 a different question).
 
+A second review pass, after rebasing onto current `origin/main`, raised two more. One was a
+**real regression I introduced**, and §5's analysis was wrong to miss it:
+
+- **Synthesised wrappers were frozen with an empty frame list.** A `.cctor` that throws under
+  `Activator.CreateInstance<T>()` hits *both* wraps on one frame — `WasInitialisingType`
+  substitutes a `TypeInitializationException`, and `WrapExceptionInTargetInvocation` then wraps
+  that. The second wrap sees the freshly synthesised TIE with `StackTrace = []`, so a token was
+  minted over no frames. That left `_stackTrace` non-null and `_stackTraceString` null, which is
+  exactly the combination that sends `Exception.StackTrace` past its short-circuit into
+  `GetStackTrace()` and crashes at the unimplemented `StackTrace_GetStackFramesInternal`.
+  Measured: real .NET answers with frames, PawPrint answered `null` before this branch, and
+  crashed on it. §5 claimed the four dispatch sites always see a non-empty list; that holds for a
+  single wrap but not for the chained one.
+
+  Fixed by making `recordThrownStackTrace` mint nothing for an empty frame list. The reasoning
+  is not §5's "nothing to render" but a stronger one: `HasBeenThrown` is a promise that the
+  structured decoder can answer, and a frameless token promises what PawPrint cannot deliver.
+  Regression test `sourcesPure/ActivatorCctorThrowsInnerStackTrace.cs`, verified to fail with
+  the guard removed and to pass with it.
+
+- **Filter-body exceptions are never recorded.** An exception escaping a callee invoked from a
+  filter is discarded (deliberately) when the filter is rejected, and nothing records a trace for
+  it. Real but *not* a regression and not a crash: `_stackTraceString` is missing for the same
+  reason and by the same omission, so `HasBeenThrown` stays false and `StackTrace` short-circuits
+  to null. Same family as #865 — PawPrint records a trace only where a handler is found, so
+  dispatch outcomes that are neither "handler found" nor "unhandled" record nothing. Added to
+  #865 rather than patched here.
+
 ## 4. Open questions for the user
 
 1. **Resolved (user, 2026-08-09): crashing on `.Source`/`.TargetSite` is accepted**, on the
