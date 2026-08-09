@@ -326,6 +326,26 @@ that is already registered means heap addresses have been reused, and fails loud
 
   Full suite after restoring: 2442 passed, 0 failed.
 
+## 3c. Review findings
+
+An OpenAI Codex review of the branch raised one substantive point, and it is correct:
+`tryFindAndEnterHandlerAtSearchPC` ignores its `_isFinally` flag, so the trace is snapshotted
+on entry to *cleanup* handlers too — where `cliException.StackTrace` holds only the frames
+unwound so far, because PawPrint interleaves handler search with cleanup instead of completing
+a first pass first as CoreCLR does.
+
+Verified, and **pre-existing**: reading the in-flight exception's `StackTrace` from inside a
+`finally` gives `at Program.B()` under PawPrint against `B`/`A`/`Main` on real .NET, on `main`
+as much as on this branch, because `setExceptionStackTraceString` already snapshots the same
+partial list at the same point. This PR extends that same list to the frozen-trace token, which
+has no decoder yet, so nothing newly observable diverges.
+
+Not fixed here: the fix is to give dispatch a real two-pass structure, which reshapes
+`ExceptionDispatching` rather than patching a call site. Filed as issue #865, and the call site
+now carries a comment saying so — including why recording the partial trace still beats skipping
+the write for cleanup handlers (`HasBeenThrown` would then be wrong, which is a worse answer to
+a different question).
+
 ## 4. Open questions for the user
 
 1. **Resolved (user, 2026-08-09): crashing on `.Source`/`.TargetSite` is accepted**, on the
