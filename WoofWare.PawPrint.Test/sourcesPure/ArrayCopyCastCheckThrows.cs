@@ -4,6 +4,20 @@ class Base { }
 
 class Derived : Base { }
 
+namespace Outer
+{
+    class Nested { }
+
+    class OtherNested { }
+}
+
+class Enclosing
+{
+    public class Inner { }
+
+    public class OtherInner { }
+}
+
 public class Program
 {
     public static int Main(string[] args)
@@ -42,6 +56,46 @@ public class Program
             {
                 Console.WriteLine(e.Message);
                 return 5;
+            }
+        }
+
+        // The EE renders those names with TypeHandle::GetName, which reads the TypeDef row's
+        // own namespace and name and does *not* walk the nesting chain -- so a nested type
+        // appears under its bare name, with neither its enclosing type nor a namespace. This
+        // differs from the reflection renderer behind Type.FullName, so it is worth pinning
+        // separately from the top-level case above.
+        object[] nestedMixed = new object[] { new Enclosing.Inner() };
+        Enclosing.OtherInner[] nestedDest = new Enclosing.OtherInner[1];
+
+        try
+        {
+            Array.Copy(nestedMixed, nestedDest, 1);
+            return 6;
+        }
+        catch (InvalidCastException e)
+        {
+            if (e.Message != "Unable to cast object of type 'Inner' to type 'OtherInner'.")
+            {
+                Console.WriteLine(e.Message);
+                return 7;
+            }
+        }
+
+        // A namespace, by contrast, does appear: it is on the TypeDef row itself.
+        object[] namespacedMixed = new object[] { new Outer.Nested() };
+        Outer.OtherNested[] namespacedDest = new Outer.OtherNested[1];
+
+        try
+        {
+            Array.Copy(namespacedMixed, namespacedDest, 1);
+            return 8;
+        }
+        catch (InvalidCastException e)
+        {
+            if (e.Message != "Unable to cast object of type 'Outer.Nested' to type 'Outer.OtherNested'.")
+            {
+                Console.WriteLine(e.Message);
+                return 9;
             }
         }
 

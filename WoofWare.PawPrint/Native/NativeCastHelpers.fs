@@ -232,9 +232,9 @@ module NativeCastHelpers =
             // `COMPlusThrowInvalidCastException(&obj, toTypeHnd)` (`src/coreclr/vm/excep.cpp`),
             // which formats IDS_EE_CANNOTCAST with both names from `TypeHandle::GetName`.
             let fromName =
-                runtimeTypeHandleName operation state formatNamespaceFlag (RuntimeTypeHandleTarget.Closed objType)
+                typeHandleGetName operation state (RuntimeTypeHandleTarget.Closed objType)
 
-            let toName = runtimeTypeHandleName operation state formatNamespaceFlag target
+            let toName = typeHandleGetName operation state target
 
             if fromName = toName then
                 // CoreCLR diverts equal names to `CheckAndThrowSameTypeAndAssemblyInvalidCastException`,

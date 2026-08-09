@@ -33,6 +33,23 @@ branch is covered via a generic parameter rather than `MakeByRefType()`.
 **No test can reach the `IDynamicInterfaceCastable` refusal**, because no guest in the suite
 implements that interface. It is a refusal path, not an answer path, so this is expected.
 
+**`TypeHandle::GetName` is a different renderer from `TypeString::AppendType`** — found by
+Codex review, which demonstrated it differentially. The exception message was first built with
+`runtimeTypeHandleName` (PawPrint's model of the reflection `ConstructName` path), and that
+disagrees for *nested* types: `TypeHandle::GetName` delegates to
+`MethodTable::_GetFullyQualifiedNameForClass` (`vm/class.cpp:2270`), which reads the TypeDef
+row's own namespace and name and does not walk the nesting chain, so `Enclosing.Inner` renders
+as bare `Inner`. (CoreCLR does have a nesting-aware sibling,
+`_GetFullyQualifiedNameForClassNestedAware`, producing `Enclosing+Inner`; `GetName` does not
+call it.) PawPrint's `TypeInfo.fullName` is nesting-aware and answered `Enclosing.Inner`.
+Fixed by adding `NativeRuntimeTypeHelpers.typeHandleGetName`, modelling `TypeHandle::GetName`
+directly and delegating only the *generic arguments* to the reflection renderer, which is what
+`TypeString::AppendInst`'s default `FormatNamespace` does. `ArrayCopyCastCheckThrows.cs` gained
+nested and namespaced cases; both are differentially checked, and reverting the renderer kills
+the test. This also fixes the choice of diagnostic: two nested types sharing a simple name now
+correctly reach the `IDS_EE_CANNOTCASTSAME` branch (which PawPrint refuses loudly) rather than
+silently taking the ordinary message.
+
 ## What was blocked before this change
 
 Any guest reaching `Type.IsInstanceOfType`, `Array.SetValue` on a reference-typed array, or the
@@ -125,8 +142,8 @@ All four are `sourcesPure` cases, so each is differentially compared against rea
 | `IsInstanceOfTypeQCall.cs` | the answer matrix: interfaces, base classes, arrays, SZ-array implicit interfaces, generic variance, the Nullable branch, and an exact-identity control that short-circuits before the QCall |
 | `IsInstanceOfTypeTypeDescTarget.cs` | the TypeDesc branch, via a bare generic parameter |
 | `ArraySetValueCastCheck.cs` | the non-throwing arm through `Array.SetValue` |
-| `ArrayCopyCastCheckThrows.cs` | the throwing arm through `Array.Copy`, asserting the exact `IDS_EE_CANNOTCAST` message text |
+| `ArrayCopyCastCheckThrows.cs` | the throwing arm through `Array.Copy`, asserting the exact `IDS_EE_CANNOTCAST` message text for top-level, nested and namespaced types |
 
 Mutation-checked: disabling the Nullable branch, disabling the TypeDesc branch, never throwing,
-and altering the message text are each killed by exactly one of the above, and by the expected
-one.
+altering the message text, and swapping `typeHandleGetName` back for the reflection renderer
+are each killed by exactly one of the above, and by the expected one.
