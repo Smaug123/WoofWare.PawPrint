@@ -242,15 +242,24 @@ type WhatWeDid =
     | ThrowingTypeInitializationException
     /// The thread completed a step (no frame change, no suspension) and the guest explicitly
     /// requested that the scheduler consider running another thread before resuming this one
-    /// (e.g. `Thread.Yield()`). Under today's scheduling policy this has the same observable
-    /// effect as `Executed`: `Scheduler.chooseNext`'s signature is `(lastRan, state)` and does
-    /// not consume the previous outcome, so the round-robin policy is hint-insensitive. The
-    /// variant exists so a future fuzz/pruning policy at the driver/scheduler boundary can
-    /// distinguish voluntary yields from forced context switches (e.g. for coverage weighting,
-    /// or to constrain the next-thread choice). Surfacing the hint to `chooseNext` itself is
-    /// a separate later change — either widen its signature, or carry the last outcome on
-    /// the state — neither of which this variant alone prescribes.
-    | VoluntaryYield
+    /// (`Thread.Yield()` and `Thread.Sleep(0)`).
+    ///
+    /// `Scheduler.onStepOutcome` is the *only* place that acts on this: it draws the policy's
+    /// honour-the-yield coin and, if honoured, charges the yielder a `ThreadState.YieldDebt`
+    /// so the scheduler holds it out of the candidate set until its contemporaries have run.
+    /// Concentrating that here rather than at the QCall handler is deliberate and load-bearing:
+    /// the driver routes every `ExecutionResult.Stepped` through `onStepOutcome`, so it is
+    /// impossible to emit a yield signal without the scheduler's bookkeeping happening. A
+    /// handler that returns `NativeHandlerResult.yielded` cannot forget to consult the
+    /// scheduler, because it never consults the scheduler itself.
+    ///
+    /// `reportsSwitch` says whether the yielding call reports the outcome back to the guest.
+    /// `Thread.Yield()` returns `Interop.BOOL` (CoreCLR's `SwitchToThread` reports whether it
+    /// actually switched away), so its handler leaves an optimistic FALSE on the eval stack
+    /// which `onStepOutcome` rewrites to TRUE iff a switch is now guaranteed — the same
+    /// optimistic-push-then-rewrite contract `Scheduler.fireJoinTimeout` uses. `Thread.Sleep(0)`
+    /// returns `void` and so has no slot to rewrite; it passes `false`.
+    | VoluntaryYield of reportsSwitch : bool
 
 /// An externally-observable side-effect that a single interpreter step requests
 /// from the driver (the imperative shell around the functional core). The
@@ -372,7 +381,7 @@ type NativeHandlerResult =
     /// equivalent to `Completed` for frame-management purposes; distinct so the guest's
     /// yield intent reaches the scheduler boundary unmangled — see `WhatWeDid.VoluntaryYield`
     /// for the longer-term motivation.
-    | Yielded of IlMachineState * StepEffect
+    | Yielded of IlMachineState * reportsSwitch : bool * StepEffect
     /// Native handler synchronously pushed a managed callee on top of itself for re-entry:
     /// the handler will be invoked again after the callee returns, typically via re-entry
     /// markers placed on the eval stack so the handler can distinguish first entry from
@@ -506,14 +515,20 @@ module NativeHandlerResult =
     let completedWith (effect : StepEffect) (state : IlMachineState) : NativeHandlerResult =
         NativeHandlerResult.Completed (state, effect)
 
-    /// Native handler completed normally AND requested a scheduler yield. Use this only
-    /// for genuine yield primitives (today: `ThreadNative_YieldThread`). The dispatcher
-    /// pops the native frame and reports `WhatWeDid.VoluntaryYield`. Handlers that simply
-    /// finish — even ones that touched shared state — should use `completed`; the yield
-    /// signal is reserved for the guest-requested hint, not derived from the handler's
-    /// side-effects.
-    let yielded (state : IlMachineState) : NativeHandlerResult =
-        NativeHandlerResult.Yielded (state, StepEffect.NoEffect)
+    /// Native handler completed normally AND requested a scheduler yield. Use this only for
+    /// genuine yield primitives (today: `ThreadNative_YieldThread` and `ThreadNative_Sleep`
+    /// with a zero timeout). The dispatcher pops the native frame and reports
+    /// `WhatWeDid.VoluntaryYield`, which is where the scheduler charges the yield debt.
+    /// Handlers that simply finish — even ones that touched shared state — should use
+    /// `completed`; the yield signal is reserved for the guest-requested hint, not derived
+    /// from the handler's side-effects.
+    ///
+    /// `reportsSwitch` must be `true` exactly when the handler has left an optimistic
+    /// `Interop.BOOL.FALSE` on the eval stack for `Scheduler.onStepOutcome` to rewrite — i.e.
+    /// when the guest-visible signature returns whether the switch happened. See
+    /// `WhatWeDid.VoluntaryYield`.
+    let yielded (reportsSwitch : bool) (state : IlMachineState) : NativeHandlerResult =
+        NativeHandlerResult.Yielded (state, reportsSwitch, StepEffect.NoEffect)
 
     /// Native handler pushed a managed callee on top of itself for re-entry. The
     /// handler will be re-invoked on a future step (typically distinguishing first
@@ -570,7 +585,7 @@ module NativeHandlerResult =
         // bubble up as a sub-call control-flow signal because the handler's own
         // outcome is what the dispatcher records, and the handler can decide for
         // itself whether to yield (via `NativeHandlerResult.yielded`) when it returns.
-        | WhatWeDid.VoluntaryYield -> None
+        | WhatWeDid.VoluntaryYield _ -> None
         | WhatWeDid.SuspendedForClassInit -> Some (suspendedForClassInit state)
         | WhatWeDid.BlockedOnClassInit blockedBy -> Some (blockedOnClassInit blockedBy state)
         | WhatWeDid.ThrowingTypeInitializationException -> Some (throwingTypeInitializationException state)

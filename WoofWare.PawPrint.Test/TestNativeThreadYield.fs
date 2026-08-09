@@ -121,20 +121,31 @@ public static class Entry
 
         let stateAfter =
             match NativeThreading.tryExecuteQCall "ThreadNative_YieldThread" ctx with
-            | Some (NativeHandlerResult.Yielded (state, effect)) ->
+            | Some (NativeHandlerResult.Yielded (state, reportsSwitch, effect)) ->
                 // The handler must not emit any externally-observable effect — Thread.Yield is
                 // a scheduler hint, not an I/O operation. The dispatcher will translate
-                // `Yielded` into `ExecutionResult.Stepped (_, WhatWeDid.VoluntaryYield, effect)`,
+                // `Yielded` into `ExecutionResult.Stepped (_, WhatWeDid.VoluntaryYield _, effect)`,
                 // so any non-`NoEffect` here would leak through to the driver.
                 effect |> shouldEqual StepEffect.NoEffect
+                // `Thread.Yield()` returns Interop.BOOL, so the handler owes the scheduler an
+                // optimistic slot to rewrite with the real answer. Asserting the flag here
+                // pins the half of the contract that lives on this side of the seam.
+                reportsSwitch |> shouldEqual true
                 state
             | Some other -> failwith $"unexpected ThreadNative_YieldThread execution result: %O{other}"
             | None -> failwith "ThreadNative_YieldThread QCall did not match"
 
         let returnValue, _ = IlMachineState.popEvalStack prepared.EntryThread stateAfter
 
-        // Interop.BOOL.FALSE is Int32 0; pushed by the handler so the IL caller's
-        // `YieldInternal() != Interop.BOOL.FALSE` evaluates to `false`. Returning TRUE here
-        // would lie under the current `Scheduler.chooseNext` contract (no guarantee a
-        // different thread will run before the yielder observes the return).
+        // Interop.BOOL.FALSE is Int32 0, so the IL caller's
+        // `YieldInternal() != Interop.BOOL.FALSE` evaluates to `false`.
+        //
+        // This is the handler's *optimistic* push, not the final answer: the handler cannot
+        // know whether a switch will happen, so it pushes FALSE and
+        // `Scheduler.onStepOutcome` rewrites the slot to TRUE iff it charges a yield debt.
+        // Here that rewrite has deliberately not run — we invoked the QCall directly rather
+        // than going through the driver — so FALSE is what we must see. It is also the
+        // correct *final* answer for this state, since the entry thread is the only Runnable
+        // thread and a yield with nobody to yield to switches to nobody.
+        // `TestSchedulerYieldDebt` covers the TRUE case, where a peer is Runnable.
         returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))

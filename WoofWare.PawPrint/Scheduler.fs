@@ -28,6 +28,26 @@ module Scheduler =
     /// surface as a knob if a future harness needs to fuzz the constant itself.
     let private P_BASE : double = 0.01
 
+    /// Probability that the `Pct` policy honours a guest yield (`Thread.Yield()`,
+    /// `Thread.Sleep(0)`) by charging the yielder a `ThreadState.YieldDebt`. On the
+    /// complementary draw the yield is declined: nothing happens, exactly as when a real
+    /// `SwitchToThread` returns without switching.
+    ///
+    /// Declines exist for *reachability*, not for frequency. A schedule in which a yield is
+    /// not respected is a real execution — it is why `Thread.Yield()` returns a `bool` at all
+    /// — so a scheduler that honoured every yield would delete those schedules from the space
+    /// a fuzzing harness can explore. But the common real-world decline, "no other thread was
+    /// ready", is already modelled exactly and deterministically by the empty-debt branch of
+    /// `chargeYieldDebt`; what this constant buys is the *rarer* case where a peer was ready
+    /// and the OS declined anyway. Hence a value near 1: at 0.9 the fairness effect engages
+    /// within a couple of yields, while a spinner's measured 16-yield `SpinWait` warmup phase
+    /// contains at least one decline with probability ~0.81.
+    ///
+    /// `RoundRobin` does not draw at all — see `chargeYieldDebt`. Like `P_BASE` this is a
+    /// hand-calibrated constant rather than a derived one; deriving it from the runnable-set
+    /// size buys nothing, since retries are geometric at any constant rate.
+    let private P_HONOUR_YIELD : double = 0.9
+
     /// Enumerate the Runnable threads in ascending id order. Used by every
     /// policy: the set of candidates is policy-independent, only the choice
     /// among them differs. Kept private so policies stay enumerable here.
@@ -46,6 +66,85 @@ module Scheduler =
             | ThreadStatus.Runnable -> tid :: acc
             | _ -> acc
         )
+
+    /// Is `thread`'s yield debt discharged, given the currently-Runnable set? A debt member
+    /// that is no longer Runnable has left the run queue and cannot be waited for, so it stops
+    /// counting; this is what makes the debt self-clearing across park/wake and termination,
+    /// with no cleanup pass anywhere.
+    let private debtDischarged (runnable : ThreadId list) (ts : ThreadState) : bool =
+        ts.YieldDebt.IsEmpty
+        || not (runnable |> List.exists (fun tid -> ts.YieldDebt |> Set.contains tid))
+
+    /// The Runnable threads the policy may choose among: those whose yield debt is discharged.
+    /// Every policy filters through here, so fairness is a property of the schedule space
+    /// rather than of any one policy.
+    ///
+    /// **This is never empty when `runnableThreads` is non-empty**, which is what keeps
+    /// `chooseNext`'s deadlock contract (`None` iff nothing is Runnable) intact. Proof: a debt
+    /// is only ever charged to a thread during that thread's own step, so any thread holding
+    /// one has run at least once; and every live member of that debt was Runnable when the
+    /// debt was charged and has not run since (a member that ran was discharged by
+    /// `dischargeYieldDebts`). So a thread with live debt necessarily ran more recently than
+    /// every live member of its debt. Now take the Runnable thread whose last run is least
+    /// recent, counting "never ran" as least recent of all — a never-run thread has an empty
+    /// debt by construction, and any other candidate for that position cannot hold live debt,
+    /// since its members would have to be Runnable and yet less recent still. Either way that
+    /// thread is a candidate.
+    ///
+    /// The proof leans on the discharge lemma — *if a thread ran, it left every debt* — which
+    /// in turn requires every step to reach `onStepOutcome`. Rather than trust that, we check
+    /// the conclusion and fail loudly: a silent fallback to the unfiltered set would convert a
+    /// structural bug into a subtle fairness anomaly, and this project would rather crash.
+    let private candidates (state : IlMachineState) : ThreadId list =
+        let runnable = runnableThreads state
+
+        match runnable with
+        | [] -> []
+        | _ ->
+
+        let eligible =
+            runnable
+            |> List.filter (fun tid -> debtDischarged runnable (Map.find tid state.ThreadState))
+
+        match eligible with
+        | [] ->
+            let debts =
+                runnable
+                |> List.map (fun tid -> tid, (Map.find tid state.ThreadState).YieldDebt)
+
+            failwith
+                $"Scheduler.candidates: every Runnable thread has an outstanding yield debt (%A{debts}), which the debt invariant makes impossible — a thread's debt can only name threads that were Runnable when it was charged, and members are discharged as they run. Reaching here means some execution path retired a step without routing its outcome through Scheduler.onStepOutcome, so debts are no longer being discharged."
+        | _ -> eligible
+
+    /// Remove `ran` from every outstanding yield debt: it has taken its step, so anyone waiting
+    /// to see it run has been satisfied. Called for every step outcome, since every step
+    /// discharges, not just yields.
+    ///
+    /// Short-circuits on the common path the way the `BlockedOnClassInit` wake scan next door
+    /// does: this runs once per interpreted IL instruction and almost never has anything to do,
+    /// because outstanding debts exist only during yield bursts.
+    let private dischargeYieldDebts (ran : ThreadId) (state : IlMachineState) : IlMachineState =
+        let anyDebtNames =
+            state.ThreadState |> Map.exists (fun _ ts -> ts.YieldDebt |> Set.contains ran)
+
+        if not anyDebtNames then
+            state
+        else
+
+        { state with
+            ThreadState =
+                state.ThreadState
+                |> Map.map (fun _ ts ->
+                    // Guard the rewrite so untouched threads keep their existing record rather
+                    // than being reallocated with an identical debt.
+                    if ts.YieldDebt |> Set.contains ran then
+                        { ts with
+                            YieldDebt = ts.YieldDebt |> Set.remove ran
+                        }
+                    else
+                        ts
+                )
+        }
 
     /// Does any thread currently have status `Runnable`? Used by the
     /// deadline-advance loop in `Program.fs` to decide whether jumping the
@@ -79,7 +178,7 @@ module Scheduler =
     let chooseNext (lastRan : ThreadId) (state : IlMachineState) : IlMachineState * ThreadId option =
         match state.Scheduling with
         | SchedulerState.RoundRobin ->
-            let runnable = runnableThreads state
+            let runnable = candidates state
 
             let chosen =
                 match runnable with
@@ -93,7 +192,13 @@ module Scheduler =
 
             state, chosen
         | SchedulerState.Pct pct ->
+            // Priorities are sampled over the *unfiltered* Runnable set, but the argmax runs
+            // over the candidates. Keeping the sampling domain unfiltered preserves the
+            // documented invariant that the sampling sequence is a function of the seed plus
+            // the set of threads ever seen Runnable — if the filter drove it, the RNG stream
+            // would depend on yield timing.
             let runnable = runnableThreads state
+            let eligible = candidates state
 
             match runnable with
             | [] ->
@@ -110,13 +215,15 @@ module Scheduler =
                 // in which they were created.
                 let pct = PctState.ensurePriorityFor runnable pct
 
-                // Deterministic argmax over `runnable`. F#'s `List.maxBy` keeps
-                // the first element on ties (it uses strict `>`); `runnable`
+                // Deterministic argmax over `eligible`. F#'s `List.maxBy` keeps
+                // the first element on ties (it uses strict `>`); `eligible`
                 // is sorted by ThreadId ascending, so ties resolve to the
                 // lowest id — purely for reproducibility, since with `nextDouble`
                 // sampling from a 53-bit mantissa a tie is astronomically rare.
+                // `Map.find` is total here: `eligible` is a subset of `runnable`,
+                // which `ensurePriorityFor` has just covered.
                 let argmax (priorities : Map<ThreadId, double>) : ThreadId =
-                    runnable |> List.maxBy (fun tid -> Map.find tid priorities)
+                    eligible |> List.maxBy (fun tid -> Map.find tid priorities)
 
                 let current = argmax pct.Priorities
 
@@ -478,7 +585,7 @@ module Scheduler =
     let onWorkerSpawned (worker : ThreadId) (initOutcome : WhatWeDid) (state : IlMachineState) : IlMachineState =
         match initOutcome with
         | WhatWeDid.Executed
-        | WhatWeDid.VoluntaryYield
+        | WhatWeDid.VoluntaryYield _
         | WhatWeDid.SuspendedForClassInit
         | WhatWeDid.SuspendedForManagedCall
         | WhatWeDid.ThrowingTypeInitializationException ->
@@ -524,17 +631,78 @@ module Scheduler =
     /// cctor hasn't completed. This is correct but wasteful;
     /// it's cheap to fix once the scheduler owns the
     /// policy, which is only true after this refactor.
+    /// Act on a guest yield by `ran`: draw the policy's honour coin and, if it comes up
+    /// honoured, charge `ran` a yield debt naming every *other* currently-Runnable thread, so
+    /// `candidates` holds it out until they have each taken a step. Returns the new state and
+    /// whether a switch away from `ran` is now guaranteed.
+    ///
+    /// That returned flag is an exact iff, not an approximation, and it is what
+    /// `Thread.Yield()` reports to the guest: a non-empty debt excludes `ran` from
+    /// `candidates` until its members run, so under *any* policy somebody else runs first;
+    /// an empty debt (nobody else was Runnable, or the coin declined) excludes nothing, so
+    /// nothing is guaranteed. This is why the debt lives in `ThreadState` rather than the
+    /// yield being a transient hint — the guarantee has to be inspectable to be reported.
+    ///
+    /// `RoundRobin` takes no draw at all and always honours. That is a deliberate asymmetry
+    /// rather than `P_HONOUR_YIELD = 1.0` through a shared path: `RoundRobin` is the
+    /// reproducible baseline and is documented as consuming no randomness whatsoever, so
+    /// introducing a draw there would break that contract for every existing run. `Pct` is the
+    /// exploration policy, and "the OS declined to switch" is an exploration feature.
+    ///
+    /// Under `Pct` the draw is unconditional — burned even when `ran` is the only Runnable
+    /// thread and the outcome cannot matter — matching the always-burn Bernoulli in
+    /// `chooseNext`, so the seed is consumed at a rate that depends only on the sequence of
+    /// yields and not on how many threads happened to be Runnable at each one.
+    let private chargeYieldDebt (ran : ThreadId) (state : IlMachineState) : IlMachineState * bool =
+        let others = runnableThreads state |> List.filter (fun tid -> tid <> ran)
+
+        let state, honour =
+            match state.Scheduling with
+            | SchedulerState.RoundRobin -> state, true
+            | SchedulerState.Pct pct ->
+                let sample, rng = NonCryptoRandom.nextDouble pct.Rng
+
+                let state =
+                    { state with
+                        Scheduling =
+                            SchedulerState.Pct
+                                { pct with
+                                    Rng = rng
+                                }
+                    }
+
+                state, sample < P_HONOUR_YIELD
+
+        if not honour || List.isEmpty others then
+            state, false
+        else
+
+        let state =
+            { state with
+                ThreadState =
+                    state.ThreadState
+                    |> Map.change
+                        ran
+                        (Option.map (fun ts ->
+                            { ts with
+                                YieldDebt = Set.ofList others
+                            }
+                        ))
+            }
+
+        state, true
+
     let onStepOutcome (ran : ThreadId) (outcome : WhatWeDid) (state : IlMachineState) : IlMachineState =
-        match outcome with
-        // VoluntaryYield is identical in its scheduler effect to Executed: the yielder
-        // made forward progress, so any thread parked BlockedOnClassInit on `ran` must
-        // be woken to re-check its blocker. The hint (that the guest *asked* to yield)
-        // is preserved for the driver-loop boundary — `chooseNext`'s current signature
-        // doesn't consume the previous outcome, so the round-robin policy is hint-
-        // insensitive today, but the variant exists so a future fuzz/pruning policy
-        // can branch here without a wider refactor.
-        | WhatWeDid.Executed
-        | WhatWeDid.VoluntaryYield ->
+        // Every step discharges, whatever else it did: `ran` has taken its turn, so any thread
+        // waiting to see it run is satisfied. Must happen for all outcomes, including the
+        // blocking ones — a thread that blocks has still run, and `candidates`' non-emptiness
+        // proof depends on that being true without exception.
+        let state = dischargeYieldDebts ran state
+
+        // A yielder made forward progress just as an ordinary `Executed` step does, so both
+        // wake any thread parked BlockedOnClassInit on `ran`. They diverge only afterwards:
+        // a yield additionally goes to the back of the run queue.
+        let wakeClassInitWaiters (state : IlMachineState) : IlMachineState =
             // This runs on every scheduler tick (once per interpreted IL instruction),
             // and almost never has anything to do, so short-circuit first.
             let anyBlockedOnRan =
@@ -563,6 +731,37 @@ module Scheduler =
             { state with
                 ThreadState = threadState
             }
+
+        match outcome with
+        | WhatWeDid.Executed -> wakeClassInitWaiters state
+        | WhatWeDid.VoluntaryYield reportsSwitch ->
+            // Wake first, then charge: the run queue the yielder goes to the back of is the
+            // one that exists at the end of its step, so a thread this very step unblocked is
+            // owed a turn too. If it promptly re-blocks it drops out of the debt anyway.
+            let state = wakeClassInitWaiters state
+            let state, switched = chargeYieldDebt ran state
+
+            if not reportsSwitch then
+                state
+            else
+
+            // Optimistic-push-then-rewrite, as `fireJoinTimeout` does for Join's return value:
+            // the handler could not know whether the switch would happen (that is the
+            // scheduler's decision, taken here), so it left `Interop.BOOL.FALSE` behind for us
+            // to correct. Pop-and-repush unconditionally, checking what we find, so that a
+            // handler which sets `reportsSwitch` without leaving the slot fails loudly rather
+            // than silently corrupting its caller's eval stack.
+            let popped, state = IlMachineState.popEvalStack ran state
+
+            match popped with
+            | EvalStackValue.Int32 _ -> ()
+            | other ->
+                failwith
+                    $"Scheduler.onStepOutcome: thread %O{ran} reported a VoluntaryYield with reportsSwitch=true, so the yield handler should have left an optimistic Interop.BOOL.FALSE on its eval stack for rewriting, but the top of stack was %O{other}. Either the handler failed to push, or a handler that returns void passed reportsSwitch=true."
+
+            let result = if switched then 1 else 0
+
+            IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim result)) ran state
         | WhatWeDid.SuspendedForClassInit
         | WhatWeDid.SuspendedForManagedCall ->
             // Mid-call work: another frame is now on top of `ran` and will run on its next turn.

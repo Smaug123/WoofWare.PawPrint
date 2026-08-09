@@ -727,7 +727,7 @@ module NativeRuntimeTypeQCall =
                     NativeHandlerResult.throwingTypeInitializationException state |> Some
                 | WhatWeDid.SuspendedForManagedCall ->
                     failwith "logic error: ensureTypeInitialised cannot suspend for an arbitrary managed call"
-                | WhatWeDid.VoluntaryYield ->
+                | WhatWeDid.VoluntaryYield _ ->
                     failwith "logic error: ensureTypeInitialised cannot produce a VoluntaryYield"
                 | WhatWeDid.Executed ->
 

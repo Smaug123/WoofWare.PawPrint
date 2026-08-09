@@ -34,6 +34,7 @@ module TestSchedulerVoluntaryYield =
     let private stubThreadState (status : ThreadStatus) : ThreadState =
         {
             MethodStates = Map.empty
+            YieldDebt = Set.empty
             NextFrameId = 0
             ActiveMethodState = FrameId -1
             Status = status
@@ -73,7 +74,7 @@ module TestSchedulerVoluntaryYield =
                     t2, ThreadStatus.BlockedOnClassInit t0
                 ]
 
-        let after = Scheduler.onStepOutcome t0 WhatWeDid.VoluntaryYield state
+        let after = Scheduler.onStepOutcome t0 (WhatWeDid.VoluntaryYield false) state
 
         // Yielder's own status is untouched — VoluntaryYield is a hint, not a self-block.
         statusOf t0 after |> shouldEqual ThreadStatus.Runnable
@@ -94,19 +95,23 @@ module TestSchedulerVoluntaryYield =
                     t2, ThreadStatus.BlockedOnClassInit t1
                 ]
 
-        let after = Scheduler.onStepOutcome t0 WhatWeDid.VoluntaryYield state
+        let after = Scheduler.onStepOutcome t0 (WhatWeDid.VoluntaryYield false) state
 
         statusOf t0 after |> shouldEqual ThreadStatus.Runnable
         statusOf t1 after |> shouldEqual ThreadStatus.Runnable
         statusOf t2 after |> shouldEqual (ThreadStatus.BlockedOnClassInit t1)
 
     [<Test>]
-    let ``VoluntaryYield wakes match Executed exactly`` () : unit =
-        // Belt-and-braces: the scheduler comment promises VoluntaryYield is identical to
-        // Executed for wake-up purposes today. Compare both outcomes on the same input
-        // so a future divergence is caught even if the explicit assertions above are
-        // edited around. Snapshot all three threads' statuses to keep the assertion
-        // total rather than spot-checking.
+    let ``VoluntaryYield wakes match Executed exactly, and only the wakes`` () : unit =
+        // VoluntaryYield used to be *wholly* identical to Executed; it no longer is, because
+        // a yield now also charges the yielder a `YieldDebt`. What must stay identical is the
+        // class-init wake behaviour: yielding is still forward progress, so the same threads
+        // wake either way. Pinning both halves separately is the point — the wake logic must
+        // not drift, and the debt must be the *only* difference, so a future change that
+        // (say) parked the yielder would fail here rather than passing a statuses-only check.
+        //
+        // Snapshot all three threads' statuses to keep the wake assertion total rather than
+        // spot-checking.
         let state =
             baseState ()
             |> withThreads
@@ -116,13 +121,26 @@ module TestSchedulerVoluntaryYield =
                     t2, ThreadStatus.BlockedOnClassInit t1
                 ]
 
-        let afterYield = Scheduler.onStepOutcome t0 WhatWeDid.VoluntaryYield state
+        let afterYield = Scheduler.onStepOutcome t0 (WhatWeDid.VoluntaryYield false) state
         let afterExecuted = Scheduler.onStepOutcome t0 WhatWeDid.Executed state
 
         let statuses (s : IlMachineState) =
             [ t0 ; t1 ; t2 ] |> List.map (fun tid -> statusOf tid s)
 
         statuses afterYield |> shouldEqual (statuses afterExecuted)
+
+        // The debt names t1: it was woken by this very step, so it is part of the run queue
+        // the yielder goes to the back of. t2 is still blocked behind t1 and so is not owed a
+        // turn. Executed charges nothing.
+        let debtOf (tid : ThreadId) (s : IlMachineState) : Set<ThreadId> = s.ThreadState.[tid].YieldDebt
+
+        debtOf t0 afterYield |> shouldEqual (Set.ofList [ t1 ])
+        debtOf t0 afterExecuted |> shouldEqual Set.empty
+
+        // Nobody else is charged anything, either way.
+        for tid in [ t1 ; t2 ] do
+            debtOf tid afterYield |> shouldEqual Set.empty
+            debtOf tid afterExecuted |> shouldEqual Set.empty
 
     [<Test>]
     let ``onWorkerSpawned treats VoluntaryYield init outcome as Runnable`` () : unit =
@@ -136,6 +154,6 @@ module TestSchedulerVoluntaryYield =
             baseState ()
             |> withThreads [ t0, ThreadStatus.Runnable ; t1, ThreadStatus.Runnable ]
 
-        let after = Scheduler.onWorkerSpawned t1 WhatWeDid.VoluntaryYield state
+        let after = Scheduler.onWorkerSpawned t1 (WhatWeDid.VoluntaryYield false) state
 
         statusOf t1 after |> shouldEqual ThreadStatus.Runnable

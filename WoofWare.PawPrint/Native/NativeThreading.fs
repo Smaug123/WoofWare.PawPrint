@@ -602,10 +602,16 @@ module NativeThreading =
             if instruction.Arguments.Length <> 0 then
                 failwith $"%s{operation}: expected zero native arguments, got %d{instruction.Arguments.Length}"
 
+            // Optimistic `Interop.BOOL.FALSE`. We cannot know here whether the switch will
+            // happen: that is the scheduler's decision, taken in `Scheduler.onStepOutcome`
+            // when it sees our `WhatWeDid.VoluntaryYield true` and either charges a yield debt
+            // or declines. It rewrites this slot to TRUE iff a switch is now guaranteed, the
+            // same optimistic-push-then-rewrite contract `Scheduler.fireJoinTimeout` uses for
+            // `Thread.Join`'s return value.
             let state =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 0)) ctx.Thread state
 
-            NativeHandlerResult.yielded state |> Some
+            NativeHandlerResult.yielded true state |> Some
         | "ThreadNative_Sleep",
           "System.Private.CoreLib",
           "System.Threading",
@@ -642,10 +648,24 @@ module NativeThreading =
                 | CliType.Numeric (CliNumericType.Int32 i) -> i
                 | other -> failwith $"%s{operation}: expected int32 millisecondsTimeout, got %O{other}"
 
+            if millisecondsTimeout = 0 then
+                // `Thread.Sleep(0)` does not park: CoreCLR's `SleepEx(0, ...)` relinquishes
+                // the remainder of the caller's time slice to a ready thread of equal
+                // priority and returns immediately, without waiting for the clock. So it
+                // costs no virtual time — but it *is* a yield, and the BCL treats it as one:
+                // `SpinWait.SpinOnceCore` uses it as one of its backoff rungs, alternating it
+                // with `Thread.Yield()` for the first 20 iterations.
+                //
+                // Reporting it as a yield rather than as `completed` is what lets
+                // `Scheduler.onStepOutcome` charge the caller a yield debt. `reportsSwitch`
+                // is `false`: unlike `Thread.Yield()`, `Thread.Sleep(int)` returns `void`,
+                // so there is no eval-stack slot for the scheduler to rewrite with the
+                // outcome, and the guest cannot observe whether the switch happened.
+                NativeHandlerResult.yielded false state |> Some
+            else
+
             let state =
-                if millisecondsTimeout = 0 then
-                    state
-                elif millisecondsTimeout = System.Threading.Timeout.Infinite then
+                if millisecondsTimeout = System.Threading.Timeout.Infinite then
                     Scheduler.blockOnSleep ctx.Thread None state
                 elif millisecondsTimeout < 0 then
                     failwith

@@ -318,7 +318,7 @@ module Program =
                 "Executed one step; active assembly: {ActiveAssembly}",
                 state.ActiveAssembly(thread).Name.Name
             )
-        | WhatWeDid.VoluntaryYield ->
+        | WhatWeDid.VoluntaryYield _ ->
             logger.LogTrace (
                 "Executed one step (voluntary yield requested); active assembly: {ActiveAssembly}",
                 state.ActiveAssembly(thread).Name.Name
@@ -501,6 +501,14 @@ module Program =
                     // terminated, the dispatcher is just between handler
                     // invocations.
                     let state = SignalDispatch.reParkAfterHandler terminatingThread state
+
+                    // Route through the scheduler like every other stepped outcome. This
+                    // branch reports `WhatWeDid.Executed` — the dispatcher did retire a step —
+                    // and the scheduler's per-step bookkeeping (discharging yield debts that
+                    // name this thread) has to see it. Skipping the call would leave the
+                    // dispatcher named in an outstanding debt it can never discharge, which
+                    // `Scheduler.candidates` relies on being impossible.
+                    let state = Scheduler.onStepOutcome terminatingThread WhatWeDid.Executed state
 
                     ProgramStepOutcome.InstructionStepped (
                         { prepared with
@@ -967,7 +975,7 @@ module Program =
         | WhatWeDid.BlockedOnClassInit _ -> failwith "logic error: surely this thread can't be blocked on class init"
         | WhatWeDid.ThrowingTypeInitializationException ->
             failwith "TypeInitializationException during entry point type initialisation"
-        | WhatWeDid.VoluntaryYield ->
+        | WhatWeDid.VoluntaryYield _ ->
             // ensureTypeInitialised drives cctor execution, which has no path to a
             // yield primitive: voluntary yields are produced by native handlers like
             // `ThreadNative_YieldThread`, never by a synthetic cctor step. If this

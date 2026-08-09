@@ -337,6 +337,31 @@ type ThreadState =
         /// and here the lie would be an *aliased* id, which is precisely the
         /// failure this type exists to prevent.
         OsThreadId : OsThreadId
+        /// Threads this one must see run — or see leave the Runnable set — before the
+        /// scheduler will choose it again. Empty for every thread that has not just yielded,
+        /// and empty means eligible; `Scheduler.candidates` filters out any Runnable thread
+        /// whose debt is still outstanding.
+        ///
+        /// This is `sched_yield(2)` semantics stated as data: an honoured `Thread.Yield()` /
+        /// `Thread.Sleep(0)` sends the caller to the back of the run queue, and the queue is
+        /// "everyone who was Runnable alongside me at that moment".
+        /// `Scheduler.onStepOutcome` charges the debt (see `WhatWeDid.VoluntaryYield`) and
+        /// discharges members as they run.
+        ///
+        /// Bounded and self-clearing by construction, which is the whole point of the
+        /// representation. The set only ever shrinks: members are removed as they run, and
+        /// `Scheduler.candidates` additionally intersects it with the live Runnable set at
+        /// read time, so a member that blocks, parks or terminates stops counting without any
+        /// cleanup pass — in particular there is nothing to prune in
+        /// `Scheduler.onThreadTerminated` (contrast `PctState.removeThread`, which exists
+        /// precisely because a map keyed on live threads *does* need pruning).
+        ///
+        /// The consequence worth stating explicitly, because the obvious alternative design
+        /// gets it wrong: a peer that never yields *discharges* the debt by running. A rule
+        /// that instead held a yielder out until its peers also yielded would let a single
+        /// non-yielding busy-waiter exclude a yielder forever — `Thread.Yield(); f = true;`
+        /// racing `while (!f) {}` would livelock, where today it does not.
+        YieldDebt : Set<ThreadId>
     }
 
     // --- Frame resolution primitives ---
@@ -432,6 +457,7 @@ type ThreadState =
             Name = None
             Cpu = cpu
             OsThreadId = osThreadId
+            YieldDebt = Set.empty
         }
 
     static member peekEvalStack (state : ThreadState) : EvalStackValue option =
