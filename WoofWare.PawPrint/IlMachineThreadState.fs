@@ -682,6 +682,49 @@ module IlMachineThreadState =
 
             alloc, state
 
+    /// Allocate a fresh object that is a shallow copy of whatever is at `source`: the primitive
+    /// behind `Object.MemberwiseClone`.
+    ///
+    /// CoreCLR spells this as `AllocateUninitializedClone` followed by a raw byte copy of the
+    /// object payload (Object.CoreCLR.cs). That formulation is not the primitive available here,
+    /// for the same reason `Array.Clone` does not use it: PawPrint stores fields and elements as
+    /// `CliType` cells rather than bytes, and flattening them to bytes would lose the provenance
+    /// of non-`Verbatim` cells. "Allocate a same-shaped object holding the same cells" is the
+    /// primitive on our side of that boundary, and it *is* the shallow copy — `CliType` cells are
+    /// immutable, so a later write through either object replaces only that object's cell, while
+    /// reference-typed fields keep naming the same heap objects from both.
+    ///
+    /// The clone gets a fresh address, so it has its own identity for reference equality, for the
+    /// synthesised pointer hash, and for monitors.
+    let cloneObject (source : ManagedHeapAddress) (state : IlMachineState) : ManagedHeapAddress * IlMachineState =
+        match state.ManagedHeap.NonArrayObjects.TryGetValue source with
+        | true, sourceObj ->
+            // `StringContents` is keyed by heap address, so a cloned string would land at a fresh
+            // address with no character data behind it. Nothing can reach that: `MemberwiseClone`
+            // is `protected internal`, `System.String` is sealed and never calls it, and PawPrint
+            // intercepts the `String` methods that would. Refuse rather than hand back a string
+            // whose characters have silently vanished.
+            if state.ManagedHeap.StringContents.ContainsKey source then
+                failwith
+                    $"TODO: MemberwiseClone of the string at %O{source}; PawPrint keys string character data by heap address, so the clone would have none. Copy StringContents and the StringArrayData range if this becomes reachable."
+
+            let alloc, heap = state.ManagedHeap |> ManagedHeap.allocateNonArray sourceObj
+
+            let state =
+                { state with
+                    ManagedHeap = heap
+                }
+
+            alloc, state
+        | false, _ ->
+
+        // `Array.Clone`'s managed body is `MemberwiseClone()`, so arrays are in scope even though
+        // PawPrint intercepts `Array.Clone` itself and nothing can derive from `System.Array`.
+        match state.ManagedHeap.Arrays.ContainsKey source with
+        | true -> cloneArray source state
+        | false ->
+            failwith $"cloneObject: address %O{source} is not allocated on the managed heap, so has nothing to clone"
+
     let allocateStringData (len : int) (state : IlMachineState) : int * IlMachineState =
         let addr, heap = state.ManagedHeap |> ManagedHeap.allocateString len
 

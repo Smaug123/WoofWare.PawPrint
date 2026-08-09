@@ -108,6 +108,8 @@ module IlMachineState =
 
     let cloneArray = IlMachineThreadState.cloneArray
 
+    let cloneObject = IlMachineThreadState.cloneObject
+
     let allocateStringData = IlMachineThreadState.allocateStringData
 
     let setStringData = IlMachineThreadState.setStringData
