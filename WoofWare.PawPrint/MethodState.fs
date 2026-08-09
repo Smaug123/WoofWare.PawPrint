@@ -879,7 +879,17 @@ and MethodState =
                 // Note: This assumes all types have already been concretized
                 // If this fails with "ConcreteTypeHandle not found", it means
                 // we need to ensure types are concretized before creating the MethodState
-                let zero, _ = CliType.zeroOf concreteTypes loadedAssemblies baseClassTypes var
+                //
+                // Deliberately the non-loading walk. This function returns only a `MethodState`,
+                // so it has nowhere to put an updated registry or load context; handing it a real
+                // loader would let it mint `ConcreteTypeHandle`s into a registry that is then
+                // discarded, leaving the locals' `FieldId`s pointing at handles the machine state
+                // does not know. `Concretization.concretizeMethod` primes every local's type
+                // before we get here, so a miss really is a bug — see
+                // `IAssemblyLoad.alreadyLoadedOnly`.
+                let zero, _, _ =
+                    CliType.zeroOf IAssemblyLoad.alreadyLoadedOnly concreteTypes loadedAssemblies baseClassTypes var
+
                 result.Add zero
 
             result.ToImmutable ()

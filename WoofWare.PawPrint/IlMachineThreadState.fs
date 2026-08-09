@@ -228,14 +228,9 @@ module IlMachineThreadState =
             // Otherwise, extract the now-complete object from the heap and push it to the stack directly.
             let constructed = state.ManagedHeap.NonArrayObjects.[constructing]
 
-            let ty =
-                AllConcreteTypes.lookup constructed.ConcreteType state.ConcreteTypes
+            let _, ty' =
+                AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes constructed.ConcreteType
                 |> Option.get
-
-            let ty' =
-                state.LoadedAssembly (ty.Assembly)
-                |> Option.get
-                |> fun a -> a.TypeDefs.[ty.Definition.Get]
 
             if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies ty' then
                 state
@@ -280,6 +275,7 @@ module IlMachineThreadState =
             {
                 ConcreteTypes = AllConcreteTypes.Empty
                 Logger = logger
+                LoggerFactory = lf
                 NextThreadId = 0
                 NextCpuRotation = 0
                 // CallStack = []

@@ -403,3 +403,61 @@ the validating `EmulatedKernel.withVirtualClockTicks`. The three projections the
 `systemTimeAsTicks`, `monotonicTimestampNanos` and `lowResolutionTimestampMs`, all in
 `EmulatedKernel.fs`. `TestSchedulerSleepFairness` pins that a sleeping thread is observably
 asleep.
+
+## `ExceptionDispatchInfo.Throw` does not preserve the captured stack trace
+
+**CoreCLR**: `ExceptionDispatchInfo.Throw()` calls `Exception.RestoreDispatchState`, which puts
+the captured `_stackTrace` back onto the exception and calls
+`Exception.PrepareForForeignExceptionRaise`. That sets a one-shot per-thread flag
+(`SetRaisingForeignException`, `comutilnative.cpp:75`) which the ensuing throw reads twice:
+`IL_Throw` (`jithelpers.cpp:814`) nulls only `_stackTraceString`, leaving `_stackTrace` intact
+where an ordinary `throw ex` would call `ClearStackTracePreservingRemoteStackTrace` and drop the
+frames; and the first `StackTraceInfo::AppendElement` afterwards (`excep.cpp:3016-3017`) reads
+and resets the flag, marking the last already-present frame
+`STEF_LAST_FRAME_FROM_FOREIGN_STACK_TRACE`. The rethrown exception therefore reports the original
+frames, then `--- End of stack trace from previous location ---`, then the frames from the
+rethrow.
+
+**PawPrint**: `PrepareForForeignExceptionRaise` is a no-op, so a rethrow through
+`ExceptionDispatchInfo.Throw()` behaves like an ordinary `throw ex`:
+`IlMachineRuntimeMetadata.recordThrownStackTrace` mints a fresh trace token at the next dispatch
+conclusion and `setExceptionStackTraceString` re-renders from it, so `StackTrace` reports only
+the frames from the rethrow site onwards, with no boundary annotation.
+
+**Spec status**: Outside ECMA-335, which says nothing about stack-trace text. But this is not a
+case where CoreCLR's answer is unreproducible in principle — it is simply unimplemented, and the
+information needed to reproduce it is already present (the captured token's frames live in
+`IlMachineState.FrozenStackTraces`).
+
+**Why we chose this**: Only as a staging point, not on the merits. The alternative to a no-op is
+not "crash instead of diverging": failing in `PrepareForForeignExceptionRaise` would block
+`ExceptionDispatchInfo.Throw` outright, and with it all `Task` fault propagation, which is a
+strictly worse answer than a gap in trace text. Consuming the flag properly needs a boundary
+marker in PawPrint's trace representation — `ExceptionStackFrame` carries only `Method` and
+`IlOffset` — and that is its own change. Tracked as issue #876; **delete this entry when it
+lands.**
+
+**Observable example**:
+
+```csharp
+static void Boom() => throw new InvalidOperationException("x");
+
+try { Boom(); } catch (Exception e) { captured = e; }
+var edi = ExceptionDispatchInfo.Capture(captured);
+try { edi.Throw(); } catch (Exception e) { Console.WriteLine(e.StackTrace); }
+
+// CoreCLR:  at Program.Boom() / at Program.Main()
+//           --- End of stack trace from previous location ---
+//           at Program.Main()
+// PawPrint: at Program.Main()          (the rethrow site only)
+```
+
+The same shape reaches any `Task` whose delegate throws, because the thread-pool dispatch loop
+rethrows the captured fault through an `ExceptionDispatchInfo`.
+
+**Where this lives in code**: the no-op handler is in `Native/NativeException.fs`;
+`ExceptionDispatching.throwExceptionObject` is where a consumed flag would seed the new
+`CliException`'s frames from the exception's existing token, and
+`IlMachineRuntimeMetadata.renderExceptionStackTrace` is where the annotation would be emitted.
+`sourcesPure/ExceptionDispatchInfoThrow.cs` covers the round trip while deliberately asserting
+identity and type rather than trace content.
