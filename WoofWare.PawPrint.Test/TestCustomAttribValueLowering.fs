@@ -223,12 +223,24 @@ module TestCustomAttribValueLowering =
                 |> ArbMap.generate<NormalFloat>
                 |> Gen.map (fun (NormalFloat f) -> CustomAttribFixedArg.R8 f)
                 Gen.constant (CustomAttribFixedArg.String None)
+                // An enum lowers to its bare underlying integer — no enum wrapper is built here —
+                // so it must land in exactly the slot its underlying type would.
+                ArbMap.defaults
+                |> ArbMap.generate<byte>
+                |> Gen.map (CustomAttribFixedArg.U1 >> CustomAttribFixedArg.Enum)
+                ArbMap.defaults
+                |> ArbMap.generate<int64>
+                |> Gen.map (CustomAttribFixedArg.I8 >> CustomAttribFixedArg.Enum)
             ]
 
     /// SizeOf agrees with the canonical mapping in `CliType.zeroOfPrimitive`,
     /// so the lowering preserves the expected slot width.
-    let private expectedSize (arg : CustomAttribFixedArg) : int =
+    let rec private expectedSize (arg : CustomAttribFixedArg) : int =
         match arg with
+        // Deliberately the underlying type's width, not a wrapper's: the ctor's parameter slot is
+        // built from the declared enum type by `callMethod`, and the value pushed here is the bare
+        // integer that `toCliTypeCoerced` rewraps into it.
+        | CustomAttribFixedArg.Enum underlying -> expectedSize underlying
         | CustomAttribFixedArg.Bool _ -> 1
         | CustomAttribFixedArg.Char _ -> 2
         | CustomAttribFixedArg.I1 _
