@@ -1953,6 +1953,34 @@ and CliValueType =
 
     /// True iff the given handle refers to `System.String`. CoreCLR only accepts
     /// `[MarshalAs(ByValTStr)]` on string-typed fields, so we use this as the shape guard.
+    /// True iff `handle` names the given non-generic corelib type.
+    ///
+    /// The corelib-assembly and no-generics test runs before the TypeDef lookup: it is cheaper,
+    /// and it is what lets a handle from any other assembly answer without resolving at all. A
+    /// structural handle answers `false` because `AllConcreteTypes.lookup` has no row for one.
+    static member private IsNominallyCorelibType
+        (concreteTypes : AllConcreteTypes)
+        (assemblies : LoadedAssemblies)
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (target : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        (handle : ConcreteTypeHandle)
+        : bool
+        =
+        match AllConcreteTypes.lookup handle concreteTypes with
+        | None -> false
+        | Some concreteType ->
+
+        if
+            concreteType.Assembly.FullName = corelib.Corelib.Name.FullName
+            && concreteType.Generics.IsEmpty
+        then
+            let typeDef =
+                assemblies.[concreteType.Assembly].TypeDefs.[concreteType.Definition.Get]
+
+            TypeInfo.NominallyEqual typeDef target
+        else
+            false
+
     static member private IsStringFieldType
         (concreteTypes : AllConcreteTypes)
         (assemblies : LoadedAssemblies)
@@ -1960,26 +1988,7 @@ and CliValueType =
         (handle : ConcreteTypeHandle)
         : bool
         =
-        match handle with
-        | ConcreteTypeHandle.Concrete _ ->
-            match AllConcreteTypes.lookup handle concreteTypes with
-            | None -> false
-            | Some concreteType ->
-                if
-                    concreteType.Assembly.FullName = corelib.Corelib.Name.FullName
-                    && concreteType.Generics.IsEmpty
-                then
-                    let typeDef =
-                        assemblies.[concreteType.Assembly].TypeDefs.[concreteType.Definition.Get]
-
-                    TypeInfo.NominallyEqual typeDef corelib.String
-                else
-                    false
-        | ConcreteTypeHandle.OneDimArrayZero _
-        | ConcreteTypeHandle.Array _
-        | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _
-        | ConcreteTypeHandle.FunctionPointer _ -> false
+        CliValueType.IsNominallyCorelibType concreteTypes assemblies corelib corelib.String handle
 
     /// True iff `vt`'s declared type is `System.DateTime`. CoreCLR's `MarshalInfo` short-circuits
     /// a DateTime-typed field to `MARSHAL_TYPE_DATE` (8 bytes) at `mlinfo.cpp:1747`, BEFORE the
@@ -1996,26 +2005,7 @@ and CliValueType =
         (vt : CliValueType)
         : bool
         =
-        match vt._Declared with
-        | ConcreteTypeHandle.Concrete _ ->
-            match AllConcreteTypes.lookup vt._Declared concreteTypes with
-            | None -> false
-            | Some concreteType ->
-                if
-                    concreteType.Assembly.FullName = corelib.Corelib.Name.FullName
-                    && concreteType.Generics.IsEmpty
-                then
-                    let typeDef =
-                        assemblies.[concreteType.Assembly].TypeDefs.[concreteType.Definition.Get]
-
-                    TypeInfo.NominallyEqual typeDef corelib.DateTime
-                else
-                    false
-        | ConcreteTypeHandle.OneDimArrayZero _
-        | ConcreteTypeHandle.Array _
-        | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _
-        | ConcreteTypeHandle.FunctionPointer _ -> false
+        CliValueType.IsNominallyCorelibType concreteTypes assemblies corelib corelib.DateTime vt._Declared
 
     /// True iff `vt`'s declared type is `System.Decimal`. CoreCLR's `MarshalInfo` routes a
     /// Decimal-typed *field* through marshal-stub synthesis (`NFT_DECIMAL` in
@@ -2037,26 +2027,7 @@ and CliValueType =
         (vt : CliValueType)
         : bool
         =
-        match vt._Declared with
-        | ConcreteTypeHandle.Concrete _ ->
-            match AllConcreteTypes.lookup vt._Declared concreteTypes with
-            | None -> false
-            | Some concreteType ->
-                if
-                    concreteType.Assembly.FullName = corelib.Corelib.Name.FullName
-                    && concreteType.Generics.IsEmpty
-                then
-                    let typeDef =
-                        assemblies.[concreteType.Assembly].TypeDefs.[concreteType.Definition.Get]
-
-                    TypeInfo.NominallyEqual typeDef corelib.Decimal
-                else
-                    false
-        | ConcreteTypeHandle.OneDimArrayZero _
-        | ConcreteTypeHandle.Array _
-        | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _
-        | ConcreteTypeHandle.FunctionPointer _ -> false
+        CliValueType.IsNominallyCorelibType concreteTypes assemblies corelib corelib.Decimal vt._Declared
 
     /// True iff `handle`'s declared type carries `LayoutKind.Auto` in its
     /// `TypeAttributes.LayoutMask`. This is the CoreCLR `HasLayout() == false` predicate:

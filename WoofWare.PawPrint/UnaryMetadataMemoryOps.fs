@@ -223,12 +223,11 @@ module internal UnaryMetadataMemoryOps =
                     $"TODO: Ldobj with a byref/pointer/function-pointer type token (%O{typeHandle}) is not implemented"
             | ConcreteTypeHandle.Concrete _ ->
 
-            match AllConcreteTypes.lookup typeHandle state.ConcreteTypes with
+            match
+                AllConcreteTypes.tryIsValueType baseClassTypes state._LoadedAssemblies state.ConcreteTypes typeHandle
+            with
+            | Some isValueType -> isValueType
             | None -> failwith $"Ldobj: concrete type handle %O{typeHandle} has no row in AllConcreteTypes"
-            | Some targetType ->
-
-            state._LoadedAssemblies.[targetType.Assembly].TypeDefs.[targetType.Definition.Get]
-            |> DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies
 
         let toPush, state =
             if isValueType then
