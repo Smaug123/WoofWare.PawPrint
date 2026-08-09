@@ -518,7 +518,9 @@ module TypeInfo =
                         else
                             ImmutableArray.Create<byte> (metadataReader.GetBlobBytes attr.Value)
 
-                    match CustomAttribute.readFixedArgs [ TypeDefn.PrimitiveType PrimitiveType.Int32 ] blob with
+                    match
+                        CustomAttribute.readFixedArgs [ CustomAttribArgShape.Primitive PrimitiveType.Int32 ] blob
+                    with
                     // Recorded exactly as decoded, including a non-positive count. That is a
                     // type-load rule (`IDS_CLASSLOAD_INLINE_ARRAY_LENGTH`) and CoreCLR only reaches
                     // it for value types, so rejecting it here would refuse an assembly CoreCLR

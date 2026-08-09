@@ -213,6 +213,10 @@ module IlMachineState =
     let setExceptionStackTraceString =
         IlMachineRuntimeMetadata.setExceptionStackTraceString
 
+    let recordThrownStackTrace = IlMachineRuntimeMetadata.recordThrownStackTrace
+
+    let frozenStackTraceToken = IlMachineRuntimeMetadata.frozenStackTraceToken
+
     let getOrAllocateManagedThreadObject =
         IlMachineRuntimeMetadata.getOrAllocateManagedThreadObject
 
