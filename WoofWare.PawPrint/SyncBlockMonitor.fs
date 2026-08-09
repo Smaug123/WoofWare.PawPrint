@@ -82,9 +82,9 @@ module SyncBlockMonitor =
     /// of which moves the waiter to the AcquireQueue carrying the snapshot
     /// for depth restoration on re-acquire.
     ///
-    /// `deadlineMs = None` is `Monitor.Wait(obj)` (infinite); `Some ms` is
+    /// `deadlineTicks = None` is `Monitor.Wait(obj)` (infinite); `Some ms` is
     /// `Monitor.Wait(obj, timeout)` (finite). The deadline is the absolute
-    /// virtual-clock millisecond at which the wait expires; on expiry the
+    /// virtual-clock tick at which the wait expires; on expiry the
     /// driver fires `fireWaitTimeout` which routes the waiter through the same
     /// reacquire path and rewrites the optimistic `Int32 1` slot pushed at
     /// park time to `Int32 0` (timed out).
@@ -95,7 +95,7 @@ module SyncBlockMonitor =
     let wait
         (thread : ThreadId)
         (addr : ManagedHeapAddress)
-        (deadlineMs : int64 option)
+        (deadlineTicks : int64 option)
         (state : IlMachineState)
         : IlMachineState
         =
@@ -141,7 +141,7 @@ module SyncBlockMonitor =
             | None -> state
             | Some nextOwner -> Scheduler.setThreadStatus nextOwner ThreadStatus.Runnable state
 
-        Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnSyncBlockWait (addr, deadlineMs)) state
+        Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnSyncBlockWait (addr, deadlineTicks)) state
 
     /// `Monitor.Pulse`: caller must hold the lock; wakes at most one waiter
     /// from the FIFO head of `WaitQueue`. The woken waiter is moved to the

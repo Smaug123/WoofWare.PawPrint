@@ -113,7 +113,7 @@ module NativeLowLevelMonitor =
             let id = monitorOfArgument operation instruction.Arguments.[0]
             let timeout = NativeCall.int32Argument operation instruction.Arguments.[1]
 
-            let deadlineMs =
+            let deadlineTicks =
                 if timeout = System.Threading.Timeout.Infinite then
                     // The managed `LowLevelMonitor.Wait(int)` wrapper
                     // routes `-1 → Wait()` rather than calling TimedWait,
@@ -139,7 +139,10 @@ module NativeLowLevelMonitor =
                     // immediate timeout against signal-poll-then-park.
                     // `int64` keeps the addition safe for `Int32.MaxValue`
                     // timeouts against a long-running clock.
-                    Some (state.Kernel.VirtualClockMs + int64 timeout)
+                    Some (
+                        state.Kernel.VirtualClockTicks
+                        + int64 timeout * EmulatedKernel.ticksPerMillisecond
+                    )
 
             // Push the optimistic `Int32 1` (signalled) onto the calling
             // thread's eval stack *before* parking. Park flips the
@@ -153,7 +156,7 @@ module NativeLowLevelMonitor =
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 1)) ctx.Thread
 
-            let state = LowLevelMonitor.wait ctx.Thread id deadlineMs state
+            let state = LowLevelMonitor.wait ctx.Thread id deadlineTicks state
             NativeHandlerResult.completed state |> Some
 
         | Some "SystemNative_LowLevelMonitor_Signal_Release",

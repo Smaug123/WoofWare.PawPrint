@@ -320,19 +320,19 @@ module Scheduler =
                     ))
         }
 
-    /// Transition `blocked` from Runnable to `BlockedOnJoin (target, deadlineMs)`.
+    /// Transition `blocked` from Runnable to `BlockedOnJoin (target, deadlineTicks)`.
     /// Called from the `Thread.Join` intrinsic; exposed here so the set of places
     /// that mutate `ThreadStatus` stays small and auditable.
     ///
-    /// `deadlineMs = None` is an infinite wait (`Thread.Join()` /
+    /// `deadlineTicks = None` is an infinite wait (`Thread.Join()` /
     /// `Thread.Join(-1)`); `Some ms` is a finite timeout, expressed as the
-    /// absolute virtual-clock millisecond at which the wait expires. The
+    /// absolute virtual-clock tick at which the wait expires. The
     /// deadline-firing path in `Program.fireExpiredDeadlines` routes such
     /// threads through `fireJoinTimeout` below.
     let blockOnJoin
         (blocked : ThreadId)
         (target : ThreadId)
-        (deadlineMs : int64 option)
+        (deadlineTicks : int64 option)
         (state : IlMachineState)
         : IlMachineState
         =
@@ -343,7 +343,7 @@ module Scheduler =
                     blocked
                     (Option.map (fun s ->
                         { s with
-                            Status = ThreadStatus.BlockedOnJoin (target, deadlineMs)
+                            Status = ThreadStatus.BlockedOnJoin (target, deadlineTicks)
                         }
                     ))
         }
@@ -391,7 +391,7 @@ module Scheduler =
     /// Park `blocked` in `BlockedOnSleep`, transitioning out of `Runnable`.
     /// Mirrors `blockOnJoin` but with no per-primitive wait queue: sleeping
     /// is purely time-driven, the wake comes from `Scheduler.fireSleepTimeout`
-    /// when the virtual clock crosses the deadline. `deadlineMs = None` is
+    /// when the virtual clock crosses the deadline. `deadlineTicks = None` is
     /// an infinite sleep (`Thread.Sleep(-1)` / `Timeout.Infinite`); `Some _`
     /// is a finite timeout. No optimistic eval-stack push is performed
     /// because `Thread.Sleep` returns `void`.
@@ -400,7 +400,7 @@ module Scheduler =
     /// `Sleep` call site before parking (so the wake resumes after the
     /// call), matching the contract used by every other QCall handler that
     /// blocks.
-    let blockOnSleep (blocked : ThreadId) (deadlineMs : int64 option) (state : IlMachineState) : IlMachineState =
+    let blockOnSleep (blocked : ThreadId) (deadlineTicks : int64 option) (state : IlMachineState) : IlMachineState =
         { state with
             ThreadState =
                 state.ThreadState
@@ -408,7 +408,7 @@ module Scheduler =
                     blocked
                     (Option.map (fun s ->
                         { s with
-                            Status = ThreadStatus.BlockedOnSleep deadlineMs
+                            Status = ThreadStatus.BlockedOnSleep deadlineTicks
                         }
                     ))
         }

@@ -47,10 +47,10 @@ module System_Threading_Monitor =
     /// ownership-transfer model so the IL after the `Enter` call site is correctly
     /// held.
     ///
-    /// `deadlineMs = None` is an infinite acquire (`Monitor.Enter(obj)` /
+    /// `deadlineTicks = None` is an infinite acquire (`Monitor.Enter(obj)` /
     /// `Monitor.TryEnter(obj, Timeout.Infinite)`); `Some ms` is a finite
     /// positive timeout from the `TryEnter_Slowpath` route, expressed as
-    /// the absolute virtual-clock millisecond at which the timed acquire
+    /// the absolute virtual-clock tick at which the timed acquire
     /// expires. If the deadline fires while still queued,
     /// `SyncBlockMonitor.fireAcquireTimeout` dequeues the thread without
     /// transferring ownership.
@@ -59,7 +59,7 @@ module System_Threading_Monitor =
         (thread : ThreadId)
         (block : SyncBlock)
         (locked : LockedSyncBlock)
-        (deadlineMs : int64 option)
+        (deadlineTicks : int64 option)
         (state : IlMachineState)
         : IlMachineState
         =
@@ -70,7 +70,7 @@ module System_Threading_Monitor =
 
         state
         |> writeHeld addr block.WaitQueue locked
-        |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnSyncBlockAcquire (addr, deadlineMs))
+        |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnSyncBlockAcquire (addr, deadlineTicks))
 
     /// .NET 10 InternalCall: Monitor.TryEnter_FastPath(obj) -> bool.
     /// Backs `Monitor.Enter(obj)`: the BCL's IL is "if (!TryEnter_FastPath(obj)) Enter_Slowpath(obj)",
@@ -285,11 +285,13 @@ module System_Threading_Monitor =
                     // via either ownership transfer (Exit_FastPath head dequeue) or
                     // deadline fire (`SyncBlockMonitor.fireAcquireTimeout` rewrites
                     // to `Int32 0`).
-                    let deadlineMs = state.Kernel.VirtualClockMs + int64 timeout
+                    let deadlineTicks =
+                        state.Kernel.VirtualClockTicks
+                        + int64 timeout * EmulatedKernel.ticksPerMillisecond
 
                     state
                     |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 1)) currentThread
-                    |> parkOnAcquireQueue addr currentThread block locked (Some deadlineMs)
+                    |> parkOnAcquireQueue addr currentThread block locked (Some deadlineTicks)
 
         state
 

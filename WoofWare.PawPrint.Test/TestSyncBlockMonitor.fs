@@ -1208,7 +1208,7 @@ module TestSyncBlockMonitor =
         (thread : ThreadId)
         (depth : int)
         (addr : ManagedHeapAddress)
-        (deadlineMs : int64)
+        (deadlineTicks : int64)
         (state : IlMachineState)
         : IlMachineState
         =
@@ -1218,16 +1218,16 @@ module TestSyncBlockMonitor =
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 1)) thread
 
-        SyncBlockMonitor.wait thread addr (Some deadlineMs) state
+        SyncBlockMonitor.wait thread addr (Some deadlineTicks) state
 
     let private parkInTimedWait
         (thread : ThreadId)
         (addr : ManagedHeapAddress)
-        (deadlineMs : int64)
+        (deadlineTicks : int64)
         (state : IlMachineState)
         : IlMachineState
         =
-        parkInTimedWaitAtDepth thread 1 addr deadlineMs state
+        parkInTimedWaitAtDepth thread 1 addr deadlineTicks state
 
     [<Test>]
     let ``fireTimeout on free SyncBlock takes ownership at snapshot depth and rewrites Int32 1 to Int32 0`` () : unit =
@@ -1493,7 +1493,7 @@ module TestSyncBlockMonitor =
     // fireAcquireTimeout — Monitor.TryEnter(obj, ms) slowpath deadlines
     // -------------------------------------------------------------------
 
-    /// Drive `acquirer` into `BlockedOnSyncBlockAcquire (addr, Some deadlineMs)`,
+    /// Drive `acquirer` into `BlockedOnSyncBlockAcquire (addr, Some deadlineTicks)`,
     /// queued behind `owner`, with the optimistic `Int32 1` on `acquirer`'s eval
     /// stack — mirroring the state `TryEnter_Slowpath` leaves the caller in when
     /// the lock was contended.
@@ -1501,7 +1501,7 @@ module TestSyncBlockMonitor =
         (owner : ThreadId)
         (acquirer : ThreadId)
         (addr : ManagedHeapAddress)
-        (deadlineMs : int64)
+        (deadlineTicks : int64)
         (state : IlMachineState)
         : IlMachineState
         =
@@ -1526,7 +1526,7 @@ module TestSyncBlockMonitor =
                 WaitQueue = block.WaitQueue
             }
         |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 1)) acquirer
-        |> Scheduler.setThreadStatus acquirer (ThreadStatus.BlockedOnSyncBlockAcquire (addr, Some deadlineMs))
+        |> Scheduler.setThreadStatus acquirer (ThreadStatus.BlockedOnSyncBlockAcquire (addr, Some deadlineTicks))
 
     [<Test>]
     let ``fireAcquireTimeout dequeues without transferring ownership and rewrites Int32 1 to Int32 0`` () : unit =

@@ -8,12 +8,24 @@ namespace HelloWorldApp
         static int Main(string[] args)
         {
             // PawPrint's high-resolution clock is the virtual clock scaled to
-            // nanoseconds, so it boots at zero and only ever takes values that
-            // are whole milliseconds. Both are part of the replay contract, and
-            // neither can be pinned by the sibling pure case
-            // `StopwatchElapsed.cs`, which is cross-checked against the real
-            // runtime (whose CLOCK_MONOTONIC counts from an unspecified origin
-            // at nanosecond resolution).
+            // nanoseconds, so it boots at zero. Both that and the granularity
+            // asserted below are part of the replay contract, and neither can
+            // be pinned by the sibling pure case `StopwatchElapsed.cs`, which
+            // is cross-checked against the real runtime (whose CLOCK_MONOTONIC
+            // counts from an unspecified origin at nanosecond resolution).
+            //
+            // Note what the whole-millisecond assertions below actually pin.
+            // The clock itself counts 100 ns ticks and can represent any of
+            // them; readings come out as whole milliseconds only because
+            // `EmulatedKernel.instructionCostTicks` currently charges exactly
+            // one millisecond per retired instruction, so every reachable
+            // value is a multiple of 10,000 ticks. These assertions therefore
+            // track the *rate*, not the unit, and are expected to change when
+            // the rate does. The same caveat applies with more force to the
+            // containment check at the end of this file: `TickCount64 * 1e6`
+            // lying inside a hi-res interval is a theorem only while readings
+            // are millisecond-granular — at a finer rate the millisecond
+            // reading floors below `before`.
 
             // On Unix `Stopwatch.Frequency` is a hard-coded 1e9, which is what
             // fixes our unit as the nanosecond.

@@ -274,7 +274,7 @@ module NativeWaitHandle =
     ///  - `timeout = 0`: the non-blocking probe `WaitOne(0)` issues —
     ///    routed through `tryWait`, which never parks and returns
     ///    `WAIT_OBJECT_0` / `WAIT_ABANDONED` / `WAIT_TIMEOUT` inline.
-    ///  - `timeout > 0`: compute an absolute deadline as `VirtualClockMs
+    ///  - `timeout > 0`: compute an absolute deadline as `VirtualClockTicks
     ///    + timeout` and thread it through `blockingWait`. The fast
     ///    paths ignore the deadline; the slow path records it on the
     ///    parked thread's `BlockedOnWaitHandle` status, and the driver
@@ -333,17 +333,22 @@ module NativeWaitHandle =
                 $"%s{operation}: negative timeout %d{timeout} ms is not Infinite (-1); the BCL's WaitHandle.WaitOne(int) validates this argument before the QCall, so reaching here means the wrapper was bypassed."
         else
             // Finite positive timeout: compute an absolute deadline
-            // against the virtual clock. `VirtualClockMs` advances 1 ms
-            // per scheduler tick (per `Program.stepPrepared`), and the
+            // against the virtual clock. The guest's timeout is in
+            // milliseconds and the clock counts 100 ns ticks, so it is scaled
+            // by `ticksPerMillisecond` on the way in. `VirtualClockTicks`
+            // advances by `instructionCostTicks` per scheduler tick (per
+            // `Program.stepPrepared`), and the
             // driver loop fires `WaitHandle.fireTimeout` when the clock
             // reaches or passes a parked thread's deadline; if no other
             // thread is Runnable, the driver also jumps the clock to
             // the nearest pending deadline so the wait can resolve.
             // `int64` keeps the addition safe even for
             // `Int32.MaxValue` timeouts against a long-running clock.
-            let deadlineMs = state.Kernel.VirtualClockMs + int64 timeout
+            let deadlineTicks =
+                state.Kernel.VirtualClockTicks
+                + int64 timeout * EmulatedKernel.ticksPerMillisecond
 
-            match blockingWait (Some deadlineMs) state with
+            match blockingWait (Some deadlineTicks) state with
             | WaitHandle.WaitOutcome.Acquired state -> state, waitObjectZero
             | WaitHandle.WaitOutcome.AcquiredAbandoned state -> state, waitAbandoned
             | WaitHandle.WaitOutcome.Blocked state -> state, waitObjectZero
@@ -715,9 +720,11 @@ module NativeWaitHandle =
                 failwith
                     $"%s{operation}: negative timeout %d{timeout} ms is not Infinite (-1); WaitHandle.WaitMultiple validates this argument before the QCall, so reaching here means the wrapper was bypassed."
             else
-                let deadlineMs = state.Kernel.VirtualClockMs + int64 timeout
+                let deadlineTicks =
+                    state.Kernel.VirtualClockTicks
+                    + int64 timeout * EmulatedKernel.ticksPerMillisecond
 
-                match WaitHandle.waitMultiple ctx.Thread handles waitAll (Some deadlineMs) state with
+                match WaitHandle.waitMultiple ctx.Thread handles waitAll (Some deadlineTicks) state with
                 | WaitHandle.MultiWaitOutcome.Acquired (index, abandoned, state) ->
                     completeWith state (multiWaitResult waitAll index abandoned)
                 | WaitHandle.MultiWaitOutcome.Blocked state -> completeWith state waitObjectZero

@@ -273,8 +273,11 @@ module TestImpureCases =
             }
             {
                 // The monotonic clock the guest observes through `Stopwatch`
-                // boots at zero and moves in whole milliseconds, and is the same
-                // clock `Environment.TickCount64` reads. Those are
+                // boots at zero, and is the same clock `Environment.TickCount64`
+                // reads. It moves in whole milliseconds at the current
+                // instruction cost — a property of the rate rather than of the
+                // clock's 100 ns unit; see the guest for what that means for
+                // these assertions. Those are
                 // replay-contract facts the pure `StopwatchElapsed.cs` cannot
                 // pin: it is cross-checked against the real runtime, whose
                 // CLOCK_MONOTONIC counts from an unspecified origin at

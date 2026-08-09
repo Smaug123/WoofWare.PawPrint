@@ -114,7 +114,7 @@ module Program =
     /// Project a thread status into its finite-timeout deadline against
     /// the virtual clock, if any. Threads with no deadline (Runnable,
     /// non-timed blocks, infinite waits) return `None`; threads parked
-    /// with a finite timeout return `Some (kind, absoluteVirtualClockMs)`.
+    /// with a finite timeout return `Some (kind, absoluteVirtualClockTicks)`.
     /// The `kind` is what tells the deadline-firing path which
     /// subsystem's fire function to invoke.
     let private waitDeadline (status : ThreadStatus) : (FiredDeadline * int64) option =
@@ -144,7 +144,7 @@ module Program =
         | ThreadStatus.Parked -> None
 
     /// Fire a timeout wake for every blocked-with-deadline thread whose
-    /// deadline is `<= state.Kernel.VirtualClockMs`. Each fire routes
+    /// deadline is `<= state.Kernel.VirtualClockTicks`. Each fire routes
     /// through a per-subsystem fire function (WaitHandle dequeues from
     /// the handle's wait queue and rewrites `WAIT_OBJECT_0 → WAIT_TIMEOUT`;
     /// LowLevelMonitor moves the waiter from `WaitQueue` to `AcquireQueue`
@@ -175,7 +175,7 @@ module Program =
     /// Queue positions are computed against the input state, before any
     /// fires mutate `WaitQueue`s.
     let private fireExpiredDeadlines (state : IlMachineState) : IlMachineState =
-        let now = state.Kernel.VirtualClockMs
+        let now = state.Kernel.VirtualClockTicks
 
         // `Map.foldBack` visits keys in descending order, so the resulting list is sorted by
         // thread ID.
@@ -278,13 +278,13 @@ module Program =
     /// `None` if no thread is parked with a finite timeout. Used by the
     /// driver loop's jump-to-deadline fallback: if no thread is Runnable
     /// but at least one has a finite-timeout wait outstanding, advance
-    /// `VirtualClockMs` to the nearest such deadline so the wait can
+    /// `VirtualClockTicks` to the nearest such deadline so the wait can
     /// resolve on the next pass.
     ///
     /// The clock-jump must not bump `StepCounter` — the spurious-wakeup
     /// schedules are keyed on `StepCounter`, and a jump-driven tick is
     /// deliberately *not* a real scheduler tick. Keeping the two clocks
-    /// separate is exactly why `VirtualClockMs` is its own field rather
+    /// separate is exactly why `VirtualClockTicks` is its own field rather
     /// than derived from `StepCounter`.
     let private nextDeadline (state : IlMachineState) : int64 option =
         state.ThreadState
@@ -378,22 +378,21 @@ module Program =
                     state.MapKernel (fun kernel ->
                         { kernel with
                             StepCounter = kernel.StepCounter + 1L
-                            // One wall-clock millisecond per scheduler
-                            // tick — see `EmulatedKernel.VirtualClockMs`
-                            // for why the rate is "very slow computer"
-                            // by realism standards but bit-for-bit
-                            // deterministic. Bumping in lock-step with
+                            // `EmulatedKernel.instructionCostTicks` of virtual
+                            // time per scheduler tick — see that constant for
+                            // the rate and why it is what it is. Bumping in
+                            // lock-step with
                             // `StepCounter` keeps both clocks pure
                             // functions of "how many scheduler ticks
                             // have elapsed", which is what tests rely
                             // on when driving the strategies without a
                             // real driver.
-                            VirtualClockMs = kernel.VirtualClockMs + 1L
+                            VirtualClockTicks = kernel.VirtualClockTicks + EmulatedKernel.instructionCostTicks
                         }
                     )
             }
 
-        // After advancing `VirtualClockMs`, fire any wait deadlines that
+        // After advancing `VirtualClockTicks`, fire any wait deadlines that
         // are now in the past. This runs every tick (not just on
         // deadlock) so a timeout against a thread holding a release lock
         // can still expire while other threads make progress: e.g.
@@ -419,11 +418,11 @@ module Program =
 
         // Jump-to-deadline fallback: if no thread is Runnable but at
         // least one is parked with a finite-timeout wait outstanding,
-        // advance `VirtualClockMs` to the nearest pending deadline and
+        // advance `VirtualClockTicks` to the nearest pending deadline and
         // fire it. This is what keeps a guest like `WaitOne(50)` against
         // an unsignalled handle from deadlocking — without the jump, the
-        // clock would advance 1 ms per tick *only when there's something
-        // to step*, but there is nothing to step.
+        // clock would advance only when there's something to step, and
+        // there is nothing to step.
         //
         // The fallback loops because a single fire may not make any
         // thread Runnable: `LowLevelMonitor.fireTimeout` moves a waiter
@@ -434,12 +433,12 @@ module Program =
         // declare deadlock even though the owner's later finite wait can
         // still resolve and release the monitor. Each iteration either
         // produces a Runnable thread (terminating the loop) or strictly
-        // advances `VirtualClockMs` to the next outstanding deadline; the
+        // advances `VirtualClockTicks` to the next outstanding deadline; the
         // set of finite-deadline threads is finite and monotonically
         // shrinks (no fire creates a new deadline), so the loop
         // terminates.
         //
-        // Only `VirtualClockMs` is advanced (not `StepCounter`), so the
+        // Only `VirtualClockTicks` is advanced (not `StepCounter`), so the
         // spurious-wakeup schedule is untouched. A jump-driven wake is
         // not a scheduler tick — it is the resolution of a timeout that
         // would otherwise be invisible.
@@ -458,7 +457,7 @@ module Program =
                     let state =
                         state.MapKernel (fun kernel ->
                             { kernel with
-                                VirtualClockMs = max kernel.VirtualClockMs target
+                                VirtualClockTicks = max kernel.VirtualClockTicks target
                             }
                         )
 

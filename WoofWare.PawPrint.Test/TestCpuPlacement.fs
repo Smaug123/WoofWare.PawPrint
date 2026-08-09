@@ -273,7 +273,7 @@ module TestCpuPlacement =
 
             let busy =
                 { plain with
-                    VirtualClockMs = 1234L
+                    VirtualClockTicks = 1234L
                     StepCounter = 5678L
                     NonCryptoRandomState = 0xDEADBEEFUL
                 }

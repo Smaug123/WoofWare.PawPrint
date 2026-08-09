@@ -51,9 +51,9 @@ namespace WoofWare.PawPrint
 ///
 /// Timeouts: finite timeouts on `WaitHandle_WaitOneCore` /
 /// `WaitHandle_WaitOnePrioritized` are supported through the
-/// virtual-clock plumbing in `EmulatedKernel.VirtualClockMs`. The
+/// virtual-clock plumbing in `EmulatedKernel.VirtualClockTicks`. The
 /// native handler converts a millisecond timeout into an absolute
-/// deadline against `VirtualClockMs` and threads it through `waitOne` /
+/// deadline against `VirtualClockTicks` and threads it through `waitOne` /
 /// `waitOnePrioritized`; if the slow path fires, the deadline is
 /// recorded on the parked thread's `BlockedOnWaitHandle` status. The
 /// driver loop fires `fireTimeout` for any thread whose deadline has
@@ -574,7 +574,7 @@ module WaitHandle =
 
     /// Internal: kind-private semaphore waitOne. Used by the kind
     /// dispatcher in `waitOne` and the property tests that exercise the
-    /// semaphore path directly. `deadlineMs` is the absolute virtual-clock
+    /// semaphore path directly. `deadlineTicks` is the absolute virtual-clock
     /// millisecond at which the wait expires (or `None` for an infinite
     /// wait); the value is recorded on the parked thread's `BlockedOn
     /// WaitHandle` status when the slow path fires, so the driver loop's
@@ -582,7 +582,7 @@ module WaitHandle =
     let private waitOneSemaphore
         (thread : ThreadId)
         (id : WaitHandleId)
-        (deadlineMs : int64 option)
+        (deadlineTicks : int64 option)
         (semaphore : SemaphoreState)
         (state : IlMachineState)
         : WaitOutcome
@@ -612,18 +612,18 @@ module WaitHandle =
 
             state
             |> writeHandle id (WaitHandleState.Semaphore semaphore)
-            |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnWaitHandle (id, deadlineMs))
+            |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnWaitHandle (id, deadlineTicks))
             |> WaitOutcome.Blocked
 
     /// Internal: kind-private mutex waitOne. Re-entrant on owner; the
     /// `Free wasAbandoned=true` transition produces `AcquiredAbandoned`
-    /// and clears the flag. `deadlineMs` is recorded on the parked
+    /// and clears the flag. `deadlineTicks` is recorded on the parked
     /// thread's status when the slow path fires (held by another thread);
     /// the fast paths do not consult it.
     let private waitOneMutex
         (thread : ThreadId)
         (id : WaitHandleId)
-        (deadlineMs : int64 option)
+        (deadlineTicks : int64 option)
         (mutex : MutexState)
         (state : IlMachineState)
         : WaitOutcome
@@ -659,18 +659,18 @@ module WaitHandle =
 
             state
             |> writeHandle id (WaitHandleState.Mutex mutex)
-            |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnWaitHandle (id, deadlineMs))
+            |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnWaitHandle (id, deadlineTicks))
             |> WaitOutcome.Blocked
 
     /// Internal: kind-private event waitOne. Acquiring a signalled `Auto`
     /// event consumes the signal (clears `Signaled`); acquiring a
     /// signalled `Manual` event leaves it signalled (every concurrent
     /// waiter passes through). On an unsignalled event the thread parks
-    /// at the FIFO tail with `deadlineMs` recorded on its status.
+    /// at the FIFO tail with `deadlineTicks` recorded on its status.
     let private waitOneEvent
         (thread : ThreadId)
         (id : WaitHandleId)
-        (deadlineMs : int64 option)
+        (deadlineTicks : int64 option)
         (event : EventState)
         (state : IlMachineState)
         : WaitOutcome
@@ -697,7 +697,7 @@ module WaitHandle =
 
             state
             |> writeHandle id (WaitHandleState.Event event)
-            |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnWaitHandle (id, deadlineMs))
+            |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnWaitHandle (id, deadlineTicks))
             |> WaitOutcome.Blocked
 
     /// Try to take ownership of `id` on behalf of `thread`. Dispatches
@@ -705,14 +705,14 @@ module WaitHandle =
     ///
     ///  - Semaphore: decrement the count if positive; otherwise park at
     ///    the FIFO tail of `WaitQueue` and flip the thread's status to
-    ///    `BlockedOnWaitHandle (id, deadlineMs)`.
+    ///    `BlockedOnWaitHandle (id, deadlineTicks)`.
     ///  - Mutex: re-entrant fast path on the owning thread; take the
     ///    free mutex (producing `AcquiredAbandoned` iff the abandoned
     ///    flag was set, clearing it); otherwise park at the FIFO tail.
     ///  - Event: signalled events fast-path (consuming the signal for
     ///    `Auto`); unsignalled events park at the FIFO tail.
     ///
-    /// `deadlineMs` is the absolute virtual-clock millisecond at which a
+    /// `deadlineTicks` is the absolute virtual-clock tick at which a
     /// finite timeout expires, or `None` for an infinite wait. The fast
     /// paths ignore it; only the slow paths thread it through to the
     /// parked thread's status, where the driver loop's deadline-firing
@@ -728,16 +728,16 @@ module WaitHandle =
     let waitOne
         (thread : ThreadId)
         (id : WaitHandleId)
-        (deadlineMs : int64 option)
+        (deadlineTicks : int64 option)
         (state : IlMachineState)
         : WaitOutcome
         =
         let handle = lookup id state
 
         match handle with
-        | WaitHandleState.Semaphore semaphore -> waitOneSemaphore thread id deadlineMs semaphore state
-        | WaitHandleState.Mutex mutex -> waitOneMutex thread id deadlineMs mutex state
-        | WaitHandleState.Event event -> waitOneEvent thread id deadlineMs event state
+        | WaitHandleState.Semaphore semaphore -> waitOneSemaphore thread id deadlineTicks semaphore state
+        | WaitHandleState.Mutex mutex -> waitOneMutex thread id deadlineTicks mutex state
+        | WaitHandleState.Event event -> waitOneEvent thread id deadlineTicks event state
 
     /// Non-blocking probe used to model the zero-timeout `WaitOne(0)`
     /// path. CoreCLR's contract for a zero millisecond timeout: try the
@@ -841,13 +841,13 @@ module WaitHandle =
     /// fairness contract is LIFO over the kernel semaphore's FIFO base.
     ///
     /// The fast path is identical to `waitOne`: priority only matters
-    /// when the call has to block. `deadlineMs` propagates to the parked
+    /// when the call has to block. `deadlineTicks` propagates to the parked
     /// thread's status when the slow path fires, and is ignored on the
     /// fast path for the same reason as `waitOne`.
     let waitOnePrioritized
         (thread : ThreadId)
         (id : WaitHandleId)
-        (deadlineMs : int64 option)
+        (deadlineTicks : int64 option)
         (state : IlMachineState)
         : WaitOutcome
         =
@@ -875,7 +875,7 @@ module WaitHandle =
 
             state
             |> writeHandle id (WaitHandleState.Semaphore semaphore)
-            |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnWaitHandle (id, deadlineMs))
+            |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnWaitHandle (id, deadlineTicks))
             |> WaitOutcome.Blocked
 
     /// Increment the semaphore by `releaseCount`, waking up to that many
@@ -1199,7 +1199,7 @@ module WaitHandle =
     /// Enqueuing twice would let one signal wake it and leave a stale entry
     /// behind.
     ///
-    /// `deadlineMs` is the absolute virtual-clock millisecond at which a
+    /// `deadlineTicks` is the absolute virtual-clock tick at which a
     /// finite timeout expires, or `None` for `INFINITE`. As on the
     /// single-handle path the IL call site advances in every case, and the
     /// slow path pushes an optimistic `WAIT_OBJECT_0` that the eventual wake
@@ -1208,7 +1208,7 @@ module WaitHandle =
         (thread : ThreadId)
         (handles : WaitHandleId list)
         (waitAll : bool)
-        (deadlineMs : int64 option)
+        (deadlineTicks : int64 option)
         (state : IlMachineState)
         : MultiWaitOutcome
         =
@@ -1231,7 +1231,7 @@ module WaitHandle =
                     state
 
             state
-            |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnWaitHandles (handles, waitAll, deadlineMs))
+            |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnWaitHandles (handles, waitAll, deadlineTicks))
             |> MultiWaitOutcome.Blocked
 
     /// Wake `thread` because its finite-timeout multi-handle wait has expired

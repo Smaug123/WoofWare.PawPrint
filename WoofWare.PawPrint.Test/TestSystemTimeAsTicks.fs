@@ -30,13 +30,15 @@ module TestSystemTimeAsTicks =
         ((seed % modulus) + modulus) % modulus
 
     /// A kernel booting at `epochMs` whose virtual clock has since advanced to
-    /// `clockMs`. The clock is set by record-copy because the driver loop is its
-    /// only production writer.
-    let private kernelWith (epochMs : int64) (clockMs : int64) : EmulatedKernel =
+    /// `clockTicks` — note the units differ: the boot instant is a millisecond
+    /// offset (that is what `KernelConfig` takes), while the clock is in the
+    /// 100 ns ticks it is denominated in. The clock is set by record-copy
+    /// because the driver loop is its only production writer.
+    let private kernelWith (epochMs : int64) (clockTicks : int64) : EmulatedKernel =
         let kernel = EmulatedKernel.initial |> EmulatedKernel.withWallClockEpochMs epochMs
 
         { kernel with
-            VirtualClockMs = clockMs
+            VirtualClockTicks = clockTicks
         }
 
     /// The guest-visible instant, computed exactly as CoreLib does but through
@@ -45,13 +47,16 @@ module TestSystemTimeAsTicks =
     let private guestUtcNow (kernel : EmulatedKernel) : DateTime =
         DateTime (DateTime.UnixEpoch.Ticks + EmulatedKernel.systemTimeAsTicks kernel, DateTimeKind.Utc)
 
-    /// Draw an epoch and a virtual-clock reading whose sum is still
-    /// representable — i.e. exactly the states a legally-configured kernel can
-    /// reach.
+    /// Draw an epoch (ms) and a virtual-clock reading (100 ns ticks) whose
+    /// combination is still representable — i.e. exactly the states a
+    /// legally-configured kernel can reach.
     let private reachable (epochSeed : int64, clockSeed : int64) : int64 * int64 =
         let epochMs = intoRange maxEpochMs epochSeed
-        let clockMs = intoRange (maxEpochMs - epochMs) clockSeed
-        epochMs, clockMs
+
+        let clockTicks =
+            intoRange ((maxEpochMs - epochMs) * EmulatedKernel.ticksPerMillisecond) clockSeed
+
+        epochMs, clockTicks
 
     let private int64Pairs = ArbMap.defaults |> ArbMap.arbitrary<int64 * int64>
 
@@ -76,8 +81,8 @@ module TestSystemTimeAsTicks =
     [<Test>]
     let ``every reachable reading names a representable UTC instant`` () =
         let property (seeds : int64 * int64) : bool =
-            let epochMs, clockMs = reachable seeds
-            let now = guestUtcNow (kernelWith epochMs clockMs)
+            let epochMs, clockTicks = reachable seeds
+            let now = guestUtcNow (kernelWith epochMs clockTicks)
 
             now.Kind = DateTimeKind.Utc
             && now >= DateTime.UnixEpoch
@@ -90,11 +95,11 @@ module TestSystemTimeAsTicks =
         // The oracle is the BCL's own date arithmetic rather than a restatement
         // of the implementation's multiply.
         let property (seeds : int64 * int64) : bool =
-            let epochMs, clockMs = reachable seeds
+            let epochMs, clockTicks = reachable seeds
 
-            guestUtcNow (kernelWith epochMs clockMs) = DateTime.UnixEpoch
+            guestUtcNow (kernelWith epochMs clockTicks) = DateTime.UnixEpoch
                 .AddTicks(epochMs * EmulatedKernel.ticksPerMillisecond)
-                .AddTicks (clockMs * EmulatedKernel.ticksPerMillisecond)
+                .AddTicks (clockTicks)
 
         Check.One (propertyConfig, Prop.forAll int64Pairs property)
 
@@ -104,11 +109,18 @@ module TestSystemTimeAsTicks =
         // "booted at E+C, ran for nothing". This is what makes the wall clock a
         // pure view of the monotonic one rather than an independent axis, and it
         // is the property that would have to be given up to model NTP steps.
+        //
+        // Only a *whole millisecond* of elapsed time can be moved, because the
+        // boot instant is denominated in milliseconds and the clock is not. The
+        // sub-millisecond remainder has to stay on the clock; that it does, and
+        // that the reading is unchanged, is the substance of the property now.
         let property (seeds : int64 * int64) : bool =
-            let epochMs, clockMs = reachable seeds
+            let epochMs, clockTicks = reachable seeds
+            let wholeMs = clockTicks / EmulatedKernel.ticksPerMillisecond
+            let remainder = clockTicks % EmulatedKernel.ticksPerMillisecond
 
-            EmulatedKernel.systemTimeAsTicks (kernelWith epochMs clockMs) = EmulatedKernel.systemTimeAsTicks (
-                kernelWith (epochMs + clockMs) 0L
+            EmulatedKernel.systemTimeAsTicks (kernelWith epochMs clockTicks) = EmulatedKernel.systemTimeAsTicks (
+                kernelWith (epochMs + wholeMs) remainder
             )
 
         Check.One (propertyConfig, Prop.forAll int64Pairs property)
@@ -132,17 +144,18 @@ module TestSystemTimeAsTicks =
         Check.One (propertyConfig, Prop.forAll (ArbMap.defaults |> ArbMap.arbitrary<int64 * int64 * int64>) property)
 
     [<Test>]
-    let ``the reading has millisecond granularity`` () =
-        // Documented consequence of deriving from a millisecond clock: every
-        // tick value is a multiple of 10,000, so `DateTime.UtcNow` is not a
-        // source of unique values. Real `clock_gettime(CLOCK_REALTIME)` makes no
-        // uniqueness guarantee either, so this is a faithful gap rather than one
-        // to paper over.
+    let ``the reading has the full 100ns granularity of DateTime`` () =
+        // This used to assert the opposite — that every reading is a multiple of
+        // 10,000 — because the clock it derives from was denominated in whole
+        // milliseconds. Now that the clock counts 100 ns ticks, `DateTime.UtcNow`
+        // resolves every one of them, which is strictly closer to real
+        // `clock_gettime(CLOCK_REALTIME)`. Pinned as a reachability claim rather
+        // than a modulus, since "not always a multiple" needs a witness.
         let property (seeds : int64 * int64) : bool =
-            let epochMs, clockMs = reachable seeds
+            let epochMs, clockTicks = reachable seeds
 
-            let ticks = EmulatedKernel.systemTimeAsTicks (kernelWith epochMs clockMs)
-            ticks % EmulatedKernel.ticksPerMillisecond = 0L
+            let ticks = EmulatedKernel.systemTimeAsTicks (kernelWith epochMs clockTicks)
+            ticks % EmulatedKernel.ticksPerMillisecond = clockTicks % EmulatedKernel.ticksPerMillisecond
 
         Check.One (propertyConfig, Prop.forAll int64Pairs property)
 
@@ -174,14 +187,15 @@ module TestSystemTimeAsTicks =
         // `DateTime`, and it must fail loudly rather than quietly wrapping.
         let property (epochSeed : int64, overshootSeed : int64) : bool =
             let epochMs = intoRange maxEpochMs epochSeed
-            let headroom = maxEpochMs - epochMs
+
+            let headroom = (maxEpochMs - epochMs) * EmulatedKernel.ticksPerMillisecond
             // Strictly past the representable end of time.
-            let clockMs = headroom + 1L + intoRange 1_000_000L overshootSeed
+            let clockTicks = headroom + 1L + intoRange 1_000_000L overshootSeed
 
             let kernel =
                 { EmulatedKernel.initial with
                     WallClockEpochMs = epochMs
-                    VirtualClockMs = clockMs
+                    VirtualClockTicks = clockTicks
                 }
 
             not (succeeds (fun () -> EmulatedKernel.systemTimeAsTicks kernel))

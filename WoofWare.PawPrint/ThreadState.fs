@@ -28,11 +28,11 @@ type ThreadStatus =
     /// `BlockedOnJoin (target, _)` whose `target` matches the terminating
     /// thread and flips them back to `Runnable`.
     ///
-    /// `deadlineMs = None` is an infinite wait (`Thread.Join()` /
+    /// `deadlineTicks = None` is an infinite wait (`Thread.Join()` /
     /// `Thread.Join(-1)` / `Timeout.Infinite`); `Some ms` is a finite
     /// timeout (`Thread.Join(int)` with a non-zero positive value),
-    /// expressed as the absolute virtual-clock millisecond at which the
-    /// wait expires. When `VirtualClockMs` advances past the deadline and
+    /// expressed as the absolute virtual-clock tick at which the
+    /// wait expires. When `VirtualClockTicks` advances past the deadline and
     /// the thread is still parked, the driver fires a timeout wake
     /// (`Scheduler.fireJoinTimeout`): the optimistic `Int32 1` slot
     /// pushed at park time by the Join handler is rewritten to `Int32 0`
@@ -43,7 +43,7 @@ type ThreadStatus =
     /// `Thread.Join(0)` is a non-blocking poll handled at the call site
     /// (no `BlockedOnJoin` transition); only `> 0` finite timeouts and
     /// `-1` infinite reach this variant.
-    | BlockedOnJoin of target : ThreadId * deadlineMs : int64 option
+    | BlockedOnJoin of target : ThreadId * deadlineTicks : int64 option
     /// This thread tried to access a type whose .cctor is currently being run by another
     /// thread. Per ECMA-335 II.10.5.3.3 it must wait for that thread to finish initialising
     /// the type before it can proceed.
@@ -63,9 +63,9 @@ type ThreadStatus =
     /// `BlockedOnMonitorAcquire`; reacquisition then runs through the
     /// normal acquire path.
     ///
-    /// `deadlineMs = None` is an infinite wait; `Some ms` is a finite
-    /// timeout, expressed as the absolute virtual-clock millisecond at
-    /// which the wait expires. When `VirtualClockMs` advances to that
+    /// `deadlineTicks = None` is an infinite wait; `Some ms` is a finite
+    /// timeout, expressed as the absolute virtual-clock tick at
+    /// which the wait expires. When `VirtualClockTicks` advances to that
     /// point and the thread is still parked, the driver fires a timeout
     /// wake (`LowLevelMonitor.fireTimeout`): the thread is dequeued from
     /// the monitor's `WaitQueue`, moved to the `AcquireQueue` tail (or
@@ -75,7 +75,7 @@ type ThreadStatus =
     /// Storing the deadline in the status itself (rather than alongside
     /// in a separate map) makes "no deadline once the wake has fired"
     /// structural — the new status carries no deadline field.
-    | BlockedOnMonitorWait of monitor : LowLevelMonitorId * deadlineMs : int64 option
+    | BlockedOnMonitorWait of monitor : LowLevelMonitorId * deadlineTicks : int64 option
     /// This thread called `Monitor.Enter` (or its `TryEnter` cousin with a non-zero
     /// timeout) on an object whose SyncBlock is `Held` by a different thread, and
     /// is parked at the SyncBlock's `AcquireQueue`. The lock owner's eventual
@@ -84,13 +84,13 @@ type ThreadStatus =
     /// the `LowLevelMonitor` ownership-transfer model so the resumed thread's IL
     /// continues past the `Enter` call site already owning the SyncBlock.
     ///
-    /// `deadlineMs = None` is an infinite acquire (`Monitor.Enter(obj)` /
+    /// `deadlineTicks = None` is an infinite acquire (`Monitor.Enter(obj)` /
     /// `Monitor.TryEnter(obj, Timeout.Infinite)`); `Some ms` is a finite
     /// timeout (`Monitor.TryEnter(obj, ms)` with `ms > 0`), expressed as the
-    /// absolute virtual-clock millisecond at which the timed acquire expires.
+    /// absolute virtual-clock tick at which the timed acquire expires.
     /// Only the `TryEnter_Slowpath` path produces `Some _` — the fast-path
     /// short-circuits zero-timeout contention and parks infinite-timeout
-    /// contention with `None` directly. When `VirtualClockMs` advances past
+    /// contention with `None` directly. When `VirtualClockTicks` advances past
     /// the deadline and the thread is still parked, the driver fires
     /// `SyncBlockMonitor.fireAcquireTimeout`: the thread is dequeued from the
     /// SyncBlock's `AcquireQueue`, the optimistic `Int32 1` (acquired) slot
@@ -98,7 +98,7 @@ type ThreadStatus =
     /// status flips back to `Runnable`. Storing the deadline in the status
     /// itself rather than in a parallel map makes the invariant "no deadline
     /// once Runnable again" structural — a wake naturally forgets it.
-    | BlockedOnSyncBlockAcquire of lockObject : ManagedHeapAddress * deadlineMs : int64 option
+    | BlockedOnSyncBlockAcquire of lockObject : ManagedHeapAddress * deadlineTicks : int64 option
     /// This thread called `Monitor.Wait` on an object's SyncBlock and is parked at
     /// the SyncBlock's `WaitQueue` with the lock fully released. A subsequent
     /// `Monitor.Pulse` / `PulseAll` from another thread (or a spurious wake)
@@ -110,10 +110,10 @@ type ThreadStatus =
     /// re-owning the lock. Parallel with `BlockedOnMonitorWait` but for managed
     /// SyncBlocks rather than `LowLevelMonitor`.
     ///
-    /// `deadlineMs = None` is an infinite wait (`Monitor.Wait(obj)` / managed
+    /// `deadlineTicks = None` is an infinite wait (`Monitor.Wait(obj)` / managed
     /// `Timeout.Infinite`); `Some ms` is a finite timeout
     /// (`Monitor.Wait(obj, ms)`), expressed as the absolute virtual-clock
-    /// millisecond at which the wait expires. When `VirtualClockMs` advances
+    /// millisecond at which the wait expires. When `VirtualClockTicks` advances
     /// past the deadline and the thread is still parked, the driver fires a
     /// timeout wake (`SyncBlockMonitor.fireWaitTimeout`): the thread is dequeued
     /// from the SyncBlock's `WaitQueue`, routed through the same reacquire
@@ -123,7 +123,7 @@ type ThreadStatus =
     /// (timed out). Storing the deadline in the status itself rather than
     /// in a parallel map makes the invariant "no deadline once Runnable
     /// again" structural — a wake naturally forgets it.
-    | BlockedOnSyncBlockWait of lockObject : ManagedHeapAddress * deadlineMs : int64 option
+    | BlockedOnSyncBlockWait of lockObject : ManagedHeapAddress * deadlineTicks : int64 option
     /// This thread called `WaitHandle.WaitOne` (via the `WaitHandle_WaitOneCore`
     /// QCall) on a wait handle whose count was zero / unsignalled, and is
     /// parked at the handle's FIFO `WaitQueue`. A subsequent state change that
@@ -134,10 +134,10 @@ type ThreadStatus =
     /// Single-handle blocking only; `BlockedOnWaitHandles` is the multi-handle
     /// counterpart.
     ///
-    /// `deadlineMs = None` is an infinite wait (Win32 `INFINITE` / managed
+    /// `deadlineTicks = None` is an infinite wait (Win32 `INFINITE` / managed
     /// `Timeout.Infinite`); `Some ms` is a finite timeout, expressed as the
-    /// absolute virtual-clock millisecond at which the wait expires. When
-    /// `VirtualClockMs` advances to that point and the thread is still
+    /// absolute virtual-clock tick at which the wait expires. When
+    /// `VirtualClockTicks` advances to that point and the thread is still
     /// parked, the driver fires a timeout wake (`WaitHandle.fireTimeout`):
     /// the thread is dequeued from the handle's `WaitQueue`, the
     /// `WAIT_OBJECT_0` slot pushed at park time is rewritten to
@@ -145,7 +145,7 @@ type ThreadStatus =
     /// deadline in the status itself (rather than alongside in a separate
     /// map) makes the invariant "no deadline once Runnable again" structural
     /// — a wake naturally forgets it.
-    | BlockedOnWaitHandle of handle : WaitHandleId * deadlineMs : int64 option
+    | BlockedOnWaitHandle of handle : WaitHandleId * deadlineTicks : int64 option
     /// This thread called `WaitHandle.WaitAny` / `WaitAll` (via the
     /// `WaitHandle_WaitMultipleIgnoringSyncContext` QCall) and could not be
     /// satisfied immediately, so it is parked at the FIFO tail of *every* named
@@ -172,16 +172,16 @@ type ThreadStatus =
     /// other waiters — see the weakened queue invariants documented on
     /// `SemaphoreState` / `MutexState` / `EventState`.
     ///
-    /// `deadlineMs` has the same meaning as on `BlockedOnWaitHandle`: `None`
+    /// `deadlineTicks` has the same meaning as on `BlockedOnWaitHandle`: `None`
     /// for `INFINITE`, `Some ms` for an absolute virtual-clock deadline, at
     /// which `WaitHandle.fireMultipleTimeout` dequeues the thread from every
     /// handle it is registered on and rewrites its slot to `WAIT_TIMEOUT`.
-    | BlockedOnWaitHandles of handles : WaitHandleId list * waitAll : bool * deadlineMs : int64 option
+    | BlockedOnWaitHandles of handles : WaitHandleId list * waitAll : bool * deadlineTicks : int64 option
     /// This thread called `Thread.Sleep` (routed via the `ThreadNative_Sleep`
     /// QCall) and is parked against the virtual clock with no associated
     /// wait-queue or signalling primitive. There is no per-primitive FIFO
     /// here because the wake is purely time-driven: the scheduler advances
-    /// `VirtualClockMs` one tick at a time, and once it crosses the deadline
+    /// `VirtualClockTicks` one tick at a time, and once it crosses the deadline
     /// the driver fires `Scheduler.fireSleepTimeout`, which flips the status
     /// back to `Runnable`. The IL `Sleep(int)` call site has already
     /// advanced past itself (Sleep returns `void`, so there is no
@@ -189,20 +189,20 @@ type ThreadStatus =
     /// `BlockedOnJoin`/`BlockedOnSyncBlockWait` et al., which use the
     /// optimistic-push-then-rewrite pattern).
     ///
-    /// `deadlineMs = None` is an infinite sleep (`Thread.Sleep(-1)` /
+    /// `deadlineTicks = None` is an infinite sleep (`Thread.Sleep(-1)` /
     /// `Timeout.Infinite`), which currently parks the thread forever
     /// because `Thread.Interrupt` is not yet implemented (a future slice
     /// that wires interrupt will be the only way out of an infinite
     /// sleep — matching real CoreCLR semantics). `Some ms` is a finite
     /// timeout (`Thread.Sleep(ms)` with `ms > 0`), expressed as the
-    /// absolute virtual-clock millisecond at which the sleep expires.
+    /// absolute virtual-clock tick at which the sleep expires.
     /// `Thread.Sleep(0)` does not produce a `BlockedOnSleep` transition
     /// at all: it is a no-op handled inline at the call site (the BCL
     /// uses it as a yield hint; PawPrint has no preemption to invoke).
     /// Storing the deadline in the status itself rather than in a
     /// parallel map makes the invariant "no deadline once Runnable
     /// again" structural — a wake naturally forgets it.
-    | BlockedOnSleep of deadlineMs : int64 option
+    | BlockedOnSleep of deadlineTicks : int64 option
     /// This thread has executed its final `ret`; it will never run again. Its state is kept
     /// only so other threads can observe termination (e.g. to satisfy Join).
     | Terminated
