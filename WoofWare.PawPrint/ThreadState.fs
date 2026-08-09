@@ -345,26 +345,21 @@ type ThreadState =
         /// This is `sched_yield(2)` semantics stated as data: an honoured `Thread.Yield()` /
         /// `Thread.Sleep(0)` sends the caller to the back of the run queue, and the queue is
         /// "everyone who was Runnable alongside me at that moment".
-        /// `Scheduler.onStepOutcome` charges the debt (see `WhatWeDid.VoluntaryYield`) and
-        /// discharges members as they run.
+        /// `Scheduler.onStepOutcome` charges the debt (see `WhatWeDid.VoluntaryYield`);
+        /// `Scheduler.dischargeYieldDebts`, applied to every retired step at the driver's
+        /// single step seam, removes members as they run.
         ///
         /// Bounded and self-clearing by construction, which is the whole point of the
-        /// representation. The set only ever shrinks: members are removed as they run, and
-        /// `Scheduler.candidates` additionally intersects it with the live Runnable set at
-        /// read time, so for *correctness* a member that blocks, parks or terminates stops
-        /// counting with no cleanup pass at all.
+        /// representation. The set only ever shrinks, and `Scheduler.candidates` additionally
+        /// intersects it with the live Runnable set at read time, so a member that blocks,
+        /// parks or terminates stops counting even before its id is removed — no wake path
+        /// needs a cleanup hook.
         ///
-        /// `Scheduler.onThreadTerminated` nonetheless prunes the terminated thread, for cost
-        /// rather than correctness: a debt that retains a permanently-unrunnable member never
-        /// becomes empty, so its owner misses the cheap `IsEmpty` test forever after and pays
-        /// a runnable-set scan on every scheduling decision. See that function for the
-        /// argument in full.
-        ///
-        /// The consequence worth stating explicitly, because the obvious alternative design
-        /// gets it wrong: a peer that never yields *discharges* the debt by running. A rule
-        /// that instead held a yielder out until its peers also yielded would let a single
-        /// non-yielding busy-waiter exclude a yielder forever — `Thread.Yield(); f = true;`
-        /// racing `while (!f) {}` would livelock, where today it does not.
+        /// A peer that never yields nonetheless *discharges* the debt by running, and that is
+        /// load-bearing rather than incidental. A rule that instead held a yielder out until
+        /// its peers also yielded would let one non-yielding busy-waiter exclude it forever:
+        /// `Thread.Yield(); f = true;` racing `while (!f) {}` would livelock under such a
+        /// rule.
         YieldDebt : Set<ThreadId>
     }
 

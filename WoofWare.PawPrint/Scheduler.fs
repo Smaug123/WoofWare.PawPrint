@@ -127,20 +127,19 @@ module Scheduler =
     /// **This must be applied to every retired step, whatever that step turned out to be**, and
     /// there is exactly one caller: the driver applies it to the result of
     /// `AbstractMachine.executeOneStep` via `ExecutionResult.mapState`, before it looks at which
-    /// outcome it got. Do not add a second call site. The reason is not tidiness — it is that
-    /// the discharge used to live in the driver's per-outcome arms, and both of the arms that
-    /// did not obviously look like "a thread ran" were missed, in both cases only being caught
-    /// in review:
+    /// outcome it got. Do not add a second call site, and in particular do not move it into the
+    /// driver's per-outcome arms. Two outcomes there do not look like "a thread ran" and are
+    /// easy to overlook:
     ///
-    ///   * a thread's *final* step leaves the driver as `ExecutionResult.Terminated`, so the one
-    ///     step that most conclusively satisfies "I am waiting to see you run" discharged
-    ///     nothing, and the terminated id sat in debts forever;
+    ///   * a thread's *final* step leaves the driver as `ExecutionResult.Terminated`, though it
+    ///     is the step that most conclusively satisfies "I am waiting to see you run";
     ///   * the entry thread's synthetic `onlyRet` frame reports `NormalExit` even in the
     ///     pre-`Main` pump, after which that same thread is resurrected and keeps running.
     ///
-    /// Neither was a correctness bug, because `candidates` filters debts against the live
-    /// Runnable set — but both broke the discharge lemma that `candidates`' non-emptiness proof
-    /// rests on, and the first one made the `IsEmpty` fast path permanently unreachable.
+    /// Missing either does not break correctness, because `candidates` filters debts against the
+    /// live Runnable set — but it breaks the discharge lemma that `candidates`' non-emptiness
+    /// proof rests on, and missing the first also makes the `IsEmpty` fast path below
+    /// permanently unreachable for any thread that yielded before a peer exited.
     ///
     /// Short-circuits on the common path the way the `BlockedOnClassInit` wake scan does: this
     /// runs once per interpreted IL instruction and almost never has anything to do, because

@@ -494,10 +494,9 @@ module Program =
             // per-step scheduler bookkeeping that holds regardless of outcome is applied here,
             // once, before we look at which outcome we got.
             //
-            // This used to be done in the individual arms, and the two arms above were both
-            // missed; see `Scheduler.dischargeYieldDebts` for what that cost. `mapState` is
-            // exhaustive over `ExecutionResult`, so a new outcome cannot quietly skip it.
-            // Outcome-*specific* consequences still belong in the arms, via
+            // Doing it here rather than in the individual arms is what makes it hard to get
+            // wrong: `mapState` is exhaustive over `ExecutionResult`, so a new outcome cannot
+            // quietly skip it. Outcome-*specific* consequences still belong in the arms, via
             // `Scheduler.onStepOutcome` and `Scheduler.onThreadTerminated`.
             let stepResult =
                 AbstractMachine.executeOneStep loggerFactory prepared.BaseClassTypes prepared.State nextThread
