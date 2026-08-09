@@ -162,11 +162,27 @@ module NativeException =
             // preallocated-singleton pool is ever introduced, this handler is where it must be
             // consulted.
             //
-            // The near-miss worth naming: PawPrint *does* cache a `TypeInitializationException` per
-            // failed type and rethrow that same instance. Cached is not preallocated — the predicate
-            // is identity against those three specific objects, and a TIE is not one of them, so
-            // false remains correct for it. Nor is a guest-constructed `new OutOfMemoryException()`:
-            // being of a preallocated *type* is not being the preallocated *object*.
+            // Three near-misses, each a plausible way to get this wrong:
+            //
+            //  * PawPrint *does* cache a `TypeInitializationException` per failed type and rethrow
+            //    that same instance. Cached is not preallocated — the predicate is identity against
+            //    those three specific objects, and a TIE is not one of them.
+            //  * A guest-constructed `new OutOfMemoryException()` is an ordinary object: being of a
+            //    preallocated *type* is not being the preallocated *object*.
+            //  * Most usefully for whoever implements the OOM TODOs above: **an ordinary
+            //    allocation-too-large `OutOfMemoryException` is not the singleton either**, so those
+            //    TODOs will not invalidate this handler. `GetOutOfMemoryException` allocates a fresh
+            //    one and falls back to the preallocated instance only in its `EX_CATCH`
+            //    (clrex.cpp:525-540) — i.e. only when allocating the exception object *itself*
+            //    fails, which is genuine heap exhaustion rather than an oversized request. Measured
+            //    on .NET 10: two `new long[int.MaxValue]` attempts yield two *distinct* OOM objects,
+            //    and `IsImmutableAgileException` answers false for both.
+            //
+            // So the guest-observable reach of a `true` answer is narrower than it looks:
+            // `StackOverflowException` is not catchable at all in CoreCLR (the process dies, so no
+            // guest ever holds that instance), `ExecutionEngineException` is obsolete and no longer
+            // thrown, and the OOM singleton appears only under true exhaustion — a state PawPrint's
+            // unbounded in-memory heap has no notion of.
             let operation = "System.Exception.IsImmutableAgileException"
 
             if instruction.Arguments.Length <> 1 then
