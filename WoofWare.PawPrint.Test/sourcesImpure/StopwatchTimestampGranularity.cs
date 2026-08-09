@@ -55,14 +55,12 @@ namespace HelloWorldApp
             // between two high-resolution ones and its *millisecond bucket* must
             // overlap the interval they bracket.
             //
-            // Not "must fall between them", which is what this used to say. That
-            // was a theorem only while the clock was millisecond-granular and the
-            // low-resolution view was therefore exact; now it truncates, so the
-            // reading generally floors to strictly below `before`. Expanding it
-            // to the millisecond it stands for is the honest statement, and it is
-            // still enough to catch the failures worth catching: the two entry
-            // points reading different clocks, or disagreeing by more than the
-            // low-resolution quantum.
+            // Not "must fall between them": that is a theorem only for a clock whose
+            // granularity is the millisecond the low-resolution view reports, and this
+            // one is finer, so the reading generally floors to strictly below `before`.
+            // Expanding it to the millisecond it stands for is the honest statement, and
+            // still catches the failures worth catching: the two entry points reading
+            // different clocks, or disagreeing by more than the low-resolution quantum.
             long before = Stopwatch.GetTimestamp();
             long ticks = Environment.TickCount64;
             long after = Stopwatch.GetTimestamp();

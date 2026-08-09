@@ -21,11 +21,11 @@ internal static class SpinWaitSpinnersDoNotStarveWorker
     private static int Main()
     {
         const int spinners = 6;
-        // Deliberately long. `SpinWait` yields for its first twenty iterations and only then
-        // starts calling `Thread.Sleep(1)`, so a worker that finishes during that warmup never
-        // exercises the sleep path at all — measured, 150 units ended the run after ~4,000
-        // ticks with every spinner still in its yield phase, and the fixture's parked-tick
-        // assertion was vacuously false rather than meaningfully so.
+        // Deliberately long, and do not shorten it. `SpinWait` yields for its first twenty
+        // iterations and only then starts calling `Thread.Sleep(1)`, so a worker that finishes
+        // during that warmup never exercises the sleep path and the fixture's parked-tick
+        // assertion passes vacuously. Measured: 150 units ends the run after ~4,000 ticks with
+        // every spinner still in its yield phase.
         const int workUnits = 4000;
 
         for (int i = 0; i < spinners; i++)

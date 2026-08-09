@@ -788,13 +788,13 @@ module EmulatedKernel =
     /// the cost of one instruction, because that ratio is what decides whether the BCL's
     /// spin-then-sleep backoff does anything at all.
     ///
-    /// It was a whole millisecond until this constant was changed, which made that ratio 1:1:
-    /// `Thread.Sleep(1)`'s deadline expired inside the very `fireExpiredDeadlines` pass that
-    /// preceded the next scheduling decision, so the sleeper missed *zero* decisions and
-    /// `Sleep` was a no-op. Measured on issue #844's repro: 81,886 parks in one run, and not
-    /// one tick at which any thread was observably parked.
+    /// A cost at or near a whole millisecond makes that ratio 1:1, at which `Thread.Sleep(1)`'s
+    /// deadline expires inside the very `fireExpiredDeadlines` pass that precedes the next
+    /// scheduling decision: the sleeper misses *zero* decisions and `Sleep` is a no-op. That is
+    /// the failure this value exists to avoid, so keep it several orders of magnitude below
+    /// `ticksPerMillisecond`.
     ///
-    /// Why 100 ns and not 1 µs, which was the other candidate. Post-backoff, a `SpinWait`
+    /// Why 100 ns and not 1 µs. Post-backoff, a `SpinWait`
     /// spinner's cycle is one `Sleep(1)` park plus a *measured* 67 retired instructions. Sixteen
     /// of them therefore demand 1,072 instructions per park window, against a window of
     /// `ticksPerMillisecond / InstructionCostTicks` instructions. At 1 µs the window is 1,000 —
@@ -1035,10 +1035,10 @@ module EmulatedKernel =
     /// `clock + timeoutMs * ticksPerMillisecond`, and `Thread.Sleep(Int32.MaxValue)` contributes
     /// about 2.1e13 ticks; with the clock bounded at 9.2e16 the sum cannot approach
     /// `Int64.MaxValue`, so the seven deadline sites need no checked arithmetic of their own.
-    /// Without the bound they would need it: the deadline jump advances the clock to a deadline
-    /// *without* retiring a step, so a loop of `Sleep(Int32.MaxValue)` reaches the wrap in about
-    /// 430,000 iterations — a few million interpreted instructions, which is minutes rather than
-    /// the unreachable 4.3 billion jumps the millisecond-denominated clock required.
+    /// Without the bound they would need it, and the horizon is close enough to matter: the
+    /// deadline jump advances the clock to a deadline *without* retiring a step, so a loop of
+    /// `Sleep(Int32.MaxValue)` reaches the wrap in about 430,000 iterations — a few million
+    /// interpreted instructions.
     let withVirtualClockTicks (ticks : int64) (kernel : EmulatedKernel) : EmulatedKernel =
         // Checked independently of the monotonicity comparison below, which on its own would
         // wave through a negative target whenever the current value is more negative still —

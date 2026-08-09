@@ -102,10 +102,9 @@ module TestMonotonicTimestamp =
         // high-resolution one truncated to milliseconds.
         // Neither side restates the other's arithmetic: the left is the high-resolution PAL
         // reading converted from nanoseconds to milliseconds using the BCL's own factor, the
-        // right is the low-resolution PAL reading. Before the clock was re-denominated this
-        // assertion happened to be expressible as "hi-res / 1e6 = the clock", because the clock
-        // *was* in milliseconds; at 100 ns that form degenerates into a tautology about
-        // `monotonicTimestampNanos` and stops covering the low-resolution projection at all.
+        // right is the low-resolution PAL reading. Compare the two *projections*, not a
+        // projection against the clock field — the latter is a tautology about
+        // `monotonicTimestampNanos` and covers the low-resolution one not at all.
         let property (seed : int64) : bool =
             let kernel = kernelWith (intoRange maxClockTicks seed)
 
@@ -210,14 +209,11 @@ module TestMonotonicTimestamp =
 
     [<Test>]
     let ``the reading has 100ns granularity`` () =
-        // Documented consequence of deriving from a 100 ns clock: every
-        // timestamp is a multiple of 100 ns. This assertion used to say
-        // *millisecond* granularity — a multiple of 1,000,000 — because the
-        // clock was denominated in milliseconds; re-denominating it made
-        // `Stopwatch` four orders of magnitude finer, and hence far closer to
-        // real `clock_gettime(CLOCK_MONOTONIC)`. It is still coarser than the
-        // real thing, and still not a source of unique values, which is a
-        // faithful gap rather than one to paper over.
+        // Documented consequence of deriving from a 100 ns clock: every timestamp is
+        // a multiple of 100 ns. That is coarser than real
+        // `clock_gettime(CLOCK_MONOTONIC)`, so `Stopwatch` is not a source of unique
+        // values here — a faithful gap rather than one to paper over, since the real
+        // thing makes no uniqueness guarantee either.
         let property (seed : int64) : bool =
             let nanos =
                 EmulatedKernel.monotonicTimestampNanos (kernelWith (intoRange maxClockTicks seed))

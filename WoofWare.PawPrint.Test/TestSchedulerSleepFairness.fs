@@ -11,13 +11,13 @@ open WoofWare.PawPrint
 /// which after twenty iterations calls `Thread.Sleep(1)` forever — so this is the sleep half of
 /// the backoff, where `TestSchedulerYieldFairness` covers the yield half.
 ///
-/// Two things are asserted, and the first matters more than the numbers. Before the virtual
-/// clock's rate was made honest, `Thread.Sleep(1)` parked a thread for *zero* scheduling
-/// decisions: its deadline was one instruction away, so `fireExpiredDeadlines` woke it before
-/// the scheduler could ever see it parked. Instrumenting the driver over the original repro
-/// found 81,886 parks and not one tick at which any thread was in `BlockedOnSleep`. So the
-/// fixture watches for a parked thread directly, rather than inferring it from a step count
-/// that could improve for unrelated reasons.
+/// Two things are asserted, and the first matters more than the numbers: that a thread which
+/// has called `Thread.Sleep(1)` is *observably* parked. That fails whenever the sleep deadline
+/// falls inside the same tick the sleep was requested in, because `fireExpiredDeadlines` then
+/// wakes the thread before the scheduler can ever see it — a state in which `Sleep` costs its
+/// caller no scheduling decisions at all and the BCL's backoff does nothing. The fixture
+/// watches for a parked thread directly rather than inferring it from a step count, which
+/// could improve for unrelated reasons.
 ///
 /// Runs under `Pct`, as `TestSchedulerYieldFairness` does and for the same reason: `RoundRobin`
 /// is already maximally yield-respecting, so it is not where scheduling fixes show up.
@@ -41,8 +41,9 @@ module TestSchedulerSleepFairness =
         |> Roslyn.compile
 
     /// What one run of the guest tells us. `ParkedTicks` is the load-bearing one: the count of
-    /// driver steps at which *some* thread was observably in `BlockedOnSleep`. Before the clock
-    /// rate was made honest this was identically zero however many times the guest slept.
+    /// driver steps at which *some* thread was observably in `BlockedOnSleep`. It is zero for
+    /// any rate at which a `Sleep(1)` deadline expires before the next scheduling decision,
+    /// however many times the guest sleeps.
     type private RunMeasurement =
         {
             ExitCode : int
@@ -120,11 +121,6 @@ module TestSchedulerSleepFairness =
         // 1 reaches the sleep rung and seed 2 does not, because PCT can starve a spinner for the
         // whole run. That is PCT working as intended, not a bug, so the *qualitative* claim
         // belongs here and the statistical one belongs in the PCT test below.
-        //
-        // This is the assertion that was false before the clock rate was made honest, and
-        // starkly so: instrumenting the original repro found 81,886 `Sleep(1)` parks and not one
-        // tick out of 800,000 at which any thread was in `BlockedOnSleep`, because the deadline
-        // was one instruction away.
         let r = runOne None
 
         r.ExitCode |> shouldEqual 0
