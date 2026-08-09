@@ -40,7 +40,10 @@ module AppContextProperties =
 
     /// No properties at all.
     ///
-    /// This is PawPrint's own default, and it is not what any real .NET process starts with:
+    /// This is what `HostConfig.Default` supplies, so it is "no properties *from the host*"
+    /// rather than "no properties": `Program.prepare` lays the host's over
+    /// <see cref="runtimeBaseline"/>, so a guest launched this way still sees that. It is not
+    /// what any real .NET process starts with either:
     /// a real host populates eight properties of its own — `TRUSTED_PLATFORM_ASSEMBLIES`,
     /// `APP_CONTEXT_BASE_DIRECTORY` and friends — before it so much as looks at
     /// `configProperties`, and PawPrint populates none of them. Nor is it "what a guest sees
