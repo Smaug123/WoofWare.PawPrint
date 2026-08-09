@@ -12,6 +12,7 @@
     <Compile Include="Assembly.fs" />
     <Compile Include="Roslyn.fs" />
     <Compile Include="TestAssemblyReadCache.fs" />
+    <Compile Include="TestSequencePoints.fs" />
     <Compile Include="TestCustomAttributeBlob.fs" />
     <Compile Include="TestCustomAttribValueLowering.fs" />
     <Compile Include="TestAttributeFormatting.fs" />
