@@ -67,7 +67,7 @@ type CanonicalPointerKey =
 /// Whichever rule is in force is part of a run's replay contract: changing it
 /// changes every synthesised pointer value the guest observes.
 [<RequireQualifiedAccess>]
-type PointerHashCounters =
+type PointerHashState =
     /// The nth distinct key to be materialised is assigned counter `n` and stores
     /// address bits `(n + 1) <<< 2`, so bits follow first-touch order and distinct
     /// keys cannot collide. Subsequent materialisations of the same key return the
@@ -89,10 +89,10 @@ type PointerHashCounters =
     | SequentialFirstTouch of nextCounter : uint64 * assigned : Map<CanonicalPointerKey, uint64>
 
 [<RequireQualifiedAccess>]
-module PointerHashCounters =
+module PointerHashState =
     /// A fresh fixture, assigning bits by first-touch order.
-    let empty : PointerHashCounters =
-        PointerHashCounters.SequentialFirstTouch (0UL, Map.empty)
+    let empty : PointerHashState =
+        PointerHashState.SequentialFirstTouch (0UL, Map.empty)
 
 [<RequireQualifiedAccess>]
 module PointerHashSynthesis =
@@ -206,7 +206,7 @@ module PointerHashSynthesis =
     /// helper — those should have been handled by the caller before they
     /// got here.
     ///
-    /// Determinism: under `PointerHashCounters.SequentialFirstTouch`, bits
+    /// Determinism: under `PointerHashState.SequentialFirstTouch`, bits
     /// depend only on the canonical key and the order in which keys are first
     /// registered. The result is stable for a given execution trace and
     /// reproducible across runs with the same scheduler.
@@ -217,8 +217,8 @@ module PointerHashSynthesis =
     let materialiseHashBits
         (reason : string)
         (src : NativeIntSource)
-        (counters : PointerHashCounters)
-        : int64 * PointerHashCounters
+        (counters : PointerHashState)
+        : int64 * PointerHashState
         =
         match src with
         | NativeIntSource.Verbatim n -> n, counters
@@ -252,13 +252,13 @@ module PointerHashSynthesis =
             let tagBits = lowBitsForSource src
 
             match counters with
-            | PointerHashCounters.SequentialFirstTouch (nextCounter, assigned) ->
+            | PointerHashState.SequentialFirstTouch (nextCounter, assigned) ->
                 match Map.tryFind key assigned with
                 | Some bits -> Operators.int64 (bits ||| tagBits), counters
                 | None ->
                     let bits = (nextCounter + 1UL) <<< 2
 
                     let counters' =
-                        PointerHashCounters.SequentialFirstTouch (nextCounter + 1UL, Map.add key bits assigned)
+                        PointerHashState.SequentialFirstTouch (nextCounter + 1UL, Map.add key bits assigned)
 
                     Operators.int64 (bits ||| tagBits), counters'

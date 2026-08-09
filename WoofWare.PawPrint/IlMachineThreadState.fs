@@ -301,7 +301,7 @@ module IlMachineThreadState =
                 RuntimeModuleObjects = ImmutableDictionary.Empty
                 ManagedThreadObjects = Map.empty
                 NextManagedThreadId = 2
-                PointerHashCounters = PointerHashCounters.empty
+                PointerHashState = PointerHashState.empty
                 Kernel = EmulatedKernel.initial
                 Scheduling = SchedulerState.RoundRobin
             }

@@ -18,7 +18,7 @@ open WoofWare.PawPrint
 ///
 /// What must be refused is narrowing a *pointer* to int32. `conv.i4` would synthesise
 /// bits for one, which fabricates the answer and, worse, assigns the pointer a
-/// `PointerHashCounters` identity — perturbing every synthesised pointer value later in
+/// `PointerHashState` identity — perturbing every synthesised pointer value later in
 /// the run. An int32 parameter cannot legally receive a pointer, so this is pure downside.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
@@ -104,13 +104,13 @@ module TestIntrinsicValueArguments =
         let property ((value, bits) : EvalStackValue * int64) : unit =
             let actual = Intrinsics.int32ValueArgument "Interlocked.Add" value
 
-            let viaConv, counters = EvalStackValue.convToInt32 value PointerHashCounters.empty
+            let viaConv, counters = EvalStackValue.convToInt32 value PointerHashState.empty
 
             viaConv |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim actual))
             actual |> shouldEqual (int32 bits)
 
             // And no identity was registered by either route, since nothing was synthesised.
-            counters |> shouldEqual PointerHashCounters.empty
+            counters |> shouldEqual PointerHashState.empty
 
         Check.One (propertyConfig, Prop.forAll (Arb.fromGen genExactIntegerValue) property)
 
@@ -129,14 +129,14 @@ module TestIntrinsicValueArguments =
 
             // Confirm the delta is real: `conv.i4` does answer, and registers an identity
             // while doing so. That side effect is what the refusal exists to prevent.
-            let _, counters = EvalStackValue.convToInt32 value PointerHashCounters.empty
+            let _, counters = EvalStackValue.convToInt32 value PointerHashState.empty
 
             match value with
             | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer _)
             | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (NativeIntSource.ManagedPointer _, _)) ->
                 // A byref narrows to `NarrowedManagedPointer` instead: no synthesis, but
                 // also no number, which is why the helper still refuses it.
-                counters |> shouldEqual PointerHashCounters.empty
+                counters |> shouldEqual PointerHashState.empty
             | _ -> PointerHashTestHelpers.assignedCount counters |> shouldEqual 1
 
         Check.One (propertyConfig, Prop.forAll (Arb.fromGen genPointerShapedValue) property)
@@ -169,7 +169,7 @@ module TestIntrinsicValueArguments =
 
         let convRefuses =
             Assert.Throws<System.Exception> (fun () ->
-                EvalStackValue.convToInt32 EvalStackValue.NullObjectRef PointerHashCounters.empty
+                EvalStackValue.convToInt32 EvalStackValue.NullObjectRef PointerHashState.empty
                 |> ignore
             )
 

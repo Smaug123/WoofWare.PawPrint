@@ -1315,7 +1315,7 @@ module TestNullaryIlOp =
     /// The six unchecked narrowing conversions, paired with the destination width
     /// their diagnostics name. `TestEvalStack` pins what each *computes* from a
     /// pointer-shaped source; these cases pin that the op arm writes the resulting
-    /// `PointerHashCounters` back into the machine state.
+    /// `PointerHashState` back into the machine state.
     ///
     /// Without that write-back each conversion would restart counter assignment from
     /// zero, so two distinct handles could be handed identical bits — which
@@ -1342,7 +1342,7 @@ module TestNullaryIlOp =
         let state, thread =
             stateWithNullary loggerFactory op (EvalStackValue.NativeInt handle)
 
-        state.PointerHashCounters |> shouldEqual PointerHashCounters.empty
+        state.PointerHashState |> shouldEqual PointerHashState.empty
 
         match NullaryIlOp.execute loggerFactory baseClassTypes state thread op with
         | ExecutionResult.Stepped (state, whatWeDid, _) ->
@@ -1350,8 +1350,8 @@ module TestNullaryIlOp =
 
             // One identity assigned, and retained: a discarded counter map would leave
             // this at zero while still producing a plausible-looking number.
-            PointerHashTestHelpers.nextCounter state.PointerHashCounters |> shouldEqual 1UL
-            PointerHashTestHelpers.assignedCount state.PointerHashCounters |> shouldEqual 1
+            PointerHashTestHelpers.nextCounter state.PointerHashState |> shouldEqual 1UL
+            PointerHashTestHelpers.assignedCount state.PointerHashState |> shouldEqual 1
         | other -> failwith $"Expected %O{op} to step, got %O{other}"
 
     [<Test>]
@@ -1363,22 +1363,22 @@ module TestNullaryIlOp =
         let _, loggerFactory = LoggerFactory.makeTest ()
         use _loggerFactoryResource = loggerFactory
 
-        let narrow (counters : PointerHashCounters) (handle : NativeIntSource) : EvalStackValue * PointerHashCounters =
+        let narrow (counters : PointerHashState) (handle : NativeIntSource) : EvalStackValue * PointerHashState =
             let state, thread =
                 stateWithNullary loggerFactory NullaryIlOp.Conv_I4 (EvalStackValue.NativeInt handle)
 
             let state =
                 { state with
-                    PointerHashCounters = counters
+                    PointerHashState = counters
                 }
 
             match NullaryIlOp.execute loggerFactory baseClassTypes state thread NullaryIlOp.Conv_I4 with
             | ExecutionResult.Stepped (state, _, _) ->
-                IlMachineState.popEvalStack thread state |> fst, state.PointerHashCounters
+                IlMachineState.popEvalStack thread state |> fst, state.PointerHashState
             | other -> failwith $"Expected Conv_I4 to step, got %O{other}"
 
         let first, counters =
-            narrow PointerHashCounters.empty (NativeIntSource.MethodHandlePtr 17L)
+            narrow PointerHashState.empty (NativeIntSource.MethodHandlePtr 17L)
 
         let second, counters = narrow counters (NativeIntSource.MethodHandlePtr 18L)
 

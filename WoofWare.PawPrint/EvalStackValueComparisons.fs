@@ -407,14 +407,14 @@ module EvalStackValueComparisons =
         // the WidenedNativeInt would synthesise to — so the answer here is
         // "equal iff WidenedNativeInt's materialised bits equal the
         // OpaqueHashBits value". Producing the right answer requires reading
-        // the `PointerHashCounters` map, which `ceq` does not thread today.
+        // the assignments held in `PointerHashState`, which `ceq` does not thread today.
         // Fail loudly rather than silently returning false (which would have
         // been wrong under identity ops) or true (which would be wrong when
         // bits genuinely differ).
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt _), EvalStackValue.Int64 (Int64Source.OpaqueHashBits _)
         | EvalStackValue.Int64 (Int64Source.OpaqueHashBits _), EvalStackValue.Int64 (Int64Source.WidenedNativeInt _) ->
             failwith
-                $"TODO: ceq of WidenedNativeInt vs OpaqueHashBits requires looking up the pointer's materialised hash bits via PointerHashCounters; thread state through ceq to resolve. Got %O{var1} vs %O{var2}"
+                $"TODO: ceq of WidenedNativeInt vs OpaqueHashBits requires looking up the pointer's materialised hash bits via PointerHashState; thread state through ceq to resolve. Got %O{var1} vs %O{var2}"
         // Verbatim and OpaqueHashBits both carry unambiguous int64 bit patterns,
         // so equality is bit-pattern equality regardless of how the bits were
         // produced. Structural DU equality would incorrectly treat

@@ -86,13 +86,13 @@ module Int64Source =
     /// genuine `Int64.MinValue` whose negation overflows; for synthesised
     /// pointer-hash bits the wraparound at `Int64.MinValue` is acceptable
     /// because the hash domain isn't a genuine signed-int value. Threads
-    /// `PointerHashCounters` because materialising a `WidenedNativeInt`
+    /// `PointerHashState` because materialising a `WidenedNativeInt`
     /// may register a new pointer.
     let negate
         (reason : string)
         (i : Int64Source)
-        (counters : PointerHashCounters)
-        : (Int64Source * PointerHashCounters) option
+        (counters : PointerHashState)
+        : (Int64Source * PointerHashState) option
         =
         match i with
         | Int64Source.Verbatim i ->
@@ -115,8 +115,8 @@ module Int64Source =
         (reason : string)
         (i : Int64Source)
         (shift : int)
-        (counters : PointerHashCounters)
-        : Int64Source * PointerHashCounters
+        (counters : PointerHashState)
+        : Int64Source * PointerHashState
         =
         match i with
         | Int64Source.Verbatim i -> i >>> shift |> Int64Source.Verbatim, counters
@@ -130,8 +130,8 @@ module Int64Source =
         (reason : string)
         (i : Int64Source)
         (shift : int)
-        (counters : PointerHashCounters)
-        : Int64Source * PointerHashCounters
+        (counters : PointerHashState)
+        : Int64Source * PointerHashState
         =
         // `open Checked` shadows `uint64` / `int64` with their overflow-checking
         // versions; an unsigned right shift needs the unchecked tag-flip, since a
@@ -151,8 +151,8 @@ module Int64Source =
         (reason : string)
         (i : Int64Source)
         (shift : int)
-        (counters : PointerHashCounters)
-        : Int64Source * PointerHashCounters
+        (counters : PointerHashState)
+        : Int64Source * PointerHashState
         =
         match i with
         | Int64Source.Verbatim i -> i <<< shift |> Int64Source.Verbatim, counters
@@ -162,12 +162,7 @@ module Int64Source =
             bits <<< shift |> Int64Source.OpaqueHashBits, counters
         | Int64Source.OpaqueHashBits bits -> bits <<< shift |> Int64Source.OpaqueHashBits, counters
 
-    let bitNot
-        (reason : string)
-        (i : Int64Source)
-        (counters : PointerHashCounters)
-        : Int64Source * PointerHashCounters
-        =
+    let bitNot (reason : string) (i : Int64Source) (counters : PointerHashState) : Int64Source * PointerHashState =
         match i with
         | Int64Source.Verbatim i -> Int64Source.Verbatim ~~~i, counters
         | Int64Source.WidenedNativeInt (src, _) ->
@@ -180,8 +175,8 @@ module Int64Source =
         (reason : string)
         (i1 : Int64Source)
         (i2 : Int64Source)
-        (counters : PointerHashCounters)
-        : Int64Source * PointerHashCounters
+        (counters : PointerHashState)
+        : Int64Source * PointerHashState
         =
         match i1, i2 with
         | Int64Source.Verbatim a, Int64Source.Verbatim b -> a &&& b |> Int64Source.Verbatim, counters
@@ -206,8 +201,8 @@ module Int64Source =
         (reason : string)
         (i1 : Int64Source)
         (i2 : Int64Source)
-        (counters : PointerHashCounters)
-        : Int64Source * PointerHashCounters
+        (counters : PointerHashState)
+        : Int64Source * PointerHashState
         =
         match i1, i2 with
         | Int64Source.Verbatim a, Int64Source.Verbatim b -> a ||| b |> Int64Source.Verbatim, counters
@@ -232,8 +227,8 @@ module Int64Source =
         (reason : string)
         (i1 : Int64Source)
         (i2 : Int64Source)
-        (counters : PointerHashCounters)
-        : Int64Source * PointerHashCounters
+        (counters : PointerHashState)
+        : Int64Source * PointerHashState
         =
         match i1, i2 with
         | Int64Source.Verbatim a, Int64Source.Verbatim b -> a ^^^ b |> Int64Source.Verbatim, counters

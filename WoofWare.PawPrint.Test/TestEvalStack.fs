@@ -224,7 +224,7 @@ module TestEvalStack =
         // Under the counter-based pointer-hash scheme, an identity bit op such as `x ^ 0UL`
         // materialises the WidenedNativeInt's bits into OpaqueHashBits. A subsequent
         // `x == y` would then ask: do `WidenedNativeInt x`'s materialised bits equal `b`?
-        // Answering that requires the PointerHashCounters map which ceq does not currently
+        // Answering that requires the PointerHashState map which ceq does not currently
         // thread; the silent-false answer that prior versions returned is wrong under
         // identity ops, so this case fails loudly until ceq is taught to look it up.
         let widened =
@@ -242,13 +242,13 @@ module TestEvalStack =
 
         ex.Message |> shouldContainText "WidenedNativeInt"
         ex.Message |> shouldContainText "OpaqueHashBits"
-        ex.Message |> shouldContainText "PointerHashCounters"
+        ex.Message |> shouldContainText "PointerHashState"
 
         // And symmetrically the other direction.
         let exSym =
             Assert.Throws<System.Exception> (fun () -> EvalStackValueComparisons.ceq hashBits widened |> ignore)
 
-        exSym.Message |> shouldContainText "PointerHashCounters"
+        exSym.Message |> shouldContainText "PointerHashState"
 
     [<Test>]
     let ``ceq of SyntheticCrossArrayOffset vs OpaqueHashBits returns false (cross-shape)`` () : unit =
@@ -821,13 +821,13 @@ module TestEvalStack =
             Name : string
             /// Width of the destination in bits, for the cross-width coherence property.
             DestinationBits : int
-            Apply : EvalStackValue -> PointerHashCounters -> int32 * PointerHashCounters
+            Apply : EvalStackValue -> PointerHashState -> int32 * PointerHashState
         }
 
     let private ofInt32Returning
         (name : string)
         (destinationBits : int)
-        (f : EvalStackValue -> PointerHashCounters -> int32 * PointerHashCounters)
+        (f : EvalStackValue -> PointerHashState -> int32 * PointerHashState)
         : NarrowingConv
         =
         {
@@ -838,7 +838,7 @@ module TestEvalStack =
 
     let private ofEvalStackReturning
         (name : string)
-        (f : EvalStackValue -> PointerHashCounters -> EvalStackValue * PointerHashCounters)
+        (f : EvalStackValue -> PointerHashState -> EvalStackValue * PointerHashState)
         : NarrowingConv
         =
         {
@@ -924,10 +924,10 @@ module TestEvalStack =
         // arm that already handled synthesised bits.
         let property ((conv, src) : NarrowingConv * NativeIntSource) : unit =
             let viaWidened, countersAfter =
-                conv.Apply (EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, true))) PointerHashCounters.empty
+                conv.Apply (EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, true))) PointerHashState.empty
 
             let bits, expectedCounters =
-                PointerHashSynthesis.materialiseHashBits "oracle" src PointerHashCounters.empty
+                PointerHashSynthesis.materialiseHashBits "oracle" src PointerHashState.empty
 
             let viaHashBits, _ =
                 conv.Apply (EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits)) expectedCounters
@@ -950,10 +950,10 @@ module TestEvalStack =
         // between the spellings by `#if TARGET_64BIT` inside `IntPtr.GetHashCode`.
         let property ((conv, src) : NarrowingConv * NativeIntSource) : unit =
             let direct, directCounters =
-                conv.Apply (EvalStackValue.NativeInt src) PointerHashCounters.empty
+                conv.Apply (EvalStackValue.NativeInt src) PointerHashState.empty
 
             let widened, widenedCounters =
-                conv.Apply (EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, true))) PointerHashCounters.empty
+                conv.Apply (EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, true))) PointerHashState.empty
 
             if direct <> widened then
                 failwith $"%s{conv.Name} of %O{src} gave %i{direct} in the native-int slot but %i{widened} once widened"
@@ -964,7 +964,7 @@ module TestEvalStack =
             // Signedness of the widening is a property of the int64 slot, not of the
             // pointer, so it cannot change the bits.
             let widenedUnsigned, _ =
-                conv.Apply (EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, false))) PointerHashCounters.empty
+                conv.Apply (EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, false))) PointerHashState.empty
 
             widenedUnsigned |> shouldEqual widened
 
@@ -974,7 +974,7 @@ module TestEvalStack =
     let ``narrowing the same pointer twice is stable and assigns no second counter`` () : unit =
         let property ((conv, src) : NarrowingConv * NativeIntSource) : unit =
             let first, counters =
-                conv.Apply (EvalStackValue.NativeInt src) PointerHashCounters.empty
+                conv.Apply (EvalStackValue.NativeInt src) PointerHashState.empty
 
             let second, counters' = conv.Apply (EvalStackValue.NativeInt src) counters
 
@@ -995,7 +995,7 @@ module TestEvalStack =
         // widths deliberately make no such claim: a byte cannot hold 2^30 identities.
         let property ((a, b) : NativeIntSource * NativeIntSource) : unit =
             let bitsA, counters =
-                PointerHashSynthesis.materialiseHashBits "oracle" a PointerHashCounters.empty
+                PointerHashSynthesis.materialiseHashBits "oracle" a PointerHashState.empty
 
             let bitsB, _ = PointerHashSynthesis.materialiseHashBits "oracle" b counters
 
@@ -1004,7 +1004,7 @@ module TestEvalStack =
             // alias deliberately, and share bits.
             if bitsA <> bitsB then
                 let narrowedA, counters =
-                    EvalStackValue.convToInt32 (EvalStackValue.NativeInt a) PointerHashCounters.empty
+                    EvalStackValue.convToInt32 (EvalStackValue.NativeInt a) PointerHashState.empty
 
                 let narrowedB, _ = EvalStackValue.convToInt32 (EvalStackValue.NativeInt b) counters
 
@@ -1020,7 +1020,7 @@ module TestEvalStack =
     let ``narrow widths are the low bytes of the int32 narrowing`` () : unit =
         let property (src : NativeIntSource) : unit =
             let asInt32, _ =
-                EvalStackValue.convToInt32 (EvalStackValue.NativeInt src) PointerHashCounters.empty
+                EvalStackValue.convToInt32 (EvalStackValue.NativeInt src) PointerHashState.empty
 
             let full =
                 match asInt32 with
@@ -1028,8 +1028,7 @@ module TestEvalStack =
                 | other -> failwith $"expected verbatim int32, got %O{other}"
 
             for conv in narrowingConversions do
-                let narrowed, _ =
-                    conv.Apply (EvalStackValue.NativeInt src) PointerHashCounters.empty
+                let narrowed, _ = conv.Apply (EvalStackValue.NativeInt src) PointerHashState.empty
 
                 let mask =
                     if conv.DestinationBits = 32 then
@@ -1061,18 +1060,18 @@ module TestEvalStack =
                     EvalStackValue.convToInt32, "conv.i4"
                     EvalStackValue.convToUInt32, "conv.u4"
                 ] do
-                match conv value PointerHashCounters.empty with
+                match conv value PointerHashState.empty with
                 | EvalStackValue.Int32 (Int32Source.NarrowedManagedPointer p), counters ->
                     p |> shouldEqual byref
                     // No identity was registered: a byref is not a synthesisable handle.
-                    counters |> shouldEqual PointerHashCounters.empty
+                    counters |> shouldEqual PointerHashState.empty
                 | other, _ -> failwith $"%s{expected} of %O{value} should keep byref provenance, got %O{other}"
 
             // Below 32 bits there is no representation for a narrowed byref, so the
             // conversion must refuse rather than invent bits.
             for conv in narrowingConversions |> List.filter (fun c -> c.DestinationBits < 32) do
                 let exn =
-                    Assert.Throws<System.Exception> (fun () -> conv.Apply value PointerHashCounters.empty |> ignore)
+                    Assert.Throws<System.Exception> (fun () -> conv.Apply value PointerHashState.empty |> ignore)
 
                 exn.Message |> shouldContainText "refusing"
 
@@ -1090,7 +1089,7 @@ module TestEvalStack =
                 Assert.Throws<System.Exception> (fun () ->
                     conv.Apply
                         (EvalStackValue.NativeInt (NativeIntSource.SyntheticCrossArrayOffset offset))
-                        PointerHashCounters.empty
+                        PointerHashState.empty
                     |> ignore
                 )
 
@@ -1108,8 +1107,8 @@ module TestEvalStack =
                         EvalStackValue.NativeInt (NativeIntSource.Verbatim i)
                         EvalStackValue.Int64 (Int64Source.Verbatim i)
                     ] do
-                    let _, counters = conv.Apply value PointerHashCounters.empty
-                    counters |> shouldEqual PointerHashCounters.empty
+                    let _, counters = conv.Apply value PointerHashState.empty
+                    counters |> shouldEqual PointerHashState.empty
 
         Check.One (narrowingPropertyConfig, Prop.forAll (ArbMap.defaults |> ArbMap.arbitrary<int64>) property)
 
@@ -1125,18 +1124,18 @@ module TestEvalStack =
                 NativeIntSource.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits)
 
             let narrowed, counters =
-                EvalStackValue.convToInt32 (EvalStackValue.NativeInt placeholder) PointerHashCounters.empty
+                EvalStackValue.convToInt32 (EvalStackValue.NativeInt placeholder) PointerHashState.empty
 
             narrowed
             |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim (int32 (uint32 (uint64 bits)))))
 
-            counters |> shouldEqual PointerHashCounters.empty
+            counters |> shouldEqual PointerHashState.empty
 
             let viaHash, hashCounters =
-                PointerHashSynthesis.materialiseHashBits "placeholder" placeholder PointerHashCounters.empty
+                PointerHashSynthesis.materialiseHashBits "placeholder" placeholder PointerHashState.empty
 
             viaHash |> shouldEqual bits
-            hashCounters |> shouldEqual PointerHashCounters.empty
+            hashCounters |> shouldEqual PointerHashState.empty
 
         Check.One (narrowingPropertyConfig, Prop.forAll (ArbMap.defaults |> ArbMap.arbitrary<int64>) property)
 
@@ -1150,7 +1149,7 @@ module TestEvalStack =
         let widened = EvalStackValue.Int64 (Int64Source.WidenedNativeInt (handle, true))
 
         // `(int)l`
-        let low, counters = EvalStackValue.convToInt32 widened PointerHashCounters.empty
+        let low, counters = EvalStackValue.convToInt32 widened PointerHashState.empty
 
         // `(int)(l >> 32)`
         let shifted, counters =
@@ -1163,7 +1162,7 @@ module TestEvalStack =
         PointerHashTestHelpers.assignedCount counters |> shouldEqual 1
 
         let expectedBits, _ =
-            PointerHashSynthesis.materialiseHashBits "oracle" handle PointerHashCounters.empty
+            PointerHashSynthesis.materialiseHashBits "oracle" handle PointerHashState.empty
 
         low
         |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim (int32 (uint32 (uint64 expectedBits)))))
