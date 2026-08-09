@@ -477,19 +477,29 @@ module IlMachineTypeResolution =
 
             state, RuntimeTypeHandleTarget.Closed handle
 
-    /// Get zero value for a type that's already been concretized
+    /// Get zero value for a type that's already been concretized.
+    ///
+    /// Laying the type out reads its field types, so this can bind assembly references that
+    /// nothing else in the run ever names; both the concrete-type registry and the load context
+    /// come back in the returned state. See `CliType.zeroOf`.
     let cliTypeZeroOfHandle
         (state : IlMachineState)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (handle : ConcreteTypeHandle)
         : CliType * IlMachineState
         =
-        let zero, updatedConcreteTypes =
-            CliType.zeroOf state.ConcreteTypes state._LoadedAssemblies baseClassTypes handle
+        let zero, updatedConcreteTypes, updatedAssemblies =
+            CliType.zeroOf
+                (loader state.LoggerFactory state)
+                state.ConcreteTypes
+                state._LoadedAssemblies
+                baseClassTypes
+                handle
 
         let newState =
             { state with
                 ConcreteTypes = updatedConcreteTypes
+                _LoadedAssemblies = updatedAssemblies
             }
 
         zero, newState

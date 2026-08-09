@@ -11,6 +11,13 @@ type IlMachineState =
     {
         ConcreteTypes : AllConcreteTypes
         Logger : ILogger
+        /// The factory `Logger` came from, kept so that the layers which need an `IAssemblyLoad`
+        /// but are not handed one can build the production loader:
+        /// `TypeResolution.directoryLoader LoggerFactory DotnetRuntimeDirs`. The state already
+        /// carries the runtime dirs for exactly that purpose; this is the other half. It is a
+        /// logging sink only — nothing about a run's behaviour may depend on it, on pain of
+        /// making replays depend on how the host configured logging.
+        LoggerFactory : ILoggerFactory
         NextThreadId : int
         /// Round-robin cursor for `EmulatedKernel.cpuForRotation`: the number
         /// of *guest-visible* threads created so far, and hence the rotation

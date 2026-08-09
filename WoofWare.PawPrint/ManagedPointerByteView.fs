@@ -23,8 +23,17 @@ module ManagedPointerByteView =
         if obj.Length > 0 then
             CliType.sizeOf obj.Elements.[0]
         else
-            let zero, _ =
-                CliType.zeroOf state.ConcreteTypes state._LoadedAssemblies baseClassTypes (arrayElementHandle obj)
+            // Deliberately the non-loading walk: this returns a bare `int`, with nowhere to put
+            // an updated registry or load context. The array exists, so whatever allocated it
+            // already ran a state-threading `zeroOf` over this very element handle to produce
+            // its zero element. See `IAssemblyLoad.alreadyLoadedOnly`.
+            let zero, _, _ =
+                CliType.zeroOf
+                    IAssemblyLoad.alreadyLoadedOnly
+                    state.ConcreteTypes
+                    state._LoadedAssemblies
+                    baseClassTypes
+                    (arrayElementHandle obj)
 
             CliType.sizeOf zero
 

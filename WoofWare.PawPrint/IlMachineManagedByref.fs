@@ -1055,8 +1055,14 @@ module IlMachineManagedByref =
                 failwith $"ReinterpretAs target %O{ty} is not present in the concrete-type registry"
             )
 
-        CliType.zeroOf state.ConcreteTypes state._LoadedAssemblies baseClassTypes handle
-        |> fst
+        // Deliberately the non-loading walk: this returns a bare `CliType`, so an updated
+        // registry or load context would have to be dropped, and dropping the registry would
+        // leave the returned value's `FieldId`s dangling. The precondition is discharged
+        // upstream by `Concretization.concretizeMethod`'s priming sweep; should a reinterpret
+        // target ever escape that sweep, this raises rather than silently re-reading the
+        // assembly and throwing the result away. See `IAssemblyLoad.alreadyLoadedOnly`.
+        CliType.zeroOf IAssemblyLoad.alreadyLoadedOnly state.ConcreteTypes state._LoadedAssemblies baseClassTypes handle
+        |> fun (zero, _, _) -> zero
 
     /// Forward walk through a `ByrefProjection` chain, accumulating a byte
     /// offset. `Field` projections consult `templateThunk` for the current

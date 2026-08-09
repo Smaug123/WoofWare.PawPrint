@@ -68,6 +68,7 @@
     <Compile Include="TestCrossAssemblyLdsflda.fs" />
     <Compile Include="TestCrossAssemblyFieldScope.fs" />
     <Compile Include="TestCrossAssemblyEnumAttribute.fs" />
+    <Compile Include="TestCrossAssemblyStructZero.fs" />
     <Compile Include="TestNativeMethodDetection.fs" />
     <Compile Include="TestUnsafeAccessorRead.fs" />
     <Compile Include="TestNativeKernel32.fs" />
