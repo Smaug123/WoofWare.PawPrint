@@ -461,6 +461,17 @@ type MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars> =
         | MethodInfo.Metadata (_, facts) -> facts.MethodAttributes.HasFlag MethodAttributes.Final
         | MethodInfo.Synthesised _ -> true
 
+    /// True iff naming this method at a call site leaves the body still to be chosen by the
+    /// receiver's runtime type, rather than binding to this declaration outright.
+    ///
+    /// This is CoreCLR's own condition, negated. Its JIT importer treats `ldvirtftn` on a method
+    /// that is `static`, `final`, or not `virtual` as a plain `ldftn` of the named method
+    /// (`mflags & (CORINFO_FLG_FINAL | CORINFO_FLG_STATIC) || !(mflags & CORINFO_FLG_VIRTUAL)`,
+    /// `importer.cpp`, `case CEE_LDVIRTFTN`), and `callvirt` devirtualizes on the same grounds.
+    /// `callvirt` and `ldvirtftn` must agree about it, so they share this one spelling.
+    member this.DispatchesVirtually : bool =
+        not this.IsStatic && this.IsVirtual && not this.IsFinal
+
     /// The P/Invoke import this method carries, if any. `None` for a synthesised method: the
     /// runtime supplies its body directly, so there is nothing to import. Already an option for
     /// metadata-backed methods, so no information is lost by projecting it.

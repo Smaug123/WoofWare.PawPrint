@@ -7,14 +7,26 @@ open Microsoft.Extensions.Logging
 
 [<RequireQualifiedAccess>]
 module internal UnaryMetadataTokenOps =
-    let executeLdftn (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
+    /// Resolve the method token of an `ldftn`/`ldvirtftn` to the concrete method its function
+    /// pointer names, before any virtual dispatch. Returns the concretized method alongside the
+    /// pre-concretization one, which carries the metadata names worth logging.
+    ///
+    /// `opName` names the opcode being executed, so that a token shape we cannot resolve produces
+    /// a failure that says which instruction hit it.
+    let private resolveMethodPointerTarget
+        (opName : string)
+        (ctx : UnaryMetadataIlOpContext)
+        (state : IlMachineState)
+        : IlMachineState *
+          WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
+          WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>
+        =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
         let activeAssy = ctx.ActiveAssembly
         let metadataToken = ctx.MetadataToken
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
-        let logger = ctx.Logger
 
         // Resolution mirrors `UnaryMetadataCallOps.executeCall`: in-assembly methods arrive as
         // MethodDef (optionally wrapped in a MethodSpec for generic methods), cross-assembly
@@ -56,7 +68,7 @@ module internal UnaryMetadataTokenOps =
                         state
 
                 match method with
-                | Choice2Of2 _field -> failwith "tried to Ldftn a field"
+                | Choice2Of2 _field -> failwith $"tried to %s{opName} a field"
                 | Choice1Of2 method ->
                     let state, concretized, _ =
                         ExecutionConcretization.concretizeMethodForExecution
@@ -122,7 +134,7 @@ module internal UnaryMetadataTokenOps =
                             state
 
                     match method with
-                    | Choice2Of2 _field -> failwith "tried to Ldftn a field"
+                    | Choice2Of2 _field -> failwith $"tried to %s{opName} a field"
                     | Choice1Of2 method ->
                         let state, concretized, _ =
                             ExecutionConcretization.concretizeMethodForExecutionWithConcreteMethodGenerics
@@ -135,8 +147,31 @@ module internal UnaryMetadataTokenOps =
                                 state
 
                         state, concretized, method
-                | k -> failwith $"Unrecognised MethodSpecification kind for Ldftn: %O{k}"
-            | t -> failwith $"Unexpectedly asked to Ldftn a non-method: {t}"
+                | k -> failwith $"Unrecognised MethodSpecification kind for %s{opName}: %O{k}"
+            | t -> failwith $"Unexpectedly asked to %s{opName} a non-method: {t}"
+
+        state, concretizedMethod, method
+
+    /// Push a function pointer to `concretizedMethod` and advance past the instruction.
+    let private pushFunctionPointer
+        (ctx : UnaryMetadataIlOpContext)
+        (concretizedMethod : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (state : IlMachineState)
+        : IlMachineState * WhatWeDid
+        =
+        state
+        |> IlMachineState.pushToEvalStack'
+            (EvalStackValue.NativeInt (
+                NativeIntSource.FunctionPointer (FunctionPointerTarget.Managed concretizedMethod)
+            ))
+            ctx.Thread
+        |> IlMachineState.advanceProgramCounter ctx.Thread
+        |> Tuple.withRight WhatWeDid.Executed
+
+    let executeLdftn (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
+        let logger = ctx.Logger
+
+        let state, concretizedMethod, method = resolveMethodPointerTarget "Ldftn" ctx state
 
         logger.LogDebug (
             "Pushed pointer to function {LdFtnAssembly}.{LdFtnType}.{LdFtnMethodName}",
@@ -145,14 +180,100 @@ module internal UnaryMetadataTokenOps =
             method.Name
         )
 
-        state
-        |> IlMachineState.pushToEvalStack'
-            (EvalStackValue.NativeInt (
-                NativeIntSource.FunctionPointer (FunctionPointerTarget.Managed concretizedMethod)
-            ))
-            thread
-        |> IlMachineState.advanceProgramCounter thread
-        |> Tuple.withRight WhatWeDid.Executed
+        pushFunctionPointer ctx concretizedMethod state
+
+    /// ECMA-335 III.4.18. Pops an object reference and pushes a function pointer to the body that
+    /// a `callvirt` of the same token on the same receiver would have run.
+    ///
+    /// The dispatch has to happen here rather than at the call: a delegate built from this pointer
+    /// is invoked with `performInterfaceResolution = false` (`AbstractMachine.dispatchDelegateInvoke`),
+    /// so whatever method the pointer names is the method that runs. That matches CoreCLR, which
+    /// also binds the target eagerly — `Delegate.Equals` compares the stored `_methodPtr`, so two
+    /// delegates over receivers of different runtime types must hold different pointers.
+    let executeLdvirtftn (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
+        let loggerFactory = ctx.LoggerFactory
+        let baseClassTypes = ctx.BaseClassTypes
+        let thread = ctx.Thread
+        let logger = ctx.Logger
+
+        let state, callSiteMethod, method = resolveMethodPointerTarget "Ldvirtftn" ctx state
+
+        // CoreCLR's importer falls through to its `ldftn` handling when the named method is
+        // `static`, `final`, or not `virtual` (`case CEE_LDVIRTFTN`, importer.cpp): the receiver is
+        // discarded via `gtUnusedValNode` — note, *without* a null check — and the named method's
+        // pointer is pushed. We mirror that rather than ECMA-335's unconditional
+        // NullReferenceException, because a spurious throw would change guest control flow against
+        // the oracle, whereas the elided check is only ever elided where the receiver's identity
+        // provably cannot affect the answer.
+        //
+        // There is no differential test for this branch and there cannot be one: Roslyn only emits
+        // `ldvirtftn` naming a method that is `virtual` and not `final` — even through a `sealed`
+        // receiver, and even for a `sealed override`, the token names the least-derived non-final
+        // declaration. `MethodInfo.DispatchesVirtually` is unit-tested against `System.Reflection`
+        // instead.
+        if not callSiteMethod.DispatchesVirtually then
+            let _receiver, state = IlMachineState.popEvalStack thread state
+
+            logger.LogDebug (
+                "Pushed pointer to non-virtual function {LdVirtFtnAssembly}.{LdVirtFtnType}.{LdVirtFtnMethodName}",
+                method.DeclaringType.Assembly.Name,
+                method.DeclaringType.Name,
+                method.Name
+            )
+
+            pushFunctionPointer ctx callSiteMethod state
+        else
+
+        // Peek before popping so that the raise leaves the evaluation stack as the faulting
+        // instruction found it, matching `executeCallvirt`'s null check. (Nothing re-executes this
+        // instruction, so this is consistency rather than a correctness requirement.)
+        match state.ThreadState.[thread].MethodState.EvaluationStack |> EvalStack.Peek with
+        | None -> failwith "Ldvirtftn: expected an object reference on the eval stack, but it was empty"
+        | Some EvalStackValue.NullObjectRef ->
+            // CoreCLR raises this from the dispatch helper (`ResolveVirtualFunctionPointer`,
+            // jithelpers.cpp), so it is an ordinary catchable managed exception.
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                baseClassTypes
+                baseClassTypes.NullReferenceException
+                thread
+                state
+        // ECMA-335 III.4.18 types the popped operand `O`, and PawPrint spells every such receiver
+        // — a boxed value type included — as an `ObjectRef`. Anything else is malformed IL rather
+        // than a shape to reinterpret, so the arm below says so instead of letting `getTypeOfObj`
+        // fail with a message that never mentions the instruction.
+        | Some (EvalStackValue.ObjectRef _) ->
+            let receiver, state = IlMachineState.popEvalStack thread state
+
+            let state, receiverType =
+                IlMachineStateExecution.getTypeOfObj loggerFactory baseClassTypes state receiver
+
+            // Exactly `callvirt`'s dispatch: same resolver, same `walkBaseTypes = true`, same
+            // method-generic context. `None` means no override exists, in which case the call
+            // site's own method is the answer.
+            let state, resolved =
+                IlMachineStateExecution.tryResolveVirtualImplementation
+                    loggerFactory
+                    baseClassTypes
+                    thread
+                    callSiteMethod.Generics
+                    callSiteMethod
+                    receiverType
+                    true
+                    state
+
+            let target = resolved |> Option.defaultValue callSiteMethod
+
+            logger.LogDebug (
+                "Pushed pointer to virtual function {LdVirtFtnAssembly}.{LdVirtFtnType}.{LdVirtFtnMethodName}, dispatched from {LdVirtFtnCallSite}",
+                target.DeclaringType.Assembly.Name,
+                target.DeclaringType.Name,
+                target.Name,
+                method.Name
+            )
+
+            pushFunctionPointer ctx target state
+        | Some other -> failwith $"Ldvirtftn: expected an object reference receiver on the eval stack, got %O{other}"
 
     let executeLdtoken (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
