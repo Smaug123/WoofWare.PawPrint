@@ -114,8 +114,7 @@ module NativeSignature =
         (state : IlMachineState)
         : ManagedHeapAddress * IlMachineState
         =
-        let assembly, fieldInfo =
-            NativeRuntimeFieldHandle.getFieldForFieldHandle operation fieldHandle state
+        let assembly, fieldInfo = FieldRvaData.fieldForHandle operation fieldHandle state
 
         // FieldHandle's declaring type is canonicalised per CoreCLR's per-canonical
         // FieldDesc model: `Closed` for non-generic declaring types,
@@ -188,8 +187,7 @@ module NativeSignature =
                 callingConventionFieldName
                 (CliType.Numeric (CliNumericType.Int32 callingConventionField))
 
-        let assembly, _fieldInfo =
-            NativeRuntimeFieldHandle.getFieldForFieldHandle operation fieldHandle state
+        let assembly, _fieldInfo = FieldRvaData.fieldForHandle operation fieldHandle state
 
         let peByteRange =
             IlMachineState.peByteRangeForFieldSignatureBlob assembly (fieldHandle.GetFieldDefinitionHandle().Get)

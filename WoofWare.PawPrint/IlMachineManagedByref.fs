@@ -745,7 +745,11 @@ module IlMachineManagedByref =
 
             CliType.ofBytesLike targetTemplate buf
 
-    let private readPeByteRangeBytesAs
+    /// Read `byteOffset ..` out of a PE byte range and rebuild a value of `targetTemplate`'s
+    /// shape from those bytes. The read is bounds-checked against the range's own declared
+    /// size, so it can never wander into whatever metadata happens to follow the field in the
+    /// section.
+    let readPeByteRangeBytesAs
         (state : IlMachineState)
         (peByteRange : PeByteRangePointer)
         (byteOffset : int)

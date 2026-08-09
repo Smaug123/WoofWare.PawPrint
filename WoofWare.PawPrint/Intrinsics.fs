@@ -1868,72 +1868,138 @@ module Intrinsics =
                 )
             | Some fieldHandle ->
 
-            // Get the assembly and field definition
-            let assemblyFullName = fieldHandle.GetAssemblyFullName ()
-            let fieldDefHandle = fieldHandle.GetFieldDefinitionHandle().Get
+            // `if (!RuntimeFieldHandle.GetRVAFieldInfo(fldInfo.Value, out address, out size))
+            //      throw new ArgumentException(SR.Argument_BadFieldForInitializeArray);`
+            // The QCall returns FALSE exactly when the field carries no RVA, and its `size`
+            // out-parameter is the field's own `LoadSize()` — the bound the copy below must
+            // respect so it cannot run off the end of the static into neighbouring data.
+            let state, rvaData =
+                FieldRvaData.tryGet loggerFactory baseClassTypes "InitializeArray" fieldHandle state
 
-            let assembly : DumpedAssembly =
-                match state.LoadedAssembly' assemblyFullName with
-                | Some a -> a
-                | None -> failwith $"InitializeArray: assembly %s{assemblyFullName} not loaded"
+            match rvaData with
+            | None ->
+                IntrinsicResult.RaiseException (
+                    state,
+                    baseClassTypes.ArgumentException,
+                    Some "The field is invalid for initializing array or span."
+                )
+            | Some rvaData ->
 
-            let fieldInfo = assembly.Fields.[fieldDefHandle]
-
-            let rva : int =
-                match fieldInfo.RelativeVirtualAddress with
-                | Some rva -> rva
-                | None -> failwith $"InitializeArray: field %s{fieldInfo.Name} has no RVA"
-
-            // Read the raw bytes from the PE image
-            let sectionData = assembly.PeReader.GetSectionData rva
-
-            // Get the array and decode elements from the raw bytes
             let arr = state.ManagedHeap.Arrays.[arrayAddr]
 
+            let elementHandle : ConcreteTypeHandle =
+                match arr.ConcreteType with
+                | ConcreteTypeHandle.OneDimArrayZero element -> element
+                | ConcreteTypeHandle.Array (element, _) -> element
+                | other ->
+                    failwith
+                        $"InitializeArray: object at %O{arrayAddr} is in the array heap but its concrete type %O{other} is not an array type"
+
+            // `if (elementTH.IsTypeDesc || !elementTH.AsMethodTable()->IsPrimitive) // Enum is included
+            //      throw new ArgumentException(SR.Argument_BadArrayForInitializeArray);`
+            //
+            // `IsPrimitive` is the MethodTable *category* test, so it is broader than
+            // `MethodTableProjection.isTruePrimitive`: `SetInternalCorElementType` normalises an
+            // enum to its underlying integer (methodtablebuilder.cpp:11157), which lands the enum
+            // in the primitive category too. It also admits the three structs `CheckForSystemTypes`
+            // normalises to `ELEMENT_TYPE_I` — `RuntimeArgumentHandle`,
+            // `RuntimeMethodHandleInternal`, `RuntimeFieldHandleInternal`
+            // (methodtablebuilder.cpp:10559). PawPrint models the latter two, and rejects them
+            // below with a host failure rather than a guest exception, because it stores their
+            // payload as a runtime pointer and so has no byte rendering to reconstruct it from.
+            // `RuntimeArgumentHandle` is not modelled at all, so an array of it would take the
+            // `Argument_BadArrayForInitializeArray` path CoreCLR would not have taken; no metadata
+            // can name an RVA-initialised array of any of the three, so none of this is reachable.
+            let state, elementIsPrimitive =
+                match elementHandle with
+                // A byref, pointer or function pointer element type is a CoreCLR `TypeDesc`, so it
+                // fails the first half of the test; a nested array is a MethodTable but its
+                // category is `Array`, so it fails the second. Both reject.
+                | ConcreteTypeHandle.Byref _
+                | ConcreteTypeHandle.Pointer _
+                | ConcreteTypeHandle.FunctionPointer _
+                | ConcreteTypeHandle.OneDimArrayZero _
+                | ConcreteTypeHandle.Array _ -> state, false
+                | ConcreteTypeHandle.Concrete _ ->
+                    match IlMachineState.tryGetConcreteTypeInfo state elementHandle with
+                    | None ->
+                        failwith
+                            $"InitializeArray: array element type %O{elementHandle} has no TypeDef row, so it cannot be classified as primitive"
+                    | Some (elementCt, elementTypeInfo) ->
+
+                    if MethodTableProjection.isTruePrimitive baseClassTypes elementTypeInfo then
+                        state, true
+                    else
+
+                    match PrimitiveLikeStruct.kind baseClassTypes elementCt with
+                    | Some PrimitiveLikeKind.FlattenToRuntimePointer ->
+                        // CoreCLR would admit these and memmove into them. PawPrint holds their
+                        // single field as a `CliType.RuntimePointer`, which has no byte encoding,
+                        // so there is nothing faithful to write. No metadata can name an
+                        // RVA-initialised array of them, so fail loudly rather than raise an
+                        // exception CoreCLR would not have raised.
+                        failwith
+                            $"TODO: InitializeArray where the array element type %s{elementTypeInfo.Namespace}.%s{elementTypeInfo.Name} is one of the handle structs CoreCLR normalises to ELEMENT_TYPE_I; PawPrint has no byte rendering for the runtime pointer it stores"
+                    | Some PrimitiveLikeKind.FlattenToNativeInt
+                    | Some PrimitiveLikeKind.FlattenToObjectRef
+                    | Some PrimitiveLikeKind.FlattenToManagedPointer
+                    | Some PrimitiveLikeKind.EnumLike
+                    | None ->
+                        // `IntPtr`/`UIntPtr` are already covered by `isTruePrimitive`; everything
+                        // else primitive-like is an ordinary value class to the type loader. What
+                        // is left to decide is enum-ness, asked nominally (is the immediate base
+                        // `System.Enum`?) as CoreCLR's `IsEnum()` does.
+                        IlMachineState.isEnumValueType loggerFactory baseClassTypes state elementHandle
+
+            if not elementIsPrimitive then
+                IntrinsicResult.RaiseException (
+                    state,
+                    baseClassTypes.ArgumentException,
+                    Some "Only array or span of primitive or enum types can be initialized from static data."
+                )
+            else
+
+            // `nuint totalSize = pMT->ComponentSize * array.NativeLength;`
+            // `ComponentSize` is the element type's storage size; take it from the element type's
+            // zero rather than from a stored element so that an empty array is sized the same way
+            // as a populated one. This is how `MethodTableProjection` projects `ComponentSize`.
+            let elementZero, state =
+                IlMachineState.cliTypeZeroOfHandle state baseClassTypes elementHandle
+
+            let elementStride : int = CliType.sizeOf elementZero
+            let totalSize : int64 = int64 elementStride * int64 arr.Length
+
+            // `// make certain you don't go off the end of the rva static
+            //  if (totalSize > size) throw new ArgumentException(SR.Argument_BadFieldForInitializeArray);`
+            if totalSize > int64 rvaData.Size then
+                IntrinsicResult.RaiseException (
+                    state,
+                    baseClassTypes.ArgumentException,
+                    Some "The field is invalid for initializing array or span."
+                )
+            else
+
+            // CoreCLR memmoves `totalSize` bytes from the static into the array's element data
+            // (the little-endian branch; every target the CLR runs on is little-endian, which is
+            // the same assumption `CliType.ToBytes` already makes). PawPrint stores elements as
+            // structured `CliType`s rather than one byte blob, so the equivalent is to slice the
+            // source per element and rebuild each element from its slice: `CliType.OfBytesLike`,
+            // which `readPeByteRangeBytesAs` applies, is the inverse of the `CliType.ToBytes`
+            // encoding used everywhere else, so enums — and anything else it later learns to
+            // reconstruct — need no decoder of their own here.
+            //
+            // The template is the element's current value, which after `newarr` is the zero of
+            // the element type and so has exactly the right shape for that slot. Multi-dimensional
+            // arrays are stored flat in row-major order, matching the CLR's own layout, so the
+            // same flat walk serves them.
             let state =
-                if arr.Length = 0 then
-                    state
-                else
-                    let reader = sectionData.GetReader ()
-                    // Decode each element from raw bytes based on its current CliType
-                    let firstElement = arr.Elements.[0]
+                (state, seq { 0 .. arr.Length - 1 })
+                ||> Seq.fold (fun (state : IlMachineState) (i : int) ->
+                    let decoded =
+                        IlMachineState.readPeByteRangeBytesAs state rvaData (i * elementStride) arr.Elements.[i]
 
-                    let state =
-                        (state, seq { 0 .. arr.Length - 1 })
-                        ||> Seq.fold (fun (state : IlMachineState) (i : int) ->
-                            let decoded : CliType =
-                                match firstElement with
-                                | CliType.Numeric (CliNumericType.Int8 _) ->
-                                    CliType.Numeric (CliNumericType.Int8 (reader.ReadSByte ()))
-                                | CliType.Numeric (CliNumericType.UInt8 _) ->
-                                    CliType.Numeric (CliNumericType.UInt8 (reader.ReadByte ()))
-                                | CliType.Numeric (CliNumericType.Int16 _) ->
-                                    CliType.Numeric (CliNumericType.Int16 (reader.ReadInt16 ()))
-                                | CliType.Numeric (CliNumericType.UInt16 _) ->
-                                    CliType.Numeric (CliNumericType.UInt16 (reader.ReadUInt16 ()))
-                                | CliType.Numeric (CliNumericType.Int32 _) ->
-                                    CliType.Numeric (CliNumericType.Int32 (reader.ReadInt32 ()))
-                                | CliType.Numeric (CliNumericType.Int64 _) ->
-                                    CliType.Numeric (
-                                        CliNumericType.Int64 (reader.ReadInt64 () |> Int64Source.Verbatim)
-                                    )
-                                | CliType.Numeric (CliNumericType.Float32 _) ->
-                                    CliType.Numeric (CliNumericType.Float32 (reader.ReadSingle ()))
-                                | CliType.Numeric (CliNumericType.Float64 _) ->
-                                    CliType.Numeric (CliNumericType.Float64 (reader.ReadDouble ()))
-                                | CliType.Bool _ -> CliType.Bool (reader.ReadByte ())
-                                | CliType.Char _ ->
-                                    let lo = reader.ReadByte ()
-                                    let hi = reader.ReadByte ()
-                                    CliType.Char (hi, lo)
-                                | other ->
-                                    failwith
-                                        $"InitializeArray: unsupported array element type for RVA initialization: %O{other}"
-
-                            IlMachineState.setArrayValue arrayAddr decoded i state
-                        )
-
-                    state
+                    IlMachineState.setArrayValue arrayAddr decoded i state
+                )
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
             IntrinsicResult.Completed state

@@ -4,27 +4,6 @@ open Microsoft.Extensions.Logging
 
 [<RequireQualifiedAccess>]
 module NativeRuntimeFieldHandle =
-    let internal getFieldForFieldHandle
-        (operation : string)
-        (fieldHandle : FieldHandle)
-        (state : IlMachineState)
-        : DumpedAssembly * FieldInfo<GenericParamFromMetadata, TypeDefn>
-        =
-        let assemblyFullName = fieldHandle.GetAssemblyFullName ()
-
-        let assembly =
-            state.LoadedAssembly' assemblyFullName
-            |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
-
-        let fieldDefinitionHandle = fieldHandle.GetFieldDefinitionHandle().Get
-
-        let fieldInfo =
-            match assembly.Fields.TryGetValue fieldDefinitionHandle with
-            | true, fieldInfo -> fieldInfo
-            | false, _ -> failwith $"%s{operation}: field %O{fieldDefinitionHandle} not found in %s{assemblyFullName}"
-
-        assembly, fieldInfo
-
     let internal fieldHandleOfRuntimeFieldHandleInternal
         (operation : string)
         (state : IlMachineState)
@@ -37,36 +16,6 @@ module NativeRuntimeFieldHandle =
             match FieldHandleRegistry.resolveFieldFromId fieldHandleId state.FieldHandles with
             | Some fieldHandle -> Some fieldHandle
             | None -> failwith $"%s{operation}: field-registry handle %d{fieldHandleId} is not allocated"
-
-    let private getPeByteRangeForFieldHandle
-        (loggerFactory : ILoggerFactory)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (operation : string)
-        (fieldHandle : FieldHandle)
-        (state : IlMachineState)
-        : IlMachineState * PeByteRangePointer option
-        =
-        let assembly, fieldInfo = getFieldForFieldHandle operation fieldHandle state
-
-        // RVA fields live on non-generic declaring types — `[FieldOffset]`/RVA
-        // initialisers cannot reference a generic typedef parameter. With the
-        // canonical FieldHandle declaring type model, "non-generic" means
-        // `Closed` (a generic declaring type would be `OpenGenericTypeDefinition`,
-        // for which RVA layout is not even definable). Reject other shapes
-        // loudly rather than silently fabricating empty generics.
-        let typeGenerics =
-            match fieldHandle.GetDeclaringTypeHandle () with
-            | RuntimeTypeHandleTarget.Closed declaringTypeHandle ->
-                match AllConcreteTypes.lookup declaringTypeHandle state.ConcreteTypes with
-                | Some declaringType -> declaringType.Generics
-                | None ->
-                    failwith
-                        $"%s{operation}: declaring type handle %O{declaringTypeHandle} was not concretized, so RVA field size cannot be computed"
-            | other ->
-                failwith
-                    $"%s{operation}: RVA field's declaring type is %O{other}; expected a Closed concrete type. RVA fields cannot live on a generic typedef."
-
-        IlMachineState.peByteRangeForFieldRva loggerFactory baseClassTypes assembly fieldInfo typeGenerics state
 
     let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
@@ -102,7 +51,7 @@ module NativeRuntimeFieldHandle =
                 fieldHandleOfRuntimeFieldHandleInternal operation state instruction.Arguments.[0]
                 |> Option.defaultWith (fun () -> failwith $"%s{operation}: null field handle")
 
-            let _, fieldInfo = getFieldForFieldHandle operation fieldHandle state
+            let _, fieldInfo = FieldRvaData.fieldForHandle operation fieldHandle state
 
             let namePtr, state =
                 NativeCall.allocateNullTerminatedUtf8 ctx.BaseClassTypes fieldInfo.Name state
@@ -130,7 +79,7 @@ module NativeRuntimeFieldHandle =
                 fieldHandleOfRuntimeFieldHandleInternal operation state instruction.Arguments.[0]
                 |> Option.defaultWith (fun () -> failwith $"%s{operation}: null field handle")
 
-            let _, fieldInfo = getFieldForFieldHandle operation fieldHandle state
+            let _, fieldInfo = FieldRvaData.fieldForHandle operation fieldHandle state
 
             let state =
                 IlMachineState.pushToEvalStack
@@ -218,12 +167,7 @@ module NativeRuntimeFieldHandle =
                         |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
                     | Some fieldHandle ->
                         let state, peByteRange =
-                            getPeByteRangeForFieldHandle
-                                ctx.LoggerFactory
-                                ctx.BaseClassTypes
-                                operation
-                                fieldHandle
-                                state
+                            FieldRvaData.tryGet ctx.LoggerFactory ctx.BaseClassTypes operation fieldHandle state
 
                         match peByteRange with
                         | None ->
