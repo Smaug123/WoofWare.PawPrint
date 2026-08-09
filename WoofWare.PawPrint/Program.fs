@@ -487,28 +487,25 @@ module Program =
             // remaining thread is blocked, so progress is impossible.
             ProgramStepOutcome.Deadlocked (prepared, deadlockDescription prepared.State)
         | Some nextThread ->
-            match AbstractMachine.executeOneStep loggerFactory prepared.BaseClassTypes prepared.State nextThread with
+            // `nextThread` has now retired a step, and that is true of *every* outcome below —
+            // including the ones that do not look like ordinary progress: a thread's final
+            // `Ret` arrives as `Terminated`, and the entry thread's synthetic `onlyRet` frame
+            // arrives as a `NormalExit` that the pre-`Main` pump then continues past. So the
+            // per-step scheduler bookkeeping that holds regardless of outcome is applied here,
+            // once, before we look at which outcome we got.
+            //
+            // This used to be done in the individual arms, and the two arms above were both
+            // missed; see `Scheduler.dischargeYieldDebts` for what that cost. `mapState` is
+            // exhaustive over `ExecutionResult`, so a new outcome cannot quietly skip it.
+            // Outcome-*specific* consequences still belong in the arms, via
+            // `Scheduler.onStepOutcome` and `Scheduler.onThreadTerminated`.
+            let stepResult =
+                AbstractMachine.executeOneStep loggerFactory prepared.BaseClassTypes prepared.State nextThread
+                |> ExecutionResult.mapState (Scheduler.dischargeYieldDebts nextThread)
+
+            match stepResult with
             | ExecutionResult.Terminated (state, terminatingThread) ->
                 if terminatingThread = prepared.EntryThread then
-                    // Discharge before reporting. This looks like the end of the run, and for
-                    // the post-`Main` pump it is — but the *pre*-`Main` cctor pump reports
-                    // `NormalExit` too, when the synthetic `onlyRet` frame returns, and then
-                    // `Program.run` resurrects this very thread with the real `Main` frame and
-                    // keeps stepping. A worker spawned by an entry-type cctor that yielded just
-                    // before that synthetic `ret` would otherwise carry a debt naming the entry
-                    // thread across the resurrection, and be held out for a decision even
-                    // though the thread it is waiting on has already run.
-                    //
-                    // Routed through `onStepOutcome` rather than a discharge-only helper for
-                    // the same reason as the dispatcher branch below: one entry point for
-                    // "a thread retired a step" is one fewer thing a future path can half-do.
-                    // Its other effect here — waking threads BlockedOnClassInit on the entry
-                    // thread — is right in the pre-`Main` case (those cctors have just
-                    // finished) and inert in the post-`Main` one (nothing is scheduled again).
-                    // Deliberately does *not* mark the entry thread Terminated: it may yet run
-                    // `Main`.
-                    let state = Scheduler.onStepOutcome terminatingThread WhatWeDid.Executed state
-
                     ProgramStepOutcome.Completed (RunOutcome.NormalExit (state, prepared.EntryThread))
                 elif SignalState.signalThread state.Kernel.Signals = Some terminatingThread then
                     // The kernel-owned signal-dispatch thread's handler frame
@@ -521,12 +518,10 @@ module Program =
                     // invocations.
                     let state = SignalDispatch.reParkAfterHandler terminatingThread state
 
-                    // Route through the scheduler like every other stepped outcome. This
-                    // branch reports `WhatWeDid.Executed` — the dispatcher did retire a step —
-                    // and the scheduler's per-step bookkeeping (discharging yield debts that
-                    // name this thread) has to see it. Skipping the call would leave the
-                    // dispatcher named in an outstanding debt it can never discharge, which
-                    // `Scheduler.candidates` relies on being impossible.
+                    // The dispatcher retired a step and this branch reports it as
+                    // `WhatWeDid.Executed`, so give it that outcome's consequences — waking
+                    // anything parked BlockedOnClassInit behind it. (The yield-debt half of
+                    // the bookkeeping has already happened at the seam above.)
                     let state = Scheduler.onStepOutcome terminatingThread WhatWeDid.Executed state
 
                     ProgramStepOutcome.InstructionStepped (
