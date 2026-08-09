@@ -390,25 +390,7 @@ module Intrinsics =
                     failwith
                         $"TODO: Type.get_IsValueType for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
                 | RuntimeTypeHandleTarget.Closed ty ->
-                    match ty with
-                    // Byref, pointer, function-pointer, single-dim szarray, and multi-dim array
-                    // types are TypeDescs in CoreCLR; IsValueTypeImpl resolves to
-                    // IsSubclassOf(typeof(ValueType)) for TypeDescs, which is false for all of
-                    // these. They're absent from the nominal AllConcreteTypes mapping, so handle
-                    // them explicitly here rather than failing the lookup.
-                    | ConcreteTypeHandle.Byref _
-                    | ConcreteTypeHandle.Pointer _
-                    | ConcreteTypeHandle.FunctionPointer _
-                    | ConcreteTypeHandle.OneDimArrayZero _
-                    | ConcreteTypeHandle.Array _ -> false
-                    | ConcreteTypeHandle.Concrete _ ->
-                        let typeInfo =
-                            match AllConcreteTypes.lookup ty state.ConcreteTypes with
-                            | Some ty -> state.LoadedAssembly(ty.Assembly).Value.TypeDefs.[ty.Definition.Get]
-                            | None ->
-                                failwith $"Type.get_IsValueType: expected nominal concrete type handle, got %O{ty}"
-
-                        DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo
+                    IntrinsicHelpers.isValueTypeHandleAsCoreClr baseClassTypes state "Type.get_IsValueType" ty
 
             IlMachineState.pushToEvalStack (CliType.ofBool isValueType) currentThread state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -2241,18 +2223,7 @@ module Intrinsics =
             // `IsValueTypeImpl` resolves to `IsSubclassOf(typeof(ValueType))` — false for all of
             // them. Same reasoning as `Type.get_IsValueType` above.
             let isValueTypeHandle (handle : ConcreteTypeHandle) : bool =
-                match handle with
-                | ConcreteTypeHandle.Byref _
-                | ConcreteTypeHandle.Pointer _
-                | ConcreteTypeHandle.FunctionPointer _
-                | ConcreteTypeHandle.OneDimArrayZero _
-                | ConcreteTypeHandle.Array _ -> false
-                | ConcreteTypeHandle.Concrete _ ->
-                    match AllConcreteTypes.lookup handle state.ConcreteTypes with
-                    | Some ty ->
-                        state.LoadedAssembly(ty.Assembly).Value.TypeDefs.[ty.Definition.Get]
-                        |> DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies
-                    | None -> failwith $"Unsafe.BitCast: expected nominal concrete type handle, got %O{handle}"
+                IntrinsicHelpers.isValueTypeHandleAsCoreClr baseClassTypes state "Unsafe.BitCast" handle
 
             // The BCL's guard is a single `if` with three clauses, all of which mean
             // `NotSupportedException` via `ThrowHelper.ThrowNotSupportedException` — the
@@ -2353,6 +2324,28 @@ module Intrinsics =
 
             state
             |> IlMachineState.pushToEvalStack (CliType.ofBool areSame) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> IntrinsicResult.Completed
+        | "System.Private.CoreLib", "Unsafe", "IsAddressLessThan" ->
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L62-L67
+            // The source-level IL body throws PlatformNotSupportedException; the runtime replaces
+            // it with `ldarg.0; ldarg.1; clt.un; ret` (the commented-out body in CoreLib's
+            // Unsafe.cs spells exactly that). So this delegates to the very function that services
+            // the `Clt_un` opcode: whatever ordering `clt.un` gives two byrefs, this must agree,
+            // including the null-byref arms and the refusal to order byrefs with no common root.
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteByref _ ; ConcreteByref _ ], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
+            | _ ->
+                failwith
+                    $"bad signature Unsafe.IsAddressLessThan: expected two byref parameters and bool return, got %A{methodToCall.Signature}"
+
+            let right, state = IlMachineState.popEvalStack currentThread state
+            let left, state = IlMachineState.popEvalStack currentThread state
+
+            let isLessThan = EvalStackValueComparisons.cltUn left right
+
+            state
+            |> IlMachineState.pushToEvalStack (CliType.ofBool isLessThan) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
         | "System.Private.CoreLib", "Unsafe", "Add" ->

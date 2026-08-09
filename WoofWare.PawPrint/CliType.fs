@@ -1953,6 +1953,34 @@ and CliValueType =
 
     /// True iff the given handle refers to `System.String`. CoreCLR only accepts
     /// `[MarshalAs(ByValTStr)]` on string-typed fields, so we use this as the shape guard.
+    /// True iff `handle` names the given non-generic corelib type.
+    ///
+    /// The corelib-assembly and no-generics test runs before the TypeDef lookup: it is cheaper,
+    /// and it is what lets a handle from any other assembly answer without resolving at all. A
+    /// structural handle answers `false` because `AllConcreteTypes.lookup` has no row for one.
+    static member private IsNominallyCorelibType
+        (concreteTypes : AllConcreteTypes)
+        (assemblies : LoadedAssemblies)
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (target : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        (handle : ConcreteTypeHandle)
+        : bool
+        =
+        match AllConcreteTypes.lookup handle concreteTypes with
+        | None -> false
+        | Some concreteType ->
+
+        if
+            concreteType.Assembly.FullName = corelib.Corelib.Name.FullName
+            && concreteType.Generics.IsEmpty
+        then
+            let typeDef =
+                assemblies.[concreteType.Assembly].TypeDefs.[concreteType.Definition.Get]
+
+            TypeInfo.NominallyEqual typeDef target
+        else
+            false
+
     static member private IsStringFieldType
         (concreteTypes : AllConcreteTypes)
         (assemblies : LoadedAssemblies)
@@ -1960,26 +1988,7 @@ and CliValueType =
         (handle : ConcreteTypeHandle)
         : bool
         =
-        match handle with
-        | ConcreteTypeHandle.Concrete _ ->
-            match AllConcreteTypes.lookup handle concreteTypes with
-            | None -> false
-            | Some concreteType ->
-                if
-                    concreteType.Assembly.FullName = corelib.Corelib.Name.FullName
-                    && concreteType.Generics.IsEmpty
-                then
-                    let typeDef =
-                        assemblies.[concreteType.Assembly].TypeDefs.[concreteType.Definition.Get]
-
-                    TypeInfo.NominallyEqual typeDef corelib.String
-                else
-                    false
-        | ConcreteTypeHandle.OneDimArrayZero _
-        | ConcreteTypeHandle.Array _
-        | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _
-        | ConcreteTypeHandle.FunctionPointer _ -> false
+        CliValueType.IsNominallyCorelibType concreteTypes assemblies corelib corelib.String handle
 
     /// True iff `vt`'s declared type is `System.DateTime`. CoreCLR's `MarshalInfo` short-circuits
     /// a DateTime-typed field to `MARSHAL_TYPE_DATE` (8 bytes) at `mlinfo.cpp:1747`, BEFORE the
@@ -1996,26 +2005,7 @@ and CliValueType =
         (vt : CliValueType)
         : bool
         =
-        match vt._Declared with
-        | ConcreteTypeHandle.Concrete _ ->
-            match AllConcreteTypes.lookup vt._Declared concreteTypes with
-            | None -> false
-            | Some concreteType ->
-                if
-                    concreteType.Assembly.FullName = corelib.Corelib.Name.FullName
-                    && concreteType.Generics.IsEmpty
-                then
-                    let typeDef =
-                        assemblies.[concreteType.Assembly].TypeDefs.[concreteType.Definition.Get]
-
-                    TypeInfo.NominallyEqual typeDef corelib.DateTime
-                else
-                    false
-        | ConcreteTypeHandle.OneDimArrayZero _
-        | ConcreteTypeHandle.Array _
-        | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _
-        | ConcreteTypeHandle.FunctionPointer _ -> false
+        CliValueType.IsNominallyCorelibType concreteTypes assemblies corelib corelib.DateTime vt._Declared
 
     /// True iff `vt`'s declared type is `System.Decimal`. CoreCLR's `MarshalInfo` routes a
     /// Decimal-typed *field* through marshal-stub synthesis (`NFT_DECIMAL` in
@@ -2037,26 +2027,7 @@ and CliValueType =
         (vt : CliValueType)
         : bool
         =
-        match vt._Declared with
-        | ConcreteTypeHandle.Concrete _ ->
-            match AllConcreteTypes.lookup vt._Declared concreteTypes with
-            | None -> false
-            | Some concreteType ->
-                if
-                    concreteType.Assembly.FullName = corelib.Corelib.Name.FullName
-                    && concreteType.Generics.IsEmpty
-                then
-                    let typeDef =
-                        assemblies.[concreteType.Assembly].TypeDefs.[concreteType.Definition.Get]
-
-                    TypeInfo.NominallyEqual typeDef corelib.Decimal
-                else
-                    false
-        | ConcreteTypeHandle.OneDimArrayZero _
-        | ConcreteTypeHandle.Array _
-        | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _
-        | ConcreteTypeHandle.FunctionPointer _ -> false
+        CliValueType.IsNominallyCorelibType concreteTypes assemblies corelib corelib.Decimal vt._Declared
 
     /// True iff `handle`'s declared type carries `LayoutKind.Auto` in its
     /// `TypeAttributes.LayoutMask`. This is the CoreCLR `HasLayout() == false` predicate:
@@ -2899,44 +2870,57 @@ module CliType =
             |> CliType.ValueType
         | PrimitiveType.Object -> CliType.ObjectRef None
 
+    /// The zero value of the given type, as `initobj`/`newarr`/a fresh local sees it.
+    ///
+    /// This is PawPrint's type-layout builder, and like CoreCLR's MethodTable builder it needs
+    /// the transitive closure of the type's *field* types, not just the type itself: laying out
+    /// `struct S { Dep.External E; }` requires reading `Dep`, however the guest arrived at `S`.
+    /// Hence the loader: the assembly holding a field's type is routinely one that nothing has
+    /// yet had a reason to name, so a walk that could only read already-loaded assemblies would
+    /// fail on perfectly ordinary programs (issue #868). The updated `LoadedAssemblies` comes
+    /// back out alongside the updated `AllConcreteTypes`, and callers must thread *both*: the
+    /// returned `CliType` embeds `ConcreteTypeHandle`s minted during the walk, which dangle if
+    /// the registry is dropped.
     let rec zeroOf
+        (loadAssembly : IAssemblyLoad)
         (concreteTypes : AllConcreteTypes)
         (assemblies : LoadedAssemblies)
         (corelib : BaseClassTypes<DumpedAssembly>)
         (handle : ConcreteTypeHandle)
-        : CliType * AllConcreteTypes
+        : CliType * AllConcreteTypes * LoadedAssemblies
         =
-        zeroOfWithVisited concreteTypes assemblies corelib handle Set.empty
+        zeroOfWithVisited loadAssembly concreteTypes assemblies corelib handle Set.empty
 
     and zeroOfWithVisited
+        (loadAssembly : IAssemblyLoad)
         (concreteTypes : AllConcreteTypes)
         (assemblies : LoadedAssemblies)
         (corelib : BaseClassTypes<DumpedAssembly>)
         (handle : ConcreteTypeHandle)
         (visited : Set<ConcreteTypeHandle>)
-        : CliType * AllConcreteTypes
+        : CliType * AllConcreteTypes * LoadedAssemblies
         =
 
         // Handle constructed types first
         match handle with
         | ConcreteTypeHandle.Byref _ ->
             // Byref types are managed references - the zero value is a null reference
-            CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null), concreteTypes
+            CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null), concreteTypes, assemblies
 
         | ConcreteTypeHandle.Pointer _ ->
             // Pointer types are unmanaged pointers - the zero value is a null pointer
-            CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null), concreteTypes
+            CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null), concreteTypes, assemblies
 
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ ->
             // Array types are reference types - the zero value is null
-            CliType.ObjectRef None, concreteTypes
+            CliType.ObjectRef None, concreteTypes, assemblies
 
         | ConcreteTypeHandle.FunctionPointer _ ->
             // Function pointers are stored in a native-int slot: a non-null fnptr
             // is NativeIntSource.FunctionPointer carrying a MethodInfo, and the
             // null fnptr is the same shape with the canonical zero source.
-            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)), concreteTypes
+            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)), concreteTypes, assemblies
 
         | ConcreteTypeHandle.Concrete _ ->
             // This is a concrete type - look it up in the mapping
@@ -2956,40 +2940,40 @@ module CliType =
             then
                 // Check against known primitive types
                 if TypeInfo.NominallyEqual typeDef corelib.Boolean then
-                    zeroOfPrimitive concreteTypes corelib PrimitiveType.Boolean, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.Boolean, concreteTypes, assemblies
                 elif TypeInfo.NominallyEqual typeDef corelib.Char then
-                    zeroOfPrimitive concreteTypes corelib PrimitiveType.Char, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.Char, concreteTypes, assemblies
                 elif TypeInfo.NominallyEqual typeDef corelib.SByte then
-                    zeroOfPrimitive concreteTypes corelib PrimitiveType.SByte, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.SByte, concreteTypes, assemblies
                 elif TypeInfo.NominallyEqual typeDef corelib.Byte then
-                    zeroOfPrimitive concreteTypes corelib PrimitiveType.Byte, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.Byte, concreteTypes, assemblies
                 elif TypeInfo.NominallyEqual typeDef corelib.Int16 then
-                    zeroOfPrimitive concreteTypes corelib PrimitiveType.Int16, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.Int16, concreteTypes, assemblies
                 elif TypeInfo.NominallyEqual typeDef corelib.UInt16 then
-                    zeroOfPrimitive concreteTypes corelib PrimitiveType.UInt16, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.UInt16, concreteTypes, assemblies
                 elif TypeInfo.NominallyEqual typeDef corelib.Int32 then
-                    zeroOfPrimitive concreteTypes corelib PrimitiveType.Int32, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.Int32, concreteTypes, assemblies
                 elif TypeInfo.NominallyEqual typeDef corelib.UInt32 then
-                    zeroOfPrimitive concreteTypes corelib PrimitiveType.UInt32, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.UInt32, concreteTypes, assemblies
                 elif TypeInfo.NominallyEqual typeDef corelib.Int64 then
-                    zeroOfPrimitive concreteTypes corelib PrimitiveType.Int64, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.Int64, concreteTypes, assemblies
                 elif TypeInfo.NominallyEqual typeDef corelib.UInt64 then
-                    zeroOfPrimitive concreteTypes corelib PrimitiveType.UInt64, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.UInt64, concreteTypes, assemblies
                 elif TypeInfo.NominallyEqual typeDef corelib.Single then
-                    zeroOfPrimitive concreteTypes corelib PrimitiveType.Single, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.Single, concreteTypes, assemblies
                 elif TypeInfo.NominallyEqual typeDef corelib.Double then
-                    zeroOfPrimitive concreteTypes corelib PrimitiveType.Double, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.Double, concreteTypes, assemblies
                 elif TypeInfo.NominallyEqual typeDef corelib.String then
-                    zeroOfPrimitive concreteTypes corelib PrimitiveType.String, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.String, concreteTypes, assemblies
                 elif TypeInfo.NominallyEqual typeDef corelib.Object then
-                    zeroOfPrimitive concreteTypes corelib PrimitiveType.Object, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.Object, concreteTypes, assemblies
                 elif TypeInfo.NominallyEqual typeDef corelib.IntPtr then
-                    zeroOfPrimitive concreteTypes corelib PrimitiveType.IntPtr, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.IntPtr, concreteTypes, assemblies
                 elif TypeInfo.NominallyEqual typeDef corelib.UIntPtr then
-                    zeroOfPrimitive concreteTypes corelib PrimitiveType.UIntPtr, concreteTypes
+                    zeroOfPrimitive concreteTypes corelib PrimitiveType.UIntPtr, concreteTypes, assemblies
                 elif TypeInfo.NominallyEqual typeDef corelib.Array then
                     // Arrays are reference types
-                    CliType.ObjectRef None, concreteTypes
+                    CliType.ObjectRef None, concreteTypes, assemblies
 
                 // Not a known primitive, now check for cycles
                 // We're in a cycle - return a default zero value for the type
@@ -2999,11 +2983,19 @@ module CliType =
                 // Since we check for (nominal) equality against all such types in the first branch,
                 // this code path is only hit with reference types.
                 else if Set.contains handle visited then
-                    CliType.ObjectRef None, concreteTypes
+                    CliType.ObjectRef None, concreteTypes, assemblies
                 else
                     let visited = Set.add handle visited
                     // Not a known primitive, check if it's a value type or reference type
-                    determineZeroForCustomType concreteTypes assemblies corelib handle concreteType typeDef visited
+                    determineZeroForCustomType
+                        loadAssembly
+                        concreteTypes
+                        assemblies
+                        corelib
+                        handle
+                        concreteType
+                        typeDef
+                        visited
 
             // Not from corelib or has generics
             // This is an array type, so null is appropriate
@@ -3012,7 +3004,7 @@ module CliType =
                 && TypeInfo.NominallyEqual typeDef corelib.Array
                 && concreteType.Generics.Length = 1
             then
-                CliType.ObjectRef None, concreteTypes
+                CliType.ObjectRef None, concreteTypes, assemblies
 
             // Custom type - now check for cycles
             // We're in a cycle - return a default zero value for the type.
@@ -3022,13 +3014,22 @@ module CliType =
             // Since we check for (nominal) equality against all such types in the first branch,
             // this code path is only hit with reference types.
             else if Set.contains handle visited then
-                CliType.ObjectRef None, concreteTypes
+                CliType.ObjectRef None, concreteTypes, assemblies
             else
                 let visited = Set.add handle visited
                 // Custom type - need to determine if it's a value type or reference type
-                determineZeroForCustomType concreteTypes assemblies corelib handle concreteType typeDef visited
+                determineZeroForCustomType
+                    loadAssembly
+                    concreteTypes
+                    assemblies
+                    corelib
+                    handle
+                    concreteType
+                    typeDef
+                    visited
 
     and private determineZeroForCustomType
+        (loadAssembly : IAssemblyLoad)
         (concreteTypes : AllConcreteTypes)
         (assemblies : LoadedAssemblies)
         (corelib : BaseClassTypes<DumpedAssembly>)
@@ -3036,14 +3037,26 @@ module CliType =
         (concreteType : ConcreteType<ConcreteTypeHandle>)
         (typeDef : WoofWare.PawPrint.TypeInfo<GenericParamFromMetadata, TypeDefn>)
         (visited : Set<ConcreteTypeHandle>)
-        : CliType * AllConcreteTypes
+        : CliType * AllConcreteTypes * LoadedAssemblies
         =
+
+        // `isValueType` walks the base-type chain and cannot load, so discharge its precondition
+        // first. This matters precisely on the paths that made this function need a loader at
+        // all: a field type we have only just read in may itself derive from a class in a third
+        // assembly, and nothing before this point had any reason to bind that reference.
+        let assemblies =
+            Concretization.ensureTypeDefinitionBaseAssembliesLoaded
+                loadAssembly
+                assemblies
+                assemblies.[concreteType.Assembly]
+                concreteType.Definition.Get
 
         let isValueType = DumpedAssembly.isValueType corelib assemblies typeDef
 
         if isValueType then
             // It's a value type - need to create zero values for all non-static fields
             let mutable currentConcreteTypes = concreteTypes
+            let mutable currentAssemblies = assemblies
 
             let vt =
                 typeDef.Fields
@@ -3052,15 +3065,29 @@ module CliType =
                     // Need to concretize the field type with the concrete type's generics
                     let fieldTypeDefn = field.Signature
 
-                    let fieldHandle, updatedConcreteTypes =
-                        concretizeFieldType currentConcreteTypes assemblies corelib concreteType fieldTypeDefn
+                    let fieldHandle, updatedConcreteTypes, updatedAssemblies =
+                        concretizeFieldType
+                            loadAssembly
+                            currentConcreteTypes
+                            currentAssemblies
+                            corelib
+                            concreteType
+                            fieldTypeDefn
 
                     currentConcreteTypes <- updatedConcreteTypes
+                    currentAssemblies <- updatedAssemblies
 
-                    let fieldZero, updatedConcreteTypes2 =
-                        zeroOfWithVisited currentConcreteTypes assemblies corelib fieldHandle visited
+                    let fieldZero, updatedConcreteTypes2, updatedAssemblies2 =
+                        zeroOfWithVisited
+                            loadAssembly
+                            currentConcreteTypes
+                            currentAssemblies
+                            corelib
+                            fieldHandle
+                            visited
 
                     currentConcreteTypes <- updatedConcreteTypes2
+                    currentAssemblies <- updatedAssemblies2
 
                     {
                         Id = FieldId.metadata handle field.Handle field.Name
@@ -3082,18 +3109,19 @@ module CliType =
                     typeDef.Layout
                     (CharSetMetadata.ofTypeAttributes typeDef.TypeAttributes)
 
-            CliType.ValueType vt, currentConcreteTypes
+            CliType.ValueType vt, currentConcreteTypes, currentAssemblies
         else
             // It's a reference type
-            CliType.ObjectRef None, concreteTypes
+            CliType.ObjectRef None, concreteTypes, assemblies
 
     and private concretizeFieldType
+        (loadAssembly : IAssemblyLoad)
         (concreteTypes : AllConcreteTypes)
         (assemblies : LoadedAssemblies)
         (corelib : BaseClassTypes<DumpedAssembly>)
         (declaringType : ConcreteType<ConcreteTypeHandle>)
         (fieldType : TypeDefn)
-        : ConcreteTypeHandle * AllConcreteTypes
+        : ConcreteTypeHandle * AllConcreteTypes * LoadedAssemblies
         =
 
         // Create a concretization context
@@ -3107,8 +3135,6 @@ module CliType =
         // The field type might reference generic parameters of the declaring type
         let methodGenerics = ImmutableArray.Empty // Fields don't have method generics
 
-        let loadAssembly = IAssemblyLoad.alreadyLoadedOnly
-
         let handle, newCtx =
             TypeConcretization.concretizeType
                 ctx
@@ -3118,7 +3144,7 @@ module CliType =
                 methodGenerics
                 fieldType
 
-        handle, newCtx.ConcreteTypes
+        handle, newCtx.ConcreteTypes, newCtx.LoadedAssemblies
 
     let withFieldSet (field : string) (value : CliType) (c : CliType) : CliType =
         match c with

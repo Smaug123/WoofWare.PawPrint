@@ -5,6 +5,32 @@ open System.Collections.Immutable
 open Microsoft.Extensions.Logging
 
 module internal IntrinsicHelpers =
+    /// CoreCLR's `MethodTable::IsValueTypeImpl`, as the reflection surface sees it.
+    ///
+    /// Byrefs, pointers, function pointers and arrays are TypeDescs, for which it resolves to
+    /// `IsSubclassOf(typeof(ValueType))` and so answers false; they are absent from the nominal
+    /// `AllConcreteTypes` mapping, so they must be answered from the shape rather than by
+    /// failing the lookup. `operation` names the caller in the diagnostic raised when a
+    /// `Concrete` handle turns out to have no row, which is a broken interpreter invariant
+    /// rather than anything the guest did.
+    let isValueTypeHandleAsCoreClr
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (operation : string)
+        (handle : ConcreteTypeHandle)
+        : bool
+        =
+        match handle with
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _ -> false
+        | ConcreteTypeHandle.Concrete _ ->
+            match AllConcreteTypes.tryIsValueType baseClassTypes state._LoadedAssemblies state.ConcreteTypes handle with
+            | Some isValueType -> isValueType
+            | None -> failwith $"%s{operation}: expected nominal concrete type handle, got %O{handle}"
+
     type private RefTypeProcessingStatus =
         | InProgress
         | Completed of bool

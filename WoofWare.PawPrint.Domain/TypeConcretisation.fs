@@ -68,6 +68,76 @@ module AllConcreteTypes =
         | ConcreteTypeHandle.Array _ -> None // Array types are structural wrappers
         | ConcreteTypeHandle.FunctionPointer _ -> None // FunctionPointer types are structural wrappers
 
+    /// The metadata behind a handle: `lookup`, then the row's assembly, then its TypeDef. This
+    /// is the chain every nominal-type question starts with, and it is spelled out at some
+    /// forty sites.
+    ///
+    /// `None` means "not a registered nominal type" — either a structural handle (byref,
+    /// pointer, array, function pointer), which by design has no row and no TypeDef, or a
+    /// `Concrete` handle whose row is absent. Callers keep their own reaction to that, because
+    /// the right answer genuinely differs by site: `Box` calls a pointer token invalid IL and
+    /// names the ECMA rule, `Type.get_IsValueType` answers `false` to match CoreCLR's
+    /// `IsValueTypeImpl` over TypeDescs, and `zeroOf` builds a null of the right shape.
+    /// Collapsing those into one answer here would erase diagnostics that name the offending
+    /// construct.
+    ///
+    /// A row that names an unloaded assembly, or a TypeDef row that is missing from it, stays a
+    /// hard failure rather than a `None`: those are broken invariants inside the interpreter,
+    /// not shapes a caller can meaningfully handle, and every call site today treats them so.
+    let tryTypeInfo
+        (assemblies : LoadedAssemblies)
+        (concreteTypes : AllConcreteTypes)
+        (handle : ConcreteTypeHandle)
+        : (ConcreteType<ConcreteTypeHandle> * TypeInfo<GenericParamFromMetadata, TypeDefn>) option
+        =
+        // Look the assembly up by the identity's own string rather than through
+        // `assemblies.[ct.Assembly]`, which reconstitutes an `AssemblyName` from that string and
+        // asks for `.FullName` back. Both spellings are in use across the call sites this
+        // replaces; this is the one that cannot be perturbed by `AssemblyName` normalising what
+        // it round-trips.
+        lookup handle concreteTypes
+        |> Option.map (fun ct ->
+            ct, assemblies.ByDefinitionName(ct.Identity.AssemblyFullName).TypeDefs.[ct.Identity.TypeDefinition.Get]
+        )
+
+    /// Whether a handle denotes a value type, for the handles that have a TypeDef to ask.
+    ///
+    /// `None` carries exactly the meaning it has in `tryTypeInfo`: the handle names no
+    /// registered nominal type, so the question has no metadata-backed answer and the caller
+    /// must supply its own.
+    let tryIsValueType
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (assemblies : LoadedAssemblies)
+        (concreteTypes : AllConcreteTypes)
+        (handle : ConcreteTypeHandle)
+        : bool option
+        =
+        tryTypeInfo assemblies concreteTypes handle
+        |> Option.map (fun (_, typeInfo) -> DumpedAssembly.isValueType baseClassTypes assemblies typeInfo)
+
+    /// Render a handle as `Namespace.Name [AssemblyShortName] (concrete H)` for diagnostics.
+    ///
+    /// Unlike `tryTypeInfo` this never throws and never returns an option: it is called from
+    /// failure paths that must not fail a second time and so hide the original error, so every
+    /// broken link in the chain renders as its own placeholder instead.
+    let describe
+        (assemblies : LoadedAssemblies)
+        (concreteTypes : AllConcreteTypes)
+        (handle : ConcreteTypeHandle)
+        : string
+        =
+        match lookup handle concreteTypes with
+        | None -> $"<unregistered concrete type %O{handle}>"
+        | Some concrete ->
+
+        match assemblies.TryByDefinitionName concrete.Identity.AssemblyFullName with
+        | None -> $"<unloaded assembly %O{concrete.Assembly} for concrete type %O{handle}>"
+        | Some assembly ->
+
+        match assembly.TypeDefs.TryGetValue concrete.Definition.Get with
+        | true, typeDef -> $"%s{typeDef.Namespace}.%s{typeDef.Name} [%s{assembly.Name.Name}] (concrete %O{handle})"
+        | false, _ -> $"<missing TypeDef %O{concrete.Definition.Get} in %s{assembly.Name.Name}> (concrete %O{handle})"
+
     let findExistingConcreteType
         (concreteTypes : AllConcreteTypes)
         (identity : ResolvedTypeIdentity)
@@ -472,6 +542,24 @@ module IAssemblyLoad =
     /// be needed has provably been loaded already, so that a miss is a bug rather than a cue to
     /// read a file.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The proof must be evident *at the call site* — typically because every type reachable from
+    /// the inputs lives in an assembly you are holding, as in <c>Corelib.concretizeAll</c>, which
+    /// touches only corelib types. Do not use it to encode "some earlier sweep primed this": that
+    /// is a claim about the whole interpreter, it cannot be checked here, and it is exactly the
+    /// claim that rotted in issue #868, where <c>CliType.zeroOf</c> asserted it and a struct's
+    /// field type turned out to live in an assembly the guest never named.
+    /// </para>
+    /// <para>
+    /// The remaining uses that do rest on an upstream sweep are the handful of layout helpers
+    /// which return a bare value with nowhere to put an updated load context or concrete-type
+    /// registry (<c>MethodState.Empty</c>, <c>IlMachineManagedByref.zeroForConcreteType</c>,
+    /// <c>ManagedPointerByteView.arrayElementSize</c>). Each says so at its call site. They keep
+    /// this loader on purpose: failing loudly beats silently re-reading an assembly and
+    /// discarding the handles minted from it.
+    /// </para>
+    /// </remarks>
     let alreadyLoadedOnly : IAssemblyLoad =
         { new IAssemblyLoad with
             member _.LoadAssembly loaded referencedIn handle =
@@ -1338,14 +1426,11 @@ module Concretization =
 
             TypeDefn.FunctionPointer mapped
         | ConcreteTypeHandle.Concrete _ ->
-            match AllConcreteTypes.lookup handle concreteTypes with
+            match AllConcreteTypes.tryTypeInfo assemblies concreteTypes handle with
             | None -> failwith "Logic error: handle not found"
-            | Some concreteType ->
+            | Some (concreteType, typeDef) ->
 
             // Determine SignatureTypeKind
-            let assy = assemblies.[concreteType.Assembly]
-            let typeDef = assy.TypeDefs.[concreteType.Definition.Get]
-
             let signatureTypeKind =
                 DumpedAssembly.signatureTypeKind baseClassTypes assemblies typeDef
 

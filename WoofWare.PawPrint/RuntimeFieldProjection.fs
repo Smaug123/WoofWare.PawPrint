@@ -94,21 +94,10 @@ module internal RuntimeFieldProjection =
         =
         isCorelibType baseClassTypes field "System.Runtime.CompilerServices" "RawData"
 
-    /// Render a `ConcreteTypeHandle` as `Namespace.Name [AssemblyShortName] (concrete H)`
-    /// for diagnostic messages. Falls back gracefully when the lookup chain breaks,
-    /// since this is called from failure paths that should not throw a second time.
+    /// Render a `ConcreteTypeHandle` for diagnostic messages. See `AllConcreteTypes.describe`
+    /// for why this never throws.
     let private describeConcreteType (state : IlMachineState) (handle : ConcreteTypeHandle) : string =
-        match AllConcreteTypes.lookup handle state.ConcreteTypes with
-        | None -> $"<unregistered concrete type %O{handle}>"
-        | Some concrete ->
-            match state.LoadedAssembly concrete.Assembly with
-            | None -> $"<unloaded assembly %O{concrete.Assembly} for concrete type %O{handle}>"
-            | Some assembly ->
-                match assembly.TypeDefs.TryGetValue concrete.Definition.Get with
-                | true, typeDef ->
-                    $"%s{typeDef.Namespace}.%s{typeDef.Name} [%s{assembly.Name.Name}] (concrete %O{handle})"
-                | false, _ ->
-                    $"<missing TypeDef %O{concrete.Definition.Get} in %s{assembly.Name.Name}> (concrete %O{handle})"
+        AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes handle
 
     /// `RawData::Data` projects to a byref over the instance data of any heap object.
     /// For boxed value types this is the boxed payload; for reference types this is the

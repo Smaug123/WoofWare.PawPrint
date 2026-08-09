@@ -33,6 +33,7 @@ module NativeDispatch =
             NativeSystemNative.tryExecute
             NativeLowLevelMonitor.tryExecute
             NativeDebugger.tryExecute
+            NativeException.tryExecute
         ]
 
     let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =

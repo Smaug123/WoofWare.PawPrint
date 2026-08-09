@@ -11,6 +11,13 @@ type IlMachineState =
     {
         ConcreteTypes : AllConcreteTypes
         Logger : ILogger
+        /// The factory `Logger` came from, kept so that the layers which need an `IAssemblyLoad`
+        /// but are not handed one can build the production loader:
+        /// `TypeResolution.directoryLoader LoggerFactory DotnetRuntimeDirs`. The state already
+        /// carries the runtime dirs for exactly that purpose; this is the other half. It is a
+        /// logging sink only — nothing about a run's behaviour may depend on it, on pain of
+        /// making replays depend on how the host configured logging.
+        LoggerFactory : ILoggerFactory
         NextThreadId : int
         /// Round-robin cursor for `EmulatedKernel.cpuForRotation`: the number
         /// of *guest-visible* threads created so far, and hence the rotation
@@ -147,15 +154,21 @@ type IlMachineState =
             Kernel = f this.Kernel
         }
 
-    member this.WithTypeBeginInit (thread : ThreadId) (ty : ConcreteTypeHandle) =
+    /// Log a type-initialisation transition. The three transitions differ only in the verb, so
+    /// they share the resolution of `ty` to the assembly and type name the message carries.
+    member private this.LogTypeInitTransition (transition : string) (ty : ConcreteTypeHandle) : unit =
         let concreteType = AllConcreteTypes.lookup ty this.ConcreteTypes |> Option.get
 
         this.Logger.LogDebug (
-            "Beginning initialisation of type {s_Assembly}.{TypeName}, handle {TypeDefinitionHandle}",
+            "{Transition} of type {s_Assembly}.{TypeName}, handle {TypeDefinitionHandle}",
+            transition,
             concreteType.Assembly.FullName,
             this.LoadedAssembly(concreteType.Assembly).Value.TypeDefs.[concreteType.Definition.Get].Name,
             concreteType.Definition.Get.GetHashCode ()
         )
+
+    member this.WithTypeBeginInit (thread : ThreadId) (ty : ConcreteTypeHandle) =
+        this.LogTypeInitTransition "Beginning initialisation" ty
 
         let typeInitTable = this.TypeInitTable |> TypeInitTable.beginInitialising thread ty
 
@@ -164,14 +177,7 @@ type IlMachineState =
         }
 
     member this.WithTypeEndInit (thread : ThreadId) (ty : ConcreteTypeHandle) =
-        let concreteType = AllConcreteTypes.lookup ty this.ConcreteTypes |> Option.get
-
-        this.Logger.LogDebug (
-            "Marking complete initialisation of type {s_Assembly}.{TypeName}, handle {TypeDefinitionHandle}",
-            concreteType.Assembly.FullName,
-            this.LoadedAssembly(concreteType.Assembly).Value.TypeDefs.[concreteType.Definition.Get].Name,
-            concreteType.Definition.Get.GetHashCode ()
-        )
+        this.LogTypeInitTransition "Marking complete initialisation" ty
 
         let typeInitTable = this.TypeInitTable |> TypeInitTable.markInitialised thread ty
 
@@ -185,14 +191,7 @@ type IlMachineState =
         (tieAddress : ManagedHeapAddress)
         (tieType : ConcreteTypeHandle)
         =
-        let concreteType = AllConcreteTypes.lookup ty this.ConcreteTypes |> Option.get
-
-        this.Logger.LogDebug (
-            "Marking failed initialisation of type {s_Assembly}.{TypeName}, handle {TypeDefinitionHandle}",
-            concreteType.Assembly.FullName,
-            this.LoadedAssembly(concreteType.Assembly).Value.TypeDefs.[concreteType.Definition.Get].Name,
-            concreteType.Definition.Get.GetHashCode ()
-        )
+        this.LogTypeInitTransition "Marking failed initialisation" ty
 
         let typeInitTable =
             this.TypeInitTable |> TypeInitTable.markFailed thread ty tieAddress tieType
