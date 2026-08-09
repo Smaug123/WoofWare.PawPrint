@@ -176,6 +176,44 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // PawPrint declares that it does not support dynamic code, which is a fact
+                // about this runtime rather than about any guest: it has no JIT and no
+                // Reflection.Emit. The BCL routes around Emit when the switch is off, so
+                // this turns a class of "unimplemented native primitive" crashes into the
+                // documented `PlatformNotSupportedException` a real host raises in the same
+                // configuration. Impure because the differential oracle runs on the host
+                // runtime, which does support dynamic code.
+                //
+                // Note this case declares *no* AppContext properties: the baseline is
+                // supplied by the library itself, so a host that expresses no preference
+                // still gets it. That is what makes it a default rather than a convention
+                // every host has to remember.
+                FileName = "DynamicCodeUnsupportedByDefault.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // The other half of the same contract: the baseline sits *beneath* the
+                // host's properties, so a guest whose `runtimeconfig.json` declares the
+                // switch true observes true. Pins the precedence direction, which is the
+                // part a future edit could silently reverse.
+                FileName = "DynamicCodeSupportedOverride.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // `SystemNative_GetCwd` must classify its error returns before
                 // resolving the caller's buffer to storage, because the C
                 // decides them without dereferencing it. Impure because the
