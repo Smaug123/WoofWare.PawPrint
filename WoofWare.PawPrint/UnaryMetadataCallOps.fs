@@ -410,6 +410,93 @@ module internal UnaryMetadataCallOps =
             | false, _ -> None
         | _ -> None
 
+    /// Resolve a `constrained.`-prefixed reference to a static abstract interface member down to
+    /// the implementation the constrained type supplies, returning it alongside its declaring
+    /// type's handle.
+    ///
+    /// Shared by `constrained. call` and `constrained. ldftn`, which pick their target the same
+    /// way: CoreCLR routes both through `getCallInfo` with the constrained token, and the switch
+    /// there is `pConstrainedResolvedToken != NULL && pMD->IsInterface() && pMD->IsStatic()`
+    /// (`jitinterface.cpp`, `getCallInfo`). That test is computed before anything branches on
+    /// `CORINFO_CALLINFO_LDFTN`, so the *method chosen* cannot differ between the two opcodes;
+    /// what differs afterwards is only what the caller does with it.
+    ///
+    /// `opName` names the prefixed instruction (`constrained.call` / `Ldftn`), so a failure says
+    /// which one hit it rather than always blaming `call`.
+    ///
+    /// The instance-receiver forms of the prefix (`CORINFO_DEREF_THIS` / `CORINFO_BOX_THIS`) are
+    /// deliberately not implemented: Roslyn emits `constrained.` before `ldftn` only for static
+    /// abstract interface members, and before `call`/`callvirt` the instance cases are handled by
+    /// `executeCallvirt`'s own transformation. Anything else fails loudly here rather than being
+    /// guessed at.
+    let resolveConstrainedStaticInterfaceMethod
+        (opName : string)
+        (ctx : UnaryMetadataIlOpContext)
+        (constrainedTypeHandle : ConcreteTypeHandle)
+        (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>)
+        (concretizedMethod : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (state : IlMachineState)
+        : IlMachineState *
+          WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
+          ConcreteTypeHandle
+        =
+        let methodDeclAssy = state._LoadedAssemblies.[methodToCall.DeclaringType.Assembly]
+
+        let methodDeclType =
+            methodDeclAssy.TypeDefs.[methodToCall.DeclaringType.Definition.Get]
+
+        if not methodToCall.IsStatic || not methodDeclType.IsInterface then
+            failwith
+                $"%s{opName}: expected a static interface method, got %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}::%s{methodToCall.Name}"
+
+        match constrainedTypeHandle with
+        | ConcreteTypeHandle.Concrete _ ->
+            // Registration is checked eagerly, and separately from rendering: an unregistered
+            // handle would otherwise surface as a confusing resolution failure below rather than
+            // as the bookkeeping error it is.
+            if (AllConcreteTypes.lookup constrainedTypeHandle state.ConcreteTypes).IsNone then
+                failwith $"%s{opName}: constrained type handle %O{constrainedTypeHandle} is not registered"
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ ->
+            failwith
+                $"%s{opName}: static interface dispatch for non-concrete constrained type %O{constrainedTypeHandle} is not implemented"
+
+        let state, implementation =
+            IlMachineStateExecution.tryResolveVirtualImplementation
+                ctx.LoggerFactory
+                ctx.BaseClassTypes
+                ctx.Thread
+                concretizedMethod.Generics
+                concretizedMethod
+                constrainedTypeHandle
+                true
+                state
+
+        match implementation with
+        | None ->
+            let constrained =
+                AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes constrainedTypeHandle
+
+            failwith $"%s{opName}: could not find static implementation of %s{methodToCall.Name} on %s{constrained}"
+        | Some implementation when not implementation.IsStatic ->
+            failwith
+                $"%s{opName}: resolved non-static implementation %s{implementation.DeclaringType.Namespace}.%s{implementation.DeclaringType.Name}::%s{implementation.Name}"
+        | Some implementation ->
+            let declaringTypeHandle =
+                AllConcreteTypes.findExistingConcreteType
+                    state.ConcreteTypes
+                    implementation.DeclaringType.Identity
+                    implementation.DeclaringType.Generics
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"%s{opName}: resolved implementation declaring type %s{implementation.DeclaringType.Namespace}.%s{implementation.DeclaringType.Name} is not registered"
+                )
+
+            state, implementation, declaringTypeHandle
+
     let executeCall (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
@@ -577,61 +664,13 @@ module internal UnaryMetadataCallOps =
             match pendingConstrained with
             | None -> state, concretizedMethod, declaringTypeHandle
             | Some constrainedTypeHandle ->
-                let methodDeclAssy = state._LoadedAssemblies.[methodToCall.DeclaringType.Assembly]
-
-                let methodDeclType =
-                    methodDeclAssy.TypeDefs.[methodToCall.DeclaringType.Definition.Get]
-
-                if not methodToCall.IsStatic || not methodDeclType.IsInterface then
-                    failwith
-                        $"constrained.call: expected a static interface method call, got %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}::%s{methodToCall.Name}"
-
-                let constrainedConcrete =
-                    match constrainedTypeHandle with
-                    | ConcreteTypeHandle.Concrete _ ->
-                        AllConcreteTypes.lookup constrainedTypeHandle state.ConcreteTypes
-                        |> Option.defaultWith (fun () ->
-                            failwith
-                                $"constrained.call: constrained type handle %O{constrainedTypeHandle} is not registered"
-                        )
-                    | ConcreteTypeHandle.OneDimArrayZero _
-                    | ConcreteTypeHandle.Array _
-                    | ConcreteTypeHandle.Byref _
-                    | ConcreteTypeHandle.Pointer _
-                    | ConcreteTypeHandle.FunctionPointer _ ->
-                        failwith
-                            $"constrained.call: static interface dispatch for non-concrete constrained type %O{constrainedTypeHandle} is not implemented"
-
-                let state, implementation =
-                    IlMachineStateExecution.tryResolveVirtualImplementation
-                        loggerFactory
-                        baseClassTypes
-                        thread
-                        concretizedMethod.Generics
-                        concretizedMethod
-                        constrainedTypeHandle
-                        true
-                        state
-
-                match implementation with
-                | None ->
-                    failwith
-                        $"constrained.call: could not find static implementation of %s{methodToCall.Name} on %s{constrainedConcrete.Namespace}.%s{constrainedConcrete.Name}"
-                | Some implementation when not implementation.IsStatic ->
-                    failwith
-                        $"constrained.call: resolved non-static implementation %s{implementation.DeclaringType.Namespace}.%s{implementation.DeclaringType.Name}::%s{implementation.Name}"
-                | Some implementation ->
-                    let declaringTypeHandle =
-                        AllConcreteTypes.findExistingConcreteType
-                            state.ConcreteTypes
-                            implementation.DeclaringType.Identity
-                            implementation.DeclaringType.Generics
-                        |> Option.defaultWith (fun () ->
-                            failwith
-                                $"constrained.call: resolved implementation declaring type %s{implementation.DeclaringType.Namespace}.%s{implementation.DeclaringType.Name} is not registered"
-                        )
-
-                    state, implementation, declaringTypeHandle
+                resolveConstrainedStaticInterfaceMethod
+                    "constrained.call"
+                    ctx
+                    constrainedTypeHandle
+                    methodToCall
+                    concretizedMethod
+                    state
 
         match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
         | NothingToDo state ->
@@ -1055,6 +1094,31 @@ module internal UnaryMetadataCallOps =
             state,
         WhatWeDid.Executed
 
+    /// The first instruction at or after `offset` that is not itself a prefix — PawPrint's
+    /// counterpart to CoreCLR's `impGetNonPrefixOpcode` (`importer.cpp`), which skips exactly
+    /// `unaligned.`, `volatile.`, `tail.`, `constrained.` and `readonly.`.
+    ///
+    /// `None` when the scan runs off the end of the body, or the method has no IL at all.
+    let rec private nextNonPrefixOp
+        (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (offset : int)
+        : IlOp option
+        =
+        match method.Body with
+        | MethodBody.Il instructions ->
+            match Map.tryFind offset instructions.Locations with
+            | None -> None
+            | Some op ->
+                match op with
+                | IlOp.Nullary NullaryIlOp.Volatile
+                | IlOp.Nullary NullaryIlOp.Tail
+                | IlOp.Nullary NullaryIlOp.Readonly
+                | IlOp.UnaryConst (UnaryConstIlOp.Unaligned _)
+                | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Constrained, _) ->
+                    nextNonPrefixOp method (offset + IlOp.NumberOfBytes op)
+                | _ -> Some op
+        | _ -> None
+
     let executeConstrained (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
@@ -1095,20 +1159,50 @@ module internal UnaryMetadataCallOps =
 
         let activeFrameId = state.ThreadState.[thread].ActiveMethodState
 
-        state
-        |> IlMachineState.mapFrame
-            thread
-            activeFrameId
-            (fun frame ->
-                { frame with
-                    PendingPrefix =
-                        { frame.PendingPrefix with
-                            Constrained = Some typeHandle
-                        }
-                }
-            )
-        |> IlMachineState.advanceProgramCounter thread
-        |> Tuple.withRight WhatWeDid.Executed
+        let state =
+            state
+            |> IlMachineState.mapFrame
+                thread
+                activeFrameId
+                (fun frame ->
+                    { frame with
+                        PendingPrefix =
+                            { frame.PendingPrefix with
+                                Constrained = Some typeHandle
+                            }
+                    }
+                )
+            |> IlMachineState.advanceProgramCounter thread
+
+        // The prefix we just armed is consumed by exactly one instruction, and only
+        // `call`/`callvirt`/`ldftn` know how to consume it (ECMA III.2.1; `importer.cpp`,
+        // `case CEE_CONSTRAINED`, rejects anything else with
+        // `BADCODE("constrained. has to be followed by callvirt, call or ldftn")`). Anything
+        // else here means the prefix would sit armed on this frame and be silently applied to
+        // some later call — the shape that made `constrained. ldftn` corrupt an unrelated
+        // `callvirt` before `executeLdftn` learned to consume it.
+        //
+        // "Followed by" is the next *non-prefix* opcode, not the next opcode: the importer asks
+        // `impGetNonPrefixOpcode`, so `constrained. tail. callvirt` is legal and must not be
+        // rejected here. The PC has already advanced, so the scan starts at the successor.
+        //
+        // A scan that finds nothing is a `constrained.` at the very end of a body, which is
+        // malformed for the same reason.
+        let currentMethodInfo = state.ThreadState.[thread].MethodState.ExecutingMethod
+        let successorOffset = state.ThreadState.[thread].MethodState.IlOpIndex
+
+        match nextNonPrefixOp currentMethodInfo successorOffset with
+        | Some (IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Call, _))
+        | Some (IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Callvirt, _))
+        | Some (IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldftn, _)) -> ()
+        | Some other ->
+            failwith
+                $"constrained. must be followed by call, callvirt or ldftn (ignoring intervening prefixes), but %O{currentMethodInfo} has %O{other} at IL offset %i{successorOffset}"
+        | None ->
+            failwith
+                $"constrained. must be followed by call, callvirt or ldftn, but %O{currentMethodInfo} has no further instruction after IL offset %i{successorOffset}"
+
+        state |> Tuple.withRight WhatWeDid.Executed
 
     /// How much two types must agree for PawPrint's callee-driven `calli` to reproduce what the
     /// real runtime does. This starts from the CLI evaluation-stack representation (ECMA-335

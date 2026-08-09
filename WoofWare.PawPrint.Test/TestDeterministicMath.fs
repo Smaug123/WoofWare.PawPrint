@@ -1415,3 +1415,292 @@ module TestDeterministicMath =
             Some $"host sqrt(%.17g{x}): expected bits {permitted}, got %016x{host}"
         )
         |> reportFailures
+
+    /// Whether `r` really is the smallest integral value at or above `x`, decided without
+    /// reference to any other ceiling implementation: `r` must be an integer, at or above
+    /// `x`, and `r - 1` must be strictly below it, so that no smaller integer would have
+    /// done. Every double is a dyadic rational, so `BigInteger` settles all three exactly.
+    ///
+    /// Note what this deliberately does not see: `atExponent` maps both zeros to 0, so the
+    /// predicate cannot tell `ceiling(-0.5) = -0` from `+0`. That sign is pinned by the
+    /// special-case table and by the bit-for-bit host property instead.
+    let private isCeilingOf (x : float) (r : float) : bool =
+        // One octave below the smallest subnormal, so that every double is an exact integer
+        // count of `2^fixedPoint` and `one` below is representable in the same units.
+        let fixedPoint = -1080
+        let one = BigInteger.One <<< -fixedPoint
+
+        let xFixed = atExponent fixedPoint x
+        let rFixed = atExponent fixedPoint r
+
+        (rFixed % one).IsZero && rFixed >= xFixed && rFixed - one < xFixed
+
+    /// Doubles whose exponent puts them in the only range where `ceiling` has anything to
+    /// do: `[1, 2^52)` in magnitude, where a value can have both an integer part and a
+    /// fractional one. A uniform draw over the whole exponent range spends about half its
+    /// budget on values that are integral already and almost all the rest on values below 1,
+    /// leaving roughly one draw in forty for the interesting case.
+    let private genFractionalDouble : Gen<float> =
+        gen {
+            let! sign = Gen.elements [ 0UL ; 1UL ]
+            // Biased exponent 1023 is the binade [1, 2); 1074 is [2^51, 2^52), the last one
+            // in which a double can be non-integral at all.
+            let! biasedExponent = Gen.choose (1023, 1074)
+            let! fraction = Gen.choose64 (0L, 0xF_FFFF_FFFF_FFFFL)
+
+            return
+                BitConverter.UInt64BitsToDouble ((sign <<< 63) ||| (uint64 biasedExponent <<< 52) ||| uint64 fraction)
+        }
+
+    /// Doubles within one ulp of an integer, where the answer turns on whether a single
+    /// discarded bit was set — the tightest boundary this function has, and one a uniform
+    /// draw over a binade essentially never lands on.
+    let private genNearIntegerDouble : Gen<float> =
+        gen {
+            let! magnitude = Gen.choose64 (0L, (1L <<< 52) - 1L)
+            let! sign = Gen.elements [ 1.0 ; -1.0 ]
+            let! offset = Gen.elements [ -1 ; 0 ; 1 ]
+
+            let integral = sign * float magnitude
+
+            return
+                match offset with
+                | -1 -> Math.BitDecrement integral
+                | 1 -> Math.BitIncrement integral
+                | _ -> integral
+        }
+
+    [<Test>]
+    let ``ceiling matches its exact definition`` () : unit =
+        // Not "to within an ulp", as the pow, sin and cos properties have to say, nor even
+        // "correctly rounded", as sqrt's does: `roundToIntegralTowardPositive` is exact, so
+        // there is a single right answer and it is checked against the definition itself
+        // rather than against another implementation.
+        let property (x : float) : bool =
+            isCeilingOf x (DeterministicMath.ceiling x)
+
+        for generator in [ genFiniteDouble ; genFractionalDouble ; genNearIntegerDouble ] do
+            Check.One (propertyConfig, Prop.forAll (Arb.fromGen generator) property)
+
+    [<Test>]
+    let ``ceiling agrees with the host bit-for-bit`` () : unit =
+        // As with `sqrt`, the host is an exact oracle here rather than a bound — and more so:
+        // `sqrt` must merely be correctly rounded, whereas this operation is exact, so any
+        // disagreement at all, including about the sign of a zero, is a bug in one of the two.
+        let property (x : float) : bool =
+            let actual = DeterministicMath.ceiling x
+            BitConverter.DoubleToUInt64Bits actual = BitConverter.DoubleToUInt64Bits (Math.Ceiling x)
+
+        for generator in [ genFiniteDouble ; genFractionalDouble ; genNearIntegerDouble ] do
+            Check.One (propertyConfig, Prop.forAll (Arb.fromGen generator) property)
+
+    [<Test>]
+    let ``ceiling is idempotent`` () : unit =
+        // The result is integral, so a second application must change nothing at all — not
+        // even the sign of the negative zero the first one may have produced.
+        let property (x : float) : bool =
+            let once = DeterministicMath.ceiling x
+            let twice = DeterministicMath.ceiling once
+            BitConverter.DoubleToUInt64Bits twice = BitConverter.DoubleToUInt64Bits once
+
+        for generator in [ genFiniteDouble ; genFractionalDouble ; genNearIntegerDouble ] do
+            Check.One (propertyConfig, Prop.forAll (Arb.fromGen generator) property)
+
+    [<Test>]
+    let ``ceiling is the identity on doubles that are already integral`` () : unit =
+        // At or above 2^52 in magnitude a double's ulp is at least 1, so it is an integer and
+        // must come back untouched. This is the `exponent >= 0` fast path, which about half
+        // of `genFiniteDouble`'s draws reach; the rest pass vacuously, and are covered by the
+        // properties above instead.
+        let property (x : float) : bool =
+            if abs x < 4503599627370496.0 then
+                true
+            else
+                BitConverter.DoubleToUInt64Bits (DeterministicMath.ceiling x) = BitConverter.DoubleToUInt64Bits x
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genFiniteDouble) property)
+
+    [<Test>]
+    let ``ceiling moves its argument by less than one, and never downwards`` () : unit =
+        // The bound a caller actually relies on, stated on its own rather than as a corollary
+        // of the definition above: `0 <= ceiling(x) - x < 1`, in exact arithmetic so that the
+        // subtraction cannot itself round.
+        let property (x : float) : bool =
+            let fixedPoint = -1080
+            let one = BigInteger.One <<< -fixedPoint
+
+            let difference =
+                atExponent fixedPoint (DeterministicMath.ceiling x) - atExponent fixedPoint x
+
+            difference.Sign >= 0 && difference < one
+
+        for generator in [ genFiniteDouble ; genFractionalDouble ; genNearIntegerDouble ] do
+            Check.One (propertyConfig, Prop.forAll (Arb.fromGen generator) property)
+
+    [<Test>]
+    let ``ceiling is monotone`` () : unit =
+        // A non-decreasing function of a non-decreasing argument, exactly rather than up to
+        // an error term.
+        let property (a : float, b : float) : bool =
+            let smaller, larger = if a <= b then a, b else b, a
+            DeterministicMath.ceiling smaller <= DeterministicMath.ceiling larger
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen (Gen.zip genFiniteDouble genFiniteDouble)) property)
+
+    [<Test>]
+    let ``ceiling is a pure function of its argument`` () : unit =
+        let property (x : float) : bool =
+            let first = DeterministicMath.ceiling x
+            let second = DeterministicMath.ceiling x
+            BitConverter.DoubleToUInt64Bits first = BitConverter.DoubleToUInt64Bits second
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genFiniteDouble) property)
+
+    [<Test>]
+    let ``ceiling agrees with the host on a dense sweep`` () : unit =
+        // Quarter-integers either side of zero, which is where the sign rules bite and where
+        // a random draw over a binade would spend nothing at all: every fractional part in
+        // sight is one a generator of uniform mantissas essentially never produces.
+        [ -2000 .. 2000 ]
+        |> List.collect (fun n ->
+            [ -0.75 ; -0.5 ; -0.25 ; 0.0 ; 0.25 ; 0.5 ; 0.75 ]
+            |> List.map (fun offset -> float n + offset)
+        )
+        |> List.choose (fun x ->
+            let actual = BitConverter.DoubleToUInt64Bits (DeterministicMath.ceiling x)
+            let host = BitConverter.DoubleToUInt64Bits (Math.Ceiling x)
+
+            if actual = host && isCeilingOf x (DeterministicMath.ceiling x) then
+                None
+            else
+                Some $"ceiling(%.17g{x}): got %016x{actual}, host %016x{host}"
+        )
+        |> reportFailures
+
+    /// `(argument, expected bits)` for the arguments on which IEEE 754 fixes an answer
+    /// exactly — which for this operation is all of them, so this table is a spread of
+    /// interesting shapes rather than an enumeration of exceptions. Stated in bits so that
+    /// the sign of a zero and the payload of a NaN are pinned rather than compared by an
+    /// equality that ignores them.
+    let private ceilingSpecialCases : (float * uint64) list =
+        let ofBits (b : uint64) : float = BitConverter.UInt64BitsToDouble b
+        let bits (v : float) : uint64 = BitConverter.DoubleToUInt64Bits v
+
+        // The last binade in which a double can be non-integral: its ulp is 1/2, so the
+        // value below is exactly representable and its ceiling is 2^52 itself.
+        let justBelowTwoToThe52 = 4503599627370495.5
+
+        [
+            // Zeros and infinities are integral already and come back with their signs.
+            0.0, bits 0.0
+            -0.0, bits (-0.0)
+            infinity, bits infinity
+            -infinity, bits (-infinity)
+
+            // Anything strictly between 0 and 1 rounds up to 1...
+            Double.Epsilon, bits 1.0
+            1e-320, bits 1.0
+            0.25, bits 1.0
+            0.5, bits 1.0
+            0.75, bits 1.0
+
+            // ...and anything strictly between -1 and 0 rounds up to *negative* zero, which
+            // is the one sign rule of this operation that an implementation is likely to get
+            // wrong: the natural integer arithmetic produces a zero with no sign attached.
+            -Double.Epsilon, bits (-0.0)
+            -1e-320, bits (-0.0)
+            -0.25, bits (-0.0)
+            -0.5, bits (-0.0)
+            -0.75, bits (-0.0)
+
+            // Integers are their own ceiling, with no sign surprises.
+            1.0, bits 1.0
+            -1.0, bits (-1.0)
+            2.0, bits 2.0
+            -2.0, bits (-2.0)
+
+            // Ordinary fractional arguments, both signs. Rounding *up* means the negative
+            // rows truncate towards zero and the positive ones do not, which is the
+            // asymmetry a floor-shaped implementation would get backwards.
+            1.5, bits 2.0
+            -1.5, bits (-1.0)
+            2.5, bits 3.0
+            -2.5, bits (-2.0)
+            123.456, bits 124.0
+            -123.456, bits (-123.0)
+
+            // The boundary of the integral range: 2^52 is the smallest magnitude whose ulp
+            // is 1, and the row below it is the largest non-integral double there is.
+            justBelowTwoToThe52, bits 4503599627370496.0
+            -justBelowTwoToThe52, bits (-4503599627370495.0)
+            4503599627370496.0, bits 4503599627370496.0
+            -4503599627370496.0, bits (-4503599627370496.0)
+
+            // Beyond it nothing can be fractional, right out to the ends of the range.
+            1e300, bits 1e300
+            -1e300, bits (-1e300)
+            Double.MaxValue, bits Double.MaxValue
+            Double.MinValue, bits Double.MinValue
+
+            // A NaN argument comes back with its payload and sign intact, quietened if it was
+            // signalling. Both `roundsd` and `frintp` do this, and so does C's `ceil`, so
+            // unlike the NaN `sqrt` *generates* for a negative argument no host exemption is
+            // needed for any of these.
+            ofBits 0x7FF8000000000000UL, 0x7FF8000000000000UL
+            ofBits 0xFFF8000000000000UL, 0xFFF8000000000000UL
+            ofBits 0x7FF8000000000123UL, 0x7FF8000000000123UL
+            ofBits 0xFFF8000000000123UL, 0xFFF8000000000123UL
+            ofBits 0x7FF0000000000123UL, 0x7FF8000000000123UL
+            ofBits 0xFFF0000000000123UL, 0xFFF8000000000123UL
+            ofBits 0x7FF0000000000001UL, 0x7FF8000000000001UL
+        ]
+
+    [<Test>]
+    let ``the ceiling special cases satisfy the exact definition`` () : unit =
+        // Keeps the table above honest independently of `ceiling`, so that a mistyped
+        // constant fails whatever the implementation does. Covers every finite row; the
+        // infinities and NaNs have no integer to compare against and are pinned by the table
+        // alone.
+        ceilingSpecialCases
+        |> List.choose (fun (x, expected) ->
+            let result = BitConverter.UInt64BitsToDouble expected
+
+            if Double.IsNaN x || Double.IsInfinity x then
+                None
+            elif isCeilingOf x result then
+                None
+            else
+                Some $"the table's ceiling(%.17g{x}) = %016x{expected} is not the smallest integer at or above it"
+        )
+        |> reportFailures
+
+    [<Test>]
+    let ``ceiling matches the IEEE 754 special cases`` () : unit =
+        ceilingSpecialCases
+        |> List.choose (fun (x, expected) ->
+            let actual = BitConverter.DoubleToUInt64Bits (DeterministicMath.ceiling x)
+
+            if actual = expected then
+                None
+            else
+                Some $"ceiling(%.17g{x}): expected bits %016x{expected}, got %016x{actual}"
+        )
+        |> reportFailures
+
+    [<Test>]
+    let ``the host agrees about the ceiling special cases`` () : unit =
+        // No table of permitted alternatives accompanies this one, unlike its `pow`, `sin`
+        // and `sqrt` counterparts. `roundToIntegralTowardPositive` is exact and generates no
+        // NaN of its own, so there is nothing left for a platform to choose: every row must
+        // match on every host, and a failure here is a real disagreement rather than a known
+        // latitude.
+        ceilingSpecialCases
+        |> List.choose (fun (x, expected) ->
+            let host = BitConverter.DoubleToUInt64Bits (Math.Ceiling x)
+
+            if host = expected then
+                None
+            else
+                Some $"host ceiling(%.17g{x}): expected bits %016x{expected}, got %016x{host}"
+        )
+        |> reportFailures

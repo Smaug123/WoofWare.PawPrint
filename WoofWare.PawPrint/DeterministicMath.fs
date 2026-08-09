@@ -3,15 +3,18 @@ namespace WoofWare.PawPrint
 open System
 open System.Numerics
 
-/// Host-independent implementations of the transcendental `System.Math` primitives that
-/// CoreCLR implements as `InternalCall`s straight down to the platform C library.
+/// Host-independent implementations of the `System.Math` primitives that CoreCLR declares
+/// as `InternalCall`s with no IL body, and that its JIT lowers either to a call into the
+/// platform C library or to a machine instruction.
 ///
 /// The interpreter cannot simply forward these to the host's `System.Math`. `pow` and its
-/// relatives are not correctly rounded and are not required to agree bit-for-bit between
-/// libm implementations, so a run recorded on one machine could replay differently on
-/// another — silently, and only in the last bit, which is the worst failure mode this
-/// project has. Everything here is therefore computed in-tree, from integer arithmetic
-/// only, and depends on nothing but its arguments.
+/// transcendental relatives are not correctly rounded and are not required to agree
+/// bit-for-bit between libm implementations, so a run recorded on one machine could replay
+/// differently on another — silently, and only in the last bit, which is the worst failure
+/// mode this project has. Everything here is therefore computed in-tree, from integer
+/// arithmetic only, and depends on nothing but its arguments. (`sqrt` and `ceiling` are the
+/// exceptions to the *motivation* rather than to the rule: both are exactly specified, so
+/// the host would have agreed anyway. See their own comments for why they are here.)
 ///
 /// The strategy is to carry far more precision than a double needs and round once at the
 /// end. Intermediate reals are held as `BigInteger` fixed-point values scaled by
@@ -466,6 +469,66 @@ module DeterministicMath =
         // value is (2 * root + sticky) / 2 -- hence the extra -1 on the exponent. Both terms
         // of the subtraction are even, so the halving is exact.
         roundToDouble ((root <<< 1) + sticky) (((exponent - sqrtGuardBits) / 2) - 1)
+
+    /// The smallest integral double at or above `x`, with the semantics of IEEE 754's
+    /// `roundToIntegralTowardPositive` (clause 5.9) — which is what CoreCLR's `Math.Ceiling`
+    /// inherits from the `roundsd`/`frintp` instruction the JIT emits for it.
+    ///
+    /// This is the least approximate function in the module: no rounding is involved at all.
+    /// Clause 5.9 makes the result exact, and every double's ceiling is itself a double
+    /// (a non-integral double has magnitude below 2^52, so adding one to its truncation
+    /// cannot leave the exactly-representable integers), so there is no error term to budget
+    /// and nothing for the fixed-point machinery above to do. It lives here beside `sqrt` for
+    /// the same reason that one does: to keep the promise this runtime's own rather than a
+    /// property of the host that recorded the run, and to give the tests an exact oracle.
+    ///
+    /// The two signs that are easy to get wrong are both specified rather than open: the
+    /// `roundToIntegral` operations take the sign of a zero result from the operand. So the
+    /// ceiling of an argument strictly between -1 and 0 is *negative* zero rather than
+    /// positive, and the ceiling of a negative zero is that same negative zero. C says the
+    /// same of `ceil` (C17 F.10.6.1), and the hardware obeys, so these are asserted against
+    /// the host in `TestDeterministicMath` rather than merely chosen here.
+    let ceiling (x : float) : float =
+        if Double.IsNaN x then
+            // Both hardware instructions propagate a NaN operand with its sign and payload,
+            // quietening a signalling one -- the same rule as `sqrt`, and likewise not a
+            // place where platforms differ.
+            quieted x
+        elif Double.IsInfinity x || x = 0.0 then
+            // Already integral, and their signs are part of the answer. `x = 0.0` catches
+            // -0 as well as +0, which is exactly what is wanted: both are returned unchanged.
+            x
+        else
+
+        // x = mantissa * 2^exponent exactly, with the sign carried by the mantissa.
+        let mantissa, exponent = decompose x
+
+        if exponent >= 0 then
+            // An integer times a non-negative power of two is already integral.
+            x
+        else
+
+        // `>>>` on a `BigInteger` is an arithmetic shift, so `truncated` is the floor of
+        // `mantissa / 2^-exponent` for a negative mantissa as well as a positive one. The
+        // ceiling is one more than the floor exactly when something was discarded.
+        let shift = -exponent
+        let truncated = mantissa >>> shift
+
+        let ceiled =
+            if (truncated <<< shift) = mantissa then
+                truncated
+            else
+                truncated + BigInteger.One
+
+        if ceiled.IsZero then
+            // Only reachable from -1 < x < 0, whose ceiling clause 5.9 gives as -0. This case
+            // has to be handled here because `roundToDouble` takes the sign from its mantissa
+            // and so cannot tell a zero that came from below from one that came from above.
+            -0.0
+        else
+            // Exact: `ceiled` is an integer of at most 53 bits, since `exponent < 0` bounds
+            // `|x|` below 2^52.
+            roundToDouble ceiled 0
 
     /// Number of fractional bits carried by the value of pi used for trigonometric range
     /// reduction. This is not the accuracy of the answer, which `fractionBits` governs; it

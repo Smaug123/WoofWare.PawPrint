@@ -73,11 +73,13 @@ double d = Math.Pow(667.32139499267623, 24.249516112846091);
 
 A guest can see any of these only through `BitConverter`, since C# has no way to write a signalling NaN literal or to compare NaN payloads directly.
 
-**Where this lives in code**: `WoofWare.PawPrint/DeterministicMath.fs`, dispatched from the `Math.Pow`, `Math.Cos`, `Math.Sin` and `Math.Sqrt` arms of `Intrinsics.fs`. Only those four are implemented so far; `Tan`, `Log`, `Exp` and the rest of `Math.CoreCLR.cs` remain unimplemented and fail loudly, and should join this module rather than being forwarded to the host. (`Math.SinCos` is a different kind of thing and is also unimplemented: it has an IL body of its own, and bottoms out in a separate `SinCos(double, double*, double*)` InternalCall.)
+**Where this lives in code**: `WoofWare.PawPrint/DeterministicMath.fs`, dispatched from the `Math.Pow`, `Math.Cos`, `Math.Sin`, `Math.Sqrt` and `Math.Ceiling` arms of `Intrinsics.fs`. Only those five are implemented so far; `Floor`, `Tan`, `Log`, `Exp` and the rest of `Math.CoreCLR.cs` remain unimplemented and fail loudly, and should join this module rather than being forwarded to the host. (`Math.SinCos` is a different kind of thing and is also unimplemented: it has an IL body of its own, and bottoms out in a separate `SinCos(double, double*, double*)` InternalCall.)
 
-`Math.Sqrt` is the exception to everything above, and appears in this section only for the NaN bullet. `squareRoot` is one of the operations IEEE 754 *requires* to be correctly rounded (§5.4.1, not the recommendation of §9.2), the JIT lowers it to a hardware instruction rather than to a libm call, and every platform's instruction obeys — so there is exactly one right answer for every argument and PawPrint returns it. `TestDeterministicMath.fs` asserts bit-for-bit agreement with the host as a property, which is an assertion the other three functions cannot make; `sourcesPure/MathSqrt.cs` correspondingly pins irrational roots exactly, where its `Pow`/`Cos`/`Sin` siblings can only assert identities and slack bounds.
+`Math.Sqrt` and `Math.Ceiling` are the exceptions to everything above, and `Math.Sqrt` appears in this section only for the NaN bullet. `squareRoot` is one of the operations IEEE 754 *requires* to be correctly rounded (§5.4.1, not the recommendation of §9.2), the JIT lowers it to a hardware instruction rather than to a libm call, and every platform's instruction obeys — so there is exactly one right answer for every argument and PawPrint returns it. `TestDeterministicMath.fs` asserts bit-for-bit agreement with the host as a property, which is an assertion the transcendental functions cannot make; `sourcesPure/MathSqrt.cs` correspondingly pins irrational roots exactly, where its `Pow`/`Cos`/`Sin` siblings can only assert identities and slack bounds.
 
-Computing it in-tree anyway is not about changing the answer, then, but about where the guarantee comes from: the interpreter promises correct rounding on its own account rather than inheriting it from whatever machine the recording happened on, and the tests get an exact oracle out of it.
+`Math.Ceiling` is further out still: `roundToIntegralTowardPositive` is not merely correctly rounded but *exact*, and it generates no NaN of its own, so it cannot diverge in any way at all — not even in the one NaN bullet that `Math.Sqrt` appears here for. Its host-agreement test in `TestDeterministicMath.fs` therefore carries no table of permitted alternatives, unlike its `pow`, `sin` and `sqrt` counterparts, and `sourcesPure/MathCeiling.cs` pins every result exactly, including the negative zero that IEEE 754 requires for an argument strictly between -1 and 0.
+
+Computing these two in-tree anyway is not about changing the answer, then, but about where the guarantee comes from: the interpreter promises the specified result on its own account rather than inheriting it from whatever machine the recording happened on, and the tests get an exact oracle out of it.
 
 ## `calli` through a null function pointer
 
@@ -461,3 +463,39 @@ rethrows the captured fault through an `ExceptionDispatchInfo`.
 `IlMachineRuntimeMetadata.renderExceptionStackTrace` is where the annotation would be emitted.
 `sourcesPure/ExceptionDispatchInfoThrow.cs` covers the round trip while deliberately asserting
 identity and type rather than trace content.
+
+## `GC.AllocateUninitializedArray` returns a zeroed array
+
+**CoreCLR**: `GC.AllocateUninitializedArray<T>(int, bool)` passes `GC_ALLOC_ZEROING_OPTIONAL` to
+`GCInterface_AllocateNewArray`, which lets `AllocateSzArray` hand back memory that still holds
+whatever the previous occupant of that heap range left behind. The whole point of the API is to
+skip the zeroing pass, and for a large enough unpinned array of a reference-free `T` it really
+does skip it, so a read before a write yields arbitrary bytes.
+
+**PawPrint**: Always zeroed, exactly as `GC.AllocateArray<T>` is. A read before a write yields
+`default(T)`.
+
+**Spec status**: Compliant with the API's own contract, which states the contents are
+unspecified. The flag *permits* the runtime to skip zeroing; it does not require it, and a
+runtime that always zeroes is a legal implementation (the NativeAOT path already skips the
+`GC_ALLOC_ZEROING_OPTIONAL` request entirely for reference-containing types).
+
+**Why we chose this**: It is the only content PawPrint can produce. `IlMachineState.allocateArray`
+fills each element from a `CliType` template, and the heap model has no representation for unset
+storage — a cell either holds a value or does not exist. Modelling "uninitialized" would mean
+adding a poison state to the heap and teaching every reader about it, which is a change to the
+memory model rather than to this QCall. It is also the deterministic answer, which is the
+project's headline goal: real garbage varies per run, so a PawPrint that reproduced it would not
+be reproducible.
+
+**Observable example**:
+
+```csharp
+byte[] a = GC.AllocateUninitializedArray<byte>(2048);
+// CoreCLR:  a[0] is arbitrary.
+// PawPrint: a[0] is 0.
+```
+
+**Where this lives in code**: `NativeGc.tryExecuteQCall` handles `GCInterface_AllocateNewArray`
+and documents the flag handling; `sourcesPure/GcAllocateArray.cs` covers the API while
+deliberately never reading an uninitialized element before writing it.
