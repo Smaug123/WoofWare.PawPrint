@@ -1766,6 +1766,23 @@ module DumpedAssembly =
             (getTypeSpec loadedAssemblies)
             ty
 
+    /// CoreCLR's `MethodTable::IsEnum`: derives from System.Enum, and is not System.Enum itself.
+    /// See <see cref="TypeInfo.isEnum"/> for why this decides the MethodTable category.
+    let isEnum
+        (bct : BaseClassTypes<DumpedAssembly>)
+        (loadedAssemblies : LoadedAssemblies)
+        (ty : TypeInfo<'generic, 'field>)
+        : bool
+        =
+        TypeInfo.isEnum
+            bct
+            (assemblies loadedAssemblies)
+            getName
+            getTypeDef
+            (getTypeRef loadedAssemblies)
+            (getTypeSpec loadedAssemblies)
+            ty
+
     /// Convenience: not a value type.
     let isReferenceType
         (bct : BaseClassTypes<DumpedAssembly>)

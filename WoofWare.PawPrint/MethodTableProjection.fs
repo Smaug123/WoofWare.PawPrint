@@ -25,6 +25,11 @@ module internal MethodTableProjection =
     let private categoryInterface : int32 = 0x000C0000
     let private categoryValueType : int32 = 0x00040000
     let private categoryNullable : int32 = 0x00050000
+
+    /// CoreCLR's `enum_flag_Category_PrimitiveValueType`. This is the category `IsPrimitive` tests
+    /// for (`(Flags & 0x000E0000) == 0x00060000`), and `categoryTruePrimitive` below is a
+    /// sub-category of it — which is why a true primitive satisfies `IsPrimitive` as well.
+    let private categoryPrimitiveValueType : int32 = 0x00060000
     let private categoryTruePrimitive : int32 = 0x00070000
     let private categoryArray : int32 = 0x00080000
 
@@ -251,6 +256,23 @@ module internal MethodTableProjection =
         elif DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
             if isTruePrimitive baseClassTypes typeInfo then
                 categoryTruePrimitive
+            elif DumpedAssembly.isEnum baseClassTypes state._LoadedAssemblies typeInfo then
+                // An enum's element type is its underlying integer (`SetupMethodTable2`,
+                // methodtablebuilder.cpp:11157), and `SetInternalCorElementType` files anything
+                // that is not `ELEMENT_TYPE_CLASS`/`ELEMENT_TYPE_VALUETYPE` under
+                // `PrimitiveValueType` (methodtable.cpp:5153). So an enum is `IsPrimitive` — which
+                // is what lets `unbox` accept an enum for its underlying integer and what makes
+                // `RuntimeHelpers.GetObjectValue` return a boxed enum unchanged rather than cloning
+                // it — but *not* `IsTruePrimitive`, since `SetIsTruePrimitive` fires only for the
+                // `System` primitives `CorTypeInfo::FindPrimitiveType` names.
+                //
+                // Not modelled: CoreCLR also normalises `RuntimeArgumentHandle`,
+                // `RuntimeMethodHandleInternal` and `RuntimeFieldHandleInternal` to
+                // `ELEMENT_TYPE_I` (methodtablebuilder.cpp:10559), so they are `IsPrimitive` too
+                // and are still reported as plain value types here. No C# can observe it: they are
+                // corelib-internal, and the CoreLib readers of `IsPrimitive` that PawPrint does not
+                // intercept never see one.
+                categoryPrimitiveValueType
             else
                 categoryValueType
         else
