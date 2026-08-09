@@ -211,7 +211,8 @@ type MethodBody<'methodVars> =
 
     /// <summary>
     /// Marked <c>[MethodAttributes.PinvokeImpl]</c>. The import data lives on the parent
-    /// <see cref="MethodInfo.NativeImport"/> field.
+    /// <see cref="MetadataMethodFacts.NativeImport"/> field — a P/Invoke is always declared, so
+    /// it is always a <see cref="MethodInfo.Metadata"/>.
     /// </summary>
     | PInvoke
 
@@ -254,21 +255,23 @@ module MethodBody =
         | MethodBody.Abstract -> MethodBody.Abstract
 
 /// <summary>
-/// Represents detailed information about a method in a .NET assembly.
-/// This is a strongly-typed representation of MethodDefinition from System.Reflection.Metadata.
-/// </summary>
 /// A method the runtime supplies rather than metadata declaring: it has no row in the MethodDef
 /// table, so none of <see cref="MetadataMethodFacts"/> exists for it.
-///
+/// </summary>
+/// <remarks>
+/// <para>
 /// CoreCLR builds these as real <c>MethodDesc</c>s over synthesised IL — see
 /// <c>PInvoke::CreateStructMarshalILStub</c> (dllimport.cpp:5289). PawPrint has no IL synthesis,
 /// so the case identifies *which* runtime behaviour this is and the interpreter supplies it
 /// directly.
-///
+/// </para>
+/// <para>
 /// The case carries no payload: a synthesised method's identity is its declaring type plus its
 /// kind. For a struct-marshal stub the declaring type is the type being marshalled, so two stubs
 /// for the same type are the same method — which is exactly the per-MethodTable identity
 /// CoreCLR's stub cache has.
+/// </para>
+/// </remarks>
 [<RequireQualifiedAccess>]
 type SynthesisedMethod =
     /// The struct-marshalling stub for this method's declaring type, as returned by
