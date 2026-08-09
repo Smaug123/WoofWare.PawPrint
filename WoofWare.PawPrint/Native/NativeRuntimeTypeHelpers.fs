@@ -2115,11 +2115,7 @@ module ActivationInfo =
             |> List.tryFind (fun m -> m.Name = ".ctor" && not m.IsStatic && MethodInfo.arity m = 0)
 
         match ctor with
-        | Some ctor ->
-            let isPublic =
-                (ctor.MethodAttributes &&& MethodAttributes.MemberAccessMask) = MethodAttributes.Public
-
-            state, ActivationInfo.WithConstructor (handle, ctor, isPublic, isValueType)
+        | Some ctor -> state, ActivationInfo.WithConstructor (handle, ctor, ctor.IsPublic, isValueType)
         | None ->
             if isValueType then
                 state, ActivationInfo.ValueTypeWithoutConstructor handle

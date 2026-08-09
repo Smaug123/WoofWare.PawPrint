@@ -53,7 +53,7 @@ For `UnaryMetadataToken` ops, resolve the token to a human-readable name: `Call 
 
 - **Locals**: Indexed list of local variables with their `CliType` rendering. If `LocalVars` type info is available from the method body, show the declared type next to the index.
 
-- **Arguments**: Indexed list of arguments. Argument 0 for instance methods is annotated `(this)`. Parameter names from `MethodInfo.Parameters` are shown where available.
+- **Arguments**: Indexed list of arguments. Argument 0 for instance methods is annotated `(this)`. Parameter names from `MetadataMethodFacts.Parameters` are shown where available.
 
 **Call Stack** (bottom strip, ~3-5 visible lines): Shows frames from `MethodStates`, newest at top. Each line shows frame index, declaring type + method name with generics, current IL offset, and the instruction at that offset. The `►` marker indicates the currently *selected/inspected* frame (tracked by `SelectedFrame` in TUI state); it defaults to the top (executing) frame but moves when the user navigates with up/down. Selecting a different frame updates the IL Listing and State Panel to show that frame's state, but stepping always operates on the top frame regardless of which frame is being inspected — the selection is purely a view into the stack. When the call stack is deeper than the visible window, the pane scrolls to keep the selected frame visible; the status bar shows the selected frame index and total depth (e.g. `Frame 2/5`) to indicate how much of the stack is off-screen.
 

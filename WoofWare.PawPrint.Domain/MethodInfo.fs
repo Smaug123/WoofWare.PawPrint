@@ -551,7 +551,7 @@ module MethodInfo =
 
     /// The true number of declared parameters (excluding `this`), independent of how many
     /// Param-table rows the metadata happened to carry. See the doc comment on
-    /// <see cref="MethodInfo.Parameters"/> for why `Parameters.Length`/`IsEmpty` must not be
+    /// <see cref="MetadataMethodFacts.Parameters"/> for why `Parameters.Length`/`IsEmpty` must not be
     /// used for this: the Param table is metadata-only and can under-count, or be entirely
     /// empty, relative to the method's real declared arity.
     let arity (m : MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars>) : int = m.Signature.ParameterTypes.Length

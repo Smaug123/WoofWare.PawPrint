@@ -50,9 +50,9 @@ type StructMarshalPlan =
 /// CoreCLR emits IL and hands CoreLib the entry address; CoreLib invokes it with `calli` through
 /// `delegate*&lt;ref byte, byte*, int, ref CleanupWorkListElement?, void&gt;`. PawPrint has no IL
 /// synthesis, but it does not need any: the stub is a `MethodInfo.Synthesised` carrying
-/// `RuntimeBehaviour.StructMarshalStub`, so an ordinary `NativeIntSource.FunctionPointer` holds
-/// it, `calli` needs no special case, and `AbstractMachine` dispatches it beside the delegate
-/// constructor and `Invoke`.
+/// `RuntimeBehaviour.StructMarshalStub`, so an ordinary
+/// `NativeIntSource.FunctionPointer (FunctionPointerTarget.Managed …)` holds it, `calli` needs no
+/// special case, and `AbstractMachine` dispatches it beside the delegate constructor and `Invoke`.
 ///
 /// That the stub has a real frame is what makes the rest of this module straightforward.
 /// `MARSHAL_TYPE_DATE` needs `DateTime.ToOADate`, whose behaviour (a zero special case, a VB
@@ -309,7 +309,7 @@ module StructMarshalStub =
     /// CoreCLR builds a real `MethodDesc` over synthesised IL here (`CreateStructMarshalILStub`,
     /// dllimport.cpp:5289) and hands CoreLib its entry address. This is PawPrint's equivalent: a
     /// `MethodInfo.Synthesised` carrying `RuntimeBehaviour.StructMarshalStub`, which
-    /// `NativeIntSource.FunctionPointer` can hold like any other function pointer, so `calli`
+    /// `FunctionPointerTarget.Managed` can hold like any other managed method, so `calli`
     /// needs no special case and the stub gets an ordinary frame — its own evaluation stack, its
     /// own locals, and the existing re-entry machinery.
     ///

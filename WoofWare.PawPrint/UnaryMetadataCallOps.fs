@@ -1312,8 +1312,10 @@ module internal UnaryMetadataCallOps =
         let fnPtr = IlMachineState.peekEvalStack thread state
 
         // A function pointer is recognised by its `FunctionPointer` provenance; anything
-        // that is semantically zero is a null pointer. The `FunctionPointer` case must be
-        // matched first — `NativeIntSource.isZero` has no answer for it (and says so).
+        // that is semantically zero is a null pointer. Matching `FunctionPointer` first is
+        // not load-bearing for correctness — `NativeIntSource.isZero` answers `false` for
+        // it, because a function pointer is never null — but it keeps the two arms readable
+        // as "is it a pointer to something" then "is it null".
         let target =
             match fnPtr with
             | None -> failwith "calli: eval stack was empty; expected a function pointer on top"
@@ -1347,7 +1349,7 @@ module internal UnaryMetadataCallOps =
 
         // Slots this call consumes: the callee's declared parameters, plus `this` when the
         // callee is an instance method. Arity comes from the signature, not the Param table:
-        // see `MethodInfo.Parameters` for why `Parameters.Length` understates arity for
+        // see `MetadataMethodFacts.Parameters` for why `Parameters.Length` understates arity for
         // methods whose parameters carry no metadata.
         let calleeSlots =
             MethodInfo.arity methodToCall + (if methodToCall.IsStatic then 0 else 1)

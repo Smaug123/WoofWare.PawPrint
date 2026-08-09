@@ -779,7 +779,8 @@ public sealed class MethodSignatureHost
         let signatureAddr, state = invokeMethodArm fixture "Twice"
 
         let expectedHandle =
-            ComparableMethodDefinitionHandle.Make (requiredHostMethod fixture "Twice").Handle
+            ComparableMethodDefinitionHandle.Make
+                (MethodInfo.requireMetadata "test" (requiredHostMethod fixture "Twice")).Handle
 
         let expectedSize =
             let mdReader = fixture.Assembly.PeReader.GetMetadataReader ()

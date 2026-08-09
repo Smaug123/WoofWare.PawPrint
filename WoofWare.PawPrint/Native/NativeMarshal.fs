@@ -285,7 +285,9 @@ module NativeMarshal =
                     (CliType.Numeric (
                         CliNumericType.NativeInt (
                             NativeIntSource.FunctionPointer (
-                                StructMarshalStub.synthesise operation ctx.BaseClassTypes state typeHandle
+                                FunctionPointerTarget.Managed (
+                                    StructMarshalStub.synthesise operation ctx.BaseClassTypes state typeHandle
+                                )
                             )
                         )
                     ))

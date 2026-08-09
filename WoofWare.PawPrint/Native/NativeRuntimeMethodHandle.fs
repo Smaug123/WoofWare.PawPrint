@@ -1202,7 +1202,8 @@ module NativeRuntimeMethodHandle =
                 resolveMethodInfoFromHandleArg operation state instruction.Arguments.[0]
 
             let result =
-                isConstructorOrClassConstructor methodInfo.MethodAttributes methodInfo.Name
+                let facts = MethodInfo.requireMetadata operation methodInfo
+                isConstructorOrClassConstructor facts.MethodAttributes methodInfo.Name
 
             let state = IlMachineState.pushToEvalStack (CliType.ofBool result) ctx.Thread state
 
