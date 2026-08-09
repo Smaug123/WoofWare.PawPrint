@@ -227,6 +227,33 @@ module internal UnaryMetadataTokenOps =
             pushFunctionPointer ctx callSiteMethod state
         else
 
+        // `DispatchesVirtually` reads only the method's own `MethodAttributes.Final`, but CoreCLR's
+        // `CORINFO_FLG_FINAL` is `IsMdFinal(attribs) || pMT->IsSealed()` (`jitinterface.cpp`,
+        // `getMethodAttribsInternal`), so a `virtual` non-`final` method declared on a *sealed* type
+        // takes CoreCLR's non-dispatching path — which does not null-check. Dispatching here would
+        // pick the same body (nothing derives from a sealed type), so the only difference is that we
+        // would throw NullReferenceException on a null receiver where CoreCLR does not.
+        //
+        // Refuse the shape rather than diverge silently. No C# compiler can produce it: a new
+        // `virtual` member on a sealed type is CS0549, and Roslyn marks overrides in sealed types
+        // `final`. Reaching this means hand-written IL, and the honest answer there is a loud stop
+        // at the faulting instruction rather than a NullReferenceException the real runtime would
+        // never have raised. `callvirt` needs no such guard: it null-checks unconditionally, so the
+        // omission is unobservable there.
+        let declaringTypeIsSealed =
+            match state.LoadedAssembly callSiteMethod.DeclaringType.Assembly with
+            | None ->
+                failwith
+                    $"Ldvirtftn: declaring assembly for %O{callSiteMethod} is not loaded: %O{callSiteMethod.DeclaringType.Assembly}"
+            | Some declaringAssy ->
+                declaringAssy.TypeDefs.[callSiteMethod.DeclaringType.Definition.Get].TypeAttributes.HasFlag
+                    TypeAttributes.Sealed
+
+        if declaringTypeIsSealed then
+            failwith
+                $"Ldvirtftn names %O{callSiteMethod}, which is virtual and not final but is declared on a sealed type. CoreCLR sets CORINFO_FLG_FINAL for a sealed declaring type, so it takes the non-dispatching path, which performs no null check; PawPrint would dispatch and would raise NullReferenceException on a null receiver. No C# compiler emits this shape, so this is hand-written IL; teach `MethodInfo.DispatchesVirtually` about sealed declaring types to support it."
+        else
+
         // Peek before popping so that the raise leaves the evaluation stack as the faulting
         // instruction found it, matching `executeCallvirt`'s null check. (Nothing re-executes this
         // instruction, so this is consistency rather than a correctness requirement.)

@@ -462,13 +462,25 @@ type MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars> =
         | MethodInfo.Synthesised _ -> true
 
     /// True iff naming this method at a call site leaves the body still to be chosen by the
-    /// receiver's runtime type, rather than binding to this declaration outright.
+    /// receiver's runtime type, rather than binding to this declaration outright. `callvirt` and
+    /// `ldvirtftn` must agree about this, so they share this one spelling.
     ///
-    /// This is CoreCLR's own condition, negated. Its JIT importer treats `ldvirtftn` on a method
-    /// that is `static`, `final`, or not `virtual` as a plain `ldftn` of the named method
-    /// (`mflags & (CORINFO_FLG_FINAL | CORINFO_FLG_STATIC) || !(mflags & CORINFO_FLG_VIRTUAL)`,
-    /// `importer.cpp`, `case CEE_LDVIRTFTN`), and `callvirt` devirtualizes on the same grounds.
-    /// `callvirt` and `ldvirtftn` must agree about it, so they share this one spelling.
+    /// CoreCLR's JIT importer asks the same question as
+    /// `mflags & (CORINFO_FLG_FINAL | CORINFO_FLG_STATIC) || !(mflags & CORINFO_FLG_VIRTUAL)`
+    /// (`importer.cpp`, `case CEE_LDVIRTFTN`), and this is that condition negated — with one
+    /// deliberate omission. `CORINFO_FLG_FINAL` is set by `IsMdFinal(attribs) || pMT->IsSealed()`
+    /// (`jitinterface.cpp`, `getMethodAttribsInternal`), so CoreCLR also treats a `virtual`
+    /// non-`final` method *declared on a sealed type* as final; this member reads only the method's
+    /// own `MethodAttributes.Final`.
+    ///
+    /// That omission is unobservable at a `callvirt`, which null-checks unconditionally: nothing
+    /// derives from a sealed type, so the receiver's runtime type is the declaring type itself and
+    /// resolving from it yields the very method the call site named. It *is* observable at an
+    /// `ldvirtftn` with a null receiver, where CoreCLR takes the non-dispatching path and does not
+    /// throw — so `executeLdvirtftn` detects that shape and refuses it outright rather than
+    /// silently raising a NullReferenceException the real runtime would not have raised. No C#
+    /// compiler can produce it (a new `virtual` member on a sealed type is CS0549, and Roslyn marks
+    /// overrides in sealed types `final`), so the refusal is unreachable from the test corpus.
     member this.DispatchesVirtually : bool =
         not this.IsStatic && this.IsVirtual && not this.IsFinal
 
