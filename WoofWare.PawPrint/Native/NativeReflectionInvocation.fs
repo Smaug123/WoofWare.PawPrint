@@ -1,7 +1,6 @@
 namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
-open System.Reflection
 open System.Reflection.Metadata
 open Microsoft.Extensions.Logging
 
@@ -293,7 +292,7 @@ module internal NativeReflectionInvocation =
                 failwith
                     $"TODO: %s{operation} on %s{describe ()}, an instance method of Nullable<T>; CoreCLR unboxes into a freshly allocated true boxed Nullable rather than through the caller's box"
 
-            if target.Method.MethodAttributes.HasFlag MethodAttributes.Virtual then
+            if target.Method.IsVirtual then
                 // For a virtual struct method CoreCLR may hold the *unboxing stub*, whose `this` is
                 // the boxed object itself rather than its payload (reflectioninvocation.cpp:492).
                 // PawPrint models no such stub, so we cannot tell which of the two rules applies, and
@@ -453,7 +452,7 @@ module internal NativeReflectionInvocation =
                 | WhatWeDid.SuspendedForManagedCall ->
                     failwith
                         $"logic error: %s{operation}: ensureTypeInitialised cannot suspend for an arbitrary managed call"
-                | WhatWeDid.VoluntaryYield ->
+                | WhatWeDid.VoluntaryYield _ ->
                     failwith $"logic error: %s{operation}: ensureTypeInitialised cannot produce a VoluntaryYield"
                 | WhatWeDid.Executed ->
 
