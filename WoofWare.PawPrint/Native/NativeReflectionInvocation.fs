@@ -1,6 +1,7 @@
 namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
+open System.Reflection.Metadata
 open Microsoft.Extensions.Logging
 
 /// CoreCLR's `reflectioninvocation.cpp` QCalls that *call* a managed method, as opposed to merely
@@ -192,6 +193,55 @@ module internal NativeReflectionInvocation =
         ManagedPointerSource.reinterpretAs viewConcreteType byref
         |> IlMachineState.readManagedByref ctx.BaseClassTypes state
 
+    /// True iff `callMethodWithCommitment` would service this method *inline* through
+    /// `Intrinsics.call` / its `Activator.CreateInstance<T>` special case, rather than by pushing an
+    /// IL frame for it.
+    ///
+    /// This mirrors the `isIntrinsic && not (Intrinsics.isSafeIntrinsic intrinsicKey)` condition at
+    /// `IlMachineStateExecution.fs:1659`, specialised to our situation: we have no separate call
+    /// site, so the method-level and type-level `[Intrinsic]` checks — which that code deliberately
+    /// keys on the post-resolution method and on the call site's static type respectively — both
+    /// look at the one method we are about to invoke. The two can only disagree if virtual
+    /// resolution changes the method underneath us, which reflection cannot reach today (see
+    /// `sourcesPure/ReflectionInvokeVirtualMethod.cs`); and if they ever did, the result would be
+    /// the same loud crash this predicate exists to pre-empt, not a wrong answer.
+    let private isInlineServicedIntrinsic
+        (state : IlMachineState)
+        (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        : bool
+        =
+        let declaringAssembly =
+            state.LoadedAssembly method.DeclaringType.Assembly
+            |> Option.defaultWith (fun () ->
+                failwith
+                    $"RuntimeMethodHandle.InvokeMethod: declaring assembly for %O{method} is not loaded: %O{method.DeclaringType.Assembly}"
+            )
+
+        let getMemberRefParentType (handle : MemberReferenceHandle) : TypeRef =
+            match declaringAssembly.Members.[handle].Parent with
+            | MetadataToken.TypeReference r -> declaringAssembly.TypeRefs.[r]
+            | other -> failwith $"RuntimeMethodHandle.InvokeMethod: unexpected MemberReference parent %O{other}"
+
+        let declaringType = declaringAssembly.TypeDefs.[method.DeclaringType.Definition.Get]
+
+        // `[Intrinsic]` on an abstract body is a call-site inlining hint with no IL behind it, and
+        // is not serviced inline; the same suppression as `isAbstractBody` / `callSiteBodyIsAbstract`.
+        let isAbstractBody =
+            match method.Body with
+            | MethodBody.Abstract -> true
+            | _ -> false
+
+        let isIntrinsic =
+            not isAbstractBody
+            && (MethodInfo.isJITIntrinsic getMemberRefParentType declaringAssembly.Methods method
+                || MethodInfo.hasIntrinsicAttribute
+                    getMemberRefParentType
+                    declaringAssembly.Methods
+                    declaringType.Attributes)
+
+        isIntrinsic
+        && not (Intrinsics.isSafeIntrinsic (Intrinsics.methodKey state method))
+
     /// Reject the invocation shapes CoreCLR handles but this does not, naming the triggering
     /// condition rather than diverging quietly.
     let private rejectUnsupportedShapes
@@ -208,6 +258,19 @@ module internal NativeReflectionInvocation =
             target.Method.Signature.Header.Get.CallingConvention = System.Reflection.Metadata.SignatureCallingConvention.VarArgs
         then
             failwith $"TODO: %s{operation} on the vararg method %s{describe ()}"
+
+        if isInlineServicedIntrinsic state target.Method then
+            // An intrinsic serviced inside `callMethodWithCommitment` never pushes a frame: it
+            // computes its result and then advances the *caller's* program counter, because for an
+            // ordinary `call` opcode the caller is the frame whose instruction has now finished.
+            // Here the caller is this native QCall frame, which has no IL body, so that advance
+            // aborts the interpreter. It also reports `CallCommitment.Committed`, so the commitment
+            // check after the call cannot catch it either. Honouring
+            // `advanceProgramCounterOfCaller = false` on that path would mean touching all ~70
+            // advance sites across `Intrinsics.fs` and `IntrinsicHelpers.fs`, which is its own
+            // change; reject here instead.
+            failwith
+                $"TODO: %s{operation} on %s{describe ()}, which PawPrint services as a JIT intrinsic; the intrinsic dispatcher advances the caller's program counter, and this QCall's frame has no IL to advance"
 
         if
             not target.Method.IsStatic
