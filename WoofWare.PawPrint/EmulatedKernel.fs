@@ -999,6 +999,13 @@ module EmulatedKernel =
     /// 430,000 iterations — a few million interpreted instructions, which is minutes rather than
     /// the unreachable 4.3 billion jumps the millisecond-denominated clock required.
     let withVirtualClockTicks (ticks : int64) (kernel : EmulatedKernel) : EmulatedKernel =
+        // Checked independently of the monotonicity comparison below, which on its own would
+        // wave through a negative target whenever the current value is more negative still —
+        // reachable because a kernel assembled by record-copy never passed through here.
+        if ticks < 0L then
+            failwith
+                $"virtual clock would be set to %d{ticks} ticks; simulated uptime starts at zero and cannot be negative"
+
         if ticks < kernel.VirtualClockTicks then
             failwith
                 $"virtual clock would move backwards, from %d{kernel.VirtualClockTicks} to %d{ticks} ticks; it is monotonic by construction and every guest-visible clock derives from it"
@@ -1049,6 +1056,24 @@ module EmulatedKernel =
                 $"kernel VirtualClockTicks is %d{kernel.VirtualClockTicks}, which is outside the range [0, %d{maxMonotonicTimestampClockTicks}] a nanosecond monotonic timestamp can be derived from without overflowing int64"
 
         kernel.VirtualClockTicks * nanosecondsPerTick
+
+    /// The guest-visible `Environment.TickCount64`, in whole milliseconds:
+    /// `SystemNative_GetLowResolutionTimestamp`'s reading.
+    ///
+    /// Lives here beside `monotonicTimestampNanos` and `systemTimeAsTicks` rather than inline in
+    /// the PAL handler, so that all three projections of the one clock sit together and can be
+    /// checked against each other without a test having to restate the arithmetic of any of
+    /// them. Upstream these two monotonic entry points (`minipal_lowres_ticks` and
+    /// `minipal_hires_ticks`) read the same clock at two resolutions, and the contract a guest
+    /// depends on is that they never disagree — so this must be exactly the high-resolution
+    /// reading truncated to milliseconds.
+    ///
+    /// Truncating rather than rounding is faithful: upstream's coarse clock truncates too.
+    /// Unguarded, unlike its siblings, because dividing a clock already bounded below
+    /// `Int64.MaxValue` cannot overflow or go negative.
+    let lowResolutionTimestampMs (kernel : EmulatedKernel) : int64 =
+        kernel.VirtualClockTicks / ticksPerMillisecond
+
 
     /// Largest value CoreCLR will accept from the processor-count
     /// configuration knob (`MAX_PROCESSOR_COUNT` in

@@ -100,14 +100,38 @@ module TestMonotonicTimestamp =
         // compares `Environment.TickCount64` against a `Stopwatch` must not see
         // them disagree, so the low-resolution reading has to be exactly the
         // high-resolution one truncated to milliseconds.
+        // Neither side restates the other's arithmetic: the left is the high-resolution PAL
+        // reading converted from nanoseconds to milliseconds using the BCL's own factor, the
+        // right is the low-resolution PAL reading. Before the clock was re-denominated this
+        // assertion happened to be expressible as "hi-res / 1e6 = the clock", because the clock
+        // *was* in milliseconds; at 100 ns that form degenerates into a tautology about
+        // `monotonicTimestampNanos` and stops covering the low-resolution projection at all.
         let property (seed : int64) : bool =
-            let clockMs = intoRange maxClockTicks seed
-            let kernel = kernelWith clockMs
+            let kernel = kernelWith (intoRange maxClockTicks seed)
 
-            EmulatedKernel.monotonicTimestampNanos kernel
-            / EmulatedKernel.nanosecondsPerTick = kernel.VirtualClockTicks
+            let hiResMs = EmulatedKernel.monotonicTimestampNanos kernel / 1_000_000L
+
+            hiResMs = EmulatedKernel.lowResolutionTimestampMs kernel
 
         Check.One (propertyConfig, Prop.forAll int64s property)
+
+    [<Test>]
+    let ``the low-resolution reading is the clock truncated to milliseconds`` () =
+        // Sub-millisecond clock values are the interesting ones: they are unreachable at the
+        // current instruction cost but reachable at any finer one, and they are what the
+        // agreement property above cannot distinguish if the conversion factor is wrong in a
+        // way that happens to preserve whole milliseconds.
+        for ticks, expected in
+            [
+                0L, 0L
+                1L, 0L
+                EmulatedKernel.ticksPerMillisecond - 1L, 0L
+                EmulatedKernel.ticksPerMillisecond, 1L
+                EmulatedKernel.ticksPerMillisecond + 1L, 1L
+                7L * EmulatedKernel.ticksPerMillisecond - 1L, 6L
+            ] do
+            EmulatedKernel.lowResolutionTimestampMs (kernelWith ticks)
+            |> shouldEqual expected
 
     [<Test>]
     let ``the wall-clock epoch cannot perturb the monotonic clock`` () =
@@ -263,3 +287,21 @@ module TestMonotonicTimestamp =
             EmulatedKernel.withVirtualClockTicks 4_999L kernel |> ignore<EmulatedKernel>
 
         Assert.Throws<Exception> (TestDelegate backwards) |> ignore<Exception>
+
+    [<Test>]
+    let ``the clock writer rejects negative targets even when moving forwards`` () : unit =
+        // The monotonicity check alone waves this through: -10,000 is *greater* than -20,000, so
+        // the move is forwards and only an independent non-negativity check catches it. Reachable
+        // because a kernel assembled by record-copy never passed through the writer, which is the
+        // same reason the per-reader guards exist. Left untested, the writer would enforce a
+        // narrower range than its own doc comment claims.
+        let negativeKernel =
+            { EmulatedKernel.initial with
+                VirtualClockTicks = -20_000L
+            }
+
+        let forwardsButNegative () =
+            EmulatedKernel.withVirtualClockTicks -10_000L negativeKernel
+            |> ignore<EmulatedKernel>
+
+        Assert.Throws<Exception> (TestDelegate forwardsButNegative) |> ignore<Exception>

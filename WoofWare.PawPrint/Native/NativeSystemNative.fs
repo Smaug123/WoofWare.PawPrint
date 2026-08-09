@@ -376,9 +376,7 @@ module NativeSystemNative =
             // scheduler is the sole writer of `VirtualClockTicks`.
             state
             |> IlMachineState.pushToEvalStack'
-                (EvalStackValue.Int64 (
-                    Int64Source.Verbatim (state.Kernel.VirtualClockTicks / EmulatedKernel.ticksPerMillisecond)
-                ))
+                (EvalStackValue.Int64 (Int64Source.Verbatim (EmulatedKernel.lowResolutionTimestampMs state.Kernel)))
                 ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
