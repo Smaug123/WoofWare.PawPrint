@@ -1,6 +1,7 @@
 namespace WoofWare.PawPrint.Test
 
 open System.Collections.Immutable
+open Microsoft.FSharp.Reflection
 open FsCheck
 open FsCheck.FSharp
 open FsUnitTyped
@@ -491,6 +492,12 @@ module TestSchedulerYieldDebt =
         let sentinel = baseState ()
         let thread = ThreadId 0
 
+        let guestException : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> =
+            {
+                ExceptionObject = ManagedHeapAddress 1
+                StackTrace = []
+            }
+
         let variants : ExecutionResult list =
             [
                 ExecutionResult.Terminated (sentinel, thread)
@@ -498,7 +505,16 @@ module TestSchedulerYieldDebt =
                 ExecutionResult.FailFast (sentinel, thread, Some "m")
                 ExecutionResult.SignalTerminated (sentinel, Signal.SIGINT)
                 ExecutionResult.Stepped (sentinel, WhatWeDid.Executed, StepEffect.NoEffect)
+                ExecutionResult.UnhandledException (sentinel, thread, guestException)
             ]
+
+        // The table above is hand-written, so it can fall behind the type — which is the exact
+        // failure this test would then hide, since a variant that is never constructed is never
+        // checked no matter how thoroughly the assertions below are written. Tie the two
+        // together: adding a variant to `ExecutionResult` fails here until it is listed.
+        FSharpType.GetUnionCases typeof<ExecutionResult>
+        |> Array.length
+        |> shouldEqual variants.Length
 
         for variant in variants do
             let mapped = ExecutionResult.mapState mark variant
