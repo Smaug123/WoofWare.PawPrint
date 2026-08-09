@@ -188,30 +188,43 @@ module TestCustomAttributeBlob =
             let count = System.BitConverter.GetBytes (uint32 (List.length elts))
             let body = elts |> List.collect (encodeFixedArg >> Array.toList) |> List.toArray
             Array.append count body
+        // ECMA-335 II.23.3: an enum is encoded exactly as its underlying value, with no tag and
+        // no name. That identity is the point of the `enum arg encodes exactly as its underlying
+        // primitive` test below.
+        | CustomAttribFixedArg.Enum underlying -> encodeFixedArg underlying
 
-    /// Recover the declaration-site `TypeDefn` for a fixed arg. For SZARRAYs we
+    /// Recover the declaration-site `CustomAttribArgShape` for a fixed arg. For SZARRAYs we
     /// recurse into the first element; empty and null arrays would lose the
-    /// element type, so callers must supply the type directly for those cases.
-    let rec private typeOfArg (arg : CustomAttribFixedArg) : TypeDefn =
+    /// element type, so callers must supply the shape directly for those cases.
+    let rec private shapeOfArg (arg : CustomAttribFixedArg) : CustomAttribArgShape =
         match arg with
-        | CustomAttribFixedArg.Bool _ -> TypeDefn.PrimitiveType PrimitiveType.Boolean
-        | CustomAttribFixedArg.Char _ -> TypeDefn.PrimitiveType PrimitiveType.Char
-        | CustomAttribFixedArg.I1 _ -> TypeDefn.PrimitiveType PrimitiveType.SByte
-        | CustomAttribFixedArg.U1 _ -> TypeDefn.PrimitiveType PrimitiveType.Byte
-        | CustomAttribFixedArg.I2 _ -> TypeDefn.PrimitiveType PrimitiveType.Int16
-        | CustomAttribFixedArg.U2 _ -> TypeDefn.PrimitiveType PrimitiveType.UInt16
-        | CustomAttribFixedArg.I4 _ -> TypeDefn.PrimitiveType PrimitiveType.Int32
-        | CustomAttribFixedArg.U4 _ -> TypeDefn.PrimitiveType PrimitiveType.UInt32
-        | CustomAttribFixedArg.I8 _ -> TypeDefn.PrimitiveType PrimitiveType.Int64
-        | CustomAttribFixedArg.U8 _ -> TypeDefn.PrimitiveType PrimitiveType.UInt64
-        | CustomAttribFixedArg.R4 _ -> TypeDefn.PrimitiveType PrimitiveType.Single
-        | CustomAttribFixedArg.R8 _ -> TypeDefn.PrimitiveType PrimitiveType.Double
-        | CustomAttribFixedArg.String _ -> TypeDefn.PrimitiveType PrimitiveType.String
-        | CustomAttribFixedArg.Array (Some (head :: _)) -> TypeDefn.OneDimensionalArrayLowerBoundZero (typeOfArg head)
+        | CustomAttribFixedArg.Bool _ -> CustomAttribArgShape.Primitive PrimitiveType.Boolean
+        | CustomAttribFixedArg.Char _ -> CustomAttribArgShape.Primitive PrimitiveType.Char
+        | CustomAttribFixedArg.I1 _ -> CustomAttribArgShape.Primitive PrimitiveType.SByte
+        | CustomAttribFixedArg.U1 _ -> CustomAttribArgShape.Primitive PrimitiveType.Byte
+        | CustomAttribFixedArg.I2 _ -> CustomAttribArgShape.Primitive PrimitiveType.Int16
+        | CustomAttribFixedArg.U2 _ -> CustomAttribArgShape.Primitive PrimitiveType.UInt16
+        | CustomAttribFixedArg.I4 _ -> CustomAttribArgShape.Primitive PrimitiveType.Int32
+        | CustomAttribFixedArg.U4 _ -> CustomAttribArgShape.Primitive PrimitiveType.UInt32
+        | CustomAttribFixedArg.I8 _ -> CustomAttribArgShape.Primitive PrimitiveType.Int64
+        | CustomAttribFixedArg.U8 _ -> CustomAttribArgShape.Primitive PrimitiveType.UInt64
+        | CustomAttribFixedArg.R4 _ -> CustomAttribArgShape.Primitive PrimitiveType.Single
+        | CustomAttribFixedArg.R8 _ -> CustomAttribArgShape.Primitive PrimitiveType.Double
+        | CustomAttribFixedArg.String _ -> CustomAttribArgShape.Primitive PrimitiveType.String
+        | CustomAttribFixedArg.Array (Some (head :: _)) -> CustomAttribArgShape.SzArray (shapeOfArg head)
+        | CustomAttribFixedArg.Enum underlying ->
+            match shapeOfArg underlying with
+            | CustomAttribArgShape.Primitive p ->
+                EnumUnderlyingType.ofPrimitive p
+                |> Option.defaultWith (fun () ->
+                    failwith $"shapeOfArg: %O{p} cannot be an enum's underlying type, so this arg is unconstructible"
+                )
+                |> CustomAttribArgShape.Enum
+            | other -> failwith $"shapeOfArg: enum payload had non-primitive shape %O{other}"
         | CustomAttribFixedArg.Array None
         | CustomAttribFixedArg.Array (Some []) ->
             failwith
-                "typeOfArg cannot infer element TypeDefn for a null or empty Array; supply the SZARRAY type directly in the test"
+                "shapeOfArg cannot infer the element shape for a null or empty Array; supply the SZARRAY shape directly in the test"
 
     /// Build a CustomAttrib blob with the given fixed args and optional trailing bytes
     /// (intended to represent the NumNamed count + named-args section).
@@ -235,7 +248,7 @@ module TestCustomAttributeBlob =
         let args = [ CustomAttribFixedArg.Bool true ]
         let blob = buildFixedArgsBlob args [||]
 
-        match CustomAttribute.readFixedArgs (args |> List.map typeOfArg) blob with
+        match CustomAttribute.readFixedArgs (args |> List.map shapeOfArg) blob with
         | Ok (decoded, offset) ->
             decoded |> shouldEqual args
             offset |> shouldEqual 3
@@ -249,7 +262,7 @@ module TestCustomAttributeBlob =
         let trailing = [| 0x05uy ; 0x06uy ; 0x07uy |]
         let blob = buildFixedArgsBlob args trailing
 
-        match CustomAttribute.readFixedArgs (args |> List.map typeOfArg) blob with
+        match CustomAttribute.readFixedArgs (args |> List.map shapeOfArg) blob with
         | Ok (decoded, offset) ->
             decoded |> shouldEqual args
             // 2 (prolog) + 4 (int32) + 1 (PackedLen for "ok") + 2 ("ok")
@@ -285,7 +298,7 @@ module TestCustomAttributeBlob =
         for arg in cases do
             let blob = buildFixedArgsBlob [ arg ] [||]
 
-            match CustomAttribute.readFixedArgs [ typeOfArg arg ] blob with
+            match CustomAttribute.readFixedArgs [ shapeOfArg arg ] blob with
             | Ok ([ decoded ], _) -> decoded |> shouldEqual arg
             | Ok (decoded, _) -> failwithf "expected single arg for %A, got %A" arg decoded
             | Error e -> failwithf "expected Ok for %A, got Error %s" arg e
@@ -294,7 +307,7 @@ module TestCustomAttributeBlob =
     let ``readFixedArgs rejects bad prolog`` () : unit =
         let blob = ImmutableArray.Create<byte> ([| 0x00uy ; 0x00uy ; 0x01uy |])
 
-        match CustomAttribute.readFixedArgs [ TypeDefn.PrimitiveType PrimitiveType.Boolean ] blob with
+        match CustomAttribute.readFixedArgs [ CustomAttribArgShape.Primitive PrimitiveType.Boolean ] blob with
         | Error msg -> msg |> shouldContainText "prolog"
         | Ok r -> failwithf "expected Error, got Ok %A" r
 
@@ -304,7 +317,7 @@ module TestCustomAttributeBlob =
         let blob =
             ImmutableArray.Create<byte> ([| 0x01uy ; 0x00uy ; 0xAAuy ; 0xBBuy ; 0xCCuy |])
 
-        match CustomAttribute.readFixedArgs [ TypeDefn.PrimitiveType PrimitiveType.Int32 ] blob with
+        match CustomAttribute.readFixedArgs [ CustomAttribArgShape.Primitive PrimitiveType.Int32 ] blob with
         | Error _ -> ()
         | Ok r -> failwithf "expected Error, got Ok %A" r
 
@@ -312,7 +325,7 @@ module TestCustomAttributeBlob =
     let ``readFixedArgs rejects unsupported primitive`` () : unit =
         let blob = ImmutableArray.Create<byte> ([| 0x01uy ; 0x00uy |])
 
-        match CustomAttribute.readFixedArgs [ TypeDefn.PrimitiveType PrimitiveType.Object ] blob with
+        match CustomAttribute.readFixedArgs [ CustomAttribArgShape.Primitive PrimitiveType.Object ] blob with
         | Error msg -> msg |> shouldContainText "TODO"
         | Ok r -> failwithf "expected Error, got Ok %A" r
 
@@ -353,7 +366,7 @@ module TestCustomAttributeBlob =
     let ``readFixedArgs round-trips arbitrary primitive arg lists`` () : unit =
         let property (args : CustomAttribFixedArg list) : bool =
             let blob = buildFixedArgsBlob args [||]
-            let types = args |> List.map typeOfArg
+            let types = args |> List.map shapeOfArg
 
             match CustomAttribute.readFixedArgs types blob with
             | Ok (decoded, offset) -> decoded = args && offset = blob.Length
@@ -367,7 +380,7 @@ module TestCustomAttributeBlob =
 
     /// Convenience for the dominant Roslyn-emitted shape: NullableAttribute(byte[]).
     let private szarrayByte =
-        TypeDefn.OneDimensionalArrayLowerBoundZero (TypeDefn.PrimitiveType PrimitiveType.Byte)
+        CustomAttribArgShape.SzArray (CustomAttribArgShape.Primitive PrimitiveType.Byte)
 
     [<Test>]
     let ``readFixedArgs decodes null byte[]`` () : unit =
@@ -416,7 +429,7 @@ module TestCustomAttributeBlob =
         let blob = buildFixedArgsBlob [ arg ] [||]
 
         let szarrayInt =
-            TypeDefn.OneDimensionalArrayLowerBoundZero (TypeDefn.PrimitiveType PrimitiveType.Int32)
+            CustomAttribArgShape.SzArray (CustomAttribArgShape.Primitive PrimitiveType.Int32)
 
         match CustomAttribute.readFixedArgs [ szarrayInt ] blob with
         | Ok ([ decoded ], offset) ->
@@ -439,7 +452,7 @@ module TestCustomAttributeBlob =
         let blob = buildFixedArgsBlob [ arg ] [||]
 
         let szarrayStr =
-            TypeDefn.OneDimensionalArrayLowerBoundZero (TypeDefn.PrimitiveType PrimitiveType.String)
+            CustomAttribArgShape.SzArray (CustomAttribArgShape.Primitive PrimitiveType.String)
 
         match CustomAttribute.readFixedArgs [ szarrayStr ] blob with
         | Ok ([ decoded ], offset) ->
@@ -477,16 +490,24 @@ module TestCustomAttributeBlob =
             )
 
         let szarrayInt =
-            TypeDefn.OneDimensionalArrayLowerBoundZero (TypeDefn.PrimitiveType PrimitiveType.Int32)
+            CustomAttribArgShape.SzArray (CustomAttribArgShape.Primitive PrimitiveType.Int32)
 
         match CustomAttribute.readFixedArgs [ szarrayInt ] blob with
         | Error _ -> ()
         | Ok r -> failwithf "expected Error, got Ok %A" r
 
-    /// Generators paired by element TypeDefn so SZARRAY tests can produce
+    /// Generators paired by element shape so SZARRAY tests can produce
     /// homogeneous element lists without losing the type for empty/null arrays.
-    let private elementGens : (TypeDefn * Gen<CustomAttribFixedArg>) list =
-        let prim (p : PrimitiveType) g = TypeDefn.PrimitiveType p, g
+    let private elementGens : (CustomAttribArgShape * Gen<CustomAttribFixedArg>) list =
+        let prim (p : PrimitiveType) g = CustomAttribArgShape.Primitive p, g
+
+        /// An enum element whose underlying type is `p`: same bytes as `p`, wrapped.
+        let enumOf (p : PrimitiveType) (g : Gen<CustomAttribFixedArg>) =
+            let underlying =
+                EnumUnderlyingType.ofPrimitive p
+                |> Option.defaultWith (fun () -> failwith $"%O{p} cannot underlie an enum")
+
+            CustomAttribArgShape.Enum underlying, g |> Gen.map CustomAttribFixedArg.Enum
 
         let serString : Gen<string option> =
             Gen.frequency
@@ -521,13 +542,18 @@ module TestCustomAttributeBlob =
                  |> ArbMap.generate<NormalFloat>
                  |> Gen.map (fun (NormalFloat f) -> CustomAttribFixedArg.R8 f))
             prim PrimitiveType.String (serString |> Gen.map CustomAttribFixedArg.String)
+            // Enum elements, so the SZARRAY property also covers arrays of enums. A byte-underlying
+            // enum beside an int64-underlying one is what makes a wrong-width read observable as a
+            // decode failure rather than a wrong-but-plausible value.
+            enumOf PrimitiveType.Byte (ArbMap.defaults |> ArbMap.generate<byte> |> Gen.map CustomAttribFixedArg.U1)
+            enumOf PrimitiveType.Int64 (ArbMap.defaults |> ArbMap.generate<int64> |> Gen.map CustomAttribFixedArg.I8)
         ]
 
     [<Test>]
     let ``readFixedArgs round-trips SZARRAY of primitive`` () : unit =
         let property (eltIdx : NonNegativeInt) (kind : int) (elems : CustomAttribFixedArg list) : bool =
             let eltType, _ = elementGens.[(eltIdx.Get) % elementGens.Length]
-            let szarrayType = TypeDefn.OneDimensionalArrayLowerBoundZero eltType
+            let szarrayType = CustomAttribArgShape.SzArray eltType
 
             let arg =
                 match (kind % 3 + 3) % 3 with
@@ -555,3 +581,105 @@ module TestCustomAttributeBlob =
         let arb = Arb.fromGen coupledGen
 
         Check.One (propertyConfig, Prop.forAll arb (fun (eltIdx, kind, elems) -> property eltIdx kind elems))
+
+    // ----- enum fixed args --------------------------------------------------
+
+    /// Every legal enum underlying type (ECMA-335 II.14.3), with a value chosen so that reading it
+    /// at the wrong width, or with the wrong signedness, produces a different answer: each
+    /// multi-byte value has distinct non-zero bytes, and each unsigned value is above its signed
+    /// counterpart's range.
+    let private underlyingCases : (EnumUnderlyingType * CustomAttribFixedArg * int) list =
+        [
+            EnumUnderlyingType.Boolean, CustomAttribFixedArg.Bool true, 1
+            EnumUnderlyingType.Char, CustomAttribFixedArg.Char 'ሴ', 2
+            EnumUnderlyingType.SByte, CustomAttribFixedArg.I1 -37y, 1
+            EnumUnderlyingType.Byte, CustomAttribFixedArg.U1 200uy, 1
+            EnumUnderlyingType.Int16, CustomAttribFixedArg.I2 -3000s, 2
+            EnumUnderlyingType.UInt16, CustomAttribFixedArg.U2 60000us, 2
+            EnumUnderlyingType.Int32, CustomAttribFixedArg.I4 -123456789, 4
+            EnumUnderlyingType.UInt32, CustomAttribFixedArg.U4 4000000000u, 4
+            EnumUnderlyingType.Int64, CustomAttribFixedArg.I8 -1234567890123456789L, 8
+            EnumUnderlyingType.UInt64, CustomAttribFixedArg.U8 18000000000000000000UL, 8
+        ]
+
+    [<Test>]
+    let ``readFixedArgs decodes an enum of each legal underlying type`` () : unit =
+        for underlying, value, width in underlyingCases do
+            let arg = CustomAttribFixedArg.Enum value
+            let blob = buildFixedArgsBlob [ arg ] [||]
+
+            match CustomAttribute.readFixedArgs [ CustomAttribArgShape.Enum underlying ] blob with
+            | Ok ([ decoded ], offset) ->
+                decoded |> shouldEqual arg
+                // The offset is the point: a decoder that read the right value at the wrong width
+                // would desynchronise every subsequent argument in the blob.
+                offset |> shouldEqual (2 + width)
+            | other -> failwithf "expected a single decoded enum for %O, got %A" underlying other
+
+    [<Test>]
+    let ``an enum arg encodes exactly as its underlying primitive`` () : unit =
+        // ECMA-335 II.23.3 gives an enum fixed arg no tag of its own, so the same bytes must decode
+        // either way depending only on the shape supplied. This is what forces the width to come
+        // from the caller's resolution rather than from the blob.
+        for underlying, value, _ in underlyingCases do
+            let blob = buildFixedArgsBlob [ value ] [||]
+
+            let asPrimitive =
+                CustomAttribArgShape.Primitive (EnumUnderlyingType.toPrimitive underlying)
+
+            let decodedAsPrimitive = CustomAttribute.readFixedArgs [ asPrimitive ] blob
+
+            let decodedAsEnum =
+                CustomAttribute.readFixedArgs [ CustomAttribArgShape.Enum underlying ] blob
+
+            decodedAsPrimitive |> shouldEqual (Ok ([ value ], blob.Length))
+
+            decodedAsEnum
+            |> shouldEqual (Ok ([ CustomAttribFixedArg.Enum value ], blob.Length))
+
+    [<Test>]
+    let ``an enum arg does not consume the arguments after it`` () : unit =
+        // A width bug is most damaging where it is least visible: the enum decodes to something
+        // plausible and the *next* argument silently reads shifted bytes. Pin the whole sequence.
+        let args =
+            [
+                CustomAttribFixedArg.Enum (CustomAttribFixedArg.U1 200uy)
+                CustomAttribFixedArg.I4 4242
+                CustomAttribFixedArg.Enum (CustomAttribFixedArg.I8 -1234567890123456789L)
+                CustomAttribFixedArg.String (Some "tail")
+            ]
+
+        let blob = buildFixedArgsBlob args [||]
+
+        let shapes =
+            [
+                CustomAttribArgShape.Enum EnumUnderlyingType.Byte
+                CustomAttribArgShape.Primitive PrimitiveType.Int32
+                CustomAttribArgShape.Enum EnumUnderlyingType.Int64
+                CustomAttribArgShape.Primitive PrimitiveType.String
+            ]
+
+        CustomAttribute.readFixedArgs shapes blob
+        |> shouldEqual (Ok (args, blob.Length))
+
+    [<Test>]
+    let ``EnumUnderlyingType admits exactly the ECMA-335 II 14 3 integer types`` () : unit =
+        // `CustomAttribArgShape.Enum` takes an `EnumUnderlyingType` rather than a `PrimitiveType`
+        // precisely so the decoder's enum arm needs no error branch. That guarantee is only worth
+        // anything if this rejection is real.
+        for rejected in
+            [
+                PrimitiveType.Single
+                PrimitiveType.Double
+                PrimitiveType.String
+                PrimitiveType.TypedReference
+                PrimitiveType.IntPtr
+                PrimitiveType.UIntPtr
+                PrimitiveType.Object
+            ] do
+            EnumUnderlyingType.ofPrimitive rejected |> shouldEqual None
+
+        for underlying, _, _ in underlyingCases do
+            EnumUnderlyingType.toPrimitive underlying
+            |> EnumUnderlyingType.ofPrimitive
+            |> shouldEqual (Some underlying)

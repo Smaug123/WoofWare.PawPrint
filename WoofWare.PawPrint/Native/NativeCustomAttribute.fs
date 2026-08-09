@@ -70,6 +70,71 @@ module NativeCustomAttribute =
             failwith
                 $"TODO: %s{operation} %s{label} pointer must be a plain ArrayElement byref (no projections); other shapes (e.g. raw native pointers, byte-view projections) are not yet supported, got %O{other}"
 
+    /// <summary>
+    /// Resolve one constructor parameter type to the shape the blob decoder needs.
+    /// </summary>
+    /// <remarks>
+    /// The fixed-args section of a <c>CustomAttrib</c> blob is not self-describing (ECMA-335
+    /// II.23.3): an enum argument is written as a bare value of its underlying type. So the
+    /// width has to come from the metadata, which is why this lives here — beside the machine
+    /// state — rather than in the parser.
+    ///
+    /// Only parameter types that <c>tryShapeWithoutResolution</c> cannot handle reach the
+    /// resolution path, so an attribute whose ctor takes only primitives costs no type loads.
+    /// </remarks>
+    let private resolveArgShape
+        (operation : string)
+        (ctx : NativeCallContext)
+        (ctorAssembly : DumpedAssembly)
+        (declaringTypeGenerics : ConcreteTypeHandle ImmutableArray)
+        (state : IlMachineState)
+        (paramType : TypeDefn)
+        : IlMachineState * CustomAttribArgShape
+        =
+        match CustomAttribute.tryShapeWithoutResolution paramType with
+        | Some shape -> state, shape
+        | None ->
+
+        let state, handle =
+            IlMachineTypeResolution.concretizeType
+                ctx.LoggerFactory
+                ctx.BaseClassTypes
+                state
+                ctorAssembly.Name
+                declaringTypeGenerics
+                // An attribute ctor cannot be a generic method: ECMA-335 II.22.10 names it by a
+                // MethodDef/MemberRef with no generic arguments, and the BCL's
+                // `FilterCustomAttributeRecord` never surfaces one.
+                ImmutableArray.Empty
+                paramType
+
+        let state, isEnum =
+            IlMachineRuntimeMetadata.isEnumValueType ctx.LoggerFactory ctx.BaseClassTypes state handle
+
+        if not isEnum then
+            failwith
+                $"TODO: %s{operation}: ctor parameter of type %O{paramType} is neither a primitive, an SZARRAY of primitives, nor an enum; TYPE (0x50) and TAGGED_OBJECT (0x51) fixed args are not yet decoded"
+
+        let state, underlyingHandle =
+            IlMachineRuntimeMetadata.enumUnderlyingHandle ctx.LoggerFactory ctx.BaseClassTypes state handle
+            |> Option.defaultWith (fun () ->
+                failwith
+                    $"%s{operation}: ctor parameter of type %O{paramType} is an enum, but its underlying type could not be read; an enum's sole instance field must be `value__`"
+            )
+
+        match underlyingHandle with
+        | ConcretePrimitive state.ConcreteTypes underlying ->
+            match EnumUnderlyingType.ofPrimitive underlying with
+            | Some underlying -> state, CustomAttribArgShape.Enum underlying
+            | None ->
+                // ECMA-335 II.14.3 requires a built-in integer type here, and the CLR type loader
+                // enforces it, so only hand-crafted metadata can get us here.
+                failwith
+                    $"%s{operation}: ctor parameter of type %O{paramType} is an enum whose underlying type %O{underlying} is not a legal enum underlying type"
+        | other ->
+            failwith
+                $"%s{operation}: ctor parameter of type %O{paramType} is an enum whose `value__` did not concretize to a primitive, got %O{other}"
+
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
@@ -309,8 +374,21 @@ module NativeCustomAttribute =
                 let blobBytes =
                     materialiseBytes operation state blobStartArr blobStartIdx blobEndIdx
 
+                // Resolving the ctor's parameter types can load assemblies, so it threads state;
+                // it cannot suspend, and it happens before the cursor write-back below, so a
+                // re-entered handler simply redoes it.
+                let state, paramShapes =
+                    ((state, []), ctorMetadata.Signature.ParameterTypes)
+                    ||> List.fold (fun (state, acc) paramType ->
+                        let state, shape =
+                            resolveArgShape operation ctx ctorAssembly concreteType.Generics state paramType
+
+                        state, shape :: acc
+                    )
+                    |> fun (state, acc) -> state, List.rev acc
+
                 let fixedArgs, fixedArgsConsumed =
-                    match CustomAttribute.readFixedArgs ctorMetadata.Signature.ParameterTypes blobBytes with
+                    match CustomAttribute.readFixedArgs paramShapes blobBytes with
                     | Ok (args, next) -> args, next
                     | Error msg -> failwith $"%s{operation}: failed to parse fixed args from CustomAttrib blob: %s{msg}"
 
