@@ -318,7 +318,7 @@ module Program =
                 "Executed one step; active assembly: {ActiveAssembly}",
                 state.ActiveAssembly(thread).Name.Name
             )
-        | WhatWeDid.VoluntaryYield ->
+        | WhatWeDid.VoluntaryYield _ ->
             logger.LogTrace (
                 "Executed one step (voluntary yield requested); active assembly: {ActiveAssembly}",
                 state.ActiveAssembly(thread).Name.Name
@@ -490,6 +490,25 @@ module Program =
             match AbstractMachine.executeOneStep loggerFactory prepared.BaseClassTypes prepared.State nextThread with
             | ExecutionResult.Terminated (state, terminatingThread) ->
                 if terminatingThread = prepared.EntryThread then
+                    // Discharge before reporting. This looks like the end of the run, and for
+                    // the post-`Main` pump it is — but the *pre*-`Main` cctor pump reports
+                    // `NormalExit` too, when the synthetic `onlyRet` frame returns, and then
+                    // `Program.run` resurrects this very thread with the real `Main` frame and
+                    // keeps stepping. A worker spawned by an entry-type cctor that yielded just
+                    // before that synthetic `ret` would otherwise carry a debt naming the entry
+                    // thread across the resurrection, and be held out for a decision even
+                    // though the thread it is waiting on has already run.
+                    //
+                    // Routed through `onStepOutcome` rather than a discharge-only helper for
+                    // the same reason as the dispatcher branch below: one entry point for
+                    // "a thread retired a step" is one fewer thing a future path can half-do.
+                    // Its other effect here — waking threads BlockedOnClassInit on the entry
+                    // thread — is right in the pre-`Main` case (those cctors have just
+                    // finished) and inert in the post-`Main` one (nothing is scheduled again).
+                    // Deliberately does *not* mark the entry thread Terminated: it may yet run
+                    // `Main`.
+                    let state = Scheduler.onStepOutcome terminatingThread WhatWeDid.Executed state
+
                     ProgramStepOutcome.Completed (RunOutcome.NormalExit (state, prepared.EntryThread))
                 elif SignalState.signalThread state.Kernel.Signals = Some terminatingThread then
                     // The kernel-owned signal-dispatch thread's handler frame
@@ -501,6 +520,14 @@ module Program =
                     // terminated, the dispatcher is just between handler
                     // invocations.
                     let state = SignalDispatch.reParkAfterHandler terminatingThread state
+
+                    // Route through the scheduler like every other stepped outcome. This
+                    // branch reports `WhatWeDid.Executed` — the dispatcher did retire a step —
+                    // and the scheduler's per-step bookkeeping (discharging yield debts that
+                    // name this thread) has to see it. Skipping the call would leave the
+                    // dispatcher named in an outstanding debt it can never discharge, which
+                    // `Scheduler.candidates` relies on being impossible.
+                    let state = Scheduler.onStepOutcome terminatingThread WhatWeDid.Executed state
 
                     ProgramStepOutcome.InstructionStepped (
                         { prepared with
@@ -967,7 +994,7 @@ module Program =
         | WhatWeDid.BlockedOnClassInit _ -> failwith "logic error: surely this thread can't be blocked on class init"
         | WhatWeDid.ThrowingTypeInitializationException ->
             failwith "TypeInitializationException during entry point type initialisation"
-        | WhatWeDid.VoluntaryYield ->
+        | WhatWeDid.VoluntaryYield _ ->
             // ensureTypeInitialised drives cctor execution, which has no path to a
             // yield primitive: voluntary yields are produced by native handlers like
             // `ThreadNative_YieldThread`, never by a synthetic cctor step. If this

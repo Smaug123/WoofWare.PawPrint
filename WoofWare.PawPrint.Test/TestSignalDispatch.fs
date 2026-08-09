@@ -126,6 +126,7 @@ module TestSignalDispatch =
     let private stubThreadState (status : ThreadStatus) : ThreadState =
         {
             MethodStates = Map.empty
+            YieldDebt = Set.empty
             NextFrameId = 0
             ActiveMethodState = FrameId -1
             Status = status

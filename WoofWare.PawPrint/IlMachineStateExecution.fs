@@ -1934,7 +1934,7 @@ module IlMachineStateExecution =
                     // `TypeInitState.Failed` cached-cctor path, which we pre-handle above.
                     failwith
                         "logic error: ensureTypeInitialised should not reach the cached-failure path inside Activator.CreateInstance<T>() (handled separately above)"
-                | WhatWeDid.VoluntaryYield ->
+                | WhatWeDid.VoluntaryYield _ ->
                     failwith
                         "logic error: ensureTypeInitialised inside Activator.CreateInstance<T>() cannot produce a VoluntaryYield (cctor execution has no path to a yield primitive)"
             else

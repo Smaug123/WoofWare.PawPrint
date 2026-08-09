@@ -370,7 +370,7 @@ module DebuggerServer =
                 match whatWeDid with
                 | WhatWeDid.BlockedOnClassInit blocker -> Some (threadIdValue blocker)
                 | WhatWeDid.Executed
-                | WhatWeDid.VoluntaryYield
+                | WhatWeDid.VoluntaryYield _
                 | WhatWeDid.SuspendedForClassInit
                 | WhatWeDid.SuspendedForManagedCall
                 | WhatWeDid.ThrowingTypeInitializationException -> None

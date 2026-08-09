@@ -359,6 +359,7 @@ module IlMachineThreadState =
                 // it therefore still consumes a rotation slot.
                 Cpu = EmulatedKernel.cpuForRotation state.NextCpuRotation state.Kernel
                 OsThreadId = EmulatedKernel.osThreadId thread
+                YieldDebt = Set.empty
             }
 
         let newState =
@@ -415,6 +416,7 @@ module IlMachineThreadState =
                 // `osThreadId` is a function of the `ThreadId` allocated just
                 // above, which is unique to this thread like any other's.
                 OsThreadId = EmulatedKernel.osThreadId thread
+                YieldDebt = Set.empty
             }
 
         let newState =
@@ -513,6 +515,7 @@ module IlMachineThreadState =
                 // field is copied like every other per-thread fact rather than
                 // recomputed, so it stays correct if that ever stops holding.)
                 OsThreadId = existing.OsThreadId
+                YieldDebt = Set.empty
             }
 
         { state with
