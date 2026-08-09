@@ -490,6 +490,25 @@ module Program =
             match AbstractMachine.executeOneStep loggerFactory prepared.BaseClassTypes prepared.State nextThread with
             | ExecutionResult.Terminated (state, terminatingThread) ->
                 if terminatingThread = prepared.EntryThread then
+                    // Discharge before reporting. This looks like the end of the run, and for
+                    // the post-`Main` pump it is — but the *pre*-`Main` cctor pump reports
+                    // `NormalExit` too, when the synthetic `onlyRet` frame returns, and then
+                    // `Program.run` resurrects this very thread with the real `Main` frame and
+                    // keeps stepping. A worker spawned by an entry-type cctor that yielded just
+                    // before that synthetic `ret` would otherwise carry a debt naming the entry
+                    // thread across the resurrection, and be held out for a decision even
+                    // though the thread it is waiting on has already run.
+                    //
+                    // Routed through `onStepOutcome` rather than a discharge-only helper for
+                    // the same reason as the dispatcher branch below: one entry point for
+                    // "a thread retired a step" is one fewer thing a future path can half-do.
+                    // Its other effect here — waking threads BlockedOnClassInit on the entry
+                    // thread — is right in the pre-`Main` case (those cctors have just
+                    // finished) and inert in the post-`Main` one (nothing is scheduled again).
+                    // Deliberately does *not* mark the entry thread Terminated: it may yet run
+                    // `Main`.
+                    let state = Scheduler.onStepOutcome terminatingThread WhatWeDid.Executed state
+
                     ProgramStepOutcome.Completed (RunOutcome.NormalExit (state, prepared.EntryThread))
                 elif SignalState.signalThread state.Kernel.Signals = Some terminatingThread then
                     // The kernel-owned signal-dispatch thread's handler frame
