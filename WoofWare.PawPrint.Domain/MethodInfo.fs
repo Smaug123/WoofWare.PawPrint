@@ -301,12 +301,11 @@ module SynthesisedMethod =
 
 /// The facts that exist only because a method was read from a MethodDef row.
 ///
-/// Split out of <see cref="MethodInfo"/> so a synthesised method cannot be asked for them. Every
-/// one of these was previously a field on the method itself, which meant a synthesised method had
-/// to invent a plausible-looking value for each — a metadata token that indexes nothing, an empty
-/// Param collection, attribute flags of zero. Those are lies in fields other code keys on, and
-/// the point of the split is that the compiler now forces each consumer to say what it does when
-/// they are absent.
+/// These live apart from <see cref="MethodCore"/> so that a synthesised method cannot be asked for
+/// them: reaching any of these requires matching on <see cref="MethodInfo.Metadata"/>, so a
+/// consumer must say what it does when they are absent. A method the runtime supplies has no
+/// honest value for any of them — a metadata token would index nothing, and attribute flags of
+/// zero are a claim about a declaration that does not exist — and other code keys on all of them.
 type MetadataMethodFacts =
     {
         /// <summary>
@@ -497,7 +496,7 @@ module MethodInfo =
 
     /// The metadata facts, for a caller that can only meaningfully act on a declared method —
     /// reflection, IL rendering, overload comparison. Fails for a synthesised method rather than
-    /// inventing the metadata, which is the whole point of keeping the two apart.
+    /// inventing metadata for it.
     let requireMetadata
         (operation : string)
         (m : MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars>)
