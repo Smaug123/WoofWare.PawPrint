@@ -173,12 +173,18 @@ module NativeException =
                 failwith
                     $"%s{operation}: expected one argument after matching signature, got %d{instruction.Arguments.Length}"
 
-            // CoreCLR asserts the argument is non-null (comutilnative.cpp:53); every caller is an
-            // instance method passing `this`, so a null here means the interpreter got the call
-            // shape wrong rather than the guest doing something unusual.
+            // A null argument answers false rather than failing. The `ASSERT(pExceptionUNSAFE !=
+            // NULL)` above the comparison (comutilnative.cpp:53) is debug-only and compiled out of
+            // the shipping runtime, so it is not a precondition a guest can violate — and in any
+            // case null is not one of the three preallocated objects, which is all the identity
+            // comparison asks. No CoreLib caller can pass null (all three pass `this`), but this is
+            // a private static, so reflection can, and real .NET answers False when it does;
+            // `ImmutableAgileExceptionNullArgument.cs` pins that against both runtimes.
+            //
+            // A non-ObjectRef argument is a different matter: that means the interpreter built the
+            // call wrong, and there is no honest answer to give.
             match instruction.Arguments.[0] |> CliType.unwrapPrimitiveLike with
-            | CliType.ObjectRef (Some _) -> ()
-            | CliType.ObjectRef None -> failwith $"%s{operation}: expected a non-null Exception argument, got null"
+            | CliType.ObjectRef _ -> ()
             | other -> failwith $"%s{operation}: expected an ObjectRef Exception argument, got %O{other}"
 
             let state = IlMachineState.pushToEvalStack (CliType.ofBool false) ctx.Thread state
