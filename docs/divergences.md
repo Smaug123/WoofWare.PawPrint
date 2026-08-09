@@ -227,7 +227,9 @@ One consequence is visible in that classification. An unpaired surrogate escape 
 
 **CoreCLR**: Before `hostpolicy` looks at `runtimeOptions.configProperties` at all, it populates eight properties of its own and passes them to `AppContext.Setup` in the same arrays: `TRUSTED_PLATFORM_ASSEMBLIES`, `NATIVE_DLL_SEARCH_DIRECTORIES`, `PLATFORM_RESOURCE_ROOTS`, `APP_CONTEXT_BASE_DIRECTORY`, `APP_CONTEXT_DEPS_FILES`, `FX_DEPS_FILE`, `PROBING_DIRECTORIES` and `RUNTIME_IDENTIFIER` (`hostpolicy_context.cpp`), plus `HOST_RUNTIME_CONTRACT`, and conditionally `APP_PATHS` and `STARTUP_HOOKS`. They come from deps resolution and the host's filesystem layout, never from the config file — a `configProperties` entry that reuses one of those names is a fatal `LibHostDuplicateProperty` rather than an override, so the two sets are disjoint by construction. Every .NET process therefore starts with them, whatever its `runtimeconfig.json` says, and a config with no `configProperties` section still yields nine.
 
-**PawPrint**: Populates none of them. `AppContext` contains exactly the `configProperties` the host passed in `HostConfig.AppContext`, and nothing else; with no properties at all, `AppContext.Setup` is never called and `s_dataStore` stays null (which is indistinguishable from an empty store through the public API, since `GetData` returns null for a null store and `SetData` lazily installs one).
+**PawPrint**: Populates none of them. `AppContext` contains exactly the `configProperties` the host passed in `HostConfig.AppContext`, plus `AppContextProperties.runtimeBaseline` beneath them — which today is the single dynamic-code switch described under "Dynamic code is declared unsupported" below, and is a claim about the runtime rather than one of the host-populated properties this entry is about. None of the eleven names above is ever among them.
+
+That baseline is why `AppContext.Setup` now runs on every guest and `s_dataStore` is always non-null. Before it existed, a host supplying no properties meant `Setup` was never called and `s_dataStore` stayed null — indistinguishable from an empty store through the public API, since `GetData` returns null for a null store and `SetData` lazily installs one, so nothing observable turned on it.
 
 **Spec status**: Outside ECMA-335, which says nothing about host properties — this is the hosting contract rather than the CLI. Non-compliant with that contract, deliberately.
 
@@ -235,7 +237,7 @@ One consequence is visible in that classification. An unpaired surrogate escape 
 
 The same gap covers framework-supplied properties. `hostfxr` builds its property bag by walking every resolved framework's own `runtimeconfig.json` and merging each one's `configProperties` (`runtime_config_t::combine_properties`, first writer wins, and the app is walked first so the app's value survives). PawPrint reads only the app's `runtimeconfig.json` and its `.dev.json` sidecar, because it has no framework-resolution chain to walk — it is handed runtime directories, not a framework graph. In practice this merges nothing today: the shipped `Microsoft.NETCore.App.runtimeconfig.json` for 10.0.7 declares only `tfm` and no `configProperties` at all, so the set being dropped is currently empty. It is recorded here because that is a fact about today's framework, not a guarantee.
 
-Note that this is *not* the same as "what a guest sees when there is no `runtimeconfig.json`". A real host treats a missing config as a self-contained app, fails to find `hostpolicy` beside the assembly, and exits before any managed code runs (verified: exit 131 on osx-arm64). "No config file, so no properties" exists only in PawPrint, and is likewise deliberate — the test harness compiles guests to a `MemoryStream` where no sidecar file can exist.
+Note that this is *not* the same as "what a guest sees when there is no `runtimeconfig.json`". A real host treats a missing config as a self-contained app, fails to find `hostpolicy` beside the assembly, and exits before any managed code runs (verified: exit 131 on osx-arm64). "No config file, so no *host* properties" exists only in PawPrint, and is likewise deliberate — the test harness compiles guests to a `MemoryStream` where no sidecar file can exist. Such a guest still receives the runtime baseline, which does not come from a config file at all.
 
 **Observable example**:
 
@@ -252,6 +254,52 @@ Console.WriteLine(AppContext.BaseDirectory);
 What PawPrint does *not* do is let a config file fill the hole itself: `RuntimeConfig.parse` refuses a `configProperties` entry that claims one of these names, exactly as a real host refuses to launch such a file. The absence above is a gap in what PawPrint can tell a guest; a forged `TRUSTED_PLATFORM_ASSEMBLIES` that the guest could not tell from the real thing would be worse than the gap.
 
 **Where this lives in code**: `AppContextProperties.empty` in `RuntimeConfig.fs` documents the gap; `hostOwnedNames` in the same file is the refusal; `HostConfig.AppContext` is where a host would supply values if it had any. Closing this would mean deciding what a simulated app's filesystem layout *is*, which is a larger question than the seeding change that surfaced it.
+
+## Dynamic code is declared unsupported
+
+**CoreCLR**: `RuntimeFeature.IsDynamicCodeSupported` reads the AppContext switch `System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported` and **defaults to true** when no such switch is present (`RuntimeFeature.NonNativeAot.cs:17`). A stock `dotnet` launch of an app whose `runtimeconfig.json` says nothing about it therefore reports dynamic code as supported, and the BCL reaches for `System.Reflection.Emit` accordingly: `Expression.Compile()` emits a `DynamicMethod` rather than interpreting, and `MethodInvokerCommon.DetermineStrategy_*` abandons the interpreted `RuntimeMethodHandle.InvokeMethod` path after a `MethodBase`'s first invocation in favour of an emitted invoke stub (`MethodInvokerCommon.cs:124,153`).
+
+**PawPrint**: Seeds that switch to `false` on every run, beneath whatever the host supplies, so a guest that says nothing about it reports dynamic code as **unsupported**. NativeAOT reports the same profile, so the BCL fallbacks this selects are well travelled rather than exotic.
+
+**Spec status**: Outside ECMA-335 — a hosting/feature-switch contract rather than the CLI. Divergent from a *stock host's default*, deliberately. Not divergent from the real runtime *in the same configuration*.
+
+That last sentence is measured, not inferred. The same program built three ways and run on net10.0/osx-arm64:
+
+| `runtimeconfig.json` | `IsDynamicCodeSupported` | `IsDynamicCodeCompiled` | `IsSupported("IsDynamicCodeSupported")` | `new DynamicMethod(...)` |
+| --- | --- | --- | --- | --- |
+| absent | True | True | True | succeeds |
+| `"...IsDynamicCodeSupported": false` | False | False | False | `PlatformNotSupportedException: Dynamic code generation is not supported on this platform.` |
+| `"...IsDynamicCodeSupported": true` | True | True | True | succeeds |
+
+So setting the switch is a supported configuration that CoreCLR honours from the app's own config, and `false` yields exactly the semantics PawPrint adopts — down to the exception type and message that `sourcesImpure/DynamicCodeUnsupportedByDefault.cs` asserts. The name is not one of the eleven the hosting layer populates for itself, so a guest's `runtimeconfig.json` may legally carry it (`hostOwnedNames` in `RuntimeConfig.fs` does not list it), and the shipped `Microsoft.NETCore.App.runtimeconfig.json` declares no `configProperties` at all, so no framework config competes for it.
+
+**Why we chose this**: it is the truthful claim. PawPrint has no JIT and no `System.Reflection.Emit`, and that switch is exactly the question "can this runtime produce code at runtime?". Leaving it at the stock default meant the BCL confidently taking Emit paths that PawPrint cannot execute, so a guest that invoked the same `MethodInfo` twice — or called `Expression.Compile()` — died on an unimplemented native primitive with a message naming a QCall, rather than on anything a guest author could act on. With the switch off, those paths are simply not taken, and the ones that have no fallback raise the `PlatformNotSupportedException` a real host raises in the same configuration. Correctness over availability: PawPrint answering "no" is a guarantee it can meet, and answering "yes" was one it could not.
+
+The direction of precedence is part of the choice. The baseline sits *beneath* the host's properties, so a guest whose `runtimeconfig.json` declares the switch true observes true. Forcing the value would make `AppContextSeed` stop being a faithful reproduction of what `hostpolicy` installs — the guest would read back something its own configuration did not say — and would not even buy immutability, since `AppContext.SetSwitch` remains available to the guest at any moment. What it *would* cost is the only way to ask PawPrint to exercise a dynamic-code path once one exists.
+
+The wart in that choice, stated plainly: a guest that explicitly declares the switch **true** is believed, and PawPrint then asserts a capability it does not have. This is deliberate rather than overlooked, and it is tolerable for a narrow reason — it cannot produce a *wrong answer*, only a crash. A guest told "yes" that goes on to reach Emit dies on an unimplemented primitive with a message naming it. "Correctness over availability" is a rule about not returning wrong results, and it is not engaged when the alternative to crashing is crashing. The two other policies are worse: forcing the value breaks the seeding mechanism's faithfulness for every property, not just this one, and refusing to launch punishes a guest that declares the switch and never exercises it.
+
+Only the *silent* case therefore diverges from CoreCLR. A guest that sets the switch either way is reproduced exactly.
+
+One consequence worth stating: this is the first property PawPrint seeds unconditionally, so `AppContext.Setup` now runs on every guest, where previously an empty property set skipped it entirely. That is a behaviour change in its own right — `s_dataStore` is now always non-null — and it interacts with the entry in this document about absent host-populated properties, which remains true of the other nine.
+
+**Observable example**:
+
+```csharp
+Console.WriteLine(RuntimeFeature.IsDynamicCodeSupported);
+// CoreCLR (stock launch): True
+// PawPrint:               False
+
+var m = typeof(C).GetMethod("M");
+m.Invoke(null, args);   // both: interpreted invoke path
+m.Invoke(null, args);   // CoreCLR: emitted invoke stub. PawPrint: interpreted again.
+
+new DynamicMethod("f", typeof(int), Type.EmptyTypes, typeof(C));
+// CoreCLR:  succeeds.
+// PawPrint: PlatformNotSupportedException, from AssemblyBuilder.EnsureDynamicCodeSupported.
+```
+
+**Where this lives in code**: `AppContextProperties.runtimeBaseline` and `withRuntimeBaseline` in `RuntimeConfig.fs`; applied in `Program.prepare` immediately before `AppContextSeed.prepareCall`. Pinned by `TestDynamicCodeSupport.fs` and by `sourcesImpure/DynamicCodeUnsupportedByDefault.cs` (the default) and `sourcesImpure/DynamicCodeSupportedOverride.cs` (the precedence). If Reflection.Emit is ever implemented — see the `DynamicMethod*` cases parked in `TestPureCases.unimplemented` — this entry and that baseline should be revisited together.
 
 ## `Activator.CreateInstance` rejection messages
 
