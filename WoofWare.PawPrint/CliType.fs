@@ -1663,6 +1663,17 @@ and CliValueType =
                 storage.Fields |> List.exists (fun f -> f.Offset <= b && b < f.Offset + f.Size)
 
             if covered byteOffset then
+                // Some field's extent contains the byte, but no single field could be descended
+                // through: two or more overlap it. That is an aliased byte, and refusing it is
+                // right for aliased *data*.
+                //
+                // It is not obviously right for a byte that is padding within every field that
+                // covers it — explicit layout overlaying two identical reference-containing
+                // structs makes their trailing filler exactly that, and a bulk copy over such an
+                // array would want to move it. No such copy can reach here today: a byte-backed
+                // value holding references cannot be field-accessed at all, so building the array
+                // fails long before the copy. `BulkMoveAcrossOverlappedStructPadding.cs` is parked
+                // on that, and is where the question comes back if the representation changes.
                 None
             else
 
