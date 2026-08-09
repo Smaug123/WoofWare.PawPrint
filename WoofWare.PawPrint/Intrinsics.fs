@@ -335,66 +335,6 @@ module Intrinsics =
                 currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
-        | "System.Private.CoreLib", "Type", "get_IsValueType" ->
-            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-            | [], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
-            | _ -> failwith "bad signature Type.get_IsValueType"
-
-            let target, state = popRuntimeTypeHandle baseClassTypes currentThread state
-
-            let isValueType =
-                match target with
-                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
-                    let ty =
-                        match state.LoadedAssembly identity.Assembly with
-                        | Some assembly -> assembly.TypeDefs.[identity.TypeDefinition.Get]
-                        | None ->
-                            failwith
-                                $"Type.get_IsValueType: assembly for open generic type definition is not loaded: %s{identity.AssemblyFullName}"
-
-                    DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies ty
-                | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
-                    // CoreCLR derives IsValueType from generic-parameter constraints:
-                    // gpNotNullableValueTypeConstraint => true; gpReferenceTypeConstraint => false;
-                    // otherwise consults the parameter's base type, which is the most specific
-                    // non-interface class constraint (System.Object if there is none). The flag
-                    // cases are exhaustive for unconstrained `T`, `where T : struct`, and
-                    // `where T : class`. For any other class constraint (including
-                    // `where T : Enum`/`where T : ValueType`, which CoreCLR resolves to true)
-                    // we'd need to walk GenericParamMetadata.Constraints and resolve each
-                    // constraint type — fail loudly here rather than silently return the wrong
-                    // answer.
-                    let assembly =
-                        state.LoadedAssembly declaringType.Assembly
-                        |> Option.defaultWith (fun () ->
-                            failwith
-                                $"Type.get_IsValueType: assembly for declaring type of generic parameter is not loaded: %s{declaringType.AssemblyFullName}"
-                        )
-
-                    let typeInfo = assembly.TypeDefs.[declaringType.TypeDefinition.Get]
-
-                    if position < 0 || position >= typeInfo.Generics.Length then
-                        failwith
-                            $"Type.get_IsValueType: generic parameter position %d{position} is out of range for %O{declaringType.TypeDefinition.Get} (declares %d{typeInfo.Generics.Length} parameters)"
-
-                    let _, metadata = typeInfo.Generics.[position]
-
-                    match metadata.Constraint with
-                    | Some GenericConstraint.NonNullableValue -> true
-                    | Some GenericConstraint.Reference -> false
-                    | None when metadata.Constraints.IsEmpty -> false
-                    | None ->
-                        failwith
-                            $"TODO: Type.get_IsValueType for generic parameter #%d{position} of %O{declaringType.TypeDefinition.Get} with %d{metadata.Constraints.Length} class/interface constraint(s); needs constraint-walk to honour `where T : Enum`/`where T : ValueType`"
-                | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
-                    failwith
-                        $"TODO: Type.get_IsValueType for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
-                | RuntimeTypeHandleTarget.Closed ty ->
-                    IntrinsicHelpers.isValueTypeHandleAsCoreClr baseClassTypes state "Type.get_IsValueType" ty
-
-            IlMachineState.pushToEvalStack (CliType.ofBool isValueType) currentThread state
-            |> IlMachineState.advanceProgramCounter currentThread
-            |> IntrinsicResult.Completed
         | "System.Private.CoreLib", "Unsafe", "AsPointer" ->
             // Method signature: 1 generic parameter, we take a Byref of that parameter, and return a TypeDefn.Pointer(Void)
             let arg, state = IlMachineState.popEvalStack currentThread state
@@ -2221,7 +2161,7 @@ module Intrinsics =
             //
             // Byrefs, pointers, function pointers and arrays are TypeDescs, for which CoreCLR's
             // `IsValueTypeImpl` resolves to `IsSubclassOf(typeof(ValueType))` — false for all of
-            // them. Same reasoning as `Type.get_IsValueType` above.
+            // them. `isValueTypeHandleAsCoreClr` is where that classification lives.
             let isValueTypeHandle (handle : ConcreteTypeHandle) : bool =
                 IntrinsicHelpers.isValueTypeHandleAsCoreClr baseClassTypes state "Unsafe.BitCast" handle
 
