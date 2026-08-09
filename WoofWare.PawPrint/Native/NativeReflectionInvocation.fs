@@ -32,19 +32,26 @@ module internal NativeReflectionInvocation =
     /// `Signature_Init` derived from this same `MethodInfo.Signature`, and binding a call against a
     /// view rather than an identity is what lets the two drift apart silently.
     ///
-    /// Everything this reads is mutable heap state, so *when* it is called is part of its contract:
-    /// CoreCLR reads `pMeth` and `retTH` once, before `CallDescrWorkerWithHandler`, and a guest that
-    /// reflectively overwrote `Signature._pMethod` from inside the target method must not be able to
-    /// change what the QCall does with the result. Hence the two call sites here are the whole set,
-    /// and neither reintroduces that:
+    /// Everything this reads is mutable heap state, so *when* it is called matters. CoreCLR reads
+    /// `pMeth` once, at QCall entry (reflectioninvocation.cpp:337), and never again. PawPrint does
+    /// not yet match that, in one specific way:
     ///
-    ///  * once on first entry, before the call, whose answer is snapshotted into the re-entry marker;
-    ///  * once on resumption, but only on a branch that is already `failwith`ing, purely to name the
-    ///    target in the message. A stale name there cannot affect any result.
+    ///  * The first-entry branch is itself re-entrant. `ensureTypeInitialised` there can report
+    ///    `SuspendedForClassInit` — which the `.cctor` case in `sourcesPure/ReflectionInvokeMethod.cs`
+    ///    really does hit — and re-entry finds the eval stack still empty and runs this again. So on
+    ///    a first invocation that triggers a `.cctor`, this runs once before that `.cctor` and again
+    ///    after it, and the *second* answer is the one used.
+    ///  * Between that final read and the call itself no guest code runs, and the return type it
+    ///    yields is snapshotted into the re-entry marker, so the post-call classification cannot
+    ///    drift. `resolveTarget`'s other call site, on resumption, is on a branch that is already
+    ///    `failwith`ing and only names the target in the message.
     ///
-    /// Adding a third call site on the resumption path — for anything the handler acts on rather than
-    /// merely prints — would make PawPrint's behaviour a function of the `Signature` object as the
-    /// callee left it, which CoreCLR's is not.
+    /// The residue is therefore: a `.cctor` that overwrote `Signature._pMethod` would make PawPrint
+    /// invoke the newly-named method where CoreCLR invokes the originally-named one. That is
+    /// unreachable today — writing the field needs `FieldInfo.SetValue`, whose
+    /// `RuntimeFieldHandle_SetValue` QCall is unimplemented — but closing it properly means carrying
+    /// the resolved identity across the suspension rather than re-reading it, which changes the
+    /// re-entry protocol's shape. See the PR discussion.
     let private resolveTarget
         (ctx : NativeCallContext)
         (operation : string)
