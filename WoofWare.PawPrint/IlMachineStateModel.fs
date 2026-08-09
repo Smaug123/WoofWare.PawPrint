@@ -104,6 +104,29 @@ type IlMachineState =
         /// sub-record because the rest of `IlMachineState` models the CIL
         /// execution layer, not the kernel surface PawPrint refuses to use.
         Kernel : EmulatedKernel
+        /// The frames behind each `System.Exception._stackTrace` value, keyed by the address of
+        /// the token object that field holds.
+        ///
+        /// CoreCLR stores a `StackTraceArray` there: a native-laid-out `sbyte[]` of
+        /// `MethodDesc*`/offset pairs (`object.h:1926`). PawPrint has no `MethodDesc*` to put in
+        /// such a blob, and does not need one: *no managed code ever decodes this field*. CoreLib
+        /// only null-checks it (`Exception.HasBeenThrown`, `CanSetRemoteStackTrace`), shuttles it
+        /// through `Exception.DispatchState`, and hands it back to runtime natives. So the guest
+        /// object is an opaque token — a zero-length `sbyte[]`, matching CoreCLR's element type
+        /// should anything ever look — and the frames it stands for live here, in the
+        /// interpreter's own typed form.
+        ///
+        /// Keyed by the *token*, not by the exception: each dispatch mints a fresh token, so an
+        /// exception thrown twice has two independent entries and a frozen capture of the first
+        /// cannot be rewritten by the second. That is what gives CoreCLR's copy-on-write
+        /// `MarkAsFrozen` semantics (`object.h:2015`) for free, the values here being immutable
+        /// lists. Entries are written exactly once; see `recordThrownStackTrace`.
+        ///
+        /// Safe to key by address because the managed heap never frees: `FirstAvailableAddress`
+        /// only increments and there is no removal API, so an address is never reused. A future
+        /// collecting GC must make this table weak-keyed.
+        FrozenStackTraces :
+            Map<ManagedHeapAddress, ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> list>
         /// Scheduling policy state. `RoundRobin` reproduces the legacy
         /// deterministic ordering and is the default for runs that don't
         /// request fuzzing; `Pct _` carries the live priority assignment
