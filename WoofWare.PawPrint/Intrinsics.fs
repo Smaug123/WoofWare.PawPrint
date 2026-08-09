@@ -1904,12 +1904,13 @@ module Intrinsics =
             // in the primitive category too. It also admits the three structs `CheckForSystemTypes`
             // normalises to `ELEMENT_TYPE_I` — `RuntimeArgumentHandle`,
             // `RuntimeMethodHandleInternal`, `RuntimeFieldHandleInternal`
-            // (methodtablebuilder.cpp:10559). PawPrint models the latter two, and rejects them
-            // below with a host failure rather than a guest exception, because it stores their
-            // payload as a runtime pointer and so has no byte rendering to reconstruct it from.
-            // `RuntimeArgumentHandle` is not modelled at all, so an array of it would take the
-            // `Argument_BadArrayForInitializeArray` path CoreCLR would not have taken; no metadata
-            // can name an RVA-initialised array of any of the three, so none of this is reachable.
+            // (methodtablebuilder.cpp:10559). PawPrint models the latter two and answers `true` for
+            // them, because that is the truthful answer to the question this classifier asks and a
+            // zero-length array of them copies no bytes at all; whether PawPrint can *render* their
+            // payload is a separate question, settled at the copy below. `RuntimeArgumentHandle` is
+            // not modelled, so an array of it would take the `Argument_BadArrayForInitializeArray`
+            // path CoreCLR would not have taken — a known gap, unreachable because no metadata can
+            // name an RVA-initialised array of it.
             let state, elementIsPrimitive =
                 match elementHandle with
                 // A byref, pointer or function pointer element type is a CoreCLR `TypeDesc`, so it
@@ -1933,13 +1934,16 @@ module Intrinsics =
 
                     match PrimitiveLikeStruct.kind baseClassTypes elementCt with
                     | Some PrimitiveLikeKind.FlattenToRuntimePointer ->
-                        // CoreCLR would admit these and memmove into them. PawPrint holds their
-                        // single field as a `CliType.RuntimePointer`, which has no byte encoding,
-                        // so there is nothing faithful to write. No metadata can name an
-                        // RVA-initialised array of them, so fail loudly rather than raise an
-                        // exception CoreCLR would not have raised.
-                        failwith
-                            $"TODO: InitializeArray where the array element type %s{elementTypeInfo.Namespace}.%s{elementTypeInfo.Name} is one of the handle structs CoreCLR normalises to ELEMENT_TYPE_I; PawPrint has no byte rendering for the runtime pointer it stores"
+                        // `RuntimeMethodHandleInternal`/`RuntimeFieldHandleInternal`: normalised to
+                        // `ELEMENT_TYPE_I`, so CoreCLR's category test says primitive, and so does
+                        // this. Answering `false` to keep a later unsupported copy from being
+                        // reached would make the classifier lie, and would turn a zero-length array
+                        // — which CoreCLR copies nothing into and accepts — into a guest exception
+                        // it would never have raised. PawPrint has no byte rendering for the runtime
+                        // pointer these store, so a *non-empty* array instead fails in
+                        // `CliType.OfBytesLike` at the copy below, where bytes are genuinely
+                        // required.
+                        state, true
                     | Some PrimitiveLikeKind.FlattenToNativeInt
                     | Some PrimitiveLikeKind.FlattenToObjectRef
                     | Some PrimitiveLikeKind.FlattenToManagedPointer
