@@ -9,8 +9,8 @@ open Microsoft.Extensions.Logging
 /// <remarks>
 /// Mirrors the per-arg cases that CoreCLR's <c>CustomAttribute_CreateCustomAttributeInstance</c>
 /// (<c>customattribute.cpp:900</c>) produces via <c>GetDataFromBlob</c> + <c>Box</c> just
-/// before invoking the ctor. The current set is limited to the cases the Phase A
-/// blob reader emits: primitives and <c>SerString</c>. <c>TYPE</c>, <c>ENUM</c>,
+/// before invoking the ctor. The current set is limited to the cases the blob
+/// reader emits: primitives, <c>SerString</c>, and <c>ENUM</c>. <c>TYPE</c>,
 /// <c>SZARRAY</c>, and <c>TAGGED_OBJECT</c> will be added when the QCall handler
 /// needs them.
 /// </remarks>
@@ -29,7 +29,7 @@ module CustomAttribValueLowering =
     /// see the <c>UInt32</c>/<c>UInt64</c> branches of <c>CliType.zeroOfPrimitive</c>),
     /// so the unsigned variants here route through <c>Int32</c>/<c>Int64</c>.
     /// </remarks>
-    let tryToPureCliType (arg : CustomAttribFixedArg) : Result<CliType, string> =
+    let rec tryToPureCliType (arg : CustomAttribFixedArg) : Result<CliType, string> =
         match arg with
         | CustomAttribFixedArg.Bool b -> CliType.Bool (if b then 1uy else 0uy) |> Ok
         | CustomAttribFixedArg.Char c ->
@@ -48,6 +48,14 @@ module CustomAttribValueLowering =
         | CustomAttribFixedArg.String None -> CliType.ObjectRef None |> Ok
         | CustomAttribFixedArg.String (Some _) ->
             Error "CustomAttribFixedArg.String (Some _) requires allocation; use CustomAttribValueLowering.toCliType"
+        // An enum argument lowers to the bare underlying integer, with no enum wrapper built here.
+        // That is not a shortcut: `IlMachineStateExecution.callMethod` derives each parameter's
+        // zero value from the ctor's *declared* parameter type — for an enum parameter, the
+        // `value__` struct — and `EvalStackValue.toCliTypeCoerced` rewraps the popped integer into
+        // that slot. Enums flatten to their underlying integer on the eval stack
+        // (`PrimitiveLikeKind.EnumLike`), so pushing the wrapper here would be the thing that was
+        // wrong.
+        | CustomAttribFixedArg.Enum underlying -> tryToPureCliType underlying
         | CustomAttribFixedArg.Array _ ->
             Error
                 "CustomAttribFixedArg.Array is not yet lowered to CliType (allocating a managed array is not implemented on this path)"
