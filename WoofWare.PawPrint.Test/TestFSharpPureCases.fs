@@ -117,6 +117,7 @@ module TestFSharpPureCases =
             "AbstractDispatch"
             "ByrefDispatch"
             "SprintfBasic"
+            "UnionReflection"
         ]
 
     /// F# cases not expected to pass under PawPrint.
@@ -125,7 +126,17 @@ module TestFSharpPureCases =
     /// behaviour is checked. Nothing therefore detects a parked case that has started passing, so
     /// before recording that a case is blocked on a named primitive, un-park it and observe the
     /// failure: parking it is what stops the claim being checked.
-    let unimplemented : Set<string> = Set.empty
+    ///
+    /// `UnionReflection` is parked on `MetadataImport.Enum`: `FSharpType.GetUnionCases` finds a
+    /// union's cases by enumerating the *nested types* of the union type, and that enumeration
+    /// fails with "TODO: MetadataImport.Enum does not yet support token type 0x02000000 with
+    /// parent 0x02000006" (a TypeDef enumeration scoped to a TypeDef parent). Observed by
+    /// un-parking it and running: the real runtime exits 0, PawPrint throws out of
+    /// `NativeQCall.tryExecute`.
+    ///
+    /// The previous blocker — decoding each case's `CompilationMappingAttribute(SourceConstructFlags,
+    /// ...)`, whose argument is an enum — is fixed in the commit this one sits on.
+    let unimplemented : Set<string> = Set.ofList [ "UnionReflection" ]
 
     // F# test cases that legitimately throw under both runtimes. Without this set, a test
     // that crashes both runtimes would silently pass — see TestPureCases.fs for the same
