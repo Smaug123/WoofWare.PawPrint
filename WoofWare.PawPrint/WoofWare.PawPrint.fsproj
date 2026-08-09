@@ -135,6 +135,9 @@
     <Compile Include="Native\NativeCustomAttribute.fs" />
     <Compile Include="Native\NativeMdUtf8String.fs" />
     <Compile Include="Native\NativeModuleHandle.fs" />
+    <!-- After NativeRuntimeTypeHelpers.fs: the CastHelpers QCall formats CoreCLR's
+         InvalidCastException message with that module's type-name renderer. -->
+    <Compile Include="Native\NativeCastHelpers.fs" />
     <Compile Include="Native\NativeQCall.fs" />
     <Compile Include="Native\NativeType.fs" />
     <Compile Include="Native\NativeString.fs" />

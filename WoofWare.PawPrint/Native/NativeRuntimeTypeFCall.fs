@@ -670,22 +670,10 @@ module NativeRuntimeTypeFCall =
             // Reflection-only rule from CanCastToWorker(nullableCast: true): T is assignable
             // to Nullable<T> when queried via reflection, even though the runtime IL cast
             // disagrees. The asymmetric direction (Nullable<T> -> T) does not hold and is
-            // left to the standard cast oracle.
+            // left to the standard cast oracle. This is the same predicate the object-cast
+            // path applies first (`IsInstanceOf_NoCacheLookup`), hence the shared helper.
             let nullableTargetMatchesSource =
-                match targetHandle with
-                | ConcreteTypeHandle.Concrete _ ->
-                    match AllConcreteTypes.lookup targetHandle state.ConcreteTypes with
-                    | Some targetCt when
-                        InternalTypeKind.kind ctx.BaseClassTypes targetCt = InternalTypeKind.Nullable
-                        && targetCt.Generics.Length = 1
-                        ->
-                        targetCt.Generics.[0] = sourceHandle
-                    | _ -> false
-                | ConcreteTypeHandle.Byref _
-                | ConcreteTypeHandle.Pointer _
-                | ConcreteTypeHandle.FunctionPointer _
-                | ConcreteTypeHandle.OneDimArrayZero _
-                | ConcreteTypeHandle.Array _ -> false
+                IlMachineState.isNullableForType ctx.BaseClassTypes state targetHandle sourceHandle
 
             let state, isAssignable =
                 if nullableTargetMatchesSource then

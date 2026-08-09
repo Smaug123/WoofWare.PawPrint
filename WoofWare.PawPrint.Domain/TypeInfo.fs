@@ -337,6 +337,14 @@ type BaseClassTypes<'corelib> =
         /// itself passed as `this` (`GetActualImplementationForArrayGenericIListOrIReadOnlyListMethod`,
         /// `src/coreclr/vm/array.cpp`); every body begins `T[] @this = Unsafe.As<T[]>(this)`.
         SZArrayHelper : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        /// `System.Runtime.InteropServices.IDynamicInterfaceCastable`. Host-known because it
+        /// participates in CoreCLR's *cast decision*: `MethodTable::IsIDynamicInterfaceCastable`
+        /// is a flag set for types implementing it, and `ObjIsInstanceOfCore`
+        /// (`src/coreclr/vm/jithelpers.cpp:426`) consults it when a structural cast to an
+        /// interface has failed, calling back into managed `IsInterfaceImplemented`. PawPrint
+        /// does not model that callback, so it identifies the interface nominally in order to
+        /// *refuse* such a cast loudly rather than answer a silent, possibly-wrong `false`.
+        IDynamicInterfaceCastable : TypeInfo<GenericParamFromMetadata, TypeDefn>
     }
 
     /// True when `identity` names one of the five CoreLib generic interfaces that a

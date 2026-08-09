@@ -1824,6 +1824,40 @@ module IlMachineRuntimeMetadata =
             failwith
                 $"requiredOwnInstanceFieldId: %O{declaringType} has no TypeDef row; cannot resolve field '%s{fieldName}'"
 
+    /// CoreCLR's `Nullable::IsNullableForType` (`coreclr/vm/object.cpp:1516`): is
+    /// `nullableCandidate` the type `System.Nullable`1[T]` for a `T` equivalent to `boxed`?
+    ///
+    /// This is the rule that makes *object* castability disagree with *type* castability: a
+    /// boxed `T` "is" a `Nullable<T>` because the two share a boxed representation, even though
+    /// `T` is not assignable to `Nullable<T>` structurally. CoreCLR checks it first and
+    /// deliberately never caches the answer (`jithelpers.cpp:401-406`). The reflection cast
+    /// path reaches the same rule through `CanCastToWorker(nullableCast: true)`.
+    ///
+    /// CoreCLR compares the instantiation argument with `TypeHandle::IsEquivalentTo`, which
+    /// degenerates to handle equality unless `FEATURE_TYPEEQUIVALENCE` is on. That feature is
+    /// Windows-only, so handle equality is exact for every CoreLib flavour PawPrint runs.
+    let isNullableForType
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (nullableCandidate : ConcreteTypeHandle)
+        (boxed : ConcreteTypeHandle)
+        : bool
+        =
+        match nullableCandidate with
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _ -> false
+        | ConcreteTypeHandle.Concrete _ ->
+            match AllConcreteTypes.lookup nullableCandidate state.ConcreteTypes with
+            | Some candidate when
+                InternalTypeKind.kind baseClassTypes candidate = InternalTypeKind.Nullable
+                && candidate.Generics.Length = 1
+                ->
+                candidate.Generics.[0] = boxed
+            | _ -> false
+
     /// Check whether the concrete type `objType` is assignable to `targetType`.
     /// Walks the base type chain and checks implemented interfaces at each level.
     /// Returns true if objType = targetType, or targetType is a base class of objType,
