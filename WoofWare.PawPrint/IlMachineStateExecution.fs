@@ -1825,9 +1825,16 @@ module IlMachineStateExecution =
                 //       with the wrap flag set on the ctor's frame.
                 match TypeInitTable.tryGet tHandle state.TypeInitTable with
                 | Some (TypeInitState.Failed (cachedTieAddr, _cachedTieType)) ->
-                    let state =
-                        IlMachineState.setExceptionStackTraceString loggerFactory baseClassTypes cachedTieAddr [] state
-
+                    // Nothing is projected onto the cached TIE before wrapping it, because there
+                    // are no frames to project: this path synthesises a throw rather than
+                    // unwinding one, so unlike the wrap sites in `ExceptionDispatching` there is
+                    // no in-flight `CliException` to take a frame list from.
+                    //
+                    // The cached TIE does lack a trace where the real runtime gives it one, but
+                    // that is not fixable from here — it is the chained-wrap gap in #865, where a
+                    // TIE synthesised under `Activator.CreateInstance<T>()` is re-wrapped in a
+                    // `TargetInvocationException` before any frame is appended to it. Fixing it
+                    // means giving synthesised wrappers propagation frames.
                     let tieAddr, tieType, state =
                         IlMachineState.synthesizeTargetInvocationException
                             loggerFactory
