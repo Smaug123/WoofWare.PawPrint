@@ -1753,3 +1753,463 @@ module TestBinaryArithmetic =
             failwith "expected tryByteAddressDeltaSign to throw on trailing ByteOffset without ReinterpretAs"
         | Choice2Of2 e when e.Message.Contains "preceded by ReinterpretAs" -> ()
         | Choice2Of2 e -> failwith $"unexpected exception: %s{e.Message}"
+
+    // ---------------------------------------------------------------------
+    // Byrefs that address one whole typed slot: `&local`, `&arg`,
+    // `&staticField`, and a box's interior pointer.
+    // ---------------------------------------------------------------------
+
+    /// A `ComparableFieldDefinitionHandle` standing in for a real static field row. These tests
+    /// never resolve it: the static-slot byref is only ever classified and (at a zero offset)
+    /// handed straight back.
+    let private syntheticFieldHandle : ComparableFieldDefinitionHandle =
+        ComparableFieldDefinitionHandle.Make Unchecked.defaultof<System.Reflection.Metadata.FieldDefinitionHandle>
+
+    /// The four roots that address a whole typed value, paired with a name for failure messages.
+    /// Kept as one list so a root that stops being classified as a whole-value target fails here
+    /// rather than only in whichever guest program happens to exercise it.
+    let private wholeValueRoots : (string * ByrefRoot) list =
+        [
+            "local variable", ByrefRoot.LocalVariable (ThreadId.ThreadId 0, FrameId.FrameId 3, 1us)
+            "argument", ByrefRoot.Argument (ThreadId.ThreadId 0, FrameId.FrameId 3, 2us)
+            "static field", ByrefRoot.StaticField (int32Handle, syntheticFieldHandle, StaticOwner.Shared)
+            "boxed value", ByrefRoot.HeapValue (ManagedHeapAddress.ManagedHeapAddress 12)
+        ]
+
+    /// A two-`int` struct under default layout, so `A` sits at offset 0 and `B` at offset 4.
+    let private pairValueType (state : IlMachineState) (a : int) (b : int) : CliValueType =
+        let field (name : string) (value : int) : CliField =
+            {
+                Id = FieldId.named name
+                Name = name
+                Contents = CliType.Numeric (CliNumericType.Int32 value)
+                Offset = None
+                Type = int32Handle
+                MarshallingDescriptor = None
+            }
+
+        [ field "A" a ; field "B" b ]
+        |> CliValueType.OfFields
+            baseClassTypes
+            state.ConcreteTypes
+            int32Handle
+            Layout.Default
+            System.Runtime.InteropServices.CharSet.Ansi
+
+    /// A boxed two-`int` struct, plus the byref to the whole boxed value.
+    let private stateWithBoxedPair () : IlMachineState * ManagedPointerSource =
+        let state = state ()
+        let contents = pairValueType state 111 222
+
+        let addr, state = IlMachineState.allocateManagedObject int32Handle contents state
+
+        state, ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [])
+
+    [<Test>]
+    let ``adding zero to a whole-slot byref returns the very same byref`` () : unit =
+        let state = state ()
+
+        for name, root in wholeValueRoots do
+            let ptr = ManagedPointerSource.Byref (root, [])
+
+            // Resolving `p + 0` to the field at offset 0 would give one address two structural
+            // forms, and `ceq` / `Unsafe.AreSame` compare structurally. `sub` routes through the
+            // same helper with a negated offset, so it must agree.
+            for opName, op in [ "add", ArithmeticOperation.add ; "sub", ArithmeticOperation.sub ] do
+                for offset in
+                    [
+                        EvalStackValue.Int32 (Int32Source.Verbatim 0)
+                        EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L)
+                    ] do
+                    match execute op state (EvalStackValue.ManagedPointer ptr) offset with
+                    | EvalStackValue.ManagedPointer actual -> actual |> shouldEqual ptr
+                    | other ->
+                        failwith $"expected %s{opName} of zero on a %s{name} byref to give back %O{ptr}, got %O{other}"
+
+    /// Offsets that land exactly on a field boundary as well as ones that land inside a field.
+    /// Both must give a byte cursor: an offset moves an address, and the access width arrives
+    /// later with the dereference. Resolving the on-boundary case to that field instead would
+    /// read one field's width where the guest asked for another's.
+    [<TestCase(1)>]
+    [<TestCase(4)>]
+    [<TestCase(7)>]
+    let ``offsetting a whole-slot byref gives a byte cursor, on field boundaries included`` (offset : int) : unit =
+        let state, ptr = stateWithBoxedPair ()
+
+        match
+            execute
+                ArithmeticOperation.add
+                state
+                (EvalStackValue.ManagedPointer ptr)
+                (EvalStackValue.Int32 (Int32Source.Verbatim offset))
+        with
+        | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (root,
+                                                                     [ ByrefProjection.ReinterpretAs viewType
+                                                                       ByrefProjection.ByteOffset actualOffset ])) ->
+            viewType.Name |> shouldEqual "Byte"
+            actualOffset |> shouldEqual offset
+
+            root
+            |> shouldEqual (
+                match ptr with
+                | ManagedPointerSource.Byref (root, []) -> root
+                | other -> failwith $"test set-up produced an unexpected pointer %O{other}"
+            )
+        | other -> failwith $"expected a byte cursor %d{offset} bytes in, got %O{other}"
+
+    [<Test>]
+    let ``offsetting a whole-slot byref and back returns to the original byref`` () : unit =
+        let state, ptr = stateWithBoxedPair ()
+
+        let advanced =
+            match
+                execute
+                    ArithmeticOperation.add
+                    state
+                    (EvalStackValue.ManagedPointer ptr)
+                    (EvalStackValue.Int32 (Int32Source.Verbatim 4))
+            with
+            | EvalStackValue.ManagedPointer advanced -> advanced
+            | other -> failwith $"expected a managed pointer, got %O{other}"
+
+        let returned =
+            match
+                execute
+                    ArithmeticOperation.sub
+                    state
+                    (EvalStackValue.ManagedPointer advanced)
+                    (EvalStackValue.Int32 (Int32Source.Verbatim 4))
+            with
+            | EvalStackValue.ManagedPointer returned -> returned
+            | other -> failwith $"expected a managed pointer, got %O{other}"
+
+        // The round trip need not be structurally identical — it keeps the byte view it
+        // acquired, and a byte view of the whole slot at offset zero is the same address as
+        // the slot. What must hold is what the guest can observe: `ceq` / `Unsafe.AreSame`
+        // must say these are the same pointer.
+        let normalise (p : ManagedPointerSource) : NormalisedManagedPointerSource =
+            ManagedPointerSource.normaliseForComparison
+                (ManagedPointerByteView.normalisationContextForPointer baseClassTypes state p)
+                p
+
+        ManagedPointerSource.ceqNormalised "round trip test" (normalise returned) (normalise ptr)
+        |> shouldEqual true
+
+        // And the byte cursor really is back at zero rather than merely comparing equal by
+        // some looser rule: nothing but a zero offset survives normalisation.
+        match returned with
+        | ManagedPointerSource.Byref (_, [])
+        | ManagedPointerSource.Byref (_, [ ByrefProjection.ReinterpretAs _ ]) -> ()
+        | other -> failwith $"expected the round trip to leave no byte offset behind, got %O{other}"
+
+    [<Test>]
+    let ``a byte cursor onto a whole slot reads and writes at the full access width`` () : unit =
+        let state, ptr = stateWithBoxedPair ()
+
+        // `B` is the second `int`, four bytes in. Reading through the cursor must produce
+        // `B`'s whole value rather than its first byte, and writing must land on `B` alone.
+        let cursor =
+            match
+                execute
+                    ArithmeticOperation.add
+                    state
+                    (EvalStackValue.ManagedPointer ptr)
+                    (EvalStackValue.Int32 (Int32Source.Verbatim 4))
+            with
+            | EvalStackValue.ManagedPointer cursor -> cursor
+            | other -> failwith $"expected a managed pointer, got %O{other}"
+
+        IlMachineState.readManagedByrefBytesAs baseClassTypes state cursor (CliType.Numeric (CliNumericType.Int32 0))
+        |> shouldEqual (CliType.Numeric (CliNumericType.Int32 222))
+
+        let state =
+            IlMachineState.writeManagedByrefWithBase
+                baseClassTypes
+                state
+                cursor
+                (CliType.Numeric (CliNumericType.Int32 333))
+
+        // Assert values, not storage shape: writing through a byte cursor may re-back the
+        // struct's storage, and that is not something a guest can observe. What it can observe
+        // is that `B` changed and `A` did not.
+        let readField (name : string) : CliType =
+            IlMachineState.readManagedByref baseClassTypes state ptr
+            |> CliType.getFieldById (FieldId.named name)
+
+        readField "B" |> shouldEqual (CliType.Numeric (CliNumericType.Int32 333))
+        readField "A" |> shouldEqual (CliType.Numeric (CliNumericType.Int32 111))
+
+    [<Test>]
+    let ``a whole PE byte range refuses pointer arithmetic`` () : unit =
+        let peByteRange =
+            {
+                AssemblyFullName = "Example"
+                Source = PeByteRangePointerSource.FieldRva syntheticFieldHandle
+                RelativeVirtualAddress = 4096
+                Size = 8
+            }
+
+        let ptr = ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange, [])
+        let state = state ()
+
+        // A PE byte range is byte-addressed, so field resolution would be a lie about the
+        // storage. Nothing needs it yet, so it must fail rather than guess.
+        let outcome =
+            try
+                execute
+                    ArithmeticOperation.add
+                    state
+                    (EvalStackValue.ManagedPointer ptr)
+                    (EvalStackValue.Int32 (Int32Source.Verbatim 4))
+                |> ignore
+
+                Choice1Of2 ()
+            with e ->
+                Choice2Of2 e
+
+        match outcome with
+        | Choice1Of2 () -> failwith "expected pointer arithmetic on a whole PE byte range to throw"
+        | Choice2Of2 e when e.Message.Contains "needs a byte cursor" -> ()
+        | Choice2Of2 e -> failwith $"unexpected exception: %s{e.Message}"
+
+    [<Test>]
+    let ``a RuntimeType cache cell refuses pointer arithmetic`` () : unit =
+        let ptr =
+            ManagedPointerSource.Byref (ByrefRoot.ExposedClassObject (RuntimeTypeHandleTarget.Closed int32Handle), [])
+
+        let state = state ()
+
+        // The cell holds one object reference; there is no interior to offset into.
+        let outcome =
+            try
+                execute
+                    ArithmeticOperation.add
+                    state
+                    (EvalStackValue.ManagedPointer ptr)
+                    (EvalStackValue.Int32 (Int32Source.Verbatim 8))
+                |> ignore
+
+                Choice1Of2 ()
+            with e ->
+                Choice2Of2 e
+
+        match outcome with
+        | Choice1Of2 () -> failwith "expected pointer arithmetic on a RuntimeType cache cell to throw"
+        | Choice2Of2 e when e.Message.Contains "no interior to address" -> ()
+        | Choice2Of2 e -> failwith $"unexpected exception: %s{e.Message}"
+
+    /// Why the zero offset must be the identity rather than a zero-length byte cursor, which
+    /// would compare equal to it and so be invisible to `ceq`. A slot whose value has no byte
+    /// image can be written whole but not through a byte cursor, and that is exactly the shape
+    /// `MethodBaseInvoker` builds: `StackAllocatedByRefs` is an inline array of `ref byte`, and
+    /// a managed pointer has no bytes. `stobj` through `&byrefs + 0` has to keep working.
+    [<Test>]
+    let ``a whole-slot byref can carry a value with no byte image, a byte cursor cannot`` () : unit =
+        let state = state ()
+
+        // A managed pointer has no bit pattern in this interpreter — it is a root plus
+        // projections — so a struct holding one has no byte image. Object references, by
+        // contrast, *do* serialise, which is why this test uses a byref field and not one of
+        // those.
+        let heldPointer =
+            ManagedPointerSource.Byref (ByrefRoot.HeapValue (ManagedHeapAddress.ManagedHeapAddress 99), [])
+
+        let imageless =
+            [
+                {
+                    Id = FieldId.named "Reference"
+                    Name = "Reference"
+                    Contents = CliType.RuntimePointer (CliRuntimePointer.Managed heldPointer)
+                    Offset = None
+                    Type = AllConcreteTypes.getRequiredNonGenericHandle concreteTypes baseClassTypes.IntPtr
+                    MarshallingDescriptor = None
+                }
+            ]
+            |> CliValueType.OfFields
+                baseClassTypes
+                state.ConcreteTypes
+                int32Handle
+                Layout.Default
+                System.Runtime.InteropServices.CharSet.Ansi
+
+        let addr, state = IlMachineState.allocateManagedObject int32Handle imageless state
+        let ptr = ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [])
+
+        // Guard the premise: if this storage acquired a byte image, the test would pass while
+        // covering nothing.
+        let toBytes =
+            try
+                CliType.ToBytes (CliType.ValueType imageless) |> ignore
+                Choice1Of2 ()
+            with e ->
+                Choice2Of2 e
+
+        match toBytes with
+        | Choice1Of2 () -> failwith "expected a value type with an object-reference field to have no byte image"
+        | Choice2Of2 _ -> ()
+
+        // `&slot + 0` is the identity, so the write below goes through the whole slot.
+        match
+            execute
+                ArithmeticOperation.add
+                state
+                (EvalStackValue.ManagedPointer ptr)
+                (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+        with
+        | EvalStackValue.ManagedPointer actual -> actual |> shouldEqual ptr
+        | other -> failwith $"expected the identity at offset zero, got %O{other}"
+
+        IlMachineState.writeManagedByrefWithBase baseClassTypes state ptr (CliType.ValueType imageless)
+        |> ignore
+
+        // The same write through a zero-length byte cursor — the form a non-identity zero offset
+        // would have produced — cannot represent the value.
+        let cursor =
+            ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [ ByrefProjection.ReinterpretAs byteType ])
+
+        let throughCursor =
+            try
+                IlMachineState.writeManagedByrefWithBase baseClassTypes state cursor (CliType.ValueType imageless)
+                |> ignore
+
+                Choice1Of2 ()
+            with e ->
+                Choice2Of2 e
+
+        match throughCursor with
+        | Choice1Of2 () ->
+            failwith
+                "expected writing an imageless value through a byte cursor to fail; if it now succeeds, the zero-offset identity may no longer be load-bearing"
+        | Choice2Of2 _ -> ()
+
+    [<Test>]
+    let ``subtracting a byte cursor and its own whole slot gives the byte delta`` () : unit =
+        let state, ptr = stateWithBoxedPair ()
+
+        let cursor =
+            match
+                execute
+                    ArithmeticOperation.add
+                    state
+                    (EvalStackValue.ManagedPointer ptr)
+                    (EvalStackValue.Int32 (Int32Source.Verbatim 4))
+            with
+            | EvalStackValue.ManagedPointer cursor -> cursor
+            | other -> failwith $"expected a managed pointer, got %O{other}"
+
+        // Advancing a whole-slot pointer has to be measurable, or `int* q = p + 1; q - p;`
+        // would work in one direction only. The slot's own address is the zero point.
+        execute ArithmeticOperation.sub state (EvalStackValue.ManagedPointer cursor) (EvalStackValue.ManagedPointer ptr)
+        |> expectNativeInt 4L
+
+        execute ArithmeticOperation.sub state (EvalStackValue.ManagedPointer ptr) (EvalStackValue.ManagedPointer cursor)
+        |> expectNativeInt -4L
+
+        execute ArithmeticOperation.sub state (EvalStackValue.ManagedPointer ptr) (EvalStackValue.ManagedPointer ptr)
+        |> expectNativeInt 0L
+
+    [<Test>]
+    let ``subtracting pointers to two distinct whole slots is refused`` () : unit =
+        let state = state ()
+
+        let first =
+            ManagedPointerSource.Byref (ByrefRoot.LocalVariable (ThreadId.ThreadId 0, FrameId.FrameId 3, 0us), [])
+
+        let second =
+            ManagedPointerSource.Byref (ByrefRoot.LocalVariable (ThreadId.ThreadId 0, FrameId.FrameId 3, 1us), [])
+
+        // Two locals are separate storage here, not offsets into one address space, so there
+        // is no byte distance to report. Inventing one would let a guest compute a difference
+        // the real runtime would never produce.
+        let outcome =
+            try
+                execute
+                    ArithmeticOperation.sub
+                    state
+                    (EvalStackValue.ManagedPointer first)
+                    (EvalStackValue.ManagedPointer second)
+                |> ignore
+
+                Choice1Of2 ()
+            with e ->
+                Choice2Of2 e
+
+        match outcome with
+        | Choice1Of2 () -> failwith "expected subtracting pointers to two distinct slots to throw"
+        | Choice2Of2 e when e.Message.Contains "two distinct whole storage slots" -> ()
+        | Choice2Of2 e -> failwith $"unexpected exception: %s{e.Message}"
+
+    /// The relaxation that lets a cursor into an argument slot be measured must not let
+    /// *unrelated* argument pointers through: two argument slots are separate storage, and an
+    /// argument paired with anything else has no distance either.
+    [<Test>]
+    let ``subtracting unrelated argument pointers stays refused`` () : unit =
+        let state = state ()
+        let frame = FrameId.FrameId 3
+
+        let argument (index : uint16) : ManagedPointerSource =
+            ManagedPointerSource.Byref (ByrefRoot.Argument (ThreadId.ThreadId 0, frame, index), [])
+
+        let local =
+            ManagedPointerSource.Byref (ByrefRoot.LocalVariable (ThreadId.ThreadId 0, frame, 0us), [])
+
+        let cases =
+            [
+                "two different argument slots", argument 0us, argument 1us
+                "an argument and a local", argument 0us, local
+                "a local and an argument", local, argument 0us
+            ]
+
+        for name, left, right in cases do
+            let outcome =
+                try
+                    execute
+                        ArithmeticOperation.sub
+                        state
+                        (EvalStackValue.ManagedPointer left)
+                        (EvalStackValue.ManagedPointer right)
+                    |> ignore
+
+                    Choice1Of2 ()
+                with e ->
+                    Choice2Of2 e
+
+            match outcome with
+            | Choice1Of2 () -> failwith $"expected subtracting %s{name} to throw"
+            | Choice2Of2 e when e.Message.Contains "pointers to arguments" -> ()
+            | Choice2Of2 e -> failwith $"unexpected exception for %s{name}: %s{e.Message}"
+
+    /// Two byte offsets accumulate by summing, and the cancellation check must not be phrased as
+    /// `n = -m`: this codebase is `Checked`, so negating `Int32.MinValue` throws a host
+    /// `OverflowException` even where the sum is representable. Reachable from a guest as
+    /// `byte* q = p + int.MinValue; q += 1;`, which real .NET completes without complaint.
+    [<TestCase(System.Int32.MinValue, 1, -2147483647)>]
+    [<TestCase(1, System.Int32.MinValue, -2147483647)>]
+    [<TestCase(System.Int32.MaxValue, -1, 2147483646)>]
+    [<TestCase(7, -7, 0)>]
+    [<TestCase(System.Int32.MinValue, 0, System.Int32.MinValue)>]
+    let ``accumulating byte offsets sums them without negating either`` (first : int) (second : int) (expected : int) =
+        let state, ptr = stateWithBoxedPair ()
+
+        let advance (offset : int) (p : ManagedPointerSource) : ManagedPointerSource =
+            match
+                execute
+                    ArithmeticOperation.add
+                    state
+                    (EvalStackValue.ManagedPointer p)
+                    (EvalStackValue.Int32 (Int32Source.Verbatim offset))
+            with
+            | EvalStackValue.ManagedPointer result -> result
+            | other -> failwith $"expected a managed pointer, got %O{other}"
+
+        let actual = ptr |> advance first |> advance second
+
+        // A zero total normalises the cursor away entirely, which is what makes a round trip
+        // return to its starting pointer.
+        match actual with
+        | ManagedPointerSource.Byref (_, [ ByrefProjection.ReinterpretAs _ ; ByrefProjection.ByteOffset offset ]) ->
+            offset |> shouldEqual expected
+            expected |> shouldNotEqual 0
+        | ManagedPointerSource.Byref (_, [ ByrefProjection.ReinterpretAs _ ])
+        | ManagedPointerSource.Byref (_, []) -> expected |> shouldEqual 0
+        | other -> failwith $"expected a byte cursor or a bare slot pointer, got %O{other}"
