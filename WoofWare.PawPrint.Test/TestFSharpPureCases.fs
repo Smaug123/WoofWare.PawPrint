@@ -125,33 +125,7 @@ module TestFSharpPureCases =
     /// behaviour is checked. Nothing therefore detects a parked case that has started passing, so
     /// before recording that a case is blocked on a named primitive, un-park it and observe the
     /// failure: parking it is what stops the claim being checked.
-    let unimplemented : Set<string> =
-        Set.ofList
-            [
-                // `sprintf` reflects over the format's argument types and then *invokes* the
-                // capture method it selects: `FormatParser.buildCaptureFunc` calls
-                // `MakeGenericMethod(...).Invoke(null, new object[1] { ... })`.
-                //
-                // An earlier version of this comment claimed the blocker was
-                // `MethodBase.GetParameters()`, needing `RuntimeMethodHandle.GetMethodDef` and then
-                // `MetadataImport`'s mdtParamDef enumeration. That is no longer true, and was
-                // written from a spike rather than a run: `MethodBase.Invoke` takes its argument
-                // types from `Signature._arguments`, which the `Signature_Init` method arm now
-                // fills, so sprintf never reaches `ParameterInfo` at all. Un-park and run before
-                // trusting any claim here.
-                //
-                // The one primitive left is the `RuntimeMethodHandle_InvokeMethod` QCall
-                // (`reflectioninvocation.cpp`), reached via
-                // `MethodBaseInvoker.InterpretedInvoke_Method`. It must unmarshal the `void**`
-                // buffer of byrefs its caller built on the stack, invoke the target method, and box
-                // the result into an `ObjectHandleOnStack`.
-                //
-                // `sourcesPure/StructLocalPointerArithmetic.cs` covers the pointer arithmetic that
-                // builds that buffer (`(IntPtr*)&byrefs + i`), and
-                // `sourcesPure/ReflectionMethodSignature.cs` covers the `Signature` fields the
-                // QCall will read; neither goes on to invoke anything.
-                "SprintfBasic"
-            ]
+    let unimplemented : Set<string> = Set.empty
 
     // F# test cases that legitimately throw under both runtimes. Without this set, a test
     // that crashes both runtimes would silently pass — see TestPureCases.fs for the same
