@@ -104,6 +104,46 @@ module AppContextProperties =
                 ||> Map.fold (fun acc k v -> Map.add k v acc)
         }
 
+    /// The properties PawPrint supplies on every run, before the host's own are laid over
+    /// the top. These describe *this runtime*, not any guest or any host policy.
+    ///
+    /// There is exactly one, and it is
+    /// `System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported=false`.
+    /// PawPrint has no JIT and no `System.Reflection.Emit`, and that switch is precisely
+    /// what the BCL consults before reaching for either: with it off, `Expression.Compile`
+    /// takes its interpreter, `MethodInvokerCommon` keeps using the interpreted
+    /// `RuntimeMethodHandle.InvokeMethod` path instead of building an invoke stub, and every
+    /// Reflection.Emit entry point raises `PlatformNotSupportedException` from
+    /// `AssemblyBuilder.EnsureDynamicCodeSupported`. This is the profile NativeAOT reports,
+    /// so those fallbacks are well travelled rather than exotic, and it converts a class of
+    /// "unimplemented native primitive" crashes into behaviour a guest can catch and a real
+    /// host also produces when configured the same way.
+    ///
+    /// It is a *divergence from a stock host*, which defaults the switch to true, and it is
+    /// recorded as one in docs/divergences.md. It is not a divergence from the real runtime
+    /// *in this configuration*: a guest published with the switch false behaves the same way
+    /// on CoreCLR.
+    let runtimeBaseline : AppContextProperties =
+        {
+            Values =
+                Map.ofList
+                    [
+                        "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "false"
+                    ]
+        }
+
+    /// Lay the host's properties over <see cref="runtimeBaseline"/>.
+    ///
+    /// The direction is deliberate: the host wins. A guest whose `runtimeconfig.json`
+    /// declares the switch true observes true, because `AppContextSeed` is otherwise a
+    /// faithful reproduction of what `hostpolicy` puts in `AppContext`, and would stop being
+    /// one if PawPrint overwrote a value the guest's own configuration contains. Forcing the
+    /// value would not even buy immutability — `AppContext.SetSwitch` remains available to
+    /// the guest at any moment — while it would remove the only way to ask PawPrint to
+    /// exercise a dynamic-code path once one exists.
+    let withRuntimeBaseline (hostProperties : AppContextProperties) : AppContextProperties =
+        overlay runtimeBaseline hostProperties
+
 /// Why a `runtimeconfig.json` did not yield properties.
 type RuntimeConfigError =
     /// The file is one a real host also refuses: malformed JSON, no `runtimeOptions`, a

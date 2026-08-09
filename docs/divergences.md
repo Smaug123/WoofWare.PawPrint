@@ -253,6 +253,38 @@ What PawPrint does *not* do is let a config file fill the hole itself: `RuntimeC
 
 **Where this lives in code**: `AppContextProperties.empty` in `RuntimeConfig.fs` documents the gap; `hostOwnedNames` in the same file is the refusal; `HostConfig.AppContext` is where a host would supply values if it had any. Closing this would mean deciding what a simulated app's filesystem layout *is*, which is a larger question than the seeding change that surfaced it.
 
+## Dynamic code is declared unsupported
+
+**CoreCLR**: `RuntimeFeature.IsDynamicCodeSupported` reads the AppContext switch `System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported` and **defaults to true** when no such switch is present (`RuntimeFeature.NonNativeAot.cs:17`). A stock `dotnet` launch of an app whose `runtimeconfig.json` says nothing about it therefore reports dynamic code as supported, and the BCL reaches for `System.Reflection.Emit` accordingly: `Expression.Compile()` emits a `DynamicMethod` rather than interpreting, and `MethodInvokerCommon.DetermineStrategy_*` abandons the interpreted `RuntimeMethodHandle.InvokeMethod` path after a `MethodBase`'s first invocation in favour of an emitted invoke stub (`MethodInvokerCommon.cs:124,153`).
+
+**PawPrint**: Seeds that switch to `false` on every run, beneath whatever the host supplies, so a guest that says nothing about it reports dynamic code as **unsupported**. NativeAOT reports the same profile, so the BCL fallbacks this selects are well travelled rather than exotic.
+
+**Spec status**: Outside ECMA-335 — a hosting/feature-switch contract rather than the CLI. Divergent from a *stock host's default*, deliberately. Not divergent from the real runtime *in the same configuration*: a guest published with the switch false behaves this way on CoreCLR too.
+
+**Why we chose this**: it is the truthful claim. PawPrint has no JIT and no `System.Reflection.Emit`, and that switch is exactly the question "can this runtime produce code at runtime?". Leaving it at the stock default meant the BCL confidently taking Emit paths that PawPrint cannot execute, so a guest that invoked the same `MethodInfo` twice — or called `Expression.Compile()` — died on an unimplemented native primitive with a message naming a QCall, rather than on anything a guest author could act on. With the switch off, those paths are simply not taken, and the ones that have no fallback raise the `PlatformNotSupportedException` a real host raises in the same configuration. Correctness over availability: PawPrint answering "no" is a guarantee it can meet, and answering "yes" was one it could not.
+
+The direction of precedence is part of the choice. The baseline sits *beneath* the host's properties, so a guest whose `runtimeconfig.json` declares the switch true observes true. Forcing the value would make `AppContextSeed` stop being a faithful reproduction of what `hostpolicy` installs — the guest would read back something its own configuration did not say — and would not even buy immutability, since `AppContext.SetSwitch` remains available to the guest at any moment. What it *would* cost is the only way to ask PawPrint to exercise a dynamic-code path once one exists.
+
+One consequence worth stating: this is the first property PawPrint seeds unconditionally, so `AppContext.Setup` now runs on every guest, where previously an empty property set skipped it entirely. That is a behaviour change in its own right — `s_dataStore` is now always non-null — and it interacts with the entry in this document about absent host-populated properties, which remains true of the other nine.
+
+**Observable example**:
+
+```csharp
+Console.WriteLine(RuntimeFeature.IsDynamicCodeSupported);
+// CoreCLR (stock launch): True
+// PawPrint:               False
+
+var m = typeof(C).GetMethod("M");
+m.Invoke(null, args);   // both: interpreted invoke path
+m.Invoke(null, args);   // CoreCLR: emitted invoke stub. PawPrint: interpreted again.
+
+new DynamicMethod("f", typeof(int), Type.EmptyTypes, typeof(C));
+// CoreCLR:  succeeds.
+// PawPrint: PlatformNotSupportedException, from AssemblyBuilder.EnsureDynamicCodeSupported.
+```
+
+**Where this lives in code**: `AppContextProperties.runtimeBaseline` and `withRuntimeBaseline` in `RuntimeConfig.fs`; applied in `Program.prepare` immediately before `AppContextSeed.prepareCall`. Pinned by `TestDynamicCodeSupport.fs` and by `sourcesImpure/DynamicCodeUnsupportedByDefault.cs` (the default) and `sourcesImpure/DynamicCodeSupportedOverride.cs` (the precedence). If Reflection.Emit is ever implemented — see the `DynamicMethod*` cases parked in `TestPureCases.unimplemented` — this entry and that baseline should be revisited together.
+
 ## `Activator.CreateInstance` rejection messages
 
 **CoreCLR**: When `Activator.CreateInstance(Type)` refuses a type, the exception the guest catches carries a two-part message: `RuntimeType.ActivatorCache` catches whatever `RuntimeTypeHandle_GetActivationInfo` threw and rethrows the same exception *type* with `SR.Activator_CannotCreateInstance` formatted around the original message — so `Activator.CreateInstance(typeof(SomeAbstract))` reads "Cannot dynamically create an instance of type 'SomeAbstract'. Reason: Cannot create an abstract class.", the tail coming from the unmanaged layer's `Acc_CreateAbst`.

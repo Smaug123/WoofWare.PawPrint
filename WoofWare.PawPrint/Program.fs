@@ -845,8 +845,16 @@ module Program =
         //
         // This runs the entry thread to completion, which consumes its startup frame; a fresh
         // one goes back afterwards so the cctor pump that follows is unaffected.
+        // The host's properties sit on top of PawPrint's own runtime baseline, which is how
+        // "this runtime does not support dynamic code" reaches every guest without each host
+        // having to remember to say so. Applied here rather than in `HostConfig.Default` so
+        // that a host which builds its `HostConfig` some other way — the App, which replaces
+        // `AppContext` wholesale with the guest's `runtimeconfig.json` — cannot drop it.
+        let propertiesToSeed =
+            AppContextProperties.withRuntimeBaseline hostConfig.AppContext
+
         let state =
-            match AppContextSeed.prepareCall loggerFactory baseClassTypes hostConfig.AppContext state with
+            match AppContextSeed.prepareCall loggerFactory baseClassTypes propertiesToSeed state with
             | None -> state
             | Some (state, setupFrame) ->
                 logger.LogInformation "Seeding AppContext from the host's configuration properties"
@@ -888,7 +896,7 @@ module Program =
                             | RunOutcome.GuestUnhandledException (_, thread, exn) ->
                                 $"threw an unhandled exception on %O{thread}: %O{exn.ExceptionObject}"
 
-                        failwith $"Seeding AppContext %s{described}. Properties being seeded: %O{hostConfig.AppContext}"
+                        failwith $"Seeding AppContext %s{described}. Properties being seeded: %O{propertiesToSeed}"
 
                 let state, startupFrame = buildStartupFrame baseClassTypes state
 

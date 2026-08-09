@@ -33,12 +33,20 @@ type HostConfig =
         /// Host policy rather than kernel state, hence its home here and not on
         /// `Kernel`: nothing about these is visible to the guest as a syscall,
         /// and the guest can overwrite any of them with `AppContext.SetData`.
+        ///
+        /// Not the whole of what the guest sees: `Program.prepare` lays these
+        /// over `AppContextProperties.runtimeBaseline`, which describes the
+        /// runtime rather than the host and so is not a host's to withhold. A
+        /// name appearing in both is taken from here — see
+        /// `AppContextProperties.withRuntimeBaseline` for why that direction.
         AppContext : AppContextProperties
     }
 
     /// A host that expresses no preference beyond where to find the framework:
     /// default kernel state, the deterministic default schedule, no guest
-    /// arguments, and no AppContext properties.
+    /// arguments, and no AppContext properties of its own. Such a guest is still
+    /// seeded with `AppContextProperties.runtimeBaseline`, which is PawPrint's
+    /// rather than the host's.
     static member Default (dotnetRuntimeDirs : ImmutableArray<string>) : HostConfig =
         {
             DotnetRuntimeDirs = dotnetRuntimeDirs
