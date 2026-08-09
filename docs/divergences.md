@@ -261,11 +261,25 @@ What PawPrint does *not* do is let a config file fill the hole itself: `RuntimeC
 
 **PawPrint**: Seeds that switch to `false` on every run, beneath whatever the host supplies, so a guest that says nothing about it reports dynamic code as **unsupported**. NativeAOT reports the same profile, so the BCL fallbacks this selects are well travelled rather than exotic.
 
-**Spec status**: Outside ECMA-335 — a hosting/feature-switch contract rather than the CLI. Divergent from a *stock host's default*, deliberately. Not divergent from the real runtime *in the same configuration*: a guest published with the switch false behaves this way on CoreCLR too.
+**Spec status**: Outside ECMA-335 — a hosting/feature-switch contract rather than the CLI. Divergent from a *stock host's default*, deliberately. Not divergent from the real runtime *in the same configuration*.
+
+That last sentence is measured, not inferred. The same program built three ways and run on net10.0/osx-arm64:
+
+| `runtimeconfig.json` | `IsDynamicCodeSupported` | `IsDynamicCodeCompiled` | `IsSupported("IsDynamicCodeSupported")` | `new DynamicMethod(...)` |
+| --- | --- | --- | --- | --- |
+| absent | True | True | True | succeeds |
+| `"...IsDynamicCodeSupported": false` | False | False | False | `PlatformNotSupportedException: Dynamic code generation is not supported on this platform.` |
+| `"...IsDynamicCodeSupported": true` | True | True | True | succeeds |
+
+So setting the switch is a supported configuration that CoreCLR honours from the app's own config, and `false` yields exactly the semantics PawPrint adopts — down to the exception type and message that `sourcesImpure/DynamicCodeUnsupportedByDefault.cs` asserts. The name is not one of the eleven the hosting layer populates for itself, so a guest's `runtimeconfig.json` may legally carry it (`hostOwnedNames` in `RuntimeConfig.fs` does not list it), and the shipped `Microsoft.NETCore.App.runtimeconfig.json` declares no `configProperties` at all, so no framework config competes for it.
 
 **Why we chose this**: it is the truthful claim. PawPrint has no JIT and no `System.Reflection.Emit`, and that switch is exactly the question "can this runtime produce code at runtime?". Leaving it at the stock default meant the BCL confidently taking Emit paths that PawPrint cannot execute, so a guest that invoked the same `MethodInfo` twice — or called `Expression.Compile()` — died on an unimplemented native primitive with a message naming a QCall, rather than on anything a guest author could act on. With the switch off, those paths are simply not taken, and the ones that have no fallback raise the `PlatformNotSupportedException` a real host raises in the same configuration. Correctness over availability: PawPrint answering "no" is a guarantee it can meet, and answering "yes" was one it could not.
 
 The direction of precedence is part of the choice. The baseline sits *beneath* the host's properties, so a guest whose `runtimeconfig.json` declares the switch true observes true. Forcing the value would make `AppContextSeed` stop being a faithful reproduction of what `hostpolicy` installs — the guest would read back something its own configuration did not say — and would not even buy immutability, since `AppContext.SetSwitch` remains available to the guest at any moment. What it *would* cost is the only way to ask PawPrint to exercise a dynamic-code path once one exists.
+
+The wart in that choice, stated plainly: a guest that explicitly declares the switch **true** is believed, and PawPrint then asserts a capability it does not have. This is deliberate rather than overlooked, and it is tolerable for a narrow reason — it cannot produce a *wrong answer*, only a crash. A guest told "yes" that goes on to reach Emit dies on an unimplemented primitive with a message naming it. "Correctness over availability" is a rule about not returning wrong results, and it is not engaged when the alternative to crashing is crashing. The two other policies are worse: forcing the value breaks the seeding mechanism's faithfulness for every property, not just this one, and refusing to launch punishes a guest that declares the switch and never exercises it.
+
+Only the *silent* case therefore diverges from CoreCLR. A guest that sets the switch either way is reproduced exactly.
 
 One consequence worth stating: this is the first property PawPrint seeds unconditionally, so `AppContext.Setup` now runs on every guest, where previously an empty property set skipped it entirely. That is a behaviour change in its own right — `s_dataStore` is now always non-null — and it interacts with the entry in this document about absent host-populated properties, which remains true of the other nine.
 
