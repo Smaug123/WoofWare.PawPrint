@@ -542,6 +542,24 @@ module IAssemblyLoad =
     /// be needed has provably been loaded already, so that a miss is a bug rather than a cue to
     /// read a file.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The proof must be evident *at the call site* — typically because every type reachable from
+    /// the inputs lives in an assembly you are holding, as in <c>Corelib.concretizeAll</c>, which
+    /// touches only corelib types. Do not use it to encode "some earlier sweep primed this": that
+    /// is a claim about the whole interpreter, it cannot be checked here, and it is exactly the
+    /// claim that rotted in issue #868, where <c>CliType.zeroOf</c> asserted it and a struct's
+    /// field type turned out to live in an assembly the guest never named.
+    /// </para>
+    /// <para>
+    /// The remaining uses that do rest on an upstream sweep are the handful of layout helpers
+    /// which return a bare value with nowhere to put an updated load context or concrete-type
+    /// registry (<c>MethodState.Empty</c>, <c>IlMachineManagedByref.zeroForConcreteType</c>,
+    /// <c>ManagedPointerByteView.arrayElementSize</c>). Each says so at its call site. They keep
+    /// this loader on purpose: failing loudly beats silently re-reading an assembly and
+    /// discarding the handles minted from it.
+    /// </para>
+    /// </remarks>
     let alreadyLoadedOnly : IAssemblyLoad =
         { new IAssemblyLoad with
             member _.LoadAssembly loaded referencedIn handle =

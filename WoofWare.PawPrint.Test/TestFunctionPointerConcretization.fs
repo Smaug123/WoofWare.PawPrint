@@ -209,8 +209,14 @@ module TestFunctionPointerConcretization =
 
         let state, handle = concretize (state ()) (TypeDefn.FunctionPointer signature)
 
-        let zero, _ =
-            CliType.zeroOf state.ConcreteTypes state._LoadedAssemblies baseClassTypes handle
+        // A function-pointer handle is terminal in `zeroOf`, so it cannot need to load anything.
+        let zero, _, _ =
+            CliType.zeroOf
+                IAssemblyLoad.alreadyLoadedOnly
+                state.ConcreteTypes
+                state._LoadedAssemblies
+                baseClassTypes
+                handle
 
         match zero with
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)) -> ()
