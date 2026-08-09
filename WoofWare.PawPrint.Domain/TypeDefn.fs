@@ -286,6 +286,58 @@ and ModifiedTypeDefn =
 
 [<RequireQualifiedAccess>]
 module TypeDefn =
+    /// The width a field of this type occupies, when that follows from the signature's head alone.
+    ///
+    /// This is CoreCLR's `FieldDesc::LoadSize` (field.cpp:655): it reads the field's normalised
+    /// `CorElementType` and takes the width from `CorTypeInfo`'s table (cortypeinfo.h), loading a
+    /// type only for `ELEMENT_TYPE_VALUETYPE` — the one row whose width the table cannot state.
+    ///
+    /// `None` is that row, and means the width genuinely needs the type loaded: for a signature
+    /// mentioning a generic parameter, that in turn needs an instantiation. `Some` means no
+    /// instantiation can change the answer, however the operand types are spelled — a `T*` is one
+    /// pointer wide whatever `T` is, which is why an RVA field on an open generic type can still
+    /// be sized.
+    let rec tryFixedSize (ty : TypeDefn) : int option =
+        match ty with
+        | TypeDefn.PrimitiveType primitiveType ->
+            match primitiveType with
+            | PrimitiveType.TypedReference ->
+                // CoreCLR's table gives this two pointers, but `PrimitiveType.sizeOf` has no
+                // answer for it and no field can legally hold one — `TypedReference` is
+                // byref-like. Defer rather than invent a width that nothing can check.
+                None
+            | primitiveType -> Some (PrimitiveType.sizeOf primitiveType)
+        // ELEMENT_TYPE_PTR, BYREF, FNPTR, SZARRAY and ARRAY are each one pointer wide, whatever
+        // they refer to; the referent never has to be loaded to say so.
+        | TypeDefn.Pointer _
+        | TypeDefn.Byref _
+        | TypeDefn.FunctionPointer _
+        | TypeDefn.OneDimensionalArrayLowerBoundZero _
+        | TypeDefn.Array _ -> Some NATIVE_INT_SIZE
+        // A custom modifier does not change the width of what it modifies, and `Pinned` is a
+        // local-variable decoration that cannot appear in a field signature at all.
+        | TypeDefn.Modified modified -> tryFixedSize modified.Unmodified
+        | TypeDefn.Pinned inner -> tryFixedSize inner
+        | TypeDefn.FromReference (_, signatureTypeKind)
+        | TypeDefn.FromDefinition (_, signatureTypeKind) ->
+            match signatureTypeKind with
+            | SignatureTypeKind.Class -> Some NATIVE_INT_SIZE
+            // `ELEMENT_TYPE_VALUETYPE`: the width is the type's instance-field bytes, so it needs
+            // the type loaded.
+            | SignatureTypeKind.ValueType -> None
+            // An undecoded signature kind is not a licence to guess a width.
+            | _ -> None
+        | TypeDefn.GenericInstantiation (generic, _) ->
+            // The instantiation's element type is the generic definition's — `List<int>` is a
+            // CLASS, `Nullable<int>` a VALUETYPE — and the arguments cannot change that.
+            tryFixedSize generic
+        | TypeDefn.GenericTypeParameter _
+        | TypeDefn.GenericMethodParameter _ ->
+            // `ELEMENT_TYPE_VAR`/`MVAR`. A `FieldDesc` carries an element type fixed when its
+            // instantiation was loaded, so there is no width to read off the open signature.
+            None
+        | TypeDefn.Void -> None
+
     let isManaged (typeDefn : TypeDefn) : bool =
         match typeDefn with
         | TypeDefn.PrimitiveType primitiveType -> failwith "todo"

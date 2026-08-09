@@ -2,6 +2,10 @@ namespace WoofWare.PawPrint.Test
 
 open System.Collections.Immutable
 open System.IO
+open System.Reflection
+open System.Reflection.Metadata
+open System.Reflection.Metadata.Ecma335
+open System.Reflection.PortableExecutable
 open System.Runtime.InteropServices
 open FsUnitTyped
 open Microsoft.Extensions.Logging
@@ -1105,3 +1109,168 @@ public static class HasRvaData
             )
 
         ex.Message.Contains "outside byte range size" |> shouldEqual true
+
+    /// A hand-built assembly declaring `G<T>` with a static `T*` field carrying a field RVA.
+    ///
+    /// Roslyn cannot be asked for this shape: it only ever emits field RVAs into the non-generic
+    /// `<PrivateImplementationDetails>`, as `__StaticArrayInitTypeSize=N` value types, so the
+    /// signature never mentions a type parameter. The shape is legal all the same — CoreCLR's type
+    /// loader rejects only RVA-plus-thread-static and RVA-plus-GC-references
+    /// (methodtablebuilder.cpp:4129 and :4500) — and it is exactly the case that separates sizing
+    /// the field by `FieldDesc::LoadSize`'s element-type dispatch from sizing it by concretising
+    /// the signature: a `T*` is one pointer wide whatever `T` is, so CoreCLR never needs the
+    /// instantiation to answer.
+    let private genericPointerRvaImage () : byte[] =
+        let metadata = MetadataBuilder ()
+
+        metadata.AddModule (
+            0,
+            metadata.GetOrAddString "GenericPointerRva.dll",
+            metadata.GetOrAddGuid (System.Guid "3f2a1b0c-9d8e-4c7b-6a5f-4e3d2c1b0a9f"),
+            Unchecked.defaultof<GuidHandle>,
+            Unchecked.defaultof<GuidHandle>
+        )
+        |> ignore<ModuleDefinitionHandle>
+
+        metadata.AddAssembly (
+            metadata.GetOrAddString "GenericPointerRva",
+            System.Version (1, 0, 0, 0),
+            Unchecked.defaultof<StringHandle>,
+            Unchecked.defaultof<BlobHandle>,
+            Unchecked.defaultof<AssemblyFlags>,
+            AssemblyHashAlgorithm.None
+        )
+        |> ignore<AssemblyDefinitionHandle>
+
+        let corelibRef =
+            metadata.AddAssemblyReference (
+                metadata.GetOrAddString "System.Private.CoreLib",
+                System.Version (10, 0, 0, 0),
+                Unchecked.defaultof<StringHandle>,
+                Unchecked.defaultof<BlobHandle>,
+                Unchecked.defaultof<AssemblyFlags>,
+                Unchecked.defaultof<BlobHandle>
+            )
+
+        let objectRef =
+            metadata.AddTypeReference (
+                (AssemblyReferenceHandle.op_Implicit corelibRef : EntityHandle),
+                metadata.GetOrAddString "System",
+                metadata.GetOrAddString "Object"
+            )
+
+        let fieldSignature = BlobBuilder ()
+        BlobEncoder(fieldSignature).FieldSignature().Pointer().GenericTypeParameter 0
+
+        let fieldHandle =
+            metadata.AddFieldDefinition (
+                FieldAttributes.Public
+                ||| FieldAttributes.Static
+                ||| FieldAttributes.HasFieldRVA,
+                metadata.GetOrAddString "Data",
+                metadata.GetOrAddBlob fieldSignature
+            )
+
+        // The offset is within the mapped field data below; the PE builder turns it into the
+        // real RVA.
+        metadata.AddFieldRelativeVirtualAddress (fieldHandle, 0)
+
+        // The real runtime declines an image with no `<Module>` row, and it owns no fields, so its
+        // field list points at the first field `G` owns.
+        metadata.AddTypeDefinition (
+            Unchecked.defaultof<TypeAttributes>,
+            Unchecked.defaultof<StringHandle>,
+            metadata.GetOrAddString "<Module>",
+            Unchecked.defaultof<EntityHandle>,
+            MetadataTokens.FieldDefinitionHandle 1,
+            MetadataTokens.MethodDefinitionHandle 1
+        )
+        |> ignore<TypeDefinitionHandle>
+
+        let genericType =
+            metadata.AddTypeDefinition (
+                TypeAttributes.Public
+                ||| TypeAttributes.Class
+                ||| TypeAttributes.BeforeFieldInit,
+                Unchecked.defaultof<StringHandle>,
+                metadata.GetOrAddString "G`1",
+                (TypeReferenceHandle.op_Implicit objectRef : EntityHandle),
+                MetadataTokens.FieldDefinitionHandle 1,
+                MetadataTokens.MethodDefinitionHandle 1
+            )
+
+        metadata.AddGenericParameter (
+            (TypeDefinitionHandle.op_Implicit genericType : EntityHandle),
+            GenericParameterAttributes.None,
+            metadata.GetOrAddString "T",
+            0
+        )
+        |> ignore<GenericParameterHandle>
+
+        // One pointer's worth of data for the field to name.
+        let mappedFieldData = BlobBuilder ()
+        mappedFieldData.WriteBytes (0x11uy, NATIVE_INT_SIZE)
+
+        let peBuilder =
+            ManagedPEBuilder (
+                PEHeaderBuilder (imageCharacteristics = (Characteristics.ExecutableImage ||| Characteristics.Dll)),
+                MetadataRootBuilder metadata,
+                BlobBuilder (),
+                mappedFieldData,
+                null,
+                null,
+                null,
+                0,
+                Unchecked.defaultof<MethodDefinitionHandle>,
+                CorFlags.ILOnly
+            )
+
+        let peImage = BlobBuilder ()
+        peBuilder.Serialize peImage |> ignore<BlobContentId>
+        peImage.ToArray ()
+
+    /// `FieldDesc::LoadSize` (field.cpp:655) switches on the field's normalised `CorElementType`
+    /// and only loads a type for `ELEMENT_TYPE_VALUETYPE`; `ELEMENT_TYPE_PTR` is a table lookup.
+    /// So an RVA field of type `T*` on an open generic type is one pointer wide, and CoreCLR
+    /// answers that without any instantiation. Sizing it by concretising the signature cannot:
+    /// it demands an argument for `T` that a caller holding only the open definition has not got.
+    [<Test>]
+    let ``RVA field whose signature mentions a type parameter is sized without an instantiation`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let corelibPath = typeof<obj>.Assembly.Location
+
+        let corelib =
+            global.WoofWare.PawPrint.AssemblyApi.readFile loggerFactory corelibPath
+
+        let baseClassTypes = Corelib.getBaseTypes corelib
+
+        use assemblyStream = new MemoryStream (genericPointerRvaImage ())
+
+        let assembly =
+            global.WoofWare.PawPrint.AssemblyApi.read loggerFactory None assemblyStream
+
+        let rvaField =
+            assembly.Fields.Values
+            |> Seq.find (fun field -> field.RelativeVirtualAddress.IsSome)
+
+        let state : IlMachineState =
+            let initialState =
+                IlMachineState.initial loggerFactory ImmutableArray.Empty assembly
+
+            initialState.WithLoadedAssembly corelib
+
+        // No generic arguments: the caller has the open definition, exactly as a `FieldHandle`
+        // whose declaring type is an `OpenGenericTypeDefinition` does.
+        let _, peByteRange =
+            IlMachineState.peByteRangeForFieldRva
+                loggerFactory
+                baseClassTypes
+                assembly
+                rvaField
+                ImmutableArray.Empty
+                state
+
+        peByteRange
+        |> Option.map (fun range -> range.Size)
+        |> shouldEqual (Some NATIVE_INT_SIZE)
