@@ -1550,10 +1550,7 @@ module IlMachineStateExecution =
         // that `isIntrinsic` and `intrinsicKey` describe the method we are actually about to
         // execute.
         let shouldPerformVirtualResolution =
-            performInterfaceResolution
-            && not methodToCall.IsStatic
-            && methodToCall.IsVirtual
-            && not methodToCall.IsFinal
+            performInterfaceResolution && methodToCall.DispatchesVirtually
 
         let state, methodToCall =
             if shouldPerformVirtualResolution then
