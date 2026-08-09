@@ -146,6 +146,54 @@ module TestVirtualMethodSlots =
         NativeRuntimeTypeHelpers.slotIndexOfIdentity ("Other", row 6) slots
         |> shouldEqual None
 
+    /// An interface has no base class, so `MethodTableBuilder::PlaceVirtualMethods` adds every
+    /// instance virtual it declares without consulting NewSlot. Corelib contains exactly one method
+    /// that makes the difference visible: `INumberBase<T>` declares
+    /// `System.IUtf8SpanFormattable.TryFormat` as `Private, Final, Virtual, HideBySig` with no
+    /// NewSlot. Treating it as an override would look for a base vtable that does not exist.
+    [<Test>]
+    let ``every instance virtual an interface declares gets its own slot`` () : unit =
+        let state = state ()
+
+        let typeInfo =
+            match corelib.TryGetTopLevelTypeDef "System.Numerics" "INumberBase`1" with
+            | None -> failwith "System.Numerics.INumberBase`1 not found in corelib"
+            | Some typeInfo -> typeInfo
+
+        let openDefn =
+            DumpedAssembly.typeInfoToTypeDefn' bct state._LoadedAssemblies typeInfo
+
+        // `typeInfoToTypeDefn'` already yields the instantiation shape `INumberBase`1<!0>`, so close
+        // it by supplying Int32 as the type-generic context rather than by wrapping it again.
+        let state, int32Handle = concretize state "System" "Int32"
+
+        let state, handle =
+            openDefn
+            |> IlMachineState.concretizeType
+                loggerFactory
+                bct
+                state
+                corelib.Name
+                (ImmutableArray.Create int32Handle)
+                ImmutableArray.Empty
+
+        let state, slots = vtable state handle
+
+        // No base class, so the vtable is exactly the instance virtuals the interface declares --
+        // including the reuse-slot one, which is what the NewSlot partition would have dropped.
+        let declared =
+            typeInfo.Methods
+            |> List.filter (fun method -> not method.IsStatic && method.IsVirtual)
+
+        List.length slots |> shouldEqual (List.length declared)
+
+        let reuseSlot =
+            declared |> List.filter (fun method -> not method.IsNewSlot) |> List.map _.Name
+
+        // Guard against the test going vacuous if corelib ever stops carrying such a method: the
+        // whole point is that at least one is not NewSlot.
+        reuseSlot |> shouldEqual [ "System.IUtf8SpanFormattable.TryFormat" ]
+
     [<Test>]
     let ``vtable length agrees with the host CLR's vtable size`` () : unit =
         let mutable exercised = 0

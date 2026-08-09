@@ -849,6 +849,25 @@ module NativeRuntimeTypeHelpers =
 
         state, List.rev parameters, ret
 
+    // Two limitations of comparing *closed* signatures, both reachable only from hand-authored IL
+    // and both wanting the same fix -- comparing at the generic-definition level, which is the
+    // capability `numVirtuals` also lacks for open generic type definitions:
+    //
+    //  - A single match can itself be a substitution artifact. `A.M(string)` with `C&lt;T&gt;` declaring
+    //    a non-newslot `M(T)` is not an override at the definition level, so CoreCLR gives it a
+    //    fresh slot; inspected as `C&lt;string&gt;` the two signatures coincide and this walk overwrites
+    //    A's slot. The multi-match guard cannot catch it because there is only one match, and the
+    //    obvious "does a generic parameter appear" screen would reject every ordinary override of
+    //    a generic base (`G1&lt;string&gt;.Id(T)` overridden by `G2.Id(string)`), which is common C#.
+    //
+    //  - Signature *encodings* are not compared. CoreCLR's `CompareMethodSigs` distinguishes
+    //    `M(object)` (ELEMENT_TYPE_OBJECT) from `M(class System.Object)`; concretisation maps both
+    //    to one handle. Recording the encoding alongside the handle does not work here either,
+    //    for the same reason: substitution destroys it, since the base writes `!0` where the
+    //    override writes ELEMENT_TYPE_STRING. Measured -- doing so breaks `G1`/`G2` above.
+    //
+    // Roslyn emits neither shape.
+
     /// Does `candidate`, a non-newslot instance virtual declared on some derived type, fill the
     /// vtable slot currently occupied by `slot`?
     ///
@@ -957,7 +976,18 @@ module NativeRuntimeTypeHelpers =
                 |> List.filter (fun method -> not method.IsStatic && method.IsVirtual)
 
             let overrides, newSlots =
-                instanceVirtuals |> List.partition (fun method -> not method.IsNewSlot)
+                if typeInfo.IsInterface then
+                    // `MethodTableBuilder::PlaceVirtualMethods` adds every instance virtual an
+                    // interface declares unconditionally, without consulting NewSlot -- an
+                    // interface has no base class whose slots it could be reusing. The distinction
+                    // is not academic: corelib's `INumberBase<T>` declares
+                    // `System.IUtf8SpanFormattable.TryFormat` as `Private, Final, Virtual,
+                    // HideBySig` with no NewSlot -- measured, the only such method in corelib -- so
+                    // partitioning on NewSlot here would classify it as an override and then fail
+                    // for want of a base vtable to match it against.
+                    [], instanceVirtuals
+                else
+                    instanceVirtuals |> List.partition (fun method -> not method.IsNewSlot)
 
             let state, slots =
                 ((state, baseSlots), overrides)
