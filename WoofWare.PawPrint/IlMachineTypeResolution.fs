@@ -325,7 +325,12 @@ module IlMachineTypeResolution =
             )
             |> Seq.forall id)
 
-    let rec private containsUnboundGenericParameter
+    /// `true` when `ty` mentions a generic parameter for which the supplied instantiations
+    /// provide no argument, i.e. concretising it would index past the end of `typeGenerics`
+    /// or `methodGenerics`. Callers that intend to concretise in an empty context can use
+    /// this to reject a signature that needs one, rather than taking an opaque
+    /// index-out-of-range from `TypeResolution`.
+    let rec containsUnboundGenericParameter
         (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
         (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (ty : TypeDefn)

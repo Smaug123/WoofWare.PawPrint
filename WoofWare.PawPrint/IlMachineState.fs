@@ -162,6 +162,8 @@ module IlMachineState =
 
     let readManagedByrefField = IlMachineManagedByref.readManagedByrefField
 
+    let readPeByteRangeBytesAs = IlMachineManagedByref.readPeByteRangeBytesAs
+
     let writeManagedByrefBytesOrTypedCell =
         IlMachineManagedByref.writeManagedByrefBytesOrTypedCell
 
