@@ -469,11 +469,11 @@ type EmulatedKernel =
         /// Denominated in 100 ns ticks — `DateTime`'s own quantum — so that
         /// `DateTime.UtcNow` needs no scaling and `Stopwatch` resolves finer
         /// than a millisecond. The driver loop advances it by
-        /// `instructionCostTicks` each time it increments `StepCounter`; see
+        /// `InstructionCostTicks` each time it increments `StepCounter`; see
         /// that constant for the rate and what it means as a machine speed.
         ///
         /// Elapsed-time polling loops such as `while (TickCount64 - start &lt; N)`
-        /// therefore terminate in `N * ticksPerMillisecond / instructionCostTicks`
+        /// therefore terminate in `N * ticksPerMillisecond / InstructionCostTicks`
         /// scheduler ticks, which is the cost to keep in mind when choosing the
         /// rate: it buys sleep fidelity and is paid for in run length.
         ///
@@ -602,6 +602,17 @@ type EmulatedKernel =
         /// and BCL callers divide by it, so `NativeEnvironment` asserts the
         /// invariant at the point of use rather than trusting construction.
         ProcessorCount : int
+        /// Virtual time charged for one retired IL instruction, in 100 ns ticks — how fast the
+        /// simulated machine is. Must be >= 1; a cost of zero would freeze the clock and make
+        /// every guest polling loop diverge.
+        ///
+        /// Kernel state rather than a constant because it is guest-observable: a guest can
+        /// measure it by counting work against `Environment.TickCount64`, and it decides which
+        /// BCL paths run — at a coarse enough rate `SpinWait` exhausts its spin budget in a
+        /// couple of iterations and drops to the blocking path. So it belongs to the replay
+        /// contract, alongside `WallClockEpochMs` and `ProcessorCount`, both of which are here
+        /// for the same reason. See `EmulatedKernel.defaultInstructionCostTicks`.
+        InstructionCostTicks : int64
         /// Number reported by `Thread.OptimalMaxSpinWaitsPerSpinIteration` (an
         /// `internal` property, reached only via `SpinWait.SpinOnce()` /
         /// `LowLevelSpinWaiter` in ordinary guest code). Deliberately a value
@@ -772,16 +783,33 @@ module EmulatedKernel =
     /// they say how fast the simulated machine is: at one tick per instruction it would be a
     /// self-consistent 10 MIPS machine.
     ///
-    /// Set here to a whole millisecond, which is deliberately absurd as a machine speed and is
-    /// exactly the historical behaviour — the clock advanced 1 ms per instruction when it was
-    /// denominated in milliseconds. Keeping the rate at its old value makes the re-denomination
-    /// a pure change of unit, observationally identical to what came before, so that the
-    /// separate change of *rate* is a one-line diff that can be reviewed and measured on its
-    /// own. See issue #844: at this rate the shortest sleep a guest can ask for, `Sleep(1)`,
-    /// expires within the same tick it was requested in, so it parks the caller for zero
-    /// scheduling decisions and the BCL's spin-then-sleep backoff does nothing at all.
+    /// One tick — 100 ns, a 10 MIPS machine. The value is a calibration choice, and the
+    /// quantity it calibrates is the ratio between the shortest sleep a guest can express and
+    /// the cost of one instruction, because that ratio is what decides whether the BCL's
+    /// spin-then-sleep backoff does anything at all.
+    ///
+    /// A cost at or near a whole millisecond makes that ratio 1:1, at which `Thread.Sleep(1)`'s
+    /// deadline expires inside the very `fireExpiredDeadlines` pass that precedes the next
+    /// scheduling decision: the sleeper misses *zero* decisions and `Sleep` is a no-op. That is
+    /// the failure this value exists to avoid, so keep it several orders of magnitude below
+    /// `ticksPerMillisecond`.
+    ///
+    /// Why 100 ns and not 1 µs. Post-backoff, a `SpinWait`
+    /// spinner's cycle is one `Sleep(1)` park plus a *measured* 67 retired instructions. Sixteen
+    /// of them therefore demand 1,072 instructions per park window, against a window of
+    /// `ticksPerMillisecond / InstructionCostTicks` instructions. At 1 µs the window is 1,000 —
+    /// smaller than the demand, so the spinners still saturate the machine and the fix does not
+    /// work at all. At 100 ns it is 10,000, leaving the producer ~89%, which is the right shape
+    /// for a single-core machine whose other threads are asleep. A further 10× buys ~10 points
+    /// and costs 10× the run length.
+    ///
+    /// The cost is paid by guests that busy-poll a clock while another thread is runnable: such
+    /// a loop waiting M ms now costs `M * 10^4` interpreted instructions, and the driver's
+    /// jump-to-deadline shortcut cannot help because the poller is runnable. That is also what
+    /// the loop would cost on a real 10 MIPS machine, and the BCL's own polling paths escalate
+    /// to `Sleep(1)`, which now parks and lets the jump engage.
     [<Literal>]
-    let instructionCostTicks : int64 = 10_000L
+    let defaultInstructionCostTicks : int64 = 1L
 
     /// Largest legal `EmulatedKernel.WallClockEpochMs`: 9999-12-31T23:59:59.999Z
     /// as milliseconds since the Unix epoch, which is the last instant
@@ -814,6 +842,7 @@ module EmulatedKernel =
 
     let initial : EmulatedKernel =
         {
+            InstructionCostTicks = defaultInstructionCostTicks
             LastPInvokeError = 0
             LastSystemError = 0
             NativeMemoryPool = NativeMemoryPool.empty
@@ -860,6 +889,18 @@ module EmulatedKernel =
     /// Set the logical-processor count the simulated process reports. Rejects
     /// non-positive values at the boundary rather than letting them reach a
     /// guest that will divide by them.
+    /// Set the virtual time charged per retired instruction. See
+    /// `EmulatedKernel.InstructionCostTicks` for what the number means and why it is
+    /// configurable; `defaultInstructionCostTicks` for how the default was calibrated.
+    let withInstructionCostTicks (cost : int64) (kernel : EmulatedKernel) : EmulatedKernel =
+        if cost < 1L then
+            failwith
+                $"InstructionCostTicks must be at least 1; got %d{cost}. A cost of zero freezes the virtual clock, so any guest waiting for time to pass would spin forever."
+
+        { kernel with
+            InstructionCostTicks = cost
+        }
+
     let withProcessorCount (count : int) (kernel : EmulatedKernel) : EmulatedKernel =
         if count < 1 then
             failwith $"ProcessorCount must be at least 1; got %d{count}"
@@ -994,10 +1035,10 @@ module EmulatedKernel =
     /// `clock + timeoutMs * ticksPerMillisecond`, and `Thread.Sleep(Int32.MaxValue)` contributes
     /// about 2.1e13 ticks; with the clock bounded at 9.2e16 the sum cannot approach
     /// `Int64.MaxValue`, so the seven deadline sites need no checked arithmetic of their own.
-    /// Without the bound they would need it: the deadline jump advances the clock to a deadline
-    /// *without* retiring a step, so a loop of `Sleep(Int32.MaxValue)` reaches the wrap in about
-    /// 430,000 iterations — a few million interpreted instructions, which is minutes rather than
-    /// the unreachable 4.3 billion jumps the millisecond-denominated clock required.
+    /// Without the bound they would need it, and the horizon is close enough to matter: the
+    /// deadline jump advances the clock to a deadline *without* retiring a step, so a loop of
+    /// `Sleep(Int32.MaxValue)` reaches the wrap in about 430,000 iterations — a few million
+    /// interpreted instructions.
     let withVirtualClockTicks (ticks : int64) (kernel : EmulatedKernel) : EmulatedKernel =
         // Checked independently of the monotonicity comparison below, which on its own would
         // wave through a negative target whenever the current value is more negative still —
@@ -1310,6 +1351,12 @@ type KernelConfig =
         /// Logical processor count the guest observes via
         /// `Environment.ProcessorCount`. Must be at least 1.
         ProcessorCount : int
+        /// Virtual time charged per retired IL instruction, in 100 ns ticks — the speed of the
+        /// simulated machine. Must be at least 1. See
+        /// `EmulatedKernel.InstructionCostTicks` for why this is part of the replay contract,
+        /// and `EmulatedKernel.defaultInstructionCostTicks` for the calibration behind the
+        /// default of one tick (a 10 MIPS machine).
+        InstructionCostTicks : int64
         /// Value the guest observes via the internal
         /// `Thread.OptimalMaxSpinWaitsPerSpinIteration`, consulted by
         /// `SpinWait.SpinOnce()` / `LowLevelSpinWaiter` to size each spin
@@ -1350,6 +1397,7 @@ type KernelConfig =
         {
             Environment = Map.empty
             ProcessorCount = EmulatedKernel.defaultProcessorCount
+            InstructionCostTicks = EmulatedKernel.defaultInstructionCostTicks
             OptimalMaxSpinWaitsPerSpinIteration = EmulatedKernel.defaultOptimalMaxSpinWaitsPerSpinIteration
             WallClockEpochMs = 0L
             UnixPlatform = EmulatedKernel.defaultUnixPlatform
@@ -1366,6 +1414,7 @@ module KernelConfig =
         kernel
         |> EmulatedKernel.withEnvironment config.Environment
         |> EmulatedKernel.withProcessorCount config.ProcessorCount
+        |> EmulatedKernel.withInstructionCostTicks config.InstructionCostTicks
         |> EmulatedKernel.withOptimalMaxSpinWaitsPerSpinIteration config.OptimalMaxSpinWaitsPerSpinIteration
         |> EmulatedKernel.withWallClockEpochMs config.WallClockEpochMs
         |> EmulatedKernel.withUnixPlatform config.UnixPlatform

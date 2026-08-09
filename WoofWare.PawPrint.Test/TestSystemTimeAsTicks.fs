@@ -165,12 +165,11 @@ module TestSystemTimeAsTicks =
 
     [<Test>]
     let ``the reading has the full 100ns granularity of DateTime`` () =
-        // This used to assert the opposite — that every reading is a multiple of
-        // 10,000 — because the clock it derives from was denominated in whole
-        // milliseconds. Now that the clock counts 100 ns ticks, `DateTime.UtcNow`
-        // resolves every one of them, which is strictly closer to real
-        // `clock_gettime(CLOCK_REALTIME)`. Pinned as a reachability claim rather
-        // than a modulus, since "not always a multiple" needs a witness.
+        // The clock counts 100 ns ticks and `DateTime.UtcNow` resolves every one of
+        // them, which is as fine as `DateTime` itself goes and close to real
+        // `clock_gettime(CLOCK_REALTIME)`. Stated as "the reading carries the clock's
+        // sub-millisecond digits" rather than as a modulus, because the interesting
+        // claim is that nothing is being rounded away.
         let property (seeds : int64 * int64) : bool =
             let epochMs, clockTicks = reachable seeds
 

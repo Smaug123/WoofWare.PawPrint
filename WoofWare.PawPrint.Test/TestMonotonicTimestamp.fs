@@ -102,10 +102,9 @@ module TestMonotonicTimestamp =
         // high-resolution one truncated to milliseconds.
         // Neither side restates the other's arithmetic: the left is the high-resolution PAL
         // reading converted from nanoseconds to milliseconds using the BCL's own factor, the
-        // right is the low-resolution PAL reading. Before the clock was re-denominated this
-        // assertion happened to be expressible as "hi-res / 1e6 = the clock", because the clock
-        // *was* in milliseconds; at 100 ns that form degenerates into a tautology about
-        // `monotonicTimestampNanos` and stops covering the low-resolution projection at all.
+        // right is the low-resolution PAL reading. Compare the two *projections*, not a
+        // projection against the clock field — the latter is a tautology about
+        // `monotonicTimestampNanos` and covers the low-resolution one not at all.
         let property (seed : int64) : bool =
             let kernel = kernelWith (intoRange maxClockTicks seed)
 
@@ -210,14 +209,11 @@ module TestMonotonicTimestamp =
 
     [<Test>]
     let ``the reading has 100ns granularity`` () =
-        // Documented consequence of deriving from a 100 ns clock: every
-        // timestamp is a multiple of 100 ns. This assertion used to say
-        // *millisecond* granularity — a multiple of 1,000,000 — because the
-        // clock was denominated in milliseconds; re-denominating it made
-        // `Stopwatch` four orders of magnitude finer, and hence far closer to
-        // real `clock_gettime(CLOCK_MONOTONIC)`. It is still coarser than the
-        // real thing, and still not a source of unique values, which is a
-        // faithful gap rather than one to paper over.
+        // Documented consequence of deriving from a 100 ns clock: every timestamp is
+        // a multiple of 100 ns. That is coarser than real
+        // `clock_gettime(CLOCK_MONOTONIC)`, so `Stopwatch` is not a source of unique
+        // values here — a faithful gap rather than one to paper over, since the real
+        // thing makes no uniqueness guarantee either.
         let property (seed : int64) : bool =
             let nanos =
                 EmulatedKernel.monotonicTimestampNanos (kernelWith (intoRange maxClockTicks seed))
@@ -305,3 +301,35 @@ module TestMonotonicTimestamp =
             |> ignore<EmulatedKernel>
 
         Assert.Throws<Exception> (TestDelegate forwardsButNegative) |> ignore<Exception>
+
+    [<Test>]
+    let ``the instruction cost is configurable and validated`` () : unit =
+        // The rate is guest-observable — a guest can measure it by counting work against
+        // `Environment.TickCount64`, and it decides whether `SpinWait` reaches its blocking
+        // rung — so it is part of the replay contract and belongs in `KernelConfig` rather than
+        // being a constant a host cannot see.
+        KernelConfig.Default.InstructionCostTicks
+        |> shouldEqual EmulatedKernel.defaultInstructionCostTicks
+
+        let configured =
+            EmulatedKernel.initial
+            |> KernelConfig.applyTo
+                { KernelConfig.Default with
+                    InstructionCostTicks = 10_000L
+                }
+
+        configured.InstructionCostTicks |> shouldEqual 10_000L
+
+        // Zero would freeze the clock, so every guest waiting for time to pass would spin
+        // forever: a hang rather than a wrong answer, and the sort of thing a host sweeping the
+        // knob could reach by off-by-one. Rejected at the setter, like `ProcessorCount`.
+        for bad in [ 0L ; -1L ] do
+            let apply () =
+                EmulatedKernel.initial
+                |> KernelConfig.applyTo
+                    { KernelConfig.Default with
+                        InstructionCostTicks = bad
+                    }
+                |> ignore<EmulatedKernel>
+
+            Assert.Throws<Exception> (TestDelegate apply) |> ignore<Exception>

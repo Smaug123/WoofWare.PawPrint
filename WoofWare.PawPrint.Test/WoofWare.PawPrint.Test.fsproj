@@ -123,6 +123,7 @@
     <Compile Include="TestSchedulerVoluntaryYield.fs" />
     <Compile Include="TestSchedulerYieldDebt.fs" />
     <Compile Include="TestSchedulerYieldFairness.fs" />
+    <Compile Include="TestSchedulerSleepFairness.fs" />
     <Compile Include="TestSchedulerPct.fs" />
     <Compile Include="TestVariableSizeNewobj.fs" />
     <Compile Include="TestNativeMdUtf8String.fs" />
