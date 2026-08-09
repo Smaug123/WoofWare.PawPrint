@@ -162,14 +162,39 @@ module internal UnaryMetadataMemoryOps =
             | EvalStackValue.Int32 _ -> failwith "refusing to interpret constant as address"
             | _ -> failwith "TODO"
 
-        let targetType =
-            AllConcreteTypes.lookup typeHandle state.ConcreteTypes |> Option.get
+        // The type token need not denote a nominal type: `ldobj !!T` with `T = int[]` — which
+        // is what `Dictionary<TKey, TValue[]>.TryGetValue` emits on a hit — concretizes to a
+        // structural array handle, which by design has no row in `AllConcreteTypes` and no
+        // TypeDef to interrogate. Decide the copy's shape from the handle before touching any
+        // metadata.
+        let isValueType : bool =
+            match typeHandle with
+            | ConcreteTypeHandle.OneDimArrayZero _
+            | ConcreteTypeHandle.Array _ ->
+                // Arrays are reference types, so III.4.13 reduces to `ldind.ref` below.
+                false
+            | ConcreteTypeHandle.Byref _
+            | ConcreteTypeHandle.Pointer _
+            | ConcreteTypeHandle.FunctionPointer _ ->
+                // Triggered by a `ldobj` whose type token is a byref, pointer or
+                // function-pointer typespec. No C#/F# compiler emits that (a pointer
+                // dereference is `ldind.i`), and the runtime's reflection stack rejects all
+                // three as type arguments, so `ldobj !!T` cannot produce one either; only
+                // hand-written IL naming such a typespec reaches here. Refusing loudly beats
+                // guessing at a coercion no test can exercise.
+                failwith
+                    $"TODO: Ldobj with a byref/pointer/function-pointer type token (%O{typeHandle}) is not implemented"
+            | ConcreteTypeHandle.Concrete _ ->
 
-        let defn =
+            match AllConcreteTypes.lookup typeHandle state.ConcreteTypes with
+            | None -> failwith $"Ldobj: concrete type handle %O{typeHandle} has no row in AllConcreteTypes"
+            | Some targetType ->
+
             state._LoadedAssemblies.[targetType.Assembly].TypeDefs.[targetType.Definition.Get]
+            |> DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies
 
         let toPush, state =
-            if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies defn then
+            if isValueType then
                 let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes typeHandle
 
                 EvalStackValue.ofCliType obj |> EvalStackValue.toCliTypeCoerced zero, state

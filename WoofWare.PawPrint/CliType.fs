@@ -1066,7 +1066,20 @@ and CliValueType =
         // An empty field list cannot contain references, so this is decided before the GC cases.
         if fields.IsEmpty then
             {
-                Size = minimumSize
+                // CoreCLR: "Like C++ we enforce that there can be no 0 length structures. Thus for
+                // a value class with no fields, we 'pad' the length to be 1"
+                // (methodtablebuilder.cpp:8568, the auto-layout path). Sequential and explicit
+                // layout reach the same floor via `EEClassLayoutInfo::SetInstanceBytesSize`
+                // (class.h:497), which is `return size == 0 ? 1 : size;` — so the floor is
+                // universal across layout kinds, and applies whether the 0 came from having no
+                // fields or from a declared `Size = 0`.
+                //
+                // This is not merely a hand-written-IL concern. Roslyn hides it for a plain
+                // `struct Empty {}` by emitting a `ClassLayout` row of `Size = 1` itself, but an
+                // explicit `[StructLayout(LayoutKind.Sequential)]` or `[StructLayout(
+                // LayoutKind.Explicit)]` on a fieldless struct emits *no* `ClassLayout` row, so
+                // the type arrives here as `Layout.Default` and the floor has to be applied.
+                Size = max 1 minimumSize
                 Alignment = 1
             }
         else
