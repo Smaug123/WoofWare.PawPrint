@@ -195,6 +195,46 @@ module Intrinsics =
             IlMachineState.pushToEvalStack (CliType.ofBool isAccelerated) currentThread state
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
+        | "System.Private.CoreLib", "Object", "MemberwiseClone" ->
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/coreclr/System.Private.CoreLib/src/System/Object.CoreCLR.cs#L26-L45
+            // The managed body allocates an uninitialised clone via the
+            // `RuntimeHelpers.AllocateUninitializedClone` QCall and then raw-byte-copies the object
+            // payload. PawPrint holds fields as `CliType` cells rather than bytes, so that
+            // formulation is not the primitive available here — reproducing it would flatten every
+            // field to bytes and lose the provenance of non-`Verbatim` cells. This is the same
+            // reasoning `Array.Clone` records, and `IlMachineState.cloneObject` is the
+            // corresponding primitive: a same-shaped object holding the same cells, which is
+            // exactly the shallow copy the method promises.
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [],
+              MethodReturnType.Returns (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                                          "System",
+                                                                          "Object",
+                                                                          generics)) when generics.IsEmpty -> ()
+            | _ -> failwith "bad signature for System.Private.CoreLib.Object.MemberwiseClone"
+
+            let receiver, state = IlMachineState.popEvalStack currentThread state
+
+            match receiver with
+            | EvalStackValue.ObjectRef addr ->
+                let clone, state = IlMachineState.cloneObject addr state
+
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.ObjectRef clone) currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> IntrinsicResult.Completed
+            | EvalStackValue.NullObjectRef
+            | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
+                // The body's first act is `ObjectHandleOnStack.Create(ref clone)` over `this`,
+                // followed by `this.GetRawData()`, so a null receiver faults and the runtime
+                // translates it into `NullReferenceException`.
+                //
+                // `MemberwiseClone` is `protected internal`, so C# only ever calls it on `this`,
+                // which is non-null in an instance method; and `callvirt`'s own null check would
+                // fire first in any case (see `Array.Clone`'s matching arm). Only hand-written IL
+                // reaches this.
+                IntrinsicResult.RaiseException (state, baseClassTypes.NullReferenceException, None)
+            | other -> failwith $"Object.MemberwiseClone: expected an object reference receiver, got %O{other}"
         | "System.Private.CoreLib", "Object", "GetType" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [],
