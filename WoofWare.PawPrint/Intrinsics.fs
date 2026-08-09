@@ -2326,6 +2326,28 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack (CliType.ofBool areSame) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
+        | "System.Private.CoreLib", "Unsafe", "IsAddressLessThan" ->
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L62-L67
+            // The source-level IL body throws PlatformNotSupportedException; the runtime replaces
+            // it with `ldarg.0; ldarg.1; clt.un; ret` (the commented-out body in CoreLib's
+            // Unsafe.cs spells exactly that). So this delegates to the very function that services
+            // the `Clt_un` opcode: whatever ordering `clt.un` gives two byrefs, this must agree,
+            // including the null-byref arms and the refusal to order byrefs with no common root.
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteByref _ ; ConcreteByref _ ], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
+            | _ ->
+                failwith
+                    $"bad signature Unsafe.IsAddressLessThan: expected two byref parameters and bool return, got %A{methodToCall.Signature}"
+
+            let right, state = IlMachineState.popEvalStack currentThread state
+            let left, state = IlMachineState.popEvalStack currentThread state
+
+            let isLessThan = EvalStackValueComparisons.cltUn left right
+
+            state
+            |> IlMachineState.pushToEvalStack (CliType.ofBool isLessThan) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> IntrinsicResult.Completed
         | "System.Private.CoreLib", "Unsafe", "Add" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L99
             // The source-level IL body throws PlatformNotSupportedException; the JIT replaces it with sizeof + conv.i + mul + add.
