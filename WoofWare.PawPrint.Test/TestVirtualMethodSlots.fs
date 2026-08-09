@@ -3,6 +3,7 @@ namespace WoofWare.PawPrint.Test
 open System
 open System.Collections.Immutable
 open System.Reflection
+open System.Reflection.Metadata.Ecma335
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
@@ -120,6 +121,30 @@ module TestVirtualMethodSlots =
         t.GetMethods (BindingFlags.Instance ||| BindingFlags.Public ||| BindingFlags.NonPublic)
         |> Array.filter _.IsVirtual
         |> Array.length
+
+    /// `GetSlot` finds its answer by locating the method in its declaring type's vtable, and a
+    /// vtable spans assemblies: a guest type's own slots sit on top of corelib's. `IdentityKey` is
+    /// a MethodDef *row number*, unique only within its own module, so row 6 of the guest and row 6
+    /// of corelib compare equal on it alone. No corpus type happens to collide, which is exactly
+    /// why this is a constructed test rather than a corpus one -- the failure it guards against is
+    /// a silently wrong slot, and `PopulateMethods` would then suppress the wrong declaration.
+    [<Test>]
+    let ``slot lookup is scoped to the declaring assembly`` () : unit =
+        let row (n : int) : System.Reflection.Metadata.MethodDefinitionHandle option * SynthesisedMethod option =
+            Some (MetadataTokens.MethodDefinitionHandle n), None
+
+        // A base method from corelib and a derived method from the guest, sharing row 6.
+        let slots = [ "CoreLib", row 6 ; "Guest", row 6 ]
+
+        NativeRuntimeTypeHelpers.slotIndexOfIdentity ("Guest", row 6) slots
+        |> shouldEqual (Some 1)
+
+        NativeRuntimeTypeHelpers.slotIndexOfIdentity ("CoreLib", row 6) slots
+        |> shouldEqual (Some 0)
+
+        // A row present in one assembly must not be found via another.
+        NativeRuntimeTypeHelpers.slotIndexOfIdentity ("Other", row 6) slots
+        |> shouldEqual None
 
     [<Test>]
     let ``vtable length agrees with the host CLR's vtable size`` () : unit =

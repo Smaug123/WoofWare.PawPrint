@@ -741,6 +741,12 @@ module NativeRuntimeTypeHelpers =
             || candidate.Method.Generics.Length <> slot.Method.Generics.Length
             || candidate.Method.Signature.ParameterTypes.Length
                <> slot.Method.Signature.ParameterTypes.Length
+            // The calling convention is part of the signature CoreCLR matches on, and it cannot be
+            // recovered from the parameter list: `virtual M(int)` and `virtual M(int, __arglist)`
+            // have identical fixed parameters and identical return types, and differ only in the
+            // header's vararg bit. Both are legal and both are virtual, so without this an override
+            // of the first would match the second as well.
+            || candidate.Method.Signature.Header <> slot.Method.Signature.Header
         then
             // Cheap metadata-only rejections first, so that the overwhelming majority of
             // (candidate, slot) pairs never reach concretisation -- including every pair that
@@ -838,8 +844,18 @@ module NativeRuntimeTypeHelpers =
                             state, (if fills then i :: acc else acc)
                         )
 
+                    // More than one slot can legitimately match: `A` declares `virtual M()`, `B :
+                    // A` declares `new virtual M()` with the identical signature, and `C : B`
+                    // overrides it. CoreCLR resolves this by searching the parent chain from the
+                    // immediate parent upwards and taking the first hit
+                    // (`LoaderFindMethodInParentClass`), i.e. the most-derived declaration -- which
+                    // is also C#'s meaning, since `C.M` overrides the `M` that `B` introduced and
+                    // leaves `A`'s alone. Slots are appended as the walk descends, so the
+                    // most-derived matching slot is the one with the largest index; the fold above
+                    // prepends, so `matched` is already in descending index order.
                     match matched with
-                    | [ i ] -> state, slots |> List.mapi (fun j slot -> if j = i then candidate else slot)
+                    | mostDerived :: _ ->
+                        state, slots |> List.mapi (fun j slot -> if j = mostDerived then candidate else slot)
                     | [] ->
                         // CoreCLR does not fail here: `MethodTableBuilder` gives an unmatched
                         // non-newslot virtual a fresh slot. Roslyn never emits that shape, so
@@ -848,9 +864,6 @@ module NativeRuntimeTypeHelpers =
                         // key that `PopulateMethods` indexes with.
                         failwith
                             $"TODO: %s{operation}: virtual method %s{method.Name} on %O{concreteTypeInfo} is not marked newslot but matches no slot in the base vtable; PawPrint does not model CoreCLR's fallback of allocating it a fresh slot"
-                    | several ->
-                        failwith
-                            $"%s{operation}: virtual method %s{method.Name} on %O{concreteTypeInfo} matches %i{several.Length} base vtable slots; overload disambiguation for vtable layout is not implemented"
                 )
 
             let newSlots =
@@ -863,6 +876,28 @@ module NativeRuntimeTypeHelpers =
                 )
 
             state, slots @ newSlots
+
+    /// What identifies a vtable slot's occupant well enough to find it again: the full name of the
+    /// assembly that declares the method, paired with the method's within-assembly identity.
+    ///
+    /// The assembly is not decoration. `MethodInfo.IdentityKey` is a MethodDef *row number*, which
+    /// is unique only within its own module, and a vtable routinely spans assemblies -- a guest type
+    /// deriving from `System.Object` has corelib's rows sitting underneath its own. Row 6 of the
+    /// guest and row 6 of corelib are different methods that compare equal on `IdentityKey` alone.
+    let slotIdentity
+        (slot : VtableSlot)
+        : string * (System.Reflection.Metadata.MethodDefinitionHandle option * SynthesisedMethod option)
+        =
+        slot.DeclaredBy.Assembly.FullName, slot.Method.IdentityKey
+
+    /// The index of the slot occupied by the method with the given identity, or `None`.
+    let slotIndexOfIdentity
+        (target : string * (System.Reflection.Metadata.MethodDefinitionHandle option * SynthesisedMethod option))
+        (slotIdentities :
+            (string * (System.Reflection.Metadata.MethodDefinitionHandle option * SynthesisedMethod option)) list)
+        : int option
+        =
+        slotIdentities |> List.tryFindIndex (fun identity -> identity = target)
 
     /// The size of the instance vtable for a closed type, matching CoreCLR's
     /// `MethodTable::GetNumVirtuals()`. This is the length of `vtableOfClosed` by definition rather

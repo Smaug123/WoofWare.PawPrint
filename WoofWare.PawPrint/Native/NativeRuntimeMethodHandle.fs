@@ -1126,10 +1126,14 @@ module NativeRuntimeMethodHandle =
 
             let slot =
                 vtable
-                |> List.tryFindIndex (fun slot -> slot.Method.IdentityKey = methodInfo.IdentityKey)
+                |> List.map NativeRuntimeTypeHelpers.slotIdentity
+                |> NativeRuntimeTypeHelpers.slotIndexOfIdentity (
+                    identity.GetAssemblyFullName (),
+                    methodInfo.IdentityKey
+                )
                 |> Option.defaultWith (fun () ->
                     failwith
-                        $"%s{operation}: method %s{methodInfo.Name} occupies no slot in the vtable of its declaring type %O{declaringType}; the BCL only asks for the slot of a method whose metadata says Virtual, and on a class or value type such a method is always in the instance vtable"
+                        $"TODO: %s{operation}: method %s{methodInfo.Name} occupies no slot in the vtable of its declaring type %O{declaringType}; CoreCLR would answer with a slot in the non-vtable region beyond GetNumVirtuals, which PawPrint does not model"
                 )
 
             let state =

@@ -8,10 +8,11 @@ using System.Reflection;
 // slot has to be a real vtable *layout*: equal, transitively, for a method and the base-chain method
 // it overrides.
 //
-// Everything here is asserted through `Name` / `DeclaringType` / `ReturnType`, never
-// `GetParameters()` — that is blocked on the unimplemented `RuntimeMethodHandle::GetMethodDef`
+// Everything here is asserted through `Name` / `DeclaringType` / `ReturnType` / `CallingConvention`,
+// never `GetParameters()` — that is blocked on the unimplemented `RuntimeMethodHandle::GetMethodDef`
 // InternalCall, which has nothing to do with slots. Overloads are therefore given *different return
-// types* purely so they can be told apart.
+// types* purely so they can be told apart, except for the vararg pair at the end, which differs only
+// in calling convention and is read back that way.
 
 public interface IExplicit
 {
@@ -188,6 +189,65 @@ public class Program
         }
     }
 
+    // --- `new virtual` with an IDENTICAL signature, then overridden ------------------------------
+    // The shadow above (`S1`/`S2`/`S3`) differs in return type, so a candidate matches only one
+    // inherited slot. Here the signatures are identical, so `Same3.M` matches *both* `Same1`'s slot and
+    // `Same2`'s. CoreCLR searches the parent chain from the immediate parent upwards and takes the
+    // first hit (`LoaderFindMethodInParentClass`), which is also C#'s meaning: `Same3.M` overrides the
+    // `M` that `Same2` introduced and leaves `Same1`'s alone. So `Same2.M` is deduped away and `Same1.M`
+    // survives; an implementation that took the least-derived match would keep `Same2.M` instead, and
+    // one that demanded a unique match would fail outright.
+    public class Same1
+    {
+        public virtual string M ()
+        {
+            return "a";
+        }
+    }
+
+    public class Same2 : Same1
+    {
+        public new virtual string M ()
+        {
+            return "b";
+        }
+    }
+
+    public class Same3 : Same2
+    {
+        public override string M ()
+        {
+            return "c";
+        }
+    }
+
+    // --- overloads differing only in calling convention ------------------------------------------
+    // `V(int)` and `V(int, __arglist)` have the same fixed parameter types and the same return type;
+    // only the signature header's vararg bit tells them apart. A matcher that compares concretised
+    // parameter and return types alone finds both, and (taking the most-derived) would bind `B2.V`
+    // to the *vararg* slot -- leaving the plain overload listed instead of the vararg one. That is
+    // visible through `CallingConvention` without needing `GetParameters()`.
+    public class A2
+    {
+        public virtual string V (int x)
+        {
+            return "a-plain";
+        }
+
+        public virtual string V (int x, __arglist)
+        {
+            return "a-vararg";
+        }
+    }
+
+    public class B2 : A2
+    {
+        public override string V (int x)
+        {
+            return "b-plain";
+        }
+    }
+
     private const BindingFlags All =
         BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static;
 
@@ -218,6 +278,38 @@ public class Program
                 return "<dup>";
 
             found = m.ReturnType.Name;
+        }
+
+        return found;
+    }
+
+    private static int CountOwnedBy (Type t, string name, string owner)
+    {
+        int n = 0;
+
+        foreach (MethodInfo m in t.GetMethods (All))
+        {
+            if (m.Name == name && m.DeclaringType.Name == owner)
+                n++;
+        }
+
+        return n;
+    }
+
+    /// Calling convention of the unique method named `name` whose DeclaringType is `owner`.
+    private static string CcOf (Type t, string name, string owner)
+    {
+        string found = "<none>";
+
+        foreach (MethodInfo m in t.GetMethods (All))
+        {
+            if (m.Name != name || m.DeclaringType.Name != owner)
+                continue;
+
+            if (found != "<none>")
+                return "<dup>";
+
+            found = m.CallingConvention.ToString ();
         }
 
         return found;
@@ -324,6 +416,31 @@ public class Program
         // interfaces down a separate branch), so this must be unaffected either way.
         if (Count (typeof (IExplicit), "E") != 1)
             return 23;
+
+        // Identical-signature `new virtual`, then overridden: the override takes the most-derived
+        // matching slot, so B1's declaration is deduped away and A1's survives.
+        if (Count (typeof (Same3), "M") != 2)
+            return 24;
+
+        if (CountOwnedBy (typeof (Same3), "M", "Same3") != 1)
+            return 25;
+
+        if (CountOwnedBy (typeof (Same3), "M", "Same1") != 1)
+            return 26;
+
+        if (CountOwnedBy (typeof (Same3), "M", "Same2") != 0)
+            return 27;
+
+        // Calling convention is part of the signature: the override binds to the plain overload, so
+        // the one still owned by A2 is the *vararg* one.
+        if (Count (typeof (B2), "V") != 2)
+            return 28;
+
+        if (CcOf (typeof (B2), "V", "B2") != "Standard, HasThis")
+            return 29;
+
+        if (CcOf (typeof (B2), "V", "A2") != "VarArgs, HasThis")
+            return 30;
 
         return 0;
     }
