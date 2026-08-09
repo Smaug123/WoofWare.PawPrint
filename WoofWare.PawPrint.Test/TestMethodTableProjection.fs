@@ -678,6 +678,14 @@ public unsafe struct PointerWrapper
     let private categoryInterface : int32 = 0x000C0000
     let private categoryArray : int32 = 0x00080000
     let private categoryValueType : int32 = 0x00040000
+    let private categoryPrimitiveValueType : int32 = 0x00060000
+    let private categoryTruePrimitive : int32 = 0x00070000
+
+    /// CoreLib reads `IsPrimitive` and `IsValueType` through their own coarser masks rather than
+    /// the full category mask, so a category is only correct if it lands correctly under all
+    /// three (RuntimeHelpers.CoreCLR.cs:787-793).
+    let private isPrimitiveMask : int32 = 0x000E0000
+    let private valueTypeMask : int32 = 0x000C0000
     let private componentSizeMask : int32 = 0x0000FFFF
     let private genericsMask : int32 = 0x00000030
     let private genericsTypicalInst : int32 = 0x00000030
@@ -1001,6 +1009,53 @@ public unsafe struct PointerWrapper
         stringFlags &&& hasComponentSizeFlag |> shouldEqual hasComponentSizeFlag
         stringFlags &&& containsGcPointersFlag |> shouldEqual 0
         stringFlags &&& componentSizeMask |> shouldEqual 2
+
+    /// CoreCLR gives an enum the *primitive* category, not the plain value-type one:
+    /// `SetupMethodTable2` normalises an enum to its underlying integer before calling
+    /// `SetInternalCorElementType` (methodtablebuilder.cpp:11157), and everything that is not
+    /// `ELEMENT_TYPE_CLASS`/`ELEMENT_TYPE_VALUETYPE` sets `enum_flag_Category_PrimitiveValueType`
+    /// (methodtable.cpp:5153). `SetIsTruePrimitive` — the extra bit that makes `TruePrimitive` —
+    /// is set separately, and only for the `System` primitives `CorTypeInfo::FindPrimitiveType`
+    /// names, so an enum sits at `PrimitiveValueType` exactly.
+    ///
+    /// Three types are checked side by side because the interesting claim is that enums are
+    /// treated *distinctly*: a projection that called everything primitive, or everything a value
+    /// type, would satisfy any one of these rows on its own. This asserts the flag bits directly;
+    /// `GetObjectValueBoxedEnum.cs` asserts the behaviour a guest observes through them.
+    [<Test>]
+    let ``Flags put enums in the primitive category, between true primitives and value types`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let state = stateWithLogger loggerFactory
+
+        let state, enumHandle =
+            concretizeCorelibType loggerFactory state (topLevelType "System" "DayOfWeek")
+
+        let state, structHandle =
+            concretizeCorelibType loggerFactory state (topLevelType "System" "DateTime")
+
+        let enumFlags = projectFlagsFromState loggerFactory state enumHandle
+        let structFlags = projectFlagsFromState loggerFactory state structHandle
+        let intFlags = projectFlagsFromState loggerFactory state (handleFor bct.Int32)
+
+        // The three categories are distinct.
+        intFlags &&& categoryMask |> shouldEqual categoryTruePrimitive
+        enumFlags &&& categoryMask |> shouldEqual categoryPrimitiveValueType
+        structFlags &&& categoryMask |> shouldEqual categoryValueType
+
+        // `IsPrimitive` admits the enum alongside the true primitive, and still excludes the
+        // ordinary struct.
+        intFlags &&& isPrimitiveMask |> shouldEqual categoryPrimitiveValueType
+        enumFlags &&& isPrimitiveMask |> shouldEqual categoryPrimitiveValueType
+        structFlags &&& isPrimitiveMask |> shouldNotEqual categoryPrimitiveValueType
+
+        // `IsTruePrimitive` keeps the enum out: it is the full-category test, and the enum lacks
+        // the bit `SetIsTruePrimitive` would have added.
+        enumFlags &&& categoryMask |> shouldNotEqual categoryTruePrimitive
+
+        // All three remain value types, which the coarser mask must continue to report.
+        intFlags &&& valueTypeMask |> shouldEqual categoryValueType
+        enumFlags &&& valueTypeMask |> shouldEqual categoryValueType
+        structFlags &&& valueTypeMask |> shouldEqual categoryValueType
 
     [<Test>]
     let ``Flags compute non-array reference type GC pointer containment from instance fields`` () : unit =

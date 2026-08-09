@@ -650,6 +650,48 @@ module TypeInfo =
             | ResolvedBaseType.Object
             | ResolvedBaseType.Delegate -> false
 
+    /// ECMA/CoreCLR "enum": derives from System.Enum, and is not System.Enum itself.
+    ///
+    /// This is the question CoreCLR's <c>MethodTable::IsEnum</c> asks, and the one that decides an
+    /// enum's MethodTable category: <c>SetupMethodTable2</c> normalises an enum to its underlying
+    /// integer element type (methodtablebuilder.cpp:11157), which lands it in the *primitive*
+    /// category rather than the plain value-type one.
+    ///
+    /// Enums are sealed, so "derives from System.Enum" and "has System.Enum as its immediate base"
+    /// cannot come apart in loadable metadata; this walks, as <see cref="isValueType"/> does.
+    let isEnum
+        (baseClassTypes : BaseClassTypes<'corelib>)
+        (assemblies : AssemblyName -> 'corelib)
+        (getName : 'corelib -> AssemblyName)
+        (getTypeDef : 'corelib -> TypeDefinitionHandle -> TypeInfo<'generic, 'field>)
+        (getTypeRef : 'corelib -> TypeReferenceHandle -> 'corelib * TypeInfo<'generic, 'field>)
+        (getTypeSpec : 'corelib -> TypeSpecificationHandle -> 'corelib * TypeDefinitionHandle)
+        (ty : TypeInfo<'g, 'f>)
+        : bool
+        =
+        match isBaseType baseClassTypes getName ty.Assembly ty.TypeDefHandle with
+        // System.Enum is not itself an enum — it is an abstract reference-shaped type deriving from
+        // System.ValueType — and neither is System.ValueType.
+        | Some ResolvedBaseType.Enum
+        | Some ResolvedBaseType.ValueType -> false
+        | Some ResolvedBaseType.Object
+        | Some ResolvedBaseType.Delegate
+        | None ->
+            match
+                resolveBaseType
+                    baseClassTypes
+                    getName
+                    getTypeDef
+                    getTypeRef
+                    getTypeSpec
+                    (assemblies ty.Assembly)
+                    ty.BaseType
+            with
+            | ResolvedBaseType.Enum -> true
+            | ResolvedBaseType.ValueType
+            | ResolvedBaseType.Object
+            | ResolvedBaseType.Delegate -> false
+
     /// Convenience: not a value type.
     let isReferenceType
         (baseClassTypes : BaseClassTypes<'corelib>)
