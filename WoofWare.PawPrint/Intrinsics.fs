@@ -31,7 +31,7 @@ module Intrinsics =
     ///
     /// What it does *not* do, and what `conv.i4` would, is synthesise bits for a pointer:
     /// an int32 parameter cannot legally receive one, and narrowing it would assign the
-    /// pointer a `PointerHashCounters` identity, perturbing every synthesised value later in
+    /// pointer a `PointerHashState` identity, perturbing every synthesised value later in
     /// the run. `Int32Source.value` likewise still refuses a byref that `conv.i4` already
     /// truncated, whose numeric value depends on an address PawPrint does not model.
     let internal int32ValueArgument (operation : string) (value : EvalStackValue) : int32 =
@@ -691,11 +691,11 @@ module Intrinsics =
                     // bits rather than failing.
                     let combine = if isOr then Int64Source.bitOr else Int64Source.bitAnd
 
-                    let updated, counters = combine operation current value state.PointerHashCounters
+                    let updated, counters = combine operation current value state.PointerHashState
 
                     let state =
                         { state with
-                            PointerHashCounters = counters
+                            PointerHashState = counters
                         }
 
                     let state =

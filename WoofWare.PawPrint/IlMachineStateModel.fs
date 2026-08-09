@@ -97,7 +97,7 @@ type IlMachineState =
         /// hash bits. Each canonical pointer key gets a stable bit pattern
         /// derived from its registration order; distinct keys produce
         /// distinct bits with no collisions. See `PointerHashSynthesis`.
-        PointerHashCounters : PointerHashCounters
+        PointerHashState : PointerHashState
         /// Host-kernel / syscall-emulation state: last-error registers, native
         /// heap pool, file-descriptor table, `LowLevelMonitor` registry, and
         /// monotonic ID counters for opaque kernel handles. Bundled into a
