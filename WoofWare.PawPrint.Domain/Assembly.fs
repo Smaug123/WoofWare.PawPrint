@@ -227,6 +227,20 @@ type DumpedAssembly =
         ContentHash : ImmutableArray<byte>
 
         /// <summary>
+        /// Sequence points from this assembly's portable PDB — embedded in the image, or a
+        /// side-by-side <c>.pdb</c> when the assembly was read from a path — keyed by the
+        /// method definition they describe. Empty when the image carries no debug information,
+        /// which is the normal case for the shared framework.
+        /// </summary>
+        /// <remarks>
+        /// Parsed during <c>Assembly.read</c> and held as plain data, so it outlives both the
+        /// stream the caller handed us and this record's own <c>PeReader</c>. Diagnostics are
+        /// the only consumer: nothing about the guest's behaviour may depend on whether symbols
+        /// happened to be present, because that varies with how the guest was built.
+        /// </remarks>
+        SequencePoints : ImmutableDictionary<ComparableMethodDefinitionHandle, MethodSequencePoints>
+
+        /// <summary>
         /// Dictionary of all custom attributes in this assembly, keyed by their handle.
         /// </summary>
         Attributes : ImmutableDictionary<CustomAttributeHandle, WoofWare.PawPrint.CustomAttribute>
@@ -729,6 +743,15 @@ type DumpedAssembly =
         | false, _ -> None
         | true, v -> Some v
 
+    /// <summary>
+    /// The source span the compiler attributed to <paramref name="ilOffset" /> within
+    /// <paramref name="method" />, if this assembly came with debug information covering it.
+    /// </summary>
+    member this.TryResolveSourceLocation (method : MethodDefinitionHandle) (ilOffset : int) : SourceLocation option =
+        match this.SequencePoints.TryGetValue (ComparableMethodDefinitionHandle.Make method) with
+        | false, _ -> None
+        | true, points -> MethodSequencePoints.resolve ilOffset points
+
     interface IDisposable with
         member this.Dispose () =
             if this.OwnsPeReader then
@@ -1117,6 +1140,11 @@ module Assembly =
 
         let logger = loggerFactory.CreateLogger assy.Name.Name
 
+        // Must happen here for the same reason `contentHash` does: callers own the stream they
+        // handed us. Parsing eagerly additionally decouples the result from `peReader`, which
+        // this record's `Dispose` may close while the parsed assembly lives on.
+        let sequencePoints = PortablePdb.readSequencePoints logger peReader originalPath
+
         let friends =
             let input : FriendAssembliesScanInput =
                 {
@@ -1151,6 +1179,7 @@ module Assembly =
             PeReader = peReader
             OwnsPeReader = true
             ContentHash = contentHash
+            SequencePoints = sequencePoints
             Attributes = attrs
             CustomAttributesByParentToken = customAttributesByParentToken
             ExportedTypes = exportedTypes
