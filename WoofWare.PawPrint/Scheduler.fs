@@ -535,17 +535,8 @@ module Scheduler =
         // can branch here without a wider refactor.
         | WhatWeDid.Executed
         | WhatWeDid.VoluntaryYield ->
-            // Checked before rewriting, because this runs on every scheduler tick — once per
-            // interpreted IL instruction — and almost never has anything to do. `Map.map` has
-            // no "nothing changed, keep the old tree" path: it rebuilds the entire thread table
-            // unconditionally, and `{ state with ... }` then rebuilds the 25-field
-            // `IlMachineState` around it, to produce a value equal to the one that went in.
-            // That was ~312 bytes per tick with a single thread, and both the scan and the
-            // rebuild are O(threads), so a concurrent guest pays more.
-            //
-            // `Map.exists` short-circuits on the first match and allocates nothing, so the
-            // no-op case now costs a walk instead of a copy. When something *is* blocked on
-            // `ran` the original rewrite runs unchanged.
+            // This runs on every scheduler tick (once per interpreted IL instruction),
+            // and almost never has anything to do, so short-circuit first.
             let anyBlockedOnRan =
                 state.ThreadState
                 |> Map.exists (fun _ ts ->
