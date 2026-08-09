@@ -206,11 +206,14 @@ module internal UnaryMetadataTokenOps =
         // the oracle, whereas the elided check is only ever elided where the receiver's identity
         // provably cannot affect the answer.
         //
-        // There is no differential test for this branch and there cannot be one: Roslyn only emits
-        // `ldvirtftn` naming a method that is `virtual` and not `final` — even through a `sealed`
-        // receiver, and even for a `sealed override`, the token names the least-derived non-final
-        // declaration. `MethodInfo.DispatchesVirtually` is unit-tested against `System.Reflection`
-        // instead.
+        // No guest test reaches this branch. Every `ldvirtftn` Roslyn was observed to emit names a
+        // method that is `virtual` and not `final` — even through a `sealed` receiver, and even for
+        // a `sealed override`, where the token names the least-derived non-final declaration (see
+        // `LdvirtftnVirtualDispatch.cs`) — and the test corpus is compiled from C#, so nothing
+        // written there can select this path. Hand-written IL could, which is why the branch exists
+        // rather than failing. `MethodInfo.DispatchesVirtually` is unit-tested against
+        // `System.Reflection` in `TestDispatchesVirtually.fs`, so the branch *condition* is covered
+        // even though the branch body is not.
         if not callSiteMethod.DispatchesVirtually then
             let _receiver, state = IlMachineState.popEvalStack thread state
 
