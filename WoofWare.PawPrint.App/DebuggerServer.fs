@@ -74,14 +74,14 @@ module DebuggerServer =
         match status with
         | ThreadStatus.Runnable -> writer.WriteStringValue "runnable"
         | ThreadStatus.NotStarted -> writer.WriteStringValue "notStarted"
-        | ThreadStatus.BlockedOnJoin (target, deadlineMs) ->
+        | ThreadStatus.BlockedOnJoin (target, deadlineTicks) ->
             writer.WriteStartObject ()
             writer.WriteString ("kind", "blockedOnJoin")
             writer.WriteNumber ("targetThread", threadIdValue target)
 
-            match deadlineMs with
+            match deadlineTicks with
             | None -> ()
-            | Some ms -> writer.WriteNumber ("deadlineMs", ms)
+            | Some ticks -> writer.WriteNumber ("deadlineTicks", ticks)
 
             writer.WriteEndObject ()
         | ThreadStatus.BlockedOnClassInit blocker ->
@@ -94,47 +94,47 @@ module DebuggerServer =
             writer.WriteString ("kind", "blockedOnMonitorAcquire")
             writer.WriteNumber ("monitor", monitor)
             writer.WriteEndObject ()
-        | ThreadStatus.BlockedOnMonitorWait (LowLevelMonitorId monitor, deadlineMs) ->
+        | ThreadStatus.BlockedOnMonitorWait (LowLevelMonitorId monitor, deadlineTicks) ->
             writer.WriteStartObject ()
             writer.WriteString ("kind", "blockedOnMonitorWait")
             writer.WriteNumber ("monitor", monitor)
 
-            match deadlineMs with
+            match deadlineTicks with
             | None -> ()
-            | Some ms -> writer.WriteNumber ("deadlineMs", ms)
+            | Some ticks -> writer.WriteNumber ("deadlineTicks", ticks)
 
             writer.WriteEndObject ()
-        | ThreadStatus.BlockedOnSyncBlockAcquire (lockObject, deadlineMs) ->
+        | ThreadStatus.BlockedOnSyncBlockAcquire (lockObject, deadlineTicks) ->
             writer.WriteStartObject ()
             writer.WriteString ("kind", "blockedOnSyncBlockAcquire")
             writer.WriteNumber ("lockObject", heapAddressValue lockObject)
 
-            match deadlineMs with
+            match deadlineTicks with
             | None -> ()
-            | Some ms -> writer.WriteNumber ("deadlineMs", ms)
+            | Some ticks -> writer.WriteNumber ("deadlineTicks", ticks)
 
             writer.WriteEndObject ()
-        | ThreadStatus.BlockedOnSyncBlockWait (lockObject, deadlineMs) ->
+        | ThreadStatus.BlockedOnSyncBlockWait (lockObject, deadlineTicks) ->
             writer.WriteStartObject ()
             writer.WriteString ("kind", "blockedOnSyncBlockWait")
             writer.WriteNumber ("lockObject", heapAddressValue lockObject)
 
-            match deadlineMs with
+            match deadlineTicks with
             | None -> ()
-            | Some ms -> writer.WriteNumber ("deadlineMs", ms)
+            | Some ticks -> writer.WriteNumber ("deadlineTicks", ticks)
 
             writer.WriteEndObject ()
-        | ThreadStatus.BlockedOnWaitHandle (WaitHandleId handle, deadlineMs) ->
+        | ThreadStatus.BlockedOnWaitHandle (WaitHandleId handle, deadlineTicks) ->
             writer.WriteStartObject ()
             writer.WriteString ("kind", "blockedOnWaitHandle")
             writer.WriteNumber ("handle", handle)
 
-            match deadlineMs with
+            match deadlineTicks with
             | None -> ()
-            | Some ms -> writer.WriteNumber ("deadlineMs", ms)
+            | Some ticks -> writer.WriteNumber ("deadlineTicks", ticks)
 
             writer.WriteEndObject ()
-        | ThreadStatus.BlockedOnWaitHandles (handles, waitAll, deadlineMs) ->
+        | ThreadStatus.BlockedOnWaitHandles (handles, waitAll, deadlineTicks) ->
             writer.WriteStartObject ()
             writer.WriteString ("kind", "blockedOnWaitHandles")
             writer.WriteBoolean ("waitAll", waitAll)
@@ -145,18 +145,18 @@ module DebuggerServer =
 
             writer.WriteEndArray ()
 
-            match deadlineMs with
+            match deadlineTicks with
             | None -> ()
-            | Some ms -> writer.WriteNumber ("deadlineMs", ms)
+            | Some ticks -> writer.WriteNumber ("deadlineTicks", ticks)
 
             writer.WriteEndObject ()
-        | ThreadStatus.BlockedOnSleep deadlineMs ->
+        | ThreadStatus.BlockedOnSleep deadlineTicks ->
             writer.WriteStartObject ()
             writer.WriteString ("kind", "blockedOnSleep")
 
-            match deadlineMs with
+            match deadlineTicks with
             | None -> ()
-            | Some ms -> writer.WriteNumber ("deadlineMs", ms)
+            | Some ticks -> writer.WriteNumber ("deadlineTicks", ticks)
 
             writer.WriteEndObject ()
         | ThreadStatus.Terminated -> writer.WriteStringValue "terminated"

@@ -137,7 +137,7 @@ module NativeMonitor =
                 | CliType.Numeric (CliNumericType.Int32 i) -> i
                 | other -> failwith $"%s{operation}: expected int32 timeout, got %O{other}"
 
-            let deadlineMs =
+            let deadlineTicks =
                 if timeout = System.Threading.Timeout.Infinite then
                     // The managed `Monitor.Wait(obj)` overload routes through the same QCall
                     // with `millisecondsTimeout = -1`; an infinite wait has no deadline and
@@ -156,7 +156,10 @@ module NativeMonitor =
                     // driver tick's `fireExpiredDeadlines` pass — observably an immediate
                     // timeout. `int64` keeps the addition safe for `Int32.MaxValue`
                     // timeouts against a long-running clock.
-                    Some (state.Kernel.VirtualClockMs + int64 timeout)
+                    Some (
+                        state.Kernel.VirtualClockTicks
+                        + int64 timeout * EmulatedKernel.ticksPerMillisecond
+                    )
 
             // Push the optimistic `Int32 1` (signalled) onto the calling thread's eval stack
             // *before* parking. Park flips the thread's status; the IL site advances past
@@ -168,7 +171,7 @@ module NativeMonitor =
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 1)) ctx.Thread
 
-            let state = SyncBlockMonitor.wait ctx.Thread addr deadlineMs state
+            let state = SyncBlockMonitor.wait ctx.Thread addr deadlineTicks state
 
             NativeHandlerResult.completed state |> Some
 

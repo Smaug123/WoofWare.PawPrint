@@ -40,7 +40,7 @@ namespace WoofWare.PawPrint
 /// BCL.
 ///
 /// Timeouts: `wait` accepts an optional absolute virtual-clock
-/// `deadlineMs`. `None` is the infinite-wait shape used by the void
+/// `deadlineTicks`. `None` is the infinite-wait shape used by the void
 /// `SystemNative_LowLevelMonitor_Wait` entry point; `Some ms` is the
 /// finite-deadline shape used by `TimedWait`. The deadline is recorded
 /// on the waiter's `BlockedOnMonitorWait` status, where the driver
@@ -257,7 +257,7 @@ module LowLevelMonitor =
     /// monitor but has not yet been parked, because both happen in a single
     /// `wait` call.
     ///
-    /// `deadlineMs = None` mirrors the infinite-timeout
+    /// `deadlineTicks = None` mirrors the infinite-timeout
     /// `SystemNative_LowLevelMonitor_Wait` entry point: the thread will
     /// only wake from a `Signal_Release` or a spurious wake. `Some ms`
     /// is the finite-deadline shape used by `TimedWait`: the driver
@@ -266,7 +266,7 @@ module LowLevelMonitor =
     let wait
         (thread : ThreadId)
         (id : LowLevelMonitorId)
-        (deadlineMs : int64 option)
+        (deadlineTicks : int64 option)
         (state : IlMachineState)
         : IlMachineState
         =
@@ -291,7 +291,7 @@ module LowLevelMonitor =
 
             state
             |> writeMonitor id monitor
-            |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnMonitorWait (id, deadlineMs))
+            |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnMonitorWait (id, deadlineTicks))
 
         | head :: rest ->
             // Transfer ownership to the AcquireQueue head and park the
@@ -306,7 +306,7 @@ module LowLevelMonitor =
             state
             |> writeMonitor id monitor
             |> Scheduler.setThreadStatus head ThreadStatus.Runnable
-            |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnMonitorWait (id, deadlineMs))
+            |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnMonitorWait (id, deadlineTicks))
 
     /// `Signal_Release` is the wakeup half of the condvar protocol. The
     /// caller must hold the monitor; the call wakes at most one thread

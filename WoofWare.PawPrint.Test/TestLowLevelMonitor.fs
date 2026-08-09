@@ -935,7 +935,7 @@ module TestLowLevelMonitor =
     let private parkInTimedWait
         (thread : ThreadId)
         (id : LowLevelMonitorId)
-        (deadlineMs : int64)
+        (deadlineTicks : int64)
         (state : IlMachineState)
         : IlMachineState
         =
@@ -945,7 +945,7 @@ module TestLowLevelMonitor =
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 1)) thread
 
-        LowLevelMonitor.wait thread id (Some deadlineMs) state
+        LowLevelMonitor.wait thread id (Some deadlineTicks) state
 
     [<Test>]
     let ``fireTimeout on free monitor grants ownership and rewrites Int32 1 to Int32 0`` () : unit =

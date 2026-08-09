@@ -466,13 +466,16 @@ type EmulatedKernel =
         /// `EmulatedKernel.monotonicTimestampNanos` — rather than either
         /// maintaining a parallel clock.
         ///
-        /// The driver loop advances this by 1 ms each time it increments
-        /// `StepCounter`, so the guest sees one wall-clock millisecond per
-        /// scheduler tick. That makes elapsed-time polling loops like
-        /// `while (TickCount64 - start &lt; N)` terminate in O(N) ticks —
-        /// the absolute rate is "very slow computer" by wall-clock
-        /// standards but exact bit-for-bit reproducibility is the goal,
-        /// not realism.
+        /// Denominated in 100 ns ticks — `DateTime`'s own quantum — so that
+        /// `DateTime.UtcNow` needs no scaling and `Stopwatch` resolves finer
+        /// than a millisecond. The driver loop advances it by
+        /// `instructionCostTicks` each time it increments `StepCounter`; see
+        /// that constant for the rate and what it means as a machine speed.
+        ///
+        /// Elapsed-time polling loops such as `while (TickCount64 - start &lt; N)`
+        /// therefore terminate in `N * ticksPerMillisecond / instructionCostTicks`
+        /// scheduler ticks, which is the cost to keep in mind when choosing the
+        /// rate: it buys sleep fidelity and is paid for in run length.
         ///
         /// Reading the field never mutates it: the BCL's `TickCount64`
         /// observers stay pure, and the consistency property "two threads
@@ -483,15 +486,15 @@ type EmulatedKernel =
         /// no thread is Runnable, and that jump must not require a
         /// matching jump in `StepCounter` (which would skew the spurious-
         /// wakeup schedule).
-        VirtualClockMs : int64
+        VirtualClockTicks : int64
         /// Wall-clock time, in milliseconds since the Unix epoch, that the
         /// simulated process boots at — i.e. the wall-clock reading that
-        /// corresponds to `VirtualClockMs = 0`. The realtime clock the guest
+        /// corresponds to `VirtualClockTicks = 0`. The realtime clock the guest
         /// observes is the affine image of the monotonic one:
-        /// `systemTimeAsTicks = (WallClockEpochMs + VirtualClockMs) * 10_000`.
+        /// `systemTimeAsTicks = (WallClockEpochMs + VirtualClockTicks) * 10_000`.
         ///
         /// Deliberately *not* a second mutable clock advanced alongside
-        /// `VirtualClockMs`. A parallel field would be behaviourally identical
+        /// `VirtualClockTicks`. A parallel field would be behaviourally identical
         /// today while silently drifting out of step the first time someone
         /// adds a new way for the monotonic clock to advance (the driver's
         /// deadline jump is exactly such a path) and forgets to update both.
@@ -742,11 +745,43 @@ module EmulatedKernel =
     /// 100ns ticks per millisecond. The `SystemNative_GetSystemTime*` family
     /// speaks in ticks while PawPrint's virtual clock speaks in milliseconds,
     /// so every wall-clock derivation goes through this factor. A consequence
-    /// is that every tick value the guest ever observes is a multiple of
-    /// 10,000: `DateTime.UtcNow` has millisecond granularity here, where real
-    /// `clock_gettime(CLOCK_REALTIME)` is far finer.
+    /// is the unit `VirtualClockTicks` itself is denominated in, so no scaling
+    /// is applied to the clock when deriving `DateTime.UtcNow`; the factor
+    /// converts the *epoch* offset, and converts guest millisecond timeouts
+    /// into deadlines.
     [<Literal>]
     let ticksPerMillisecond : int64 = 10_000L
+
+    /// Largest legal wall-clock reading, in 100 ns ticks since the Unix epoch:
+    /// `DateTime.MaxValue.Ticks - DateTime.UnixEpoch.Ticks`. `DateTime` cannot
+    /// name an instant beyond it.
+    ///
+    /// Deliberately *not* `maxWallClockEpochMs * ticksPerMillisecond`, which is
+    /// 9,999 ticks smaller. The two differ because they bound different things:
+    /// `maxWallClockEpochMs` is the last whole millisecond, which is the right
+    /// ceiling for `KernelConfig.WallClockEpochMs` because that knob is
+    /// denominated in milliseconds, while the clock resolves every 100 ns tick
+    /// up to the end of `DateTime`'s range. Deriving this one from the other
+    /// would reject the final sub-millisecond of representable time.
+    [<Literal>]
+    let maxWallClockTicks : int64 = 2534023007999999999L
+
+    /// Virtual time charged for one retired IL instruction, in 100 ns ticks.
+    ///
+    /// This is the *rate* half of the clock; `ticksPerMillisecond` is the unit half. Together
+    /// they say how fast the simulated machine is: at one tick per instruction it would be a
+    /// self-consistent 10 MIPS machine.
+    ///
+    /// Set here to a whole millisecond, which is deliberately absurd as a machine speed and is
+    /// exactly the historical behaviour — the clock advanced 1 ms per instruction when it was
+    /// denominated in milliseconds. Keeping the rate at its old value makes the re-denomination
+    /// a pure change of unit, observationally identical to what came before, so that the
+    /// separate change of *rate* is a one-line diff that can be reviewed and measured on its
+    /// own. See issue #844: at this rate the shortest sleep a guest can ask for, `Sleep(1)`,
+    /// expires within the same tick it was requested in, so it parks the caller for zero
+    /// scheduling decisions and the BCL's spin-then-sleep backoff does nothing at all.
+    [<Literal>]
+    let instructionCostTicks : int64 = 10_000L
 
     /// Largest legal `EmulatedKernel.WallClockEpochMs`: 9999-12-31T23:59:59.999Z
     /// as milliseconds since the Unix epoch, which is the last instant
@@ -791,7 +826,7 @@ module EmulatedKernel =
             SpuriousWakeup = SpuriousWakeupStrategy.Disabled
             SyncBlockSpuriousWakeup = SyncBlockSpuriousWakeupStrategy.Disabled
             StepCounter = 0L
-            VirtualClockMs = 0L
+            VirtualClockTicks = 0L
             WallClockEpochMs = 0L
             NonCryptoRandomState = NonCryptoRandom.initialState
             CryptoRandomState = cryptoRandomInitialState
@@ -874,7 +909,7 @@ module EmulatedKernel =
     ///
     /// Pure: reading the clock never advances it, so two threads reading on the
     /// same scheduler tick observe the same instant — the same property
-    /// `VirtualClockMs` guarantees for `Environment.TickCount64`, and the
+    /// `VirtualClockTicks` guarantees for `Environment.TickCount64`, and the
     /// reason this is a plain derivation rather than an advance-on-read
     /// counter. That does mean `DateTime.UtcNow` is only *weakly* monotonic
     /// here: repeated reads within one scheduler tick are equal, so it is not
@@ -884,62 +919,104 @@ module EmulatedKernel =
     let systemTimeAsTicks (kernel : EmulatedKernel) : int64 =
         // A kernel built by record-copy can bypass `withWallClockEpochMs`, so
         // re-assert the invariant here: the guest must never observe a tick
-        // count that names no `DateTime`. Checking both operands first also
-        // establishes that neither the addition nor the multiplication below
-        // can overflow (each is at most `maxWallClockEpochMs`, whose doubled
-        // value scaled by `ticksPerMillisecond` still fits in an int64).
+        // count that names no `DateTime`.
+        //
+        // The association matters. `WallClockEpochMs` is milliseconds and
+        // `VirtualClockTicks` is already in `DateTime`'s own 100 ns unit, so the
+        // scaling applies to the epoch alone: scaling their *sum* would first
+        // have to convert the clock back to milliseconds and would throw away
+        // its sub-millisecond digits. Doing it this way is also what keeps the
+        // arithmetic in range — the guards below bound each operand, and
+        // `maxWallClockEpochMs * ticksPerMillisecond` is 2.53e18, comfortably
+        // inside int64, where the same bound expressed in nanoseconds
+        // (2.53e20) would not be.
         if kernel.WallClockEpochMs < 0L || kernel.WallClockEpochMs > maxWallClockEpochMs then
             failwith
                 $"kernel WallClockEpochMs is %d{kernel.WallClockEpochMs}, which is outside the range [0, %d{maxWallClockEpochMs}] that System.DateTime can represent"
 
-        if kernel.VirtualClockMs < 0L || kernel.VirtualClockMs > maxWallClockEpochMs then
+        if kernel.VirtualClockTicks < 0L || kernel.VirtualClockTicks > maxWallClockTicks then
             failwith
-                $"kernel VirtualClockMs is %d{kernel.VirtualClockMs}, which is outside the range [0, %d{maxWallClockEpochMs}] a wall-clock reading can be derived from"
+                $"kernel VirtualClockTicks is %d{kernel.VirtualClockTicks}, which is outside the range [0, %d{maxWallClockTicks}] a wall-clock reading can be derived from"
 
-        let ms = kernel.WallClockEpochMs + kernel.VirtualClockMs
+        let ticks = kernel.WallClockEpochMs * ticksPerMillisecond + kernel.VirtualClockTicks
 
-        if ms > maxWallClockEpochMs then
+        if ticks > maxWallClockTicks then
             failwith
-                $"simulated wall clock has reached %d{ms} ms since the Unix epoch, past the %d{maxWallClockEpochMs} ms that System.DateTime can represent; lower KernelConfig.WallClockEpochMs"
+                $"simulated wall clock has reached %d{ticks} ticks since the Unix epoch, past the %d{maxWallClockTicks} that System.DateTime can represent; lower KernelConfig.WallClockEpochMs"
 
-        ms * ticksPerMillisecond
+        ticks
 
     /// Nanoseconds per millisecond. `SystemNative_GetTimestamp` speaks in
-    /// nanoseconds while PawPrint's virtual clock speaks in milliseconds, so
-    /// the high-resolution timestamp derivation goes through this factor. A
-    /// consequence is that every timestamp the guest ever observes is a
-    /// multiple of 1,000,000: `Stopwatch` has millisecond granularity here,
-    /// where real `clock_gettime(CLOCK_MONOTONIC)` is far finer.
+    /// nanoseconds while PawPrint's virtual clock speaks in 100 ns ticks, so
+    /// the high-resolution timestamp derivation goes through this factor. Every
+    /// timestamp the guest observes is therefore a multiple of 100 — `Stopwatch`
+    /// has 100 ns granularity here, matching `DateTime`'s quantum, where real
+    /// `clock_gettime(CLOCK_MONOTONIC)` is finer still.
     [<Literal>]
-    let nanosecondsPerMillisecond : int64 = 1_000_000L
+    let nanosecondsPerTick : int64 = 100L
 
-    /// Largest `VirtualClockMs` from which a nanosecond timestamp can be
+    /// Largest `VirtualClockTicks` from which a nanosecond timestamp can be
     /// derived without overflowing the `int64` the PAL entry point returns:
-    /// `Int64.MaxValue / nanosecondsPerMillisecond`, i.e. about 292 years of
-    /// simulated uptime.
+    /// `Int64.MaxValue / nanosecondsPerTick`, i.e. about 29 years of simulated
+    /// uptime.
     ///
     /// The horizon is reachable by ordinary guest code, not merely in
-    /// principle. A sleep deadline is `VirtualClockMs + timeout` with no cap,
+    /// principle. A sleep deadline is `VirtualClockTicks + timeout` with no cap,
     /// and when no thread is Runnable the driver's deadline jump moves the
     /// clock the whole way there, so each `Thread.Sleep(Int32.MaxValue)`
-    /// advances it by about 2.1e9 ms: eight of them advance it by
-    /// 17,179,869,451 ms, and roughly 4,300 cross this bound. So
+    /// advances it by about 2.1e13 ticks, and roughly 4,300 cross this bound. So
     /// `monotonicTimestampNanos` checks rather than assumes — silently wrapping
     /// into a negative timestamp would hand the guest a monotonic clock that
     /// had run backwards, which is the one guarantee the primitive exists to
     /// provide.
     ///
-    /// The bound is *tighter* than `maxWallClockEpochMs` by a factor of about
+    /// The bound is *tighter* than `maxWallClockTicks` by a factor of about
     /// 27, so there is a band of clock readings from which `DateTime.UtcNow`
     /// and `Environment.TickCount64` are derivable but `Stopwatch.GetTimestamp`
-    /// is not. Nothing bounds `VirtualClockMs` at its write sites, so each
-    /// clock-derived PAL entry enforces its own ceiling lazily, at the moment
-    /// the guest reads that particular clock — `systemTimeAsTicks` has the same
-    /// shape. Bounding the field centrally at the scheduler, its sole writer,
-    /// would collapse these into one invariant and fault at the wait that
-    /// pushed time past the horizon rather than at an arbitrary later read.
+    /// is not. `withVirtualClockTicks` bounds the field centrally at the
+    /// scheduler, its sole writer, using *this* ceiling because it is the
+    /// tightest; the per-reader guards remain because a kernel assembled by
+    /// record-copy can bypass the writer, and `systemTimeAsTicks` has the same
+    /// shape for the same reason.
     [<Literal>]
-    let maxMonotonicTimestampClockMs : int64 = 9223372036854L
+    let maxMonotonicTimestampClockTicks : int64 = 92233720368547758L
+
+    /// Advance the virtual clock to `ticks`, which must not move it backwards and must keep it
+    /// inside the range every clock-derived reading can be computed from.
+    ///
+    /// The bound is `maxMonotonicTimestampClockTicks` — the tightest of the per-reader ceilings
+    /// — so this is deliberately stricter than any individual reader requires. Enforcing it at
+    /// the writer means a guest that runs the clock off the end faults at the wait that did it,
+    /// naming the operation responsible, rather than at whichever unlucky later `Stopwatch` read
+    /// happens to trip over the value.
+    ///
+    /// It also keeps deadline arithmetic total. A finite deadline is
+    /// `clock + timeoutMs * ticksPerMillisecond`, and `Thread.Sleep(Int32.MaxValue)` contributes
+    /// about 2.1e13 ticks; with the clock bounded at 9.2e16 the sum cannot approach
+    /// `Int64.MaxValue`, so the seven deadline sites need no checked arithmetic of their own.
+    /// Without the bound they would need it: the deadline jump advances the clock to a deadline
+    /// *without* retiring a step, so a loop of `Sleep(Int32.MaxValue)` reaches the wrap in about
+    /// 430,000 iterations — a few million interpreted instructions, which is minutes rather than
+    /// the unreachable 4.3 billion jumps the millisecond-denominated clock required.
+    let withVirtualClockTicks (ticks : int64) (kernel : EmulatedKernel) : EmulatedKernel =
+        // Checked independently of the monotonicity comparison below, which on its own would
+        // wave through a negative target whenever the current value is more negative still —
+        // reachable because a kernel assembled by record-copy never passed through here.
+        if ticks < 0L then
+            failwith
+                $"virtual clock would be set to %d{ticks} ticks; simulated uptime starts at zero and cannot be negative"
+
+        if ticks < kernel.VirtualClockTicks then
+            failwith
+                $"virtual clock would move backwards, from %d{kernel.VirtualClockTicks} to %d{ticks} ticks; it is monotonic by construction and every guest-visible clock derives from it"
+
+        if ticks > maxMonotonicTimestampClockTicks then
+            failwith
+                $"simulated uptime has reached %d{ticks} ticks (100 ns each), past the %d{maxMonotonicTimestampClockTicks} from which a monotonic nanosecond timestamp can still be derived — about 292 years. The guest has almost certainly been jumping the clock with long timed waits; PawPrint cannot represent time beyond this."
+
+        { kernel with
+            VirtualClockTicks = ticks
+        }
 
     /// Monotonic time since the simulated process booted, in nanoseconds:
     /// exactly what `SystemNative_GetTimestamp` returns, and hence what
@@ -948,7 +1025,7 @@ module EmulatedKernel =
     /// Real CoreCLR answers this from `minipal_hires_ticks()`
     /// (`clock_gettime_nsec_np(CLOCK_UPTIME_RAW)` on macOS,
     /// `clock_gettime(CLOCK_MONOTONIC)` on Linux). PawPrint derives it from
-    /// the same `VirtualClockMs` that already backs
+    /// the same `VirtualClockTicks` that already backs
     /// `SystemNative_GetLowResolutionTimestamp` — which upstream is
     /// `minipal_lowres_ticks()`, *the same clock* read in milliseconds. Making
     /// both PawPrint entry points views of one field is therefore not merely
@@ -967,18 +1044,36 @@ module EmulatedKernel =
     /// reads within one tick are equal, so a zero-length measured interval is
     /// normal). Real `CLOCK_MONOTONIC` makes no uniqueness guarantee either.
     let monotonicTimestampNanos (kernel : EmulatedKernel) : int64 =
-        // The driver loop is the only production writer of `VirtualClockMs`
+        // The driver loop is the only production writer of `VirtualClockTicks`
         // and only ever advances it from zero, but a kernel built by
         // record-copy (as tests do) can bypass that, so re-assert here rather
         // than trusting construction.
         if
-            kernel.VirtualClockMs < 0L
-            || kernel.VirtualClockMs > maxMonotonicTimestampClockMs
+            kernel.VirtualClockTicks < 0L
+            || kernel.VirtualClockTicks > maxMonotonicTimestampClockTicks
         then
             failwith
-                $"kernel VirtualClockMs is %d{kernel.VirtualClockMs}, which is outside the range [0, %d{maxMonotonicTimestampClockMs}] a nanosecond monotonic timestamp can be derived from without overflowing int64"
+                $"kernel VirtualClockTicks is %d{kernel.VirtualClockTicks}, which is outside the range [0, %d{maxMonotonicTimestampClockTicks}] a nanosecond monotonic timestamp can be derived from without overflowing int64"
 
-        kernel.VirtualClockMs * nanosecondsPerMillisecond
+        kernel.VirtualClockTicks * nanosecondsPerTick
+
+    /// The guest-visible `Environment.TickCount64`, in whole milliseconds:
+    /// `SystemNative_GetLowResolutionTimestamp`'s reading.
+    ///
+    /// Lives here beside `monotonicTimestampNanos` and `systemTimeAsTicks` rather than inline in
+    /// the PAL handler, so that all three projections of the one clock sit together and can be
+    /// checked against each other without a test having to restate the arithmetic of any of
+    /// them. Upstream these two monotonic entry points (`minipal_lowres_ticks` and
+    /// `minipal_hires_ticks`) read the same clock at two resolutions, and the contract a guest
+    /// depends on is that they never disagree — so this must be exactly the high-resolution
+    /// reading truncated to milliseconds.
+    ///
+    /// Truncating rather than rounding is faithful: upstream's coarse clock truncates too.
+    /// Unguarded, unlike its siblings, because dividing a clock already bounded below
+    /// `Int64.MaxValue` cannot overflow or go negative.
+    let lowResolutionTimestampMs (kernel : EmulatedKernel) : int64 =
+        kernel.VirtualClockTicks / ticksPerMillisecond
+
 
     /// Largest value CoreCLR will accept from the processor-count
     /// configuration knob (`MAX_PROCESSOR_COUNT` in

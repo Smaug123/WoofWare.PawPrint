@@ -101,7 +101,7 @@ module NativeThreading =
         (timeout : int)
         : IlMachineState * bool
         =
-        let deadlineMs : int64 option option =
+        let deadlineTicks : int64 option option =
             // `None` = caller passed `0` (non-blocking poll, no block at all).
             // `Some None` = caller passed `-1` (infinite wait, block with no deadline).
             // `Some (Some ms)` = caller passed `> 0` (finite timeout, block with deadline).
@@ -122,7 +122,12 @@ module NativeThreading =
                 // `timeout > 0` is the finite-wait case. `int64` keeps the addition
                 // safe against an `Int32.MaxValue` timeout against a long-running
                 // virtual clock.
-                Some (Some (state.Kernel.VirtualClockMs + int64 timeout))
+                Some (
+                    Some (
+                        state.Kernel.VirtualClockTicks
+                        + int64 timeout * EmulatedKernel.ticksPerMillisecond
+                    )
+                )
 
         let targetThreadId = threadIdFromThreadAddr state "Thread.Join" threadAddr
 
@@ -140,7 +145,7 @@ module NativeThreading =
         // waits 50 ms and returns false. The non-blocking poll (`timeout = 0`)
         // is also fine for self: `targetTerminated` is false for a running self,
         // so we return false immediately without any status transition.
-        match deadlineMs with
+        match deadlineTicks with
         | Some None when targetThreadId = ctx.Thread ->
             failwith
                 $"Thread.Join: thread {ctx.Thread} is attempting to join itself with an infinite timeout, which would deadlock. The real CLR also hangs on infinite self-join; PawPrint reports this at the call site rather than as a downstream deadlock. Use Thread.Join(int) with a finite timeout (or 0) if you want the call to return."
@@ -168,7 +173,7 @@ module NativeThreading =
 
         let targetTerminated = targetState.Status = ThreadStatus.Terminated
 
-        match deadlineMs with
+        match deadlineTicks with
         | None ->
             // timeout = 0: non-blocking poll. Result is whether the target is
             // already terminated; no status transition.
@@ -630,7 +635,7 @@ module NativeThreading =
             // `WaitHandle.ToTimeoutMilliseconds`, so this single arm covers
             // both overloads.
             //
-            // PawPrint's deterministic scheduler advances `VirtualClockMs`
+            // PawPrint's deterministic scheduler advances `VirtualClockTicks`
             // one tick at a time; the actual wait is implemented by parking
             // the thread in `BlockedOnSleep` with an absolute deadline
             // (or `None` for `Timeout.Infinite`) and letting
@@ -671,7 +676,10 @@ module NativeThreading =
                     failwith
                         $"%s{operation}: negative timeout %d{millisecondsTimeout} ms is not Infinite (-1); the BCL Thread.Sleep call site is required to pre-validate this. Reaching here means the validation was bypassed (e.g. by a synthesised IL call) — bug in the caller."
                 else
-                    let deadline = state.Kernel.VirtualClockMs + int64 millisecondsTimeout
+                    let deadline =
+                        state.Kernel.VirtualClockTicks
+                        + int64 millisecondsTimeout * EmulatedKernel.ticksPerMillisecond
+
                     Scheduler.blockOnSleep ctx.Thread (Some deadline) state
 
             NativeHandlerResult.completed state |> Some
@@ -707,16 +715,16 @@ module NativeThreading =
             // wall-clock time proportional to `iterations`.
             //
             // Elapsed time *is* observable to a PawPrint guest — that is what
-            // `EmulatedKernel.VirtualClockMs` is, and `Environment.TickCount64`
+            // `EmulatedKernel.VirtualClockTicks` is, and `Environment.TickCount64`
             // and `DateTime.UtcNow` both read it. But the driver loop advances
-            // it as a function of scheduler ticks (one tick, one millisecond,
-            // per instruction retired), never as a function of what a given
+            // it as a function of scheduler ticks (`instructionCostTicks` of
+            // virtual time per instruction retired), never as a function of what a given
             // instruction physically costs. So this handler doing no work does
             // not freeze the guest's clock: the `call` still retires, the clock
             // still moves, and a guest delay loop such as
-            // `while (TickCount64 - start < N) Thread.SpinWait(k);` terminates —
-            // in fact almost immediately, since a millisecond per instruction is
-            // a generous rate to be billed at.
+            // `while (TickCount64 - start < N) Thread.SpinWait(k);` terminates,
+            // after about `N * ticksPerMillisecond / instructionCostTicks`
+            // iterations.
             //
             // What is deliberately not modelled is the *proportionality* to
             // `iterations`: `SpinWait(1)` and `SpinWait(10_000_000)` each cost
@@ -729,7 +737,7 @@ module NativeThreading =
             // days of virtual time, firing every outstanding timeout in the
             // process — strictly worse for guest fidelity than under-charging.
             // And it would make a native handler a second writer of
-            // `VirtualClockMs`, which `EmulatedKernel` documents as
+            // `VirtualClockTicks`, which `EmulatedKernel` documents as
             // scheduler-only; the property that two threads reading on the same
             // tick observe the same value is stated there and relied on by the
             // `SystemNative_GetLowResolutionTimestamp` and

@@ -369,11 +369,14 @@ module NativeSystemNative =
             // CoreCLR returns `clock_gettime(CLOCK_MONOTONIC_COARSE)`
             // converted to milliseconds; PawPrint substitutes the
             // deterministic virtual clock the scheduler maintains so the
-            // result is bit-for-bit reproducible. Read-only: the
-            // scheduler is the sole writer of `VirtualClockMs`.
+            // result is bit-for-bit reproducible. The clock counts 100 ns
+            // ticks, so the conversion to the milliseconds this entry point
+            // returns is an explicit divide — truncating, which is faithful:
+            // upstream's coarse clock truncates too. Read-only: the
+            // scheduler is the sole writer of `VirtualClockTicks`.
             state
             |> IlMachineState.pushToEvalStack'
-                (EvalStackValue.Int64 (Int64Source.Verbatim state.Kernel.VirtualClockMs))
+                (EvalStackValue.Int64 (Int64Source.Verbatim (EmulatedKernel.lowResolutionTimestampMs state.Kernel)))
                 ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
@@ -519,7 +522,7 @@ module NativeSystemNative =
             // on Unix (Stopwatch.Unix.cs) — so the units here are pinned by
             // CoreLib rather than chosen.
             //
-            // The reading derives from the same `VirtualClockMs` that backs
+            // The reading derives from the same `VirtualClockTicks` that backs
             // `SystemNative_GetLowResolutionTimestamp` above, because upstream
             // *that* entry point is `minipal_lowres_ticks()`, which reads the
             // very same monotonic clock in milliseconds. One field for both
@@ -529,7 +532,7 @@ module NativeSystemNative =
             // `EmulatedKernel.monotonicTimestampNanos`.
             //
             // Read-only, like every other clock observer: the scheduler is the
-            // sole writer of `VirtualClockMs`.
+            // sole writer of `VirtualClockTicks`.
             state
             |> IlMachineState.pushToEvalStack'
                 (EvalStackValue.Int64 (Int64Source.Verbatim (EmulatedKernel.monotonicTimestampNanos state.Kernel)))
@@ -546,7 +549,7 @@ module NativeSystemNative =
             // from the same deterministic virtual clock that backs
             // `Environment.TickCount64`, offset by the kernel's boot-time
             // wall-clock reading. Read-only, like every other clock observer:
-            // the scheduler is the sole writer of `VirtualClockMs`, and
+            // the scheduler is the sole writer of `VirtualClockTicks`, and
             // `WallClockEpochMs` never changes after configuration.
             state
             |> IlMachineState.pushToEvalStack'
