@@ -32,10 +32,19 @@ module internal NativeReflectionInvocation =
     /// `Signature_Init` derived from this same `MethodInfo.Signature`, and binding a call against a
     /// view rather than an identity is what lets the two drift apart silently.
     ///
-    /// Caveat, which CoreCLR does not share: CoreCLR snapshots the return TypeHandle before the
-    /// call, whereas we re-derive it afterwards. A guest that reflectively overwrote
-    /// `Signature._pMethod` from inside the target method would change our post-call classification
-    /// where CoreCLR's would be fixed.
+    /// Everything this reads is mutable heap state, so *when* it is called is part of its contract:
+    /// CoreCLR reads `pMeth` and `retTH` once, before `CallDescrWorkerWithHandler`, and a guest that
+    /// reflectively overwrote `Signature._pMethod` from inside the target method must not be able to
+    /// change what the QCall does with the result. Hence the two call sites here are the whole set,
+    /// and neither reintroduces that:
+    ///
+    ///  * once on first entry, before the call, whose answer is snapshotted into the re-entry marker;
+    ///  * once on resumption, but only on a branch that is already `failwith`ing, purely to name the
+    ///    target in the message. A stale name there cannot affect any result.
+    ///
+    /// Adding a third call site on the resumption path — for anything the handler acts on rather than
+    /// merely prints — would make PawPrint's behaviour a function of the `Signature` object as the
+    /// callee left it, which CoreCLR's is not.
     let private resolveTarget
         (ctx : NativeCallContext)
         (operation : string)
