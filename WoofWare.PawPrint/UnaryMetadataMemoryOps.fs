@@ -102,7 +102,12 @@ module internal UnaryMetadataMemoryOps =
         match addr with
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ManagedPointer ManagedPointerSource.Null
-        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) ->
+        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)
+        | EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L) ->
+            // `Verbatim 0L` is the unmanaged spelling of null — `*(S*)null = v` is
+            // `ldc.i4.0; conv.u; ...; stobj S` — and is also what a null managed pointer
+            // normalises to on a `conv` round-trip. Without it a null store faults the
+            // interpreter instead of the guest. `executeLdobj` guards the same four spellings.
             IlMachineStateExecution.raiseRuntimeException
                 loggerFactory
                 baseClassTypes
@@ -151,25 +156,82 @@ module internal UnaryMetadataMemoryOps =
 
         let addr, state = state |> IlMachineState.popEvalStack thread
 
+        match addr with
+        | EvalStackValue.NullObjectRef
+        | EvalStackValue.ManagedPointer ManagedPointerSource.Null
+        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)
+        | EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L) ->
+            // ECMA-335 III.4.13: `ldobj` through a null address throws
+            // `NullReferenceException`, which the guest may catch. `readManagedByref` cannot
+            // raise it — it returns a `CliType` and has a dozen callers — so the check belongs
+            // here, at the one site that can dispatch.
+            //
+            // All four spellings are reachable. `Verbatim 0L` is what an unmanaged null
+            // pointer becomes (`*(S*)null` is `ldc.i4.0; conv.u; ldobj S`), and it is also
+            // what a null managed pointer normalises to on any `conv` round-trip — see the
+            // "Conv.U8 of a null managed pointer normalises to verbatim zero" case in
+            // `TestBinaryArithmetic.fs`. A non-zero `Verbatim` is a genuine unimplemented
+            // path, not a null, and still fails below.
+            //
+            // Deliberately no `advanceProgramCounter`: dispatch reads the faulting
+            // instruction's PC to decide which handler regions are active and to build the
+            // stack trace.
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                baseClassTypes
+                baseClassTypes.NullReferenceException
+                thread
+                state
+        | _ ->
+
         let obj =
             match addr with
-            | EvalStackValue.NullObjectRef -> failwith "TODO: throw NullReferenceException"
             | EvalStackValue.ObjectRef _ ->
                 failwith "Ldobj on an object reference is invalid; expected a managed pointer"
-            | EvalStackValue.ManagedPointer ptr -> IlMachineState.readManagedByref baseClassTypes state ptr
+            | EvalStackValue.ManagedPointer ptr
+            | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) ->
+                IlMachineState.readManagedByref baseClassTypes state ptr
             | EvalStackValue.Float _
             | EvalStackValue.Int64 _
             | EvalStackValue.Int32 _ -> failwith "refusing to interpret constant as address"
-            | _ -> failwith "TODO"
+            | EvalStackValue.NullObjectRef -> failwith "unreachable: null Ldobj address handled above"
+            | EvalStackValue.NativeInt nativeIntSource ->
+                failwith $"TODO: Ldobj through native pointer %O{nativeIntSource} is not implemented"
+            | EvalStackValue.UserDefinedValueType _ -> failwith $"Ldobj address was not an address: %O{addr}"
 
-        let targetType =
-            AllConcreteTypes.lookup typeHandle state.ConcreteTypes |> Option.get
+        // The type token need not denote a nominal type: `ldobj !!T` with `T = int[]` — which
+        // is what `Dictionary<TKey, TValue[]>.TryGetValue` emits on a hit — concretizes to a
+        // structural array handle, which by design has no row in `AllConcreteTypes` and no
+        // TypeDef to interrogate. Decide the copy's shape from the handle before touching any
+        // metadata.
+        let isValueType : bool =
+            match typeHandle with
+            | ConcreteTypeHandle.OneDimArrayZero _
+            | ConcreteTypeHandle.Array _ ->
+                // Arrays are reference types, so III.4.13 reduces to `ldind.ref` below.
+                false
+            | ConcreteTypeHandle.Byref _
+            | ConcreteTypeHandle.Pointer _
+            | ConcreteTypeHandle.FunctionPointer _ ->
+                // Triggered by a `ldobj` whose type token is a byref, pointer or
+                // function-pointer typespec. No C#/F# compiler emits that (a pointer
+                // dereference is `ldind.i`), and the runtime's reflection stack rejects all
+                // three as type arguments, so `ldobj !!T` cannot produce one either; only
+                // hand-written IL naming such a typespec reaches here. Refusing loudly beats
+                // guessing at a coercion no test can exercise.
+                failwith
+                    $"TODO: Ldobj with a byref/pointer/function-pointer type token (%O{typeHandle}) is not implemented"
+            | ConcreteTypeHandle.Concrete _ ->
 
-        let defn =
+            match AllConcreteTypes.lookup typeHandle state.ConcreteTypes with
+            | None -> failwith $"Ldobj: concrete type handle %O{typeHandle} has no row in AllConcreteTypes"
+            | Some targetType ->
+
             state._LoadedAssemblies.[targetType.Assembly].TypeDefs.[targetType.Definition.Get]
+            |> DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies
 
         let toPush, state =
-            if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies defn then
+            if isValueType then
                 let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes typeHandle
 
                 EvalStackValue.ofCliType obj |> EvalStackValue.toCliTypeCoerced zero, state
