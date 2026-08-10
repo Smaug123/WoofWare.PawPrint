@@ -165,6 +165,64 @@ module AbstractMachine =
             let originalCallSitePC =
                 instruction.ReturnState |> Option.map (fun rs -> rs.CallSiteIlOpIndex)
 
+            // Calling a method runs its declaring type's initialiser first, and invoking a
+            // delegate is a call like any other: every sibling call op does this
+            // (`UnaryMetadataCallOps.executeCall`, `executeCallvirt`, `executeCalli`,
+            // `UnaryMetadataObjectOps`' `newobj`), and only this path was missing it.
+            //
+            // The rule is not narrowed to static targets. ECMA-335 II.10.5.3.1 also triggers on
+            // the first invocation of an instance method of a *value type*, which is the one
+            // receiver whose existence does not already imply initialisation — for a class,
+            // holding an instance means `base..ctor()` ran up the chain. Measured against real
+            // .NET 10: a delegate over a struct's instance method leaves the initialiser
+            // unrun at construction and runs it at invocation, exactly as a static target does.
+            // `sourcesPure/DelegateToValueTypeInstanceMethodRunsCctor.cs` pins that.
+            //
+            // Deferring to invocation rather than running it at `ldftn` is likewise measured, not
+            // assumed: taking a function pointer is not a use of the type, and CoreCLR's
+            // `comdelegate.cpp` contains no class-init call at all.
+            let declaringTypeHandle =
+                AllConcreteTypes.findExistingConcreteType
+                    state.ConcreteTypes
+                    methodPtr.DeclaringType.Identity
+                    methodPtr.DeclaringType.Generics
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"delegate invocation: declaring type %s{methodPtr.DeclaringType.Namespace}.%s{methodPtr.DeclaringType.Name} of the target method is not registered in AllConcreteTypes"
+                )
+
+            // For a *synthesised* method the declaring type is the subject rather than the owner,
+            // so "calling a member initialises its type" does not follow; `initialisesDeclaringType`
+            // is the single place that question is answered. Same gate as `calli`.
+            let classInitialisation =
+                let required =
+                    match methodPtr with
+                    | MethodInfo.Metadata _ -> true
+                    | MethodInfo.Synthesised (_, kind) -> SynthesisedMethod.initialisesDeclaringType kind
+
+                if required then
+                    IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state
+                else
+                    StateLoadResult.NothingToDo state
+
+            // This runs *before* the synthetic frame is popped, which is what makes the retry
+            // free. Everything above is a pure read — `instruction.Arguments`, the heap, the
+            // concrete-type table — so on the suspension paths below we leave this frame exactly
+            // as we found it, the initialiser is pushed on top of it, and when that returns the
+            // dispatch loop re-enters `dispatchDelegateInvoke` from the top and recomputes the
+            // same values. There is nothing to save and restore, unlike `calli`, which must push
+            // its function pointer back because it had to pop it before the arguments.
+            //
+            // Re-entering a runtime-provided frame this way is the same mechanism `dispatchNative`
+            // above relies on for `NativeHandlerResult.SuspendedForClassInit`.
+            match classInitialisation with
+            | StateLoadResult.FirstLoadThis state -> ExecutionResult.stepped (state, WhatWeDid.SuspendedForClassInit)
+            | StateLoadResult.ThrowingTypeInitializationException state ->
+                ExecutionResult.stepped (state, WhatWeDid.ThrowingTypeInitializationException)
+            | StateLoadResult.Blocked (state, blockedBy) ->
+                ExecutionResult.stepped (state, WhatWeDid.BlockedOnClassInit blockedBy)
+            | StateLoadResult.NothingToDo state ->
+
             // When we return, we need to go back up the stack
             match state |> IlMachineState.returnFromSyntheticStackFrame thread with
             | ReturnFrameResult.NoFrameToReturn -> failwith "unexpectedly nowhere to return from delegate"
@@ -192,8 +250,8 @@ module AbstractMachine =
             // caused this delegate to be invoked.
             let currentThreadState = state.ThreadState.[thread]
 
-            let state =
-                IlMachineStateExecution.callMethod
+            let state, commitment =
+                IlMachineStateExecution.callMethodWithCommitment
                     loggerFactory
                     baseClassTypes
                     None
@@ -210,7 +268,21 @@ module AbstractMachine =
                     false // wrapExceptionInTargetInvocation
                     state
 
-            ExecutionResult.stepped (state, WhatWeDid.Executed)
+            // The class initialisation above covers the *target's declaring type*, but the target
+            // itself can still ask to suspend from inside the call: `Activator.CreateInstance<T>()`
+            // is serviced as an intrinsic and suspends to run `T`'s initialiser, and
+            // `Func<Foo> f = Activator.CreateInstance<Foo>;` is legal C#. By this point our
+            // synthetic frame is gone, so unlike a call opcode there is nothing left to re-execute
+            // and no program counter to leave unadvanced — the suspension would be silently
+            // dropped and the activator would never run. Refuse loudly instead of corrupting the
+            // frame; `calli` handles the same situation by restoring its stack and retrying, which
+            // is only open to it because its frame survives.
+            match commitment with
+            | IlMachineStateExecution.CallCommitment.Committed
+            | IlMachineStateExecution.CallCommitment.Raised -> ExecutionResult.stepped (state, WhatWeDid.Executed)
+            | IlMachineStateExecution.CallCommitment.SuspendedForClassInit ->
+                failwith
+                    $"TODO: delegate invocation of %s{methodPtr.DeclaringType.Namespace}.%s{methodPtr.DeclaringType.Name}::%s{methodPtr.Name} suspended for class initialisation after the delegate's synthetic frame was popped; there is no frame left to re-enter, so the call would be silently dropped"
 
         match instruction.ExecutingMethod.Body with
         | MethodBody.RuntimeProvided RuntimeBehaviour.DelegateCtor -> dispatchDelegateCtor ()
