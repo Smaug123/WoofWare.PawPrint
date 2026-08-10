@@ -7,9 +7,9 @@ using System.Reflection;
 // Two constraints, both load-bearing, and both the same as in the sibling LiteralFieldType.cs.
 // Every subject must be `const`: a literal has no FieldDesc, so it is reflected over by
 // `MdFieldInfo`, and only that class reaches `MdConstant`. And fields are reached through
-// `GetFields()` rather than `GetField(name)`, because a name filter makes `PopulateLiteralFields`
-// call `MetadataImport.GetName`, which PawPrint does not implement — that blocker would mask this
-// one. Hence one holder type per literal.
+// `GetFields()` rather than `GetField(name)`, so that this case depends on nothing but the
+// Constant-table read: a name filter would drag in `MetadataImport.GetName` as well (see the
+// sibling LiteralFieldName.cs, which covers that deliberately). Hence one holder type per literal.
 public class IntConst { public const int Value = 42; }
 public class NegativeSByteConst { public const sbyte Value = -1; }
 public class NegativeLongConst { public const long Value = -1234567890123L; }

@@ -44,23 +44,6 @@ module NativeGc =
     let private GC_ALLOC_ZEROING_OPTIONAL = 16
     let private GC_ALLOC_PINNED_OBJECT_HEAP = 64
 
-    /// `MaxArrayLength()` (`gchelpers.cpp:604-609`), which upstream keeps in sync with the
-    /// managed `Array.MaxLength`.
-    let private maxArrayLength = 0x7FFFFFC7
-
-    /// The English text of `IDS_EE_ARRAY_DIMENSIONS_EXCEEDED` (`mscorrc.rc:455`), the native
-    /// resource string CoreCLR's `ThrowOutOfMemoryDimensionsExceeded` (`gchelpers.cpp:767-778`)
-    /// attaches to the `OutOfMemoryException` it raises. PawPrint has no resource pipeline, so
-    /// the literal is reproduced here byte-for-byte, exactly as `NativeException.messageForKind`
-    /// does for the sibling `mscorrc` strings.
-    ///
-    /// Note that this message is the `HOST_64BIT` answer: a 32-bit CoreCLR falls through to a
-    /// plain `ThrowOutOfMemory()` with the default message instead. PawPrint models a 64-bit
-    /// target throughout (`SimulatedUnixPlatform` defaults to `LinuxX64`, and `NativeInt` is
-    /// 64 bits wide), so the 64-bit arm is the faithful one here.
-    let private arrayDimensionsExceededMessage =
-        "Array dimensions exceeded supported range."
-
     /// The SZ-array type `GCInterface_AllocateNewArray` was asked to allocate, and its element
     /// type. Both managed callers pass `typeof(T[]).TypeHandle`, so anything else here means a
     /// caller we have not read rather than a guest-reachable state; CoreCLR likewise only
@@ -316,21 +299,17 @@ module NativeGc =
             // length would independently have thrown.
             let arrayType, elementType = szArrayTypeForAllocation operation typeHandle
 
-            if length < 0 then
-                // `gchelpers.cpp:637-638`: `COMPlusThrow(kOverflowException)`, with no message,
-                // so the parameterless ctor's own default resource string is the faithful one.
-                // `ret` is left at whatever the caller initialised it to (null, in both callers).
-                NativeHandlerResult.raiseException ctx.BaseClassTypes.OverflowException state
+            // The same two `AllocateSzArray` checks the `newarr` opcode makes, in the same
+            // order, from the same classifier — `gchelpers.cpp:637-641`. Both are reached
+            // before any allocation is attempted, so an absurd length costs nothing, and both
+            // leave `ret` at whatever the caller initialised it to (null, in both callers).
+            match SzArrayAllocation.checkLength length with
+            | Some err ->
+                let exceptionType, message = SzArrayAllocation.exceptionFor ctx.BaseClassTypes err
+
+                NativeHandlerResult.raiseExceptionWithMessage exceptionType message state
                 |> Some
-            elif length > maxArrayLength then
-                // `gchelpers.cpp:640-641`: `ThrowOutOfMemoryDimensionsExceeded()`. This is
-                // reached before any allocation is attempted, so an absurd length costs nothing.
-                NativeHandlerResult.raiseExceptionWithMessage
-                    ctx.BaseClassTypes.OutOfMemoryException
-                    arrayDimensionsExceededMessage
-                    state
-                |> Some
-            else
+            | None ->
 
             let zero, state =
                 IlMachineState.cliTypeZeroOfHandle state ctx.BaseClassTypes elementType

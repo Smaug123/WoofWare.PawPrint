@@ -59,6 +59,7 @@
     <Compile Include="HostConfig.fs" />
     <Compile Include="IlMachineStateModel.fs" />
     <Compile Include="IlMachineTypeResolution.fs" />
+    <Compile Include="SzArrayAllocation.fs" />
     <Compile Include="IlMachineThreadState.fs" />
     <Compile Include="IlMachineMemberResolution.fs" />
     <Compile Include="IlMachineManagedByref.fs" />

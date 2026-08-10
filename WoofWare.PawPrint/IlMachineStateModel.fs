@@ -606,17 +606,20 @@ module NativeHandlerResult =
         =
         NativeHandlerResult.RaiseException (state, exnType, None, StepEffect.NoEffect)
 
-    /// `raiseException`, but with the message CoreCLR would have attached. Use this only
+    /// `raiseException`, but with the message CoreCLR would have attached. Pass `Some` only
     /// where CoreCLR throws with an explicit message (typically an `EEMessageException`
-    /// carrying an `mscorrc` resource string); everywhere else the parameterless ctor's
-    /// own default is the faithful answer and `raiseException` is the right entry point.
+    /// carrying an `mscorrc` resource string); everywhere else the parameterless ctor's own
+    /// default is the faithful answer, and `raiseException` is the shorter spelling of `None`.
+    /// The `string option` shape mirrors `IlMachineStateExecution.raiseRuntimeException` and
+    /// its `WithMessage` sibling, so a caller holding a message it did not choose itself
+    /// (`SzArrayAllocation.exceptionFor`, say) can pass it straight through.
     let raiseExceptionWithMessage
         (exnType : TypeInfo<GenericParamFromMetadata, TypeDefn>)
-        (message : string)
+        (message : string option)
         (state : IlMachineState)
         : NativeHandlerResult
         =
-        NativeHandlerResult.RaiseException (state, exnType, Some message, StepEffect.NoEffect)
+        NativeHandlerResult.RaiseException (state, exnType, message, StepEffect.NoEffect)
 
     /// Forward a `WhatWeDid.SuspendedForClassInit` outcome from a sub-call. Use this
     /// at the leaf of a passthrough branch when the dispatcher should keep the native
