@@ -601,6 +601,29 @@ module IntrinsicMethodKeys =
             // See ReadOnlySpan<T>.get_Empty above; the IL body is the same `default(Span<T>)` shape.
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/Span.cs#L219
             pattern "System.Private.CoreLib" "System.Span`1" "get_Empty" []
+            // The `Span<T>` siblings of the ReadOnlySpan<T> operators above. Both IL bodies are
+            // the same instruction for instruction, over `Span<T>`'s own `_length` and
+            // `_reference` fields, so the review above applies unchanged — including the caveat
+            // that these are exactly as good as `Unsafe.AreSame` and inherit its first-field
+            // versus reinterpreted-whole gap.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Span.cs#L364-L366
+            pattern
+                "System.Private.CoreLib"
+                "System.Span`1"
+                "op_Equality"
+                [
+                    IntrinsicParameterPattern.Exact "System.Span`1"
+                    IntrinsicParameterPattern.Exact "System.Span`1"
+                ]
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Span.cs#L183
+            pattern
+                "System.Private.CoreLib"
+                "System.Span`1"
+                "op_Inequality"
+                [
+                    IntrinsicParameterPattern.Exact "System.Span`1"
+                    IntrinsicParameterPattern.Exact "System.Span`1"
+                ]
             // Same constructor shape as ReadOnlySpan<T>; the `(void*, int)` constructor is
             // handled explicitly below.
             pattern "System.Private.CoreLib" "System.Span`1" ".ctor" [ IntrinsicParameterPattern.SzArray ]
