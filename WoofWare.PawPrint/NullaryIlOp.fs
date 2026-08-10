@@ -2472,6 +2472,10 @@ module NullaryIlOp =
 
                     let skippedFilters = continuation.CurrentFilter :: continuation.SkippedFilters
 
+                    // `false`: this resumes a raise that has already run guest code — the filter
+                    // whose `endfilter` we are executing — so any frame appended from here is one
+                    // CoreCLR would have appended before that filter ran. A foreign-raise flag the
+                    // filter itself set therefore belongs to the *next* raise, not this one.
                     match
                         ExceptionDispatching.dispatchExceptionFromSearchPC
                             loggerFactory
@@ -2480,6 +2484,7 @@ module NullaryIlOp =
                             currentThread
                             continuation.CliException
                             exceptionType
+                            false
                             continuation.SearchPC
                             skippedFilters
                     with
@@ -2566,6 +2571,10 @@ module NullaryIlOp =
                         ThreadState = state.ThreadState |> Map.add currentThread threadState
                     }
 
+                // `false`: this resumes a raise whose `finally` has just run guest code. CoreCLR
+                // appends every frame in pass one, before any cleanup clause, so a foreign-raise
+                // flag that the `finally` set cannot be consumed by the raise it is unwinding —
+                // it stays pending for the next one. `sourcesPure/ForeignRaiseFlagSetInFinally.cs`.
                 match
                     ExceptionDispatching.dispatchException
                         loggerFactory
@@ -2574,6 +2583,7 @@ module NullaryIlOp =
                         currentThread
                         exn
                         heapObject.ConcreteType
+                        false
                 with
                 | ExceptionDispatchResult.HandlerFound state -> (state, WhatWeDid.Executed) |> ExecutionResult.stepped
                 | ExceptionDispatchResult.ExceptionUnhandled (state, exn) ->
@@ -2608,6 +2618,9 @@ module NullaryIlOp =
                 // handler lives in this same method leaves the flag pending because it appends
                 // nothing at all. See `sourcesPure/ForeignRaiseFlagSurvivesFramelessRethrow.cs`.
                 //
+                // This *is* a raise initiation, though, so it passes `true`: any frame it goes on
+                // to append is one CoreCLR's pass one would still have ahead of it.
+                //
                 // The trace it inherits is the exception's own: whatever `_stackTrace` holds now,
                 // not the snapshot this catch handler was entered with, which can be staler.
                 let cliException =
@@ -2622,6 +2635,7 @@ module NullaryIlOp =
                         currentThread
                         cliException
                         exceptionType
+                        true
                 with
                 | ExceptionDispatchResult.HandlerFound state -> (state, WhatWeDid.Executed) |> ExecutionResult.stepped
                 | ExceptionDispatchResult.ExceptionUnhandled (state, exn) ->

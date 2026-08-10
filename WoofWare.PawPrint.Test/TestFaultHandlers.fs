@@ -204,7 +204,16 @@ module TestFaultHandlers =
 
         let state =
             match
-                ExceptionDispatching.unwindToCallerAndSearch loggerFactory bct state thread cliException objectHandle
+                // `false` for `mayConsumeForeignRaise`: this drives the unwind directly rather than
+                // through a raise, and the skeletal state here has no `_stackTrace` to read.
+                ExceptionDispatching.unwindToCallerAndSearch
+                    loggerFactory
+                    bct
+                    state
+                    thread
+                    cliException
+                    objectHandle
+                    false
             with
             | ExceptionDispatchResult.ExceptionUnhandled (state, _) -> state
             | other -> failwith $"Expected unhandled exception after unwinding to caller, got %O{other}"

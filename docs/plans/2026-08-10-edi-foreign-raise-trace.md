@@ -177,6 +177,27 @@ carries `threadState` as a *value* alongside `state`, and hands it to the handle
 writes it back. A consume that only updates `state` is silently undone — visibly so, since the
 boundary then appears *and* the flag survives to be spent again.
 
+### The pass-one ordering, and `mayConsumeForeignRaise`
+
+Codex's third round found that "consume at an append" is still not the whole rule. CoreCLR appends
+every frame of a raise in **pass one**, before running any cleanup clause, so a flag set by guest
+code in a `finally` cannot be consumed by the raise unwinding through it — that raise has no
+appends left. Measured: 0 boundaries on the unwinding exception, then 1 on the next raise. PawPrint,
+which interleaves search with cleanup instead of completing a search pass first, would otherwise hang
+the boundary on the caller frame it appends *after* the `finally` — getting both halves wrong at
+once, and regressing a case that was previously right.
+
+PawPrint has no pass one to appeal to, so the ordering is stated explicitly: `dispatchException`,
+`dispatchExceptionFromSearchPC` and `unwindToCallerAndSearch` take `mayConsumeForeignRaise`, and
+every path that *resumes* a raise after guest code has run passes `false` — the `endfinally`
+propagation resume and the `endfilter` rejection resume. Raise initiation (`throw`, `rethrow`)
+passes `true`.
+
+The residual: a flag set from an exception *filter*. Filters run in pass one, so CoreCLR would let
+a later append of the same raise consume it, where PawPrint treats the resumed search as
+ineligible. Distinguishing that needs the real two-pass structure — issue #865 — and no
+approximation short of it would be honest.
+
 A plain rethrow still carries the catch handler's snapshot rather than re-reading the token, so it
 can report a staler trace than real .NET. That is pre-existing and independent of the flag; making
 it read the token unconditionally would lose frames whenever the token is absent, because
@@ -275,8 +296,9 @@ Mutation results (each applied to a clean tree, then reverted from a scratchpad 
 | never clear the flag (again, against the rethrow test) | `ForeignRaiseFlagConsumedByRethrow` fails, exit 7 |
 | consume when the raise begins rather than at the append | `ForeignRaiseFlagSurvivesFramelessRethrow` fails, exit 4 |
 | mark the in-flight snapshot instead of the exception's token | `ForeignRaiseReadsCurrentExceptionTrace` fails, exit 4 |
+| let the resume-after-`finally` path consume | `ForeignRaiseFlagSetInFinally` fails, exit 4 |
 
-Three test files, each killed by a different mutation:
+Five test files, each killed by a different mutation:
 
 * `ExceptionDispatchInfoThrowPreservesTrace.cs` — the ordinary `EDI.Capture`/`Throw` round trip.
 * `ForeignRaiseFlagConsumedByRethrow.cs` — a reflective set-then-`rethrow` that *does* unwind:
@@ -285,10 +307,11 @@ Three test files, each killed by a different mutation:
   annotation, and the flag *not* spent.
 * `ForeignRaiseReadsCurrentExceptionTrace.cs` — a nested throw of the same object before the
   rethrow: two annotations, only reachable by reading the token.
+* `ForeignRaiseFlagSetInFinally.cs` — the flag set from a `finally` during an unwind: no
+  annotation on the unwinding exception, one on the next raise.
 
-The last two are what the first attempt at the rethrow fix passed while being wrong; they exist
-because Codex's second review round named those shapes, and each was measured on real .NET before
-its assertion was written.
+Every one of these after the first exists because a Codex round named the shape; each was measured
+on real .NET before its assertion was written, and each kills a mutation the others survive.
 
 ## Follow-ups (not this PR)
 
@@ -297,6 +320,9 @@ its assertion was written.
 * A plain `rethrow` extends the snapshot the catch handler was entered with, where CoreCLR
   re-reads the exception's current `_stackTrace`. Observable when the same object is thrown again
   from inside the handler.
+* A foreign-raise flag set from an exception *filter* is treated as belonging to the next raise,
+  where CoreCLR — for which filters run in pass one — would let the current raise consume it.
+  Needs #865's two-pass dispatch.
 * PawPrint's trace renderer implements none of `StackTrace.ToString`'s display policy:
   `[StackTraceHidden]`/`AggressiveInlining` filtering, async state-machine name resolution, and the
   `!isAsync` suppression of this very annotation.
