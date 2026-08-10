@@ -336,16 +336,18 @@ contract, not the prefix's. `runToFork` must not be handed one.
 3. **split**: `HostConfig = { Prefix : PrefixConfig ; PctSeed : uint64 option }`, `runToFork`
    taking `PrefixConfig`.
 
-Recommend 3, with 2 as the fallback. **Flag for the maintainer before implementing:**
-`WoofWare.PawPrint` is `IsPackable=true` with `PackageId=WoofWare.PawPrint`
-(`WoofWare.PawPrint.fsproj:6-7`), so `HostConfig` is a published surface and restructuring it is a
-breaking change for external consumers. There are 37 `HostConfig.Default` construction sites in
-this repo (9 setting `PctSeed`, 8 `Kernel`, 3 each `Argv`/`AppContext`); the churn is mechanical
-here, but it is not ours to impose on downstream consumers without a decision. A cheaper variant
-that keeps the published record flat: leave `HostConfig` alone and add
-`HostConfig.WithoutSeed : PrefixConfig` plus `PrefixConfig.WithSeed : uint64 option -> HostConfig`,
-pinned by a round-trip test. **This is the one decision in this plan I want confirmed before code
-is written.**
+**Decided: 3.** `WoofWare.PawPrint` is `IsPackable=true` with `PackageId=WoofWare.PawPrint`
+(`WoofWare.PawPrint.fsproj:6-7`), so `HostConfig` is a published surface and this is a breaking
+change for external consumers — but the package is prerelease and the maintainer has confirmed
+breaking it outright is fine, so the compile-time-correct factoring wins over any variant that
+preserves the flat record. Do not soften it into `WithoutSeed`/`WithSeed` projections beside the
+old shape: two records that must agree is precisely the drift risk the split exists to remove.
+
+In-repo churn is 37 `HostConfig.Default` construction sites (9 setting `PctSeed`, 8 `Kernel`, 3
+each `Argv`/`AppContext`), all mechanical — the compiler finds every one. `HostConfig.Default`
+should keep taking the runtime dirs and returning a whole `HostConfig`, so the common
+`{ HostConfig.Default dirs with PctSeed = ... }` shape survives; only sites that set a
+`PrefixConfig` field move a level down.
 
 ### 5.5 Logging and parallel fan-out
 
@@ -446,8 +448,10 @@ Fable proposed two PRs, I proposed four; the difference was mostly the now-dropp
    decisions. Adds P2 (scheduler-level half), P3. Inverts the yield-draw test with the §3.4
    argument. Re-baselines the fairness thresholds and re-validates `TestRaces`. Runs P7 and
    records the numbers. This is the seed-remapping commit, isolated so a bisect lands on it.
-2. **`ScheduleFork` + the config split.** §5.2–§5.4 plus P1, P4, P5, P6. No consumer changes.
-   Blocked on the §5.4 decision.
+2. **`ScheduleFork` + the config split.** §5.2–§5.4 plus P1, P4, P5, P6. No consumer changes
+   beyond the mechanical `HostConfig` re-shaping. Worth splitting the `HostConfig` re-shaping into
+   its own commit *within* the PR: it touches 37 call sites and would otherwise bury the new
+   logic.
 3. **Rewire the sweeps.** `TestConcurrencyBugs` and `TestRaces` fan out from a shared fork point;
    report the measured speedup against §1.
 
@@ -455,8 +459,6 @@ PR 1 is the one to review hardest.
 
 ## 8. Open questions
 
-* **§5.4 needs a decision before coding**: splitting the published `HostConfig` versus adding
-  projections beside it versus failing loud.
 * Does anything want the prefix's `StepEffect` stream? A driver streaming guest output per step
   (`Program.fs:64-84`) sees only post-fork effects when resuming; the final state's `OutputLog` is
   still complete. Document at `resume`.
