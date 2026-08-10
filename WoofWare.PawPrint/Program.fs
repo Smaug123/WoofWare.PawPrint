@@ -402,29 +402,26 @@ module Program =
         | WhatWeDid.ThrowingTypeInitializationException ->
             logger.LogTrace "TypeInitializationException dispatched due to failed .cctor."
 
-    let stepPrepared
-        (loggerFactory : ILoggerFactory)
-        (logger : ILogger)
-        (prepared : PreparedProgram)
-        : ProgramStepOutcome
-        =
-        // The stepper reports NormalExit as soon as `EntryThread` Terminates, regardless
-        // of whether other threads are still Runnable or Blocked. This matches both
-        // use sites:
-        //   * Pre-Main cctor pump: the synthetic onlyRet frame has returned, which
-        //     means class initialisation is done. The entry thread isn't actually
-        //     finished — Program.run is about to resurrect it with the real Main
-        //     frame — so we deliberately do NOT mark it Terminated, because doing so
-        //     would let a worker that joined the entry thread during a .cctor observe
-        //     a false end-of-thread and proceed past the Join before Main has started.
-        //   * Post-Main pump: when Main returns, we report NormalExit immediately
-        //     rather than waiting for foreground threads. The test comparison oracles
-        //     in WoofWare.PawPrint.Test just invoke `assy.EntryPoint.Invoke` via
-        //     reflection, which also returns as soon as Main returns without waiting
-        //     for foreground workers, so matching that behaviour keeps PawPrint and
-        //     the oracle aligned. Environment.Exit from a worker still propagates as
-        //     ProcessExit (handled below) before Main has a chance to return.
-
+    /// The first half of a scheduler tick: everything that happens before the policy is asked
+    /// which thread runs next. Advancing the clocks, firing wait deadlines, letting the signal
+    /// dispatcher wake, and jumping the virtual clock forward if nothing is Runnable.
+    ///
+    /// Split out from `stepPrepared` because *this* is the moment at which "how many threads are
+    /// Runnable" becomes the answer the policy will act on. Every phase here can create
+    /// contention within the tick — a deadline firing, a spurious wake, the dispatcher becoming
+    /// Runnable — so a fork detector that probed the inter-tick state instead would miss forks
+    /// and hand a schedule-sweeping harness a prefix that is not actually forced. See
+    /// `runToNextFork`.
+    ///
+    /// Deliberately policy-independent: nothing here reads `state.Scheduling`, and
+    /// `advanceUntilRunnableOrQuiescent` goes out of its way to use `Scheduler.hasAnyRunnable`
+    /// rather than `chooseNext` so that a stochastic policy's RNG is not advanced by a probe. That
+    /// is what makes it safe to run this, look at the result, and then run it again from the
+    /// original state on a later resume.
+    ///
+    /// Not idempotent: it advances `StepCounter` and the virtual clock. Callers hold the
+    /// *inter-tick* value if they want to be able to replay the tick.
+    let private advanceToDecision (prepared : PreparedProgram) : PreparedProgram =
         // Apply the spurious-wakeup strategies at the current tick, then
         // advance the counter so the next iteration sees a fresh tick.
         // For the default (`Disabled`) strategy each application is a fold
@@ -541,11 +538,20 @@ module Program =
 
                     advanceUntilRunnableOrQuiescent (fireExpiredDeadlines state)
 
-        let prepared =
-            { prepared with
-                State = advanceUntilRunnableOrQuiescent prepared.State
-            }
+        { prepared with
+            State = advanceUntilRunnableOrQuiescent prepared.State
+        }
 
+    /// The second half of a scheduler tick: ask the policy which thread runs next, run it, and
+    /// fold the outcome back into the thread states. `prepared` must already have been through
+    /// `advanceToDecision`; running this against an inter-tick value would consult the policy
+    /// about a Runnable set that a deadline or a spurious wake was about to change.
+    let private stepDecided
+        (loggerFactory : ILoggerFactory)
+        (logger : ILogger)
+        (prepared : PreparedProgram)
+        : ProgramStepOutcome
+        =
         let scheduledState, scheduledChoice =
             Scheduler.chooseNext prepared.LastRan prepared.State
 
@@ -644,6 +650,32 @@ module Program =
                     whatWeDid,
                     effect
                 )
+
+    /// Advance the machine by one scheduler tick.
+    ///
+    /// The stepper reports NormalExit as soon as `EntryThread` Terminates, regardless
+    /// of whether other threads are still Runnable or Blocked. This matches both
+    /// use sites:
+    ///   * Pre-Main cctor pump: the synthetic onlyRet frame has returned, which
+    ///     means class initialisation is done. The entry thread isn't actually
+    ///     finished — Program.run is about to resurrect it with the real Main
+    ///     frame — so we deliberately do NOT mark it Terminated, because doing so
+    ///     would let a worker that joined the entry thread during a .cctor observe
+    ///     a false end-of-thread and proceed past the Join before Main has started.
+    ///   * Post-Main pump: when Main returns, we report NormalExit immediately
+    ///     rather than waiting for foreground threads. The test comparison oracles
+    ///     in WoofWare.PawPrint.Test just invoke `assy.EntryPoint.Invoke` via
+    ///     reflection, which also returns as soon as Main returns without waiting
+    ///     for foreground workers, so matching that behaviour keeps PawPrint and
+    ///     the oracle aligned. Environment.Exit from a worker still propagates as
+    ///     ProcessExit (handled below) before Main has a chance to return.
+    let stepPrepared
+        (loggerFactory : ILoggerFactory)
+        (logger : ILogger)
+        (prepared : PreparedProgram)
+        : ProgramStepOutcome
+        =
+        stepDecided loggerFactory logger (advanceToDecision prepared)
 
     let rec pumpPrepared (loggerFactory : ILoggerFactory) (logger : ILogger) (prepared : PreparedProgram) : RunOutcome =
         match stepPrepared loggerFactory logger prepared with
@@ -1199,3 +1231,229 @@ module Program =
         match prepare loggerFactory originalPath fileStream hostConfig with
         | ProgramStartResult.CompletedBeforeMain outcome -> outcome
         | ProgramStartResult.Ready prepared -> pumpPrepared loggerFactory logger prepared
+
+    /// A machine state sitting at a scheduler tick *boundary* whose next decision is contended:
+    /// once this tick's preamble has run, more than one thread is Runnable, so which of them runs
+    /// is a genuine choice — and it is the first such choice since this snapshot's run began.
+    ///
+    /// Note the "once the preamble has run". Contention is a property of the state the *policy*
+    /// sees, which is not the state held here: a deadline expiring or the signal dispatcher waking
+    /// can make a second thread Runnable inside the tick. So `State` may well show only one
+    /// Runnable thread, and `Contenders` may name a thread that is blocked in it. Guests reaching
+    /// their first fork organically do not show this — there the second thread arrives via the
+    /// guest's own `Thread.Start`, which is a retired instruction — but `runToNextFork` from
+    /// mid-run does, and a caller inspecting `State` should not expect otherwise.
+    ///
+    /// Why this is worth having: everything before a fork point is forced, so every scheduling
+    /// policy makes the same choices there and — since `Scheduler` only ever mutates policy state
+    /// at a contended decision — the policy state is still exactly what it was seeded with. A
+    /// harness sweeping many PCT seeds over one guest can therefore compute this prefix *once*,
+    /// under `RoundRobin`, and hand each seed a run bit-identical to what it would have produced
+    /// from scratch. Measured on the `sourcesConcurrencyBugs` guests, that prefix is 74-94% of a
+    /// run's instructions and ~90% of its wall clock.
+    ///
+    /// The state held is the one from *before* the tick's preamble, not from between the preamble
+    /// and the choice. That is deliberate: a mid-tick value would be a new kind of resumable
+    /// thing, and handing it to the ordinary driver would run the preamble twice — advancing
+    /// `StepCounter` twice and shifting the spurious-wakeup schedule. Resuming therefore re-runs
+    /// the contended tick's preamble, which is policy-independent (see `advanceToDecision`) and
+    /// so reproduces it exactly.
+    ///
+    /// Construct one only through `runToFirstFork` / `runToNextFork`: the representation is
+    /// private because the type's whole value is the claim that the prefix behind it was forced,
+    /// and a hand-built one would carry that claim without having earned it.
+    type ForkSnapshot =
+        private
+            {
+                Prepared : PreparedProgram
+                Contending : ThreadId list
+            }
+
+        /// The machine as it stands at the fork point.
+        member this.State : IlMachineState = this.Prepared.State
+
+        /// The threads whose contention makes this a fork point: at least two, ascending by
+        /// `ThreadId`. Runnable *at the decision point* — i.e. after this tick's preamble — which
+        /// is not necessarily the same as Runnable in `State`. Ascending order is not cosmetic:
+        /// it is the order `PctState.ensurePriorityFor` samples in, so it is part of what makes a
+        /// seeded schedule reproducible.
+        member this.Contenders : ThreadId list = this.Contending
+
+    /// How far a run got before it first had a scheduling choice to make.
+    [<RequireQualifiedAccess>]
+    type PrefixOutcome =
+        /// Reached a contended decision. Resume with `resumeFork`, once per seed.
+        | ForkedAt of ForkSnapshot
+        /// The program ran to completion without ever reaching a contended decision. No policy
+        /// had a choice anywhere, so this is the outcome under *every* seed, and a sweep is
+        /// answered by this one run. (Its state's `Scheduling` is the `RoundRobin` the prefix ran
+        /// under, where a from-scratch `Pct s` run would carry `Pct (ofSeed s)`; nothing
+        /// guest-visible depends on the difference, but do not compare that field.)
+        | NeverForked of RunOutcome
+        /// Every thread blocked before any choice arose. Like `NeverForked`, seed-independent.
+        | DeadlockedBeforeFork of stuckThreads : string
+        /// A class initialiser started a thread, so the first contended decision happens during
+        /// startup rather than in `Main`.
+        ///
+        /// Detected and refused rather than snapshotted. Snapshotting it is possible — the
+        /// detector finds the exact point — but resuming it means handing the caller a
+        /// half-finished `Startup` rather than a `PreparedProgram`, so `resumeFork` would have to
+        /// return a two-shape value and every caller would have to drive both phases. No guest in
+        /// this repository does it, so that surface would be speculative; refusing loudly keeps
+        /// the caller honest until something needs it. To lift the restriction, give
+        /// `ForkSnapshot` a startup arm — nothing else here has to change.
+        ///
+        /// Carries the contenders rather than a rendered message: the detector has the witness in
+        /// hand, and a caller deciding what to do about a refusal (report it, fall back to
+        /// per-seed runs) is better served by the threads than by a sentence about them.
+        | ForkedDuringStartup of contenders : ThreadId list
+
+    /// Guard against a yield retiring at a tick we classified as forced whose *post*-step state is
+    /// contended.
+    ///
+    /// This is the one way a prefix could be seed-dependent despite every decision being forced.
+    /// `Scheduler.onStepOutcome` wakes class-init waiters *before* charging the yield debt, so
+    /// `chargeYieldDebt` reads contention against a Runnable set that may have grown since the
+    /// choice was made. At such a tick a `Pct` policy would toss its honour coin — and could
+    /// decline the yield where `RoundRobin` always honours it, which the guest sees directly in
+    /// `Thread.Yield()`'s return value. A prefix containing one is not shareable.
+    ///
+    /// Unreachable today: a thread parked `BlockedOnClassInit` must have executed a step to get
+    /// there, and a `.cctor` can only be `InProgress` on another thread, so two threads have
+    /// already run and contention has already occurred. But that is a chain of facts about wake
+    /// paths rather than a structural property, so check the conclusion and crash rather than
+    /// silently emit a snapshot that does not commute.
+    let private checkYieldDidNotStraddle (ran : ThreadId) (whatWeDid : WhatWeDid) (after : PreparedProgram) : unit =
+        match whatWeDid with
+        | WhatWeDid.VoluntaryYield _ ->
+            match Scheduler.tryContenders after.State with
+            | None -> ()
+            | Some contenders ->
+                failwith
+                    $"Program: thread %O{ran} yielded at a tick whose scheduling decision was forced, but the state after the step is contended (Runnable: %A{contenders}). Scheduler.chargeYieldDebt reads contention after class-init waiters are woken, so a Pct policy would have drawn here — and could have declined the yield where RoundRobin honours it — which means the prefix up to this point is not seed-independent and must not be shared. See Scheduler.onStepOutcome."
+        | WhatWeDid.Executed
+        | WhatWeDid.SuspendedForClassInit
+        | WhatWeDid.SuspendedForManagedCall
+        | WhatWeDid.BlockedOnClassInit _
+        | WhatWeDid.ThrowingTypeInitializationException -> ()
+
+    /// Advance `prepared` until the next contended scheduling decision, returning the machine as
+    /// it stood at the start of that tick.
+    ///
+    /// This is the general primitive: from a fresh `Main` it finds the *first* fork point, and
+    /// from a mid-run state it finds the next one, which is what a future schedule-space tree
+    /// search descends with. What "resume" means differs between those two — see
+    /// `IlMachineState.withPctSeed` — but finding the point does not.
+    ///
+    /// Each *retired* tick's preamble runs exactly once: the probe consumes it and hands the
+    /// advanced state straight to the decision half. The fork tick itself is the exception, by
+    /// design — its preamble runs here to answer the probe, and again on every resume.
+    let rec runToNextFork
+        (loggerFactory : ILoggerFactory)
+        (logger : ILogger)
+        (prepared : PreparedProgram)
+        : PrefixOutcome
+        =
+        let advanced = advanceToDecision prepared
+
+        match Scheduler.tryContenders advanced.State with
+        | Some contenders ->
+            PrefixOutcome.ForkedAt
+                {
+                    Prepared = prepared
+                    Contending = contenders
+                }
+        | None ->
+
+        match stepDecided loggerFactory logger advanced with
+        | ProgramStepOutcome.Completed outcome -> PrefixOutcome.NeverForked outcome
+        | ProgramStepOutcome.Deadlocked (_, stuck) -> PrefixOutcome.DeadlockedBeforeFork stuck
+        | ProgramStepOutcome.WorkerTerminated (next, _) -> runToNextFork loggerFactory logger next
+        | ProgramStepOutcome.InstructionStepped (next, ran, whatWeDid, _) ->
+            checkYieldDidNotStraddle ran whatWeDid next
+            runToNextFork loggerFactory logger next
+
+    /// Read the guest assembly and run it — startup and all — up to its first contended
+    /// scheduling decision.
+    ///
+    /// Takes a `GuestConfig` rather than a `HostConfig` precisely so that no seed can be passed:
+    /// the prefix is the part of the run every seed shares, and it is computed under the
+    /// randomness-free `RoundRobin` policy. `resumeFork` supplies the seed afterwards.
+    let runToFirstFork
+        (loggerFactory : ILoggerFactory)
+        (originalPath : string option)
+        (fileStream : Stream)
+        (guestConfig : GuestConfig)
+        : PrefixOutcome
+        =
+        let logger = loggerFactory.CreateLogger "Program"
+
+        let hostConfig =
+            {
+                Guest = guestConfig
+                PctSeed = None
+            }
+
+        let rec goStartup (startup : Startup) : PrefixOutcome =
+            // Probe startup with the same predicate `runToNextFork` uses, so a `.cctor` that
+            // starts a thread is reported rather than silently mistaken for a forced prefix. The
+            // preamble runs twice per startup tick here, once for the probe and once inside
+            // `stepStartup`; that is a handful of map operations against `executeOneStep`, and it
+            // is paid once for a whole sweep rather than once per seed.
+            match Scheduler.tryContenders (advanceToDecision startup.Prepared).State with
+            | Some contenders -> PrefixOutcome.ForkedDuringStartup contenders
+            | None ->
+
+            match stepStartup loggerFactory logger startup with
+            | StartupStepOutcome.Completed (ProgramStartResult.Ready prepared) ->
+                runToNextFork loggerFactory logger prepared
+            | StartupStepOutcome.Completed (ProgramStartResult.CompletedBeforeMain outcome) ->
+                PrefixOutcome.NeverForked outcome
+            | StartupStepOutcome.Deadlocked (_, stuck) -> PrefixOutcome.DeadlockedBeforeFork stuck
+            | StartupStepOutcome.Stepped (startup, ran, whatWeDid, _) ->
+                checkYieldDidNotStraddle ran whatWeDid startup.Prepared
+                goStartup startup
+            | StartupStepOutcome.WorkerTerminated (startup, _)
+            | StartupStepOutcome.PhaseAdvanced startup -> goStartup startup
+
+        goStartup (beginStartup loggerFactory originalPath fileStream hostConfig)
+
+    /// Install a scheduling policy on a fork snapshot and hand back an ordinary `PreparedProgram`,
+    /// to be driven with `stepPrepared` / `pumpPrepared` like any other.
+    ///
+    /// For a snapshot from `runToFirstFork`, `pctSeed = Some s` gives a run bit-identical to
+    /// `Program.run` with `PctSeed = Some s` over the same image and `GuestConfig`: the prefix was
+    /// forced, so the policy state a from-scratch run would hold here is exactly
+    /// `PctState.ofSeed s`. See `IlMachineState.withPctSeed`, which spells out why that stops
+    /// being true for a mid-run snapshot from `runToNextFork`.
+    ///
+    /// `None` installs no policy at all — it keeps whatever the snapshot carries. For a
+    /// `runToFirstFork` snapshot that is the `RoundRobin` the prefix ran under, so it reproduces
+    /// the default run; for a mid-run snapshot it is whatever policy got you there, mid-flight.
+    ///
+    /// `loggerFactory` rebinds the state's logging sink, which would otherwise still be the
+    /// prefix's: every seed resumed from one snapshot would log through the factory the *prefix*
+    /// was built with, losing whatever per-run properties the caller attaches. The prefix's own
+    /// factory must outlive every resume regardless, because `BaseClassTypes` and the loaded
+    /// assemblies were built against it.
+    ///
+    /// One thing a resumed run does *not* reproduce: `StepEffect`s retired during the prefix. A
+    /// driver streaming guest output per step sees only post-fork effects. The final state's
+    /// `Kernel.OutputLog` is still complete, because it came through the snapshot.
+    let resumeFork
+        (loggerFactory : ILoggerFactory)
+        (pctSeed : uint64 option)
+        (snapshot : ForkSnapshot)
+        : PreparedProgram
+        =
+        let state =
+            snapshot.Prepared.State |> IlMachineState.withLoggerFactory loggerFactory
+
+        let state =
+            match pctSeed with
+            | None -> state
+            | Some seed -> IlMachineState.withPctSeed seed state
+
+        { snapshot.Prepared with
+            State = state
+        }

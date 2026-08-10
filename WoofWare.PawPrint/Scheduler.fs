@@ -110,7 +110,7 @@ module Scheduler =
             | Contention.Contended (first, second, rest) -> first :: second :: rest
 
     /// Classify the imminent decision. This is the single definition of "contended" that the
-    /// draw sites and any external fork detector (`isContended`) both consume; two derivations
+    /// draw sites and any external fork detector (`tryContenders`) both consume; two derivations
     /// of the same predicate could disagree, and a detector that disagreed with the policy would
     /// silently hand a schedule-sweeping harness the wrong prefix.
     let private classify (state : IlMachineState) : Contention =
@@ -119,20 +119,27 @@ module Scheduler =
         | [ only ] -> Contention.Forced only
         | first :: second :: rest -> Contention.Contended (first, second, rest)
 
-    /// Does the imminent scheduling decision have more than one Runnable thread to choose
-    /// among? Equivalently: may a stochastic policy consume randomness at this tick, and is
-    /// this tick a fork point in the schedule space?
+    /// The Runnable threads contending for the imminent scheduling decision, if there is a
+    /// genuine choice to be made: `Some` — with at least two members, in ascending `ThreadId`
+    /// order — iff more than one thread is Runnable. Equivalently: `Some` iff a stochastic
+    /// policy may consume randomness at this tick, and iff this tick is a fork point in the
+    /// schedule space.
     ///
-    /// Exposed for harnesses that want to run a guest up to its first fork point and then fan
-    /// out over seeds from there. Must be evaluated at the same moment the scheduler would make
-    /// its choice — i.e. after the driver's per-tick preamble (spurious wakeups, deadline
-    /// firing, signal-handler spawn, deadline jump), any of which can create contention within
-    /// the tick that a probe on the inter-tick state would miss.
-    let isContended (state : IlMachineState) : bool =
+    /// Returns the witness rather than a bare `bool` so that a caller which needs to *name* the
+    /// contenders (a fork detector recording what forked, a diagnostic) gets them from the same
+    /// evaluation that decided the question. Deriving the list separately would be a second
+    /// definition of the predicate, free to disagree with this one.
+    ///
+    /// Exposed for harnesses that run a guest up to its first fork point and then fan out over
+    /// seeds from there. Must be evaluated at the same moment the scheduler would make its
+    /// choice — i.e. after the driver's per-tick preamble (spurious wakeups, deadline firing,
+    /// signal-handler spawn, deadline jump), any of which can create contention within the tick
+    /// that a probe on the inter-tick state would miss.
+    let tryContenders (state : IlMachineState) : ThreadId list option =
         match classify state with
-        | Contention.Contended _ -> true
+        | Contention.Contended _ as contention -> Some contention.Runnable
         | Contention.NoRunnable
-        | Contention.Forced _ -> false
+        | Contention.Forced _ -> None
 
     /// Is `thread`'s yield debt discharged, given the currently-Runnable set? A debt member
     /// that is no longer Runnable has left the run queue and cannot be waited for, so it stops
@@ -773,7 +780,7 @@ module Scheduler =
     /// therefore be forced at choice time and contended here. That is harmless for the policy —
     /// the draw is still gated on a genuine choice existing — but a harness that snapshots
     /// "before the first contended decision" must treat it as a fork point too; see
-    /// `isContended`.
+    /// `tryContenders`.
     let private chargeYieldDebt (ran : ThreadId) (state : IlMachineState) : IlMachineState * bool =
         let others = runnableThreads state |> List.filter (fun tid -> tid <> ran)
 
