@@ -703,6 +703,78 @@ module IntrinsicMethodKeys =
                 "System.UIntPtr"
                 "LeadingZeroCount"
                 [ IntrinsicParameterPattern.Exact "System.UIntPtr" ]
+            // BitOperations.TrailingZeroCount's uint32 overload is modelled as an arm in
+            // Intrinsics.fs, because its body bottoms out in a De Bruijn table backed by a PE
+            // byte range. Its siblings do not need that: `(long)`, `(nint)` and `(nuint)` are
+            // one-instruction forwarders to the uint64 overload, and the uint64 overload's own
+            // fallback splits the value into 32-bit halves and calls back into the modelled
+            // uint32 one. Every `IsSupported` guard on those paths is either folded to false
+            // when CoreLib was built for another architecture or answered false by
+            // `scalarOnlyFalseIsSupportedIntrinsics`, so the IL runs to the same fully
+            // specified answer. This is the LeadingZeroCount rule above applied here: model the
+            // widths BitOperations implements separately, and run its forwarders — which for
+            // TrailingZeroCount leaves exactly one modelled width, since its uint64 body reduces
+            // to the uint32 one instead of reaching a table PawPrint cannot read.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Numerics/BitOperations.cs#L579-L668
+            //
+            // `BitOperations.TrailingZeroCount(int)` carries no [Intrinsic] attribute at all,
+            // so it is never routed to `Intrinsics.call` and deliberately has no entry here.
+            pattern
+                "System.Private.CoreLib"
+                "System.Numerics.BitOperations"
+                "TrailingZeroCount"
+                [ IntrinsicParameterPattern.Exact "System.Int64" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.Numerics.BitOperations"
+                "TrailingZeroCount"
+                [ IntrinsicParameterPattern.Exact "System.UInt64" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.Numerics.BitOperations"
+                "TrailingZeroCount"
+                [ IntrinsicParameterPattern.Exact "System.IntPtr" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.Numerics.BitOperations"
+                "TrailingZeroCount"
+                [ IntrinsicParameterPattern.Exact "System.UIntPtr" ]
+            // The IBinaryInteger<TSelf>.TrailingZeroCount wrappers, exactly as for
+            // LeadingZeroCount above: `ldarg.0; call BitOperations::TrailingZeroCount; [conv];
+            // ret`, [Intrinsic] only so the JIT can elide the wrapper. The narrower wrappers
+            // (SByte/Byte/Int16/UInt16) and the Int128 pair are not [Intrinsic] and so need no
+            // entry.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/UInt32.cs#L310-L312
+            pattern
+                "System.Private.CoreLib"
+                "System.Int32"
+                "TrailingZeroCount"
+                [ IntrinsicParameterPattern.Exact "System.Int32" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.Int64"
+                "TrailingZeroCount"
+                [ IntrinsicParameterPattern.Exact "System.Int64" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.IntPtr"
+                "TrailingZeroCount"
+                [ IntrinsicParameterPattern.Exact "System.IntPtr" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.UInt32"
+                "TrailingZeroCount"
+                [ IntrinsicParameterPattern.Exact "System.UInt32" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.UInt64"
+                "TrailingZeroCount"
+                [ IntrinsicParameterPattern.Exact "System.UInt64" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.UIntPtr"
+                "TrailingZeroCount"
+                [ IntrinsicParameterPattern.Exact "System.UIntPtr" ]
             // BitOperations.RotateLeft is marked [Intrinsic] only so the JIT can lower it to a
             // single ROL instruction; the IL bodies are pure shift+OR over the existing primitive
             // numeric ops PawPrint already supports:
