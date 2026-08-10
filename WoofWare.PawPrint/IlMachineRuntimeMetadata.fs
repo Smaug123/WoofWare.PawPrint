@@ -399,7 +399,13 @@ module IlMachineRuntimeMetadata =
                 resolveBaseConcreteType loggerFactory baseClassTypes state handle
 
             state, parent |> Option.map RuntimeTypeHandleTarget.Closed
-        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+        // An instantiation's parent is its definition's base type with the instantiation
+        // substituted in. The substitution is only needed when the base actually mentions a
+        // parameter, and the existing guard below refuses exactly that case — so the common
+        // shapes (`Comparer<T>`, whose base is `System.Object`, and any non-generic base) are
+        // answered correctly and the rest stays loud.
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity
+        | RuntimeTypeHandleTarget.OpenConstructed (identity, _) ->
             let assy =
                 match state.LoadedAssembly identity.Assembly with
                 | Some assembly -> assembly
@@ -2344,6 +2350,24 @@ module IlMachineRuntimeMetadata =
         : IlMachineState * bool
         =
         match source, target with
+        // Every type is assignable to System.Object — a reference type by inheritance, a value
+        // type by boxing — regardless of what its generic arguments are. That makes this one
+        // answer decidable without the substitution the general case needs, and it is the query
+        // reflection over a returned constraint object actually makes
+        // (`typeof(object).IsAssignableFrom(constraint)`).
+        | RuntimeTypeHandleTarget.OpenConstructed _, RuntimeTypeHandleTarget.Closed t when
+            (match AllConcreteTypes.lookup t state.ConcreteTypes with
+             | Some ct -> ct.Identity = baseClassTypes.Object.Identity
+             | None -> false)
+            ->
+            state, true
+        // Anything else needs variance and argument substitution over the instantiation, which
+        // the cast oracle does not model. Reachable — a constraint object can be handed to any
+        // reflection assignability API — so it fails loudly rather than guessing.
+        | (RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed), _
+        | _, (RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed) ->
+            failwith
+                $"TODO: isRuntimeTypeHandleTargetAssignableTo does not model open constructed types except assignability to System.Object; got %O{openConstructed} (source %O{source}, target %O{target})"
         | RuntimeTypeHandleTarget.Closed s, RuntimeTypeHandleTarget.Closed t ->
             isConcreteTypeAssignableTo loggerFactory baseClassTypes state s t
         | RuntimeTypeHandleTarget.Closed _, RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->

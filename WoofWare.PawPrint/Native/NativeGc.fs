@@ -78,6 +78,9 @@ module NativeGc =
                 $"%s{operation}: expected the type handle of an SZ array, got %O{other}; both managed callers pass typeof(T[]).TypeHandle"
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
             failwith $"%s{operation}: expected a closed SZ array type handle, got open generic definition %O{identity}"
+        | RuntimeTypeHandleTarget.OpenConstructed (definition, _) ->
+            failwith
+                $"%s{operation}: expected a closed SZ array type handle, got open constructed type %O{definition.TypeDefinition.Get}"
         | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
             failwith
                 $"%s{operation}: expected a closed SZ array type handle, got generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"

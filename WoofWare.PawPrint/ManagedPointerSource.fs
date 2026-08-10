@@ -60,6 +60,17 @@ type RuntimeTypeHandleTarget =
         declaringType : ResolvedTypeIdentity *
         declaringMethod : ComparableMethodDefinitionHandle *
         position : int
+    /// A generic type definition applied to arguments at least one of which is not closed —
+    /// ECMA-335's "open constructed type", e.g. `IComparable&lt;T&gt;` as it appears in
+    /// `class Box&lt;T&gt; where T : IComparable&lt;T&gt;`. Unlike a bare generic parameter this has a
+    /// real MethodTable in CoreCLR (`TypeVarTypeDesc::LoadConstraints` loads each constraint
+    /// under the declaring type's formal `SigTypeContext`, typedesc.cpp:826-830), which is why
+    /// `RuntimeType.IsActualInterface` can answer for one.
+    ///
+    /// Construct via <c>RuntimeTypeHandleTarget.openConstructed</c>, never directly: the
+    /// well-formedness rules there are what keep guest `Type` identity canonical, and
+    /// `TypeHandleRegistry` keys on this value.
+    | OpenConstructed of definition : ResolvedTypeIdentity * arguments : RuntimeTypeHandleTarget list
 
     override this.ToString () : string =
         match this with
@@ -70,6 +81,98 @@ type RuntimeTypeHandleTarget =
             $"generic parameter #%i{position} of %s{declaringType.Assembly.Name}/%O{declaringType.TypeDefinition.Get}"
         | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
             $"method generic parameter #%i{position} of method %O{declaringMethod.Get} on %s{declaringType.Assembly.Name}/%O{declaringType.TypeDefinition.Get}"
+        | RuntimeTypeHandleTarget.OpenConstructed (definition, arguments) ->
+            let args = arguments |> List.map string |> String.concat ", "
+
+            $"open constructed %s{definition.Assembly.Name}/%O{definition.TypeDefinition.Get}[%s{args}]"
+
+[<RequireQualifiedAccess>]
+module RuntimeTypeHandleTarget =
+    /// Is this target the definition <paramref name="definition"/> applied to exactly its own
+    /// formal parameters, in declaration order? CoreCLR calls that the *typical instantiation*,
+    /// and represents it as the generic type definition itself rather than as a distinct
+    /// instantiation: `ClassLoader::LoadGenericInstantiationThrowing` (clsload.cpp:1426) routes
+    /// such a request to `LoadTypeDefThrowing`, and `IsTypicalInstantiation` (clsload.cpp:242-270)
+    /// is this same check — each argument a type variable of the same owner, at its own index.
+    ///
+    /// This matters constantly rather than exotically: `interface ISelf&lt;T&gt; where T : ISelf&lt;T&gt;`
+    /// is the CRTP shape of `IParsable&lt;TSelf&gt;` and the whole generic-math hierarchy, and real
+    /// .NET hands its constraint back as `typeof(ISelf&lt;&gt;)` — reference-equal, and reporting
+    /// `IsGenericTypeDefinition`. `TypeGetGenericParameterConstraintsSelfReferential.cs` pins it.
+    let private isTypicalInstantiation
+        (definition : ResolvedTypeIdentity)
+        (arguments : RuntimeTypeHandleTarget list)
+        : bool
+        =
+        arguments
+        |> List.indexed
+        |> List.forall (fun (i, arg) ->
+            match arg with
+            | RuntimeTypeHandleTarget.GenericParameter (owner, position) -> position = i && owner = definition
+            | _ -> false
+        )
+
+    /// The target for <paramref name="definition"/> applied to <paramref name="arguments"/>,
+    /// canonicalised. Use this rather than the `OpenConstructed` case directly: `TypeHandleRegistry`
+    /// keys guest `Type` object identity on the target, so two spellings of one type would mint two
+    /// `Type` objects and break the reference identity .NET guarantees.
+    ///
+    /// Three collapses, each mirroring what CoreCLR's class loader does:
+    ///   * no arguments at all is the bare definition;
+    ///   * the definition applied to its own formals is the definition (see above);
+    ///   * every argument closed means the whole thing is closed, and belongs in
+    ///     `AllConcreteTypes` as a `Closed` handle — which this function cannot mint, so it
+    ///     refuses rather than inventing a second representation. The caller holds the
+    ///     concretization context and must take that path itself.
+    let openConstructed
+        (definition : ResolvedTypeIdentity)
+        (arguments : RuntimeTypeHandleTarget list)
+        : RuntimeTypeHandleTarget
+        =
+        if List.isEmpty arguments then
+            RuntimeTypeHandleTarget.OpenGenericTypeDefinition definition
+        elif isTypicalInstantiation definition arguments then
+            RuntimeTypeHandleTarget.OpenGenericTypeDefinition definition
+        else
+
+        // No check that an argument is not itself a bare definition. No *signature* can spell
+        // one there, but canonicalisation can produce one: in
+        // `interface INested<T> where T : IWrap<INested<T>>` the inner `INested<T>` is the
+        // typical instantiation, collapses to the definition by the rule above, and then appears
+        // as an argument of `IWrap<>`. Real .NET agrees — that constraint's argument is
+        // `typeof(INested<>)` — and `TypeGetGenericParameterConstraintsSelfReferential.cs`
+        // pins it.
+        let isClosed (arg : RuntimeTypeHandleTarget) : bool =
+            match arg with
+            | RuntimeTypeHandleTarget.Closed _ -> true
+            | _ -> false
+
+        if arguments |> List.forall isClosed then
+            failwith
+                $"RuntimeTypeHandleTarget.openConstructed: every argument to %O{definition.TypeDefinition.Get} is closed, so this is a closed type and must be concretized into a `Closed` handle rather than represented as `OpenConstructed`"
+
+        RuntimeTypeHandleTarget.OpenConstructed (definition, arguments)
+
+    /// Recursively check the canonicalisation rules `openConstructed` establishes. Called at
+    /// `TypeHandleRegistry.getOrAllocate`, the one choke point through which a target becomes a
+    /// guest-visible `Type`, so that anything constructing the DU case directly is caught before
+    /// it can hand the guest a duplicate identity.
+    let rec assertWellFormed (target : RuntimeTypeHandleTarget) : unit =
+        match target with
+        | RuntimeTypeHandleTarget.OpenConstructed (definition, arguments) ->
+            // Re-running the constructor must be a no-op: anything it would have collapsed or
+            // rejected is by definition not canonical.
+            match openConstructed definition arguments with
+            | RuntimeTypeHandleTarget.OpenConstructed _ -> ()
+            | collapsed ->
+                failwith
+                    $"RuntimeTypeHandleTarget: %O{target} is not canonical; it should have been built as %O{collapsed}"
+
+            arguments |> List.iter assertWellFormed
+        | RuntimeTypeHandleTarget.Closed _
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+        | RuntimeTypeHandleTarget.GenericParameter _
+        | RuntimeTypeHandleTarget.MethodGenericParameter _ -> ()
 
 /// The root storage location that a managed pointer points into.
 [<NoComparison>]

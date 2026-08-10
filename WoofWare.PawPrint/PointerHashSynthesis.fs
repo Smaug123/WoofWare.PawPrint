@@ -109,7 +109,13 @@ module PointerHashSynthesis =
         match src with
         | NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed handle) ->
             CanonicalPointerKey.MethodTable handle
-        | NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ as target) ->
+        // Same reasoning as `OpenGenericTypeDefinition`: an open constructed type is a real
+        // MethodTable (see `TypeHandleTag.forTarget`), so its `MethodTablePtr` and
+        // `TypeHandlePtr` are one address and must share a key — the `ceq` arm in
+        // `NativeIntSource.equalsForCli` says they are equal, and the synthesised bits have
+        // to agree with that.
+        | NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ as target)
+        | NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.OpenConstructed _ as target) ->
             CanonicalPointerKey.TypeHandle target
         | NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.GenericParameter _ as target)
         | NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.MethodGenericParameter _ as target) ->

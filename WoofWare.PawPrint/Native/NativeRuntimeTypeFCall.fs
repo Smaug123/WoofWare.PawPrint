@@ -91,6 +91,9 @@ module NativeRuntimeTypeFCall =
 
             let state, fieldHandleIds =
                 match typeHandleTarget with
+                | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
+                    failwith
+                        $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeFCall.fs:%s{__LINE__}; got %O{openConstructed}"
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
                     failwith
                         $"TODO: %s{operation} for open generic type definition %O{identity}; expected behavior is to enumerate the canonical type's non-literal fields"
@@ -162,6 +165,9 @@ module NativeRuntimeTypeFCall =
             // means the wrapper's guard was bypassed, so fail rather than invent a name.
             let name =
                 match typeHandleTarget with
+                | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
+                    failwith
+                        $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeFCall.fs:%s{__LINE__}; got %O{openConstructed}"
                 | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as typeHandle) ->
                     match IlMachineState.tryGetConcreteTypeInfo state typeHandle with
                     | Some (_, typeInfo) -> typeInfo.Name
@@ -277,6 +283,10 @@ module NativeRuntimeTypeFCall =
                 match target with
                 | RuntimeTypeHandleTarget.GenericParameter _
                 | RuntimeTypeHandleTarget.MethodGenericParameter _ -> true
+                // An open constructed type *contains* generic variables but is not one: it has a
+                // MethodTable, and `RuntimeType.GetBaseType` branches on this to decide whether
+                // to walk constraints at all.
+                | RuntimeTypeHandleTarget.OpenConstructed _
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
                 | RuntimeTypeHandleTarget.Closed _ -> false
 
@@ -305,6 +315,9 @@ module NativeRuntimeTypeFCall =
 
             let index =
                 match target with
+                | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
+                    failwith
+                        $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeFCall.fs:%s{__LINE__}; got %O{openConstructed}"
                 | RuntimeTypeHandleTarget.GenericParameter (_, position)
                 | RuntimeTypeHandleTarget.MethodGenericParameter (_, _, position) -> position
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
@@ -338,6 +351,9 @@ module NativeRuntimeTypeFCall =
                 NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
 
             match target with
+            | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
+                failwith
+                    $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeFCall.fs:%s{__LINE__}; got %O{openConstructed}"
             | RuntimeTypeHandleTarget.GenericParameter _
             | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
             | RuntimeTypeHandleTarget.Closed _ ->
@@ -572,10 +588,13 @@ module NativeRuntimeTypeFCall =
 
             let elementTypeSource : NativeIntSource =
                 match target with
+                | RuntimeTypeHandleTarget.OpenConstructed _
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
                 | RuntimeTypeHandleTarget.GenericParameter _
                 | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
-                    // GetElementType returns null for non-array/pointer/byref types.
+                    // GetElementType returns null for non-array/pointer/byref types. An open
+                    // constructed type is a generic instantiation, so it has no element type
+                    // any more than its definition does.
                     NativeIntSource.Verbatim 0L
                 | RuntimeTypeHandleTarget.Closed handle ->
                     match handle with
@@ -618,6 +637,9 @@ module NativeRuntimeTypeFCall =
 
             let sourceHandle =
                 match sourceTarget with
+                | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
+                    failwith
+                        $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeFCall.fs:%s{__LINE__}; got %O{openConstructed}"
                 | RuntimeTypeHandleTarget.Closed handle -> handle
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
                     failwith
@@ -631,6 +653,9 @@ module NativeRuntimeTypeFCall =
 
             let targetHandle =
                 match targetTarget with
+                | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
+                    failwith
+                        $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeFCall.fs:%s{__LINE__}; got %O{openConstructed}"
                 | RuntimeTypeHandleTarget.Closed handle -> handle
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
                     failwith
@@ -706,7 +731,10 @@ module NativeRuntimeTypeFCall =
                 match target with
                 | RuntimeTypeHandleTarget.GenericParameter _
                 | RuntimeTypeHandleTarget.MethodGenericParameter _ -> int System.Reflection.TypeAttributes.Public
-                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+                // An instantiation's attributes are its definition's: instantiating an interface
+                // leaves it an interface, which is what `Type.IsInterface` reads here.
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity
+                | RuntimeTypeHandleTarget.OpenConstructed (identity, _) ->
                     let assembly =
                         state.LoadedAssembly identity.Assembly
                         |> Option.defaultWith (fun () ->
@@ -806,6 +834,9 @@ module NativeRuntimeTypeFCall =
 
             let handle =
                 match target with
+                | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
+                    failwith
+                        $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeFCall.fs:%s{__LINE__}; got %O{openConstructed}"
                 | RuntimeTypeHandleTarget.Closed handle -> handle
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
                     failwith

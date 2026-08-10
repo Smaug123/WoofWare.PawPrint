@@ -105,6 +105,9 @@ module NativeCall =
         : ConcreteTypeHandle
         =
         match qCallTypeHandleToRuntimeTypeHandleTarget operation state arg with
+        | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
+            failwith
+                $"TODO: open constructed types are not handled at Native/NativeCall.fs:%s{__LINE__}; got %O{openConstructed}"
         | RuntimeTypeHandleTarget.Closed cth -> cth
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
             failwith
@@ -606,6 +609,9 @@ module NativeCall =
         : System.Reflection.AssemblyName
         =
         match typeHandleTarget with
+        // An instantiation lives in the assembly that declares its definition, exactly as a
+        // closed one does (`typeof(List<int>).Assembly` is corelib, not the caller's).
+        | RuntimeTypeHandleTarget.OpenConstructed (identity, _)
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity -> identity.Assembly
         | RuntimeTypeHandleTarget.GenericParameter (declaringType, _)
         | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, _, _) ->
