@@ -1022,6 +1022,29 @@ module IlMachineRuntimeMetadata =
                     $"frozenStackTraceToken: exception @ %O{exceptionAddr} holds a _stackTrace token @ %O{tokenAddr} that is not registered in FrozenStackTraces; this is an interpreter bug"
         | other -> failwith $"frozenStackTraceToken: expected ObjectRef in Exception._stackTrace, got %O{other}"
 
+    /// The frames behind `exceptionAddr`'s `_stackTrace` token: the trace as of its last dispatch.
+    /// Empty means the exception has never been thrown, which is a legitimate state.
+    ///
+    /// This is the read side of `recordThrownStackTrace`, and the two must agree about what a token
+    /// means; `frozenStackTraceToken` is what enforces that the token is one PawPrint minted.
+    let frozenStackTraceFrames
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (exceptionAddr : ManagedHeapAddress)
+        (state : IlMachineState)
+        : ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> list
+        =
+        match frozenStackTraceToken baseClassTypes exceptionAddr state with
+        | None -> []
+        | Some token ->
+            match state.FrozenStackTraces |> Map.tryFind token with
+            | Some frames -> frames
+            | None ->
+                // `frozenStackTraceToken` has already established that the token is registered, so
+                // this is unreachable; stated rather than defaulted to `[]` because silently
+                // answering "never thrown" would turn a bookkeeping bug into a lost stack trace.
+                failwith
+                    $"frozenStackTraceFrames: token %O{token} for exception @ %O{exceptionAddr} vanished from FrozenStackTraces between lookups; this is an interpreter bug"
+
     /// Record that `exceptionAddr` has been thrown, with `stackTrace` as the frames behind it:
     /// mint a fresh token object, register `token -> frames` in `IlMachineState.FrozenStackTraces`,
     /// and store the token in the exception's `_stackTrace`.

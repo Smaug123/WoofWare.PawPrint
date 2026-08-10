@@ -2598,8 +2598,21 @@ module NullaryIlOp =
                 let exceptionType =
                     ExceptionDispatching.exceptionObjectType state cliException.ExceptionObject
 
-                // TODO: when stack traces are formatted, record the rethrow site as a boundary
-                // so rendered traces can distinguish it from the original throw frame.
+                // A rethrow continues the exception's *own* trace, so its starting frames are
+                // whatever `_stackTrace` holds now — CoreCLR's `IL_Rethrow` (jithelpers.cpp:890)
+                // reaches dispatch without clearing that field, and every frame it goes on to
+                // append accumulates onto it.
+                //
+                // The list that arrived on the parked `CliException` is not that: it is the
+                // snapshot taken when this catch handler was *entered*, and the exception's trace
+                // can have moved on since. Throwing the same object again from inside the handler
+                // replaces it, and a `finally` that this raise later runs can overwrite it too, so
+                // carrying the snapshot silently drops frames the guest can observe.
+                let cliException =
+                    { cliException with
+                        StackTrace = IlMachineState.frozenStackTraceFrames corelib cliException.ExceptionObject state
+                    }
+
                 match
                     ExceptionDispatching.dispatchException
                         loggerFactory
