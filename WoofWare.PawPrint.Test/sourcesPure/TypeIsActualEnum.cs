@@ -12,6 +12,10 @@ class EnumConstrained<T> where T : Enum { }
 
 class Unconstrained<T> { }
 
+class ClosedBase { }
+
+class DerivedFromClosedBase<T> : ClosedBase { }
+
 class Program
 {
     static int next = 1;
@@ -91,6 +95,18 @@ class Program
         Type unconstrained = typeof(Unconstrained<>).GetGenericArguments()[0];
         Check(!unconstrained.IsEnum);
         Check(!IsActualEnum(unconstrained));
+
+        // An open generic *definition* is a MethodTable, not a TypeDesc, so it does not take the
+        // short-circuit above: the base-type read really happens, down the
+        // `OpenGenericTypeDefinition` arm of the `ParentMethodTable` projection rather than the
+        // `Closed` one every other case here uses. Both parents that arm can name are covered —
+        // `System.Object`, and a closed non-generic base. (A base that still mentions the type
+        // parameter is the shape `resolveBaseRuntimeTypeHandleTarget` refuses; it is parked in
+        // `EnumQueriesOpenGenericSharedParent.cs`, and `IsEnum` reaches that refusal too.)
+        Check(!typeof(Unconstrained<>).IsEnum);
+        Check(!IsActualEnum(typeof(Unconstrained<>)));
+        Check(!typeof(DerivedFromClosedBase<>).IsEnum);
+        Check(!IsActualEnum(typeof(DerivedFromClosedBase<>)));
 
         // The reflection surface `IsActualEnum` gates, in its allowing direction.
         Check(typeof(GuestIntEnum).GetEnumUnderlyingType() == typeof(int));
