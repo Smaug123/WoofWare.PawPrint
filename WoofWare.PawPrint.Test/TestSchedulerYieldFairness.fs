@@ -103,7 +103,7 @@ module TestSchedulerYieldFairness =
                     code, state.Kernel.StepCounter
                 | Program.ProgramStepOutcome.Completed other -> failwith $"unexpected guest outcome: %A{other}"
                 | Program.ProgramStepOutcome.Deadlocked (_, stuck) -> failwith $"guest deadlocked: %s{stuck}"
-                | Program.ProgramStepOutcome.InstructionStepped (p, _, _) -> loop p
+                | Program.ProgramStepOutcome.InstructionStepped (p, _, _, _) -> loop p
                 | Program.ProgramStepOutcome.WorkerTerminated (p, _) -> loop p
 
             loop prepared

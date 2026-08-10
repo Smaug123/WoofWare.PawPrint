@@ -365,7 +365,7 @@ module DebuggerServer =
 
     let private eventOfStepOutcome (stepNumber : int64) (outcome : Program.ProgramStepOutcome) : DebugEvent =
         match outcome with
-        | Program.ProgramStepOutcome.InstructionStepped (_, thread, whatWeDid) ->
+        | Program.ProgramStepOutcome.InstructionStepped (_, thread, whatWeDid, _effect) ->
             let blockedOnClassInitThread =
                 match whatWeDid with
                 | WhatWeDid.BlockedOnClassInit blocker -> Some (threadIdValue blocker)
@@ -426,7 +426,7 @@ module DebuggerServer =
             let outcome = Program.stepPrepared loggerFactory logger prepared
 
             match outcome with
-            | Program.ProgramStepOutcome.InstructionStepped (prepared, _, _)
+            | Program.ProgramStepOutcome.InstructionStepped (prepared, _, _, _)
             | Program.ProgramStepOutcome.WorkerTerminated (prepared, _) ->
                 let steps = steps + 1L
                 SessionState.Running (prepared, steps), eventOfStepOutcome steps outcome, true

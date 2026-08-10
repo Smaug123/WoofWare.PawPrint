@@ -98,7 +98,7 @@ module TestCalliSuspensionOutcome =
                 | other -> failwith $"guest did not exit normally: %O{other}"
             | Program.ProgramStepOutcome.Deadlocked (_, stuck) -> failwith $"guest deadlocked: %s{stuck}"
             | Program.ProgramStepOutcome.WorkerTerminated (p, _) -> loop p acc
-            | Program.ProgramStepOutcome.InstructionStepped (p, ran, whatWeDid) ->
+            | Program.ProgramStepOutcome.InstructionStepped (p, ran, whatWeDid, _) ->
                 let acc =
                     match currentIlOp ran stateBefore with
                     | Some op when isCalli op -> whatWeDid :: acc
