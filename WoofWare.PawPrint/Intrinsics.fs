@@ -1514,6 +1514,51 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Float64 result)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
+        | "System.Private.CoreLib", "Math", "Round" when
+            intrinsicKey.DeclaringTypeFullName = "System.Math"
+            && intrinsicKey.ParameterShapes = [ "System.Double" ]
+            ->
+            // The odd one out among the five `System.Math` arms above: this one is `[Intrinsic]`
+            // but *not* `MethodImplOptions.InternalCall`, so it does have an IL body and could
+            // in principle be allowlisted in `safeIntrinsics` and simply run.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Math.cs#L1306-L1348
+            //
+            // That body is not the definition, though. It is a managed emulation of the
+            // instruction the JIT actually emits -- `roundsd` with mode 0 on x86, `frintn` on
+            // Arm -- and it gets ties-to-even out of the ambient rounding mode by computing
+            // `(a + 2^52) - 2^52`. Running it would make the answer a property of whatever
+            // performed that addition rather than of this runtime, which is the class of
+            // dependency `DeterministicMath` exists to remove; so, as with `Math.Ceiling` above,
+            // the operation is named in-tree. `roundToIntegralTiesToEven` is exact, so this
+            // changes nothing about the result and gives the tests an exact oracle.
+            //
+            // The three other `double` overloads -- `Round(double, int)`,
+            // `Round(double, MidpointRounding)` and `Round(double, int, MidpointRounding)` --
+            // are not `[Intrinsic]`, so they run as ordinary managed IL and reach this arm
+            // through their own `MidpointRounding.ToEven` path. The `decimal` overloads never
+            // arrive here either, for the same reason. The guard on `DeclaringTypeFullName`
+            // keeps this arm off any other type with a `Round` (`System.MathF.Round(float)` is
+            // also `[Intrinsic]`, and is a different operation on a different width), and the
+            // guard on `ParameterShapes` keeps it off the multi-argument overloads should any
+            // of them ever become intrinsic.
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteDouble state.ConcreteTypes ], MethodReturnType.Returns (ConcreteDouble state.ConcreteTypes) ->
+                ()
+            | _ -> failwith $"Math.Round: unexpected signature %s{formatMethodKey intrinsicKey}"
+
+            let argument, state = IlMachineState.popEvalStack currentThread state
+
+            let argument =
+                match argument with
+                | EvalStackValue.Float f -> f
+                | _ -> failwith $"Math.Round: unexpected eval stack value: %O{argument}"
+
+            let result = DeterministicMath.round argument
+
+            state
+            |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Float64 result)) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> IntrinsicResult.Completed
         | "System.Private.CoreLib", "String", "Equals" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteString state.ConcreteTypes ; ConcreteString state.ConcreteTypes ],
