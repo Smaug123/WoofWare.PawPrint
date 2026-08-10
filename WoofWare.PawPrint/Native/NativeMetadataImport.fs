@@ -250,16 +250,18 @@ module NativeMetadataImport =
             failwith
                 $"%s{operation}: expected TypeDef parent token for property enumeration, got %O{token} from 0x%08x{parent}"
 
-    /// The <c>#Strings</c> entry naming a property definition.
+    /// One Property row, bounds-checked.
     ///
     /// The presence check is the same guard as <c>propertyDefinitionsForTypeDefinition</c>'s and
     /// exists for the same reason; <c>MetadataReader</c> has no total lookup, so the row number is
-    /// compared against the table's length directly.
-    let private propertyDefinitionName
+    /// compared against the table's length directly. An out-of-range handle otherwise reaches the
+    /// reader as <c>BadImageFormatException: Read out of bounds</c>, which reads as a corrupt image
+    /// when the truth is that PawPrint was handed a token it should never have seen.
+    let private propertyDefinition
         (operation : string)
         (assembly : DumpedAssembly)
         (propertyHandle : System.Reflection.Metadata.PropertyDefinitionHandle)
-        : string
+        : System.Reflection.Metadata.PropertyDefinition
         =
         let metadataReader = metadataReaderOf assembly
 
@@ -278,7 +280,16 @@ module NativeMetadataImport =
             failwith
                 $"%s{operation}: PropertyDef token 0x%08x{metadataTokenOfPropertyDefinitionHandle propertyHandle} was not present in %s{assembly.Name.FullName}"
 
-        metadataReader.GetString (metadataReader.GetPropertyDefinition propertyHandle).Name
+        metadataReader.GetPropertyDefinition propertyHandle
+
+    /// The <c>#Strings</c> entry naming a property definition.
+    let private propertyDefinitionName
+        (operation : string)
+        (assembly : DumpedAssembly)
+        (propertyHandle : System.Reflection.Metadata.PropertyDefinitionHandle)
+        : string
+        =
+        (metadataReaderOf assembly).GetString ((propertyDefinition operation assembly propertyHandle).Name)
 
     /// The types immediately nested inside the TypeDef named by <paramref name="parent"/>, as raw
     /// metadata tokens, in the order the real runtime returns them.
@@ -942,9 +953,11 @@ module NativeMetadataImport =
             // row reports ELEMENT_TYPE_VOID, which `MdConstant` turns into DBNull.Value.
             //
             // Only FieldDef parents are covered. The Constant table's Parent is a HasConstant coded
-            // index spanning ParamDef and PropertyDef too, but neither is reachable: PawPrint has no
-            // `GetPropertyProps` handler, and the `Enum` QCall mints no ParamDef tokens, so those
-            // arms could never be executed.
+            // index spanning ParamDef and PropertyDef too, but neither is reachable, for different
+            // reasons. A ParamDef token would have to come from the `Enum` QCall, which mints none.
+            // A PropertyDef Constant row is read by `RuntimePropertyInfo.GetRawConstantValue`, which
+            // needs a fully constructed `RuntimePropertyInfo` — so it is `Associates.AssignAssociates`
+            // that blocks it, not the absence of `GetPropertyProps`, which this file now implements.
             let operation = "MetadataImport.GetDefaultValue"
             let assemblyFullName = metadataImportHandleOfArg operation instruction.Arguments.[0]
             let assembly = metadataImportAssembly operation state assemblyFullName
@@ -1239,6 +1252,96 @@ module NativeMetadataImport =
                 IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread state
 
             NativeHandlerResult.completed state |> Some
+        | "System.Private.CoreLib",
+          "System.Reflection",
+          "MetadataImport",
+          "GetPropertyProps",
+          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcreteByref (ConcretePointer (ConcreteVoid state.ConcreteTypes))
+            ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
+            ConcreteByref (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                             "System.Reflection",
+                                                             "ConstArray",
+                                                             constArrayGenerics)) ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
+            constArrayGenerics.IsEmpty
+            ->
+            // CoreCLR's FCall (managedmdimport.cpp:330) forwards straight to
+            // `IMDInternalImport::GetPropertyProps`, which reads one Property row and reports three
+            // things: the `#Strings` name, the raw `Property.Flags` column, and a
+            // `PCCOR_SIGNATURE`/length pair over the row's Type blob (mdinternalro.cpp:2329). No
+            // filtering, no base-chain walk, no associates — `RuntimePropertyInfo`'s constructor
+            // does that separately through `Associates.AssignAssociates`.
+            let operation = "MetadataImport.GetPropertyProps"
+            let assemblyFullName = metadataImportHandleOfArg operation instruction.Arguments.[0]
+            let assembly = metadataImportAssembly operation state assemblyFullName
+
+            let mdToken =
+                match CliType.unwrapPrimitiveLikeDeep instruction.Arguments.[1] with
+                | CliType.Numeric (CliNumericType.Int32 mdToken) -> mdToken
+                | other -> failwith $"%s{operation}: expected Int32 mdToken argument, got %O{other}"
+
+            let nameOut =
+                NativeCall.managedPointerOfPointerArgument operation "name out pointer" instruction.Arguments.[2]
+
+            let attributesOut =
+                NativeCall.managedPointerOfPointerArgument
+                    operation
+                    "propertyAttributes out pointer"
+                    instruction.Arguments.[3]
+
+            let signatureOut =
+                NativeCall.managedPointerOfPointerArgument operation "signature out pointer" instruction.Arguments.[4]
+
+            let propertyHandle =
+                match MetadataToken.ofInt mdToken with
+                | MetadataToken.PropertyDefinition propertyHandle -> propertyHandle
+                | token -> failwith $"%s{operation}: expected PropertyDef token, got %O{token} from 0x%08x{mdToken}"
+
+            // Rejects a PropertyDef absent from this assembly, so everything below reads a row that
+            // exists.
+            let property = propertyDefinition operation assembly propertyHandle
+
+            let peByteRange =
+                IlMachineState.peByteRangeForPropertySignatureBlob assembly propertyHandle
+
+            // ECMA-335 II.23.2.5: a PropertySig is the calling-convention byte, then a compressed
+            // ParamCount, then a non-empty Type — so it is never shorter than three bytes. Anything
+            // shorter means we resolved the wrong blob, and passing it on would leave the managed
+            // parser to fail somewhere far from the cause. Same reasoning as the two-byte floor in
+            // `GetSigOfFieldDef`.
+            if peByteRange.Size < 3 then
+                failwith
+                    $"%s{operation}: PropertyDef token 0x%08x{mdToken} in %s{assemblyFullName} has a %d{peByteRange.Size}-byte signature blob, but an ECMA-335 II.23.2.5 PropertySig is at least three bytes"
+
+            // A PE byte range rather than a copy, unlike the `GetMemberRefProps` sibling. The blob's
+            // only consumer is `RuntimePropertyInfo.Signature`, which passes it to the handle-less
+            // `Signature` constructor; PawPrint resolves that through
+            // `NativeSignature.corSigPeByteRange`, which accepts only null or a `PeByteRange` — and
+            // parsing the blob will need the provenance anyway, because a custom modifier in a
+            // property signature carries a coded token that only means something against the
+            // owning assembly.
+            let constArrayValue, state =
+                buildConstArrayOverPeByteRange ctx.LoggerFactory ctx.BaseClassTypes operation peByteRange state
+
+            let state =
+                IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state signatureOut constArrayValue
+
+            // The raw Property.Flags column, as `getPropFlagsOfProperty` returns it; the managed
+            // wrapper casts it to `PropertyAttributes`.
+            let state =
+                writeInt32AtPointer ctx.BaseClassTypes state attributesOut (int32 property.Attributes)
+
+            // Writes the name, pushes S_OK and completes. The name is the `#Strings` entry itself,
+            // as `getNameOfProperty` hands back, so an indexer reports its metadata name (`Item`, or
+            // whatever `[IndexerName]` says) rather than its C# spelling.
+            //
+            // Every failure above is instead a host-level crash rather than the negative HRESULT
+            // CoreCLR would return, as in the sibling handlers: the only guest caller passes tokens
+            // the runtime itself minted, so a rejected token is a PawPrint bug rather than a
+            // malformed image.
+            completeWithUtf8String ctx nameOut ((metadataReaderOf assembly).GetString property.Name) state
         | "System.Private.CoreLib",
           "System.Reflection",
           "MetadataImport",
