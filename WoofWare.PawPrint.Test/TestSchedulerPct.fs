@@ -2,6 +2,8 @@ namespace WoofWare.PawPrint.Test
 
 open System.Collections.Immutable
 open System.IO
+open FsCheck
+open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
@@ -252,6 +254,69 @@ module TestSchedulerPct =
         | SchedulerState.RoundRobin ->
             failwith "onThreadTerminated must preserve the Pct policy, not silently revert to RoundRobin"
 
+    // ---------------- "draws iff contended" ----------------
+
+    let private config : Config = Config.QuickThrowOnFailure.WithMaxTest 500
+
+    /// Splitmix64 seeds across the whole `uint64` range. FsCheck's default integral
+    /// generator is size-bounded — it would sample only tiny seeds, and a scheduler
+    /// bug that only bites for large `Rng` states would sail through.
+    let private seedGen : Gen<uint64> =
+        Gen.choose64 (System.Int64.MinValue, System.Int64.MaxValue) |> Gen.map uint64
+
+    /// Every `ThreadStatus` that is not `Runnable`. A thread in any of these is invisible
+    /// to the scheduler's choice, so a state containing any mixture of them plus exactly one
+    /// `Runnable` thread has a forced decision.
+    let private notRunnableGen : Gen<ThreadStatus> =
+        Gen.elements
+            [
+                ThreadStatus.NotStarted
+                ThreadStatus.Terminated
+                ThreadStatus.Parked
+                ThreadStatus.BlockedOnSleep None
+                ThreadStatus.BlockedOnSleep (Some 5L)
+                ThreadStatus.BlockedOnClassInit (ThreadId 0)
+                ThreadStatus.BlockedOnJoin (ThreadId 0, None)
+                ThreadStatus.BlockedOnMonitorAcquire (LowLevelMonitorId 1)
+            ]
+
+    /// A thread table with exactly one `Runnable` thread, plus the id of that thread.
+    let private forcedThreadsGen : Gen<(ThreadId * ThreadStatus) list * ThreadId> =
+        gen {
+            let! count = Gen.choose (1, 6)
+            let! runnableIndex = Gen.choose (0, count - 1)
+            let! statuses = Gen.listOfLength count notRunnableGen
+
+            let threads =
+                statuses
+                |> List.mapi (fun i status -> ThreadId i, (if i = runnableIndex then ThreadStatus.Runnable else status))
+
+            return threads, ThreadId runnableIndex
+        }
+
+    [<Test>]
+    let ``Pct consumes no randomness when the decision is forced`` () : unit =
+        // The invariant the whole fork-point-sharing feature rests on: the policy's state
+        // changes only at genuine choice points, so a prefix during which the scheduler
+        // never had a choice leaves `PctState.ofSeed s` untouched and can therefore be
+        // computed once and shared across every seed.
+        //
+        // Note the thread stubs here are frameless. That is not laziness in the fixture: it
+        // is part of the assertion. `chooseNext`'s contended path calls `peekNextOp` on the
+        // winner to weight its demotion coin, so a frameless stub would blow up. A forced
+        // decision must not even ask what the next op is, because there is nothing it could
+        // do with the answer.
+        let property ((threads, runnable) : (ThreadId * ThreadStatus) list * ThreadId) (seed : uint64) : unit =
+            let before = baseState () |> withThreads threads |> IlMachineState.withPctSeed seed
+
+            let after, chosen = Scheduler.chooseNext (ThreadId 0) before
+
+            chosen |> shouldEqual (Some runnable)
+            after.Scheduling |> shouldEqual before.Scheduling
+            after.Scheduling |> shouldEqual (SchedulerState.Pct (PctState.ofSeed seed))
+
+        Check.One (config, Prop.forAll (Arb.fromGen (Gen.zip forcedThreadsGen seedGen)) (fun (t, s) -> property t s))
+
     [<Test>]
     let ``onThreadTerminated leaves a RoundRobin schedule alone`` () : unit =
         // The Pct cleanup branch must not introduce a behavioural difference for
@@ -325,6 +390,43 @@ module TestSchedulerPct =
         let second = runSourceWithSeed "ReadWriteRace.cs" seed
 
         outcomeSignature first |> shouldEqual (outcomeSignature second)
+
+    let private finalScheduling (outcome : RunOutcome) : SchedulerState =
+        match outcome with
+        | RunOutcome.NormalExit (state, _)
+        | RunOutcome.ProcessExit (state, _)
+        | RunOutcome.FailFast (state, _, _)
+        | RunOutcome.SignalTerminated (state, _)
+        | RunOutcome.GuestUnhandledException (state, _, _) -> state.Scheduling
+
+    [<Test>]
+    let ``a run that never forks consumes no randomness at all`` () : unit =
+        // The forced-decision property at whole-run scale, and the premise the fork-point
+        // sharing feature is built on: a guest that never has two Runnable threads leaves the
+        // policy state exactly where `withPctSeed` put it — startup's ~3300 class-initialiser
+        // steps included. So such a run can be computed once and reused for every seed, and
+        // more immediately, a snapshot taken at the first fork can be resumed by overwriting
+        // `Scheduling` with `ofSeed s`.
+        //
+        // This is the assertion the frameless unit tests structurally cannot make: it drives
+        // real frames through the whole of `chooseNext`, including `peekNextOp`.
+        let seed = 0xC0FFEEUL
+
+        runSourceWithSeed "ArithmeticOperations.cs" (Some seed)
+        |> finalScheduling
+        |> shouldEqual (SchedulerState.Pct (PctState.ofSeed seed))
+
+    [<Test>]
+    let ``a run that forks does consume randomness`` () : unit =
+        // The other half of the iff. Without it, a policy that never drew anything would pass
+        // the test above, and PCT would have silently degenerated into RoundRobin — which the
+        // outcome-coverage tests in TestRaces would eventually catch, but only statistically
+        // and far from the cause.
+        let seed = 0xC0FFEEUL
+
+        runSourceWithSeed "ReadWriteRace.cs" (Some seed)
+        |> finalScheduling
+        |> shouldNotEqual (SchedulerState.Pct (PctState.ofSeed seed))
 
     [<Test>]
     let ``PCT runs without a seed default to RoundRobin parity`` () : unit =
