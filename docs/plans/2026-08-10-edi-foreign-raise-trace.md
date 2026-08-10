@@ -206,10 +206,29 @@ The mutation pair is the proof: forcing the field `false` at the `endfinally` re
 `ForeignRaiseFlagPendingBeforeCleanup` at exit 5, forcing it `true` fails
 `ForeignRaiseFlagSetInFinally` at exit 4. No resume-site rule passes both.
 
-The residual: a flag set from an exception *filter*. Filters run in pass one, so CoreCLR would let
-a later append of the same raise consume it, where PawPrint's raise began before the flag existed
-and so declines. Distinguishing that needs the real two-pass structure — issue #865 — and no
-approximation short of it would be honest.
+Codex's fifth round then found that `rethrow` was setting the field to a blanket `true` rather than
+to the flag actually pending at that instant — so a rethrow that began with nothing pending would
+still take a flag its own `finally` set. That is a one-token fix, and it makes the code say what
+the field's doc comment already claimed; `ForeignRaiseFlagSetInFinallyDuringRethrow.cs` pins it,
+and reverting to `true` fails it at exit 5.
+
+### What is left, and why it is not fixed here
+
+Two residuals, both needing pass structure rather than a better statement of the current model:
+
+* **A flag set from an exception *filter*.** Filters run in pass one, so CoreCLR would let a later
+  append of the same raise consume it, where PawPrint's raise began before the flag existed and so
+  declines.
+* **A flag *stolen* during cleanup.** The raise records that a flag was pending and re-reads the
+  thread's bit when it finally appends; an exception thrown and caught inside an intervening
+  `finally` consumes it first. Parked as `sourcesPure/ForeignRaiseFlagNotStolenByCleanup.cs`,
+  measured exit 5 against 0.
+
+Closing the second means *transferring* ownership of the flag at raise initiation and handing it
+back if the raise turns out to append nothing — and "turns out to append nothing" is only
+answerable once dispatch distinguishes a cleanup handler from a real one. That is the `_isFinally`
+that `tryFindAndEnterHandlerAtSearchPC` deliberately ignores, i.e. issue #865's two-pass structure.
+Both residuals are the same shape, and no approximation short of #865 would be honest about it.
 
 A plain rethrow still carries the catch handler's snapshot rather than re-reading the token, so it
 can report a staler trace than real .NET. That is pre-existing and independent of the flag; making
@@ -311,8 +330,9 @@ Mutation results (each applied to a clean tree, then reverted from a scratchpad 
 | mark the in-flight snapshot instead of the exception's token | `ForeignRaiseReadsCurrentExceptionTrace` fails, exit 4 |
 | force the raise ineligible at the `endfinally` resume | `ForeignRaiseFlagPendingBeforeCleanup` fails, exit 5 |
 | force the raise eligible at the `endfinally` resume | `ForeignRaiseFlagSetInFinally` fails, exit 4 |
+| start every `rethrow` eligible instead of reading the flag | `ForeignRaiseFlagSetInFinallyDuringRethrow` fails, exit 5 |
 
-Six test files, each killed by a different mutation:
+Seven test files, six passing and one parked, each killed by a different mutation:
 
 * `ExceptionDispatchInfoThrowPreservesTrace.cs` — the ordinary `EDI.Capture`/`Throw` round trip.
 * `ForeignRaiseFlagConsumedByRethrow.cs` — a reflective set-then-`rethrow` that *does* unwind:
@@ -325,6 +345,11 @@ Six test files, each killed by a different mutation:
   annotation on the unwinding exception, one on the next raise.
 * `ForeignRaiseFlagPendingBeforeCleanup.cs` — its mirror: the flag set before a `rethrow` that
   then passes through a `finally`. One annotation, and nothing left pending.
+* `ForeignRaiseFlagSetInFinallyDuringRethrow.cs` — the `rethrow` counterpart of
+  `ForeignRaiseFlagSetInFinally.cs`: nothing pending when the rethrow starts, the `finally` sets a
+  flag, and the rethrow must not take it.
+* `ForeignRaiseFlagNotStolenByCleanup.cs` — **parked**: a raise inside a `finally` consuming the
+  flag the outer raise had claimed. Needs #865.
 
 Every one of these after the first exists because a Codex round named the shape; each was measured
 on real .NET before its assertion was written, and each kills a mutation the others survive.

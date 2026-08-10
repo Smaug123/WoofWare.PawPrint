@@ -2614,11 +2614,13 @@ module NullaryIlOp =
                 // handler lives in this same method leaves the flag pending because it appends
                 // nothing at all. See `sourcesPure/ForeignRaiseFlagSurvivesFramelessRethrow.cs`.
                 //
-                // This *is* a raise initiation, though, so the new raise starts eligible: whatever
-                // was pending on the thread just now is this raise's to consume at its first
-                // appended frame, however many cleanup clauses it passes through on the way. The
-                // `CliException` here came out of `CatchExceptions`, where the field is stale, so
-                // this is a set rather than a carry-over.
+                // This *is* a raise initiation, though, so the new raise records what was pending
+                // on the thread at this instant — that, and only that, is its to consume at its
+                // first appended frame, however many cleanup clauses it passes through on the way.
+                // Reading the flag *now* rather than at the append is the whole point: a `finally`
+                // this raise runs on its way out may set a flag of its own, and that one belongs to
+                // the next raise, not this one. The `CliException` here came out of
+                // `CatchExceptions`, where the field is stale, so this is a set, not a carry-over.
                 //
                 // Its `StackTrace` out of `CatchExceptions` is stale in the same way, and for the
                 // same reason: it is the snapshot this catch handler was entered with. The trace a
@@ -2626,7 +2628,7 @@ module NullaryIlOp =
                 let cliException =
                     { cliException with
                         StackTrace = IlMachineState.frozenStackTraceFrames corelib cliException.ExceptionObject state
-                        MayConsumeForeignRaise = true
+                        MayConsumeForeignRaise = threadState.IsRaisingForeignException
                     }
 
                 match
