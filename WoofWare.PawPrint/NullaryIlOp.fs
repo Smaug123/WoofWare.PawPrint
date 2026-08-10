@@ -978,6 +978,148 @@ module NullaryIlOp =
         | EvalStackValue.UserDefinedValueType valueType ->
             failwith $"Conv_ovf_i: refusing to convert user-defined value type %O{valueType} to signed native int"
 
+    /// The conversion performed by `conv.ovf.i.un`: treats the source value as
+    /// *unsigned* and converts it to a signed native int, returning `Error ()`
+    /// when the value cannot be represented. PawPrint's native int is 64 bits
+    /// wide, so an int32 source is zero-extended and can never overflow (every
+    /// uint32 fits), while a 64-bit source overflows exactly when its top bit is
+    /// set — read as unsigned it is then at least 2^63, which no signed native
+    /// int can hold. That is the whole of the difference from `conv.ovf.i`, and
+    /// it points both ways: the int32 `-1` that `conv.ovf.i` passes through
+    /// becomes `4294967295` here, and the int64 `-1` it passes through overflows
+    /// here. A float has no alternative bit-pattern reading — it is signed by
+    /// construction — so for float sources the `.un` suffix is a no-op and the
+    /// behaviour is exactly `conv.ovf.i`'s. All three readings are pinned in
+    /// `TestNullaryIlOp` against the host's own `conv.ovf.i.un`, emitted through
+    /// a `DynamicMethod` rather than restated from this code. Pointer-shaped
+    /// native ints are passed through to keep pointer provenance intact,
+    /// matching the `Conv_I` / `Conv_ovf_i` policy. The result is expressed as
+    /// `NativeIntSource` (the same slot used by `Conv_I`).
+    let internal convOvfIUn (value : EvalStackValue) : Result<NativeIntSource, unit> =
+        // A 64-bit source read as unsigned is representable in a signed native
+        // int exactly when its top bit is clear.
+        let fromUnsignedInt64 (i : int64) : Result<NativeIntSource, unit> =
+            if i < 0L then
+                Error ()
+            else
+                NativeIntSource.Verbatim i |> Ok
+
+        // A byref read as unsigned. PawPrint does not model addresses, so a real
+        // byref has no bits to range-check — but no CLR user-mode address
+        // reaches 2^63, so the conversion is the identity and preserving the
+        // provenance is the same charity `Conv_I` / `Conv_ovf_i` extend. A
+        // `NativeIntPlaceholder` is the exception: it *is* an exact bit pattern
+        // the guest handed us via `(void*)bits`, so it gets the real range check
+        // (`Int64Source.widenedNativeInt` and `materialiseHashBits` treat
+        // placeholders as bit patterns for the same reason).
+        let fromManagedPointer (ptr : ManagedPointerSource) : Result<NativeIntSource, unit> =
+            match ptr with
+            | ManagedPointerSource.NativeIntPlaceholder bits when bits < 0L -> Error ()
+            | _ -> NativeIntSource.ManagedPointer ptr |> Ok
+
+        match value with
+        | EvalStackValue.Int32 int32Source ->
+            let i = Int32Source.value "Conv_ovf_i_un" int32Source
+            // Zero-extend: the 32-bit slot is the whole of the source, and every
+            // uint32 fits in a signed 64-bit native int, so this cannot fail.
+            NativeIntSource.Verbatim (int64<uint32> (uint32<int32> i)) |> Ok
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> fromUnsignedInt64 i
+        | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset i) ->
+            // Cross-array offsets are byte distances between two storage
+            // containers whose addresses PawPrint does not model, so there is no
+            // sign bit to read. The model already answers every ordering
+            // question about them as though they were large and positive (see
+            // `SyntheticCrossArrayOffset.cltVerbatim` / `cgtVerbatim`), under
+            // which the unsigned reading is the identity and cannot overflow;
+            // preserving the tag keeps later arithmetic honest.
+            NativeIntSource.SyntheticCrossArrayOffset i |> Ok
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
+            // Inversion of `Conv.I8` / `Conv.U8` followed by `Conv.ovf.i.un`. On
+            // a 64-bit interpreter the widening is bit-preserving, so the
+            // truncation back to native int recovers the original
+            // NativeIntSource. `Int64Source.widenedNativeInt` normalises away
+            // every numeric underlying source, so what survives here is always
+            // pointer-shaped and the overflow check cannot fire.
+            Ok src
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) ->
+            // Unlike a byref, synthesised hash bits *are* the value: they are
+            // what every other numeric use of this tag reads. So the unsigned
+            // range check applies to them for real — bit-mixing (`not`, `neg`)
+            // can set the top bit, and a real pointer put through the same
+            // mixing would overflow in real .NET too. Preserve the tag on the
+            // way out so downstream code still sees a non-pointer.
+            if bits < 0L then
+                Error ()
+            else
+                NativeIntSource.OpaqueHashBits bits |> Ok
+        | EvalStackValue.NativeInt src ->
+            match src with
+            | NativeIntSource.Verbatim n -> fromUnsignedInt64 n
+            | NativeIntSource.SyntheticCrossArrayOffset _ -> Ok src
+            | NativeIntSource.ManagedPointer ptr -> fromManagedPointer ptr
+            | NativeIntSource.OpaqueHashBits bits -> if bits < 0L then Error () else Ok src
+            | NativeIntSource.FunctionPointer methodInfo ->
+                failwith $"Conv_ovf_i_un: refusing to convert function pointer %O{methodInfo} to signed native int"
+            | NativeIntSource.FieldHandlePtr handle ->
+                failwith
+                    $"Conv_ovf_i_un: refusing to convert RuntimeFieldHandle pointer %d{handle} to signed native int"
+            | NativeIntSource.MethodHandlePtr handle ->
+                failwith
+                    $"Conv_ovf_i_un: refusing to convert RuntimeMethodHandle pointer %d{handle} to signed native int"
+            | NativeIntSource.TypeHandlePtr typeHandle ->
+                failwith
+                    $"Conv_ovf_i_un: refusing to convert RuntimeTypeHandle pointer %O{typeHandle} to signed native int"
+            | NativeIntSource.TypeDescPtr typeHandle ->
+                failwith $"Conv_ovf_i_un: refusing to convert TypeDesc pointer %O{typeHandle} to signed native int"
+            | NativeIntSource.MethodTablePtr typeHandle ->
+                failwith $"Conv_ovf_i_un: refusing to convert MethodTable pointer %O{typeHandle} to signed native int"
+            | NativeIntSource.MethodTableAuxiliaryDataPtr typeHandle ->
+                failwith
+                    $"Conv_ovf_i_un: refusing to convert MethodTableAuxiliaryData pointer %O{typeHandle} to signed native int"
+            | NativeIntSource.PerInstInfoPtr handle ->
+                failwith $"Conv_ovf_i_un: refusing to convert PerInstInfo pointer %O{handle} to signed native int"
+            | NativeIntSource.PerInstDictPtr handle ->
+                failwith $"Conv_ovf_i_un: refusing to convert PerInstDict pointer %O{handle} to signed native int"
+            | NativeIntSource.GcHandlePtr (handle, _) ->
+                failwith $"Conv_ovf_i_un: refusing to convert GC handle pointer %O{handle} to signed native int"
+            | NativeIntSource.EventPipeProviderPtr id ->
+                failwith $"Conv_ovf_i_un: refusing to convert EventPipe provider handle #%d{id} to signed native int"
+            | NativeIntSource.EventPipeEventPtr id ->
+                failwith $"Conv_ovf_i_un: refusing to convert EventPipe event handle #%d{id} to signed native int"
+            | NativeIntSource.LowLevelMonitorPtr id ->
+                failwith $"Conv_ovf_i_un: refusing to convert low-level monitor handle %O{id} to signed native int"
+            | NativeIntSource.WaitHandlePtr id ->
+                failwith $"Conv_ovf_i_un: refusing to convert wait handle %O{id} to signed native int"
+            | NativeIntSource.AssemblyHandle assemblyName ->
+                failwith $"Conv_ovf_i_un: refusing to convert assembly handle %s{assemblyName} to signed native int"
+            | NativeIntSource.ModuleHandle moduleName ->
+                failwith $"Conv_ovf_i_un: refusing to convert module handle %s{moduleName} to signed native int"
+            | NativeIntSource.MetadataImportHandle moduleName ->
+                failwith
+                    $"Conv_ovf_i_un: refusing to convert metadata import handle %s{moduleName} to signed native int"
+        | EvalStackValue.Float f ->
+            // ECMA-335 Partition III, `conv.ovf.<to type>.un`: the `.un` suffix
+            // describes how to read an *integer* source, so it has no effect on
+            // a float, which is signed by construction — the host agrees, and
+            // the property test checks that against it rather than against this
+            // comment. This is therefore `conv.ovf.i`'s float path
+            // verbatim: truncate toward zero, then range-check against
+            // `[Int64.MinValue, Int64.MaxValue]`. `2^63` is exactly
+            // representable and is the smallest double > Int64.MaxValue, so use
+            // `>=` to reject it; `-2^63` is exactly Int64.MinValue and in range,
+            // so the lower bound is a strict `<`. NaN compares false to every
+            // value, so the `IsNaN` guard is required separately.
+            if Double.IsNaN f || f >= 9223372036854775808.0 || f < -9223372036854775808.0 then
+                Error ()
+            else
+                NativeIntSource.Verbatim (int64<float> (Math.Truncate f)) |> Ok
+        | EvalStackValue.ManagedPointer ptr -> fromManagedPointer ptr
+        | EvalStackValue.NullObjectRef -> NativeIntSource.ManagedPointer ManagedPointerSource.Null |> Ok
+        | EvalStackValue.ObjectRef addr ->
+            failwith $"Conv_ovf_i_un: refusing to convert object reference %O{addr} to signed native int"
+        | EvalStackValue.UserDefinedValueType valueType ->
+            failwith $"Conv_ovf_i_un: refusing to convert user-defined value type %O{valueType} to signed native int"
+
     // Helper to get the target CliType for each Ldind variant
     let private getTargetLdindCliType (targetType : LdindTargetType) : CliType =
         match targetType with
@@ -2642,7 +2784,38 @@ module NullaryIlOp =
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.stepped
-        | Conv_ovf_i_un -> failwith "TODO: Conv_ovf_i_un unimplemented"
+        | Conv_ovf_i_un ->
+            let popped, state = IlMachineState.popEvalStack currentThread state
+
+            match convOvfIUn popped with
+            | Ok conv ->
+                // Crossing from byref-world to native-pointer-world: subsequent
+                // pointer arithmetic must be byte-stride per ECMA-335 §III.1.5,
+                // so anchor a `ReinterpretAs T` projection on plain array
+                // byrefs. Plain byrefs (no anchor) keep element-stride
+                // arithmetic to match `Unsafe.Add<T>`.
+                let conv =
+                    match conv with
+                    | NativeIntSource.ManagedPointer ptr ->
+                        ManagedPointerByteView.anchorByteViewIfPlainArrayByref corelib state ptr
+                        |> NativeIntSource.ManagedPointer
+                    | other -> other
+
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt conv) currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Tuple.withRight WhatWeDid.Executed
+                |> ExecutionResult.stepped
+            | Error () ->
+                // Exception dispatch uses the faulting instruction's PC, so do
+                // not advance the program counter on this branch.
+                IlMachineStateExecution.raiseRuntimeException
+                    loggerFactory
+                    corelib
+                    corelib.OverflowException
+                    currentThread
+                    state
+                |> ExecutionResult.stepped
         | Conv_ovf_u_un -> failwith "TODO: Conv_ovf_u_un unimplemented"
         | Conv_ovf_i1_un -> failwith "TODO: Conv_ovf_i1_un unimplemented"
         | Conv_ovf_u1_un ->
