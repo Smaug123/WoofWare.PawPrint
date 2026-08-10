@@ -791,17 +791,6 @@ module IlMachineTypeResolution =
         |> Some
 
     /// A `char*` over a PE byte range, as opposed to `peByteRangePointer`'s `byte*`.
-    ///
-    /// Having *a* `ReinterpretAs` projection is load-bearing: `ArithmeticTarget.decompose` refuses
-    /// pointer arithmetic on a bare PE-byte-range root, and that refusal is reached even by
-    /// `ptr + 0`, since the zero-offset shortcut sits after the decomposition. A guest doing
-    /// `new string(ptr, 0, length)` offsets the pointer before reading it, so a projection-less
-    /// pointer faults there rather than here — confirmed by mutation.
-    ///
-    /// Which primitive the projection names is *not* load-bearing for that guest path: the offset is
-    /// zero and the copy that follows is byte-wise, so a `byte` projection reaches the same answer.
-    /// `char` is chosen because it is the type the API declares (`out char*`), which keeps the
-    /// pointer self-describing to anything that later inspects it.
     let peByteRangeCharPointer
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -809,6 +798,16 @@ module IlMachineTypeResolution =
         (state : IlMachineState)
         : IlMachineState * ManagedPointerSource
         =
+        /// Having *a* `ReinterpretAs` projection is necessary: `ArithmeticTarget.decompose` refuses
+        /// pointer arithmetic on a bare PE-byte-range root, and that refusal is reached even by
+        /// `ptr + 0`, since the zero-offset shortcut sits after the decomposition. A guest doing
+        /// `new string(ptr, 0, length)` offsets the pointer before reading it, so a projection-less
+        /// pointer faults there rather than here.
+        ///
+        /// *Which* primitive the projection names doesn't matter: the offset is
+        /// zero and the copy that follows is byte-wise, so a `byte` projection reaches the same answer.
+        /// `char` is chosen because it is the type the API declares (`out char*`), which keeps the
+        /// pointer self-describing to anything that later inspects it.
         let state, charType = ensureCharConcreteType loggerFactory baseClassTypes state
 
         state,
