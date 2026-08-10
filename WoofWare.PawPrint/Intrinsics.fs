@@ -76,6 +76,25 @@ module Intrinsics =
         | EvalStackValue.UserDefinedValueType _ ->
             failwith $"%s{operation}: expected an integer value argument, got %O{value}"
 
+    /// The bit pattern of an integer value argument of an intrinsic whose result is defined
+    /// by those bits directly — a bit count, say — rather than by the value's arithmetic.
+    ///
+    /// The bits come back widened to int64, which is the shape `tryExactIntegerBits` reports
+    /// (a 32-bit stack value is sign-extended into it). A caller whose declared parameter is
+    /// narrower than that must therefore narrow to its own width before reading the bits;
+    /// that narrowing is the CLI's implicit call-boundary coercion, for which see
+    /// `int32ValueArgument`.
+    ///
+    /// A pointer PawPrint does not model has no bits to report, and reporting some anyway
+    /// would assign it a `PointerHashState` identity, perturbing every synthesised value
+    /// later in the run — so those are refused rather than answered.
+    let internal bitPatternValueArgument (operation : string) (value : EvalStackValue) : int64 =
+        match EvalStackValue.tryExactIntegerBits value with
+        | ValueSome bits -> bits
+        | ValueNone ->
+            failwith
+                $"%s{operation}: refusing to report the bit pattern of %O{value}; PawPrint does not model its bits, and synthesising them would register a pointer identity for a value whose bits the guest is asking about"
+
     open IntrinsicHelpers
 
     let call
@@ -1219,6 +1238,55 @@ module Intrinsics =
 
             state
             |> IlMachineState.pushToEvalStack' result currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> IntrinsicResult.Completed
+        | "System.Private.CoreLib", "BitOperations", "LeadingZeroCount" when
+            intrinsicKey.DeclaringTypeFullName = "System.Numerics.BitOperations"
+            ->
+            // BitOperations.LeadingZeroCount is a JIT intrinsic in the real CLR, lowered to
+            // LZCNT on x86 or CLZ on Arm. PawPrint models a deterministic virtual CPU that
+            // reports every hardware profile unavailable, so executing the BCL IL body would
+            // fall through all of its `IsSupported` guards to `31 ^ Log2SoftwareFallback(value)`
+            // (the 64-bit overload first splits into halves and then reaches the same place),
+            // which reads a De Bruijn lookup table backed by a PE byte range — the very path
+            // the sibling Log2 arm exists to avoid. Model the boundary directly instead.
+            //
+            // Delegating to the host BCL is deterministic here, unlike Math.Pow: the method is
+            // a pure function of the argument's bits, and its answer is fully specified for
+            // every input — including zero, where the BCL adds an explicit check precisely
+            // because BSR and the software fallback would otherwise disagree with LZCNT/CLZ.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Numerics/BitOperations.cs#L167-L267
+            //
+            // Only the two widths the BCL genuinely implements separately are modelled here.
+            // The `(nuint)` overload's body is `ldarg.0; conv.u8; call LeadingZeroCount(uint64);
+            // ret` — IL PawPrint can run — so it is allowlisted in `safeIntrinsics` and reaches
+            // the uint64 arm below rather than duplicating a width decision on this side.
+            //
+            // Each arm narrows the bits back to its own operand width before calling the host
+            // method of that same width. That narrowing is load-bearing: the bits arrive
+            // widened to int64, and the zeros the widening introduced are not the operand's.
+            let result, state =
+                match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+                | [ ConcreteUInt32 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) ->
+                    let arg, state = IlMachineState.popEvalStack currentThread state
+
+                    let value =
+                        bitPatternValueArgument "BitOperations.LeadingZeroCount(uint)" arg
+                        |> uint32<int64>
+
+                    System.Numerics.BitOperations.LeadingZeroCount value, state
+                | [ ConcreteUInt64 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) ->
+                    let arg, state = IlMachineState.popEvalStack currentThread state
+
+                    let value =
+                        bitPatternValueArgument "BitOperations.LeadingZeroCount(ulong)" arg
+                        |> uint64<int64>
+
+                    System.Numerics.BitOperations.LeadingZeroCount value, state
+                | _ -> failwith $"BitOperations.LeadingZeroCount: unexpected signature %s{formatMethodKey intrinsicKey}"
+
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim result)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
         | "System.Private.CoreLib", "BitOperations", "Log2" ->
