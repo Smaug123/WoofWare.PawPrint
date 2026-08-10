@@ -127,6 +127,19 @@ public class ConstantShapes
     public static int NotAConstant = 7;
 }
 
+// `GetName` hands back the `#Strings` entry verbatim, so the interesting axis is the encoding, not
+// the field's kind: `Größe` is five characters but seven UTF-8 bytes, which is what distinguishes a
+// real UTF-8 encode from an ASCII or UTF-16 one. Both a literal and a non-literal field are here
+// because the handler cannot tell them apart (a FieldDef is a FieldDef), even though only the
+// literal ones are reachable from a guest — a plain field's name comes from `RtFieldInfo`, which
+// uses the `RuntimeFieldHandle.GetName` QCall instead.
+public class FieldNames
+{
+    public int PlainNamedField;
+    public const int LiteralNamedField = 3;
+    public const int Größe = 5;
+}
+
 public class ReferencesOtherAssemblyMembers
 {
     // `string.Empty` is a static field on a corelib type, so the reference is a MemberRef row
@@ -168,6 +181,7 @@ public class TypesWithMembers
             SeveralNestedType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             SignatureShapesType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             ConstantShapesType : TypeInfo<GenericParamFromMetadata, TypeDefn>
+            FieldNamesType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             MembersType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             InstanceField : FieldInfo<GenericParamFromMetadata, TypeDefn>
             StaticField : FieldInfo<GenericParamFromMetadata, TypeDefn>
@@ -257,6 +271,8 @@ public class TypesWithMembers
 
         let constantShapesType = requiredTopLevelType assembly "" "ConstantShapes"
 
+        let fieldNamesType = requiredTopLevelType assembly "" "FieldNames"
+
         let membersType = requiredTopLevelType assembly "" "TypesWithMembers"
 
         let constArrayType = requiredTopLevelType corelib "System.Reflection" "ConstArray"
@@ -310,6 +326,7 @@ public class TypesWithMembers
             SeveralNestedType = severalNestedType
             SignatureShapesType = signatureShapesType
             ConstantShapesType = constantShapesType
+            FieldNamesType = fieldNamesType
             MembersType = membersType
             InstanceField = fieldByName "InstanceField"
             StaticField = fieldByName "StaticField"
@@ -1950,3 +1967,166 @@ public class TypesWithMembers
             )
 
         ex.Message |> shouldContainText "expected FieldDef token"
+
+    /// The bytes behind the `byte*` that `GetName` wrote, up to and including the NUL terminator,
+    /// read straight out of the backing array rather than through `NativeCall.readNullTerminatedUtf8`.
+    /// Decoding with the same assumption the handler encoded with would not distinguish UTF-8 from
+    /// any other encoding, which is the single most likely way to get this wrong.
+    ///
+    /// A missing terminator surfaces as the array read running off the end, which `ManagedHeap`
+    /// refuses; there is deliberately no scan limit here to soften that into a nicer message.
+    let private readNameBufferIncludingTerminator (state : IlMachineState) (ptr : ManagedPointerSource) : byte array =
+        match ptr with
+        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), []) ->
+            let rec loop (index : int) (acc : byte list) : byte list =
+                match
+                    IlMachineState.getArrayValue arrayAddr index state
+                    |> CliType.unwrapPrimitiveLikeDeep
+                with
+                | CliType.Numeric (CliNumericType.UInt8 0uy) -> List.rev (0uy :: acc)
+                | CliType.Numeric (CliNumericType.UInt8 b) -> loop (index + 1) (b :: acc)
+                | other -> failwith $"expected a byte in the name buffer at index %d{index}, got %O{other}"
+
+            loop 0 [] |> Array.ofList
+        | other -> failwith $"expected a byref to the first element of a byte array, got %O{other}"
+
+    let private invokeGetName
+        (fixture : MetadataImportFixture)
+        (mdToken : int32)
+        (state : IlMachineState)
+        : EvalStackValue * byte array * IlMachineState
+        =
+        let state, metadataImportType, getNameMethod =
+            metadataImportMethod fixture state "GetName" 3
+
+        let nameOut, state =
+            allocateSlotOut
+                fixture
+                fixture.BaseClassTypes.IntPtr
+                (CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null))
+                state
+
+        let state =
+            invokeMetadataImportNative
+                fixture
+                metadataImportType
+                getNameMethod
+                [
+                    metadataImportHandle fixture
+                    CliType.Numeric (CliNumericType.Int32 mdToken)
+                    CliType.RuntimePointer (CliRuntimePointer.Managed nameOut)
+                ]
+                state
+
+        let returnValue, state = IlMachineState.popEvalStack (ThreadId 0) state
+
+        let namePtr =
+            match
+                IlMachineState.readManagedByref fixture.BaseClassTypes state nameOut
+                |> CliType.unwrapPrimitiveLikeDeep
+            with
+            | CliType.RuntimePointer (CliRuntimePointer.Managed ptr) -> ptr
+            | other -> failwith $"expected a managed pointer written to the name out param, got %O{other}"
+
+        returnValue, readNameBufferIncludingTerminator state namePtr, state
+
+    [<Test>]
+    let ``MetadataImport GetName returns each field's name as null-terminated UTF-8`` () : unit =
+        let fixture = makeFixture ()
+
+        // Expectations are derived from PawPrint's own parse of the name, so this test pins the
+        // encoding and the terminator but *not* the name itself; the host-runtime test below is
+        // what stops both sides from being wrong together.
+        let fields = fixture.FieldNamesType.Fields
+
+        fields
+        |> List.map (fun field -> field.Name)
+        |> shouldEqual [ "PlainNamedField" ; "LiteralNamedField" ; "Größe" ]
+
+        let mutable state = fixture.State
+
+        let actual =
+            fields
+            |> List.map (fun field ->
+                let returnValue, bytes, nextState =
+                    invokeGetName fixture (fieldDefToken field.Handle) state
+
+                state <- nextState
+                returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+                field.Name, bytes
+            )
+
+        let expected =
+            fields
+            |> List.map (fun field ->
+                field.Name, Array.append (System.Text.Encoding.UTF8.GetBytes field.Name) [| 0uy |]
+            )
+
+        actual |> shouldEqual expected
+
+    [<Test>]
+    let ``MetadataImport GetName encodes a non-ASCII name as UTF-8, not one byte per character`` () : unit =
+        let fixture = makeFixture ()
+        let field = fieldNamed fixture.FieldNamesType "Größe"
+
+        let _, bytes, _ = invokeGetName fixture (fieldDefToken field.Handle) fixture.State
+
+        // Five characters, seven UTF-8 bytes: `ö` and `ß` are two bytes each. An ASCII or Latin-1
+        // encode would produce six bytes and a UTF-16 one eleven, so the length alone separates
+        // all three, and the byte sequence pins which UTF-8 it is.
+        field.Name.Length |> shouldEqual 5
+
+        bytes
+        |> shouldEqual [| 0x47uy ; 0x72uy ; 0xC3uy ; 0xB6uy ; 0xC3uy ; 0x9Fuy ; 0x65uy ; 0x00uy |]
+
+    [<Test>]
+    let ``MetadataImport GetName agrees with the host runtime for every field`` () : unit =
+        let fixture = makeFixture ()
+
+        // Outside oracle: the same image, the host CLR's own metadata engine. `Module.ResolveField`
+        // reaches literal fields too — it catches `MissingFieldException` and falls back to
+        // `ResolveLiteralField`, which is the `MdFieldInfo` path this handler exists to serve.
+        let hostModule = (System.Reflection.Assembly.Load fixture.Image).ManifestModule
+
+        let fields = fixture.Assembly.Fields |> Seq.map (fun kvp -> kvp.Key) |> Seq.toList
+
+        fields |> List.isEmpty |> shouldEqual false
+
+        let mutable state = fixture.State
+
+        for fieldHandle in fields do
+            let token = fieldDefToken fieldHandle
+
+            let returnValue, bytes, nextState = invokeGetName fixture token state
+            state <- nextState
+
+            returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+
+            let expected =
+                Array.append (System.Text.Encoding.UTF8.GetBytes (hostModule.ResolveField token).Name) [| 0uy |]
+
+            bytes |> shouldEqual expected
+
+    [<Test>]
+    let ``MetadataImport GetName rejects a non-FieldDef token`` () : unit =
+        let fixture = makeFixture ()
+
+        // CoreCLR would answer a TypeDef token here (with the type's name), but no managed caller
+        // ever passes one: `RuntimeType.Name` goes through `Cache.GetName()`/`ConstructName`. A
+        // TypeDef arriving means a PawPrint gap, so it must be loud rather than answered.
+        let ex =
+            Assert.Throws (fun () ->
+                invokeGetName fixture (typeDefToken fixture.FieldNamesType.TypeDefHandle) fixture.State
+                |> ignore
+            )
+
+        ex.Message |> shouldContainText "expected FieldDef token"
+
+    [<Test>]
+    let ``MetadataImport GetName rejects a FieldDef token that is absent from the assembly`` () : unit =
+        let fixture = makeFixture ()
+
+        let ex =
+            Assert.Throws (fun () -> invokeGetName fixture 0x04FFFFFF fixture.State |> ignore)
+
+        ex.Message |> shouldContainText "was not present in"

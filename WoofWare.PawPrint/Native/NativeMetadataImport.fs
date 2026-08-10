@@ -562,6 +562,46 @@ module NativeMetadataImport =
             (CliType.RuntimePointer (CliRuntimePointer.Managed pointer))
             state
 
+    /// Finish a <c>MetadataImport</c> call whose contract is "write an <c>LPCSTR</c> through an out
+    /// parameter and return an HRESULT": allocate the null-terminated UTF-8 bytes, point the out
+    /// parameter at them, and push <c>S_OK</c>.
+    ///
+    /// CoreCLR returns a pointer straight into the mapped <c>#Strings</c> heap, so it hands back the
+    /// same address for the same token every time and never allocates. PawPrint copies instead,
+    /// which is safe only because these strings are consumed purely as bytes: the caller wraps the
+    /// pointer in <c>MdUtf8String</c>, which compares contents (<c>SequenceEqual</c>) or decodes
+    /// them, and nothing anywhere compares the pointer itself.
+    ///
+    /// The copy must be null-terminated because <c>MdUtf8String</c>'s constructor measures it with
+    /// <c>string.strlen</c> — <c>SpanHelpers.IndexOfNullByte</c>, which deliberately over-reads in
+    /// its vector paths. Those are all behind <c>VectorNNN.IsHardwareAccelerated</c>, and PawPrint
+    /// only ever reports <c>HardwareIntrinsicsProfile.ScalarOnly</c>, so what runs is the scalar
+    /// loop: one byte at a time, stopping at the first zero, never reading past the terminator.
+    /// Giving the guest an accelerated profile would invalidate that, and this buffer would need to
+    /// be padded to a vector width.
+    let private completeWithUtf8String
+        (ctx : NativeCallContext)
+        (out : ManagedPointerSource)
+        (value : string)
+        (state : IlMachineState)
+        : NativeHandlerResult option
+        =
+        let ptr, state =
+            NativeCall.allocateNullTerminatedUtf8 ctx.BaseClassTypes value state
+
+        let state =
+            IlMachineState.writeManagedByrefWithBase
+                ctx.BaseClassTypes
+                state
+                out
+                (CliType.RuntimePointer (CliRuntimePointer.Managed ptr))
+
+        // S_OK; the managed wrapper runs every HRESULT through `ThrowBadImageExceptionForHR`.
+        let state =
+            IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread state
+
+        NativeHandlerResult.completed state |> Some
+
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
@@ -717,20 +757,46 @@ module NativeMetadataImport =
 
             let namespaceName = typeDefinitionNamespace operation state assemblyFullName mdToken
 
-            let namespacePtr, state =
-                NativeCall.allocateNullTerminatedUtf8 ctx.BaseClassTypes namespaceName state
+            completeWithUtf8String ctx namespaceOut namespaceName state
+        | "System.Private.CoreLib",
+          "System.Reflection",
+          "MetadataImport",
+          "GetName",
+          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcreteByref (ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)) ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            // CoreCLR's FCall (`managedmdimport.cpp:204`) answers seven token kinds, forwarding each
+            // to a different `IMDInternalImport` accessor. Only FieldDef can arrive here: of the six
+            // managed call sites — `MdFieldInfo.Name`, `RuntimeModule.ResolveLiteralField`, and the
+            // name filters in `RuntimeType`'s field/event/property population, plus
+            // `RuntimeParameterInfo.Name` — each passes a token of one fixed kind, and the Event,
+            // Property and ParamDef tokens are all minted by `MetadataImport.Enum`, which PawPrint
+            // refuses for those token types. MethodDef, `mdtModule` and TypeDef are handled by the
+            // FCall but reached by no managed caller at all: `RuntimeType.Name` goes through
+            // `Cache.GetName()`/`ConstructName`, and methods and non-literal fields have their own
+            // `RuntimeMethodHandle.GetName` / `RuntimeFieldHandle.GetName` QCalls.
+            //
+            // So any other kind reaching here is a PawPrint gap rather than a bad image, and
+            // `fieldDefinition` says so. CoreCLR would instead return `E_FAIL` and the guest would
+            // see a `BadImageFormatException`, which would disguise the gap as a corrupt assembly.
+            let operation = "MetadataImport.GetName"
+            let assemblyFullName = metadataImportHandleOfArg operation instruction.Arguments.[0]
+            let assembly = metadataImportAssembly operation state assemblyFullName
 
-            let state =
-                IlMachineState.writeManagedByrefWithBase
-                    ctx.BaseClassTypes
-                    state
-                    namespaceOut
-                    (CliType.RuntimePointer (CliRuntimePointer.Managed namespacePtr))
+            let mdToken =
+                match CliType.unwrapPrimitiveLikeDeep instruction.Arguments.[1] with
+                | CliType.Numeric (CliNumericType.Int32 mdToken) -> mdToken
+                | other -> failwith $"%s{operation}: expected Int32 mdToken argument, got %O{other}"
 
-            let state =
-                IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread state
+            let nameOut =
+                NativeCall.managedPointerOfPointerArgument operation "name out pointer" instruction.Arguments.[2]
 
-            NativeHandlerResult.completed state |> Some
+            // `FieldInfo.Name` is `mr.GetString def.Name`, i.e. the `#Strings` entry itself, so this
+            // is the same string CoreCLR's `GetNameOfFieldDef` returns rather than a reconstruction.
+            let name = (fieldDefinition operation assembly mdToken).Name
+
+            completeWithUtf8String ctx nameOut name state
         | "System.Private.CoreLib",
           "System.Reflection",
           "MetadataImport",
