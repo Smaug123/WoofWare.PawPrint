@@ -2,13 +2,20 @@ namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
 
-/// Everything the host supplies to configure one run of a guest program, as
-/// distinct from the program image itself (which `Program.prepare` takes
-/// separately, as a stream plus the path it came from).
+/// Everything the host supplies that describes the simulated process itself, as opposed to
+/// which of its possible thread interleavings we are exploring: where its framework comes from,
+/// what its kernel looks like, what it was invoked with.
 ///
-/// Every field here is part of a run's replay contract. Two runs with equal
-/// `HostConfig` over the same image will produce the same trace.
-type HostConfig =
+/// Split out of `HostConfig` so that the schedule seed can be handed over separately. Two runs
+/// of the same image that share a `GuestConfig` but differ in seed are the *same program*
+/// explored along different schedules — and, up to the first point at which more than one thread
+/// is Runnable, they are bit-for-bit the same execution. A harness that wants to compute that
+/// shared prefix once and fan out over seeds therefore needs to name "everything except the
+/// seed", and needs it to be impossible to pass a seed in by accident. See
+/// `docs/plans/2026-08-10-fork-point-snapshots.md`.
+///
+/// Every field here is part of a run's replay contract, as is `HostConfig.PctSeed`.
+type GuestConfig =
     {
         /// Directories on the real host machine searched, in order, for framework assemblies. Binding is
         /// by simple name and takes the first hit, so putting a runtime pack at
@@ -17,9 +24,6 @@ type HostConfig =
         /// The simulated process's kernel-visible state: environment, processor
         /// count, virtual clock, platform identity.
         Kernel : KernelConfig
-        /// Seed for the PCT scheduler. `None` runs the deterministic default
-        /// schedule; `Some` explores a randomised-but-reproducible interleaving.
-        PctSeed : uint64 option
         /// The guest's command-line arguments, as `Main` receives them — i.e.
         /// excluding the program name. Distinct from `Kernel.Environment`
         /// because the runtime hands these to `Main` directly rather than the
@@ -43,15 +47,42 @@ type HostConfig =
     }
 
     /// A host that expresses no preference beyond where to find the framework:
-    /// default kernel state, the deterministic default schedule, no guest
-    /// arguments, and no AppContext properties of its own. Such a guest is still
-    /// seeded with `AppContextProperties.runtimeBaseline`, which is PawPrint's
-    /// rather than the host's.
-    static member Default (dotnetRuntimeDirs : ImmutableArray<string>) : HostConfig =
+    /// default kernel state, no guest arguments, and no AppContext properties of
+    /// its own. Such a guest is still seeded with
+    /// `AppContextProperties.runtimeBaseline`, which is PawPrint's rather than
+    /// the host's.
+    static member Default (dotnetRuntimeDirs : ImmutableArray<string>) : GuestConfig =
         {
             DotnetRuntimeDirs = dotnetRuntimeDirs
             Kernel = KernelConfig.Default
-            PctSeed = None
             Argv = []
             AppContext = AppContextProperties.empty
+        }
+
+/// Everything the host supplies to configure one run of a guest program, as
+/// distinct from the program image itself (which `Program.prepare` takes
+/// separately, as a stream plus the path it came from).
+///
+/// Every field here is part of a run's replay contract. Two runs with equal
+/// `HostConfig` over the same image will produce the same trace.
+///
+/// The seed is deliberately the *only* thing at this level: it is the one input that selects
+/// among the schedules of an otherwise fixed program, and separating it is what lets a
+/// schedule-sweeping harness say "this program, under all of these seeds" without being able to
+/// name a seed in the part that is shared. See `GuestConfig`.
+type HostConfig =
+    {
+        /// The simulated process: framework, kernel, arguments, AppContext.
+        Guest : GuestConfig
+        /// Seed for the PCT scheduler. `None` runs the deterministic default
+        /// schedule; `Some` explores a randomised-but-reproducible interleaving.
+        PctSeed : uint64 option
+    }
+
+    /// A host that expresses no preference beyond where to find the framework:
+    /// `GuestConfig.Default`, run under the deterministic default schedule.
+    static member Default (dotnetRuntimeDirs : ImmutableArray<string>) : HostConfig =
+        {
+            Guest = GuestConfig.Default dotnetRuntimeDirs
+            PctSeed = None
         }
