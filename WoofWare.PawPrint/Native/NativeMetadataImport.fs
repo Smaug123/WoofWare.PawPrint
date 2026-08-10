@@ -8,6 +8,11 @@ module NativeMetadataImport =
     let private metadataTokenTypeCustomAttribute : int32 = 0x0c000000
     let private metadataTokenTypeFieldDef : int32 = 0x04000000
     let private metadataTokenTypeExportedType : int32 = 0x27000000
+
+    /// <c>mdtTypeDef</c>. As an <c>Enum</c> token type this does *not* mean "enumerate TypeDefs":
+    /// CoreCLR special-cases it to mean the nested classes of the parent (see
+    /// <c>nestedTypeDefinitionsForTypeDefinition</c>).
+    let private metadataTokenTypeTypeDef : int32 = 0x02000000
     let private metadataEnumSmallResultLimit : int = 16
 
     /// <c>mdTypeDefNil</c>: TypeDef table code (0x02) | row 0. Returned by
@@ -25,6 +30,15 @@ module NativeMetadataImport =
             System.Reflection.Metadata.FieldDefinitionHandle.op_Implicit fieldHandle
 
         System.Reflection.Metadata.Ecma335.MetadataTokens.GetToken fieldHandle
+
+    let private metadataTokenOfTypeDefinitionHandle
+        (typeHandle : System.Reflection.Metadata.TypeDefinitionHandle)
+        : int32
+        =
+        let typeHandle : System.Reflection.Metadata.EntityHandle =
+            System.Reflection.Metadata.TypeDefinitionHandle.op_Implicit typeHandle
+
+        System.Reflection.Metadata.Ecma335.MetadataTokens.GetToken typeHandle
 
     let private metadataImportHandleOfArg (operation : string) (arg : CliType) : string =
         match CliType.unwrapPrimitiveLikeDeep arg with
@@ -185,6 +199,44 @@ module NativeMetadataImport =
         | token ->
             failwith
                 $"%s{operation}: expected TypeDef parent token for FieldDef enumeration, got %O{token} from 0x%08x{parent}"
+
+    /// The types immediately nested inside the TypeDef named by <paramref name="parent"/>, as raw
+    /// metadata tokens, in the order the real runtime returns them.
+    ///
+    /// CoreCLR answers an <c>mdtTypeDef</c> enumeration by calling <c>GetNestedClasses</c> on the
+    /// parent (managedmdimport.cpp:547), not by enumerating TypeDefs in general;
+    /// <c>MetadataImport.EnumNestedTypes</c> is its only managed caller. Nesting is *not*
+    /// transitive here: a type nested inside a nested type belongs to that inner type's list, and
+    /// CoreCLR's single pass over the NestedClass table matches only rows whose EnclosingClass is
+    /// exactly this parent.
+    let private nestedTypeDefinitionsForTypeDefinition
+        (operation : string)
+        (assembly : DumpedAssembly)
+        (parent : int32)
+        : int32 list
+        =
+        match MetadataToken.ofInt parent with
+        | MetadataToken.TypeDefinition typeDefHandle ->
+            if typeDefHandle.IsNil then
+                // CoreCLR asserts a non-nil parent here, and `RuntimeType.PopulateNestedClasses`
+                // returns early on `MdToken.IsNullToken` rather than calling in. Reaching this
+                // means a caller skipped that guard, which a silent empty list would hide.
+                failwith
+                    $"%s{operation}: nil TypeDef parent token 0x%08x{parent} for nested-type enumeration; the caller should have screened this out"
+
+            if not (assembly.TypeDefs.ContainsKey typeDefHandle) then
+                failwith $"%s{operation}: TypeDef token 0x%08x{parent} was not present in %s{assembly.Name.FullName}"
+
+            match
+                assembly.NestedTypeDefsByEnclosing.TryGetValue (ComparableTypeDefinitionHandle.Make typeDefHandle)
+            with
+            | true, nested -> nested |> Seq.map metadataTokenOfTypeDefinitionHandle |> List.ofSeq
+            // Absent means "no nested types", which is the overwhelmingly common case; the index
+            // does not store empty entries.
+            | false, _ -> []
+        | token ->
+            failwith
+                $"%s{operation}: expected TypeDef parent token for nested-type enumeration, got %O{token} from 0x%08x{parent}"
 
     let private fieldDefinition
         (operation : string)
@@ -432,6 +484,8 @@ module NativeMetadataImport =
                     | false, _ -> []
                 elif tokenType = metadataTokenTypeFieldDef then
                     fieldDefinitionsForTypeDefinition operation assembly parent
+                elif tokenType = metadataTokenTypeTypeDef then
+                    nestedTypeDefinitionsForTypeDefinition operation assembly parent
                 else
                     failwith
                         $"TODO: %s{operation} does not yet support token type 0x%08x{tokenType} with parent 0x%08x{parent}"

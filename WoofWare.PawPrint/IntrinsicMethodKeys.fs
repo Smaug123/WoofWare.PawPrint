@@ -702,6 +702,24 @@ module IntrinsicMethodKeys =
                 "System.Threading.Volatile"
                 "Write"
                 [ IntrinsicParameterPattern.Byref ; IntrinsicParameterPattern.Any ]
+            // Unlike its `IsAddressLessThan` / `IsAddressGreaterThan` siblings — whose bodies
+            // are a bare `throw new PlatformNotSupportedException()` and so must be intercepted
+            // in `Intrinsics.fs` — this one has a real IL body:
+            // `ldarg.0; ldarg.1; call Unsafe::IsAddressLessThan<!!T>; ldc.i4.0; ceq; ret`.
+            // The `[Intrinsic]` marker is only so the JIT can emit `cge.un` directly. Executing
+            // the IL routes through the `IsAddressLessThan` intrinsic and negates it, which is
+            // exactly the documented meaning.
+            //
+            // `IsAddressLessThanOrEqualTo` has the mirror-image body but bottoms out in
+            // `IsAddressGreaterThan`, which is not implemented; it is deliberately left off the
+            // allowlist so it keeps failing at the intrinsic dispatcher, naming the method that
+            // is actually missing rather than failing one frame deeper.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L414-L421
+            pattern
+                "System.Private.CoreLib"
+                "System.Runtime.CompilerServices.Unsafe"
+                "IsAddressGreaterThanOrEqualTo"
+                [ IntrinsicParameterPattern.Byref ; IntrinsicParameterPattern.Byref ]
         ]
 
     let isSafeIntrinsic (key : IntrinsicMethodKey) : bool =

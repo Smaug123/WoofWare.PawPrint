@@ -416,7 +416,16 @@ type NativeHandlerResult =
     /// the object, calling its ctor, and arming dispatch-on-return. The native frame stays
     /// on the stack so exception dispatch can unwind it on the ctor's `Ret`; the handler
     /// is never re-entered. Reports `WhatWeDid.SuspendedForManagedCall` to the Scheduler.
-    | RaiseException of IlMachineState * exnType : TypeInfo<GenericParamFromMetadata, TypeDefn> * StepEffect
+    ///
+    /// `message` names the string the CLR would have passed to a message-taking ctor
+    /// overload — for a native handler that typically means one of the `mscorrc` resource
+    /// strings CoreCLR's `EEMessageException` carries. `None` accepts the parameterless
+    /// ctor's default, which is correct wherever CoreCLR itself throws with no message.
+    | RaiseException of
+        IlMachineState *
+        exnType : TypeInfo<GenericParamFromMetadata, TypeDefn> *
+        message : string option *
+        StepEffect
     /// A type's `.cctor` has been pushed on top of the native frame (typically because a
     /// sub-call into managed code needed to initialise an uninitialised type). Dispatcher
     /// leaves the native frame on the stack until the `.cctor` completes, then re-enters
@@ -595,7 +604,19 @@ module NativeHandlerResult =
         (state : IlMachineState)
         : NativeHandlerResult
         =
-        NativeHandlerResult.RaiseException (state, exnType, StepEffect.NoEffect)
+        NativeHandlerResult.RaiseException (state, exnType, None, StepEffect.NoEffect)
+
+    /// `raiseException`, but with the message CoreCLR would have attached. Use this only
+    /// where CoreCLR throws with an explicit message (typically an `EEMessageException`
+    /// carrying an `mscorrc` resource string); everywhere else the parameterless ctor's
+    /// own default is the faithful answer and `raiseException` is the right entry point.
+    let raiseExceptionWithMessage
+        (exnType : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        (message : string)
+        (state : IlMachineState)
+        : NativeHandlerResult
+        =
+        NativeHandlerResult.RaiseException (state, exnType, Some message, StepEffect.NoEffect)
 
     /// Forward a `WhatWeDid.SuspendedForClassInit` outcome from a sub-call. Use this
     /// at the leaf of a passthrough branch when the dispatcher should keep the native

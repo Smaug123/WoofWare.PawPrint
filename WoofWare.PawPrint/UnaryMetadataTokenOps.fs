@@ -170,8 +170,56 @@ module internal UnaryMetadataTokenOps =
 
     let executeLdftn (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let logger = ctx.Logger
+        let thread = ctx.Thread
 
         let state, concretizedMethod, method = resolveMethodPointerTarget "Ldftn" ctx state
+
+        // `ldftn` is one of the three opcodes ECMA and the JIT importer allow `constrained.` to
+        // precede, so it must consume the prefix. Consuming means both halves: *clearing* it, or a
+        // later call-like instruction in this frame picks it up (frames start at
+        // `PrefixState.empty`, so the damage is frame-scoped but real — see
+        // `ConstrainedLdftnPrefixNotLeaked.cs`), and *honouring* it, because the prefix is what
+        // directs resolution from an interface's abstract declaration to the constrained type's
+        // implementation.
+        //
+        // Unlike `call`, this never reinstalls the prefix: `ldftn` runs no class initialiser and
+        // resolution cannot suspend, so the instruction is atomic and never re-executes.
+        let activeFrameId = state.ThreadState.[thread].ActiveMethodState
+
+        let pendingConstrained, state =
+            match state.ThreadState.[thread].MethodState.PendingPrefix.Constrained with
+            | None -> None, state
+            | Some _ as cur ->
+                let cleared =
+                    state
+                    |> IlMachineState.mapFrame
+                        thread
+                        activeFrameId
+                        (fun frame ->
+                            { frame with
+                                PendingPrefix =
+                                    { frame.PendingPrefix with
+                                        Constrained = None
+                                    }
+                            }
+                        )
+
+                cur, cleared
+
+        let state, target =
+            match pendingConstrained with
+            | None -> state, concretizedMethod
+            | Some constrainedTypeHandle ->
+                let state, implementation, _declaringTypeHandle =
+                    UnaryMetadataCallOps.resolveConstrainedStaticInterfaceMethod
+                        "Ldftn"
+                        ctx
+                        constrainedTypeHandle
+                        method
+                        concretizedMethod
+                        state
+
+                state, implementation
 
         logger.LogDebug (
             "Pushed pointer to function {LdFtnAssembly}.{LdFtnType}.{LdFtnMethodName}",
@@ -180,7 +228,7 @@ module internal UnaryMetadataTokenOps =
             method.Name
         )
 
-        pushFunctionPointer ctx concretizedMethod state
+        pushFunctionPointer ctx target state
 
     /// ECMA-335 III.4.18. Pops an object reference and pushes a function pointer to the body that
     /// a `callvirt` of the same token on the same receiver would have run.

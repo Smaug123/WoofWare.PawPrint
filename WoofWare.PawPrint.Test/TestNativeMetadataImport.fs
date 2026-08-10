@@ -68,6 +68,29 @@ public class OuterMetadataField
     }
 }
 
+public class OuterWithSeveralNested
+{
+    public class NestedPublicFirst
+    {
+    }
+
+    // Private on purpose: the QCall enumerates the NestedClass table and does no visibility
+    // filtering — `RuntimeType.PopulateNestedClasses` applies binding flags afterwards. A
+    // handler that filtered here would silently drop this one.
+    private class NestedPrivateSecond
+    {
+    }
+
+    public class NestedThirdWithOwnNested
+    {
+        // Nesting is not transitive: this belongs to NestedThirdWithOwnNested's list, never to
+        // OuterWithSeveralNested's.
+        public class DeeplyNested
+        {
+        }
+    }
+}
+
 public class ReferencesOtherAssemblyMembers
 {
     // `string.Empty` is a static field on a corelib type, so the reference is a MemberRef row
@@ -103,6 +126,7 @@ public class TypesWithMembers
             ArgumentAttrType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             OuterType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             InnerType : TypeInfo<GenericParamFromMetadata, TypeDefn>
+            SeveralNestedType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             MembersType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             InstanceField : FieldInfo<GenericParamFromMetadata, TypeDefn>
             StaticField : FieldInfo<GenericParamFromMetadata, TypeDefn>
@@ -186,6 +210,8 @@ public class TypesWithMembers
             assembly.TryGetNestedTypeDef outerType.TypeDefHandle "InnerMetadataField"
             |> Option.defaultWith (fun () -> failwith "nested type InnerMetadataField not found")
 
+        let severalNestedType = requiredTopLevelType assembly "" "OuterWithSeveralNested"
+
         let membersType = requiredTopLevelType assembly "" "TypesWithMembers"
 
         let constArrayType = requiredTopLevelType corelib "System.Reflection" "ConstArray"
@@ -234,6 +260,7 @@ public class TypesWithMembers
             ArgumentAttrType = argumentAttrType
             OuterType = outerType
             InnerType = innerType
+            SeveralNestedType = severalNestedType
             MembersType = membersType
             InstanceField = fieldByName "InstanceField"
             StaticField = fieldByName "StaticField"
@@ -488,9 +515,10 @@ public class TypesWithMembers
         | Some result -> failwith $"unexpected MetadataImport execution result: %O{result}"
         | None -> failwith "MetadataImport native method did not match"
 
-    let private invokeEnumFields
+    let private invokeEnum
         (fixture : MetadataImportFixture)
-        (targetType : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        (tokenType : int32)
+        (parent : int32)
         (state : IlMachineState)
         : int32 * int32 list * EnumResultStorage * IlMachineState
         =
@@ -502,9 +530,6 @@ public class TypesWithMembers
         let longResult, state = allocateObjectOut fixture state
         let longResultHandle, state = objectHandleOnStack fixture longResult state
 
-        let fieldDefTokenType = 0x04000000
-        let parent = typeDefToken targetType.TypeDefHandle
-
         let state =
             invokeMetadataImportNative
                 fixture
@@ -512,7 +537,7 @@ public class TypesWithMembers
                 enumMethod
                 [
                     metadataImportHandle fixture
-                    CliType.Numeric (CliNumericType.Int32 fieldDefTokenType)
+                    CliType.Numeric (CliNumericType.Int32 tokenType)
                     CliType.Numeric (CliNumericType.Int32 parent)
                     CliType.RuntimePointer (CliRuntimePointer.Managed lengthOut)
                     CliType.RuntimePointer (CliRuntimePointer.Managed shortResult)
@@ -543,6 +568,25 @@ public class TypesWithMembers
             | other -> failwith $"expected object reference in long result slot, got %O{other}"
 
         length, tokens, storage, state
+
+    /// `MetadataTokenType.FieldDef`, as `MetadataImport.EnumFields` passes it.
+    let private invokeEnumFields
+        (fixture : MetadataImportFixture)
+        (targetType : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        (state : IlMachineState)
+        : int32 * int32 list * EnumResultStorage * IlMachineState
+        =
+        invokeEnum fixture 0x04000000 (typeDefToken targetType.TypeDefHandle) state
+
+    /// `MetadataTokenType.TypeDef`, as `MetadataImport.EnumNestedTypes` passes it — which asks for
+    /// the parent's *nested classes*, not for TypeDefs at large.
+    let private invokeEnumNestedTypes
+        (fixture : MetadataImportFixture)
+        (targetType : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        (state : IlMachineState)
+        : int32 * int32 list * EnumResultStorage * IlMachineState
+        =
+        invokeEnum fixture 0x02000000 (typeDefToken targetType.TypeDefHandle) state
 
     let private invokeGetFieldDefProps
         (fixture : MetadataImportFixture)
@@ -744,6 +788,90 @@ public class TypesWithMembers
         length |> shouldEqual 2
         storage |> shouldEqual EnumResultStorage.ShortResult
         tokens |> shouldEqual (fieldDefTokens fixture.GenericType)
+
+    /// Resolve a nested type by name, for use as the *expected* answer. Deliberately via
+    /// `TryGetNestedTypeDef`, which is a different index from the one under test
+    /// (`NestedTypeDefsByEnclosing`): reading the expectation out of the index being tested would
+    /// pass for any self-consistent wrong answer.
+    let private requiredNestedType
+        (fixture : MetadataImportFixture)
+        (enclosing : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        (name : string)
+        : int32
+        =
+        fixture.Assembly.TryGetNestedTypeDef enclosing.TypeDefHandle name
+        |> Option.defaultWith (fun () -> failwith $"nested type %s{name} not found in %s{enclosing.Name}")
+        |> fun ty -> typeDefToken ty.TypeDefHandle
+
+    [<Test>]
+    let ``MetadataImport Enum returns nested TypeDef tokens in declaration order`` () : unit =
+        let fixture = makeFixture ()
+
+        let length, tokens, storage, _ =
+            invokeEnumNestedTypes fixture fixture.SeveralNestedType fixture.State
+
+        length |> shouldEqual 3
+        storage |> shouldEqual EnumResultStorage.ShortResult
+
+        // Order is guest-observable — `RuntimeType.PopulateNestedClasses` passes it straight
+        // through to `Type.GetNestedTypes()` — so pin the sequence, not just the set.
+        tokens
+        |> shouldEqual
+            [
+                requiredNestedType fixture fixture.SeveralNestedType "NestedPublicFirst"
+                requiredNestedType fixture fixture.SeveralNestedType "NestedPrivateSecond"
+                requiredNestedType fixture fixture.SeveralNestedType "NestedThirdWithOwnNested"
+            ]
+
+    [<Test>]
+    let ``MetadataImport Enum returns only immediately nested TypeDefs`` () : unit =
+        let fixture = makeFixture ()
+
+        let thirdType =
+            fixture.Assembly.TryGetNestedTypeDef fixture.SeveralNestedType.TypeDefHandle "NestedThirdWithOwnNested"
+            |> Option.defaultWith (fun () -> failwith "nested type NestedThirdWithOwnNested not found")
+
+        // `DeeplyNested` belongs to this list and, per the previous test, not to its grandparent's.
+        // A transitive walk would put it in both.
+        let length, tokens, _, _ = invokeEnumNestedTypes fixture thirdType fixture.State
+
+        length |> shouldEqual 1
+        tokens |> shouldEqual [ requiredNestedType fixture thirdType "DeeplyNested" ]
+
+    [<Test>]
+    let ``MetadataImport Enum returns the single nested TypeDef of a simple outer type`` () : unit =
+        let fixture = makeFixture ()
+
+        let length, tokens, storage, _ =
+            invokeEnumNestedTypes fixture fixture.OuterType fixture.State
+
+        length |> shouldEqual 1
+        storage |> shouldEqual EnumResultStorage.ShortResult
+        tokens |> shouldEqual [ typeDefToken fixture.InnerType.TypeDefHandle ]
+
+    [<Test>]
+    let ``MetadataImport Enum returns empty nested TypeDef list for a type with none`` () : unit =
+        let fixture = makeFixture ()
+
+        // The index stores no entry at all for such a type, so this pins that "absent" is reported
+        // as an empty enumeration rather than as an error.
+        let length, tokens, storage, _ =
+            invokeEnumNestedTypes fixture fixture.EmptyType fixture.State
+
+        length |> shouldEqual 0
+        tokens |> shouldEqual []
+        storage |> shouldEqual EnumResultStorage.ShortResult
+
+    [<Test>]
+    let ``MetadataImport Enum rejects a nil TypeDef parent for nested-type enumeration`` () : unit =
+        let fixture = makeFixture ()
+
+        // `RuntimeType.PopulateNestedClasses` screens nil tokens out before calling, and CoreCLR
+        // asserts on one. Answering "no nested types" would look identical to a real empty result.
+        let exn =
+            Assert.Throws (fun () -> invokeEnum fixture 0x02000000 0x02000000 fixture.State |> ignore)
+
+        exn.ToString () |> shouldContainText "nil TypeDef parent token"
 
     [<Test>]
     let ``MetadataImport GetFieldDefProps writes metadata field attributes`` () : unit =

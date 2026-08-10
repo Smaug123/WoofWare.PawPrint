@@ -252,6 +252,21 @@ type DumpedAssembly =
         CustomAttributesByParentToken : ImmutableDictionary<int, ImmutableArray<int>>
 
         /// <summary>
+        /// Index from an enclosing type's TypeDef handle to the TypeDef handles of the types
+        /// *immediately* nested inside it, in ascending TypeDef row order. Types with no nested
+        /// types are absent rather than mapped to an empty array.
+        /// </summary>
+        /// <remarks>
+        /// This is the NestedClass metadata table (ECMA-335 II.22.32) inverted: it answers
+        /// "what is nested in this type", where <c>TypeInfo.DeclaringType</c> answers the
+        /// converse. It exists because <c>MetadataImport_Enum</c> for <c>mdtTypeDef</c> is that
+        /// question, and it is deliberately not <c>_NestedTypeDefsLookup</c>, which is keyed by
+        /// name and silently drops duplicates — legal in IL, and fatal to an enumeration.
+        /// </remarks>
+        NestedTypeDefsByEnclosing :
+            ImmutableDictionary<ComparableTypeDefinitionHandle, ImmutableArray<TypeDefinitionHandle>>
+
+        /// <summary>
         /// Dictionary of all exported types in this assembly, keyed by their handle.
         /// </summary>
         ExportedTypes : ImmutableDictionary<ExportedTypeHandle, WoofWare.PawPrint.ExportedType>
@@ -1036,6 +1051,44 @@ module Assembly =
 
             builder.ToImmutable ()
 
+        let nestedTypeDefsByEnclosing
+            : ImmutableDictionary<ComparableTypeDefinitionHandle, ImmutableArray<TypeDefinitionHandle>> =
+            let grouped =
+                Dictionary<ComparableTypeDefinitionHandle, ImmutableArray<TypeDefinitionHandle>.Builder> ()
+
+            // Iterate the *ordered* TypeDef sequence rather than `typeDefs`, whose dictionary
+            // enumeration order is not the metadata order. CoreCLR's `GetNestedClasses`
+            // (md/runtime/mdinternalro.cpp:1323) walks the NestedClass table front to back and
+            // emits each matching row's NestedClass, and ECMA-335 II.24.2.6 requires that table to
+            // be sorted by NestedClass — so ascending TypeDef row order reproduces what the real
+            // runtime returns. This is guest-observable: `RuntimeType.PopulateNestedClasses`
+            // preserves the order it is given straight into `Type.GetNestedTypes()`.
+            for handle in metadataReader.TypeDefinitions do
+                // `DeclaringType` is the NestedClass table, which is exactly what the QCall
+                // enumerates. Deliberately not `IsNested`, which reads the visibility bits of
+                // `TypeAttributes`: that is a different fact, and hand-written IL can disagree.
+                let declaring = typeDefs.[handle].DeclaringType
+
+                if not declaring.IsNil then
+                    let key = ComparableTypeDefinitionHandle.Make declaring
+
+                    let builder =
+                        match grouped.TryGetValue key with
+                        | true, b -> b
+                        | false, _ ->
+                            let b = ImmutableArray.CreateBuilder ()
+                            grouped.[key] <- b
+                            b
+
+                    builder.Add handle
+
+            let result = ImmutableDictionary.CreateBuilder ()
+
+            for KeyValue (enclosing, builder) in grouped do
+                result.Add (enclosing, builder.ToImmutable ())
+
+            result.ToImmutable ()
+
         // TODO: this probably misses any methods out which aren't associated with a type definition?
         let methods =
             typeDefs
@@ -1196,6 +1249,7 @@ module Assembly =
             SequencePoints = sequencePoints
             Attributes = attrs
             CustomAttributesByParentToken = customAttributesByParentToken
+            NestedTypeDefsByEnclosing = nestedTypeDefsByEnclosing
             ExportedTypes = exportedTypes
             _TopLevelTypeDefsLookup = DumpedAssembly.BuildTopLevelTypeDefsLookup logger assy.Name typeDefs.Values
             _NestedTypeDefsLookup = DumpedAssembly.BuildNestedTypeDefsLookup logger assy.Name typeDefs.Values
