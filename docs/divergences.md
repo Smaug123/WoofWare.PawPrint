@@ -501,3 +501,57 @@ byte[] a = GC.AllocateUninitializedArray<byte>(2048);
 **Where this lives in code**: `NativeGc.tryExecuteQCall` handles `GCInterface_AllocateNewArray`
 and documents the flag handling; `sourcesPure/GcAllocateArray.cs` covers the API while
 deliberately never reading an uninitialized element before writing it.
+
+## A negative-length `newarr` always reports the `AllocateSzArray` message
+
+**CoreCLR**: `newarr` with a negative length raises `OverflowException` either way, but with one
+of two different messages, chosen by which allocation helper the JIT emitted for the element
+type. `CEEInfo::getNewArrHelperStatic` (`vm/jitinterface.cpp:5752-5806`) picks
+`CORINFO_HELP_NEWARR_1_PTR` when the element is exactly pointer-sized and
+`CORINFO_HELP_NEWARR_1_VC` otherwise. The pointer helper's slow path is
+`RhpGcAlloc(MethodTable*, GC_ALLOC_FLAGS, uintptr_t numElements, …)`
+(`vm/gchelpers.cpp:58-100`), where `numElements` is *unsigned*: the `numElements < 0` test there
+is dead, and a negative length instead trips `numElements > INT_MAX`, which throws
+`EEMessageException(kOverflowException, IDS_EE_ARRAY_DIMENSIONS_EXCEEDED)` — "Array dimensions
+exceeded supported range.". Every other element type reaches `AllocateSzArray`'s bare
+`COMPlusThrow(kOverflowException)` (`vm/gchelpers.cpp:637-638`) and so carries the parameterless
+constructor's own message.
+
+**PawPrint**: Always the `AllocateSzArray` message, for every element type.
+
+**Spec status**: Compliant. ECMA-335 III.4.13 says only that `OverflowException` is thrown when
+`numElems` is negative; it says nothing about the message, and both runtimes agree on the type.
+
+**Why we chose this**: The CoreCLR split is not a property of the program, it is a property of
+the code the JIT happened to emit. It moves with the target pointer size (on a 32-bit target
+`int[]` would be the pointer-sized case), and `getNewArrHelperStatic` also falls back to the
+slow helper whenever `LoggingOn(LF_GCALLOC, …)` or `TrackAllocationsEnabled()` — so the message
+can change with ETW state at run time, for a fixed program on a fixed machine. PawPrint has no
+JIT and no notion of a selected allocation helper, so there is nothing here to be faithful to.
+Reproducing the split would mean hard-coding a rule about a compilation strategy PawPrint does
+not have.
+
+The `> MaxArrayLength()` rejection is *not* affected: it is raised inside `AllocateSzArray`
+itself on every helper path, so `OutOfMemoryException` with "Array dimensions exceeded supported
+range." is uniform upstream and PawPrint reproduces it exactly.
+
+**Observable example**:
+
+```csharp
+static int Neg() => -1;
+
+try { var a = new int[Neg()]; }    catch (OverflowException e) { Console.WriteLine(e.Message); }
+try { var a = new string[Neg()]; } catch (OverflowException e) { Console.WriteLine(e.Message); }
+
+// CoreCLR (64-bit):  Arithmetic operation resulted in an overflow.
+//                    Array dimensions exceeded supported range.
+// PawPrint:          Arithmetic operation resulted in an overflow.
+//                    Arithmetic operation resulted in an overflow.
+```
+
+**Where this lives in code**: `SzArrayAllocation.exceptionFor` chooses the exception and message
+for both routes into a single-dimensional allocation (`UnaryMetadataArrayOps.executeNewarr` and
+`NativeGc`'s `GCInterface_AllocateNewArray`). `sourcesPure/NewarrLengthValidation.cs` asserts the
+exception *type* differentially across element types on both sides of the split, and
+`sourcesImpure/NewarrNegativeLengthMessage.cs` pins PawPrint's choice of message for the case
+where CoreCLR would have used the other one.
