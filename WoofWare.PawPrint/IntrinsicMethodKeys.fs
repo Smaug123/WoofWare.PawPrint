@@ -344,8 +344,8 @@ module IntrinsicMethodKeys =
             // is abstract on `Type`, so a receiver that is not a `RuntimeType` — a
             // `TypeDelegator`, or any guest `Type` subclass — answers from its own override.
             // An arm keyed on `Type::get_IsPrimitive` would intercept ahead of that dispatch
-            // and then fail trying to read `m_handle` off a type that does not declare it,
-            // which is exactly what the hand-written `Type.get_IsValueType` arm does today.
+            // and then fail trying to read `m_handle` off a type that does not declare it.
+            // `Type.get_IsValueType` below is an entry for the same reason.
             //
             // It also keeps `GetCorElementType` the single place that classifies a runtime
             // type handle, so `IsPrimitive` cannot drift from it. In particular an enum is
@@ -359,6 +359,35 @@ module IntrinsicMethodKeys =
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L133-L136
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.cs#L109-L111
             pattern "System.Private.CoreLib" "System.Type" "get_IsPrimitive" []
+            // `Type.IsValueType` is the same shape as `IsPrimitive` above: a non-virtual
+            // property whose `[Intrinsic]` getter is `ldarg.0; callvirt Type::IsValueTypeImpl();
+            // ret`, with the attribute present only for the JIT's `typeof(X)` constant-fold
+            // (`NI_System_Type_get_IsValueType`, importercalls.cpp:4045). The getter is always
+            // the call target, so its `callvirt` is the only thing that selects an
+            // implementation — a `TypeDelegator` or a guest `Type` subclass must answer from
+            // its own override. (`IsEnum` needs no entry at all: it is itself virtual and
+            // `RuntimeType` overrides the whole property, so a `callvirt` never lands on an
+            // `[Intrinsic]` body.)
+            //
+            // `RuntimeType.IsValueTypeImpl` is not a plain handle query:
+            //
+            //   TypeHandle th = GetNativeTypeHandle();
+            //   if (th.IsTypeDesc) return IsSubclassOf(typeof(ValueType));  // generic parameters
+            //   return th.AsMethodTable()->IsValueType;
+            //
+            // Both branches are modelled — the MethodTable flag by `MethodTableProjection`,
+            // and the TypeDesc branch by ordinary `IsSubclassOf` walking a type variable's
+            // base type, which CoreCLR defines as its most specific non-interface class
+            // constraint. That walk is what makes `where T : Enum` report true, which reading
+            // only the NotNullableValueType/Reference constraint *flags* cannot.
+            //
+            // Method-level generic parameters reach `RuntimeTypeHandle.GetConstraints`
+            // (NativeRuntimeTypeQCall.fs), which does not serve them;
+            // `TypeIsValueTypeMethodGenericParameter.cs` is parked on that.
+            //
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Type.cs#L135-L140
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/coreclr/System.Private.CoreLib/src/System/RuntimeType.CoreCLR.cs#L3432-L3443
+            pattern "System.Private.CoreLib" "System.Type" "get_IsValueType" []
             // .NET 10 added [Intrinsic] to RuntimeTypeHandle.ToIntPtr; the IL body delegates
             // to the Value getter which reads RuntimeType.m_handle, a field PawPrint already
             // populates with NativeIntSource.TypeHandlePtr. Executing the IL is safe and

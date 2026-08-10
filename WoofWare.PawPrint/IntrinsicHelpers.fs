@@ -178,44 +178,6 @@ module internal IntrinsicHelpers =
         containsRefType loggerFactory baseClassTypes state ImmutableDictionary.Empty handle
         |> fun (state, _, result) -> state, result
 
-    let popRuntimeTypeHandle
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (currentThread : ThreadId)
-        (state : IlMachineState)
-        : RuntimeTypeHandleTarget * IlMachineState
-        =
-        let this, state = IlMachineState.popEvalStack currentThread state
-
-        let this =
-            match this with
-            | EvalStackValue.ObjectRef ptr ->
-                IlMachineState.readManagedByref
-                    baseClassTypes
-                    state
-                    (ManagedPointerSource.Byref (ByrefRoot.HeapValue ptr, []))
-            | EvalStackValue.ManagedPointer ptr -> IlMachineState.readManagedByref baseClassTypes state ptr
-            | EvalStackValue.NullObjectRef -> failwith "TODO: Type intrinsic receiver was null; throw NRE"
-            | EvalStackValue.Float _
-            | EvalStackValue.Int32 _
-            | EvalStackValue.Int64 _ -> failwith "Type intrinsic receiver: refusing to dereference literal"
-            | other -> failwith $"Type intrinsic receiver: expected RuntimeType object or byref, got %O{other}"
-
-        let ty =
-            match this with
-            | CliType.ValueType cvt ->
-                // `RuntimeType.m_handle` is IntPtr (primitive-like); unwrap to reach the inner NativeInt.
-                let handleField =
-                    IlMachineState.requiredOwnInstanceFieldId state cvt.Declared "m_handle"
-
-                match CliValueType.DereferenceFieldById handleField cvt |> CliType.unwrapPrimitiveLike with
-                | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr target)) -> target
-                | other ->
-                    failwith
-                        $"Type intrinsic receiver: expected RuntimeType.m_handle to contain a TypeHandlePtr, got %O{other}"
-            | other -> failwith $"Type intrinsic receiver: expected RuntimeType value contents, got %O{other}"
-
-        ty, state
-
     /// Compute `src + offset` worth of element-T steps over a byref source.
     /// The input byref may or may not carry an address-preserving
     /// `ReinterpretAs` projection (from an `Unsafe.As` or a round-trip).
