@@ -388,6 +388,52 @@ module IntrinsicMethodKeys =
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Type.cs#L135-L140
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/coreclr/System.Private.CoreLib/src/System/RuntimeType.CoreCLR.cs#L3432-L3443
             pattern "System.Private.CoreLib" "System.Type" "get_IsValueType" []
+            // `RuntimeType.IsActualEnum` is the *nominal* enum test — "is this type's immediate
+            // base `System.Enum`" — as opposed to the neighbouring `RuntimeType.IsEnum`, which
+            // also answers true for a generic parameter constrained `where T : Enum`. That is the
+            // whole reason it exists, and it is what every enum reflection entry point gates on
+            // (`GetEnumUnderlyingType`, `GetEnumNames`, `GetEnumValuesAsUnderlyingType`,
+            // `IsEnumDefined`, `Enum.GetUnderlyingType`, `Type.GetTypeCode`), so an
+            // implementation that conflated the two would hand a generic parameter to code that
+            // then looks for a `value__` field.
+            //
+            // Its `[Intrinsic]` is the same JIT constant-fold hint the two `Type` getters above
+            // carry — `importercalls.cpp:10438` maps `get_IsActualEnum` to
+            // `NI_System_Type_get_IsEnum`, which folds only when the receiver is a literal
+            // `ldtoken` — so the managed body is the semantic definition:
+            //
+            //   TypeHandle th = GetNativeTypeHandle();
+            //   bool isEnum = !th.IsTypeDesc
+            //                 && th.AsMethodTable()->ParentMethodTable
+            //                    == TypeHandle.TypeHandleOf<Enum>().AsMethodTable();
+            //   GC.KeepAlive(this);
+            //   return isEnum;
+            //
+            // Every step is an already-modelled boundary:
+            //  * `GetNativeTypeHandle` is `new TypeHandle((void*)m_handle)`, and PawPrint
+            //    populates `RuntimeType.m_handle` with a `NativeIntSource.TypeHandlePtr`.
+            //  * `TypeHandle.IsTypeDesc` is the `& 2` tag test, whose single home is
+            //    `TypeHandleTag.forTarget` (NativeIntSource.fs). It reports true for generic
+            //    parameters, byrefs, pointers and function pointers, which is what keeps the
+            //    short-circuit load-bearing: `MethodTable::ParentMethodTable` deliberately
+            //    refuses a TypeDesc target, so a wrong tag would surface as a loud projection
+            //    failure rather than a wrong answer.
+            //  * `MethodTable::ParentMethodTable` is projected (MethodTableProjection.fs) through
+            //    `resolveBaseRuntimeTypeHandleTarget`, the same base-type walk `isEnumValueType`
+            //    uses; interpreting the body rather than hand-writing an arm is what keeps those
+            //    two from drifting.
+            //  * `TypeHandle.TypeHandleOf<Enum>()` is not itself `[Intrinsic]`; it is
+            //    `RuntimeTypeHandle.ToIntPtr(typeof(Enum).TypeHandle)`, and both of those are
+            //    allowlisted here already.
+            //  * The `ceq` between the two `MethodTable*`s is the `MethodTablePtr` comparison
+            //    that `NativeIntSource` already has to support for
+            //    `RuntimeHelpers.GetMethodTable(obj) == TypeHandleOf<T>().AsMethodTable()`.
+            //
+            // `RuntimeType` is sealed, so unlike `Type.get_IsPrimitive`/`get_IsValueType` there is
+            // no virtual dispatch for an allowlist entry to preserve here; the reason to interpret
+            // rather than intercept is the single-classifier one above.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/coreclr/System.Private.CoreLib/src/System/RuntimeType.CoreCLR.cs#L3474-L3486
+            pattern "System.Private.CoreLib" "System.RuntimeType" "get_IsActualEnum" []
             // .NET 10 added [Intrinsic] to RuntimeTypeHandle.ToIntPtr; the IL body delegates
             // to the Value getter which reads RuntimeType.m_handle, a field PawPrint already
             // populates with NativeIntSource.TypeHandlePtr. Executing the IL is safe and
