@@ -81,6 +81,53 @@ module TestByrefComparison =
 
         exn.Message |> shouldContainText "field offsets"
 
+    /// Two fields of one heap object are *different roots*, but that is a fact about how
+    /// each byref was built, not about where it points: `[StructLayout(LayoutKind.Explicit)]`
+    /// on a class can put two fields on one address. Measured the same way as the struct
+    /// case — real .NET says `true`, this comparison used to say `false`. Parked as
+    /// `AreSameHeapFieldsOverlappingExplicitLayout.cs`.
+    [<Test>]
+    let ``two fields of one heap object are refused`` () =
+        let obj = ManagedHeapAddress 1
+
+        let field (name : string) =
+            ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (obj, FieldId.Named name), [])
+            |> ManagedPointerSource.unsafeAssumeNormalisedForComparison
+
+        let exn = Assert.Throws (fun () -> ceq (field "A") (field "B") |> ignore)
+
+        exn.Message |> shouldContainText "one heap object"
+
+    /// Fields of *different* objects are genuinely different storage, so those still decide.
+    [<Test>]
+    let ``fields of different heap objects are unequal`` () =
+        let field (addr : int) (name : string) =
+            ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (ManagedHeapAddress addr, FieldId.Named name), [])
+            |> ManagedPointerSource.unsafeAssumeNormalisedForComparison
+
+        ceq (field 1 "A") (field 2 "B") |> shouldEqual false
+
+    /// The same field of the same object is the same address, and must not be swept into
+    /// the refusal by an over-eager same-object rule.
+    [<Test>]
+    let ``the same field of one heap object is equal`` () =
+        let field () =
+            ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (ManagedHeapAddress 1, FieldId.Named "A"), [])
+            |> ManagedPointerSource.unsafeAssumeNormalisedForComparison
+
+        ceq (field ()) (field ()) |> shouldEqual true
+
+    /// Distinct array elements cannot overlap however the element type is laid out, so
+    /// distinct roots still decide there — the heap-field refusal must not generalise to
+    /// every same-container root pair.
+    [<Test>]
+    let ``distinct elements of one array are unequal`` () =
+        let element (index : int) =
+            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (ManagedHeapAddress 1, index), [])
+            |> ManagedPointerSource.unsafeAssumeNormalisedForComparison
+
+        ceq (element 0) (element 1) |> shouldEqual false
+
     /// A chain differing only by a trailing `ReinterpretAs` is address-preserving, so it
     /// still decides — this is what makes `Unsafe.As` round-trips compare equal, and it is
     /// deliberately *not* what the field refusal catches.

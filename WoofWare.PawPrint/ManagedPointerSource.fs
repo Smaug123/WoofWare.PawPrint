@@ -1159,9 +1159,23 @@ module ManagedPointerSource =
             | None ->
                 failwith
                     $"TODO (CEQ): %s{context} compares byrefs whose projection chains differ by field steps, so whether they alias depends on field offsets within their declaring types — layout that byref comparison does not carry. Got %O{raw1} vs %O{raw2}"
+        | ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (obj1, field1), _),
+          ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (obj2, field2), _) when obj1 = obj2 && field1 <> field2 ->
+            // Two fields of one heap object are *different roots* here, but that is a
+            // statement about how the byref was built, not about where it points. Under
+            // `[StructLayout(LayoutKind.Explicit)]` on a class, two fields can share an
+            // address — measured: `Unsafe.AreSame(ref c.A, ref c.B)` for two
+            // `[FieldOffset(0)]` fields is `true` on real .NET and was answering `false`
+            // here. Only the layout separates that from an ordinary class.
+            failwith
+                $"TODO (CEQ): %s{context} compares byrefs to two fields of one heap object, which alias iff those fields share an offset — layout that byref comparison does not carry. Got %O{raw1} vs %O{raw2}"
         | _, _ ->
-            // Distinct roots are distinct storage, and the non-byref sources (`Null`, and
-            // bit-pattern placeholders) carry their whole identity in the value itself.
+            // Distinct roots are otherwise distinct storage: separate locals and arguments
+            // are separate slots, distinct array elements and string characters are disjoint
+            // by construction, statics get a slot each, and a heap allocation has a single
+            // object kind so a boxed value and a class-field byref never name one address.
+            // The non-byref sources (`Null`, bit-pattern placeholders) carry their whole
+            // identity in the value itself.
             stripped1 = stripped2
 
 [<RequireQualifiedAccess>]
