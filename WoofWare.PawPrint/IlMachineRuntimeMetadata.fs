@@ -887,13 +887,32 @@ module IlMachineRuntimeMetadata =
 
         $"   at %s{typeName}.%s{frame.Method.Name}%s{methodGenericsText}(%s{paramText})"
 
+    /// CoreLib's `SR.Exception_EndStackTraceFromPreviousThrow` (Strings.resx:2291), emitted by
+    /// `StackTrace.ToString` after a frame whose `IsLastFrameFromForeignExceptionStackTrace` is
+    /// set (StackTrace.cs:365). Hard-coded for the same reason as
+    /// `NativeException.messageForKind`'s strings: PawPrint has no resource pipeline, and this is
+    /// the invariant (non-localised) value.
+    [<Literal>]
+    let private foreignStackTraceBoundary =
+        "--- End of stack trace from previous location ---"
+
     let private renderExceptionStackTrace
         (state : IlMachineState)
         (stackTrace : ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> list)
         : string
         =
         stackTrace
-        |> List.map (renderExceptionStackFrame state)
+        |> List.collect (fun frame ->
+            let rendered = renderExceptionStackFrame state frame
+
+            if frame.IsLastFrameFromForeignExceptionStackTrace then
+                // Unconditionally, where `StackTrace.ToString` suppresses the annotation on an
+                // async state machine's frame. That, and the rest of that method's display
+                // policy, is a documented rendering gap; see docs/divergences.md.
+                [ rendered ; foreignStackTraceBoundary ]
+            else
+                [ rendered ]
+        )
         |> String.concat Environment.NewLine
 
     /// Write `_message` on an already-allocated exception object.
@@ -986,9 +1005,14 @@ module IlMachineRuntimeMetadata =
     /// Read the frozen-stack-trace token out of `exceptionAddr`'s `_stackTrace`. `None` means the
     /// exception has never been thrown, which is a legitimate state and not an error.
     ///
-    /// Fails if the field holds a token PawPrint did not mint: every writer goes through
-    /// `recordThrownStackTrace`, so anything else means a second writer has appeared and any
-    /// later decode of the token would silently misread it.
+    /// Fails if the field holds a token PawPrint did not mint. The invariant is not that
+    /// `recordThrownStackTrace` is the only writer — guest IL writes `_stackTrace` too, since
+    /// `Exception.RestoreDispatchState` (Exception.CoreCLR.cs:140) assigns it from a captured
+    /// `DispatchState` — but that every non-null value ever written is a token minted here
+    /// earlier. That holds because the only source of a non-null value the guest can obtain is
+    /// `ExceptionNative_GetFrozenStackTrace`, which hands back this same field, and because
+    /// `FrozenStackTraces` is never pruned, so a token stays decodable for the rest of the run.
+    /// Anything else means a second minter has appeared and a later decode would misread it.
     let frozenStackTraceToken
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (exceptionAddr : ManagedHeapAddress)
@@ -1023,10 +1047,11 @@ module IlMachineRuntimeMetadata =
         | other -> failwith $"frozenStackTraceToken: expected ObjectRef in Exception._stackTrace, got %O{other}"
 
     /// The frames behind `exceptionAddr`'s `_stackTrace` token: the trace as of its last dispatch.
-    /// Empty means the exception has never been thrown, which is a legitimate state.
+    /// Empty means the exception has never been thrown, which is a legitimate state — an
+    /// `ExceptionDispatchInfo` may be captured from an unthrown exception.
     ///
-    /// This is the read side of `recordThrownStackTrace`, and the two must agree about what a token
-    /// means; `frozenStackTraceToken` is what enforces that the token is one PawPrint minted.
+    /// This is the read side of `recordThrownStackTrace`, and the two must agree about what a
+    /// token means; `frozenStackTraceToken` is what enforces that the token is one PawPrint minted.
     let frozenStackTraceFrames
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (exceptionAddr : ManagedHeapAddress)

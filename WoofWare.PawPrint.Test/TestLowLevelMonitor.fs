@@ -45,6 +45,7 @@ module TestLowLevelMonitor =
             ActiveMethodState = FrameId -1
             Status = status
             IsBackground = false
+            IsRaisingForeignException = false
             Name = None
             Cpu = CpuId 0
             // Inert here: a frameless stub cannot execute the `SystemNative_*OSThreadId`

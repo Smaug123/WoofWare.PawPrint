@@ -10,6 +10,20 @@ type ExceptionStackFrame<'typeGen, 'methodGen, 'methodVar
         Method : WoofWare.PawPrint.MethodInfo<'typeGen, 'methodGen, 'methodVar>
         /// The number of bytes into the IL of the method we were in
         IlOffset : int
+        /// This is the last frame carried over from an *earlier* throw of the same exception —
+        /// i.e. the trace continues past it with frames from a later re-raise. Set only when
+        /// `ExceptionDispatchInfo.Throw()` splices a captured trace back on; renders as
+        /// "--- End of stack trace from previous location ---" after this frame's line.
+        ///
+        /// A property of the frame rather than a separator between frames because that is how the
+        /// CLR exposes it: `STEF_LAST_FRAME_FROM_FOREIGN_STACK_TRACE` (clrex.h:26) is a bit on the
+        /// `StackTraceElement`, and `debugdebugger.cpp:475-477` materialises those bits into a
+        /// `bool[]` parallel to the frame array, which managed code reads as
+        /// `System.Diagnostics.StackFrame.IsLastFrameFromForeignExceptionStackTrace`. Any
+        /// representation PawPrint chose would have to answer that question frame by frame.
+        ///
+        /// More than one frame in a trace can carry this: each capture/rethrow hop adds another.
+        IsLastFrameFromForeignExceptionStackTrace : bool
     }
 
 /// Represents a CLI exception being propagated
@@ -19,6 +33,22 @@ type CliException<'typeGen, 'methodGen, 'methodVar when 'typeGen : comparison an
         ExceptionObject : ManagedHeapAddress
         /// Stack trace built during unwinding
         StackTrace : ExceptionStackFrame<'typeGen, 'methodGen, 'methodVar> list
+        /// Whether a foreign-raise flag pending on this thread is still *this* raise's to consume
+        /// — see `ExceptionDispatching.consumeForeignExceptionRaise`. True from the moment a raise
+        /// begins until it appends its first frame; false thereafter, and false for a flag set
+        /// after this raise was already under way.
+        ///
+        /// It lives on the raise rather than being passed down the dispatch functions because a
+        /// raise is *suspended* across guest cleanup code — a `finally` body, a filter — and has to
+        /// come back with the same answer it left with. Both of PawPrint's suspension points
+        /// already carry a `CliException` (`ExceptionContinuation.PropagatingException` and
+        /// `ExceptionFilterContinuation`), so putting it here makes it survive them for free; a
+        /// parameter at the resume sites cannot tell a flag that predates the cleanup from one the
+        /// cleanup set, and gets one of the two wrong whichever constant it picks.
+        ///
+        /// Meaningless on a `CliException` parked in `MethodState.CatchExceptions`: that raise has
+        /// concluded. A `rethrow` reading one back is starting a *new* raise and sets this afresh.
+        MayConsumeForeignRaise : bool
     }
 
 type ExceptionFilterRegion =

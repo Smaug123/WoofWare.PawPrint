@@ -496,8 +496,84 @@ module ExceptionDispatching =
             |> Some
         | None -> state, None
 
+    /// Mark the last frame of `frames` as the end of an earlier throw's trace. The empty list is a
+    /// fixed point, which is CoreCLR's `numCurrentFrames > 0` guard (excep.cpp:3093) and is what
+    /// gives an `ExceptionDispatchInfo` captured from a never-thrown exception a trace with no
+    /// boundary in it.
+    let private markLastFrameAsForeign
+        (frames : ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> list)
+        : ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> list
+        =
+        match List.rev frames with
+        | [] -> []
+        | last :: earlierReversed ->
+            let last =
+                { last with
+                    IsLastFrameFromForeignExceptionStackTrace = true
+                }
+
+            List.rev (last :: earlierReversed)
+
+    /// If `currentThread` has a pending foreign-raise flag, clear it and return the frames the
+    /// exception already carried, with the last marked as the end of that earlier trace, so that
+    /// the frame about to be appended continues them instead of starting a new trace. `None` means
+    /// no flag was pending and the caller's own frames stand unchanged.
+    ///
+    /// This is `StackTraceInfo::AppendElement`'s read-and-reset (excep.cpp:3016-3017, 3087-3099),
+    /// and the placement matters as much as the marking: CoreCLR consumes the flag when a frame is
+    /// *appended*, not when a raise is *initiated*. A `rethrow` whose handler turns out to live in
+    /// the same method appends nothing, so it leaves the flag pending for the next raise — measured
+    /// on .NET 10, and covered by `sourcesPure/ForeignRaiseFlagSurvivesFramelessRethrow.cs`. Hence
+    /// the two callers are PawPrint's two frame-append sites, not its two dispatch entry points.
+    ///
+    /// Appending is not enough on its own, though, because CoreCLR appends every frame in pass one,
+    /// *before* running any cleanup clause. Guest code that sets the flag from a `finally` therefore
+    /// cannot have it consumed by the raise it is unwinding — that raise's appends already happened.
+    /// PawPrint has no pass one; it interleaves search with cleanup, so what it has instead is
+    /// `CliException.MayConsumeForeignRaise`, set when a raise begins and carried through every
+    /// suspension. A flag that predates the raise is consumed at its first append; one set by the
+    /// raise's own cleanup is not. `sourcesPure/ForeignRaiseFlagSetInFinally.cs` covers the second,
+    /// and `ForeignRaiseFlagPendingBeforeCleanup.cs` the first — they differ only in *when* the
+    /// flag is set, so a rule that looked at the resume site rather than the raise gets one of
+    /// them wrong whichever way it decides.
+    ///
+    /// The frames come from the exception object rather than from any in-flight list, because
+    /// CoreCLR re-reads `_stackTrace` at every append. That is observable: a nested throw of the
+    /// *same* object from inside a catch updates the token while the outer handler's snapshot goes
+    /// stale, and only the token still holds the nested boundary.
+    ///
+    /// `framesAlreadyPresent` is a thunk because only the flag-set path may evaluate it: the reader
+    /// fails loudly on an exception address that is not a real heap object, which is exactly what
+    /// the skeletal states in low-level dispatch tests use.
+    let private consumeForeignExceptionRaise
+        (currentThread : ThreadId)
+        (framesAlreadyPresent :
+            unit -> ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> list)
+        (state : IlMachineState)
+        : IlMachineState * ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> list option
+        =
+        let threadState = state.ThreadState.[currentThread]
+
+        if not threadState.IsRaisingForeignException then
+            state, None
+        else
+
+        let state =
+            { state with
+                ThreadState =
+                    state.ThreadState
+                    |> Map.add
+                        currentThread
+                        { threadState with
+                            IsRaisingForeignException = false
+                        }
+            }
+
+        state, framesAlreadyPresent () |> markLastFrameAsForeign |> Some
+
     /// Unwind the call stack looking for an exception handler. Pops frames until a handler is found
     /// (catch or cleanup), entering it; or until no frames remain, in which case the exception is unhandled.
+    ///
     let rec unwindToCallerAndSearch
         (loggerFactory : ILoggerFactory)
         (corelib : BaseClassTypes<DumpedAssembly>)
@@ -576,6 +652,9 @@ module ExceptionDispatching =
                     {
                         ExceptionObject = tieAddr
                         StackTrace = []
+                        // The raise carries on, so its answer to the foreign-raise question does
+                        // too: wrapping swaps the object, not the raise.
+                        MayConsumeForeignRaise = cliException.MayConsumeForeignRaise
                     }
 
                 state, wrappedCliException, tieType
@@ -617,6 +696,9 @@ module ExceptionDispatching =
                     {
                         ExceptionObject = tieAddr
                         StackTrace = []
+                        // The raise carries on, so its answer to the foreign-raise question does
+                        // too: wrapping swaps the object, not the raise.
+                        MayConsumeForeignRaise = cliException.MayConsumeForeignRaise
                     }
 
                 state, wrappedCliException, tieType
@@ -644,6 +726,10 @@ module ExceptionDispatching =
             {
                 Method = callerFrame.ExecutingMethod
                 IlOffset = callSitePC
+                // The frame being appended belongs to the raise in progress, never to an earlier
+                // one — CoreCLR sets `stackTraceElem.flags = 0` here for the same reason
+                // (excep.cpp:3045). A pending flag marks the frame *before* this one, below.
+                IsLastFrameFromForeignExceptionStackTrace = false
             }
 
         // A delegate's `Invoke` is a stub, not a managed method: real .NET has no frame for it,
@@ -662,12 +748,56 @@ module ExceptionDispatching =
             | MethodBody.RuntimeProvided RuntimeBehaviour.DelegateInvoke -> true
             | _ -> false
 
+        // This is one of PawPrint's two frame-append sites, so a flag left pending by
+        // `Exception.PrepareForForeignExceptionRaise` is consumed here (the other site is the
+        // throw-site frame in `throwExceptionObject`). In practice only a `rethrow` reaches this
+        // with a flag still set: a `throw` consumes it when it seeds its first frame.
+        //
+        // A suppressed delegate-`Invoke` stub appends nothing, so it consumes nothing either: real
+        // .NET has no `StackTraceElement` for that stub and hence no `AppendElement` call to read
+        // the flag, which stays pending for the next genuine frame the raise reaches.
+        //
+        // The frames to mark are the ones the raise is already carrying: a `rethrow` read them out
+        // of `_stackTrace` when it began, and a `throw` seeded them at its own throw site. That is
+        // deliberately not a re-read of the token here, even though here is where CoreCLR reads it
+        // — because here can be separated from the raise's initiation by guest cleanup code, and a
+        // `finally` that throws the same exception again moves the token on. CoreCLR never faces
+        // the question: pass one appends every frame before any cleanup clause runs, so the frames
+        // it marks are the ones the raise began with, which is what this carries.
+        //
+        // The two answers cannot be told apart today. Reaching a case where they differ needs a
+        // raise inside that `finally`, and such a raise also steals the flag before this one can
+        // spend it — `sourcesPure/ForeignRaiseFlagNotStolenByCleanup.cs`, parked on issue #865. So
+        // no test pins this line; it is written this way because it is the same fact as
+        // `MayConsumeForeignRaise`, that a suspended raise comes back with the state it left with.
+        let state, restoredFrames =
+            if isDelegateInvokeStub || not cliException.MayConsumeForeignRaise then
+                state, None
+            else
+
+            state
+            |> consumeForeignExceptionRaise currentThread (fun () -> cliException.StackTrace)
+
+        let framesBefore = restoredFrames |> Option.defaultValue cliException.StackTrace
+
+        // `threadState` is a *value* captured before the consume, and the handler-entry path below
+        // takes it as a parameter and writes it back into the state map. Left stale, it would
+        // resurrect the flag we just cleared — with the visible effect that the boundary appears
+        // here and the flag is *also* still there for the next raise to spend. Re-read it, which
+        // is exact: the consume changes nothing else, and the frame bookkeeping above is already
+        // in `state`.
+        let threadState = state.ThreadState.[currentThread]
+
         let cliExceptionAtCallSite =
             if isDelegateInvokeStub then
+                // Nothing appended, so nothing decided: the question stays open for the next frame.
                 cliException
             else
                 { cliException with
-                    StackTrace = cliException.StackTrace @ [ stackFrame ]
+                    StackTrace = framesBefore @ [ stackFrame ]
+                    // Decided, one way or the other, at this raise's first appended frame; the rest of
+                    // the unwind must not ask again.
+                    MayConsumeForeignRaise = false
                 }
 
         match callerFrame.ExceptionContinuation with
@@ -717,6 +847,7 @@ module ExceptionDispatching =
                 | _state, Some state -> ExceptionDispatchResult.HandlerFound state
                 | state, None ->
                     unwindToCallerAndSearch loggerFactory corelib state currentThread cliException exceptionType
+
         | _ ->
 
             match
@@ -736,6 +867,7 @@ module ExceptionDispatching =
             | state, None ->
                 // No handler in this frame either; continue unwinding
                 unwindToCallerAndSearch loggerFactory corelib state currentThread cliExceptionAtCallSite exceptionType
+
 
     let dispatchExceptionFromSearchPC
         (loggerFactory : ILoggerFactory)
@@ -793,7 +925,9 @@ module ExceptionDispatching =
                 | _state, Some state -> ExceptionDispatchResult.HandlerFound state
                 | state, None ->
                     unwindToCallerAndSearch loggerFactory corelib state currentThread cliException exceptionType
+
             | _ -> unwindToCallerAndSearch loggerFactory corelib state currentThread cliException exceptionType
+
 
     /// Dispatch an exception that has been thrown or is being propagated. Searches for a handler
     /// in the current method; if found, enters it; otherwise unwinds to the caller.
@@ -838,12 +972,47 @@ module ExceptionDispatching =
             {
                 Method = currentMethodState.ExecutingMethod
                 IlOffset = currentMethodState.IlOpIndex
+                IsLastFrameFromForeignExceptionStackTrace = false
             }
+
+        // `Exception.PrepareForForeignExceptionRaise` has just told us that this throw is
+        // re-raising an exception whose trace was captured earlier, so the frames behind its
+        // `_stackTrace` must survive rather than be replaced. CoreCLR splits this across two
+        // readers of the same flag — `IL_Throw` (jithelpers.cpp:814) declines to clear
+        // `_stackTrace`, and the next `StackTraceInfo::AppendElement` (excep.cpp:3087) marks the
+        // last frame already present — but PawPrint has no clear-at-throw step to decline, and
+        // appends its first frame right here, so both land in one place.
+        //
+        // The other half of `IL_Throw`'s flag branch, `SetStackTraceString(NULL)`, needs nothing
+        // here: `RestoreDispatchState` assigns `_stackTraceString = null` itself in managed code
+        // (Exception.CoreCLR.cs:141), which PawPrint interprets like any other store. CoreCLR's
+        // native null exists for flag-setters that bypass `RestoreDispatchState` — only
+        // `IL_ThrowExact` (jithelpers.cpp:937), a JIT helper with no managed caller in CoreLib.
+        //
+        // The frames come from the exception's *own* token, not from anything the flag carries:
+        // `RestoreDispatchState` (Exception.CoreCLR.cs:140) has already written the captured token
+        // into `_stackTrace`, and if some other exception were raised while the flag was set,
+        // CoreCLR would likewise splice whatever that one's `_stackTrace` held.
+        //
+        // Consumed here for every raise reaching this function, not only for the `throw` opcode,
+        // matching the unconditional reset at excep.cpp:3017: the flag belongs to the thread's
+        // next dispatch, whatever raises it. `rethrow` does not come through here — it appends no
+        // frame of its own — and so carries the question forward instead.
+        let state, restoredFrames =
+            state
+            |> consumeForeignExceptionRaise
+                currentThread
+                (fun () -> IlMachineState.frozenStackTraceFrames corelib exceptionAddr state)
+
+        let restoredFrames = restoredFrames |> Option.defaultValue []
 
         let cliException =
             {
                 ExceptionObject = exceptionAddr
-                StackTrace = [ stackFrame ]
+                StackTrace = restoredFrames @ [ stackFrame ]
+                // Whatever the flag had to say has been said, right here at this raise's first
+                // appended frame, so the unwind below must not ask again.
+                MayConsumeForeignRaise = false
             }
 
         dispatchException loggerFactory corelib state currentThread cliException exceptionType

@@ -2472,6 +2472,8 @@ module NullaryIlOp =
 
                     let skippedFilters = continuation.CurrentFilter :: continuation.SkippedFilters
 
+                    // As at the `endfinally` resume: `continuation.CliException` carries the
+                    // raise's own foreign-raise eligibility across the filter that just ran.
                     match
                         ExceptionDispatching.dispatchExceptionFromSearchPC
                             loggerFactory
@@ -2566,6 +2568,10 @@ module NullaryIlOp =
                         ThreadState = state.ThreadState |> Map.add currentThread threadState
                     }
 
+                // `exn` is passed through unchanged, foreign-raise eligibility included. That is
+                // the whole point of the field living on the raise: this resume cannot tell a flag
+                // the `finally` just set from one that was already pending when the raise began,
+                // but it does not have to — the raise itself remembers.
                 match
                     ExceptionDispatching.dispatchException
                         loggerFactory
@@ -2598,19 +2604,31 @@ module NullaryIlOp =
                 let exceptionType =
                     ExceptionDispatching.exceptionObjectType state cliException.ExceptionObject
 
-                // A rethrow continues the exception's *own* trace, so its starting frames are
-                // whatever `_stackTrace` holds now — CoreCLR's `IL_Rethrow` (jithelpers.cpp:890)
-                // reaches dispatch without clearing that field, and every frame it goes on to
-                // append accumulates onto it.
+                // Nothing about the foreign-raise flag happens here, deliberately. `IL_Rethrow`
+                // (jithelpers.cpp:890) never *sets* it, so a rethrow of its own produces no
+                // boundary — its frames simply accumulate onto the trace it inherited. It can
+                // still *consume* a flag someone else left pending, but CoreCLR's read-and-reset
+                // lives in `StackTraceInfo::AppendElement` (excep.cpp:3016), which fires when a
+                // frame is appended rather than when a raise begins — so that belongs at
+                // `ExceptionDispatching`'s append site, where it now is, and a rethrow whose
+                // handler lives in this same method leaves the flag pending because it appends
+                // nothing at all. See `sourcesPure/ForeignRaiseFlagSurvivesFramelessRethrow.cs`.
                 //
-                // The list that arrived on the parked `CliException` is not that: it is the
-                // snapshot taken when this catch handler was *entered*, and the exception's trace
-                // can have moved on since. Throwing the same object again from inside the handler
-                // replaces it, and a `finally` that this raise later runs can overwrite it too, so
-                // carrying the snapshot silently drops frames the guest can observe.
+                // This *is* a raise initiation, though, so the new raise records what was pending
+                // on the thread at this instant — that, and only that, is its to consume at its
+                // first appended frame, however many cleanup clauses it passes through on the way.
+                // Reading the flag *now* rather than at the append is the whole point: a `finally`
+                // this raise runs on its way out may set a flag of its own, and that one belongs to
+                // the next raise, not this one. The `CliException` here came out of
+                // `CatchExceptions`, where the field is stale, so this is a set, not a carry-over.
+                //
+                // Its `StackTrace` out of `CatchExceptions` is stale in the same way, and for the
+                // same reason: it is the snapshot this catch handler was entered with. The trace a
+                // rethrow inherits is the exception's own, whatever `_stackTrace` holds now.
                 let cliException =
                     { cliException with
                         StackTrace = IlMachineState.frozenStackTraceFrames corelib cliException.ExceptionObject state
+                        MayConsumeForeignRaise = threadState.IsRaisingForeignException
                     }
 
                 match
