@@ -512,6 +512,15 @@ module IntrinsicMethodKeys =
             // Note this is deliberately *reference* equality, not content equality: equal-
             // length spans over distinct backing storage are unequal, and a zero-length slice
             // of a live array is unequal to `default` because only the latter is null-backed.
+            //
+            // The operator is therefore exactly as good as `Unsafe.AreSame`, and inherits its
+            // one known gap: a byref to a struct's first field does not compare equal to a
+            // byref to the whole struct reinterpreted as that field's type, so two spans built
+            // over the same storage that way wrongly report unequal. That is a defect in byref
+            // normalisation, not in this operator — it is reachable with no span in sight by
+            // calling `Unsafe.AreSame` directly, and predates this entry — and is parked as
+            // `AreSameFirstFieldVersusReinterpretedWhole.cs`, whose first assertion uses no
+            // span at all.
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/ReadOnlySpan.cs#L346-L348
             pattern
                 "System.Private.CoreLib"
