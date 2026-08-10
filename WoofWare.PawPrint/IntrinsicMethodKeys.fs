@@ -649,6 +649,60 @@ module IntrinsicMethodKeys =
                 "System.UIntPtr"
                 "Log2"
                 [ IntrinsicParameterPattern.Exact "System.UIntPtr" ]
+            // `BitOperations.LeadingZeroCount`'s uint32 and uint64 overloads are modelled as
+            // arms in Intrinsics.fs, because both bodies bottom out in a De Bruijn table backed
+            // by a PE byte range. The `(nuint)` overload needs no such treatment: its body is
+            // `ldarg.0; conv.u8; call LeadingZeroCount(uint64); ret`, so running the IL lands on
+            // the modelled uint64 arm and the guest's own CoreLib decides the width, rather than
+            // PawPrint asserting one. The rule is: model the widths BitOperations implements
+            // separately, and run its forwarders.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Numerics/BitOperations.cs#L252-L267
+            pattern
+                "System.Private.CoreLib"
+                "System.Numerics.BitOperations"
+                "LeadingZeroCount"
+                [ IntrinsicParameterPattern.Exact "System.UIntPtr" ]
+            // The IBinaryInteger<TSelf>.LeadingZeroCount wrappers on the primitive integer
+            // types are each `ldarg.0; call int32 BitOperations::LeadingZeroCount(<U>); ret`,
+            // where U is the unsigned type of the same width (the signed wrappers reinterpret
+            // their argument, which needs no IL at all) and a `conv` for the wrapper's own
+            // return type follows the call on everything but the 32-bit pair. They are marked
+            // [Intrinsic] only so the JIT can elide the wrapper; PawPrint can run the IL
+            // unchanged because the BitOperations.LeadingZeroCount boundary is modelled in
+            // Intrinsics.fs. The narrower wrappers (SByte/Byte/Int16/UInt16) and the Int128
+            // pair carry no [Intrinsic] attribute, so they are never routed to Intrinsics.call
+            // and need no entry here.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/UInt32.cs#L294-L296
+            pattern
+                "System.Private.CoreLib"
+                "System.Int32"
+                "LeadingZeroCount"
+                [ IntrinsicParameterPattern.Exact "System.Int32" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.Int64"
+                "LeadingZeroCount"
+                [ IntrinsicParameterPattern.Exact "System.Int64" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.IntPtr"
+                "LeadingZeroCount"
+                [ IntrinsicParameterPattern.Exact "System.IntPtr" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.UInt32"
+                "LeadingZeroCount"
+                [ IntrinsicParameterPattern.Exact "System.UInt32" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.UInt64"
+                "LeadingZeroCount"
+                [ IntrinsicParameterPattern.Exact "System.UInt64" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.UIntPtr"
+                "LeadingZeroCount"
+                [ IntrinsicParameterPattern.Exact "System.UIntPtr" ]
             // BitOperations.RotateLeft is marked [Intrinsic] only so the JIT can lower it to a
             // single ROL instruction; the IL bodies are pure shift+OR over the existing primitive
             // numeric ops PawPrint already supports:

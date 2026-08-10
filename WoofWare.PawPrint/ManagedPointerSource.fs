@@ -22,6 +22,13 @@ type PeByteRangePointerSource =
     /// The COR signature blob for a method definition (ECMA II.23.2.1). Same
     /// storage story as `FieldSignatureBlob`.
     | MethodSignatureBlob of method : ComparableMethodDefinitionHandle
+    /// The Constant table's value blob for a field definition (ECMA II.22.9): the
+    /// field's compile-time constant, in the encoding its `ConstantTypeCode`
+    /// names. For a string constant those bytes are UTF-16LE characters, which is
+    /// what `MetadataImport.GetDefaultValue` hands back as a `char*`. Same storage
+    /// story as `FieldSignatureBlob` — it lives in the `#Blob` heap, so the RVA has
+    /// no PE-section meaning and is fixed at 0.
+    | ConstantBlob of field : ComparableFieldDefinitionHandle
 
 type PeByteRangePointer =
     {
@@ -38,6 +45,7 @@ type PeByteRangePointer =
             | PeByteRangePointerSource.ManagedResource resourceName -> $"managed resource %s{resourceName}"
             | PeByteRangePointerSource.FieldSignatureBlob field -> $"field signature blob for %O{field.Get}"
             | PeByteRangePointerSource.MethodSignatureBlob method -> $"method signature blob for %O{method.Get}"
+            | PeByteRangePointerSource.ConstantBlob field -> $"constant blob for %O{field.Get}"
 
         $"<PE data %s{this.AssemblyFullName} %s{source} at %d{this.RelativeVirtualAddress} size %d{this.Size}>"
 
@@ -698,7 +706,8 @@ module ManagedPointerSource =
             | PeByteRangePointerSource.FieldRva _
             | PeByteRangePointerSource.ManagedResource _ -> Some 3
             | PeByteRangePointerSource.FieldSignatureBlob _
-            | PeByteRangePointerSource.MethodSignatureBlob _ -> None
+            | PeByteRangePointerSource.MethodSignatureBlob _
+            | PeByteRangePointerSource.ConstantBlob _ -> None
         // Object fields, static fields, stack slots and the synthetic roots have no
         // stable in-container offset either (see `tryStableAddressBits` and
         // `NullaryIlOp.tryManagedPointerAddressBits`), so there is nothing to pair

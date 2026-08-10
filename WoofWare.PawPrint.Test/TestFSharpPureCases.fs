@@ -127,17 +127,18 @@ module TestFSharpPureCases =
     /// before recording that a case is blocked on a named primitive, un-park it and observe the
     /// failure: parking it is what stops the claim being checked.
     ///
-    /// `UnionReflection` is parked on `MetadataImport::GetDefaultValue`: having learned a literal
-    /// field's *type*, `MdFieldInfo.GetValue` goes on to read its constant out of the Constant
-    /// table through `MdConstant.GetValue`, and that reaches an InternalCall with no handler
-    /// ("Unimplemented native method (InternalCall): ... MetadataImport::GetDefaultValue").
-    /// Observed by un-parking it and running: the real runtime exits 0, PawPrint throws out of
-    /// `NativeDispatch.failUnimplemented`.
+    /// `UnionReflection` is parked on `MetadataImport::GetName`: having read a literal field's
+    /// value, `FSharpType.GetUnionCases` goes on to ask for members *by name*, and both
+    /// `MdFieldInfo.Name` and `RuntimeType`'s name-filtered member lookups reach an InternalCall
+    /// with no handler ("Unimplemented native method (InternalCall): ...
+    /// MetadataImport::GetName"). Observed by un-parking it and running: the real runtime exits 0,
+    /// PawPrint throws out of `NativeDispatch.failUnimplemented`.
     ///
-    /// Four earlier blockers are already gone: decoding each case's
+    /// Five earlier blockers are already gone: decoding each case's
     /// `CompilationMappingAttribute(SourceConstructFlags, ...)`, whose argument is an enum;
-    /// enumerating the union's nested case types; `MetadataImport::GetSigOfFieldDef`; and the
-    /// raw-blob path of `Signature_Init`, which the commit this comment sits in implements.
+    /// enumerating the union's nested case types; `MetadataImport::GetSigOfFieldDef`; the raw-blob
+    /// path of `Signature_Init`; and `MetadataImport::GetDefaultValue`, which the commit this
+    /// comment sits in implements.
     let unimplemented : Set<string> = Set.ofList [ "UnionReflection" ]
 
     // F# test cases that legitimately throw under both runtimes. Without this set, a test
