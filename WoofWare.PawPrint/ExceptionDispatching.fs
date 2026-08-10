@@ -496,6 +496,70 @@ module ExceptionDispatching =
             |> Some
         | None -> state, None
 
+    /// Mark the last frame of `frames` as the end of an earlier throw's trace. The empty list is a
+    /// fixed point, which is CoreCLR's `numCurrentFrames > 0` guard (excep.cpp:3093) and is what
+    /// gives an `ExceptionDispatchInfo` captured from a never-thrown exception a trace with no
+    /// boundary in it.
+    let private markLastFrameAsForeign
+        (frames : ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> list)
+        : ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> list
+        =
+        match List.rev frames with
+        | [] -> []
+        | last :: earlierReversed ->
+            let last =
+                { last with
+                    IsLastFrameFromForeignExceptionStackTrace = true
+                }
+
+            List.rev (last :: earlierReversed)
+
+    /// If `currentThread` has a pending foreign-raise flag, clear it and return the frames the
+    /// exception already carried, with the last marked as the end of that earlier trace, so that
+    /// the frame about to be appended continues them instead of starting a new trace. `None` means
+    /// no flag was pending and the caller's own frames stand unchanged.
+    ///
+    /// This is `StackTraceInfo::AppendElement`'s read-and-reset (excep.cpp:3016-3017, 3087-3099),
+    /// and the placement matters as much as the marking: CoreCLR consumes the flag when a frame is
+    /// *appended*, not when a raise is *initiated*. A `rethrow` whose handler turns out to live in
+    /// the same method appends nothing, so it leaves the flag pending for the next raise — measured
+    /// on .NET 10, and covered by `sourcesPure/ForeignRaiseFlagSurvivesFramelessRethrow.cs`. Hence
+    /// the two callers are PawPrint's two frame-append sites, not its two dispatch entry points.
+    ///
+    /// The frames come from the exception object rather than from any in-flight list, because
+    /// CoreCLR re-reads `_stackTrace` at every append. That is observable: a nested throw of the
+    /// *same* object from inside a catch updates the token while the outer handler's snapshot goes
+    /// stale, and only the token still holds the nested boundary.
+    ///
+    /// `framesAlreadyPresent` is a thunk because only the flag-set path may evaluate it: the reader
+    /// fails loudly on an exception address that is not a real heap object, which is exactly what
+    /// the skeletal states in low-level dispatch tests use.
+    let private consumeForeignExceptionRaise
+        (currentThread : ThreadId)
+        (framesAlreadyPresent :
+            unit -> ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> list)
+        (state : IlMachineState)
+        : IlMachineState * ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> list option
+        =
+        let threadState = state.ThreadState.[currentThread]
+
+        if not threadState.IsRaisingForeignException then
+            state, None
+        else
+
+        let state =
+            { state with
+                ThreadState =
+                    state.ThreadState
+                    |> Map.add
+                        currentThread
+                        { threadState with
+                            IsRaisingForeignException = false
+                        }
+            }
+
+        state, framesAlreadyPresent () |> markLastFrameAsForeign |> Some
+
     /// Unwind the call stack looking for an exception handler. Pops frames until a handler is found
     /// (catch or cleanup), entering it; or until no frames remain, in which case the exception is unhandled.
     let rec unwindToCallerAndSearch
@@ -644,10 +708,9 @@ module ExceptionDispatching =
             {
                 Method = callerFrame.ExecutingMethod
                 IlOffset = callSitePC
-                // A frame appended during unwind belongs to the throw in progress, never to an
-                // earlier one — CoreCLR sets `stackTraceElem.flags = 0` here for the same reason
-                // (excep.cpp:3045). Only `throwExceptionObject` marks a frame, and only on frames
-                // it restored rather than built.
+                // The frame being appended belongs to the raise in progress, never to an earlier
+                // one — CoreCLR sets `stackTraceElem.flags = 0` here for the same reason
+                // (excep.cpp:3045). A pending flag marks the frame *before* this one, below.
                 IsLastFrameFromForeignExceptionStackTrace = false
             }
 
@@ -667,12 +730,46 @@ module ExceptionDispatching =
             | MethodBody.RuntimeProvided RuntimeBehaviour.DelegateInvoke -> true
             | _ -> false
 
+        // This is one of PawPrint's two frame-append sites, so a flag left pending by
+        // `Exception.PrepareForForeignExceptionRaise` is consumed here (the other site is the
+        // throw-site frame in `throwExceptionObject`). In practice only a `rethrow` reaches this
+        // with a flag still set: a `throw` consumes it when it seeds its first frame.
+        //
+        // A suppressed delegate-`Invoke` stub appends nothing, so it consumes nothing either: real
+        // .NET has no `StackTraceElement` for that stub and hence no `AppendElement` call to read
+        // the flag, which stays pending for the next genuine frame the raise reaches.
+        //
+        // Replacing the in-flight frames wholesale is safe precisely because this is the *first*
+        // append of the raise — the flag can only be consumed once, and the list it replaces is
+        // still the one the raise started with. A plain rethrow, by contrast, keeps carrying the
+        // snapshot the catch handler was entered with, which can be staler than the token; that
+        // pre-existing gap is out of scope here and noted in docs/divergences.md.
+        let state, restoredFrames =
+            if isDelegateInvokeStub then
+                state, None
+            else
+
+            state
+            |> consumeForeignExceptionRaise
+                currentThread
+                (fun () -> IlMachineState.frozenStackTraceFrames corelib cliException.ExceptionObject state)
+
+        let framesBefore = restoredFrames |> Option.defaultValue cliException.StackTrace
+
+        // `threadState` is a *value* captured before the consume, and the handler-entry path below
+        // takes it as a parameter and writes it back into the state map. Left stale, it would
+        // resurrect the flag we just cleared — with the visible effect that the boundary appears
+        // here and the flag is *also* still there for the next raise to spend. Re-read it, which
+        // is exact: the consume changes nothing else, and the frame bookkeeping above is already
+        // in `state`.
+        let threadState = state.ThreadState.[currentThread]
+
         let cliExceptionAtCallSite =
             if isDelegateInvokeStub then
                 cliException
             else
                 { cliException with
-                    StackTrace = cliException.StackTrace @ [ stackFrame ]
+                    StackTrace = framesBefore @ [ stackFrame ]
                 }
 
         match callerFrame.ExceptionContinuation with
@@ -824,65 +921,6 @@ module ExceptionDispatching =
             exceptionType
             currentMethodState.IlOpIndex
             []
-
-    /// Mark the last frame of `frames` as the end of an earlier throw's trace. The empty list is a
-    /// fixed point, which is CoreCLR's `numCurrentFrames > 0` guard (excep.cpp:3093) and is what
-    /// gives an `ExceptionDispatchInfo` captured from a never-thrown exception a trace with no
-    /// boundary in it.
-    let private markLastFrameAsForeign
-        (frames : ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> list)
-        : ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> list
-        =
-        match List.rev frames with
-        | [] -> []
-        | last :: earlierReversed ->
-            let last =
-                { last with
-                    IsLastFrameFromForeignExceptionStackTrace = true
-                }
-
-            List.rev (last :: earlierReversed)
-
-    /// If `currentThread` has a pending foreign-raise flag, clear it and return the frames the
-    /// exception already carried — with the last marked as the end of that earlier trace — so the
-    /// raise about to begin continues them instead of starting over. `None` means the flag was not
-    /// set and the caller's own frames stand unchanged.
-    ///
-    /// This is `StackTraceInfo::AppendElement`'s read-and-reset (excep.cpp:3016-3017, 3087-3099),
-    /// which fires on the *first* frame appended by whatever raise follows the flag, not
-    /// specifically on a `throw`. Both of PawPrint's dispatch entry points therefore call it, and
-    /// they pass different `framesAlreadyPresent` because they hold those frames in different
-    /// places: a `throw` has none in hand and must read the exception's `_stackTrace` token, while
-    /// a `rethrow` is already carrying the in-flight `CliException`'s list.
-    ///
-    /// `framesAlreadyPresent` is a thunk because only the flag-set path may evaluate it. The
-    /// `throw` path's reader fails loudly on an exception address that is not a real heap object,
-    /// which is exactly what the skeletal states in low-level dispatch tests use.
-    let internal consumeForeignExceptionRaise
-        (currentThread : ThreadId)
-        (framesAlreadyPresent :
-            unit -> ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> list)
-        (state : IlMachineState)
-        : IlMachineState * ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> list option
-        =
-        let threadState = state.ThreadState.[currentThread]
-
-        if not threadState.IsRaisingForeignException then
-            state, None
-        else
-
-        let state =
-            { state with
-                ThreadState =
-                    state.ThreadState
-                    |> Map.add
-                        currentThread
-                        { threadState with
-                            IsRaisingForeignException = false
-                        }
-            }
-
-        state, framesAlreadyPresent () |> markLastFrameAsForeign |> Some
 
     /// Initiate exception dispatch for an exception object already on the heap.
     /// Builds the initial stack trace frame and dispatches.
