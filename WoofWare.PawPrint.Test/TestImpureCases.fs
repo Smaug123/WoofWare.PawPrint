@@ -599,8 +599,9 @@ module TestImpureCases =
         try
             let terminalState, terminatingThread =
                 match
-                    Program.run
+                    BoundedRun.run
                         loggerFactory
+                        case.FileName
                         (Some case.FileName)
                         peImage
                         { HostConfig.Default dotnetRuntimes with
