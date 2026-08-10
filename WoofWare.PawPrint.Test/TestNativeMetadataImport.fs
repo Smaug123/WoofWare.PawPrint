@@ -91,6 +91,18 @@ public class OuterWithSeveralNested
     }
 }
 
+// One field per interesting FIELD-signature shape (ECMA-335 II.23.2.4). `VolatileField` is here
+// because `volatile` prefixes the field's type with `modreq(IsVolatile)`, whose coded token is
+// image-dependent: it is the shape that a hand-written expectation cannot cover but the host CLR
+// can.
+public class FieldSignatureShapes
+{
+    public int Int32Field;
+    public string StringField;
+    public int[] Int32ArrayField;
+    public volatile int VolatileField;
+}
+
 public class ReferencesOtherAssemblyMembers
 {
     // `string.Empty` is a static field on a corelib type, so the reference is a MemberRef row
@@ -118,6 +130,9 @@ public class TypesWithMembers
             LoggerFactory : ILoggerFactory
             BaseClassTypes : BaseClassTypes<DumpedAssembly>
             Assembly : DumpedAssembly
+            /// The raw bytes Roslyn produced, so a test can also hand the same image to the host
+            /// CLR and use it as an outside oracle.
+            Image : byte array
             TargetType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             EmptyType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             ManyFieldsType : TypeInfo<GenericParamFromMetadata, TypeDefn>
@@ -127,6 +142,7 @@ public class TypesWithMembers
             OuterType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             InnerType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             SeveralNestedType : TypeInfo<GenericParamFromMetadata, TypeDefn>
+            SignatureShapesType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             MembersType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             InstanceField : FieldInfo<GenericParamFromMetadata, TypeDefn>
             StaticField : FieldInfo<GenericParamFromMetadata, TypeDefn>
@@ -212,6 +228,8 @@ public class TypesWithMembers
 
         let severalNestedType = requiredTopLevelType assembly "" "OuterWithSeveralNested"
 
+        let signatureShapesType = requiredTopLevelType assembly "" "FieldSignatureShapes"
+
         let membersType = requiredTopLevelType assembly "" "TypesWithMembers"
 
         let constArrayType = requiredTopLevelType corelib "System.Reflection" "ConstArray"
@@ -252,6 +270,7 @@ public class TypesWithMembers
             LoggerFactory = loggerFactory
             BaseClassTypes = baseClassTypes
             Assembly = assembly
+            Image = image
             TargetType = targetType
             EmptyType = emptyType
             ManyFieldsType = manyFieldsType
@@ -261,6 +280,7 @@ public class TypesWithMembers
             OuterType = outerType
             InnerType = innerType
             SeveralNestedType = severalNestedType
+            SignatureShapesType = signatureShapesType
             MembersType = membersType
             InstanceField = fieldByName "InstanceField"
             StaticField = fieldByName "StaticField"
@@ -627,11 +647,16 @@ public class TypesWithMembers
 
         ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), []), state
 
+    /// Read back a `ConstArray` written through `ptr`: its `m_length`, the bytes its `m_constArray`
+    /// addresses, and the raw `m_constArray` pointer itself. The pointer is returned because it is
+    /// part of the contract and not merely a route to the bytes: a handler that hands back the right
+    /// bytes over the wrong pointer shape breaks the guest's `ConstArray[i]` while satisfying every
+    /// content assertion.
     let private readConstArrayOut
         (fixture : MetadataImportFixture)
         (state : IlMachineState)
         (ptr : ManagedPointerSource)
-        : int32 * byte array
+        : int32 * byte array * ManagedPointerSource
         =
         let cli = IlMachineState.readManagedByref fixture.BaseClassTypes state ptr
 
@@ -654,19 +679,22 @@ public class TypesWithMembers
             | CliType.Numeric (CliNumericType.Int32 n) -> n
             | other -> failwith $"expected Int32 ConstArray.m_length, got %O{other}"
 
-        let bytes =
+        let pointer =
             match
                 CliValueType.DereferenceFieldById pointerFieldId valueType
                 |> CliType.unwrapPrimitiveLikeDeep
             with
-            | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null) ->
+            | CliType.RuntimePointer (CliRuntimePointer.Managed ptr) -> ptr
+            | other -> failwith $"expected managed pointer for ConstArray.m_constArray, got %O{other}"
+
+        let bytes =
+            match pointer with
+            | ManagedPointerSource.Null ->
                 if length = 0 then
                     [||]
                 else
                     failwith $"ConstArray with length %d{length} but null pointer"
-            | CliType.RuntimePointer (CliRuntimePointer.Managed (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr,
-                                                                                                                     baseIndex),
-                                                                                             []))) ->
+            | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, baseIndex), []) ->
                 Array.init
                     length
                     (fun i ->
@@ -677,15 +705,32 @@ public class TypesWithMembers
                         | CliType.Numeric (CliNumericType.UInt8 b) -> b
                         | other -> failwith $"expected UInt8 in ConstArray storage, got %O{other}"
                     )
-            | other -> failwith $"expected managed byref for ConstArray.m_constArray, got %O{other}"
+            | ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange, _) ->
+                // Read one byte at a time through the machine's own byte-view reader — the reader a
+                // guest's `ConstArray[i]` ultimately lands in, though the guest reaches it via
+                // pointer arithmetic rather than by supplying the offset directly as we do here.
+                let byteTemplate, _ =
+                    IlMachineState.cliTypeZeroOfHandle state fixture.BaseClassTypes fixture.ByteHandle
 
-        length, bytes
+                Array.init
+                    length
+                    (fun i ->
+                        match
+                            IlMachineState.readPeByteRangeBytesAs state peByteRange i byteTemplate
+                            |> CliType.unwrapPrimitiveLikeDeep
+                        with
+                        | CliType.Numeric (CliNumericType.UInt8 b) -> b
+                        | other -> failwith $"expected UInt8 in PE byte-range ConstArray storage, got %O{other}"
+                    )
+            | other -> failwith $"unexpected ConstArray.m_constArray pointer %O{other}"
+
+        length, bytes, pointer
 
     let private invokeGetCustomAttributeProps
         (fixture : MetadataImportFixture)
         (attrToken : int32)
         (state : IlMachineState)
-        : EvalStackValue * int32 * (int32 * byte array) * IlMachineState
+        : EvalStackValue * int32 * (int32 * byte array * ManagedPointerSource) * IlMachineState
         =
         let state, metadataImportType, getCustomAttributePropsMethod =
             metadataImportMethod fixture state "GetCustomAttributeProps" 4
@@ -1173,7 +1218,7 @@ public class TypesWithMembers
         let attrToken, expected =
             singleCustomAttributeForType fixture.Assembly fixture.ParameterlessAttrType
 
-        let returnValue, ctorToken, (length, bytes), _ =
+        let returnValue, ctorToken, (length, bytes, _), _ =
             invokeGetCustomAttributeProps fixture attrToken fixture.State
 
         returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
@@ -1190,7 +1235,7 @@ public class TypesWithMembers
         let attrToken, expected =
             singleCustomAttributeForType fixture.Assembly fixture.ArgumentAttrType
 
-        let returnValue, ctorToken, (length, bytes), _ =
+        let returnValue, ctorToken, (length, bytes, _), _ =
             invokeGetCustomAttributeProps fixture attrToken fixture.State
 
         returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
@@ -1211,7 +1256,7 @@ public class TypesWithMembers
         (fixture : MetadataImportFixture)
         (memberTokenRef : int32)
         (state : IlMachineState)
-        : EvalStackValue * (int32 * byte array) * IlMachineState
+        : EvalStackValue * (int32 * byte array * ManagedPointerSource) * IlMachineState
         =
         let state, metadataImportType, getMemberRefPropsMethod =
             metadataImportMethod fixture state "GetMemberRefProps" 3
@@ -1280,7 +1325,7 @@ public class TypesWithMembers
         | MetadataToken.MemberReference _ -> ()
         | other -> failwith $"expected [Obsolete] ctor to be a MemberRef, got %O{other}"
 
-        let returnValue, (length, bytes), _ =
+        let returnValue, (length, bytes, _), _ =
             invokeGetMemberRefProps fixture ctorToken fixture.State
 
         returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
@@ -1297,7 +1342,7 @@ public class TypesWithMembers
 
         let ctorToken = MetadataToken.toInt expected.Constructor
 
-        let returnValue, (length, bytes), _ =
+        let returnValue, (length, bytes, _), _ =
             invokeGetMemberRefProps fixture ctorToken fixture.State
 
         returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
@@ -1320,7 +1365,7 @@ public class TypesWithMembers
         | MemberSignature.Field _ -> ()
         | MemberSignature.Method _ -> failwith "expected String.Empty MemberRef to have a field signature"
 
-        let returnValue, (length, bytes), _ =
+        let returnValue, (length, bytes, _), _ =
             invokeGetMemberRefProps fixture (memberRefToken handle) fixture.State
 
         returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
@@ -1342,7 +1387,7 @@ public class TypesWithMembers
         let mutable state = fixture.State
 
         for handle, memberRef in members do
-            let returnValue, (length, bytes), nextState =
+            let returnValue, (length, bytes, _), nextState =
                 invokeGetMemberRefProps fixture (memberRefToken handle) state
 
             state <- nextState
@@ -1383,3 +1428,178 @@ public class TypesWithMembers
             )
 
         ex.Message |> shouldContainText "expected MemberRef token"
+
+    let private fieldNamed
+        (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        (name : string)
+        : FieldInfo<GenericParamFromMetadata, TypeDefn>
+        =
+        typeInfo.Fields
+        |> List.tryFind (fun field -> field.Name = name)
+        |> Option.defaultWith (fun () -> failwith $"field %s{name} not found on %s{typeInfo.Name}")
+
+    let private invokeGetSigOfFieldDef
+        (fixture : MetadataImportFixture)
+        (fieldToken : int32)
+        (state : IlMachineState)
+        : EvalStackValue * (int32 * byte array * ManagedPointerSource) * IlMachineState
+        =
+        let state, metadataImportType, getSigOfFieldDefMethod =
+            metadataImportMethod fixture state "GetSigOfFieldDef" 3
+
+        let signatureOut, state = allocateConstArrayOut fixture state
+
+        let state =
+            invokeMetadataImportNative
+                fixture
+                metadataImportType
+                getSigOfFieldDefMethod
+                [
+                    metadataImportHandle fixture
+                    CliType.Numeric (CliNumericType.Int32 fieldToken)
+                    CliType.RuntimePointer (CliRuntimePointer.Managed signatureOut)
+                ]
+                state
+
+        let returnValue, state = IlMachineState.popEvalStack (ThreadId 0) state
+        returnValue, readConstArrayOut fixture state signatureOut, state
+
+    [<Test>]
+    let ``MetadataImport GetSigOfFieldDef returns the ECMA FIELD signature blob`` () : unit =
+        let fixture = makeFixture ()
+
+        // ECMA-335 II.23.2.4: a FIELD signature is the FIELD calling-convention byte (0x06)
+        // followed by a Type (II.23.2.12). These expectations are derived from the standard
+        // rather than read back out of the image, so they pin the blob's width as well as its
+        // content: ELEMENT_TYPE_I4 = 0x08, _STRING = 0x0e, _SZARRAY = 0x1d, _VAR = 0x13 followed
+        // by the compressed generic-parameter index.
+        let cases =
+            [
+                fixture.SignatureShapesType, "Int32Field", [| 0x06uy ; 0x08uy |]
+                fixture.SignatureShapesType, "StringField", [| 0x06uy ; 0x0Euy |]
+                fixture.SignatureShapesType, "Int32ArrayField", [| 0x06uy ; 0x1Duy ; 0x08uy |]
+                fixture.GenericType, "GenericField", [| 0x06uy ; 0x13uy ; 0x00uy |]
+            ]
+
+        let mutable state = fixture.State
+
+        for typeInfo, fieldName, expected in cases do
+            let field = fieldNamed typeInfo fieldName
+
+            let returnValue, (length, bytes, _), nextState =
+                invokeGetSigOfFieldDef fixture (fieldDefToken field.Handle) state
+
+            state <- nextState
+
+            returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+            bytes |> shouldEqual expected
+            length |> shouldEqual expected.Length
+
+    [<Test>]
+    let ``MetadataImport GetSigOfFieldDef returns the signature of a literal field`` () : unit =
+        let fixture = makeFixture ()
+
+        // The literal shape is the one that matters in practice: a literal has no FieldDesc, so
+        // CoreCLR reflects over it with `MdFieldInfo` (RuntimeType.CoreCLR.cs, PopulateLiteralFields),
+        // and `MdFieldInfo.FieldType` is the only managed caller of GetSigOfFieldDef.
+        let _, (length, bytes, _), _ =
+            invokeGetSigOfFieldDef fixture (fieldDefToken fixture.LiteralField.Handle) fixture.State
+
+        // FIELD (0x06), ELEMENT_TYPE_I4 (0x08). A literal's signature describes its type only; the
+        // constant 7 lives in the Constant table, not here.
+        bytes |> shouldEqual [| 0x06uy ; 0x08uy |]
+        length |> shouldEqual bytes.Length
+
+    [<Test>]
+    let ``MetadataImport GetSigOfFieldDef agrees with the host runtime for every field`` () : unit =
+        let fixture = makeFixture ()
+
+        // Outside oracle: hand the same image to the host CLR and ask its own metadata engine the
+        // same question. `Module.ResolveSignature` does not go through the managed
+        // `MetadataImport.GetSigOfFieldDef`; for a FieldDef it calls `GetSignatureFromToken`, and
+        // `MDInternalRO::GetSigFromToken` (md/runtime/mdinternalro.cpp) dispatches mdtFieldDef to
+        // the same `MDInternalRO::GetSigOfFieldDef` and copies the blob byte for byte. This is the
+        // only assertion that covers `VolatileField`, whose modreq carries an image-dependent
+        // coded token that cannot be written down ahead of time.
+        let hostModule = (System.Reflection.Assembly.Load fixture.Image).ManifestModule
+
+        let fields = fixture.Assembly.Fields |> Seq.map (fun kvp -> kvp.Key) |> Seq.toList
+
+        fields |> List.isEmpty |> shouldEqual false
+
+        let mutable state = fixture.State
+
+        for fieldHandle in fields do
+            let token = fieldDefToken fieldHandle
+
+            let returnValue, (length, bytes, _), nextState =
+                invokeGetSigOfFieldDef fixture token state
+
+            state <- nextState
+
+            returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+            bytes |> shouldEqual (hostModule.ResolveSignature token)
+            length |> shouldEqual bytes.Length
+
+    [<Test>]
+    let ``MetadataImport GetSigOfFieldDef points at the field's own signature blob`` () : unit =
+        let fixture = makeFixture ()
+        let field = fieldNamed fixture.SignatureShapesType "Int32Field"
+
+        let _, (length, _, pointer), state =
+            invokeGetSigOfFieldDef fixture (fieldDefToken field.Handle) fixture.State
+
+        // The pointer's shape is part of the contract, not just a route to the bytes. CoreCLR hands
+        // back a PCCOR_SIGNATURE straight into the mapped metadata, and PawPrint models that with a
+        // PeByteRange root whose Source names *this* FieldDef; `NativeSignature.resolveSignatureBlobHandle`
+        // reads that provenance back when the blob later arrives as a `Signature`'s `_sig`. The
+        // `ReinterpretAs byte` projection is equally load-bearing: `BinaryArithmetic` refuses
+        // arithmetic on a bare PeByteRange root, so without it a guest's `ConstArray[i]` — which is
+        // `((byte*)m_constArray)[index]` — would fail while every content assertion above still passed.
+        let byteType =
+            AllConcreteTypes.lookup fixture.ByteHandle state.ConcreteTypes
+            |> Option.defaultWith (fun () -> failwith "System.Byte was not concretized")
+
+        let expected =
+            ManagedPointerSource.Byref (
+                ByrefRoot.PeByteRange
+                    {
+                        AssemblyFullName = fixture.Assembly.Name.FullName
+                        Source =
+                            PeByteRangePointerSource.FieldSignatureBlob (
+                                ComparableFieldDefinitionHandle.Make field.Handle
+                            )
+                        RelativeVirtualAddress = 0
+                        // `int` is `06 08`, so the range covers exactly two bytes. Spelled out
+                        // rather than taken from `length`, so that a handler which derived both the
+                        // struct's length and the range's size from the same wrong place would
+                        // still fail here.
+                        Size = 2
+                    },
+                [ ByrefProjection.ReinterpretAs byteType ]
+            )
+
+        length |> shouldEqual 2
+        pointer |> shouldEqual expected
+
+    [<Test>]
+    let ``MetadataImport GetSigOfFieldDef rejects a non-FieldDef token`` () : unit =
+        let fixture = makeFixture ()
+
+        let ex =
+            Assert.Throws (fun () ->
+                invokeGetSigOfFieldDef fixture (typeDefToken fixture.TargetType.TypeDefHandle) fixture.State
+                |> ignore
+            )
+
+        ex.Message |> shouldContainText "expected FieldDef token"
+
+    [<Test>]
+    let ``MetadataImport GetSigOfFieldDef rejects a FieldDef absent from the assembly`` () : unit =
+        let fixture = makeFixture ()
+
+        // Row 0xFFFFFF of the Field table; the fixture assembly has nothing like that many fields.
+        let ex =
+            Assert.Throws (fun () -> invokeGetSigOfFieldDef fixture 0x04FFFFFF fixture.State |> ignore)
+
+        ex.Message |> shouldContainText "was not present in"
