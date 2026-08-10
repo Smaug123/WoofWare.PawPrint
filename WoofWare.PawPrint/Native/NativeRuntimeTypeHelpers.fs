@@ -685,7 +685,8 @@ module NativeRuntimeTypeHelpers =
         slot.Method.Signature.ParameterTypes, slot.Method.Signature.ReturnType
 
     /// Could substituting the declaring types' generic arguments have created this tie, rather than
-    /// the two slots being genuinely the same at the generic-definition level?
+    /// the candidate and the slots it matched being genuinely the same at the generic-definition
+    /// level?
     ///
     /// Answered conservatively, because the exact question is not decidable from what a closed
     /// walk carries. It is tempting to say "the raw signatures are syntactically equal, so the tie
@@ -695,10 +696,20 @@ module NativeRuntimeTypeHelpers =
     /// inherited signatures are raw `[!0]` yet .NET replaces Ka's slot and reports `Kc`/`Kb`;
     /// trusting the syntactic equality picks Kb's slot and reports `Kc`/`Ka`.
     ///
-    /// So: if no compared signature mentions a generic parameter at all, no substitution can have
+    /// So: if no signature involved mentions a generic parameter at all, no substitution can have
     /// changed anything and the tie is genuine (any raw difference is then just the same type
     /// spelled as a TypeDef in one assembly and a TypeRef in another). Otherwise, refuse to guess.
-    let private tieCouldBeSubstitutionArtifact (a : VtableSlot) (b : VtableSlot) : bool =
+    ///
+    /// The *candidate's* own signature is swept alongside the slots it matched, not just the slots
+    /// against each other. Without it the guard is weaker than the rule above: let non-generic `A`
+    /// declare `virtual string M(string)` and `B : A` re-declare it `newslot`, so that two slots
+    /// hold identical parameter-free signatures; then let `C&lt;T&gt; : B` declare a *non-newslot*
+    /// `virtual string M(!0)`. At `T = string` the candidate matches both slots, yet neither
+    /// slot's raw signature mentions a parameter, so sweeping only the slots calls the tie genuine
+    /// and answers `B`'s slot -- where CoreCLR, comparing at the definition level, matches neither
+    /// (`!0` is not `string`) and allocates a fresh slot. Only the candidate carries the evidence
+    /// that a substitution happened at all.
+    let private tieCouldBeSubstitutionArtifact (slots : VtableSlot list) : bool =
         let types (slot : VtableSlot) =
             let parameters, ret = rawSignature slot
 
@@ -706,7 +717,7 @@ module NativeRuntimeTypeHelpers =
             | MethodReturnType.Void -> parameters
             | MethodReturnType.Returns ty -> ty :: parameters
 
-        (types a @ types b) |> List.exists mentionsGenericParameter
+        slots |> List.collect types |> List.exists mentionsGenericParameter
 
     /// The custom modifiers (`modreq`/`modopt`) a signature element carries: each paired with
     /// `true` for required and with the *path* through the type tree at which it sits.
@@ -762,10 +773,14 @@ module NativeRuntimeTypeHelpers =
                 state, acc @ mods
             )
         | TypeDefn.FunctionPointer signature ->
-            // The unmanaged calling convention of a `delegate* unmanaged[Cdecl]` is carried as
-            // custom modifiers *inside* the function pointer's own signature, so two overloads can
-            // differ only there. Concretisation collapses a function pointer to one handle, so
-            // without this descent those overloads would be indistinguishable.
+            // A function pointer's unmanaged calling convention is carried two different ways, and
+            // only one of them is a modifier. One of the four conventions the signature header can
+            // name directly (`delegate* unmanaged[Cdecl]` and friends) lives in the header's
+            // CallKind byte, which concretisation preserves -- `ConcreteTypeHandle.FunctionPointer`
+            // keeps the whole `TypeMethodSignature`, `Header` included. Anything else -- a combined
+            // or otherwise unnameable convention, e.g. `unmanaged[Cdecl, SuppressGCTransition]` --
+            // is spelled as custom modifiers *inside* the function pointer's own signature, so two
+            // overloads can differ only there. Those are what this descent recovers.
             let state, fromReturn =
                 match signature.ReturnType with
                 | MethodReturnType.Void -> state, []
@@ -807,8 +822,18 @@ module NativeRuntimeTypeHelpers =
             // entries carry only closed arguments), so the two signatures cannot be brought into a
             // common form. Fail loudly rather than fall back to a coarser comparison that could
             // silently bind an override to the wrong slot.
+            //
+            // Unlike the other refusals in this file, this one rejects *ordinary C#*: any
+            // `class B : A` overriding a `virtual void M<T>(T)` reaches it, and because
+            // `numVirtualsOfClosed` is the vtable's length, that poisons every reflection query on
+            // the type rather than only those that ask for the generic method. CoreCLR does not
+            // need a substitution to decide this -- `MetaSig::CompareMethodSigs` compares
+            // ELEMENT_TYPE_MVAR positionally -- and the arities are already known equal by the time
+            // this fires, so the rule PawPrint is missing is a *symbolic* positional comparison,
+            // not a better closed one. `sourcesPure/ReflectionGenericVirtualMethodOverrideSlots.cs`
+            // is the parked case.
             failwith
-                $"TODO: %s{operation}: matching an override against a base vtable slot needs to compare the signature of generic method %s{slot.Method.Name} on %O{slot.DeclaredBy}, which has %i{slot.Method.Generics.Length} method generic parameters; comparing those requires a symbolic method-generic context that ConcreteTypeHandle cannot represent"
+                $"TODO: %s{operation}: matching an override against a base vtable slot needs to compare the signature of generic method %s{slot.Method.Name} on %O{slot.DeclaredBy}, which has %i{slot.Method.Generics.Length} method generic parameters; comparing those requires a symbolic method-generic context that ConcreteTypeHandle cannot represent. This is an override of a generic virtual method -- ordinary C#, not hand-written IL"
 
         let assembly = slot.DeclaredBy.Assembly
         let typeGenerics = slot.DeclaredBy.Generics
@@ -866,7 +891,11 @@ module NativeRuntimeTypeHelpers =
     //    for the same reason: substitution destroys it, since the base writes `!0` where the
     //    override writes ELEMENT_TYPE_STRING. Measured -- doing so breaks `G1`/`G2` above.
     //
-    // Roslyn emits neither shape.
+    // Roslyn emits neither shape: the first needs a hand-written non-newslot override, and the
+    // second needs a signature blob spelling `object` as `class System.Object`, which Roslyn does
+    // not produce. Both are legal IL, so a guest built by another toolchain could still reach
+    // them -- in which case the multi-match guard below catches what it can and the rest is the
+    // limitation recorded here.
 
     /// Does `candidate`, a non-newslot instance virtual declared on some derived type, fill the
     /// vtable slot currently occupied by `slot`?
@@ -1009,13 +1038,18 @@ module NativeRuntimeTypeHelpers =
 
                     // More than one slot can legitimately match: `A` declares `virtual M()`, `B :
                     // A` declares `new virtual M()` with the identical signature, and `C : B`
-                    // overrides it. CoreCLR resolves this by searching the parent chain from the
-                    // immediate parent upwards and taking the first hit
-                    // (`LoaderFindMethodInParentClass`), i.e. the most-derived declaration -- which
-                    // is also C#'s meaning, since `C.M` overrides the `M` that `B` introduced and
-                    // leaves `A`'s alone. Slots are appended as the walk descends, so the
-                    // most-derived matching slot is the one with the largest index; the fold above
-                    // prepends, so `matched` is already in descending index order.
+                    // overrides it. CoreCLR resolves this in `LoaderFindMethodInParentClass`, and
+                    // the tie-break lives in how that lookup's index is built rather than in the
+                    // lookup itself: `CreateMethodChainHash` walks the *parent's* slot table in
+                    // ascending slot order and inserts each slot's occupant at the **head** of its
+                    // name bucket, and `Lookup` returns the first entry in the bucket. So the entry
+                    // returned is the one inserted last, i.e. the occupant of the highest matching
+                    // slot -- the most-derived declaration, which is also C#'s meaning, since
+                    // `C.M` overrides the `M` that `B` introduced and leaves `A`'s alone. Slots are
+                    // appended as the walk descends, so that is the matching slot with the largest
+                    // index; the fold above prepends, so `matched` is already in descending index
+                    // order. This is therefore the same rule as upstream's, not merely one that
+                    // agrees with it on the cases we have tried.
                     // A candidate legitimately matching several slots is the `new virtual` case
                     // above, where the tie is real and most-derived is the answer. But a tie can
                     // also be an *artifact* of matching closed signatures: CoreCLR lays slots out on
@@ -1032,14 +1066,7 @@ module NativeRuntimeTypeHelpers =
                     if List.length matched > 1 then
                         let matchedSlots = matched |> List.map (fun i -> List.item i slots)
 
-                        let artifact =
-                            matchedSlots
-                            |> List.exists (fun a ->
-                                matchedSlots
-                                |> List.exists (fun b ->
-                                    not (obj.ReferenceEquals (a, b)) && tieCouldBeSubstitutionArtifact a b
-                                )
-                            )
+                        let artifact = tieCouldBeSubstitutionArtifact (candidate :: matchedSlots)
 
                         if artifact then
                             failwith
@@ -1063,10 +1090,15 @@ module NativeRuntimeTypeHelpers =
                         state, slots |> List.mapi (fun j slot -> if j = mostDerived then candidate else slot)
                     | [] ->
                         // CoreCLR does not fail here: `MethodTableBuilder` gives an unmatched
-                        // non-newslot virtual a fresh slot. Roslyn never emits that shape, so
-                        // rather than model IL we have never seen, fail with the method named --
-                        // silently appending would shift every later slot and corrupt the dedupe
-                        // key that `PopulateMethods` indexes with.
+                        // non-newslot virtual a fresh slot. That fallback is not dead code
+                        // upstream, and the shape is not confined to corrupt images: assembly
+                        // version skew produces it, because a derived assembly compiled against a
+                        // base that has since removed or changed the virtual still carries the
+                        // non-newslot bit, and CoreCLR loads and runs that app. Roslyn does not
+                        // emit it against the assemblies it compiled against, so PawPrint has
+                        // never had a case to walk; fail with the method named rather than model a
+                        // layout no test exercises, since silently appending would shift every
+                        // later slot and corrupt the dedupe key `PopulateMethods` indexes with.
                         failwith
                             $"TODO: %s{operation}: virtual method %s{method.Name} on %O{concreteTypeInfo} is not marked newslot but matches no slot in the base vtable; PawPrint does not model CoreCLR's fallback of allocating it a fresh slot"
                 )

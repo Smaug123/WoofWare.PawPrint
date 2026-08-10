@@ -65,6 +65,41 @@ module TestVirtualMethodSlots =
         =
         NativeRuntimeTypeHelpers.vtableOfClosed loggerFactory bct "test" state handle
 
+    /// Closes a generic corelib type definition at the given corelib type arguments.
+    let private concretizeClosed
+        (state : IlMachineState)
+        (``namespace`` : string)
+        (name : string)
+        (args : (string * string) list)
+        : IlMachineState * ConcreteTypeHandle
+        =
+        let typeInfo =
+            match corelib.TryGetTopLevelTypeDef ``namespace`` name with
+            | None -> failwith $"%s{``namespace``}.%s{name} not found in corelib"
+            | Some typeInfo -> typeInfo
+
+        let openDefn =
+            DumpedAssembly.typeInfoToTypeDefn' bct state._LoadedAssemblies typeInfo
+
+        let state, argHandles =
+            ((state, []), args)
+            ||> List.fold (fun (state, acc) (argNamespace, argName) ->
+                let state, handle = concretize state argNamespace argName
+                state, handle :: acc
+            )
+
+        // As in the interface test: `typeInfoToTypeDefn'` already yields the instantiation shape
+        // `T`n<!0, ..>`, so close it by supplying the arguments as the type-generic context rather
+        // than by wrapping it again.
+        openDefn
+        |> IlMachineState.concretizeType
+            loggerFactory
+            bct
+            state
+            corelib.Name
+            (ImmutableArray.CreateRange (List.rev argHandles))
+            ImmutableArray.Empty
+
     /// A spread of corelib shapes: the root, a value type and its own root, deep exception
     /// hierarchies, types that override some but not all of Object's virtuals, types with
     /// explicit interface implementations (private/final/virtual/newslot, which are in the
@@ -112,6 +147,48 @@ module TestVirtualMethodSlots =
         match typeof<obj>.Assembly.GetType (full, false) with
         | null -> failwith $"host CLR could not find %s{full} in its own corelib"
         | t -> t
+
+    /// Closed generic types, which put the *substitution* half of the matcher under the same
+    /// outside oracle. The non-generic corpus above cannot: every signature it compares is already
+    /// closed in the metadata, so a matcher that ignored generic arguments entirely would still
+    /// agree with the host on all of it. These types override methods whose signatures are written
+    /// `!0` on the base and spelled concretely (or substituted) on the derived side -- exactly the
+    /// shape `G1`/`G2` covers in the differential guest, but here over real corelib signatures
+    /// (spans, nullables, interface reimplementation) that no hand-written case would think to
+    /// produce.
+    let private genericCorpus : (string * string * (string * string) list * Type) list =
+        [
+            "System", "Nullable`1", [ "System", "Int32" ], typeof<System.Nullable<int>>
+            "System.Collections.Generic",
+            "EqualityComparer`1",
+            [ "System", "Int32" ],
+            typeof<System.Collections.Generic.EqualityComparer<int>>
+            "System.Collections.Generic",
+            "Comparer`1",
+            [ "System", "Int32" ],
+            typeof<System.Collections.Generic.Comparer<int>>
+            "System.Collections.Generic", "List`1", [ "System", "Int32" ], typeof<System.Collections.Generic.List<int>>
+            "System.Collections.Generic",
+            "Dictionary`2",
+            [ "System", "Int32" ; "System", "Int32" ],
+            typeof<System.Collections.Generic.Dictionary<int, int>>
+        ]
+
+    /// The two corpora as one list of (label, concretiser, host type), so every check below ranges
+    /// over both.
+    let private allCorpus : (string * (IlMachineState -> IlMachineState * ConcreteTypeHandle) * Type) list =
+        (corpus
+         |> List.map (fun (ns, name) ->
+             $"%s{ns}.%s{name}", (fun (state : IlMachineState) -> concretize state ns name), hostType ns name
+         ))
+        @ (genericCorpus
+           |> List.map (fun (ns, name, args, host) ->
+               let arguments = args |> List.map snd |> String.concat ","
+
+               $"%s{ns}.%s{name}[%s{arguments}]",
+               (fun (state : IlMachineState) -> concretizeClosed state ns name args),
+               host
+           ))
 
     /// Every method `Type.GetMethods` reports that carries `Virtual` corresponds to exactly one
     /// occupied vtable slot, and every occupied slot yields exactly one such method -- that is what
@@ -199,16 +276,14 @@ module TestVirtualMethodSlots =
         let mutable exercised = 0
         let mutable failures = []
 
-        for ns, name in corpus do
-            let state, handle = concretize (state ()) ns name
+        for label, concretiseType, host in allCorpus do
+            let state, handle = concretiseType (state ())
             let _, slots = vtable state handle
 
-            let expected = hostNumVirtuals (hostType ns name)
+            let expected = hostNumVirtuals host
 
             if List.length slots <> expected then
-                failures <-
-                    $"%s{ns}.%s{name}: PawPrint %i{List.length slots}, host %i{expected}"
-                    :: failures
+                failures <- $"%s{label}: PawPrint %i{List.length slots}, host %i{expected}" :: failures
 
             exercised <- exercised + 1
 
@@ -220,15 +295,15 @@ module TestVirtualMethodSlots =
                 + String.Join ("\n", List.rev failures)
             )
 
-        exercised |> shouldEqual (List.length corpus)
+        exercised |> shouldEqual (List.length allCorpus)
 
     [<Test>]
     let ``GetNumVirtuals is exactly the vtable length`` () : unit =
         // Not a tautology worth skipping: it is the one thing an implementation could regress by
         // reintroducing an independent count, which is the failure mode the whole design exists to
         // rule out (the BCL *compares* the two).
-        for ns, name in corpus do
-            let state, handle = concretize (state ()) ns name
+        for _, concretiseType, _ in allCorpus do
+            let state, handle = concretiseType (state ())
             let state, slots = vtable state handle
 
             let _, count =
@@ -238,16 +313,16 @@ module TestVirtualMethodSlots =
 
     [<Test>]
     let ``every vtable entry is a non-static virtual method`` () : unit =
-        for ns, name in corpus do
-            let state, handle = concretize (state ()) ns name
+        for label, concretiseType, _ in allCorpus do
+            let state, handle = concretiseType (state ())
             let _, slots = vtable state handle
 
             for slot in slots do
                 if slot.Method.IsStatic then
-                    failwith $"%s{ns}.%s{name}: static method %s{slot.Method.Name} occupies a vtable slot"
+                    failwith $"%s{label}: static method %s{slot.Method.Name} occupies a vtable slot"
 
                 if not slot.Method.IsVirtual then
-                    failwith $"%s{ns}.%s{name}: non-virtual method %s{slot.Method.Name} occupies a vtable slot"
+                    failwith $"%s{label}: non-virtual method %s{slot.Method.Name} occupies a vtable slot"
 
     [<Test>]
     let ``no method occupies two slots`` () : unit =
@@ -255,8 +330,8 @@ module TestVirtualMethodSlots =
         // several slots -- or if MethodImpl consultation crept back in and stamped a body into a
         // slot it does not declare -- the same method would appear twice, and `GetSlot`'s
         // `tryFindIndex` would silently answer the first.
-        for ns, name in corpus do
-            let state, handle = concretize (state ()) ns name
+        for _, concretiseType, _ in allCorpus do
+            let state, handle = concretiseType (state ())
             let _, slots = vtable state handle
 
             let keys =
@@ -271,8 +346,8 @@ module TestVirtualMethodSlots =
         // overrides, append new slots after. This is what makes a slot number mean the same thing
         // at every level of the chain, which is the property `PopulateMethods` relies on when it
         // indexes one `bool[]` while walking from derived to base.
-        for ns, name in corpus do
-            let state, handle = concretize (state ()) ns name
+        for label, concretiseType, _ in allCorpus do
+            let state, handle = concretiseType (state ())
             let state, slots = vtable state handle
 
             let state, baseHandle =
@@ -285,12 +360,12 @@ module TestVirtualMethodSlots =
 
                 if List.length slots < List.length baseSlots then
                     failwith
-                        $"%s{ns}.%s{name}: vtable is shorter (%i{List.length slots}) than its base's (%i{List.length baseSlots})"
+                        $"%s{label}: vtable is shorter (%i{List.length slots}) than its base's (%i{List.length baseSlots})"
 
                 let ownIdentity =
                     match IlMachineState.tryGetConcreteTypeInfo state handle with
                     | Some (ct, _) -> ct.Identity
-                    | None -> failwith $"%s{ns}.%s{name}: handle was not registered"
+                    | None -> failwith $"%s{label}: handle was not registered"
 
                 List.zip (List.truncate (List.length baseSlots) slots) baseSlots
                 |> List.iteri (fun i (slot, baseSlot) ->
@@ -302,5 +377,5 @@ module TestVirtualMethodSlots =
 
                     if not inherited && not overriddenHere then
                         failwith
-                            $"%s{ns}.%s{name}: slot %i{i} holds %s{slot.Method.Name} declared by %O{slot.DeclaredBy}, which is neither the inherited entry nor a method of this type"
+                            $"%s{label}: slot %i{i} holds %s{slot.Method.Name} declared by %O{slot.DeclaredBy}, which is neither the inherited entry nor a method of this type"
                 )
