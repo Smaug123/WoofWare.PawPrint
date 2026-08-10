@@ -1067,59 +1067,66 @@ module ManagedPointerSource =
         | x :: xs', y :: ys' when x = y -> stripCommonProjectionPrefix xs' ys'
         | _ -> xs, ys
 
-    /// True when two byrefs share a root and one's projection chain is a strict
-    /// prefix of the other's, with at least one `Field` among the extra steps.
+    /// Does this run of projections contain a `Field` step, whose byte offset is a
+    /// layout fact that byref comparison does not carry?
+    let private containsField : ByrefProjection list -> bool =
+        List.exists (fun p ->
+            match p with
+            | ByrefProjection.Field _ -> true
+            | ByrefProjection.ReinterpretAs _
+            | ByrefProjection.ByteOffset _ -> false
+        )
+
+    /// The byte displacement this run contributes that comparison *can* see.
+    /// `ReinterpretAs` is address-preserving and contributes nothing; `Field` steps
+    /// contribute an unknown non-negative amount and are counted by `containsField`
+    /// instead.
+    let private knownByteDisplacement (projs : ByrefProjection list) : int =
+        projs
+        |> List.sumBy (fun p ->
+            match p with
+            | ByrefProjection.ByteOffset n -> n
+            | ByrefProjection.Field _
+            | ByrefProjection.ReinterpretAs _ -> 0
+        )
+
+    /// Whether two byrefs sharing a root name the same address, or `None` when saying
+    /// so would need field-offset layout that byref comparison does not carry.
     ///
-    /// Structural comparison cannot decide such a pair. A field laid out at offset 0
-    /// of its declaring type has the *same address* as the value containing it, so
-    /// `ref a.X` and `ref a` are one address whenever `X` is first in `a`'s layout —
-    /// yet their chains differ by exactly one `Field`. Answering `false` would be a
-    /// silent wrong answer, and answering `true` would be wrong for every field that
-    /// is *not* at offset 0. Deciding needs the declaring type's field offsets, which
-    /// byref comparison does not carry.
-    ///
-    /// Chains that diverge at a `Field` *without* one being a prefix (`[Field X]` vs
-    /// `[Field Y]`) are not reported: distinct fields of a layout that can be field-
-    /// addressed at all occupy distinct offsets, so structural inequality is sound
-    /// there. Overlapping explicit layouts are stored byte-backed and so never carry
-    /// `Field` projections to begin with.
-    ///
-    /// Nor is a run whose `ByteOffset` steps sum to something strictly positive. A field
-    /// offset is non-negative — a field lives inside its container — and `ReinterpretAs`
-    /// is address-preserving, so such a run advances the address by strictly more than
-    /// zero however the fields turn out to be laid out. That is decidable without any
-    /// layout at all, and answering `false` for it is what the plain structural
-    /// comparison already did. A run summing to zero or less is not decidable: a
-    /// negative cursor can cancel an unknown field offset exactly.
-    let private differsByUndecidableFieldRun (p1 : ManagedPointerSource) (p2 : ManagedPointerSource) : bool =
-        match p1, p2 with
-        | ManagedPointerSource.Byref (root1, projs1), ManagedPointerSource.Byref (root2, projs2) when root1 = root2 ->
-            let rest1, rest2 = stripCommonProjectionPrefix projs1 projs2
+    /// The residuals are what is left of each chain after their common prefix, so the
+    /// question is only ever whether those two runs displace by the same number of
+    /// bytes. Each run displaces by `knownByteDisplacement` plus, for every `Field`
+    /// step, an unknown but *non-negative* amount — a field lives inside its container.
+    /// That single inequality is what the decidable cases below rest on.
+    let private tryDecideResiduals (rest1 : ByrefProjection list) (rest2 : ByrefProjection list) : bool option =
+        let known1 = knownByteDisplacement rest1
+        let known2 = knownByteDisplacement rest2
 
-            let containsField =
-                List.exists (fun p ->
-                    match p with
-                    | ByrefProjection.Field _ -> true
-                    | _ -> false
-                )
+        match containsField rest1, containsField rest2 with
+        // Neither side's displacement has an unknown component, so it is simply arithmetic.
+        | false, false -> Some (known1 = known2)
+        // One side is the bare shared prefix and the other walks through fields. The
+        // difference is `known + (unknown >= 0)`, so a strictly positive known part proves
+        // the addresses differ; anything else could still land back on the same byte —
+        // `ref a.X` is `ref a` exactly when `X` sits at offset 0.
+        | true, false when List.isEmpty rest2 -> if known1 > 0 then Some false else None
+        | false, true when List.isEmpty rest1 -> if known2 > 0 then Some false else None
+        | _ ->
+            // Both runs walk through fields, or one walks through fields while the other
+            // displaces without being the bare prefix. Two *different* fields of a value
+            // occupy disjoint extents, so as long as neither run also carries a cursor that
+            // could walk out of its field and into the other's, the divergence itself proves
+            // the addresses differ. A cursor removes that guarantee: in a sequential
+            // `{ int X; int Y }`, `ref s.X + 4 bytes` and `ref s.Y` are one address.
+            let divergesAtDistinctFields =
+                match rest1, rest2 with
+                | ByrefProjection.Field f1 :: _, ByrefProjection.Field f2 :: _ -> f1 <> f2
+                | _, _ -> false
 
-            let byteOffsetSum (projs : ByrefProjection list) : int =
-                projs
-                |> List.sumBy (fun p ->
-                    match p with
-                    | ByrefProjection.ByteOffset n -> n
-                    | ByrefProjection.Field _
-                    | ByrefProjection.ReinterpretAs _ -> 0
-                )
-
-            let undecidable (extra : ByrefProjection list) : bool =
-                containsField extra && byteOffsetSum extra <= 0
-
-            match rest1, rest2 with
-            | [], extra
-            | extra, [] -> undecidable extra
-            | _, _ -> false
-        | _, _ -> false
+            if divergesAtDistinctFields && known1 = 0 && known2 = 0 then
+                Some false
+            else
+                None
 
     /// CEQ semantics for two normalised byref sources. Trailing address-
     /// preserving `ReinterpretAs` projections are stripped before comparison,
@@ -1129,8 +1136,10 @@ module ManagedPointerSource =
     /// than silently returning a wrong answer. `context` is folded into the
     /// failure message so callers can identify which boundary refused.
     ///
-    /// The same applies to a pair whose chains differ by a run of `Field` steps
-    /// that may denote zero bytes; see `differsByUndecidableFieldRun`.
+    /// The same applies to any pair whose chains differ in a way that only field-offset
+    /// layout could settle; `tryDecideResiduals` is where that line is drawn. Structural
+    /// inequality is *not* address inequality — two chains reaching one byte by different
+    /// routes are equal — so anything it cannot prove is refused rather than answered.
     let ceqNormalised
         (context : string)
         (p1 : NormalisedManagedPointerSource)
@@ -1147,11 +1156,19 @@ module ManagedPointerSource =
         let stripped1 = stripTrailingReinterprets p1
         let stripped2 = stripTrailingReinterprets p2
 
-        if differsByUndecidableFieldRun stripped1 stripped2 then
-            failwith
-                $"TODO (CEQ): %s{context} compares byrefs differing by a run of field projections, which alias iff every extra field sits at offset 0 of its declaring type; deciding that needs field-offset layout which byref comparison does not carry. Got %O{raw1} vs %O{raw2}"
+        match stripped1, stripped2 with
+        | ManagedPointerSource.Byref (root1, projs1), ManagedPointerSource.Byref (root2, projs2) when root1 = root2 ->
+            let rest1, rest2 = stripCommonProjectionPrefix projs1 projs2
 
-        stripped1 = stripped2
+            match tryDecideResiduals rest1 rest2 with
+            | Some answer -> answer
+            | None ->
+                failwith
+                    $"TODO (CEQ): %s{context} compares byrefs whose projection chains differ by field steps, so whether they alias depends on field offsets within their declaring types — layout that byref comparison does not carry. Got %O{raw1} vs %O{raw2}"
+        | _, _ ->
+            // Distinct roots are distinct storage, and the non-byref sources (`Null`, and
+            // bit-pattern placeholders) carry their whole identity in the value itself.
+            stripped1 = stripped2
 
 [<RequireQualifiedAccess>]
 module NormalisedManagedPointerSource =

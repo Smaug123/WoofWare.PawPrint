@@ -61,10 +61,12 @@ module TestByrefComparison =
     let ``distinct roots are unequal`` () =
         ceq (byref (local 0us) []) (byref (local 1us) []) |> shouldEqual false
 
-    /// Two *different* fields of one value occupy different offsets in any layout that can
-    /// be field-addressed at all, so structural inequality is sound here and must not be
-    /// swept into the refusal. Overlapping explicit layouts are stored byte-backed and so
-    /// never carry `Field` projections in the first place.
+    /// Two *different* fields of one value occupy disjoint extents in any layout that can
+    /// be field-addressed at all, so with no cursor on either side to walk out of those
+    /// extents, the divergence itself proves the addresses differ. Overlapping explicit
+    /// layouts are stored byte-backed and so never carry `Field` projections in the first
+    /// place. This must not be swept into the refusal: byrefs to two different fields are
+    /// the ordinary case, and refusing it would make `ceq` on byrefs largely unusable.
     [<Test>]
     let ``distinct fields of the same root are unequal`` () =
         ceq (byref (local 0us) [ fieldX ]) (byref (local 0us) [ fieldY ])
@@ -86,15 +88,14 @@ module TestByrefComparison =
         let exn =
             Assert.Throws (fun () -> ceq (byref (local 0us) [ fieldX ]) (byref (local 0us) []) |> ignore)
 
-        exn.Message |> shouldContainText "field projections"
-        exn.Message |> shouldContainText "offset 0"
+        exn.Message |> shouldContainText "field offsets"
 
     [<Test>]
     let ``the refusal is symmetric`` () =
         let exn =
             Assert.Throws (fun () -> ceq (byref (local 0us) []) (byref (local 0us) [ fieldX ]) |> ignore)
 
-        exn.Message |> shouldContainText "field projections"
+        exn.Message |> shouldContainText "field offsets"
 
     /// The prefix need not be empty: the extra run is what matters, not where it starts.
     [<Test>]
@@ -105,7 +106,7 @@ module TestByrefComparison =
                 |> ignore
             )
 
-        exn.Message |> shouldContainText "field projections"
+        exn.Message |> shouldContainText "field offsets"
 
     /// A run that also advances the cursor by a strictly positive number of bytes IS
     /// decidable, and must not be swept into the refusal: a field offset is non-negative
@@ -138,7 +139,25 @@ module TestByrefComparison =
         let exn =
             Assert.Throws (fun () -> ceq (byref (local 0us) []) (byref (local 0us) extra) |> ignore)
 
-        exn.Message |> shouldContainText "field projections"
+        exn.Message |> shouldContainText "field offsets"
+
+    /// Divergent field chains can alias too, once a cursor lets one run walk out of its
+    /// own field: in a sequential `{ int X; int Y }`, `ref s.X` advanced by 4 bytes and
+    /// `ref s.Y` are one address, though the chains diverge at the very first step. The
+    /// refusal must therefore not be limited to prefix pairs.
+    [<Test>]
+    let ``divergent field chains joined by a cursor are refused`` () =
+        let viaCursor =
+            [
+                fieldX
+                ByrefProjection.ReinterpretAs byteType
+                ByrefProjection.ByteOffset 4
+            ]
+
+        let exn =
+            Assert.Throws (fun () -> ceq (byref (local 0us) viaCursor) (byref (local 0us) [ fieldY ]) |> ignore)
+
+        exn.Message |> shouldContainText "field offsets"
 
     /// For any shared prefix and any non-empty run of extra fields, extending one side is
     /// undecidable — the extra fields may all sit at offset 0 and denote no bytes at all.
