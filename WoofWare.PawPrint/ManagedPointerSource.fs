@@ -1091,9 +1091,17 @@ module ManagedPointerSource =
         )
 
     /// Could this run of projections have moved the byref outside the extent of the root it
-    /// names? A `Field` displaces by an amount only the declaring type's layout knows, and a
-    /// non-zero `ByteOffset` that survived normalisation is one the fixed-stride folding
-    /// could not absorb into the root — typically because a `Field` intervened.
+    /// names?
+    ///
+    /// Only a byte cursor can. Selecting a `Field` navigates *into* the current value and so
+    /// stays within the root however the type is laid out — that a field's offset is unknown
+    /// makes two chains under **one** root hard to compare, but it cannot carry either of
+    /// them out of the root. A `ReinterpretAs` changes the type view without moving at all.
+    ///
+    /// A non-zero `ByteOffset` is different: it is unbounded by construction, and one that
+    /// survived normalisation is one the fixed-stride folding could not absorb into the root
+    /// — typically because a `Field` intervened, which is exactly the shape that walks from
+    /// `a[0].Y` into `a[1]`.
     ///
     /// This is what makes root disjointness insufficient on its own: two byrefs on different
     /// roots are different addresses only while each stays within the root it started from.
@@ -1101,8 +1109,8 @@ module ManagedPointerSource =
         projs
         |> List.exists (fun p ->
             match p with
-            | ByrefProjection.Field _ -> true
             | ByrefProjection.ByteOffset n -> n <> 0
+            | ByrefProjection.Field _
             | ByrefProjection.ReinterpretAs _ -> false
         )
 

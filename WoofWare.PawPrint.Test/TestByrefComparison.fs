@@ -153,6 +153,22 @@ module TestByrefComparison =
 
         exn.Message |> shouldContainText "root's extent"
 
+    /// Selecting a field navigates *into* a value, so it cannot carry a byref out of the
+    /// root it started from. `Unsafe.AreSame(ref left.X, ref right.X)` for two distinct
+    /// local structs must therefore still decide — this is the ordinary comparison of one
+    /// field across two values, and refusing it would be a plain regression.
+    [<Test>]
+    let ``the same field of two distinct roots is unequal`` () =
+        ceq (byref (local 0us) [ fieldX ]) (byref (local 1us) [ fieldX ])
+        |> shouldEqual false
+
+    /// Likewise for different fields of distinct roots: neither byref has left its own
+    /// local, so the roots settle it.
+    [<Test>]
+    let ``different fields of two distinct roots are unequal`` () =
+        ceq (byref (local 0us) [ fieldX ]) (byref (local 1us) [ fieldY ])
+        |> shouldEqual false
+
     /// The displacement rule keys on displacement, not on merely having projections: a
     /// byref that only changes type view has not moved, so it still decides against a
     /// different root.
