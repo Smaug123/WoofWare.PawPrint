@@ -557,6 +557,14 @@ module IlMachineThreadState =
             ThreadState = state.ThreadState |> Map.add thread started
         }
 
+    /// Allocate a single-dimensional, zero-based array of `len` elements, each set to
+    /// `zeroOfType ()`.
+    ///
+    /// `len` must be a length CoreCLR would go on to allocate, i.e.
+    /// `SzArrayAllocation.checkLength len` must be `None`. That is a precondition rather than a
+    /// checked error because only the caller knows which guest exception a violation deserves
+    /// (`newarr` and `GCInterface_AllocateNewArray` both raise one), and every other caller
+    /// computes its length itself. Violating it is an interpreter bug, and fails loudly here.
     let allocateArray
         (arrayType : ConcreteTypeHandle)
         (zeroOfType : unit -> CliType)
@@ -564,6 +572,12 @@ module IlMachineThreadState =
         (state : IlMachineState)
         : ManagedHeapAddress * IlMachineState
         =
+        match SzArrayAllocation.checkLength len with
+        | Some err ->
+            failwith
+                $"allocateArray: length %d{len} violates the precondition that it %s{SzArrayAllocation.describe err}. A guest-supplied length must be classified with SzArrayAllocation.checkLength at the boundary and turned into a guest exception there; reaching here means a caller skipped that."
+        | None -> ()
+
         let initialisation =
             (fun _ -> zeroOfType ()) |> Seq.init len |> ImmutableArray.CreateRange
 
