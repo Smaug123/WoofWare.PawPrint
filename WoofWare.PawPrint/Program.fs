@@ -83,6 +83,61 @@ module Program =
         | Completed of RunOutcome
         | Deadlocked of PreparedProgram * stuckThreads : string
 
+    /// Where a `Startup` has got to, together with whatever that phase needs to hand on.
+    ///
+    /// Startup runs guest code twice before `Main`, and the two runs are not interchangeable:
+    /// the AppContext seed must finish before the entry type's `.cctor` starts, because BCL
+    /// feature switches latch into `static readonly` fields on first read. Modelled as a DU
+    /// carrying each phase's own data so the pair cannot drift apart — there is no way to be
+    /// initialising classes without having allocated argv, nor to be seeding without knowing
+    /// what to do when the seed returns.
+    type private StartupPhase =
+        /// Pumping `AppContext.Setup`. `onReturn` reinstates the startup frame the seed
+        /// consumed, loads the entry class, and allocates argv.
+        | SeedingAppContext of onReturn : (IlMachineState -> IlMachineState * ImmutableArray<CliType>)
+        /// Pumping class initialisers, the entry type's included, with argv already allocated.
+        | InitialisingClasses of mainArgs : ImmutableArray<CliType>
+
+    /// Startup in progress. Holds the machine state as a `PreparedProgram`, so the same
+    /// `stepPrepared` drives startup as drives `Main`, plus what remains to be done at each
+    /// phase boundary.
+    ///
+    /// This exists so a driver can *step* startup rather than having it run to completion
+    /// behind a single call. Guest code runs here — a static initialiser may print, block, or
+    /// wedge — and a driver that cannot see those steps cannot stream their output or report
+    /// where startup got stuck.
+    ///
+    /// The phase transitions are closures. They capture concretization results (a concretized
+    /// `Main`, the entry type's handle) whose inspectable form would be no more use to a caller
+    /// than the functions that consume them, and hoisting them to module scope would mean
+    /// threading ten parameters through for no gain in reasoning. What a caller *can* see —
+    /// the machine state, and which outcome a step produced — is data.
+    type Startup =
+        private
+            {
+                Prepared : PreparedProgram
+                Phase : StartupPhase
+                /// Installs the `Main` frame once class initialisation has returned.
+                InstallMain : IlMachineState -> ImmutableArray<CliType> -> ProgramStartResult
+            }
+
+        /// The machine state as it currently stands. A driver streaming guest output reads
+        /// `Kernel.OutputLog` from here when startup ends without a `ProgramStartResult`.
+        member this.State : IlMachineState = this.Prepared.State
+
+    /// The result of stepping startup once. Mirrors `ProgramStepOutcome`, and for the same
+    /// reason carries the step's `StepEffect`: a driver consumes it to stream guest writes as
+    /// they happen, which is the whole point of startup being steppable.
+    [<RequireQualifiedAccess>]
+    type StartupStepOutcome =
+        | Stepped of Startup * ranThread : ThreadId * whatWeDid : WhatWeDid * effect : StepEffect
+        | WorkerTerminated of Startup * terminatingThread : ThreadId
+        /// The entry thread's frame returned and startup moved to its next phase. No guest
+        /// instruction retired, so there is no effect to report.
+        | PhaseAdvanced of Startup
+        | Completed of ProgramStartResult
+        | Deadlocked of Startup * stuckThreads : string
+
     let private deadlockDescription (state : IlMachineState) : string =
         state.ThreadState
         |> Map.toSeq
@@ -631,12 +686,12 @@ module Program =
     /// default round-robin policy. Applied before any cctor frame is pushed so the very first
     /// `chooseNext` decision is policy-correct — `IlMachineState.initial` defaults the field
     /// to `RoundRobin`, and `withPctSeed` simply overwrites it.
-    let prepare
+    let beginStartup
         (loggerFactory : ILoggerFactory)
         (originalPath : string option)
         (fileStream : Stream)
         (hostConfig : HostConfig)
-        : ProgramStartResult
+        : Startup
         =
         let logger = loggerFactory.CreateLogger "Program"
         let dotnetRuntimeDirs = hostConfig.DotnetRuntimeDirs
@@ -874,65 +929,6 @@ module Program =
         let propertiesToSeed =
             AppContextProperties.withRuntimeBaseline hostConfig.AppContext
 
-        let state =
-            match AppContextSeed.prepareCall loggerFactory baseClassTypes propertiesToSeed state with
-            | None -> state
-            | Some (state, setupFrame) ->
-                logger.LogInformation "Seeding AppContext from the host's configuration properties"
-
-                let threadState =
-                    state.ThreadState.[mainThread]
-                    |> ThreadState.replaceFrames setupFrame
-                    |> fun threadState ->
-                        { threadState with
-                            Status = ThreadStatus.Runnable
-                        }
-
-                let state =
-                    { state with
-                        ThreadState = state.ThreadState |> Map.add mainThread threadState
-                    }
-
-                let state =
-                    match pumpToReturn loggerFactory logger baseClassTypes mainThread state with
-                    | RunOutcome.NormalExit (state, _) -> state
-                    | outcome ->
-                        // Nothing in `AppContext.Setup` can legitimately exit, fail fast or
-                        // throw: it allocates a Dictionary and copies strings out of buffers
-                        // we ourselves just wrote. Anything else means a cctor dragged in by
-                        // that work misbehaved, and pressing on would run Main against a
-                        // half-seeded AppContext.
-                        //
-                        // Describe the outcome by case rather than with `%O`: every
-                        // `RunOutcome` carries an `IlMachineState`, so structural formatting
-                        // would render the entire heap into the exception message.
-                        let described =
-                            match outcome with
-                            | RunOutcome.NormalExit _ -> "returned normally" // unreachable, matched above
-                            | RunOutcome.ProcessExit (_, thread) -> $"called Environment.Exit on %O{thread}"
-                            | RunOutcome.FailFast (_, thread, message) ->
-                                let message = message |> Option.defaultValue "<no message>"
-                                $"called Environment.FailFast on %O{thread}: %s{message}"
-                            | RunOutcome.SignalTerminated (_, signal) -> $"was terminated by signal %O{signal}"
-                            | RunOutcome.GuestUnhandledException (_, thread, exn) ->
-                                $"threw an unhandled exception on %O{thread}: %O{exn.ExceptionObject}"
-
-                        failwith $"Seeding AppContext %s{described}. Properties being seeded: %O{propertiesToSeed}"
-
-                let state, startupFrame = buildStartupFrame baseClassTypes state
-
-                let threadState =
-                    state.ThreadState.[mainThread]
-                    |> ThreadState.replaceFrames startupFrame
-                    |> fun threadState ->
-                        { threadState with
-                            Status = ThreadStatus.Runnable
-                        }
-
-                { state with
-                    ThreadState = state.ThreadState |> Map.add mainThread threadState
-                }
-
         let rec loadInitialState (state : IlMachineState) =
             match
                 state
@@ -949,100 +945,242 @@ module Program =
                 failwith
                     "logic error: initial loadClass for entry point cannot block on another thread (no other threads exist yet)"
 
-        let state = loadInitialState state
+        /// Everything between the two guest-code phases: load the entry class and allocate argv.
+        /// Runs no guest instructions of its own — `loadClass` only pushes cctor frames, which
+        /// the class-initialisation phase then pumps.
+        let enterClassInit (state : IlMachineState) : IlMachineState * ImmutableArray<CliType> =
+            let state = loadInitialState state
 
-        let mainArgs, state =
             if mainTakesStringArrayArg then
                 let arrayAllocation, state = allocateArgs loggerFactory argv baseClassTypes state
-                ImmutableArray.Create (CliType.ofManagedObject arrayAllocation), state
+                state, ImmutableArray.Create (CliType.ofManagedObject arrayAllocation)
             else
-                ImmutableArray.Empty, state
+                state, ImmutableArray.Empty
 
-        // We might be in the middle of class construction. Pump the static constructors to completion.
-        // We haven't yet entered the main method!
+        let installMain (state : IlMachineState) (mainArgs : ImmutableArray<CliType>) : ProgramStartResult =
+            logger.LogInformation "Main method class now initialised"
 
-        match pumpToReturn loggerFactory logger baseClassTypes mainThread state with
-        | RunOutcome.GuestUnhandledException _ as outcome ->
-            // Either the entry thread's .cctor raised an unhandled exception, or a worker
-            // spawned during cctor pumping did. In both cases the CLR would terminate the
-            // process; propagate rather than collapsing to a host failwith that would
-            // mask the guest-level diagnostic.
-            ProgramStartResult.CompletedBeforeMain outcome
-        | RunOutcome.ProcessExit _ as outcome ->
-            // A worker started during cctor pumping called Environment.Exit; the process
-            // has torn down. Propagate rather than pressing on into Main.
-            ProgramStartResult.CompletedBeforeMain outcome
-        | RunOutcome.FailFast _ as outcome ->
-            // A worker started during cctor pumping called Environment.FailFast; the
-            // process has aborted. Propagate rather than pressing on into Main.
-            ProgramStartResult.CompletedBeforeMain outcome
-        | RunOutcome.SignalTerminated _ as outcome ->
-            // A non-cancelled signal handler reached the kernel-default
-            // Terminate disposition during cctor pumping. Same shape as
-            // ProcessExit: the simulated process is gone, so propagate
-            // rather than pressing on into Main.
-            ProgramStartResult.CompletedBeforeMain outcome
-        | RunOutcome.NormalExit (state, _) ->
+            // Now that BCL initialisation has taken place and the user-code classes are constructed,
+            // overwrite the main thread completely using the already-concretized method. The entry
+            // thread Terminated during the cctor pump (its onlyRet body hit `ret`); we're resurrecting
+            // it to run Main, so restore Status to Runnable before the scheduler is asked to pick again.
+            let methodState =
+                match
+                    MethodState.Empty
+                        state.ConcreteTypes
+                        baseClassTypes
+                        state._LoadedAssemblies
+                        dumped
+                        concretizedMainMethod
+                        ImmutableArray.Empty
+                        mainArgs
+                        None
+                with
+                | Ok s -> s
+                | Error _ -> failwith "TODO: I'd be surprised if this could ever happen in a valid program"
 
-        logger.LogInformation "Main method class now initialised"
+            let threadState =
+                state.ThreadState.[mainThread]
+                |> ThreadState.replaceFrames methodState
+                |> fun threadState ->
+                    { threadState with
+                        Status = ThreadStatus.Runnable
+                    }
 
-        // Now that BCL initialisation has taken place and the user-code classes are constructed,
-        // overwrite the main thread completely using the already-concretized method. The entry
-        // thread Terminated during the cctor pump (its onlyRet body hit `ret`); we're resurrecting
-        // it to run Main, so restore Status to Runnable before the scheduler is asked to pick again.
-        let methodState =
-            match
-                MethodState.Empty
-                    state.ConcreteTypes
-                    baseClassTypes
-                    state._LoadedAssemblies
-                    dumped
-                    concretizedMainMethod
-                    ImmutableArray.Empty
-                    mainArgs
-                    None
-            with
-            | Ok s -> s
-            | Error _ -> failwith "TODO: I'd be surprised if this could ever happen in a valid program"
+            let state, init =
+                { state with
+                    ThreadState = state.ThreadState |> Map.add mainThread threadState
+                }
+                |> IlMachineStateExecution.ensureTypeInitialised loggerFactory baseClassTypes mainThread mainTypeHandle
 
-        let threadState =
-            state.ThreadState.[mainThread]
-            |> ThreadState.replaceFrames methodState
-            |> fun threadState ->
-                { threadState with
-                    Status = ThreadStatus.Runnable
+            match init with
+            | WhatWeDid.SuspendedForClassInit -> failwith "TODO: suspended for class init"
+            | WhatWeDid.SuspendedForManagedCall ->
+                failwith "logic error: ensureTypeInitialised cannot suspend for an arbitrary managed call"
+            | WhatWeDid.BlockedOnClassInit _ ->
+                failwith "logic error: surely this thread can't be blocked on class init"
+            | WhatWeDid.ThrowingTypeInitializationException ->
+                failwith "TypeInitializationException during entry point type initialisation"
+            | WhatWeDid.VoluntaryYield _ ->
+                // ensureTypeInitialised drives cctor execution, which has no path to a
+                // yield primitive: voluntary yields are produced by native handlers like
+                // `ThreadNative_YieldThread`, never by a synthetic cctor step. If this
+                // arm ever fires, the cctor pipeline has acquired a producer we didn't
+                // anticipate, and the entry-point sequencer needs to decide explicitly
+                // whether to honour the yield before running Main.
+                failwith "logic error: ensureTypeInitialised cannot produce a VoluntaryYield"
+            | WhatWeDid.Executed -> ()
+
+            ProgramStartResult.Ready
+                {
+                    State = state
+                    BaseClassTypes = baseClassTypes
+                    EntryThread = mainThread
+                    LastRan = mainThread
                 }
 
-        let state, init =
-            { state with
-                ThreadState = state.ThreadState |> Map.add mainThread threadState
-            }
-            |> IlMachineStateExecution.ensureTypeInitialised loggerFactory baseClassTypes mainThread mainTypeHandle
-
-        match init with
-        | WhatWeDid.SuspendedForClassInit -> failwith "TODO: suspended for class init"
-        | WhatWeDid.SuspendedForManagedCall ->
-            failwith "logic error: ensureTypeInitialised cannot suspend for an arbitrary managed call"
-        | WhatWeDid.BlockedOnClassInit _ -> failwith "logic error: surely this thread can't be blocked on class init"
-        | WhatWeDid.ThrowingTypeInitializationException ->
-            failwith "TypeInitializationException during entry point type initialisation"
-        | WhatWeDid.VoluntaryYield _ ->
-            // ensureTypeInitialised drives cctor execution, which has no path to a
-            // yield primitive: voluntary yields are produced by native handlers like
-            // `ThreadNative_YieldThread`, never by a synthetic cctor step. If this
-            // arm ever fires, the cctor pipeline has acquired a producer we didn't
-            // anticipate, and the entry-point sequencer needs to decide explicitly
-            // whether to honour the yield before running Main.
-            failwith "logic error: ensureTypeInitialised cannot produce a VoluntaryYield"
-        | WhatWeDid.Executed -> ()
-
-        ProgramStartResult.Ready
+        let atPhase (state : IlMachineState) (phase : StartupPhase) : Startup =
             {
-                State = state
-                BaseClassTypes = baseClassTypes
-                EntryThread = mainThread
-                LastRan = mainThread
+                Prepared =
+                    {
+                        State = state
+                        BaseClassTypes = baseClassTypes
+                        EntryThread = mainThread
+                        LastRan = mainThread
+                    }
+                Phase = phase
+                InstallMain = installMain
             }
+
+        match AppContextSeed.prepareCall loggerFactory baseClassTypes propertiesToSeed state with
+        | None ->
+            // Nothing to seed, so there is no first phase to pump: go straight to class
+            // initialisation. The startup frame `computeState` installed is still in place,
+            // never having been consumed.
+            let state, mainArgs = enterClassInit state
+            atPhase state (StartupPhase.InitialisingClasses mainArgs)
+        | Some (state, setupFrame) ->
+            logger.LogInformation "Seeding AppContext from the host's configuration properties"
+
+            let threadState =
+                state.ThreadState.[mainThread]
+                |> ThreadState.replaceFrames setupFrame
+                |> fun threadState ->
+                    { threadState with
+                        Status = ThreadStatus.Runnable
+                    }
+
+            let state =
+                { state with
+                    ThreadState = state.ThreadState |> Map.add mainThread threadState
+                }
+
+            let onSeeded (state : IlMachineState) : IlMachineState * ImmutableArray<CliType> =
+                // The seed ran the entry thread to completion, consuming its startup frame; put
+                // a fresh one back so the class-initialisation pump that follows is unaffected.
+                let state, startupFrame = buildStartupFrame baseClassTypes state
+
+                let threadState =
+                    state.ThreadState.[mainThread]
+                    |> ThreadState.replaceFrames startupFrame
+                    |> fun threadState ->
+                        { threadState with
+                            Status = ThreadStatus.Runnable
+                        }
+
+                { state with
+                    ThreadState = state.ThreadState |> Map.add mainThread threadState
+                }
+                |> enterClassInit
+
+            atPhase state (StartupPhase.SeedingAppContext onSeeded)
+
+    /// Advance startup by one guest instruction, crossing a phase boundary when the entry
+    /// thread's current frame returns.
+    let stepStartup (loggerFactory : ILoggerFactory) (logger : ILogger) (startup : Startup) : StartupStepOutcome =
+        match stepPrepared loggerFactory logger startup.Prepared with
+        | ProgramStepOutcome.InstructionStepped (prepared, ran, whatWeDid, effect) ->
+            StartupStepOutcome.Stepped (
+                { startup with
+                    Prepared = prepared
+                },
+                ran,
+                whatWeDid,
+                effect
+            )
+        | ProgramStepOutcome.WorkerTerminated (prepared, terminated) ->
+            StartupStepOutcome.WorkerTerminated (
+                { startup with
+                    Prepared = prepared
+                },
+                terminated
+            )
+        | ProgramStepOutcome.Deadlocked (prepared, stuck) ->
+            StartupStepOutcome.Deadlocked (
+                { startup with
+                    Prepared = prepared
+                },
+                stuck
+            )
+        | ProgramStepOutcome.Completed outcome ->
+
+        // `stepPrepared` reports `Completed` as soon as the entry thread terminates, which
+        // during startup means the frame this phase was pumping has returned rather than that
+        // the program is over.
+        match startup.Phase, outcome with
+        | StartupPhase.SeedingAppContext onReturn, RunOutcome.NormalExit (state, _) ->
+            let state, mainArgs = onReturn state
+
+            StartupStepOutcome.PhaseAdvanced
+                { startup with
+                    Prepared =
+                        { startup.Prepared with
+                            State = state
+                        }
+                    Phase = StartupPhase.InitialisingClasses mainArgs
+                }
+        | StartupPhase.SeedingAppContext _, outcome ->
+            // Nothing in `AppContext.Setup` can legitimately exit, fail fast or throw: it
+            // allocates a Dictionary and copies strings out of buffers we ourselves just
+            // wrote. Anything else means a cctor dragged in by that work misbehaved, and
+            // pressing on would run Main against a half-seeded AppContext.
+            //
+            // Describe the outcome by case rather than with `%O`: every `RunOutcome` carries
+            // an `IlMachineState`, so structural formatting would render the entire heap into
+            // the exception message.
+            let described =
+                match outcome with
+                | RunOutcome.NormalExit _ -> "returned normally" // unreachable, matched above
+                | RunOutcome.ProcessExit (_, thread) -> $"called Environment.Exit on %O{thread}"
+                | RunOutcome.FailFast (_, thread, message) ->
+                    let message = message |> Option.defaultValue "<no message>"
+                    $"called Environment.FailFast on %O{thread}: %s{message}"
+                | RunOutcome.SignalTerminated (_, signal) -> $"was terminated by signal %O{signal}"
+                | RunOutcome.GuestUnhandledException (_, thread, exn) ->
+                    $"threw an unhandled exception on %O{thread}: %O{exn.ExceptionObject}"
+
+            failwith $"Seeding AppContext %s{described}."
+        | StartupPhase.InitialisingClasses mainArgs, RunOutcome.NormalExit (state, _) ->
+            StartupStepOutcome.Completed (startup.InstallMain state mainArgs)
+        | StartupPhase.InitialisingClasses _, RunOutcome.GuestUnhandledException _
+        | StartupPhase.InitialisingClasses _, RunOutcome.ProcessExit _
+        | StartupPhase.InitialisingClasses _, RunOutcome.FailFast _
+        | StartupPhase.InitialisingClasses _, RunOutcome.SignalTerminated _ ->
+            // The entry thread's `.cctor` raised, or a worker spawned during cctor pumping
+            // exited, failed fast, or took a terminating signal. In every case the CLR would
+            // tear the process down; propagate rather than collapsing to a host `failwith`
+            // that would mask the guest-level diagnostic, and rather than pressing on into
+            // Main.
+            StartupStepOutcome.Completed (ProgramStartResult.CompletedBeforeMain outcome)
+
+    /// Reads the guest assembly and performs the one-time setup needed before Main is ready to
+    /// schedule, running startup to completion.
+    ///
+    /// This is `beginStartup` driven by `stepStartup` in a loop. A driver that wants to observe
+    /// startup — to stream a static initialiser's output, or to report where startup wedged
+    /// rather than throwing out of it — should drive those two directly instead; guest code
+    /// runs during startup, and this function gives back nothing until all of it has finished.
+    ///
+    /// See `beginStartup` for the `kernelConfig` and `pctSeed` timing contracts.
+    let prepare
+        (loggerFactory : ILoggerFactory)
+        (originalPath : string option)
+        (fileStream : Stream)
+        (hostConfig : HostConfig)
+        : ProgramStartResult
+        =
+        let logger = loggerFactory.CreateLogger "Program"
+
+        let rec go (startup : Startup) : ProgramStartResult =
+            match stepStartup loggerFactory logger startup with
+            | StartupStepOutcome.Completed result -> result
+            | StartupStepOutcome.Stepped (startup, _, _, _)
+            | StartupStepOutcome.WorkerTerminated (startup, _)
+            | StartupStepOutcome.PhaseAdvanced startup -> go startup
+            | StartupStepOutcome.Deadlocked (_, stuck) ->
+                failwith $"Deadlock during startup: no runnable threads and startup has not finished. Stuck: {stuck}"
+
+        go (beginStartup loggerFactory originalPath fileStream hostConfig)
 
     /// Returns the outcome of the program run: normal exit or unhandled guest exception.
     ///

@@ -123,7 +123,46 @@ module ExceptionHandling =
             )
             |> Seq.toList
 
-    /// Find finally blocks that need to run when leaving a try region
+    /// Every `finally` that must run when control leaves `currentPC` for `targetPC`,
+    /// ordered innermost first — the order ECMA-335 III.3.55 requires `leave` to run them in.
+    ///
+    /// Takes a bare region table rather than a method: this is the whole of the decision —
+    /// which handlers, in which order — while `findFinallyBlocksToRun` below only fetches the
+    /// table. Tests can then exercise the rule against hand-built towers of regions without
+    /// standing up a method.
+    ///
+    /// The ordering key is `(-TryOffset, TryLength)`. Sorting on `-TryOffset` alone is not
+    /// total: a `try` may begin at the same IL offset as the `try` enclosing it, and then only
+    /// the extent distinguishes them, the shorter being the inner. ECMA-335 II.25.4.6 does
+    /// require the table itself to list more deeply nested clauses first, so a stable sort on
+    /// the offset alone happens to work today — but that leaves correctness resting on both
+    /// the producer's clause order and `Seq.sortBy`'s stability, neither of which is stated
+    /// where a reader of this function would look.
+    let finallyBlocksBetween (regions : ExceptionRegion seq) (currentPC : int) (targetPC : int) : ExceptionOffset list =
+        regions
+        |> Seq.choose (fun region ->
+            match region with
+            | ExceptionRegion.Finally offset ->
+                // We're leaving if we're in the try block and target is outside
+                if
+                    currentPC >= offset.TryOffset
+                    && currentPC < offset.TryOffset + offset.TryLength
+                    && (targetPC < offset.TryOffset || targetPC >= offset.TryOffset + offset.TryLength)
+                then
+                    Some offset
+                else
+                    None
+            | ExceptionRegion.Filter _
+            | ExceptionRegion.Catch _
+            | ExceptionRegion.Fault _ -> None
+        )
+        |> Seq.sortBy (fun offset ->
+            // Inner to outer: later-starting first, and among regions that start together,
+            // the shorter one is the nested one.
+            -offset.TryOffset, offset.TryLength
+        )
+        |> Seq.toList
+
     let findFinallyBlocksToRun
         (currentPC : int)
         (targetPC : int)
@@ -132,27 +171,62 @@ module ExceptionHandling =
         =
         match MethodInfo.tryIlBody method with
         | None -> []
-        | Some instructions ->
-            instructions.ExceptionRegions
-            |> Seq.choose (fun region ->
-                match region with
-                | ExceptionRegion.Finally offset ->
-                    // We're leaving if we're in the try block and target is outside
-                    if
-                        currentPC >= offset.TryOffset
-                        && currentPC < offset.TryOffset + offset.TryLength
-                        && (targetPC < offset.TryOffset || targetPC >= offset.TryOffset + offset.TryLength)
-                    then
-                        Some offset
-                    else
-                        None
-                | _ -> None
-            )
-            |> Seq.sortBy (fun offset ->
-                // Inner to outer
-                -offset.TryOffset
-            )
-            |> Seq.toList
+        | Some instructions -> finallyBlocksBetween instructions.ExceptionRegions currentPC targetPC
+
+    /// The next `finally` a `leave` bound for `targetPC` must run, given that `justRan` — the
+    /// innermost one not yet accounted for — has just completed. `None` once the chain is
+    /// exhausted, at which point control belongs at `targetPC`.
+    ///
+    /// A single `leave` may exit several nested protected regions at once, and ECMA-335
+    /// III.3.55 requires every one of their handlers to run, innermost first. Rather than
+    /// carrying the remaining list in the continuation, each `endfinally` asks this for its
+    /// successor. That keeps `MethodState`'s continuation shape unchanged, and means there is
+    /// no second copy of the chain that could disagree with the method's own handler table if
+    /// an exception unwinds partway through it.
+    ///
+    /// `justRan.TryOffset` stands in for the original leave site, which the continuation does
+    /// not carry, and it selects the same remaining regions. Any region still to run properly
+    /// encloses `justRan`: it contained the leave site, and two protected regions sharing a
+    /// point must nest (ECMA-335 II.12.4.2.7 forbids partial overlap), so one that began after
+    /// `justRan.TryOffset` would be nested *inside* `justRan` and would therefore already have
+    /// run before it. Enclosing regions contain the whole of `justRan`, hence its first byte.
+    /// The handlers a `leave` bound for `targetPC` has still to run once `justRan` completes,
+    /// innermost first. `None` means `justRan` is not in that chain at all, which is a caller
+    /// contract violation rather than an empty tail — the two are distinguished so the
+    /// `MethodInfo` wrapper can report the former loudly.
+    let finallyBlocksAfter
+        (regions : ExceptionRegion seq)
+        (justRan : ExceptionOffset)
+        (targetPC : int)
+        : ExceptionOffset list option
+        =
+        let rec afterJustRan (remaining : ExceptionOffset list) : ExceptionOffset list option =
+            match remaining with
+            | [] -> None
+            | candidate :: rest -> if candidate = justRan then Some rest else afterJustRan rest
+
+        finallyBlocksBetween regions justRan.TryOffset targetPC |> afterJustRan
+
+    let nextFinallyToRun
+        (justRan : ExceptionOffset)
+        (targetPC : int)
+        (method : WoofWare.PawPrint.MethodInfo<'typeGeneric, 'methodGeneric, 'methodVar>)
+        : ExceptionOffset option
+        =
+        let regions =
+            match MethodInfo.tryIlBody method with
+            | None -> Seq.empty
+            | Some instructions -> instructions.ExceptionRegions :> seq<_>
+
+        match finallyBlocksAfter regions justRan targetPC with
+        | Some remaining -> List.tryHead remaining
+        | None ->
+            // `justRan` is absent from a list built from a point inside its own try and a
+            // target outside it, which is the exact condition that put it there. Reaching
+            // here means the handler table changed under us, or the continuation named a
+            // region belonging to a different method.
+            failwith
+                $"endfinally: finally handler at IL offset %d{justRan.HandlerOffset} (try %d{justRan.TryOffset}..%d{justRan.TryOffset + justRan.TryLength}) is not among the finally regions a leave to IL offset %d{targetPC} would run in %s{method.Name}"
 
     /// Get the active exception regions at a given offset
     let getActiveRegionsAtOffset

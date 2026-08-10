@@ -232,10 +232,9 @@ module AppProgram =
 
                 written <- written + 1
 
-            // Write any log entries that never passed through `writeEntry`. Two cases reach
-            // this: writes performed inside `Program.prepare` (a `.cctor` that prints is
-            // pumped before our stepping loop begins), and any future path that appends to
-            // the log without surfacing a `StepEffect`. Normally a no-op.
+            // Write any log entries that never passed through `writeEntry` — any path that
+            // appends to the log without surfacing a `StepEffect`. Normally a no-op, since
+            // both startup and `Main` are stepped and every guest write reports an effect.
             let drainRemaining (state : IlMachineState) : unit =
                 let log = state.Kernel.OutputLog
 
@@ -312,67 +311,75 @@ module AppProgram =
             // end-of-run drain at all and lost everything it had printed.
             let logger = loggerFactory.CreateLogger "Program"
 
+            // Every thread is blocked and the run has not finished, so no further step is
+            // possible. Report it as a diagnostic rather than letting it escape as an unhandled
+            // host exception: the guest's own output has already been streamed, and a stack
+            // trace through the interpreter says nothing about why the *guest* is stuck.
+            let reportDeadlock (during : string) (state : IlMachineState) (stuck : string) : int =
+                drainRemaining state
+
+                logger.LogCritical (
+                    "Guest deadlocked during {Phase}: no runnable threads, and it has not finished. Stuck: {StuckThreads}",
+                    during,
+                    stuck
+                )
+
+                // Same code the escaping host exception produced, so shell callers observe no
+                // change. That is per-platform: an unhandled .NET exception terminates with
+                // 0xE0434352 on Windows and SIGABRT (128 + 6) on Unix, which is the same split
+                // the guest-unhandled-exception arm above uses.
+                if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+                    -532462766
+                else
+                    134
+
+            let consume (effect : StepEffect) : unit =
+                match effect with
+                | StepEffect.WroteToFd (role, bytes) -> writeEntry role bytes
+                | StepEffect.NoEffect -> ()
+
             let rec pump (prepared : Program.PreparedProgram) : int =
                 match Program.stepPrepared loggerFactory logger prepared with
                 | Program.ProgramStepOutcome.InstructionStepped (prepared, _ranThread, _whatWeDid, effect) ->
-                    match effect with
-                    | StepEffect.WroteToFd (role, bytes) -> writeEntry role bytes
-                    | StepEffect.NoEffect -> ()
-
+                    consume effect
                     pump prepared
                 | Program.ProgramStepOutcome.WorkerTerminated (prepared, _terminatingThread) -> pump prepared
                 | Program.ProgramStepOutcome.Completed outcome -> onOutcome outcome
                 | Program.ProgramStepOutcome.Deadlocked (prepared, stuck) ->
-                    // Every thread is blocked and the entry thread has not terminated, so
-                    // no further step is possible. Report it as a diagnostic rather than
-                    // letting it escape as an unhandled host exception: the guest's own
-                    // output has already been streamed, and a stack trace through the
-                    // interpreter says nothing about why the *guest* is stuck.
+                    reportDeadlock "execution" prepared.State stuck
+
+            // Startup runs guest code too — the AppContext seed, then class initialisers — so
+            // it is stepped for exactly the same reason `Main` is: a static initialiser that
+            // prints and then wedges must still deliver what it printed, and must be reported
+            // rather than escaping as a host exception.
+            let rec pumpStartup (startup : Program.Startup) : int =
+                match Program.stepStartup loggerFactory logger startup with
+                | Program.StartupStepOutcome.Stepped (startup, _ranThread, _whatWeDid, effect) ->
+                    consume effect
+                    pumpStartup startup
+                | Program.StartupStepOutcome.WorkerTerminated (startup, _terminatingThread) -> pumpStartup startup
+                | Program.StartupStepOutcome.PhaseAdvanced startup -> pumpStartup startup
+                | Program.StartupStepOutcome.Completed (Program.ProgramStartResult.CompletedBeforeMain outcome) ->
+                    onOutcome outcome
+                | Program.StartupStepOutcome.Completed (Program.ProgramStartResult.Ready prepared) ->
+                    // Startup's own bookkeeping (installing the `Main` frame, allocating argv)
+                    // performs no guest writes, so this is normally a no-op; it keeps the
+                    // "everything in the log has reached a stream" invariant true regardless.
                     drainRemaining prepared.State
+                    pump prepared
+                | Program.StartupStepOutcome.Deadlocked (startup, stuck) -> reportDeadlock "startup" startup.State stuck
 
-                    logger.LogCritical (
-                        "Guest deadlocked: no runnable threads and the entry thread has not terminated. Stuck: {StuckThreads}",
-                        stuck
-                    )
-
-                    // Same code the escaping host exception produced, so shell callers
-                    // observe no change. That is per-platform: an unhandled .NET exception
-                    // terminates with 0xE0434352 on Windows and SIGABRT (128 + 6) on Unix,
-                    // which is the same split the guest-unhandled-exception arm above uses.
-                    if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
-                        -532462766
-                    else
-                        134
-
-            match
-                Program.prepare
-                    loggerFactory
-                    (Some dllPath)
-                    fileStream
-                    { HostConfig.Default dotnetRuntimes with
-                        Kernel = kernelConfig
-                        PctSeed = pctSeed
-                        Argv = args
-                        AppContext = HostRuntimeConfig.forAssembly dllPath
-                    }
-            with
-            | Program.ProgramStartResult.CompletedBeforeMain outcome -> onOutcome outcome
-            | Program.ProgramStartResult.Ready prepared ->
-                // `prepare` pumps the entry type's `.cctor` before returning, so a static
-                // initialiser that printed has already appended to the log without passing
-                // through `pump`. Flush that before stepping Main.
-                //
-                // KNOWN GAP: this only recovers startup output once `prepare` *returns*.
-                // `prepare` drives two `pumpToReturn` loops of its own (the AppContext seed
-                // and the `.cctor` pump), and neither surfaces its steps, so a static
-                // initialiser that prints and then livelocks or deadlocks still loses its
-                // output — the very failure this streaming path exists to fix, confined to
-                // the startup phase. Closing it means making `prepare` resumable so the
-                // shell can step it too, which restructures a subtle three-phase startup
-                // path and wants its own change; the guest's `Main` (much the commoner
-                // case) is fully covered here.
-                drainRemaining prepared.State
-                pump prepared
+            Program.beginStartup
+                loggerFactory
+                (Some dllPath)
+                fileStream
+                { HostConfig.Default dotnetRuntimes with
+                    Kernel = kernelConfig
+                    PctSeed = pctSeed
+                    Argv = args
+                    AppContext = HostRuntimeConfig.forAssembly dllPath
+                }
+            |> pumpStartup
 
         let runDebugger (dllPath : string) (pctSeed : uint64 option) (args : string list) : int =
             let dotnetRuntimes =
