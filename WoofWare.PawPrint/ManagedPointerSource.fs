@@ -1056,6 +1056,51 @@ module ManagedPointerSource =
                 | _ -> false
             )
 
+    /// Drop the longest common prefix of two projection chains, returning what is
+    /// left of each.
+    let rec private stripCommonProjectionPrefix
+        (xs : ByrefProjection list)
+        (ys : ByrefProjection list)
+        : ByrefProjection list * ByrefProjection list
+        =
+        match xs, ys with
+        | x :: xs', y :: ys' when x = y -> stripCommonProjectionPrefix xs' ys'
+        | _ -> xs, ys
+
+    /// True when two byrefs share a root and one's projection chain is a strict
+    /// prefix of the other's, with at least one `Field` among the extra steps.
+    ///
+    /// Structural comparison cannot decide such a pair. A field laid out at offset 0
+    /// of its declaring type has the *same address* as the value containing it, so
+    /// `ref a.X` and `ref a` are one address whenever `X` is first in `a`'s layout —
+    /// yet their chains differ by exactly one `Field`. Answering `false` would be a
+    /// silent wrong answer, and answering `true` would be wrong for every field that
+    /// is *not* at offset 0. Deciding needs the declaring type's field offsets, which
+    /// byref comparison does not carry.
+    ///
+    /// Chains that diverge at a `Field` *without* one being a prefix (`[Field X]` vs
+    /// `[Field Y]`) are not reported: distinct fields of a layout that can be field-
+    /// addressed at all occupy distinct offsets, so structural inequality is sound
+    /// there. Overlapping explicit layouts are stored byte-backed and so never carry
+    /// `Field` projections to begin with.
+    let private differsByUndecidableFieldRun (p1 : ManagedPointerSource) (p2 : ManagedPointerSource) : bool =
+        match p1, p2 with
+        | ManagedPointerSource.Byref (root1, projs1), ManagedPointerSource.Byref (root2, projs2) when root1 = root2 ->
+            let rest1, rest2 = stripCommonProjectionPrefix projs1 projs2
+
+            let containsField =
+                List.exists (fun p ->
+                    match p with
+                    | ByrefProjection.Field _ -> true
+                    | _ -> false
+                )
+
+            match rest1, rest2 with
+            | [], extra
+            | extra, [] -> containsField extra
+            | _, _ -> false
+        | _, _ -> false
+
     /// CEQ semantics for two normalised byref sources. Trailing address-
     /// preserving `ReinterpretAs` projections are stripped before comparison,
     /// so `Unsafe.As`-style type-view changes don't break identity. A non-
@@ -1063,6 +1108,9 @@ module ManagedPointerSource =
     /// bytewise layout comparison, which we don't model — fail loudly rather
     /// than silently returning a wrong answer. `context` is folded into the
     /// failure message so callers can identify which boundary refused.
+    ///
+    /// The same applies to a pair whose chains differ by a run of `Field` steps
+    /// that may denote zero bytes; see `differsByUndecidableFieldRun`.
     let ceqNormalised
         (context : string)
         (p1 : NormalisedManagedPointerSource)
@@ -1076,7 +1124,14 @@ module ManagedPointerSource =
             failwith
                 $"TODO (CEQ): %s{context} with `ReinterpretAs` followed by `Field` needs a bytewise layout comparison; got %O{raw1} vs %O{raw2}"
 
-        stripTrailingReinterprets p1 = stripTrailingReinterprets p2
+        let stripped1 = stripTrailingReinterprets p1
+        let stripped2 = stripTrailingReinterprets p2
+
+        if differsByUndecidableFieldRun stripped1 stripped2 then
+            failwith
+                $"TODO (CEQ): %s{context} compares byrefs differing by a run of field projections, which alias iff every extra field sits at offset 0 of its declaring type; deciding that needs field-offset layout which byref comparison does not carry. Got %O{raw1} vs %O{raw2}"
+
+        stripped1 = stripped2
 
 [<RequireQualifiedAccess>]
 module NormalisedManagedPointerSource =
