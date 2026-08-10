@@ -1098,23 +1098,60 @@ module ManagedPointerSource =
     /// makes two chains under **one** root hard to compare, but it cannot carry either of
     /// them out of the root. A `ReinterpretAs` changes the type view without moving at all.
     ///
-    /// A cursor is the only step that can, and even then only when it follows a `Field`.
-    /// A cursor with no `Field` before it has been through `normaliseTrailingByteOffset`,
-    /// which folds whole strides into a fixed-stride root — so what is left is a residual
-    /// within one element or character, which by construction cannot have reached the next
-    /// one. Once a `Field` intervenes that folding cannot happen, the residual is no longer
-    /// bounded by a stride, and the cursor is free to walk out: `a[0].Y` advanced four bytes
-    /// is `a[1]`.
+    /// Roots that `normaliseTrailingByteOffset` folds whole strides into: those with a fixed
+    /// cell size, listed by `tryGetCellSize` at each of the `normalise*ByteOffset` helpers
+    /// above. This distinction is load-bearing for `mayLeaveRootExtent` and must be kept in
+    /// step with them.
+    let private rootHasFoldedCursor (root : ByrefRoot) : bool =
+        match root with
+        | ByrefRoot.ArrayElement _
+        | ByrefRoot.StringCharAt _
+        | ByrefRoot.StackMemoryByte _
+        | ByrefRoot.NativeMemoryByte _ -> true
+        | ByrefRoot.LocalVariable _
+        | ByrefRoot.Argument _
+        | ByrefRoot.HeapValue _
+        | ByrefRoot.HeapObjectField _
+        | ByrefRoot.StaticField _
+        | ByrefRoot.PeByteRange _
+        | ByrefRoot.ExposedClassObject _ -> false
+
+    /// A cursor is the only step that can, and whether it is bounded depends on the root.
+    ///
+    /// For a root whose cursor has been folded, a cursor with no `Field` before it is a
+    /// residual within one element or character and by construction cannot have reached the
+    /// next one; only a `Field` in between defeats the folding and lets it walk out, which
+    /// is how `a[0].Y` advanced four bytes reaches `a[1]`.
+    ///
+    /// For every other root there is no stride to fold against — `normaliseTrailingByteOffset`
+    /// falls through and leaves the cursor untouched — so *any* non-zero cursor is unbounded.
+    /// That is not a hypothetical: `Unsafe.AddByteOffset` applies to a `LocalVariable` root
+    /// with no special-casing, and `Byref (local 0, [ReinterpretAs byte; ByteOffset 1000])`
+    /// against `Byref (local 1, [])` was measured *answering* `false` while this predicate
+    /// still justified itself by folding that had never happened.
+    ///
+    /// Whether such a pair should be answered at all is a genuine policy question rather than
+    /// a fact: ECMA-335 promises no relative address between two independently declared
+    /// locals, so a real JIT could place them any distance apart. LLVM's alias analysis
+    /// assumes distinct identified objects never alias however the arithmetic goes; CompCert
+    /// declines to compare pointers from different blocks. This takes CompCert's side, per
+    /// this project's preference for crashing over quiet divergence.
     ///
     /// This is what makes root disjointness insufficient on its own: two byrefs on different
     /// roots are different addresses only while each stays within the root it started from.
-    let private mayLeaveRootExtent (projs : ByrefProjection list) : bool =
+    let private mayLeaveRootExtent (root : ByrefRoot) (projs : ByrefProjection list) : bool =
+        let folded = rootHasFoldedCursor root
+
         let rec go (seenField : bool) (rest : ByrefProjection list) : bool =
             match rest with
             | [] -> false
             | ByrefProjection.Field _ :: tail -> go true tail
             | ByrefProjection.ReinterpretAs _ :: tail -> go seenField tail
-            | ByrefProjection.ByteOffset n :: tail -> if seenField && n <> 0 then true else go seenField tail
+            | ByrefProjection.ByteOffset n :: tail ->
+                if n <> 0 && (seenField || not folded) then
+                    true
+                else
+                    go seenField tail
 
         go false projs
 
@@ -1188,7 +1225,7 @@ module ManagedPointerSource =
                 failwith
                     $"TODO (CEQ): %s{context} compares byrefs whose projection chains differ by field steps, so whether they alias depends on field offsets within their declaring types — layout that byref comparison does not carry. Got %O{raw1} vs %O{raw2}"
         | ManagedPointerSource.Byref (root1, projs1), ManagedPointerSource.Byref (root2, projs2) when
-            mayLeaveRootExtent projs1 || mayLeaveRootExtent projs2
+            mayLeaveRootExtent root1 projs1 || mayLeaveRootExtent root2 projs2
             ->
             // Distinct roots, but at least one byref has been displaced by an amount this
             // comparison cannot evaluate, so it may have walked clean out of its own root's

@@ -188,6 +188,40 @@ module TestByrefComparison =
 
         ceq inCell other |> shouldEqual false
 
+    /// A local has no stride for `normaliseTrailingByteOffset` to fold against, so a cursor
+    /// on a local root is unbounded even with no `Field` before it — unlike the array case
+    /// above, where folding leaves a residual inside one element.
+    ///
+    /// This is the shape that was answering `false` while the predicate justified itself by
+    /// a folding that had never happened for this root. ECMA-335 promises no relative address
+    /// between two independently declared locals, so there is no fact to answer with.
+    [<Test>]
+    let ``an unbounded cursor on a local root is refused`` () =
+        let displaced =
+            byref (local 0us) [ ByrefProjection.ReinterpretAs byteType ; ByrefProjection.ByteOffset 1000 ]
+
+        let exn = Assert.Throws (fun () -> ceq displaced (byref (local 1us) []) |> ignore)
+
+        exn.Message |> shouldContainText "root's extent"
+
+    /// The same cursor on an *array element* root is bounded by folding, so that one still
+    /// decides. The pair of tests is what pins the rule to the root kind rather than to the
+    /// projection list alone.
+    [<Test>]
+    let ``the same cursor on a fold-eligible root still decides`` () =
+        let displaced =
+            ManagedPointerSource.Byref (
+                ByrefRoot.ArrayElement (ManagedHeapAddress 1, 0),
+                [ ByrefProjection.ReinterpretAs byteType ; ByrefProjection.ByteOffset 1000 ]
+            )
+            |> ManagedPointerSource.unsafeAssumeNormalisedForComparison
+
+        let other =
+            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (ManagedHeapAddress 1, 1), [])
+            |> ManagedPointerSource.unsafeAssumeNormalisedForComparison
+
+        ceq displaced other |> shouldEqual false
+
     /// The displacement rule keys on displacement, not on merely having projections: a
     /// byref that only changes type view has not moved, so it still decides against a
     /// different root.
