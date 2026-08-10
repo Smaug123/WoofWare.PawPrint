@@ -614,6 +614,84 @@ type CliType =
             // tagged native int would leave a corrupt pointer.
             CliType.WithBytesAtIfChanged offset (Array.zeroCreate count) value
 
+    /// The maximal run of *padding* bytes containing `byteOffset` — bytes that no field covers, at
+    /// whatever depth of nesting the byte finally lands — as `(start, length)` in `value`'s own
+    /// coordinates.
+    ///
+    /// Padding needs naming because `CellPathsExactlyCovering` cannot name it and, inside a value
+    /// type that holds object references, the byte path cannot render it either: such a value has
+    /// no byte image at all, so `BytesAt` refuses the whole of it. A bulk move whose range starts
+    /// or ends *inside* such a value therefore has a cursor with nowhere to go — no cell begins
+    /// there and no byte can be read — which is exactly the state
+    /// `CellAwareMemOps.tryPaddingMoveAt` uses this to get out of. Padding is the one part of such
+    /// a value that is pure bytes, and `PreservedBytes` already holds it.
+    ///
+    /// Descent follows `CandidateCellExtentsContainingByte`'s rule — step through the single field
+    /// containing the byte — so the two agree on which value the byte finally belongs to. `None`
+    /// means the byte is not padding, which covers four cases: it lies inside some field's
+    /// contents; the value is not a field-backed value type (a primitive is all content, and a
+    /// raw-bytes value *is* its bytes); explicit layout puts two or more fields over it, leaving no
+    /// single field to descend through; or a field's laid-out extent disagrees with the size of
+    /// what it holds, which makes the value internally inconsistent (see
+    /// `CliValueType.TryDescendableFieldAt`).
+    static member TryPaddingRunAt (byteOffset : int) (value : CliType) : (int * int) option =
+        match value with
+        | CliType.ValueType vt -> CliValueType.TryPaddingRunAt byteOffset vt
+        | CliType.Bool _
+        | CliType.Char _
+        | CliType.Numeric _
+        | CliType.ObjectRef _
+        | CliType.RuntimePointer _ -> None
+
+    /// The bytes of `[offset, offset + count)`, which must lie wholly within a single padding run
+    /// of `value`. Unlike `BytesAt` this is defined even when `value` has no byte image, which is
+    /// the whole point: padding inside a reference-containing struct is pure bytes even though the
+    /// struct around it is not.
+    static member PaddingBytesAt (offset : int) (count : int) (value : CliType) : byte[] =
+        CliType.CheckPaddingRange "CliType.PaddingBytesAt" offset count value
+
+        match value with
+        | CliType.ValueType vt -> CliValueType.PaddingBytesAt offset count vt
+        | other ->
+            failwith
+                $"CliType.PaddingBytesAt: %O{other} is not a value type and so has no padding (this is an interpreter bug: CheckPaddingRange should have refused)"
+
+    /// Replace the bytes of `[offset, offset + bytes.Length)`, which must lie wholly within a
+    /// single padding run of `value`, returning `None` if that would leave it unchanged.
+    ///
+    /// No field's contents can be touched by construction, so the value's CLI shape — and every
+    /// cell `CellPathsExactlyCovering` names in it — is preserved.
+    static member WithPaddingBytesAtIfChanged (offset : int) (bytes : byte[]) (value : CliType) : CliType option =
+        CliType.CheckPaddingRange "CliType.WithPaddingBytesAtIfChanged" offset bytes.Length value
+
+        match value with
+        | CliType.ValueType vt ->
+            CliValueType.WithPaddingBytesAtIfChanged offset bytes vt
+            |> Option.map CliType.ValueType
+        | other ->
+            failwith
+                $"CliType.WithPaddingBytesAtIfChanged: %O{other} is not a value type and so has no padding (this is an interpreter bug: CheckPaddingRange should have refused)"
+
+    /// Both padding accessors are partial in the same way, so they check their precondition the
+    /// same way: the range must be non-empty and contained in the single run `TryPaddingRunAt`
+    /// reports at its start. A caller reaching either without having asked that question is a bug,
+    /// not a shape to degrade on.
+    static member private CheckPaddingRange (operation : string) (offset : int) (count : int) (value : CliType) : unit =
+        if count <= 0 then
+            failwith $"%s{operation}: byte count %d{count} is not positive"
+
+        match CliType.TryPaddingRunAt offset value with
+        | None ->
+            failwith
+                $"%s{operation}: byte offset %d{offset} of %O{value} is not padding. Value layout:\n%s{CliType.DescribeByteLayout None value}"
+        | Some (start, length) ->
+            // `offset` is inside the run by construction, so only the far end can escape it.
+            // Phrased to avoid forming `offset + count`, which this file's `open Checked` would
+            // overflow on a guest-driven offset.
+            if count > start + length - offset then
+                failwith
+                    $"%s{operation}: byte range of %d{count} byte(s) at offset %d{offset} of %O{value} leaves the padding run [%d{start}, %d{start + length})"
+
     /// Return a byte-addressable CLI value with the requested byte range replaced, or `None` if
     /// the materialised byte image would be unchanged. Value types delegate to
     /// `CliValueType.WithBytesAtIfChanged`, so represented padding and overlapping-field
@@ -1499,6 +1577,202 @@ and CliValueType =
                                     PreservedBytes = updatedPreserved
                                 }
                     }
+
+    /// The single field of `cvt` whose laid-out extent contains `byteOffset`, when descending
+    /// through it is well defined. `None` when the byte is padding of `cvt` itself (no field
+    /// covers it), when explicit layout puts two or more fields over it (there is no single one to
+    /// descend through — the same refusal `CellPathsExactlyCovering` makes for an aliased range),
+    /// or when the field's laid-out extent disagrees with the size of what it now holds.
+    ///
+    /// That last case is not hypothetical: `WithFieldSetById` replaces `Contents` without
+    /// recomputing `Size`, so a field can be left claiming an extent its contents do not fill.
+    /// Such a value is already inconsistent — `ToBytes` (CliType.fs:1265) overlays the field's own
+    /// image across its full `Size` and runs off the end of it — so declining is the honest answer
+    /// rather than describing bytes that are not there.
+    static member private TryDescendableFieldAt
+        (byteOffset : int)
+        (fields : CliConcreteField list)
+        : CliConcreteField option
+        =
+        match
+            fields
+            |> List.filter (fun f -> f.Offset <= byteOffset && byteOffset < f.Offset + f.Size)
+        with
+        | [ f ] when f.Size = CliType.SizeOf(f.Contents).Size -> Some f
+        | _ -> None
+
+    /// The maximal run of *padding* bytes containing `byteOffset` — bytes that no field covers, so
+    /// no cell names them and the value's byte image is the only thing that holds them — as
+    /// `(start, length)` in this value's own coordinates.
+    ///
+    /// See `CliType.TryPaddingRunAt` for what `None` means and why the notion is needed at all.
+    static member TryPaddingRunAt (byteOffset : int) (cvt : CliValueType) : (int * int) option =
+        let size = CliValueType.SizeOf(cvt).Size
+
+        if byteOffset < 0 || byteOffset >= size then
+            None
+        else
+
+        match cvt._Storage with
+        // A raw-bytes value *is* its bytes; there is no field structure for anything to be filler
+        // between, and the ordinary byte path already serves every offset of it.
+        | CliValueTypeStorage.RawBytes _ -> None
+        | CliValueTypeStorage.Fields storage ->
+            match CliValueType.TryDescendableFieldAt byteOffset storage.Fields with
+            | Some f ->
+                match CliType.TryPaddingRunAt (byteOffset - f.Offset) f.Contents with
+                | None -> None
+                | Some (start, length) ->
+
+                // The run is maximal within `f`, but `f` itself may be aliased: explicit layout can
+                // put a sibling over part of `f`'s extent, and those bytes are the sibling's
+                // content rather than `f`'s filler. `ToBytes` awards them to whichever field wrote
+                // last, so answering about them out of `f`'s own preserved image would read and
+                // write the wrong storage — a bulk copy would then leave the destination's sibling
+                // untouched while believing it had moved those bytes.
+                //
+                // Clip to the stretch around `byteOffset` that no sibling covers. `byteOffset`
+                // itself is never covered by one: `TryDescendableFieldAt` would have seen two
+                // containing fields and declined.
+                let siblingCovered (b : int) : bool =
+                    storage.Fields
+                    |> List.exists (fun g ->
+                        not (FieldId.exactlyEqual g.Id f.Id) && g.Offset <= b && b < g.Offset + g.Size
+                    )
+
+                let runStart = f.Offset + start
+                let runEnd = f.Offset + start + length
+
+                let mutable clippedStart = byteOffset
+
+                while clippedStart > runStart && not (siblingCovered (clippedStart - 1)) do
+                    clippedStart <- clippedStart - 1
+
+                let mutable clippedEnd = byteOffset + 1
+
+                while clippedEnd < runEnd && not (siblingCovered clippedEnd) do
+                    clippedEnd <- clippedEnd + 1
+
+                Some (clippedStart, clippedEnd - clippedStart)
+            | None ->
+
+            // Either the byte is padding of this value, or containment was ambiguous. Only the
+            // first is a padding run; re-ask whether *any* field covers the byte to tell them
+            // apart, since `TryDescendableFieldAt` folds both into `None`.
+            let covered (b : int) : bool =
+                storage.Fields |> List.exists (fun f -> f.Offset <= b && b < f.Offset + f.Size)
+
+            if covered byteOffset then
+                // Some field's extent contains the byte, but no single field could be descended
+                // through: two or more overlap it. That is an aliased byte, and refusing it is
+                // right for aliased *data*.
+                //
+                // It is not obviously right for a byte that is padding within every field that
+                // covers it — explicit layout overlaying two identical reference-containing
+                // structs makes their trailing filler exactly that, and a bulk copy over such an
+                // array would want to move it. No such copy can reach here today: a byte-backed
+                // value holding references cannot be field-accessed at all, so building the array
+                // fails long before the copy. `BulkMoveAcrossOverlappedStructPadding.cs` is parked
+                // on that, and is where the question comes back if the representation changes.
+                None
+            else
+
+            let mutable start = byteOffset
+
+            while start > 0 && not (covered (start - 1)) do
+                start <- start - 1
+
+            let mutable endExclusive = byteOffset + 1
+
+            while endExclusive < size && not (covered endExclusive) do
+                endExclusive <- endExclusive + 1
+
+            Some (start, endExclusive - start)
+
+    /// The bytes of a range lying wholly inside one padding run. See `CliType.PaddingBytesAt`.
+    static member PaddingBytesAt (offset : int) (count : int) (cvt : CliValueType) : byte[] =
+        match cvt._Storage with
+        | CliValueTypeStorage.RawBytes _ ->
+            failwith
+                $"CliValueType.PaddingBytesAt: raw-bytes-backed %O{cvt._Declared} has no padding; the byte path serves it directly"
+        | CliValueTypeStorage.Fields storage ->
+            match CliValueType.TryDescendableFieldAt offset storage.Fields with
+            | Some f ->
+                match f.Contents with
+                | CliType.ValueType inner -> CliValueType.PaddingBytesAt (offset - f.Offset) count inner
+                | other ->
+                    failwith
+                        $"CliValueType.PaddingBytesAt: byte offset %d{offset} of %O{cvt._Declared} lies inside field %O{f.Id}, which holds %O{other} rather than padding (this is an interpreter bug: the caller must validate with TryPaddingRunAt first)"
+            | None ->
+                // `TryPaddingRunAt` has already established that the whole range is uncovered
+                // here, and `PreservedBytes` is a full-size image whose uncovered positions
+                // `ToBytes` never overlays, so it is authoritative for exactly these bytes.
+                let result : byte[] = Array.zeroCreate count
+                Array.blit storage.PreservedBytes offset result 0 count
+                result
+
+    /// Replace the bytes of a range lying wholly inside one padding run.
+    /// See `CliType.WithPaddingBytesAtIfChanged`.
+    static member WithPaddingBytesAtIfChanged
+        (offset : int)
+        (bytes : byte[])
+        (cvt : CliValueType)
+        : CliValueType option
+        =
+        match cvt._Storage with
+        | CliValueTypeStorage.RawBytes _ ->
+            failwith
+                $"CliValueType.WithPaddingBytesAtIfChanged: raw-bytes-backed %O{cvt._Declared} has no padding; the byte path serves it directly"
+        | CliValueTypeStorage.Fields storage ->
+            match CliValueType.TryDescendableFieldAt offset storage.Fields with
+            | Some f ->
+                match f.Contents with
+                | CliType.ValueType inner ->
+                    CliValueType.WithPaddingBytesAtIfChanged (offset - f.Offset) bytes inner
+                    |> Option.map (fun updatedInner ->
+                        let updatedFields =
+                            storage.Fields
+                            |> List.map (fun g ->
+                                if FieldId.exactlyEqual g.Id f.Id then
+                                    // `EditedAtTime` is deliberately left alone, for the same
+                                    // reason `WithZeroedRangeIfChanged` leaves it alone: `ToBytes`
+                                    // resolves overlapping fields in timestamp order, so promoting
+                                    // this one to "newest" would change who wins on bytes outside
+                                    // the range this call was asked to touch. Padding is covered by
+                                    // no field, so no contest over it exists to be re-decided.
+                                    { g with
+                                        Contents = CliType.ValueType updatedInner
+                                    }
+                                else
+                                    g
+                            )
+
+                        { cvt with
+                            _Storage =
+                                CliValueTypeStorage.Fields
+                                    { storage with
+                                        Fields = updatedFields
+                                    }
+                        }
+                    )
+                | other ->
+                    failwith
+                        $"CliValueType.WithPaddingBytesAtIfChanged: byte offset %d{offset} of %O{cvt._Declared} lies inside field %O{f.Id}, which holds %O{other} rather than padding (this is an interpreter bug: the caller must validate with TryPaddingRunAt first)"
+            | None ->
+                let updated = Array.copy storage.PreservedBytes
+                Array.blit bytes 0 updated offset bytes.Length
+
+                if updated = storage.PreservedBytes then
+                    None
+                else
+                    Some
+                        { cvt with
+                            _Storage =
+                                CliValueTypeStorage.Fields
+                                    { storage with
+                                        PreservedBytes = updated
+                                    }
+                        }
 
     static member WithBytesAtIfChanged (offset : int) (bytes : byte[]) (cvt : CliValueType) : CliValueType option =
         let existing = CliValueType.ToBytes cvt
