@@ -498,6 +498,41 @@ module IntrinsicMethodKeys =
             // and managed-byref assignment are already-modelled span primitives.
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/ReadOnlySpan.cs#L289
             pattern "System.Private.CoreLib" "System.ReadOnlySpan`1" "GetPinnableReference" []
+            // Reviewed IL: `ldfld _length` on each argument, `bne.un.s` to a `ldc.i4.0; ret`,
+            // then `ldarga.s; ldfld _reference` on each and `Unsafe.AreSame<T>(ref T, ref T)`.
+            // Every step is an already-modelled boundary: the `_length` and `_reference` field
+            // reads are the same span primitives `Slice` and `GetPinnableReference` above rely
+            // on, and `Unsafe.AreSame` is implemented in `Intrinsics.fs` — where it normalises
+            // both byrefs before comparing, so two spans built over the same storage by
+            // different routes (implicit conversion, `AsSpan`, `.ctor`, `Slice`) compare equal.
+            // Neither operator carries an attribute of its own: what routes them here is the
+            // type-level `[Intrinsic]` on ReadOnlySpan<T>, which every member of the type
+            // inherits and which is why each one needs allowlisting individually.
+            //
+            // Note this is deliberately *reference* equality, not content equality: equal-
+            // length spans over distinct backing storage are unequal, and a zero-length slice
+            // of a live array is unequal to `default` because only the latter is null-backed.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/ReadOnlySpan.cs#L346-L348
+            pattern
+                "System.Private.CoreLib"
+                "System.ReadOnlySpan`1"
+                "op_Equality"
+                [
+                    IntrinsicParameterPattern.Exact "System.ReadOnlySpan`1"
+                    IntrinsicParameterPattern.Exact "System.ReadOnlySpan`1"
+                ]
+            // `ldarg.0; ldarg.1; call op_Equality; ldc.i4.0; ceq; ret` — nothing but the
+            // operator above, which is itself allowlisted, and a negation. The C# `!=`
+            // operator on two spans emits a call to this, so it is inseparable from `==`.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/ReadOnlySpan.cs#L178
+            pattern
+                "System.Private.CoreLib"
+                "System.ReadOnlySpan`1"
+                "op_Inequality"
+                [
+                    IntrinsicParameterPattern.Exact "System.ReadOnlySpan`1"
+                    IntrinsicParameterPattern.Exact "System.ReadOnlySpan`1"
+                ]
             // IL body for both Span<T>.Empty and ReadOnlySpan<T>.Empty is
             // `.locals init (valuetype S V_0) ldloca.s V_0; initobj S; ldloc.0; ret` —
             // i.e. just returning `default(...)`. The `[Intrinsic]` attribute is for
