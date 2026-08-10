@@ -312,3 +312,61 @@ public class Program
 
         exitCode terminalState thread |> shouldEqual 0
         loadedCorelibPath terminalState |> shouldEqual (corelibPath frameworkDir)
+
+    /// The flavour risk is larger for `TrailingZeroCount` than for its sibling: only the uint32
+    /// overload is modelled, so every other overload's CoreLib body is *executed*, including the
+    /// uint64 one whose fallback splits the value into halves. Those bodies are precisely where
+    /// the flavours diverge — `Bmi1`/`X86Base` guards are folded to constant false in an arm64
+    /// build but are live calls in the x64 build that CI and production interpret, and the arm64
+    /// `ArmBase` guards are the other way round. A macOS/arm64 run exercises only one of those
+    /// shapes, so this case runs the other.
+    [<Test>]
+    let ``TrailingZeroCount runs against the pinned linux-x64 CoreLib`` () : unit =
+        let frameworkDir = requireLinuxFramework ()
+
+        let source =
+            """
+using System;
+using System.Numerics;
+
+public class Program
+{
+    public static int Main(string[] args)
+    {
+        // The modelled width.
+        if (BitOperations.TrailingZeroCount(0u) != 32) return 1;
+        if (BitOperations.TrailingZeroCount(0x80000000u) != 31) return 2;
+
+        // The executed uint64 body, including the half-splitting fallback: a value whose low
+        // 32 bits are zero is the branch that recurses into the modelled uint32 overload.
+        if (BitOperations.TrailingZeroCount(0ul) != 64) return 3;
+        if (BitOperations.TrailingZeroCount(1ul) != 0) return 4;
+        if (BitOperations.TrailingZeroCount(0x100000000ul) != 32) return 5;
+        if (BitOperations.TrailingZeroCount(0x8000000000000000ul) != 63) return 6;
+
+        // The executed signed and native-width forwarders.
+        int width = IntPtr.Size * 8;
+        if (BitOperations.TrailingZeroCount(0L) != 64) return 7;
+        if (BitOperations.TrailingZeroCount(long.MinValue) != 63) return 8;
+        if (BitOperations.TrailingZeroCount((nuint)0) != width) return 9;
+        if (BitOperations.TrailingZeroCount((nuint)256) != 8) return 10;
+        if (BitOperations.TrailingZeroCount(default(nuint)) != width) return 11;
+        if (BitOperations.TrailingZeroCount((nint)(-2)) != 1) return 12;
+
+        // The executed IBinaryInteger wrappers.
+        if (uint.TrailingZeroCount(0x80000000u) != 31u) return 13;
+        if (ulong.TrailingZeroCount(0x100000000ul) != 32ul) return 14;
+        if (nuint.TrailingZeroCount((nuint)256) != (nuint)8) return 15;
+        if (int.TrailingZeroCount(int.MinValue) != 31) return 16;
+        if (long.TrailingZeroCount(long.MinValue) != 63L) return 17;
+        if (nint.TrailingZeroCount((nint)(-2)) != (nint)1) return 18;
+
+        return 0;
+    }
+}
+"""
+
+        let terminalState, thread = runOnLinuxFramework frameworkDir source
+
+        exitCode terminalState thread |> shouldEqual 0
+        loadedCorelibPath terminalState |> shouldEqual (corelibPath frameworkDir)

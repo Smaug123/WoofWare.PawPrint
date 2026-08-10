@@ -1240,6 +1240,40 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack' result currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
+        | "System.Private.CoreLib", "BitOperations", "TrailingZeroCount" when
+            intrinsicKey.DeclaringTypeFullName = "System.Numerics.BitOperations"
+            ->
+            // BitOperations.TrailingZeroCount is a JIT intrinsic in the real CLR, lowered to
+            // TZCNT on x86 or RBIT+CLZ on Arm. Only the uint32 overload needs modelling: with
+            // every hardware profile reporting unavailable, its body falls through to a De
+            // Bruijn lookup table backed by a PE byte range, which PawPrint does not model.
+            // The other overloads' bodies are IL PawPrint can already run — they either
+            // forward outright or, for uint64, split into halves that land back here — so
+            // they are allowlisted in `safeIntrinsics` rather than duplicated as arms.
+            //
+            // Delegating to the host BCL is deterministic, for the same reason the sibling
+            // LeadingZeroCount arm records: the method is a pure function of the argument's
+            // bits, fully specified for every input, including the zero that TZCNT and BSF
+            // disagree about (hence the BCL's own explicit zero check).
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Numerics/BitOperations.cs#L526-L577
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteUInt32 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) ->
+                let arg, state = IlMachineState.popEvalStack currentThread state
+
+                // The narrowing to the operand's own width is load-bearing: the bits arrive
+                // widened to int64, and the zeros above bit 31 are not the operand's.
+                let value =
+                    bitPatternValueArgument "BitOperations.TrailingZeroCount(uint)" arg
+                    |> uint32<int64>
+
+                let result = System.Numerics.BitOperations.TrailingZeroCount value
+
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim result)) currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> IntrinsicResult.Completed
+            | _ ->
+                failwith $"BitOperations.TrailingZeroCount: unexpected signature %s{formatMethodKey intrinsicKey}"
         | "System.Private.CoreLib", "BitOperations", "LeadingZeroCount" when
             intrinsicKey.DeclaringTypeFullName = "System.Numerics.BitOperations"
             ->
