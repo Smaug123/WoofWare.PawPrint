@@ -574,8 +574,12 @@ public sealed class MethodSignatureHost
                 |> ignore
             )
 
+        // 1 is not a shape any COR signature pointer arrives in — the classifier accepts a null
+        // pointer or a byref over a PE byte range, and nothing else. It is rejected there rather
+        // than reaching the both-inputs check, which the sibling test below covers with a *real*
+        // blob pointer.
         ex.Message
-        |> shouldContainText "TODO: Signature_Init pCorSig blob parsing is not implemented"
+        |> shouldContainText "expected a null COR signature pointer or a managed pointer over a PE byte range"
 
     [<Test>]
     let ``Signature_Init rejects a field handle and a method handle together`` () : unit =
@@ -614,11 +618,17 @@ public sealed class MethodSignatureHost
                 |> ignore
             )
 
+        // A handle-backed call must not carry a blob length either: CoreCLR overwrites both pCorSig
+        // and cCorSig from the handle, so a non-zero length is a caller that thinks it is supplying
+        // a blob.
         ex.Message
-        |> shouldContainText "TODO: Signature_Init pCorSig blob parsing is not implemented; got cCorSig 1"
+        |> shouldContainText "a handle-backed signature was given cCorSig 1, expected 0"
 
     [<Test>]
-    let ``Signature_Init rejects null field handle as non-field signature parsing`` () : unit =
+    let ``Signature_Init rejects a call with no handle and no blob`` () : unit =
+        // CoreCLR asserts `pCorSig != NULL && cCorSig > 0` once both handles are null, so with
+        // neither a handle nor a blob there is simply no input to derive a signature from. This is
+        // the one remaining unreachable corner of the four-way dispatch.
         let fixture = makeSignatureFixture ()
 
         let ex =
@@ -632,8 +642,7 @@ public sealed class MethodSignatureHost
                 |> ignore
             )
 
-        ex.Message
-        |> shouldContainText "TODO: Signature_Init non-field signature parsing is not implemented; fieldHandle was null"
+        ex.Message |> shouldContainText "there is nothing to build a signature from"
 
     /// Concretize a `TypeDefn` in `state` so it can be compared against a `RuntimeType` the QCall
     /// allocated. Concretization is idempotent, so this recovers the handle the QCall used rather
@@ -863,3 +872,357 @@ public sealed class MethodSignatureHost
 
         runtimeTypeTargetOfField state signatureAddr "_returnTypeORfieldType"
         |> shouldEqual (expectedTarget fixture state (TypeDefn.PrimitiveType PrimitiveType.Int32))
+
+    /// Build the closed `GenericFieldHost<DistinctiveFieldType>` handle plus a `RuntimeType` for it,
+    /// which is what a real `MdFieldInfo` would carry in `Signature._declaringType`.
+    let private closedHostDeclaringType
+        (fixture : SignatureFixture)
+        (state : IlMachineState)
+        : ManagedHeapAddress * ConcreteTypeHandle * IlMachineState
+        =
+        let distinctiveDefn =
+            TypeDefn.FromDefinition (fixture.DistinctiveType.Identity, SignatureTypeKind.Class)
+
+        let state, distinctiveHandle =
+            IlMachineState.concretizeType
+                fixture.LoggerFactory
+                fixture.BaseClassTypes
+                state
+                fixture.Assembly.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                distinctiveDefn
+
+        let closedHostDefn =
+            TypeDefn.GenericInstantiation (
+                TypeDefn.FromDefinition (fixture.HostType.Identity, SignatureTypeKind.Class),
+                ImmutableArray.Create distinctiveDefn
+            )
+
+        let state, closedHostHandle =
+            IlMachineState.concretizeType
+                fixture.LoggerFactory
+                fixture.BaseClassTypes
+                state
+                fixture.Assembly.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                closedHostDefn
+
+        let declaringTypeAddr, state =
+            IlMachineState.getOrAllocateType
+                fixture.LoggerFactory
+                fixture.BaseClassTypes
+                (RuntimeTypeHandleTarget.Closed closedHostHandle)
+                state
+
+        declaringTypeAddr, distinctiveHandle, state
+
+    /// The PE byte range over `GenericFieldHost&lt;T&gt;.Payload`'s COR signature blob, and a pointer
+    /// over it in the shape `MetadataImport.GetSigOfFieldDef` hands back.
+    let private payloadSignatureBlobPointer
+        (fixture : SignatureFixture)
+        (state : IlMachineState)
+        : PeByteRangePointer * ManagedPointerSource * IlMachineState
+        =
+        let peByteRange =
+            IlMachineState.peByteRangeForFieldSignatureBlob fixture.Assembly fixture.Field.Handle
+
+        let state, pointer =
+            IlMachineState.peByteRangePointer fixture.LoggerFactory fixture.BaseClassTypes peByteRange state
+
+        peByteRange, pointer, state
+
+    /// Drive `Signature_Init` with no field or method handle and a raw blob pointer — the shape
+    /// `new Signature(void*, int, RuntimeType)` produces. `declaringType` is preset on the freshly
+    /// allocated `Signature` because the managed constructor sets it before calling in, and CoreCLR
+    /// asserts it is non-null.
+    let private invokeSignatureInitRawBlob
+        (fixture : SignatureFixture)
+        (declaringType : CliType)
+        (pCorSig : CliType)
+        (cCorSig : int)
+        (state : IlMachineState)
+        : ManagedHeapAddress * IlMachineState
+        =
+        let state, signatureType, signatureTypeHandle, signatureInitMethod =
+            signatureInitMethod fixture state
+
+        let signatureAddr, state =
+            allocateZeroInitializedObject fixture fixture.BaseClassTypes.Corelib signatureType signatureTypeHandle state
+
+        let state =
+            let signatureObj = ManagedHeap.get signatureAddr state.ManagedHeap
+
+            let declaringTypeFieldId =
+                IlMachineState.requiredOwnInstanceFieldId state signatureObj.ConcreteType "_declaringType"
+
+            let signatureObj =
+                AllocatedNonArrayObject.SetFieldById declaringTypeFieldId declaringType signatureObj
+
+            { state with
+                ManagedHeap = ManagedHeap.set signatureAddr signatureObj state.ManagedHeap
+            }
+
+        let signatureRefSlot, state =
+            allocateObjectRefSlot fixture (CliType.ObjectRef (Some signatureAddr)) state
+
+        let objectHandleOnStack, state =
+            objectHandleOnStackValue fixture signatureRefSlot state
+
+        let methodArgs =
+            ImmutableArray.CreateRange
+                [
+                    objectHandleOnStack
+                    pCorSig
+                    CliType.Numeric (CliNumericType.Int32 cCorSig)
+                    nullFieldHandle
+                    CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L)
+                ]
+
+        let methodState =
+            match
+                MethodState.Empty
+                    state.ConcreteTypes
+                    fixture.BaseClassTypes
+                    state._LoadedAssemblies
+                    fixture.BaseClassTypes.Corelib
+                    signatureInitMethod
+                    ImmutableArray.Empty
+                    methodArgs
+                    None
+            with
+            | Ok methodState -> methodState
+            | Error missing ->
+                failwith $"Unexpected missing assembly references creating Signature_Init frame: %O{missing}"
+
+        let thread = ThreadId 0
+
+        let state =
+            { state with
+                ThreadState =
+                    Map.empty
+                    |> Map.add thread (ThreadState.New (CpuId 0) (OsThreadId 1u) methodState)
+            }
+
+        let ctx : NativeCallContext =
+            {
+                LoggerFactory = fixture.LoggerFactory
+                BaseClassTypes = fixture.BaseClassTypes
+                Thread = thread
+                State = state
+                Instruction = state.ThreadState.[thread].MethodState
+                TargetAssembly = fixture.BaseClassTypes.Corelib
+                TargetType = signatureType
+            }
+
+        let state =
+            match NativeSignature.tryExecuteQCall "Signature_Init" ctx with
+            | Some (NativeHandlerResult.Completed (state, _)) -> state
+            | Some result -> failwith $"unexpected Signature_Init execution result: %O{result}"
+            | None -> failwith "Signature_Init did not match"
+
+        signatureAddr, state
+
+    [<Test>]
+    let ``Signature_Init raw blob resolves the field type against _declaringType`` () : unit =
+        // `GenericFieldHost<T>.Payload` is declared `VAR 0`, so the blob alone cannot say what the
+        // field's type is. CoreCLR builds its SigTypeContext from `_declaringType`
+        // (SigTypeContext::InitTypeContext(declType)), *not* from the definition that owns the blob
+        // -- so with `_declaringType = GenericFieldHost<DistinctiveFieldType>` the answer must be
+        // DistinctiveFieldType. An implementation that took generics from the FieldDef's own
+        // declaring TypeDef would see the open generic, get an empty instantiation, and fault.
+        let fixture = makeSignatureFixture ()
+
+        let declaringTypeAddr, distinctiveHandle, state =
+            closedHostDeclaringType fixture fixture.State
+
+        let peByteRange, sigPointer, state = payloadSignatureBlobPointer fixture state
+
+        let signatureAddr, state =
+            invokeSignatureInitRawBlob
+                fixture
+                (CliType.ObjectRef (Some declaringTypeAddr))
+                (CliType.RuntimePointer (CliRuntimePointer.Managed sigPointer))
+                peByteRange.Size
+                state
+
+        runtimeTypeTargetOfField state signatureAddr "_returnTypeORfieldType"
+        |> shouldEqual (RuntimeTypeHandleTarget.Closed distinctiveHandle)
+
+        // `_sig` is the caller's own pointer, verbatim, as CoreCLR assigns it -- so the blob's
+        // provenance survives for the later byte-level readers.
+        match signatureField state signatureAddr "_sig" |> CliType.unwrapPrimitiveLikeDeep with
+        | CliType.RuntimePointer (CliRuntimePointer.Managed actual) -> actual |> shouldEqual sigPointer
+        | other -> failwith $"Expected _sig to be a managed pointer, got %O{other}"
+
+        match signatureField state signatureAddr "_csig" |> CliType.unwrapPrimitiveLikeDeep with
+        | CliType.Numeric (CliNumericType.Int32 actual) -> actual |> shouldEqual peByteRange.Size
+        | other -> failwith $"Expected _csig to be Int32, got %O{other}"
+
+    /// Both encodings of the same non-null blob pointer. Only the first is produced by the live
+    /// route today (`ConstArray.m_constArray` through `MdFieldInfo.FieldType`, confirmed by
+    /// mutation); the second is here for the same reason `nullFieldHandleSpellings` exists --
+    /// `unwrapPrimitiveLikeDeep` does not canonicalise between them, so a classifier that lists one
+    /// throws on the other.
+    let corSigPointerSpellings : (ManagedPointerSource -> CliType) list =
+        [
+            (fun ptr -> CliType.RuntimePointer (CliRuntimePointer.Managed ptr))
+            (fun ptr -> CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ptr)))
+        ]
+
+    [<TestCaseSource(nameof corSigPointerSpellings)>]
+    let ``Signature_Init raw blob accepts every spelling of the blob pointer``
+        (spell : ManagedPointerSource -> CliType)
+        : unit
+        =
+        let fixture = makeSignatureFixture ()
+
+        let declaringTypeAddr, distinctiveHandle, state =
+            closedHostDeclaringType fixture fixture.State
+
+        let peByteRange, sigPointer, state = payloadSignatureBlobPointer fixture state
+
+        let signatureAddr, state =
+            invokeSignatureInitRawBlob
+                fixture
+                (CliType.ObjectRef (Some declaringTypeAddr))
+                (spell sigPointer)
+                peByteRange.Size
+                state
+
+        runtimeTypeTargetOfField state signatureAddr "_returnTypeORfieldType"
+        |> shouldEqual (RuntimeTypeHandleTarget.Closed distinctiveHandle)
+
+    [<Test>]
+    let ``Signature_Init leaves the calling convention alone for a raw field blob`` () : unit =
+        // CoreCLR's FIELD arm is `msig.NextArgNormalized(); SetReturnType(...)`; only the
+        // method-shaped `else` branch calls SetCallingConvention. A field-backed Signature therefore
+        // keeps the zero it was allocated with, and 0x6 -- the raw ECMA FIELD byte -- is not even a
+        // legal CallingConventions value.
+        let fixture = makeSignatureFixture ()
+
+        let declaringTypeAddr, _, state = closedHostDeclaringType fixture fixture.State
+        let peByteRange, sigPointer, state = payloadSignatureBlobPointer fixture state
+
+        let signatureAddr, state =
+            invokeSignatureInitRawBlob
+                fixture
+                (CliType.ObjectRef (Some declaringTypeAddr))
+                (CliType.RuntimePointer (CliRuntimePointer.Managed sigPointer))
+                peByteRange.Size
+                state
+
+        match signatureField state signatureAddr "_managedCallingConventionAndArgIteratorFlags" with
+        | CliType.Numeric (CliNumericType.Int32 actual) -> actual |> shouldEqual 0
+        | other -> failwith $"Expected _managedCallingConventionAndArgIteratorFlags to be Int32, got %O{other}"
+
+    [<Test>]
+    let ``Signature_Init leaves the calling convention alone for a field handle`` () : unit =
+        // The handle-backed field path shares CoreCLR's common tail with the raw-blob one, so it
+        // must agree: two Signatures describing the same field cannot report different calling
+        // conventions depending on which constructor built them.
+        let fixture = makeSignatureFixture ()
+
+        let signatureAddr, _, state =
+            invokeSignatureInit fixture nullPCorSig (CliType.Numeric (CliNumericType.Int32 0)) None nullMethodHandle
+
+        match signatureField state signatureAddr "_managedCallingConventionAndArgIteratorFlags" with
+        | CliType.Numeric (CliNumericType.Int32 actual) -> actual |> shouldEqual 0
+        | other -> failwith $"Expected _managedCallingConventionAndArgIteratorFlags to be Int32, got %O{other}"
+
+    [<Test>]
+    let ``Signature_Init raw blob refuses a null declaring type`` () : unit =
+        // CoreCLR asserts `!declType.IsNull()`: every managed constructor sets `_declaringType`
+        // before calling in, and there is no fallback to derive the type context from.
+        let fixture = makeSignatureFixture ()
+
+        let peByteRange, sigPointer, state =
+            payloadSignatureBlobPointer fixture fixture.State
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () ->
+                invokeSignatureInitRawBlob
+                    fixture
+                    (CliType.ObjectRef None)
+                    (CliType.RuntimePointer (CliRuntimePointer.Managed sigPointer))
+                    peByteRange.Size
+                    state
+                |> ignore
+            )
+
+        ex.Message |> shouldContainText "Signature._declaringType was null"
+
+    [<Test>]
+    let ``Signature_Init raw blob refuses a cCorSig that disagrees with the blob`` () : unit =
+        let fixture = makeSignatureFixture ()
+        let declaringTypeAddr, _, state = closedHostDeclaringType fixture fixture.State
+        let peByteRange, sigPointer, state = payloadSignatureBlobPointer fixture state
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () ->
+                invokeSignatureInitRawBlob
+                    fixture
+                    (CliType.ObjectRef (Some declaringTypeAddr))
+                    (CliType.RuntimePointer (CliRuntimePointer.Managed sigPointer))
+                    (peByteRange.Size + 1)
+                    state
+                |> ignore
+            )
+
+        ex.Message |> shouldContainText "does not match the"
+
+    [<Test>]
+    let ``Signature_Init raw blob refuses a pointer with no signature-blob provenance`` () : unit =
+        // The arm does not parse the blob; it recovers the FieldDef the pointer names. A pointer
+        // that is merely "some bytes" cannot answer that, and guessing would be worse than failing.
+        let fixture = makeSignatureFixture ()
+        let declaringTypeAddr, _, state = closedHostDeclaringType fixture fixture.State
+
+        let byteHandle =
+            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes fixture.BaseClassTypes.Byte
+
+        let arrayAddr, state =
+            IlMachineState.allocateArray
+                (ConcreteTypeHandle.OneDimArrayZero byteHandle)
+                (fun () -> CliType.Numeric (CliNumericType.UInt8 0uy))
+                2
+                state
+
+        let anonymousPointer =
+            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), [])
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () ->
+                invokeSignatureInitRawBlob
+                    fixture
+                    (CliType.ObjectRef (Some declaringTypeAddr))
+                    (CliType.RuntimePointer (CliRuntimePointer.Managed anonymousPointer))
+                    2
+                    state
+                |> ignore
+            )
+
+        ex.Message |> shouldContainText "managed pointer over a PE byte range"
+
+    [<Test>]
+    let ``Signature_Init refuses a blob alongside a field handle`` () : unit =
+        // CoreCLR overwrites the caller's blob from the handle, so no managed constructor passes
+        // both; silently preferring one would hide the bug that produced it.
+        let fixture = makeSignatureFixture ()
+
+        let peByteRange, sigPointer, state =
+            payloadSignatureBlobPointer fixture fixture.State
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () ->
+                invokeSignatureInit
+                    fixture
+                    (CliType.RuntimePointer (CliRuntimePointer.Managed sigPointer))
+                    (CliType.Numeric (CliNumericType.Int32 peByteRange.Size))
+                    None
+                    nullMethodHandle
+                |> ignore
+            )
+
+        ex.Message |> shouldContainText "no managed Signature constructor passes both"

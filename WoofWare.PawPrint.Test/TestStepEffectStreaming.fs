@@ -216,3 +216,104 @@ class Program
         OutputLogEntry.bytesFor FileDescriptorRole.StandardOutput result.Terminal.Kernel.OutputLog
         |> Seq.toArray
         |> shouldEqual [| 0x62uy ; 0x65uy ; 0x66uy ; 0x0Auy |]
+
+    /// Startup runs guest code too, and it must be streamable for the same reason `Main` is: a
+    /// static initialiser that prints and then wedges has to deliver what it printed.
+    ///
+    /// `prepare` used to pump the AppContext seed and the class initialisers internally, so a
+    /// driver saw nothing until all of that had finished — and if it never finished, nothing at
+    /// all. `beginStartup`/`stepStartup` expose those steps, and this pins that a `.cctor`'s
+    /// write is reported *during* startup rather than merely turning up in the log afterwards.
+    [<Test>]
+    let ``a static initialiser's write is reported while startup is still running`` () : unit =
+        let source =
+            """
+using System;
+using System.Runtime.InteropServices;
+
+class Program
+{"""
+            + writeDecl
+            + """
+    static Program()
+    {
+        Write(1, new byte[] { 0x63, 0x63, 0x74, 0x0A });   // "cct\n"
+    }
+
+    static int Main(string[] args)
+    {
+        if (Write(1, new byte[] { 0x6D, 0x61, 0x6E, 0x0A }) != 4) return 1;   // "man\n"
+        return 0;
+    }
+}
+"""
+
+        let image = Roslyn.compile [ source ]
+
+        let _messages, loggerFactory =
+            LoggerFactory.makeTestWithProperties [ "source_file", "StepEffectStartup.cs" ]
+
+        use _loggerFactoryResource = loggerFactory
+        let logger = loggerFactory.CreateLogger "TestStepEffectStreaming"
+
+        let dotnetRuntimes =
+            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+
+        use peImage = new MemoryStream (image)
+
+        let rec pumpStartup
+            (startup : Program.Startup)
+            (acc : (FileDescriptorRole * byte array) list)
+            : (FileDescriptorRole * byte array) list * Program.PreparedProgram
+            =
+            match Program.stepStartup loggerFactory logger startup with
+            | Program.StartupStepOutcome.Stepped (startup, _, _, effect) ->
+                let acc =
+                    match effect with
+                    | StepEffect.WroteToFd (role, bytes) -> (role, bytes |> Seq.toArray) :: acc
+                    | StepEffect.NoEffect -> acc
+
+                pumpStartup startup acc
+            | Program.StartupStepOutcome.WorkerTerminated (startup, _)
+            | Program.StartupStepOutcome.PhaseAdvanced startup -> pumpStartup startup acc
+            | Program.StartupStepOutcome.Deadlocked (_, stuck) -> failwith $"startup deadlocked: %s{stuck}"
+            | Program.StartupStepOutcome.Completed (Program.ProgramStartResult.CompletedBeforeMain outcome) ->
+                failwith $"guest completed before Main: %O{outcome}"
+            | Program.StartupStepOutcome.Completed (Program.ProgramStartResult.Ready prepared) -> List.rev acc, prepared
+
+        let startupEffects, prepared =
+            pumpStartup
+                (Program.beginStartup
+                    loggerFactory
+                    (Some "StepEffectStartup.cs")
+                    peImage
+                    (HostConfig.Default dotnetRuntimes))
+                []
+
+        // The cctor's write is reported by a startup step, not left to be discovered in the log
+        // once startup has finished. This is the whole claim.
+        startupEffects
+        |> shouldEqual [ FileDescriptorRole.StandardOutput, [| 0x63uy ; 0x63uy ; 0x74uy ; 0x0Auy |] ]
+
+        // ...and Main's write is not: it belongs to the phase after startup, so a driver that
+        // only streamed startup would still be losing output.
+        let rec pumpMain
+            (prepared : Program.PreparedProgram)
+            (acc : (FileDescriptorRole * byte array) list)
+            : (FileDescriptorRole * byte array) list
+            =
+            match Program.stepPrepared loggerFactory logger prepared with
+            | Program.ProgramStepOutcome.Completed (RunOutcome.NormalExit _) -> List.rev acc
+            | Program.ProgramStepOutcome.Completed other -> failwith $"guest did not exit normally: %O{other}"
+            | Program.ProgramStepOutcome.Deadlocked (_, stuck) -> failwith $"guest deadlocked: %s{stuck}"
+            | Program.ProgramStepOutcome.WorkerTerminated (prepared, _) -> pumpMain prepared acc
+            | Program.ProgramStepOutcome.InstructionStepped (prepared, _, _, effect) ->
+                let acc =
+                    match effect with
+                    | StepEffect.WroteToFd (role, bytes) -> (role, bytes |> Seq.toArray) :: acc
+                    | StepEffect.NoEffect -> acc
+
+                pumpMain prepared acc
+
+        pumpMain prepared []
+        |> shouldEqual [ FileDescriptorRole.StandardOutput, [| 0x6Duy ; 0x61uy ; 0x6Euy ; 0x0Auy |] ]
