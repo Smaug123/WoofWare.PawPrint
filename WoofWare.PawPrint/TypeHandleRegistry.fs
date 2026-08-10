@@ -34,6 +34,12 @@ module TypeHandleRegistry =
         (reg : TypeHandleRegistry)
         : ManagedHeapAddress * TypeHandleRegistry * 'allocState
         =
+        // This is the one place a target becomes a guest-visible `Type`, and the map lookup just
+        // below is what makes that object reference-stable. A non-canonical target would
+        // therefore hand the guest a second `Type` for a type it already has one for, so check
+        // canonicality here rather than trusting every construction site.
+        RuntimeTypeHandleTarget.assertWellFormed def
+
         match Map.tryFind def reg.TypeToHandle with
         | Some v -> v, reg, allocState
         | None ->

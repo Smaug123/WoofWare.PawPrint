@@ -21,6 +21,9 @@ module NativeEnum =
 
         let concreteTypeHandle =
             match NativeCall.qCallTypeHandleToRuntimeTypeHandleTarget operation state arg with
+            | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
+                failwith
+                    $"TODO: open constructed types are not handled at Native/NativeEnum.fs:%s{__LINE__}; got %O{openConstructed}"
             | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
                 failwith $"%s{operation}: expected a closed enum RuntimeTypeHandle, got open generic %O{identity}"
             | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->

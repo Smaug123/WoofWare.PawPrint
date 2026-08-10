@@ -1090,6 +1090,9 @@ public class OpenBox<T> { }
             failwith "TypeSpec-like token was incorrectly classified as a generic parameter"
         | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
             failwith "TypeSpec-like token was incorrectly classified as a method generic parameter"
+        | RuntimeTypeHandleTarget.OpenConstructed _ ->
+            failwith
+                "TypeSpec-like token was incorrectly classified as an open constructed type; its argument is closed, so it must be a Closed handle"
         | RuntimeTypeHandleTarget.Closed handle ->
             let constructed =
                 AllConcreteTypes.lookup handle state.ConcreteTypes
