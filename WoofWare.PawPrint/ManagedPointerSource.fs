@@ -1083,6 +1083,14 @@ module ManagedPointerSource =
     /// addressed at all occupy distinct offsets, so structural inequality is sound
     /// there. Overlapping explicit layouts are stored byte-backed and so never carry
     /// `Field` projections to begin with.
+    ///
+    /// Nor is a run whose `ByteOffset` steps sum to something strictly positive. A field
+    /// offset is non-negative — a field lives inside its container — and `ReinterpretAs`
+    /// is address-preserving, so such a run advances the address by strictly more than
+    /// zero however the fields turn out to be laid out. That is decidable without any
+    /// layout at all, and answering `false` for it is what the plain structural
+    /// comparison already did. A run summing to zero or less is not decidable: a
+    /// negative cursor can cancel an unknown field offset exactly.
     let private differsByUndecidableFieldRun (p1 : ManagedPointerSource) (p2 : ManagedPointerSource) : bool =
         match p1, p2 with
         | ManagedPointerSource.Byref (root1, projs1), ManagedPointerSource.Byref (root2, projs2) when root1 = root2 ->
@@ -1095,9 +1103,21 @@ module ManagedPointerSource =
                     | _ -> false
                 )
 
+            let byteOffsetSum (projs : ByrefProjection list) : int =
+                projs
+                |> List.sumBy (fun p ->
+                    match p with
+                    | ByrefProjection.ByteOffset n -> n
+                    | ByrefProjection.Field _
+                    | ByrefProjection.ReinterpretAs _ -> 0
+                )
+
+            let undecidable (extra : ByrefProjection list) : bool =
+                containsField extra && byteOffsetSum extra <= 0
+
             match rest1, rest2 with
             | [], extra
-            | extra, [] -> containsField extra
+            | extra, [] -> undecidable extra
             | _, _ -> false
         | _, _ -> false
 

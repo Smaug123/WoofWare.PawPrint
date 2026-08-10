@@ -107,6 +107,39 @@ module TestByrefComparison =
 
         exn.Message |> shouldContainText "field projections"
 
+    /// A run that also advances the cursor by a strictly positive number of bytes IS
+    /// decidable, and must not be swept into the refusal: a field offset is non-negative
+    /// and `ReinterpretAs` preserves the address, so the run moves strictly forward
+    /// whatever the layout turns out to be. This is the shape reached by comparing
+    /// `Unsafe.As<S, byte>(ref s)` with
+    /// `Unsafe.AddByteOffset(ref Unsafe.As<int, byte>(ref s.X), 1)`.
+    [<Test>]
+    let ``a field run carrying a positive byte offset still decides`` () =
+        let extra =
+            [
+                fieldX
+                ByrefProjection.ReinterpretAs byteType
+                ByrefProjection.ByteOffset 1
+            ]
+
+        ceq (byref (local 0us) []) (byref (local 0us) extra) |> shouldEqual false
+
+    /// A *negative* cursor is a different matter: it can cancel an unknown field offset
+    /// exactly, so the pair is undecidable again and must still be refused.
+    [<Test>]
+    let ``a field run carrying a negative byte offset is refused`` () =
+        let extra =
+            [
+                fieldX
+                ByrefProjection.ReinterpretAs byteType
+                ByrefProjection.ByteOffset -4
+            ]
+
+        let exn =
+            Assert.Throws (fun () -> ceq (byref (local 0us) []) (byref (local 0us) extra) |> ignore)
+
+        exn.Message |> shouldContainText "field projections"
+
     /// For any shared prefix and any non-empty run of extra fields, extending one side is
     /// undecidable — the extra fields may all sit at offset 0 and denote no bytes at all.
     /// Generated rather than enumerated, so the rule is pinned at every depth rather than
