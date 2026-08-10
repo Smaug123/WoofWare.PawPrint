@@ -86,6 +86,7 @@
     <Compile Include="Netstandard21FSharpCore.fs" />
     <Compile Include="TestZeroOfBaseAssemblies.fs" />
     <Compile Include="TestTypeResolutionBaseAssemblies.fs" />
+    <Compile Include="TestGenericEnvironmentCycles.fs" />
     <Compile Include="TestAssemblyDictionaryKeying.fs" />
     <Compile Include="TestLoadedAssemblies.fs" />
     <Compile Include="TestSharedFrameworkForwardSweep.fs" />

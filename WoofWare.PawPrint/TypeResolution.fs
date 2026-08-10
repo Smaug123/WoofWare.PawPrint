@@ -209,12 +209,50 @@ module TypeResolution =
         let target = assy.TypeRefs.[ty]
         resolveTypeFromRef loggerFactory dotnetRuntimeDirs assy target genericArgs assemblies
 
+    /// <summary>
+    /// One generic parameter whose argument we are part-way through expanding.
+    /// </summary>
+    /// <remarks>
+    /// Substitution here replaces a parameter with its argument and then keeps walking that
+    /// argument under the <i>same</i> environment, so that an argument which itself mentions a
+    /// parameter gets expanded in turn. That terminates exactly when the "parameter i's argument
+    /// mentions parameter j" relation is acyclic; a cyclic environment (the degenerate case being
+    /// <c>!0 := !0</c>, the interesting one <c>!0 := List&lt;!0&gt;</c>) otherwise re-expands for
+    /// ever. A value of this type records one link of the expansion chain currently in flight, so
+    /// that revisiting a parameter can be reported instead of recursed into.
+    /// </remarks>
+    [<RequireQualifiedAccess>]
+    type private ExpandingParam =
+        /// The type-generic parameter at this index, i.e. `!n`.
+        | Type of int
+        /// The method-generic parameter at this index, i.e. `!!n`.
+        | Method of int
+
+        override this.ToString () : string =
+            match this with
+            | ExpandingParam.Type i -> $"!%d{i}"
+            | ExpandingParam.Method i -> $"!!%d{i}"
+
+    /// A cyclic environment is not something metadata can express: environments are built by the
+    /// interpreter, and every live path builds them out of `concreteHandleToTypeDefn`, which emits
+    /// closed types only. So this is an invariant violation in the caller, not bad guest input —
+    /// hence a hard failure rather than a guest exception. It exists because the alternative is a
+    /// stack overflow, which .NET cannot catch, report, or contain.
+    let private failCyclicEnvironment (param : ExpandingParam) (arg : TypeDefn) (expanding : Set<ExpandingParam>) : 'a =
+        let chain = expanding |> Seq.map string |> String.concat ", "
+
+        failwith
+            $"TypeResolution: generic environment is cyclic. Expanding generic parameter %O{param} requires expanding %O{param} again (already expanding: %s{chain}); its argument is %O{arg}. A generic environment must be well-founded: an argument may not mention, whether directly or through the other arguments, the parameter it is bound to. Callers should be passing closed generic arguments."
+
     /// Substitute generic parameters in a TypeDefn while preserving the structure of
     /// constructed types (arrays, pointers, byrefs). For "leaf" types (FromReference,
     /// FromDefinition, PrimitiveType), falls through to resolveTypeFromDefn and converts
     /// back via typeInfoToTypeDefn, which is lossless for those cases. For constructed
     /// types, recurses structurally so that e.g. OneDimensionalArrayLowerBoundZero is
     /// preserved rather than being collapsed to System.Array.
+    ///
+    /// <c>expanding</c> is the chain of parameter expansions currently in flight; see
+    /// <c>ExpandingParam</c>.
     let rec private substituteGenericsInTypeDefn
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -222,12 +260,18 @@ module TypeResolution =
         (ty : TypeDefn)
         (typeGenericArgs : ImmutableArray<TypeDefn>)
         (methodGenericArgs : ImmutableArray<TypeDefn>)
+        (expanding : Set<ExpandingParam>)
         (assy : DumpedAssembly)
         (assemblies : LoadedAssemblies)
         : LoadedAssemblies * TypeDefn
         =
         match ty with
         | TypeDefn.GenericTypeParameter idx ->
+            let link = ExpandingParam.Type idx
+
+            if Set.contains link expanding then
+                failCyclicEnvironment link typeGenericArgs.[idx] expanding
+
             substituteGenericsInTypeDefn
                 loggerFactory
                 dotnetRuntimeDirs
@@ -235,9 +279,15 @@ module TypeResolution =
                 typeGenericArgs.[idx]
                 typeGenericArgs
                 methodGenericArgs
+                (Set.add link expanding)
                 assy
                 assemblies
         | TypeDefn.GenericMethodParameter idx ->
+            let link = ExpandingParam.Method idx
+
+            if Set.contains link expanding then
+                failCyclicEnvironment link methodGenericArgs.[idx] expanding
+
             substituteGenericsInTypeDefn
                 loggerFactory
                 dotnetRuntimeDirs
@@ -245,6 +295,7 @@ module TypeResolution =
                 methodGenericArgs.[idx]
                 typeGenericArgs
                 methodGenericArgs
+                (Set.add link expanding)
                 assy
                 assemblies
         | TypeDefn.OneDimensionalArrayLowerBoundZero elementType ->
@@ -256,6 +307,7 @@ module TypeResolution =
                     elementType
                     typeGenericArgs
                     methodGenericArgs
+                    expanding
                     assy
                     assemblies
 
@@ -269,6 +321,7 @@ module TypeResolution =
                     elementType
                     typeGenericArgs
                     methodGenericArgs
+                    expanding
                     assy
                     assemblies
 
@@ -282,6 +335,7 @@ module TypeResolution =
                     elementType
                     typeGenericArgs
                     methodGenericArgs
+                    expanding
                     assy
                     assemblies
 
@@ -295,6 +349,7 @@ module TypeResolution =
                     elementType
                     typeGenericArgs
                     methodGenericArgs
+                    expanding
                     assy
                     assemblies
 
@@ -319,6 +374,7 @@ module TypeResolution =
                             arg
                             typeGenericArgs
                             methodGenericArgs
+                            expanding
                             assy
                             assemblies
 
@@ -329,13 +385,14 @@ module TypeResolution =
             let substituted = TypeDefn.GenericInstantiation (generic, builder.ToImmutable ())
 
             let assemblies, _assy, resolvedInfo =
-                resolveTypeFromDefn
+                resolveTypeFromDefnTracked
                     loggerFactory
                     dotnetRuntimeDirs
                     baseClassTypes
                     substituted
                     typeGenericArgs
                     methodGenericArgs
+                    expanding
                     assy
                     assemblies
 
@@ -350,13 +407,14 @@ module TypeResolution =
             // Leaf types: resolve for side effects (assembly loading) and convert back.
             // The round-trip through TypeInfo is lossless for these cases.
             let assemblies, _assy, resolvedInfo =
-                resolveTypeFromDefn
+                resolveTypeFromDefnTracked
                     loggerFactory
                     dotnetRuntimeDirs
                     baseClassTypes
                     ty
                     typeGenericArgs
                     methodGenericArgs
+                    expanding
                     assy
                     assemblies
 
@@ -367,13 +425,14 @@ module TypeResolution =
         | other ->
             // For any other TypeDefn variant, resolve and convert back.
             let assemblies, _assy, resolvedInfo =
-                resolveTypeFromDefn
+                resolveTypeFromDefnTracked
                     loggerFactory
                     dotnetRuntimeDirs
                     baseClassTypes
                     other
                     typeGenericArgs
                     methodGenericArgs
+                    expanding
                     assy
                     assemblies
 
@@ -382,19 +441,18 @@ module TypeResolution =
 
             assemblies, preserved
 
-    /// Resolve a TypeDefn to the metadata of the type it names, loading assemblies as required.
-    ///
-    /// The returned TypeInfo satisfies the base-chain closure invariant described on
-    /// <c>primeBaseChain</c>: every assembly reachable from its base-type chain is loaded in the
-    /// returned load context, so the caller may run the pure walks (<c>isValueType</c>,
-    /// <c>signatureTypeKind</c>, <c>typeInfoToTypeDefn</c>) over it.
-    and resolveTypeFromDefn
+    /// The body of <c>resolveTypeFromDefn</c>, carrying the chain of parameter expansions
+    /// currently in flight. The public entry point starts that chain empty; everything inside
+    /// this recursive group must thread it, because the cycle it guards against runs through
+    /// here.
+    and private resolveTypeFromDefnTracked
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (ty : TypeDefn)
         (typeGenericArgs : ImmutableArray<TypeDefn>)
         (methodGenericArgs : ImmutableArray<TypeDefn>)
+        (expanding : Set<ExpandingParam>)
         (assy : DumpedAssembly)
         (assemblies : LoadedAssemblies)
         : LoadedAssemblies * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
@@ -407,13 +465,14 @@ module TypeResolution =
                 ty
                 typeGenericArgs
                 methodGenericArgs
+                expanding
                 assy
                 assemblies
 
         primeBaseChain loggerFactory dotnetRuntimeDirs assemblies resolvedIn resolved, resolvedIn, resolved
 
     /// The body of <c>resolveTypeFromDefn</c>, without the base-chain priming its contract
-    /// promises. Only <c>resolveTypeFromDefn</c> may call this.
+    /// promises. Only <c>resolveTypeFromDefnTracked</c> may call this.
     and private resolveTypeFromDefnUnprimed
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -421,6 +480,7 @@ module TypeResolution =
         (ty : TypeDefn)
         (typeGenericArgs : ImmutableArray<TypeDefn>)
         (methodGenericArgs : ImmutableArray<TypeDefn>)
+        (expanding : Set<ExpandingParam>)
         (assy : DumpedAssembly)
         (assemblies : LoadedAssemblies)
         : LoadedAssemblies * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
@@ -440,6 +500,7 @@ module TypeResolution =
                             arg
                             typeGenericArgs
                             methodGenericArgs
+                            expanding
                             assy
                             assemblies
 
@@ -450,13 +511,23 @@ module TypeResolution =
 
             let args' = builder.ToImmutable ()
 
-            resolveTypeFromDefn
+            // `args'` replaces `typeGenericArgs` as the environment `generic` is resolved in, so
+            // in principle the chain's type-parameter links now name parameters of an environment
+            // we have left. We carry them anyway: `generic` is the head of an instantiation, which
+            // metadata can only ever spell as a TypeDef or TypeRef, and resolving either consults
+            // no parameter and so reaches no guard. Clearing the links would only change the
+            // answer for a parameter-headed instantiation — a shape no assembly can contain, and
+            // one whose environment is cyclic in any case. Staying conservative is the honest
+            // choice for a guard whose false positives would be far harder to diagnose than its
+            // false negatives.
+            resolveTypeFromDefnTracked
                 loggerFactory
                 dotnetRuntimeDirs
                 baseClassTypes
                 generic
                 args'
                 methodGenericArgs
+                expanding
                 assy
                 assemblies
         | TypeDefn.FromDefinition (identity, _typeKind) ->
@@ -497,26 +568,38 @@ module TypeResolution =
             assemblies, baseClassTypes.Corelib, ty
         | TypeDefn.GenericTypeParameter param ->
             let arg = typeGenericArgs.[param]
+            let link = ExpandingParam.Type param
+
+            if Set.contains link expanding then
+                failCyclicEnvironment link arg expanding
+
             // TODO: this assembly is probably wrong?
-            resolveTypeFromDefn
+            resolveTypeFromDefnTracked
                 loggerFactory
                 dotnetRuntimeDirs
                 baseClassTypes
                 arg
                 typeGenericArgs
                 methodGenericArgs
+                (Set.add link expanding)
                 assy
                 assemblies
         | TypeDefn.GenericMethodParameter param ->
             let arg = methodGenericArgs.[param]
+            let link = ExpandingParam.Method param
+
+            if Set.contains link expanding then
+                failCyclicEnvironment link arg expanding
+
             // TODO: this assembly is probably wrong?
-            resolveTypeFromDefn
+            resolveTypeFromDefnTracked
                 loggerFactory
                 dotnetRuntimeDirs
                 baseClassTypes
                 arg
                 typeGenericArgs
                 methodGenericArgs
+                (Set.add link expanding)
                 assy
                 assemblies
         | TypeDefn.OneDimensionalArrayLowerBoundZero _
@@ -535,6 +618,46 @@ module TypeResolution =
             failwith
                 $"TODO: resolveTypeFromDefn cannot faithfully represent pointer/byref/pinned types as TypeInfo. Caller should handle these wrapper types before calling resolveTypeFromDefn. Got: {ty}"
         | s -> failwith $"TODO: resolveTypeFromDefn unimplemented for {s}"
+
+    /// <summary>
+    /// Resolve a TypeDefn to the metadata of the type it names, loading assemblies as required.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The returned TypeInfo satisfies the base-chain closure invariant described on
+    /// <c>primeBaseChain</c>: every assembly reachable from its base-type chain is loaded in the
+    /// returned load context, so the caller may run the pure walks (<c>isValueType</c>,
+    /// <c>signatureTypeKind</c>, <c>typeInfoToTypeDefn</c>) over it.
+    /// </para>
+    /// <para>
+    /// <paramref name="typeGenericArgs" /> and <paramref name="methodGenericArgs" /> must be
+    /// well-founded: no argument may mention, whether directly or through the other arguments,
+    /// the parameter it is bound to. Passing closed arguments — which is what every path through
+    /// <c>concreteHandleToTypeDefn</c> produces — satisfies this trivially. A cyclic environment
+    /// is diagnosed and raised on rather than recursed into; see <c>ExpandingParam</c>.
+    /// </para>
+    /// </remarks>
+    let resolveTypeFromDefn
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (ty : TypeDefn)
+        (typeGenericArgs : ImmutableArray<TypeDefn>)
+        (methodGenericArgs : ImmutableArray<TypeDefn>)
+        (assy : DumpedAssembly)
+        (assemblies : LoadedAssemblies)
+        : LoadedAssemblies * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
+        =
+        resolveTypeFromDefnTracked
+            loggerFactory
+            dotnetRuntimeDirs
+            baseClassTypes
+            ty
+            typeGenericArgs
+            methodGenericArgs
+            Set.empty
+            assy
+            assemblies
 
     let resolveTypeFromSpec
         (loggerFactory : ILoggerFactory)
