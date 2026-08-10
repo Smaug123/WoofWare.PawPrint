@@ -1090,6 +1090,22 @@ module ManagedPointerSource =
             | ByrefProjection.ReinterpretAs _ -> 0
         )
 
+    /// Could this run of projections have moved the byref outside the extent of the root it
+    /// names? A `Field` displaces by an amount only the declaring type's layout knows, and a
+    /// non-zero `ByteOffset` that survived normalisation is one the fixed-stride folding
+    /// could not absorb into the root — typically because a `Field` intervened.
+    ///
+    /// This is what makes root disjointness insufficient on its own: two byrefs on different
+    /// roots are different addresses only while each stays within the root it started from.
+    let private mayLeaveRootExtent (projs : ByrefProjection list) : bool =
+        projs
+        |> List.exists (fun p ->
+            match p with
+            | ByrefProjection.Field _ -> true
+            | ByrefProjection.ByteOffset n -> n <> 0
+            | ByrefProjection.ReinterpretAs _ -> false
+        )
+
     /// Whether two byrefs sharing a root name the same address, or `None` when saying
     /// so would need field-offset layout that byref comparison does not carry.
     ///
@@ -1159,23 +1175,38 @@ module ManagedPointerSource =
             | None ->
                 failwith
                     $"TODO (CEQ): %s{context} compares byrefs whose projection chains differ by field steps, so whether they alias depends on field offsets within their declaring types — layout that byref comparison does not carry. Got %O{raw1} vs %O{raw2}"
+        | ManagedPointerSource.Byref (root1, projs1), ManagedPointerSource.Byref (root2, projs2) when
+            mayLeaveRootExtent projs1 || mayLeaveRootExtent projs2
+            ->
+            // Distinct roots, but at least one byref has been displaced by an amount this
+            // comparison cannot evaluate, so it may have walked clean out of its own root's
+            // extent and into the other's. Measured: for `struct Pair { int X; int Y }` and
+            // `Pair[] a`, a byte view of `a[0].Y` advanced 4 bytes IS `a[1]`, and real .NET
+            // says so — yet the two byrefs keep different `ArrayElement` roots because the
+            // intervening `Field` stops the cursor folding into the index.
+            //
+            // Disjointness of the *roots* — separate locals, distinct array elements,
+            // distinct string characters — says nothing once a projection can leave the
+            // root it started from.
+            failwith
+                $"TODO (CEQ): %s{context} compares byrefs on different roots where at least one carries field or byte displacement, so it may have left its root's extent; deciding that needs layout this comparison does not carry. Got %O{raw1} vs %O{raw2}"
         | ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (obj1, field1), _),
           ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (obj2, field2), _) when obj1 = obj2 && field1 <> field2 ->
-            // Two fields of one heap object are *different roots* here, but that is a
-            // statement about how the byref was built, not about where it points. Under
-            // `[StructLayout(LayoutKind.Explicit)]` on a class, two fields can share an
-            // address — measured: `Unsafe.AreSame(ref c.A, ref c.B)` for two
-            // `[FieldOffset(0)]` fields is `true` on real .NET and was answering `false`
-            // here. Only the layout separates that from an ordinary class.
+            // Undisplaced, but two fields of one heap object are still *different roots* here
+            // — again a statement about how each byref was built, not about where it points.
+            // Under `[StructLayout(LayoutKind.Explicit)]` on a class, two fields share an
+            // address: measured, `Unsafe.AreSame(ref c.A, ref c.B)` for two `[FieldOffset(0)]`
+            // fields is `true` on real .NET and was answering `false` here.
             failwith
                 $"TODO (CEQ): %s{context} compares byrefs to two fields of one heap object, which alias iff those fields share an offset — layout that byref comparison does not carry. Got %O{raw1} vs %O{raw2}"
         | _, _ ->
-            // Distinct roots are otherwise distinct storage: separate locals and arguments
-            // are separate slots, distinct array elements and string characters are disjoint
-            // by construction, statics get a slot each, and a heap allocation has a single
-            // object kind so a boxed value and a class-field byref never name one address.
-            // The non-byref sources (`Null`, bit-pattern placeholders) carry their whole
-            // identity in the value itself.
+            // Distinct roots, neither byref displaced from the root it names, and not two
+            // fields of one object. Each byref is then exactly its root's base address, and
+            // those roots are distinct storage: separate locals and arguments are separate
+            // slots, distinct array elements and string characters are disjoint, statics get
+            // a slot each, and a heap allocation has a single object kind so a boxed value
+            // and a class-field byref never name one address. The non-byref sources (`Null`,
+            // bit-pattern placeholders) carry their whole identity in the value itself.
             stripped1 = stripped2
 
 [<RequireQualifiedAccess>]

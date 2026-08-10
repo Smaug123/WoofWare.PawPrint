@@ -117,16 +117,59 @@ module TestByrefComparison =
 
         ceq (field ()) (field ()) |> shouldEqual true
 
-    /// Distinct array elements cannot overlap however the element type is laid out, so
-    /// distinct roots still decide there — the heap-field refusal must not generalise to
-    /// every same-container root pair.
+    /// Distinct array elements are disjoint, so two *undisplaced* byrefs to different
+    /// elements still decide — the refusals must not generalise to every same-container
+    /// root pair.
     [<Test>]
-    let ``distinct elements of one array are unequal`` () =
+    let ``distinct undisplaced elements of one array are unequal`` () =
         let element (index : int) =
             ManagedPointerSource.Byref (ByrefRoot.ArrayElement (ManagedHeapAddress 1, index), [])
             |> ManagedPointerSource.unsafeAssumeNormalisedForComparison
 
         ceq (element 0) (element 1) |> shouldEqual false
+
+    /// ... but once a projection displaces one of them, element disjointness stops settling
+    /// anything: it can walk out of its own element and into the next. For
+    /// `struct Pair { int X; int Y }`, a byte view of `a[0].Y` advanced 4 bytes *is* `a[1]`.
+    /// Parked as `AreSameProjectionCrossesArrayElement.cs`.
+    [<Test>]
+    let ``a displaced element byref against another element is refused`` () =
+        let displaced =
+            ManagedPointerSource.Byref (
+                ByrefRoot.ArrayElement (ManagedHeapAddress 1, 0),
+                [
+                    fieldY
+                    ByrefProjection.ReinterpretAs byteType
+                    ByrefProjection.ByteOffset 4
+                ]
+            )
+            |> ManagedPointerSource.unsafeAssumeNormalisedForComparison
+
+        let bare =
+            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (ManagedHeapAddress 1, 1), [])
+            |> ManagedPointerSource.unsafeAssumeNormalisedForComparison
+
+        let exn = Assert.Throws (fun () -> ceq displaced bare |> ignore)
+
+        exn.Message |> shouldContainText "root's extent"
+
+    /// The displacement rule keys on displacement, not on merely having projections: a
+    /// byref that only changes type view has not moved, so it still decides against a
+    /// different root.
+    [<Test>]
+    let ``a reinterpreted-but-undisplaced byref still decides against another root`` () =
+        let reinterpreted =
+            ManagedPointerSource.Byref (
+                ByrefRoot.ArrayElement (ManagedHeapAddress 1, 0),
+                [ ByrefProjection.ReinterpretAs byteType ]
+            )
+            |> ManagedPointerSource.unsafeAssumeNormalisedForComparison
+
+        let other =
+            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (ManagedHeapAddress 1, 1), [])
+            |> ManagedPointerSource.unsafeAssumeNormalisedForComparison
+
+        ceq reinterpreted other |> shouldEqual false
 
     /// A chain differing only by a trailing `ReinterpretAs` is address-preserving, so it
     /// still decides — this is what makes `Unsafe.As` round-trips compare equal, and it is
