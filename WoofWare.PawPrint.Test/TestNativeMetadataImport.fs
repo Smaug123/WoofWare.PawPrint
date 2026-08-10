@@ -150,6 +150,28 @@ public class ReferencesOtherAssemblyMembers
     public static string MethodMemberRef(int x) => x.ToString();
 }
 
+public class PropertyBase
+{
+    public int Inherited { get; set; }
+}
+
+// Every shape the QCall must *not* filter out. `MetadataImport_Enum` walks the PropertyMap run
+// verbatim: `RuntimeType.PopulateProperties` is what applies binding flags and drops inherited or
+// private members afterwards, so a handler that filtered here would silently lose all but `Alpha`.
+// `Größe` is five characters and seven UTF-8 bytes, which is what separates a real UTF-8 name from
+// an ASCII or UTF-16 one; the indexer is the shape whose metadata name (`Item`) is not its C#
+// spelling. Deriving from `PropertyBase` makes "declared-only" observable: enumeration is per-type,
+// and the managed side walks the base chain itself.
+public class PropertyShapes : PropertyBase
+{
+    public int Alpha { get; set; }
+    public string Beta { get { return "b"; } }
+    private int Hidden { get; set; }
+    public static int Stat { get; set; }
+    public int this[int i] { get { return i; } }
+    public int Größe { get; set; }
+}
+
 public class TypesWithMembers
 {
     public int InstanceMethod(int x, string y) => x + y.Length;
@@ -182,6 +204,7 @@ public class TypesWithMembers
             SignatureShapesType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             ConstantShapesType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             FieldNamesType : TypeInfo<GenericParamFromMetadata, TypeDefn>
+            PropertyShapesType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             MembersType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             InstanceField : FieldInfo<GenericParamFromMetadata, TypeDefn>
             StaticField : FieldInfo<GenericParamFromMetadata, TypeDefn>
@@ -273,6 +296,8 @@ public class TypesWithMembers
 
         let fieldNamesType = requiredTopLevelType assembly "" "FieldNames"
 
+        let propertyShapesType = requiredTopLevelType assembly "" "PropertyShapes"
+
         let membersType = requiredTopLevelType assembly "" "TypesWithMembers"
 
         let constArrayType = requiredTopLevelType corelib "System.Reflection" "ConstArray"
@@ -327,6 +352,7 @@ public class TypesWithMembers
             SignatureShapesType = signatureShapesType
             ConstantShapesType = constantShapesType
             FieldNamesType = fieldNamesType
+            PropertyShapesType = propertyShapesType
             MembersType = membersType
             InstanceField = fieldByName "InstanceField"
             StaticField = fieldByName "StaticField"
@@ -654,6 +680,36 @@ public class TypesWithMembers
         =
         invokeEnum fixture 0x02000000 (typeDefToken targetType.TypeDefHandle) state
 
+    /// `MetadataTokenType.Property`, as `MetadataImport.EnumProperties` passes it.
+    let private invokeEnumProperties
+        (fixture : MetadataImportFixture)
+        (targetType : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        (state : IlMachineState)
+        : int32 * int32 list * EnumResultStorage * IlMachineState
+        =
+        invokeEnum fixture 0x17000000 (typeDefToken targetType.TypeDefHandle) state
+
+    /// The property tokens the *host* CLR reports for a type in the fixture's image, in the order it
+    /// reports them. `PropertyInfo.MetadataToken` is the raw `mdtProperty` token, so this is an
+    /// oracle from outside PawPrint's own parse rather than a restatement of it.
+    ///
+    /// `DeclaredOnly` is what makes the comparison exact: `RuntimeType.PopulateProperties` walks the
+    /// base chain and can drop inherited privates and vtable-slot duplicates, and none of that
+    /// filtering is the QCall's job. Restricted to one type's own rows, the managed result is the
+    /// PropertyMap run itself.
+    let private hostPropertyTokens (image : byte array) (typeName : string) : int32 list =
+        let hostType = (System.Reflection.Assembly.Load image).GetType (typeName, true)
+
+        hostType.GetProperties (
+            System.Reflection.BindingFlags.DeclaredOnly
+            ||| System.Reflection.BindingFlags.Public
+            ||| System.Reflection.BindingFlags.NonPublic
+            ||| System.Reflection.BindingFlags.Instance
+            ||| System.Reflection.BindingFlags.Static
+        )
+        |> Array.map (fun property -> property.MetadataToken)
+        |> List.ofArray
+
     let private invokeGetFieldDefProps
         (fixture : MetadataImportFixture)
         (field : FieldInfo<GenericParamFromMetadata, TypeDefn>)
@@ -963,6 +1019,90 @@ public class TypesWithMembers
             Assert.Throws (fun () -> invokeEnum fixture 0x02000000 0x02000000 fixture.State |> ignore)
 
         exn.ToString () |> shouldContainText "nil TypeDef parent token"
+
+    [<Test>]
+    let ``MetadataImport Enum returns a type's PropertyDef tokens in declaration order`` () : unit =
+        let fixture = makeFixture ()
+
+        let length, tokens, storage, _ =
+            invokeEnumProperties fixture fixture.PropertyShapesType fixture.State
+
+        // Six declared properties; nothing is filtered by visibility, staticness, or being an
+        // indexer, and order is guest-observable because `PopulateProperties` appends in the order
+        // it receives.
+        length |> shouldEqual 6
+        storage |> shouldEqual EnumResultStorage.ShortResult
+        tokens |> shouldEqual (hostPropertyTokens fixture.Image "PropertyShapes")
+
+    [<Test>]
+    let ``MetadataImport Enum returns only a type's own PropertyDef tokens`` () : unit =
+        let fixture = makeFixture ()
+
+        let _, derivedTokens, _, _ =
+            invokeEnumProperties fixture fixture.PropertyShapesType fixture.State
+
+        let baseType = requiredTopLevelType fixture.Assembly "" "PropertyBase"
+        let _, baseTokens, _, _ = invokeEnumProperties fixture baseType fixture.State
+
+        // `PopulateProperties` walks the base chain itself, calling `Enum` once per type, so an
+        // implementation that helpfully included inherited properties would report each base
+        // property twice to the guest. Asserted directly as well as via the host oracle, because
+        // this is the specific way the arm goes wrong.
+        baseTokens |> shouldEqual (hostPropertyTokens fixture.Image "PropertyBase")
+        baseTokens.Length |> shouldEqual 1
+
+        derivedTokens
+        |> List.filter (fun token -> List.contains token baseTokens)
+        |> shouldEqual []
+
+    [<Test>]
+    let ``MetadataImport Enum returns no PropertyDef tokens for a type with only fields`` () : unit =
+        let fixture = makeFixture ()
+
+        // `MetadataFields` has three fields and no properties, so this separately rules out an arm
+        // that enumerated the wrong table: an empty type could not tell the two apart.
+        let length, tokens, storage, _ =
+            invokeEnumProperties fixture fixture.TargetType fixture.State
+
+        length |> shouldEqual 0
+        tokens |> shouldEqual []
+        storage |> shouldEqual EnumResultStorage.ShortResult
+
+    [<Test>]
+    let ``MetadataImport Enum returns no PropertyDef tokens for an empty type`` () : unit =
+        let fixture = makeFixture ()
+
+        // A type with no PropertyMap row at all, as opposed to one whose run is empty.
+        let length, tokens, _, _ =
+            invokeEnumProperties fixture fixture.EmptyType fixture.State
+
+        length |> shouldEqual 0
+        tokens |> shouldEqual []
+
+    [<Test>]
+    let ``MetadataImport Enum rejects a non-TypeDef parent for property enumeration`` () : unit =
+        let fixture = makeFixture ()
+
+        let exn =
+            Assert.Throws (fun () ->
+                invokeEnum fixture 0x17000000 (fieldDefToken fixture.InstanceField.Handle) fixture.State
+                |> ignore
+            )
+
+        exn.ToString ()
+        |> shouldContainText "expected TypeDef parent token for property enumeration"
+
+    [<Test>]
+    let ``MetadataImport Enum rejects a TypeDef parent absent from the assembly`` () : unit =
+        let fixture = makeFixture ()
+
+        // Unguarded, an out-of-range TypeDef handle reaches the metadata reader and surfaces as
+        // `BadImageFormatException: Read out of bounds` — a PawPrint gap disguised as a corrupt
+        // image.
+        let exn =
+            Assert.Throws (fun () -> invokeEnum fixture 0x17000000 0x02FFFFFF fixture.State |> ignore)
+
+        exn.ToString () |> shouldContainText "was not present in"
 
     [<Test>]
     let ``MetadataImport GetFieldDefProps writes metadata field attributes`` () : unit =
@@ -2108,7 +2248,45 @@ public class TypesWithMembers
             bytes |> shouldEqual expected
 
     [<Test>]
-    let ``MetadataImport GetName rejects a non-FieldDef token`` () : unit =
+    let ``MetadataImport GetName agrees with the host runtime for every property`` () : unit =
+        let fixture = makeFixture ()
+
+        // Same outside oracle as the field case, but `Module` has no `ResolveProperty`, so the
+        // property rows are reached through the reflected type instead. `Item` is here because the
+        // indexer's metadata name is not its C# spelling, which a name reconstructed from anything
+        // other than the `#Strings` entry would get wrong.
+        let hostType =
+            (System.Reflection.Assembly.Load fixture.Image).GetType ("PropertyShapes", true)
+
+        let hostProperties =
+            hostType.GetProperties (
+                System.Reflection.BindingFlags.DeclaredOnly
+                ||| System.Reflection.BindingFlags.Public
+                ||| System.Reflection.BindingFlags.NonPublic
+                ||| System.Reflection.BindingFlags.Instance
+                ||| System.Reflection.BindingFlags.Static
+            )
+
+        hostProperties
+        |> Array.map (fun property -> property.Name)
+        |> List.ofArray
+        |> shouldEqual [ "Alpha" ; "Beta" ; "Hidden" ; "Stat" ; "Item" ; "Größe" ]
+
+        let mutable state = fixture.State
+
+        for property in hostProperties do
+            let returnValue, bytes, nextState =
+                invokeGetName fixture property.MetadataToken state
+
+            state <- nextState
+
+            returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+
+            bytes
+            |> shouldEqual (Array.append (System.Text.Encoding.UTF8.GetBytes property.Name) [| 0uy |])
+
+    [<Test>]
+    let ``MetadataImport GetName rejects a token that is neither a FieldDef nor a PropertyDef`` () : unit =
         let fixture = makeFixture ()
 
         // CoreCLR would answer a TypeDef token here (with the type's name), but no managed caller
@@ -2120,7 +2298,7 @@ public class TypesWithMembers
                 |> ignore
             )
 
-        ex.Message |> shouldContainText "expected FieldDef token"
+        ex.Message |> shouldContainText "expected FieldDef or PropertyDef token"
 
     [<Test>]
     let ``MetadataImport GetName rejects a FieldDef token that is absent from the assembly`` () : unit =
@@ -2128,5 +2306,17 @@ public class TypesWithMembers
 
         let ex =
             Assert.Throws (fun () -> invokeGetName fixture 0x04FFFFFF fixture.State |> ignore)
+
+        ex.Message |> shouldContainText "was not present in"
+
+    [<Test>]
+    let ``MetadataImport GetName rejects a PropertyDef token that is absent from the assembly`` () : unit =
+        let fixture = makeFixture ()
+
+        // Unguarded, this reaches `MetadataReader.GetPropertyDefinition` and surfaces as
+        // `BadImageFormatException: Read out of bounds` — which reads as "your assembly is corrupt"
+        // when the truth is that PawPrint was handed a token it should never have seen.
+        let ex =
+            Assert.Throws (fun () -> invokeGetName fixture 0x17FFFFFF fixture.State |> ignore)
 
         ex.Message |> shouldContainText "was not present in"

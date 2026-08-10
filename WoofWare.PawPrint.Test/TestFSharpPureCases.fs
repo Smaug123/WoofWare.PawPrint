@@ -127,19 +127,24 @@ module TestFSharpPureCases =
     /// before recording that a case is blocked on a named primitive, un-park it and observe the
     /// failure: parking it is what stops the claim being checked.
     ///
-    /// `UnionReflection` is parked on *property enumeration*: having found each case's name,
-    /// `FSharpType.GetUnionCases` asks the union type for its properties (the compiler-generated
-    /// `Tag` and per-case field accessors), and `RuntimeType.PopulateProperties` gets the token list
-    /// from the `MetadataImport.Enum` QCall. PawPrint answers that for ExportedType,
-    /// CustomAttribute, FieldDef and TypeDef only, so it fails with "TODO: MetadataImport.Enum does
-    /// not yet support token type 0x17000000" — mdtProperty. Observed by un-parking it and running:
-    /// the real runtime exits 0, PawPrint throws.
+    /// `UnionReflection` is parked on <c>MetadataImport::GetPropertyProps</c>. Having enumerated the
+    /// union type's properties (the compiler-generated `Tag` and per-case field accessors),
+    /// `RuntimeType.PopulateProperties` turns each token into a `RuntimePropertyInfo`, whose
+    /// constructor asks for the property's name, flags and signature blob through that InternalCall.
+    /// Observed by un-parking it and running: the real runtime exits 0, PawPrint reports
+    /// "Unimplemented native method (InternalCall): ... MetadataImport::GetPropertyProps".
     ///
-    /// Six earlier blockers are already gone: decoding each case's
+    /// That is not the last one on this path. A throwaway spike showed at least three more behind
+    /// it: the *associates* branch of the `MetadataImport.Enum` QCall (`mdtMethodDef` with a
+    /// Property or Event parent, which returns method/semantics pairs rather than plain tokens),
+    /// then `RuntimeMethodHandle::GetSlot`, then whatever `Associates.AssignAssociates` needs after
+    /// that.
+    ///
+    /// Seven earlier blockers are already gone: decoding each case's
     /// `CompilationMappingAttribute(SourceConstructFlags, ...)`, whose argument is an enum;
     /// enumerating the union's nested case types; `MetadataImport::GetSigOfFieldDef`; the raw-blob
-    /// path of `Signature_Init`; `MetadataImport::GetDefaultValue`; and `MetadataImport::GetName`,
-    /// which the commit this comment sits in implements.
+    /// path of `Signature_Init`; `MetadataImport::GetDefaultValue`; `MetadataImport::GetName`; and
+    /// property enumeration, which the commit this comment sits in implements.
     let unimplemented : Set<string> = Set.ofList [ "UnionReflection" ]
 
     // F# test cases that legitimately throw under both runtimes. Without this set, a test
