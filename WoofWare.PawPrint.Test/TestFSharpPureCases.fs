@@ -117,6 +117,7 @@ module TestFSharpPureCases =
             "AbstractDispatch"
             "ByrefDispatch"
             "SprintfBasic"
+            "UnionReflection"
         ]
 
     /// F# cases not expected to pass under PawPrint.
@@ -125,7 +126,18 @@ module TestFSharpPureCases =
     /// behaviour is checked. Nothing therefore detects a parked case that has started passing, so
     /// before recording that a case is blocked on a named primitive, un-park it and observe the
     /// failure: parking it is what stops the claim being checked.
-    let unimplemented : Set<string> = Set.empty
+    ///
+    /// `UnionReflection` is parked on `MetadataImport::GetSigOfFieldDef`: having found a union's
+    /// cases, `FSharpType.GetUnionCases` reads each case's fields, and that reaches an InternalCall
+    /// with no handler ("Unimplemented native method (InternalCall): ...
+    /// MetadataImport::GetSigOfFieldDef"). Observed by un-parking it and running: the real runtime
+    /// exits 0, PawPrint throws out of `NativeDispatch.failUnimplemented`.
+    ///
+    /// Two earlier blockers are already gone: decoding each case's
+    /// `CompilationMappingAttribute(SourceConstructFlags, ...)`, whose argument is an enum; and
+    /// enumerating the union's nested case types, which the commit this comment sits in
+    /// implements.
+    let unimplemented : Set<string> = Set.ofList [ "UnionReflection" ]
 
     // F# test cases that legitimately throw under both runtimes. Without this set, a test
     // that crashes both runtimes would silently pass — see TestPureCases.fs for the same

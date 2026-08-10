@@ -330,7 +330,7 @@ module IlMachineTypeResolution =
     /// or `methodGenerics`. Callers that intend to concretise in an empty context can use
     /// this to reject a signature that needs one, rather than taking an opaque
     /// index-out-of-range from `TypeResolution`.
-    let rec containsUnboundGenericParameter
+    let rec private containsUnboundGenericParameter
         (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
         (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (ty : TypeDefn)
@@ -477,19 +477,29 @@ module IlMachineTypeResolution =
 
             state, RuntimeTypeHandleTarget.Closed handle
 
-    /// Get zero value for a type that's already been concretized
+    /// Get zero value for a type that's already been concretized.
+    ///
+    /// Laying the type out reads its field types, so this can bind assembly references that
+    /// nothing else in the run ever names; both the concrete-type registry and the load context
+    /// come back in the returned state. See `CliType.zeroOf`.
     let cliTypeZeroOfHandle
         (state : IlMachineState)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (handle : ConcreteTypeHandle)
         : CliType * IlMachineState
         =
-        let zero, updatedConcreteTypes =
-            CliType.zeroOf state.ConcreteTypes state._LoadedAssemblies baseClassTypes handle
+        let zero, updatedConcreteTypes, updatedAssemblies =
+            CliType.zeroOf
+                (loader state.LoggerFactory state)
+                state.ConcreteTypes
+                state._LoadedAssemblies
+                baseClassTypes
+                handle
 
         let newState =
             { state with
                 ConcreteTypes = updatedConcreteTypes
+                _LoadedAssemblies = updatedAssemblies
             }
 
         zero, newState
@@ -633,22 +643,37 @@ module IlMachineTypeResolution =
         match field.RelativeVirtualAddress with
         | None -> state, None
         | Some fieldRva ->
-            let state, zero, _fieldType =
-                cliTypeZeroOf
-                    loggerFactory
-                    baseClassTypes
-                    assembly
-                    field.Signature
-                    typeGenerics
-                    ImmutableArray.Empty
-                    state
+            // `TypeDefn.tryFixedSize` is CoreCLR's `FieldDesc::LoadSize` dispatch: for every
+            // element type but a value type, the width follows from the signature's head and no
+            // type — and so no instantiation — is needed. Only the value-type case falls through
+            // to concretising the signature, which is the only case that can demand generic
+            // arguments the caller may not hold.
+            let state, size =
+                match TypeDefn.tryFixedSize field.Signature with
+                | Some size -> state, size
+                | None ->
+                    if containsUnboundGenericParameter typeGenerics ImmutableArray.Empty field.Signature then
+                        failwith
+                            $"RVA field %s{field.Name} on %s{assembly.Name.Name} has a value-typed signature mentioning a generic parameter, so its size needs an instantiation, and none was supplied. An RVA static is one blob shared by every instantiation, so a field whose *width* varies with the type arguments cannot be laid out at all."
+
+                    let state, zero, _fieldType =
+                        cliTypeZeroOf
+                            loggerFactory
+                            baseClassTypes
+                            assembly
+                            field.Signature
+                            typeGenerics
+                            ImmutableArray.Empty
+                            state
+
+                    state, CliType.sizeOf zero
 
             let data =
                 {
                     AssemblyFullName = assembly.Name.FullName
                     Source = PeByteRangePointerSource.FieldRva (ComparableFieldDefinitionHandle.Make field.Handle)
                     RelativeVirtualAddress = fieldRva
-                    Size = CliType.sizeOf zero
+                    Size = size
                 }
 
             state, Some data

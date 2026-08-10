@@ -58,13 +58,11 @@ module internal FieldRvaData =
         // (methodtablebuilder.cpp:4129 and :4500). So an `OpenGenericTypeDefinition` declaring
         // type has to be sized, not rejected.
         //
-        // It can be. An RVA static is one blob at a fixed spot in the image, resolved from the
-        // module rather than from a per-instantiation static block (`FieldDesc::
-        // GetStaticAddressHandle`, field.cpp:247), so every instantiation shares the same bytes
-        // and the field's type cannot depend on the type arguments. That makes the empty
-        // instantiation the right context to size it in — and the guard below turns an image
-        // that violates the premise into a diagnosis rather than an index-out-of-range from
-        // deep inside `TypeResolution`.
+        // It can be. `peByteRangeForFieldRva` models `FieldDesc::LoadSize`, which reads the width
+        // off the field's element type and needs the type loaded only for a value type — so for
+        // every other signature, including a `T*` on `G<T>`, the empty instantiation is a
+        // sufficient context and no argument for `T` is ever consulted. Where an instantiation
+        // *is* needed and absent, that function says so by name.
         let typeGenerics =
             match fieldHandle.GetDeclaringTypeHandle () with
             | RuntimeTypeHandleTarget.Closed declaringTypeHandle ->
@@ -77,14 +75,5 @@ module internal FieldRvaData =
             | other ->
                 failwith
                     $"%s{operation}: RVA field's declaring type is %O{other}; expected a concrete type or an open generic type definition. A field cannot be declared on a generic parameter."
-
-        if
-            IlMachineTypeResolution.containsUnboundGenericParameter
-                typeGenerics
-                ImmutableArray.Empty
-                fieldInfo.Signature
-        then
-            failwith
-                $"%s{operation}: RVA field %s{fieldInfo.Name} on %s{assembly.Name.Name} has a signature mentioning a generic parameter its declaring type supplies no argument for. An RVA static is shared by every instantiation, so its type cannot legally depend on the type arguments."
 
         IlMachineState.peByteRangeForFieldRva loggerFactory baseClassTypes assembly fieldInfo typeGenerics state
