@@ -293,6 +293,46 @@ module TestByrefComparison =
 
         ceq (byref (local 0us) []) (byref (local 0us) extra) |> shouldEqual false
 
+    /// The known parts are compared against each other, not merely against zero: a field
+    /// walk displaced 5 bytes cannot land on the same byte as a bare 1-byte displacement,
+    /// because the field offsets it also picks up can only push it further forward. The
+    /// other residual being non-empty is irrelevant.
+    [<Test>]
+    let ``a field run outruns a smaller known displacement`` () =
+        let withField =
+            byref
+                (local 0us)
+                [
+                    fieldX
+                    ByrefProjection.ReinterpretAs byteType
+                    ByrefProjection.ByteOffset 5
+                ]
+
+        let bare =
+            byref (local 0us) [ ByrefProjection.ReinterpretAs byteType ; ByrefProjection.ByteOffset 1 ]
+
+        ceq withField bare |> shouldEqual false
+
+    /// ... but when the field walk's known part does not already exceed the other's, the
+    /// unknown field offsets could make up exactly the difference, so it is still refused.
+    [<Test>]
+    let ``a field run that does not outrun the other side is refused`` () =
+        let withField =
+            byref
+                (local 0us)
+                [
+                    fieldX
+                    ByrefProjection.ReinterpretAs byteType
+                    ByrefProjection.ByteOffset 1
+                ]
+
+        let bare =
+            byref (local 0us) [ ByrefProjection.ReinterpretAs byteType ; ByrefProjection.ByteOffset 5 ]
+
+        let exn = Assert.Throws (fun () -> ceq withField bare |> ignore)
+
+        exn.Message |> shouldContainText "field offsets"
+
     /// A *negative* cursor is a different matter: it can cancel an unknown field offset
     /// exactly, so the pair is undecidable again and must still be refused.
     [<Test>]

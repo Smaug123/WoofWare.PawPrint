@@ -1170,12 +1170,14 @@ module ManagedPointerSource =
         match containsField rest1, containsField rest2 with
         // Neither side's displacement has an unknown component, so it is simply arithmetic.
         | false, false -> Some (known1 = known2)
-        // One side is the bare shared prefix and the other walks through fields. The
-        // difference is `known + (unknown >= 0)`, so a strictly positive known part proves
-        // the addresses differ; anything else could still land back on the same byte —
-        // `ref a.X` is `ref a` exactly when `X` sits at offset 0.
-        | true, false when List.isEmpty rest2 -> if known1 > 0 then Some false else None
-        | false, true when List.isEmpty rest1 -> if known2 > 0 then Some false else None
+        // Exactly one side walks through fields, so its displacement is `known + (unknown
+        // >= 0)` while the other's is exactly `known`. The unknown part can only push the
+        // field-walking side further forward, so a known part that already exceeds the other
+        // proves the two differ. Anything else could still land back on the same byte —
+        // `ref a.X` is `ref a` exactly when `X` sits at offset 0, which is the `known1 =
+        // known2 = 0` corner.
+        | true, false -> if known1 > known2 then Some false else None
+        | false, true -> if known2 > known1 then Some false else None
         | _ ->
             // Both runs walk through fields. It is tempting to say that two *different*
             // fields occupy disjoint extents, so the divergence alone proves the addresses
