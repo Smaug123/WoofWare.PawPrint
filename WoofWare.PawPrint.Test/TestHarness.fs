@@ -163,7 +163,14 @@ module BoundedRun =
             // to cost nothing — lazy class initialisation means a trivial guest reaches `Main`
             // in a little over 3,000 steps — and a single budget is one number for a caller to
             // reason about instead of two.
-            | Program.StartupStepOutcome.Completed (Program.ProgramStartResult.Ready prepared) -> goMain steps prepared
+            //
+            // `steps + 1L`, not `steps`: reaching this outcome means `stepStartup` called
+            // `stepPrepared`, which retired the startup frame's final `ret` and bumped the
+            // kernel's counter like any other step. Handing `steps` on would drop that tick, so
+            // the harness would allow `maxSteps + 1` steps and report a kernel counter one above
+            // the budget it claims to have enforced.
+            | Program.StartupStepOutcome.Completed (Program.ProgramStartResult.Ready prepared) ->
+                goMain (steps + 1L) prepared
             | Program.StartupStepOutcome.Deadlocked (startup, stuck) ->
                 // `Program.prepare` raises on this itself, but with no guest identification and
                 // no thread summary. Reported here in the same shape as the other three

@@ -347,6 +347,31 @@ class DeadlocksInCctor
         // Detail `Program.prepare`'s own failure lacks: which threads, and what they were doing.
         message |> shouldContainText "Threads:"
 
+    /// The budget is *exact*, in both phases: a guest given N steps retires N, not N+1.
+    ///
+    /// Observable because every `stepPrepared` call bumps the kernel's own step counter by one,
+    /// and the diagnostic reports it — so "counter equals budget" says the harness counted every
+    /// step it took. The off-by-one this guards against is not hypothetical: handing the step
+    /// count across the startup-to-`Main` handoff unchanged drops the tick that retired the
+    /// startup frame's final `ret`, and only the `Main`-phase half of this test can see it (no
+    /// handoff happens when the guest never leaves startup).
+    [<Test>]
+    let ``the budget is exact: a guest given N steps retires N`` () : unit =
+        let budget = 40_000L
+
+        let mainPhase =
+            Assert.Throws (fun () -> runSource budget "ExactMain.cs" spinsForEver |> ignore<RunOutcome>)
+
+        mainPhase.Message |> shouldContainText $"kernel step counter %d{budget}"
+
+        let startupPhase =
+            Assert.Throws (fun () ->
+                runSource budget "ExactStartup.cs" wedgesInStaticInitialiser
+                |> ignore<RunOutcome>
+            )
+
+        startupPhase.Message |> shouldContainText $"kernel step counter %d{budget}"
+
     let private startupBudgetFailure (maxSteps : int64) : string =
         let exn =
             Assert.Throws (fun () ->
