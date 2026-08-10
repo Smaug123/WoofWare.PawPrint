@@ -790,6 +790,21 @@ module IlMachineManagedByref =
                 let mutable blobReader = mdReader.GetBlobReader methodDef.Signature
                 blobReader.Offset <- byteOffset
                 blobReader.ReadBytes targetSize
+            | PeByteRangePointerSource.ConstantBlob field ->
+                let mdReader = assembly.PeReader.GetMetadataReader ()
+                let fieldDef = mdReader.GetFieldDefinition field.Get
+                let constantHandle = fieldDef.GetDefaultValue ()
+
+                if constantHandle.IsNil then
+                    // The pointer could only have been minted from a Constant row, so its
+                    // disappearance would mean the metadata reader disagrees with itself.
+                    failwith $"PE byte-view read: field %O{field.Get} no longer has a Constant row"
+
+                let mutable blobReader =
+                    mdReader.GetBlobReader (mdReader.GetConstant constantHandle).Value
+
+                blobReader.Offset <- byteOffset
+                blobReader.ReadBytes targetSize
 
         CliType.ofBytesLike targetTemplate bytes
 
