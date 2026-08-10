@@ -3,18 +3,23 @@ namespace WoofWare.PawPrint
 open System
 open System.Numerics
 
-/// Host-independent implementations of the `System.Math` primitives that CoreCLR declares
-/// as `InternalCall`s with no IL body, and that its JIT lowers either to a call into the
-/// platform C library or to a machine instruction.
+/// Host-independent implementations of the `System.Math` primitives that CoreCLR's JIT
+/// lowers either to a call into the platform C library or to a machine instruction, rather
+/// than executing as ordinary managed IL.
+///
+/// Most of them CoreCLR declares as `InternalCall`s with no IL body at all. `round` is the
+/// exception: it has a body, but that body is a managed emulation of the instruction the JIT
+/// emits rather than a definition — see its own comment.
 ///
 /// The interpreter cannot simply forward these to the host's `System.Math`. `pow` and its
 /// transcendental relatives are not correctly rounded and are not required to agree
 /// bit-for-bit between libm implementations, so a run recorded on one machine could replay
 /// differently on another — silently, and only in the last bit, which is the worst failure
 /// mode this project has. Everything here is therefore computed in-tree, from integer
-/// arithmetic only, and depends on nothing but its arguments. (`sqrt` and `ceiling` are the
-/// exceptions to the *motivation* rather than to the rule: both are exactly specified, so
-/// the host would have agreed anyway. See their own comments for why they are here.)
+/// arithmetic only, and depends on nothing but its arguments. (`sqrt`, `ceiling` and `round`
+/// are exceptions to the *motivation* rather than to the rule: all three are exactly
+/// specified, so the host would have agreed anyway. See their own comments for why they are
+/// here.)
 ///
 /// The strategy is to carry far more precision than a double needs and round once at the
 /// end. Intermediate reals are held as `BigInteger` fixed-point values scaled by
@@ -529,6 +534,79 @@ module DeterministicMath =
             // Exact: `ceiled` is an integer of at most 53 bits, since `exponent < 0` bounds
             // `|x|` below 2^52.
             roundToDouble ceiled 0
+
+    /// The integral double nearest to `x`, ties going to the even one, with the semantics of
+    /// IEEE 754's `roundToIntegralTiesToEven` (clause 5.9) — which is what CoreCLR's
+    /// `Math.Round(double)` means.
+    ///
+    /// Exact, like `ceiling` and for the same reasons: clause 5.9 fixes the result, and every
+    /// double's rounding is itself a double (a non-integral double has magnitude below 2^52, so
+    /// stepping to the next integer cannot leave the exactly-representable integers). There is
+    /// no error term to budget and nothing for the fixed-point machinery above to do.
+    ///
+    /// `Math.Round` is the odd one out among the `System.Math` primitives implemented here in
+    /// that CoreCLR gives it an IL body rather than declaring it `InternalCall`. That body is
+    /// not a definition, though: it is a managed emulation of the instruction the JIT actually
+    /// emits (`roundsd` with mode 0, or `frintn`), and it obtains ties-to-even from the ambient
+    /// rounding mode by computing `(a + 2^52) - 2^52`. Running it would make the answer a
+    /// property of whatever performed that addition, which is the class of dependency this
+    /// module exists to remove, so the operation is named here instead of inherited.
+    ///
+    /// The two signs that are easy to get wrong are both specified rather than open. As for
+    /// `ceiling`, the `roundToIntegral` operations take the sign of a zero result from the
+    /// operand — so the rounding of an argument in [-1/2, 0) is *negative* zero, and the
+    /// rounding of a negative zero is that same negative zero. And the tie-break is towards the
+    /// even neighbour in both directions: 2.5 and 3.5 both give 2.0 and 4.0 respectively rather
+    /// than moving consistently away from zero. Both are asserted against the host in
+    /// `TestDeterministicMath`.
+    let round (x : float) : float =
+        if Double.IsNaN x then
+            // Both hardware instructions propagate a NaN operand with its sign and payload,
+            // quietening a signalling one -- the same rule as `ceiling`.
+            quieted x
+        elif Double.IsInfinity x || x = 0.0 then
+            // Already integral, and their signs are part of the answer. `x = 0.0` catches -0 as
+            // well as +0, which is exactly what is wanted: both are returned unchanged.
+            x
+        else
+
+        // x = mantissa * 2^exponent exactly, with the sign carried by the mantissa.
+        let mantissa, exponent = decompose x
+
+        if exponent >= 0 then
+            // An integer times a non-negative power of two is already integral.
+            x
+        else
+
+        // `>>>` on a `BigInteger` is an arithmetic shift, so `truncated` is the floor of
+        // `mantissa / 2^-exponent` for a negative mantissa as well as a positive one, and
+        // `remainder` is therefore the non-negative distance up from it. The two candidate
+        // answers are `truncated` and `truncated + 1`; `remainder` against half the divisor
+        // says which is nearer, and the parity of `truncated` breaks an exact tie. (Exactly
+        // one of the two candidates is even, so "keep `truncated` when it is even" is the
+        // same rule as "choose the even one".)
+        let shift = -exponent
+        let truncated = mantissa >>> shift
+        let remainder = mantissa - (truncated <<< shift)
+        // `shift` is at least 1 here, since `exponent < 0`.
+        let half = BigInteger.One <<< (shift - 1)
+
+        let rounded =
+            if remainder > half || (remainder = half && not truncated.IsEven) then
+                truncated + BigInteger.One
+            else
+                truncated
+
+        if rounded.IsZero then
+            // Only reachable from -1/2 <= x < 0 and from 0 < x <= 1/2. Clause 5.9 gives the
+            // result the operand's sign; this case has to be handled here because
+            // `roundToDouble` takes the sign from its mantissa and so cannot tell a zero that
+            // came from below from one that came from above.
+            if Double.IsNegative x then -0.0 else 0.0
+        else
+            // Exact: `exponent < 0` bounds `|x|` below 2^52, so `|rounded|` is at most 2^52 and
+            // is an integer of at most 53 bits.
+            roundToDouble rounded 0
 
     /// Number of fractional bits carried by the value of pi used for trigonometric range
     /// reduction. This is not the accuracy of the answer, which `fractionBits` governs; it

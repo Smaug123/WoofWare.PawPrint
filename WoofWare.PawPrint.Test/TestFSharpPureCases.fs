@@ -127,18 +127,19 @@ module TestFSharpPureCases =
     /// before recording that a case is blocked on a named primitive, un-park it and observe the
     /// failure: parking it is what stops the claim being checked.
     ///
-    /// `UnionReflection` is parked on `MetadataImport::GetName`: having read a literal field's
-    /// value, `FSharpType.GetUnionCases` goes on to ask for members *by name*, and both
-    /// `MdFieldInfo.Name` and `RuntimeType`'s name-filtered member lookups reach an InternalCall
-    /// with no handler ("Unimplemented native method (InternalCall): ...
-    /// MetadataImport::GetName"). Observed by un-parking it and running: the real runtime exits 0,
-    /// PawPrint throws out of `NativeDispatch.failUnimplemented`.
+    /// `UnionReflection` is parked on *property enumeration*: having found each case's name,
+    /// `FSharpType.GetUnionCases` asks the union type for its properties (the compiler-generated
+    /// `Tag` and per-case field accessors), and `RuntimeType.PopulateProperties` gets the token list
+    /// from the `MetadataImport.Enum` QCall. PawPrint answers that for ExportedType,
+    /// CustomAttribute, FieldDef and TypeDef only, so it fails with "TODO: MetadataImport.Enum does
+    /// not yet support token type 0x17000000" — mdtProperty. Observed by un-parking it and running:
+    /// the real runtime exits 0, PawPrint throws.
     ///
-    /// Five earlier blockers are already gone: decoding each case's
+    /// Six earlier blockers are already gone: decoding each case's
     /// `CompilationMappingAttribute(SourceConstructFlags, ...)`, whose argument is an enum;
     /// enumerating the union's nested case types; `MetadataImport::GetSigOfFieldDef`; the raw-blob
-    /// path of `Signature_Init`; and `MetadataImport::GetDefaultValue`, which the commit this
-    /// comment sits in implements.
+    /// path of `Signature_Init`; `MetadataImport::GetDefaultValue`; and `MetadataImport::GetName`,
+    /// which the commit this comment sits in implements.
     let unimplemented : Set<string> = Set.ofList [ "UnionReflection" ]
 
     // F# test cases that legitimately throw under both runtimes. Without this set, a test
