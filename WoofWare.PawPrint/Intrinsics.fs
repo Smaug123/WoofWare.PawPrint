@@ -1272,8 +1272,7 @@ module Intrinsics =
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim result)) currentThread
                 |> IlMachineState.advanceProgramCounter currentThread
                 |> IntrinsicResult.Completed
-            | _ ->
-                failwith $"BitOperations.TrailingZeroCount: unexpected signature %s{formatMethodKey intrinsicKey}"
+            | _ -> failwith $"BitOperations.TrailingZeroCount: unexpected signature %s{formatMethodKey intrinsicKey}"
         | "System.Private.CoreLib", "BitOperations", "LeadingZeroCount" when
             intrinsicKey.DeclaringTypeFullName = "System.Numerics.BitOperations"
             ->
