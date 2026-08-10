@@ -200,6 +200,9 @@ module TestFaultHandlers =
             {
                 ExceptionObject = exceptionObject
                 StackTrace = []
+                // These drive dispatch directly rather than through a raise, and the skeletal
+                // state here has no `_stackTrace` for a consume to read.
+                MayConsumeForeignRaise = false
             }
 
         let state =
@@ -273,6 +276,9 @@ module TestFaultHandlers =
             {
                 ExceptionObject = exceptionObject
                 StackTrace = []
+                // These drive dispatch directly rather than through a raise, and the skeletal
+                // state here has no `_stackTrace` for a consume to read.
+                MayConsumeForeignRaise = false
             }
 
         let state =

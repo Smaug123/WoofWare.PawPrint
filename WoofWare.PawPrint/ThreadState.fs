@@ -361,6 +361,28 @@ type ThreadState =
         /// `Thread.Yield(); f = true;` racing `while (!f) {}` would livelock under such a
         /// rule.
         YieldDebt : Set<ThreadId>
+        /// Set by `Exception.PrepareForForeignExceptionRaise` and consumed by the next throw on
+        /// this thread, which is the only reader. It means: the exception about to be raised is
+        /// carrying frames restored from an earlier throw, so keep them instead of starting a
+        /// fresh trace, and mark the last of them as the point where that earlier trace ended.
+        ///
+        /// `ExceptionDispatchInfo.Throw()` is the only thing that sets it, via
+        /// `Exception.RestoreDispatchState` (Exception.CoreCLR.cs:145), and the `throw` that
+        /// follows in the same method is what consumes it — so in practice the window in which
+        /// this is `true` is a single guest instruction wide.
+        ///
+        /// This is CoreCLR's `TEF_ForeignExceptionRaise` (exstate.h:113), which likewise lives on
+        /// the thread's exception state and not on the exception. It has to be per-thread rather
+        /// than per-exception because the flag is set before the runtime knows which object will
+        /// be raised: `RestoreDispatchState` runs to completion, and only then does `throw`
+        /// nominate a target. Two threads rethrowing the same captured exception concurrently
+        /// therefore do not interfere.
+        ///
+        /// A `ThreadState` field rather than kernel state: `EmulatedKernel` holds what the guest
+        /// could learn by asking the OS, and nothing in this is OS-visible. It sits beside
+        /// `IsBackground` as another per-thread runtime fact the guest can only influence
+        /// indirectly.
+        IsRaisingForeignException : bool
     }
 
     // --- Frame resolution primitives ---
@@ -457,6 +479,8 @@ type ThreadState =
             Cpu = cpu
             OsThreadId = osThreadId
             YieldDebt = Set.empty
+            // A fresh thread has raised nothing yet.
+            IsRaisingForeignException = false
         }
 
     static member peekEvalStack (state : ThreadState) : EvalStackValue option =

@@ -343,7 +343,7 @@ module ScheduleFork =
         | NeverForked of RunOutcome
         | DeadlockedBeforeFork of stuckThreads : string
 
-    val runToFork : ILoggerFactory -> string option -> Stream -> PrefixConfig -> PrefixOutcome
+    val runToFork : ILoggerFactory -> string option -> Stream -> GuestConfig -> PrefixOutcome
 
     /// Install a policy and hand back ordinary driver state; `None` resumes RoundRobin.
     /// Rebinds the state's Logger/LoggerFactory to the factory given (see §5.5).
@@ -368,10 +368,15 @@ contract, not the prefix's. `runToFork` must not be handed one.
    wrong experiment;
 2. take `HostConfig` and `failwith` unless `PctSeed = None` — loud, zero churn, but validation
    where parsing is available;
-3. **split**: `HostConfig = { Prefix : PrefixConfig ; PctSeed : uint64 option }`, `runToFork`
-   taking `PrefixConfig`.
+3. **split**: `HostConfig = { Guest : GuestConfig ; PctSeed : uint64 option }`, `runToFork`
+   taking `GuestConfig`.
 
-**Decided: 3.** `WoofWare.PawPrint` is `IsPackable=true` with `PackageId=WoofWare.PawPrint`
+**Decided: 3.** (This plan first called the inner record `PrefixConfig`. That name was wrong and
+was changed during implementation: the record does not configure the *prefix*, it configures the
+whole run, and it is only the seed that the prefix and its continuations differ in. Naming it
+after one downstream consumer would also have exported a concept — the fork prefix — into a file
+whose reader has no context for it. `GuestConfig` says what it is: everything describing the
+simulated process, as against which of its schedules we are exploring.) `WoofWare.PawPrint` is `IsPackable=true` with `PackageId=WoofWare.PawPrint`
 (`WoofWare.PawPrint.fsproj:6-7`), so `HostConfig` is a published surface and this is a breaking
 change for external consumers — but the package is prerelease and the maintainer has confirmed
 breaking it outright is fine, so the compile-time-correct factoring wins over any variant that
@@ -382,7 +387,7 @@ In-repo churn is 37 `HostConfig.Default` construction sites (9 setting `PctSeed`
 each `Argv`/`AppContext`), all mechanical — the compiler finds every one. `HostConfig.Default`
 should keep taking the runtime dirs and returning a whole `HostConfig`, so the common
 `{ HostConfig.Default dirs with PctSeed = ... }` shape survives; only sites that set a
-`PrefixConfig` field move a level down.
+`GuestConfig` field move a level down.
 
 ### 5.5 Logging and parallel fan-out
 
