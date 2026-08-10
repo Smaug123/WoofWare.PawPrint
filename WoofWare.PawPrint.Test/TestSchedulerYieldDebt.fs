@@ -400,10 +400,26 @@ module TestSchedulerYieldDebt =
         after.Scheduling |> shouldEqual SchedulerState.RoundRobin
 
     [<Test>]
-    let ``Pct burns exactly one draw per yield, regardless of the Runnable set`` () : unit =
-        // Matching the always-burn Bernoulli in `chooseNext`: the seed must be consumed at a
-        // rate that depends only on the sequence of yields, so that a replay does not diverge
-        // because a thread happened to be blocked at one of them.
+    let ``Pct draws on a yield iff a peer is Runnable`` () : unit =
+        // This test used to assert the opposite: that a yield burns exactly one draw
+        // *regardless* of the Runnable set, matching the always-burn Bernoulli in
+        // `chooseNext`. The stated benefit was that the seed is consumed "at a rate that
+        // depends only on the sequence of yields", so a replay could not diverge because a
+        // thread happened to be blocked at one of them.
+        //
+        // That invariant was never actually true — consumption is also one draw per
+        // newly-seen Runnable thread (`PctState.ensurePriorityFor`) plus one per demotion,
+        // and the demotion count depends on the `ContextSwitchPrior` weights of the ops
+        // encountered. So the old assertion pinned a rate that nothing observable depended on
+        // and that the rest of the policy did not honour anyway.
+        //
+        // What is pinned instead is the invariant the schedule-sharing work needs: the policy
+        // state changes only where a draw could change something. A yield with no other
+        // Runnable thread is forced to "no switch" by the empty-`others` branch of
+        // `chargeYieldDebt` whatever the coin says, so the coin is not tossed.
+        //
+        // Both halves are asserted. Dropping the peer half would let a regression that never
+        // draws at all pass.
         let rngAfter (threads : (ThreadId * ThreadStatus) list) : uint64 =
             let state =
                 baseState () |> withThreads threads |> IlMachineState.withPctSeed 12345UL
@@ -423,10 +439,13 @@ module TestSchedulerYieldDebt =
                     ThreadId 1, ThreadStatus.BlockedOnSleep (Some 5L)
                 ]
 
-        withPeer |> shouldEqual alone
+        // Alone: nothing drawn, so the Rng is exactly where `ofSeed` left it.
+        alone |> shouldEqual 12345UL
 
+        // With a peer: exactly one draw, the honour coin.
         let _, expected = NonCryptoRandom.nextDouble 12345UL
         withPeer |> shouldEqual expected
+        withPeer |> shouldNotEqual alone
 
     [<Test>]
     let ``a Pct run with no yields consumes no RNG`` () : unit =

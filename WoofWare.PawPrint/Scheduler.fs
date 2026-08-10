@@ -15,6 +15,15 @@ namespace WoofWare.PawPrint
 /// is for the scheduling policy to become pluggable — a harness will want to drive
 /// `chooseNext` from outside. Keep this module free of logging and of anything that
 /// isn't a pure state transformation so that swap is cheap.
+///
+/// **A stochastic policy consumes randomness if and only if the decision is contended**, i.e.
+/// iff more than one thread is Runnable. When it is not, every policy makes the same choice —
+/// there is only one thread to make it about — so the step is not a decision and no policy
+/// state may change. That is what lets a harness compute the single-threaded prefix of a run
+/// *once* and fan every seed out from the first contended decision, instead of re-executing an
+/// identical startup per seed: over a forced prefix, `SchedulerState.Pct (PctState.ofSeed s)` is
+/// unchanged, so the prefix can be computed under `RoundRobin` and the seed installed at the
+/// fork. See `Contention`, which carries the witness that entitles a policy to draw.
 [<RequireQualifiedAccess>]
 module Scheduler =
 
@@ -66,6 +75,64 @@ module Scheduler =
             | ThreadStatus.Runnable -> tid :: acc
             | _ -> acc
         )
+
+    /// How much choice the scheduler has at the imminent decision, and — for the one case where
+    /// there is any — the witness that entitles a stochastic policy to draw.
+    ///
+    /// The `Contended` case carries its first two members separately rather than as a plain
+    /// list, so "at least two threads are Runnable" is a fact about the *type* rather than one
+    /// maintained by discipline. There is deliberately no way to reach `PctState` from the other
+    /// two cases in `chooseNext`: the policy match sits inside the `Contended` branch, so a
+    /// future edit that wants to draw on a forced decision has nothing to draw from and has to
+    /// restructure the function to do it.
+    ///
+    /// Contention is defined over the *unfiltered* Runnable set, not over `candidates`. A thread
+    /// held out by an outstanding yield debt still counts: the draws taken at such a tick shape
+    /// later choices, so the tick is genuinely part of the seed's identity even though this
+    /// tick's pick may be forced. Defining it the other way would also desynchronise the
+    /// predicate from `PctState.ensurePriorityFor`'s sampling domain, which is the unfiltered
+    /// set (see `chooseNext`).
+    [<RequireQualifiedAccess>]
+    type private Contention =
+        /// Nothing is Runnable: the driver's deadlock signal.
+        | NoRunnable
+        /// Exactly one thread is Runnable. Every policy picks it, so this is not a decision.
+        | Forced of ThreadId
+        /// At least two threads are Runnable, so which one runs next is a genuine choice.
+        | Contended of first : ThreadId * second : ThreadId * rest : ThreadId list
+
+        /// The Runnable threads this classification was derived from, in ascending `ThreadId`
+        /// order.
+        member this.Runnable : ThreadId list =
+            match this with
+            | Contention.NoRunnable -> []
+            | Contention.Forced only -> [ only ]
+            | Contention.Contended (first, second, rest) -> first :: second :: rest
+
+    /// Classify the imminent decision. This is the single definition of "contended" that the
+    /// draw sites and any external fork detector (`isContended`) both consume; two derivations
+    /// of the same predicate could disagree, and a detector that disagreed with the policy would
+    /// silently hand a schedule-sweeping harness the wrong prefix.
+    let private classify (state : IlMachineState) : Contention =
+        match runnableThreads state with
+        | [] -> Contention.NoRunnable
+        | [ only ] -> Contention.Forced only
+        | first :: second :: rest -> Contention.Contended (first, second, rest)
+
+    /// Does the imminent scheduling decision have more than one Runnable thread to choose
+    /// among? Equivalently: may a stochastic policy consume randomness at this tick, and is
+    /// this tick a fork point in the schedule space?
+    ///
+    /// Exposed for harnesses that want to run a guest up to its first fork point and then fan
+    /// out over seeds from there. Must be evaluated at the same moment the scheduler would make
+    /// its choice — i.e. after the driver's per-tick preamble (spurious wakeups, deadline
+    /// firing, signal-handler spawn, deadline jump), any of which can create contention within
+    /// the tick that a probe on the inter-tick state would miss.
+    let isContended (state : IlMachineState) : bool =
+        match classify state with
+        | Contention.Contended _ -> true
+        | Contention.NoRunnable
+        | Contention.Forced _ -> false
 
     /// Is `thread`'s yield debt discharged, given the currently-Runnable set? A debt member
     /// that is no longer Runnable has left the run queue and cannot be waited for, so it stops
@@ -196,14 +263,41 @@ module Scheduler =
     /// Returns `None` for the choice iff no thread is Runnable, which the
     /// driver treats as deadlock; the state is still returned so the caller
     /// always handles the same shape regardless of the outcome.
+    ///
+    /// The uncontended cases are handled ahead of the policy match, and are therefore
+    /// policy-independent *in the code* rather than by two branches that happen to agree: with
+    /// no Runnable thread there is nothing to choose, and with one there is nothing to choose
+    /// *between*. Only the contended branch can see a `PctState` at all.
     let chooseNext (lastRan : ThreadId) (state : IlMachineState) : IlMachineState * ThreadId option =
+        match classify state with
+        | Contention.NoRunnable ->
+            // No Runnable threads — deadlock signal. State is returned
+            // unchanged (no RNG advance) so a quiescent probe followed by
+            // a wake-up resumes from the same PRNG position as if the probe
+            // never happened, keeping replay bit-exact across the boundary.
+            state, None
+        | Contention.Forced only ->
+            // Exactly one Runnable thread, so every policy returns it and no policy state may
+            // change. Note this path does not consult `candidates`, and does not need to: a
+            // debt is only ever charged naming threads *other* than its holder, so `only`'s
+            // debt cannot name `only`, and no other thread is Runnable for it to name — hence
+            // `debtDischarged` holds vacuously and `candidates` here is exactly `[only]`.
+            //
+            // Nor does it consult `peekNextOp`. A forced decision has no use for the imminent
+            // op: the weight exists solely to scale a demotion probability, and there is
+            // nothing to demote towards.
+            state, Some only
+        | Contention.Contended _ as contention ->
+
         match state.Scheduling with
         | SchedulerState.RoundRobin ->
             let runnable = candidates state
 
             let chosen =
                 match runnable with
-                | [] -> None
+                | [] ->
+                    failwith
+                        "Scheduler.chooseNext: `candidates` was empty on a contended decision, which the debt invariant makes impossible — see `candidates`."
                 | _ ->
                     let (ThreadId lastRanId) = lastRan
 
@@ -214,89 +308,82 @@ module Scheduler =
             state, chosen
         | SchedulerState.Pct pct ->
             // Priorities are sampled over the *unfiltered* Runnable set, but the argmax runs
-            // over the candidates. Keeping the sampling domain unfiltered preserves the
-            // documented invariant that the sampling sequence is a function of the seed plus
-            // the set of threads ever seen Runnable — if the filter drove it, the RNG stream
-            // would depend on yield timing.
-            let runnable = runnableThreads state
+            // over the candidates. Keeping the sampling domain unfiltered means the sampling
+            // sequence is a function of the seed plus the set of threads ever seen Runnable at
+            // a contended decision; if the filter drove it, the RNG stream would additionally
+            // depend on yield timing.
+            let runnable = contention.Runnable
             let eligible = candidates state
 
-            match runnable with
-            | [] ->
-                // No Runnable threads — deadlock signal. State is returned
-                // unchanged (no RNG advance) so a quiescent probe followed by
-                // a wake-up resumes from the same PRNG position as if the probe
-                // never happened, keeping replay bit-exact across the boundary.
-                state, None
-            | _ ->
-                // Lazy first-observation insert: any Runnable thread without a
-                // priority gets one sampled in ascending-ThreadId order, so the
-                // sampling sequence is determined by the seed plus the set of
-                // threads that have ever been seen Runnable, not by the order
-                // in which they were created.
-                let pct = PctState.ensurePriorityFor runnable pct
+            // Lazy first-observation insert: any Runnable thread without a
+            // priority gets one sampled in ascending-ThreadId order, so the
+            // sampling sequence is determined by the seed plus the set of
+            // threads that have ever been seen Runnable at a contended
+            // decision, not by the order in which they were created.
+            let pct = PctState.ensurePriorityFor runnable pct
 
-                // Deterministic argmax over `eligible`. F#'s `List.maxBy` keeps
-                // the first element on ties (it uses strict `>`); `eligible`
-                // is sorted by ThreadId ascending, so ties resolve to the
-                // lowest id — purely for reproducibility, since with `nextDouble`
-                // sampling from a 53-bit mantissa a tie is astronomically rare.
-                // `Map.find` is total here: `eligible` is a subset of `runnable`,
-                // which `ensurePriorityFor` has just covered.
-                let argmax (priorities : Map<ThreadId, double>) : ThreadId =
-                    eligible |> List.maxBy (fun tid -> Map.find tid priorities)
+            // Deterministic argmax over `eligible`. F#'s `List.maxBy` keeps
+            // the first element on ties (it uses strict `>`); `eligible`
+            // is sorted by ThreadId ascending, so ties resolve to the
+            // lowest id — purely for reproducibility, since with `nextDouble`
+            // sampling from a 53-bit mantissa a tie is astronomically rare.
+            // `Map.find` is total here: `eligible` is a subset of `runnable`,
+            // which `ensurePriorityFor` has just covered.
+            let argmax (priorities : Map<ThreadId, double>) : ThreadId =
+                eligible |> List.maxBy (fun tid -> Map.find tid priorities)
 
-                let current = argmax pct.Priorities
+            let current = argmax pct.Priorities
 
-                // Classify the imminent op of `current` to weight the demotion
-                // probability. `None` (the active frame is native — InternalCall,
-                // PInvoke, or RuntimeProvided) is treated as AlwaysGuestVisible
-                // (weight 1.0): a native step runs as one atomic block from the
-                // scheduler's viewpoint and almost always has observable effects,
-                // so it's the most interesting interleaving point we can see.
-                let weight =
-                    match ThreadState.peekNextOp (Map.find current state.ThreadState) with
-                    | Some op -> ContextSwitchPrior.weight (ContextSwitchPrior.ofIlOp op)
-                    | None -> 1.0
+            // Classify the imminent op of `current` to weight the demotion
+            // probability. `None` (the active frame is native — InternalCall,
+            // PInvoke, or RuntimeProvided) is treated as AlwaysGuestVisible
+            // (weight 1.0): a native step runs as one atomic block from the
+            // scheduler's viewpoint and almost always has observable effects,
+            // so it's the most interesting interleaving point we can see.
+            let weight =
+                match ThreadState.peekNextOp (Map.find current state.ThreadState) with
+                | Some op -> ContextSwitchPrior.weight (ContextSwitchPrior.ofIlOp op)
+                | None -> 1.0
 
-                // Single weighted-Bernoulli draw against `weight * P_BASE`. We
-                // always burn one RNG step here, regardless of weight, so
-                // `Pct` schedules consume the seed at a predictable rate
-                // (one `nextDouble` per `chooseNext` call) and `weight = 0.0`
-                // is correctly a no-op without a branch that skips the draw.
-                let sample, rng = NonCryptoRandom.nextDouble pct.Rng
+            // Single weighted-Bernoulli draw against `weight * P_BASE`, burned
+            // regardless of weight so that `weight = 0.0` is correctly a no-op
+            // without a branch that skips the draw. It is *not* burned when the
+            // decision is uncontended — see the `Forced` arm above and the module
+            // header: a draw that cannot change a decision is what would make the
+            // policy state depend on a run's forced prefix, and hence unshareable.
+            let sample, rng = NonCryptoRandom.nextDouble pct.Rng
 
-                let pct =
-                    { pct with
-                        Rng = rng
+            let pct =
+                { pct with
+                    Rng = rng
+                }
+
+            if sample < weight * P_BASE then
+                // Demote: resample `current`'s priority and recompute the
+                // argmax. The new priority is uniform-on-[0, 1), so demotion
+                // may yield a higher value than the old one (in which case
+                // `current` wins again) — by design, since the per-step
+                // weight system is a Bernoulli "consider switching here"
+                // signal, not a guaranteed switch. The effective switch
+                // rate is `weight * P_BASE * P(some other thread now has
+                // a higher priority)`, which the PCT statistics naturally
+                // approach asymptotically.
+                let pct = PctState.resamplePriority current pct
+                let chosen = argmax pct.Priorities
+
+                let state =
+                    { state with
+                        Scheduling = SchedulerState.Pct pct
                     }
 
-                if sample < weight * P_BASE then
-                    // Demote: resample `current`'s priority and recompute the
-                    // argmax. The new priority is uniform-on-[0, 1), so demotion
-                    // may yield a higher value than the old one (in which case
-                    // `current` wins again) — by design, since the per-step
-                    // weight system is a Bernoulli "consider switching here"
-                    // signal, not a guaranteed switch. The effective switch
-                    // rate is `weight * P_BASE * P(some other thread now has
-                    // a higher priority)`, which the PCT statistics naturally
-                    // approach asymptotically.
-                    let pct = PctState.resamplePriority current pct
-                    let chosen = argmax pct.Priorities
+                state, Some chosen
+            else
+                let state =
+                    { state with
+                        Scheduling = SchedulerState.Pct pct
+                    }
 
-                    let state =
-                        { state with
-                            Scheduling = SchedulerState.Pct pct
-                        }
-
-                    state, Some chosen
-                else
-                    let state =
-                        { state with
-                            Scheduling = SchedulerState.Pct pct
-                        }
-
-                    state, Some current
+                state, Some current
 
     /// Set `thread`'s status. Used by the LowLevelMonitor state machine, which
     /// owns the registry-side bookkeeping (queues, owner) but routes every
@@ -673,17 +760,31 @@ module Scheduler =
     /// introducing a draw there would break that contract for every existing run. `Pct` is the
     /// exploration policy, and "the OS declined to switch" is an exploration feature.
     ///
-    /// Under `Pct` the draw is unconditional — burned even when `ran` is the only Runnable
-    /// thread and the outcome cannot matter — matching the always-burn Bernoulli in
-    /// `chooseNext`, so the seed is consumed at a rate that depends only on the sequence of
-    /// yields and not on how many threads happened to be Runnable at each one.
+    /// Under `Pct` the coin is tossed iff `others` is non-empty — i.e. iff the yield happens at
+    /// a contended moment, `ran` itself being Runnable. When `others` is empty the result is
+    /// forced to `false` by the guard below whichever way the coin lands, so tossing it would be
+    /// a draw that cannot change anything, and the module header explains why the policy must
+    /// not take those: they would make `PctState` depend on a run's forced prefix, which is
+    /// exactly the prefix a schedule-sweeping harness wants to compute once and share.
+    ///
+    /// Careful: this contention test is *not* the same evaluation as `chooseNext`'s, because
+    /// `onStepOutcome` wakes class-init waiters before calling here, so `others` is read against
+    /// a possibly-larger Runnable set than the one the step was scheduled from. A tick can
+    /// therefore be forced at choice time and contended here. That is harmless for the policy —
+    /// the draw is still gated on a genuine choice existing — but a harness that snapshots
+    /// "before the first contended decision" must treat it as a fork point too; see
+    /// `isContended`.
     let private chargeYieldDebt (ran : ThreadId) (state : IlMachineState) : IlMachineState * bool =
         let others = runnableThreads state |> List.filter (fun tid -> tid <> ran)
 
         let state, honour =
-            match state.Scheduling with
-            | SchedulerState.RoundRobin -> state, true
-            | SchedulerState.Pct pct ->
+            match state.Scheduling, others with
+            | SchedulerState.RoundRobin, _ -> state, true
+            | SchedulerState.Pct _, [] ->
+                // Uncontended: `ran` is the only Runnable thread, so no switch can be
+                // guaranteed and the guard below returns `false` regardless. No draw.
+                state, false
+            | SchedulerState.Pct pct, _ :: _ ->
                 let sample, rng = NonCryptoRandom.nextDouble pct.Rng
 
                 let state =

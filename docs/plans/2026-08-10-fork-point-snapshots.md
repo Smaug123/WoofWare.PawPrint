@@ -1,6 +1,7 @@
 # Plan: share the machine state up to the first fork point
 
-Status: **plan only, nothing implemented.**
+Status: **PR 1 implemented** (§3.5's "draws iff contended", in `Scheduler.fs`). PRs 2 and 3 are
+still to do. §3.7 records the two places where implementation contradicted the plan.
 
 Goal: when sweeping many PCT seeds over one guest, compute the single-threaded prefix *once* and
 fan every seed out from it.
@@ -180,6 +181,40 @@ arithmetic in `PctState` — no draws — and at the next contended tick draw on
 resampling is memoryless, that reproduces the always-burn distribution of the priority vector at
 every contention *exactly*, and the accumulator over a forced prefix is seed-independent so it
 still lives happily in the snapshot. Do not build B′ speculatively.
+
+### 3.7 What implementation contradicted
+
+Two predictions in this plan turned out to be wrong, both in the direction of the change being
+cheaper than forecast. Recorded rather than quietly edited away, because the reasons are
+informative.
+
+**The fairness thresholds did not need re-baselining.** §3.6's prototype gated the draws on
+`|candidates| = 1`; the shipped version gates on `|runnable| = 1` (§4.2's conclusion, which was
+reached after the prototype had already been measured). Those two differ in exactly one regime —
+two Runnable threads of which one is held out by a yield debt — and that regime is precisely what
+`TestSchedulerYieldFairness` exercises. The shipped predicate keeps drawing there, and the
+yielding-spinner budget lands inside its existing 300000 with no adjustment; the whole fairness
+and voluntary-yield battery passes untouched. So the +1.9% overshoot was an artefact of the
+prototype's over-broad gate, not of Option B, and it is independent evidence for choosing
+`runnable` over `candidates`: the coupling argument and the measurement agree.
+
+**P3 as specified is not writable.** The plan called for a unit test that the draw guard fails
+loudly given a fewer-than-two-thread witness. The guard is private to `Scheduler` and the test
+project has no `InternalsVisibleTo`, so there is nothing to call. Rather than widen the surface
+for a test, the guard was made *structural*: `Contention.Contended` carries its first two members
+as separate fields, so "at least two threads are Runnable" is a fact about the type, and
+`chooseNext` puts the policy match *inside* that branch so the uncontended arms have no
+`PctState` in scope to draw from at all. An edit that wants to draw on a forced decision has to
+restructure the function to reach the state. The behavioural half of P3 is covered by P2, which
+is what would actually fail — confirmed by mutation, below.
+
+**Mutation results** (each applied to the shipped implementation, then reverted):
+
+| mutant | killed by |
+|---|---|
+| draw a `nextDouble` in the `Forced` arm of `chooseNext` | `Pct consumes no randomness when the decision is forced`; `a run that never forks consumes no randomness at all` |
+| toss the honour coin when `others` is empty | `Pct draws on a yield iff a peer is Runnable` |
+| `classify` never returns `Contended` | `a run that forks does consume randomness` (plus five yield-debt tests, since that mutant also disables debt filtering — a coarser mutant than intended, but the target test fired) |
 
 ## 4. Auditing the forced-prefix claim
 
@@ -429,25 +464,27 @@ invariant; the new one pins *"policy state changes only at choice points"*, whic
 correctness depends on. The replacement must stay two-sided — assert that the contended case still
 burns its draw — or a regression to never drawing would pass.
 
-### Tests that need re-baselining, not fixing
+### Tests that were expected to need re-baselining, and did not
 
 `TestSchedulerYieldFairness` / `TestSchedulerSleepFairness` aggregate step counts over fixed seed
 sets against hand-tuned thresholds whose own comments record that per-seed numbers are
-non-monotone. Measured overshoot is +1.9% (§3.6). Re-measure and re-state the thresholds *in the
-same commit as the policy change*, writing the new numbers into the comments as the existing ones
-are. `TestRaces`' exact-coverage assertions passed under the prototype but are the other
-aggregate-over-fixed-seeds claim in the tree, so re-validate them deliberately rather than
-noticing they went green.
+non-monotone, and `TestRaces` asserts *exact* outcome coverage over a fixed seed range. All were
+expected to move. In the event none did — see §3.7 for why — so PR 1 changed no threshold and no
+seed range. That is a happier outcome than planned, but it also means the aggregate claims were
+re-validated by observation rather than re-derived, which is worth remembering if a future
+`P_BASE`-scale change moves them for real.
 
 ## 7. Staging
 
 Fable proposed two PRs, I proposed four; the difference was mostly the now-dropped
 `SchedulingDecision` refactor. Three:
 
-1. **Option B.** The shared `isContended`, the witness-asserting draw helper, no draws on forced
-   decisions. Adds P2 (scheduler-level half), P3. Inverts the yield-draw test with the §3.4
-   argument. Re-baselines the fairness thresholds and re-validates `TestRaces`. Runs P7 and
-   records the numbers. This is the seed-remapping commit, isolated so a bisect lands on it.
+1. **Option B — done.** The shared `Contention`/`classify`/`isContended`, the structural draw
+   witness, no draws on forced decisions. Adds P2 (both the frameless property over generated
+   thread tables and the whole-run "a run that never forks consumes no randomness at all", which
+   is the first time the claim is asserted through live frames), P6's two-sided half, and the
+   inverted yield-draw test carrying the §3.4 argument. No threshold moved (§3.7). This is the
+   seed-remapping commit, isolated so a bisect lands on it.
 2. **`ScheduleFork` + the config split.** §5.2–§5.4 plus P1, P4, P5, P6. No consumer changes
    beyond the mechanical `HostConfig` re-shaping. Worth splitting the `HostConfig` re-shaping into
    its own commit *within* the PR: it touches 37 call sites and would otherwise bury the new
