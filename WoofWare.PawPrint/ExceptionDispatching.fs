@@ -843,6 +843,47 @@ module ExceptionDispatching =
 
             List.rev (last :: earlierReversed)
 
+    /// If `currentThread` has a pending foreign-raise flag, clear it and return the frames the
+    /// exception already carried — with the last marked as the end of that earlier trace — so the
+    /// raise about to begin continues them instead of starting over. `None` means the flag was not
+    /// set and the caller's own frames stand unchanged.
+    ///
+    /// This is `StackTraceInfo::AppendElement`'s read-and-reset (excep.cpp:3016-3017, 3087-3099),
+    /// which fires on the *first* frame appended by whatever raise follows the flag, not
+    /// specifically on a `throw`. Both of PawPrint's dispatch entry points therefore call it, and
+    /// they pass different `framesAlreadyPresent` because they hold those frames in different
+    /// places: a `throw` has none in hand and must read the exception's `_stackTrace` token, while
+    /// a `rethrow` is already carrying the in-flight `CliException`'s list.
+    ///
+    /// `framesAlreadyPresent` is a thunk because only the flag-set path may evaluate it. The
+    /// `throw` path's reader fails loudly on an exception address that is not a real heap object,
+    /// which is exactly what the skeletal states in low-level dispatch tests use.
+    let internal consumeForeignExceptionRaise
+        (currentThread : ThreadId)
+        (framesAlreadyPresent :
+            unit -> ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> list)
+        (state : IlMachineState)
+        : IlMachineState * ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> list option
+        =
+        let threadState = state.ThreadState.[currentThread]
+
+        if not threadState.IsRaisingForeignException then
+            state, None
+        else
+
+        let state =
+            { state with
+                ThreadState =
+                    state.ThreadState
+                    |> Map.add
+                        currentThread
+                        { threadState with
+                            IsRaisingForeignException = false
+                        }
+            }
+
+        state, framesAlreadyPresent () |> markLastFrameAsForeign |> Some
+
     /// Initiate exception dispatch for an exception object already on the heap.
     /// Builds the initial stack trace frame and dispatches.
     let throwExceptionObject
@@ -883,28 +924,17 @@ module ExceptionDispatching =
         // into `_stackTrace`, and if some other exception were raised while the flag was set,
         // CoreCLR would likewise splice whatever that one's `_stackTrace` held.
         //
-        // Consumed here for every raise, not only for the `throw` opcode, matching the
-        // unconditional reset at excep.cpp:3017: the flag belongs to the thread's next dispatch,
-        // whatever raises it.
+        // Consumed here for every raise reaching this function, not only for the `throw` opcode,
+        // matching the unconditional reset at excep.cpp:3017: the flag belongs to the thread's
+        // next dispatch, whatever raises it. `rethrow` does not come through here and consumes it
+        // for itself.
         let state, restoredFrames =
-            if not threadState.IsRaisingForeignException then
-                state, []
-            else
+            state
+            |> consumeForeignExceptionRaise
+                currentThread
+                (fun () -> IlMachineState.frozenStackTraceFrames corelib exceptionAddr state)
 
-            let state =
-                { state with
-                    ThreadState =
-                        state.ThreadState
-                        |> Map.add
-                            currentThread
-                            { threadState with
-                                IsRaisingForeignException = false
-                            }
-                }
-
-            state,
-            IlMachineState.frozenStackTraceFrames corelib exceptionAddr state
-            |> markLastFrameAsForeign
+        let restoredFrames = restoredFrames |> Option.defaultValue []
 
         let cliException =
             {

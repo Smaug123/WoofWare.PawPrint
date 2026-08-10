@@ -2598,28 +2598,39 @@ module NullaryIlOp =
                 let exceptionType =
                     ExceptionDispatching.exceptionObjectType state cliException.ExceptionObject
 
-                // No boundary is recorded here, and none should be: `IL_Rethrow`
-                // (jithelpers.cpp:890) never sets the foreign-raise flag, so the frames a
-                // `rethrow` appends are indistinguishable in the trace from the original throw's.
-                // The "--- End of stack trace from previous location ---" annotation belongs only
-                // to `ExceptionDispatchInfo.Throw()`, which is a different operation:
-                // `throwExceptionObject` handles it, and passing through here would introduce a
-                // divergence rather than fix one.
+                // `IL_Rethrow` (jithelpers.cpp:890) never *sets* the foreign-raise flag, so a
+                // `rethrow` on its own produces no boundary — its frames simply accumulate onto
+                // the trace it inherited. But it does *consume* a flag someone else left pending:
+                // the read-and-reset lives in `StackTraceInfo::AppendElement` (excep.cpp:3016),
+                // which fires on the first frame appended by whichever raise comes next, and a
+                // rethrow is such a raise. Reachable because
+                // `Exception.PrepareForForeignExceptionRaise` is reflectively invocable, as
+                // `sourcesPure/ForeignRaiseFlagConsumedByRethrow.cs` does; skipping it here would
+                // both miss that boundary and leave the flag to be spent by an unrelated later
+                // throw.
                 //
-                // A rethrow continues the exception's *own* trace, so its starting frames are
-                // whatever `_stackTrace` holds now — CoreCLR's `IL_Rethrow` (jithelpers.cpp:890)
-                // reaches dispatch without clearing that field, and every frame it goes on to
-                // append accumulates onto it.
-                //
-                // The list that arrived on the parked `CliException` is not that: it is the
-                // snapshot taken when this catch handler was *entered*, and the exception's trace
-                // can have moved on since. Throwing the same object again from inside the handler
-                // replaces it, and a `finally` that this raise later runs can overwrite it too, so
-                // carrying the snapshot silently drops frames the guest can observe.
+                // A rethrow continues the exception's *own* trace, so the frames already present
+                // are whatever `_stackTrace` holds now — the direct analogue of CoreCLR's "last
+                // element of the array already on the exception". Notably not the snapshot the
+                // catch handler was entered with, which can be staler than the token.
                 let cliException =
                     { cliException with
                         StackTrace = IlMachineState.frozenStackTraceFrames corelib cliException.ExceptionObject state
                     }
+
+                let state, alreadyPresent =
+                    state
+                    |> ExceptionDispatching.consumeForeignExceptionRaise
+                        currentThread
+                        (fun () -> cliException.StackTrace)
+
+                let cliException =
+                    match alreadyPresent with
+                    | None -> cliException
+                    | Some marked ->
+                        { cliException with
+                            StackTrace = marked
+                        }
 
                 match
                     ExceptionDispatching.dispatchException

@@ -139,11 +139,25 @@ All `throwExceptionObject` call sites consume the flag, not just the `throw` opc
 `AppendElement` reset is likewise unconditional — the flag belongs to the thread's next dispatch,
 whatever raises it.
 
-`Rethrow` (`NullaryIlOp.fs:2426`) calls `dispatchException` directly and is untouched: `IL_Rethrow`
-(`jithelpers.cpp:890`) never sets the flag, so a real `rethrow` produces no annotation and
-accumulates frames onto the existing trace, which is already what PawPrint does. The standing TODO
-there — "record the rethrow site as a boundary" — is therefore an instruction to *introduce* a
-divergence, and is replaced with the reason not to.
+`Rethrow` (`NullaryIlOp.fs:2426`) calls `dispatchException` directly. `IL_Rethrow`
+(`jithelpers.cpp:890`) never *sets* the flag, so a plain `rethrow` produces no annotation and
+accumulates frames onto the existing trace, which is already what PawPrint does — the standing TODO
+there, "record the rethrow site as a boundary", is an instruction to *introduce* a divergence and
+is replaced with the reason not to.
+
+But a rethrow does *consume* a flag left pending by someone else, and an earlier draft of this
+plan missed that, on the reasoning that only `ExceptionDispatchInfo.Throw()` sets the flag and it
+always throws in the same breath. Codex found the hole: the setter is reflectively invocable —
+PawPrint already has a test doing exactly that to `IsImmutableAgileException` — so a guest can set
+the flag inside a `catch` and then `rethrow`. CoreCLR's read-and-reset lives in
+`StackTraceInfo::AppendElement`, which fires on the first frame appended by *whatever* raise
+follows, so that rethrow both gains a boundary and spends the flag. Measured on .NET 10: one
+annotation on the rethrown trace, and none on a subsequent ordinary `throw` of the same object.
+
+Both dispatch entry points therefore call one shared `consumeForeignExceptionRaise`, differing only
+in where they get "the frames already present": `throw` reads the exception's `_stackTrace` token,
+`rethrow` already holds the in-flight `CliException`'s list. Keeping clear-the-flag and mark-the-
+frames in one function is what stops the two callers drifting apart on the invariant.
 
 The other half of `IL_Throw`'s flag branch, `SetStackTraceString(NULL)`, needs no PawPrint
 counterpart: `RestoreDispatchState` assigns `_stackTraceString = null` in managed code
@@ -193,8 +207,8 @@ silent.
   `frozenStackTraceFrames` reader (token → frames) next to `frozenStackTraceToken`.
 * `ExceptionDispatching.fs` — `throwExceptionObject` consumes the flag and splices; the two
   frame-construction sites set the flag `false`.
-* `NullaryIlOp.fs` — the `Rethrow` TODO asking for a boundary at the rethrow site is replaced by
-  the reason there must not be one.
+* `NullaryIlOp.fs` — `Rethrow` consumes a pending flag; its TODO asking for a boundary at the
+  rethrow site is replaced by the reason a rethrow of its own must not produce one.
 * `Native/NativeException.fs` — `PrepareForForeignExceptionRaise` sets the flag; its comment stops
   describing a divergence.
 * `docs/divergences.md` — delete the `ExceptionDispatchInfo.Throw` entry; add the renderer
@@ -234,6 +248,13 @@ Mutation results (each applied to a clean tree, then reverted from a scratchpad 
 | mark every restored frame, not just the last | case 1 fails, exit 14 |
 | never clear the flag after consuming | case 4 fails, exit 43 |
 | assume a foreign raise always has restored frames (`None -> failwith`) | case 3 crashes |
+| `rethrow` does not consume the flag | `ForeignRaiseFlagConsumedByRethrow` fails, exit 4 |
+| never clear the flag (again, against the rethrow test) | `ForeignRaiseFlagConsumedByRethrow` fails, exit 7 |
+
+`sourcesPure/ForeignRaiseFlagConsumedByRethrow.cs` is the second test file, covering the reflective
+set-then-`rethrow` path: one annotation on the rethrown trace, and none on an ordinary `throw`
+afterwards. Its two halves are killed by different mutations, which is what says neither is
+carrying the other.
 
 ## Follow-ups (not this PR)
 
