@@ -127,16 +127,17 @@ module TestFSharpPureCases =
     /// before recording that a case is blocked on a named primitive, un-park it and observe the
     /// failure: parking it is what stops the claim being checked.
     ///
-    /// `UnionReflection` is parked on `MetadataImport::GetSigOfFieldDef`: having found a union's
-    /// cases, `FSharpType.GetUnionCases` reads each case's fields, and that reaches an InternalCall
-    /// with no handler ("Unimplemented native method (InternalCall): ...
-    /// MetadataImport::GetSigOfFieldDef"). Observed by un-parking it and running: the real runtime
-    /// exits 0, PawPrint throws out of `NativeDispatch.failUnimplemented`.
+    /// `UnionReflection` is parked on the raw-blob path of the `Signature_Init` QCall: having read
+    /// a literal field's signature blob, `MdFieldInfo.FieldType` builds a `Signature` from the
+    /// blob pointer alone (`new Signature(void*, int, RuntimeType)`, RuntimeHandles.cs), and
+    /// PawPrint answers that with "TODO: Signature_Init pCorSig blob parsing is not implemented;
+    /// got non-null RuntimePointer". Observed by un-parking it and running: the real runtime exits
+    /// 0, PawPrint throws out of `NativeSignature`.
     ///
-    /// Two earlier blockers are already gone: decoding each case's
-    /// `CompilationMappingAttribute(SourceConstructFlags, ...)`, whose argument is an enum; and
-    /// enumerating the union's nested case types, which the commit this comment sits in
-    /// implements.
+    /// Three earlier blockers are already gone: decoding each case's
+    /// `CompilationMappingAttribute(SourceConstructFlags, ...)`, whose argument is an enum;
+    /// enumerating the union's nested case types; and `MetadataImport::GetSigOfFieldDef`, which
+    /// the commit this comment sits in implements.
     let unimplemented : Set<string> = Set.ofList [ "UnionReflection" ]
 
     // F# test cases that legitimately throw under both runtimes. Without this set, a test

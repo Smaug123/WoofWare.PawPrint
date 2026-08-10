@@ -363,14 +363,15 @@ module NativeMetadataImport =
 
         state, handle, typeInfo
 
-    /// Build a <c>System.Reflection.ConstArray</c> value with <c>m_length = blob.Length</c> and
-    /// <c>m_constArray</c> pointing at the first byte of <paramref name="blob"/>. Allocates the
-    /// backing managed <c>byte[]</c> on the heap.
-    let private buildConstArray
+    /// Build a <c>System.Reflection.ConstArray</c> value with the given <c>m_length</c> and
+    /// <c>m_constArray</c>. The caller decides what the pointer addresses; this only assembles
+    /// the struct and checks that corelib's field signatures are still what we assume.
+    let private constArrayOfPointer
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (operation : string)
-        (blob : ImmutableArray<byte>)
+        (length : int)
+        (pointerValue : CliType)
         (state : IlMachineState)
         : CliType * IlMachineState
         =
@@ -396,20 +397,11 @@ module NativeMetadataImport =
         let intPtrHandle =
             AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.IntPtr
 
-        let storage : byte array = Array.init blob.Length (fun i -> blob.[i])
-
-        let pointerValue, state =
-            if storage.Length = 0 then
-                CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null), state
-            else
-                let bytePtr, state = NativeCall.allocateBlobByteArray baseClassTypes storage state
-                CliType.RuntimePointer (CliRuntimePointer.Managed bytePtr), state
-
         let lengthField =
             FieldIdentity.cliField
                 constArrayHandle
                 lengthFieldInfo
-                (CliType.Numeric (CliNumericType.Int32 storage.Length))
+                (CliType.Numeric (CliNumericType.Int32 length))
                 int32Handle
 
         let pointerField =
@@ -426,6 +418,61 @@ module NativeMetadataImport =
             |> CliType.ValueType
 
         valueType, state
+
+    /// Build a <c>System.Reflection.ConstArray</c> value with <c>m_length = blob.Length</c> and
+    /// <c>m_constArray</c> pointing at the first byte of <paramref name="blob"/>. Allocates the
+    /// backing managed <c>byte[]</c> on the heap.
+    let private buildConstArray
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (blob : ImmutableArray<byte>)
+        (state : IlMachineState)
+        : CliType * IlMachineState
+        =
+        let storage : byte array = Array.init blob.Length (fun i -> blob.[i])
+
+        let pointerValue, state =
+            if storage.Length = 0 then
+                CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null), state
+            else
+                let bytePtr, state = NativeCall.allocateBlobByteArray baseClassTypes storage state
+                CliType.RuntimePointer (CliRuntimePointer.Managed bytePtr), state
+
+        constArrayOfPointer loggerFactory baseClassTypes operation storage.Length pointerValue state
+
+    /// Build a <c>System.Reflection.ConstArray</c> whose <c>m_constArray</c> addresses the metadata
+    /// bytes themselves rather than a copy of them.
+    ///
+    /// CoreCLR's <c>ConstArray</c>-returning imports hand back a <c>PCCOR_SIGNATURE</c> straight
+    /// into the mapped metadata, so a PE byte range is the faithful model: it keeps the blob's
+    /// provenance (which FieldDef in which assembly), which is what lets a later consumer such as
+    /// <c>NativeSignature.resolveSignatureBlobHandle</c> recover the definition instead of
+    /// re-parsing anonymous bytes, and it makes the read-only-ness of a <c>ConstArray</c> a
+    /// machine-checked fact — <c>IlMachineManagedByref</c> refuses writes through a
+    /// <c>PeByteRange</c> root.
+    ///
+    /// The sibling handlers that copy (<c>GetSigOfMethodDef</c>, <c>GetMemberRefProps</c>,
+    /// <c>GetCustomAttributeProps</c>) have no consumer that needs that provenance, and MemberRef
+    /// and CustomAttribute blobs have no <c>PeByteRangePointerSource</c> variant at all.
+    let private buildConstArrayOverPeByteRange
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (peByteRange : PeByteRangePointer)
+        (state : IlMachineState)
+        : CliType * IlMachineState
+        =
+        let state, pointer =
+            IlMachineState.peByteRangePointer loggerFactory baseClassTypes peByteRange state
+
+        constArrayOfPointer
+            loggerFactory
+            baseClassTypes
+            operation
+            peByteRange.Size
+            (CliType.RuntimePointer (CliRuntimePointer.Managed pointer))
+            state
 
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
@@ -736,6 +783,65 @@ module NativeMetadataImport =
             let state =
                 IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state signatureOut constArrayValue
 
+            let state =
+                IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread state
+
+            NativeHandlerResult.completed state |> Some
+        | "System.Private.CoreLib",
+          "System.Reflection",
+          "MetadataImport",
+          "GetSigOfFieldDef",
+          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcreteByref (ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                                             "System.Reflection",
+                                                             "ConstArray",
+                                                             constArrayGenerics)) ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
+            constArrayGenerics.IsEmpty
+            ->
+            // CoreCLR's FCall forwards to `IMDInternalImport::GetSigOfFieldDef`
+            // (managedmdimport.cpp:372), so despite the `fieldMarshal` parameter name this returns
+            // the FieldDef's *signature* blob; `GetFieldMarshal` is the separate call for
+            // marshalling info. The sole managed caller is `MdFieldInfo.FieldType`, which exists
+            // only for literal fields (a literal has no FieldDesc, so `PopulateLiteralFields`
+            // reflects over it from tokens alone).
+            let operation = "MetadataImport.GetSigOfFieldDef"
+            let assemblyFullName = metadataImportHandleOfArg operation instruction.Arguments.[0]
+            let assembly = metadataImportAssembly operation state assemblyFullName
+
+            let mdToken =
+                match CliType.unwrapPrimitiveLikeDeep instruction.Arguments.[1] with
+                | CliType.Numeric (CliNumericType.Int32 mdToken) -> mdToken
+                | other -> failwith $"%s{operation}: expected Int32 fieldToken argument, got %O{other}"
+
+            let signatureOut =
+                NativeCall.managedPointerOfPointerArgument operation "signature out pointer" instruction.Arguments.[2]
+
+            // Rejects a non-FieldDef token, and a FieldDef absent from this assembly.
+            let fieldInfo = fieldDefinition operation assembly mdToken
+
+            let peByteRange =
+                IlMachineState.peByteRangeForFieldSignatureBlob assembly fieldInfo.Handle
+
+            // ECMA-335 II.23.2.4: a FIELD signature is the 0x06 calling-convention byte followed by
+            // a non-empty Type, so it is never shorter than two bytes. Anything shorter means we
+            // resolved the wrong blob, and passing it on would leave the managed parser to fail
+            // somewhere far from the cause.
+            if peByteRange.Size < 2 then
+                failwith
+                    $"%s{operation}: FieldDef token 0x%08x{mdToken} in %s{assemblyFullName} has a %d{peByteRange.Size}-byte signature blob, but an ECMA-335 II.23.2.4 FIELD signature is at least two bytes"
+
+            let constArrayValue, state =
+                buildConstArrayOverPeByteRange ctx.LoggerFactory ctx.BaseClassTypes operation peByteRange state
+
+            let state =
+                IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state signatureOut constArrayValue
+
+            // The managed wrapper turns a negative HRESULT into BadImageFormatException
+            // (MdImport.cs, ThrowBadImageExceptionForHR). Every failure above is instead a host-level
+            // crash, as in the sibling handlers: the only guest caller passes tokens the runtime
+            // itself minted, so a rejected token is a PawPrint bug rather than a malformed image.
             let state =
                 IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread state
 
