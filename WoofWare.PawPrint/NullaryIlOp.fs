@@ -2367,13 +2367,34 @@ module NullaryIlOp =
                 |> Tuple.withRight WhatWeDid.Executed
                 |> ExecutionResult.stepped
             | Some {
-                       Scope = ExceptionContinuationScope.FinallyHandler _
+                       Scope = ExceptionContinuationScope.FinallyHandler justRan
                        Continuation = ExceptionContinuation.ResumeAfterFinally targetPC
                    },
               methodStateWithoutContinuation ->
-                // Resume at the leave target
+                // A single `leave` may exit several nested protected regions, and every one of
+                // their handlers has to run, innermost first (ECMA-335 III.3.55). `leave`
+                // starts the innermost; each handler's `endfinally` asks for its successor
+                // here and only resumes at the leave target once the chain is exhausted.
+                // Jumping straight to `targetPC` skipped every outer handler — including, for
+                // instance, the one in `CancellationTokenSource.ExecuteCallbackHandlers` that
+                // clears `ExecutingCallbackId`, whose loss livelocks a cross-thread
+                // `CancellationTokenRegistration.Dispose()`.
                 let newMethodState =
-                    methodStateWithoutContinuation |> MethodState.setProgramCounter targetPC
+                    match
+                        ExceptionHandling.nextFinallyToRun
+                            justRan
+                            targetPC
+                            methodStateWithoutContinuation.ExecutingMethod
+                    with
+                    | Some next ->
+                        // The eval stack is not cleared again: `leave` emptied it before the
+                        // first handler, and a handler must leave it empty at its `endfinally`.
+                        methodStateWithoutContinuation
+                        |> MethodState.pushExceptionContinuation
+                            (ExceptionContinuationScope.FinallyHandler next)
+                            (ExceptionContinuation.ResumeAfterFinally targetPC)
+                        |> MethodState.setProgramCounter next.HandlerOffset
+                    | None -> methodStateWithoutContinuation |> MethodState.setProgramCounter targetPC
 
                 let newThreadState =
                     ThreadState.setFrame threadState.ActiveMethodState newMethodState threadState

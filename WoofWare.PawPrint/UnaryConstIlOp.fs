@@ -22,7 +22,11 @@ module internal UnaryConstIlOp =
             (methodState, catchHandlersToLeave)
             ||> List.fold (fun methodState offset -> MethodState.clearCatchException offset methodState)
 
-        // TODO: check that finallyBlocksToRun are indeed sorted by closeness
+        // Only the innermost handler is entered here. The rest of the chain is walked by
+        // `Endfinally`, which asks `ExceptionHandling.nextFinallyToRun` for the successor of
+        // whichever handler just completed; see that function for why the remaining regions
+        // are recomputed rather than carried along. `findFinallyBlocksToRun` orders its result
+        // innermost first, so the head is the one to enter.
         match finallyBlocksToRun with
         | [] ->
             // No finallys to run, just jump and clear eval stack

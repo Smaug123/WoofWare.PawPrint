@@ -1,18 +1,19 @@
 // A single `leave` may exit more than one enclosing protected region at once. ECMA-335
 // III.3.55 requires it to run *every* `finally` between the leave site and the target,
-// innermost first. PawPrint runs only the innermost one and jumps straight to the target,
-// so every outer `finally` on the way out is silently skipped.
+// innermost first.
 //
-// `UnaryConstIlOp.leave` computes the full list via `Exceptions.findFinallyBlocksToRun`
-// (correctly, sorted inner-to-outer) and then matches `finallyOffset :: _`, discarding the
-// tail: it pushes one `ExceptionContinuationScope.FinallyHandler` whose continuation is
-// `ResumeAfterFinally targetPc`, so after the innermost handler's `endfinally` control goes
-// directly to the leave target.
+// `UnaryConstIlOp.leave` used to run only the innermost and jump straight to the target: it
+// computed the full list via `Exceptions.findFinallyBlocksToRun` (correctly, sorted
+// inner-to-outer) and then matched `finallyOffset :: _`, discarding the tail. `leave` now
+// enters the innermost and each `endfinally` asks `ExceptionHandling.nextFinallyToRun` for
+// its successor, so the whole chain runs. `TestFinallyChain.fs` pins that rule directly;
+// this file is the end-to-end guest.
 //
 // Whether C# produces a multi-region `leave` turns on where the branch target sits, which is
-// why this is easy to miss: `OneRegion` below puts a statement after the loop, so the
+// why the bug was easy to miss: `OneRegion` below puts a statement after the loop, so the
 // loop-exit label is still inside the outer `try` and its `leave` crosses one region — that
-// one passes today, and is the control. The other four cross two or more and fail.
+// case behaved correctly throughout, and is the control. The other four cross two or more,
+// and every one of them failed before the fix.
 //
 // It also turns on the optimization level, which matters because `Roslyn.compile` builds
 // these guests unoptimized. See `LoopExitTwoRegions` for the measurement: a plain `break`
@@ -22,12 +23,13 @@
 //
 // This is not a niche shape. `CancellationTokenSource.ExecuteCallbackHandlers` hits it: its
 // `break` out of the callback-dispatch loop is the last thing in the outer `try`, so the
-// `leave` skips the outer `finally` that sets `_state = NotifyingCompleteState` and clears
-// `Registrations.ExecutingCallbackId`. Both stay stale forever, so a later
-// `CancellationTokenRegistration.Dispose()` from a thread other than the one that ran
-// `Cancel()` spins for ever in `Registrations.WaitForCallbackToComplete`. See the sibling
-// `CancellationTokenRegistrationDisposeCrossThread.cs`, which is a guest-level witness of
-// exactly that; unlike this file, that one does not terminate under PawPrint today.
+// `leave` crossed straight past the outer `finally` that sets `_state =
+// NotifyingCompleteState` and clears `Registrations.ExecutingCallbackId`. Both stayed stale
+// for ever, so a later `CancellationTokenRegistration.Dispose()` from a thread other than
+// the one that ran `Cancel()` span for ever in `Registrations.WaitForCallbackToComplete`.
+// See the sibling `CancellationTokenRegistrationDisposeCrossThread.cs`, the guest-level
+// witness of exactly that — and note it detects a regression by hanging, whereas this file
+// fails in about a second, so this is the one to read first.
 //
 // Handlers append to a shared ordered trace rather than bumping independent counters,
 // because *order* is half the contract and counters cannot see it: an implementation that
