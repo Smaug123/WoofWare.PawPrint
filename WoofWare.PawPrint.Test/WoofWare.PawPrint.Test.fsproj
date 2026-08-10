@@ -50,6 +50,7 @@
     <Compile Include="TestBinaryArithmetic.fs" />
     <Compile Include="TestContextSwitchPrior.fs" />
     <Compile Include="TestNullaryIlOp.fs" />
+    <Compile Include="TestIlDecoding.fs" />
     <Compile Include="TestStackMemoryPool.fs" />
     <Compile Include="TestNativeMemoryPool.fs" />
     <Compile Include="TestAbsoluteUnixPath.fs" />
