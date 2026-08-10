@@ -1098,21 +1098,25 @@ module ManagedPointerSource =
     /// makes two chains under **one** root hard to compare, but it cannot carry either of
     /// them out of the root. A `ReinterpretAs` changes the type view without moving at all.
     ///
-    /// A non-zero `ByteOffset` is different: it is unbounded by construction, and one that
-    /// survived normalisation is one the fixed-stride folding could not absorb into the root
-    /// — typically because a `Field` intervened, which is exactly the shape that walks from
-    /// `a[0].Y` into `a[1]`.
+    /// A cursor is the only step that can, and even then only when it follows a `Field`.
+    /// A cursor with no `Field` before it has been through `normaliseTrailingByteOffset`,
+    /// which folds whole strides into a fixed-stride root — so what is left is a residual
+    /// within one element or character, which by construction cannot have reached the next
+    /// one. Once a `Field` intervenes that folding cannot happen, the residual is no longer
+    /// bounded by a stride, and the cursor is free to walk out: `a[0].Y` advanced four bytes
+    /// is `a[1]`.
     ///
     /// This is what makes root disjointness insufficient on its own: two byrefs on different
     /// roots are different addresses only while each stays within the root it started from.
     let private mayLeaveRootExtent (projs : ByrefProjection list) : bool =
-        projs
-        |> List.exists (fun p ->
-            match p with
-            | ByrefProjection.ByteOffset n -> n <> 0
-            | ByrefProjection.Field _
-            | ByrefProjection.ReinterpretAs _ -> false
-        )
+        let rec go (seenField : bool) (rest : ByrefProjection list) : bool =
+            match rest with
+            | [] -> false
+            | ByrefProjection.Field _ :: tail -> go true tail
+            | ByrefProjection.ReinterpretAs _ :: tail -> go seenField tail
+            | ByrefProjection.ByteOffset n :: tail -> if seenField && n <> 0 then true else go seenField tail
+
+        go false projs
 
     /// Whether two byrefs sharing a root name the same address, or `None` when saying
     /// so would need field-offset layout that byref comparison does not carry.

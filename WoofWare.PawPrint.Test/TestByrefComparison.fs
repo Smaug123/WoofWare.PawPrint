@@ -169,6 +169,25 @@ module TestByrefComparison =
         ceq (byref (local 0us) [ fieldX ]) (byref (local 1us) [ fieldY ])
         |> shouldEqual false
 
+    /// A cursor with no field before it has been folded by `normaliseTrailingByteOffset`
+    /// down to a residual within one element, so it cannot have reached the next element
+    /// and the comparison still decides. Only a cursor that follows a `Field` is unbounded,
+    /// because that folding cannot happen through a field.
+    [<Test>]
+    let ``a field-free in-cell cursor still decides against another element`` () =
+        let inCell =
+            ManagedPointerSource.Byref (
+                ByrefRoot.ArrayElement (ManagedHeapAddress 1, 0),
+                [ ByrefProjection.ReinterpretAs byteType ; ByrefProjection.ByteOffset 1 ]
+            )
+            |> ManagedPointerSource.unsafeAssumeNormalisedForComparison
+
+        let other =
+            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (ManagedHeapAddress 1, 1), [])
+            |> ManagedPointerSource.unsafeAssumeNormalisedForComparison
+
+        ceq inCell other |> shouldEqual false
+
     /// The displacement rule keys on displacement, not on merely having projections: a
     /// byref that only changes type view has not moved, so it still decides against a
     /// different root.
