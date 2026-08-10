@@ -580,6 +580,21 @@ module TestImpureCases =
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }
+            {
+                // Which message a negative-length `newarr` reports. CoreCLR has two answers,
+                // picked by the allocation helper the JIT emitted for the element type, and
+                // for `string[]` on a 64-bit target it picks the one PawPrint does *not*
+                // reproduce — so there is no cross-runtime fact here, only PawPrint's own
+                // choice of the `AllocateSzArray` message. The exception *type*, which both
+                // runtimes agree on, is asserted differentially in
+                // `sourcesPure/NewarrLengthValidation.cs`. Recorded in docs/divergences.md.
+                FileName = "NewarrNegativeLengthMessage.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
         ]
 
     let runTest (case : EndToEndTestCase) : unit =

@@ -18,13 +18,23 @@ module internal UnaryMetadataArrayOps =
         let currentState = state.ThreadState.[thread]
         let popped, methodState = MethodState.popFromStack currentState.MethodState
 
-        let currentState =
-            ThreadState.setFrame currentState.ActiveMethodState methodState currentState
+        // Commit the pop straight into `state` rather than merging a pre-pop `ThreadState`
+        // entry back in at the end: there are two exits from here — the raise below and the
+        // allocation — and both have to return a state in which the operand really has been
+        // popped.
+        let state =
+            { state with
+                ThreadState =
+                    state.ThreadState
+                    |> Map.add thread (ThreadState.setFrame currentState.ActiveMethodState methodState currentState)
+            }
 
         let len =
             match popped with
             | EvalStackValue.Int32 (Int32Source.Verbatim v) -> v
-            | popped -> failwith $"unexpectedly popped value %O{popped} to serve as array len"
+            | popped ->
+                failwith
+                    $"unexpectedly popped value %O{popped} to serve as array len for Newarr. ECMA-335 III.4.13 also permits a native int here — Roslyn emits `conv.ovf.i; newarr` for `new T[someLong]` — which PawPrint does not yet decode."
 
         let typeGenerics = currentMethod.DeclaringType.Generics
 
@@ -47,15 +57,32 @@ module internal UnaryMetadataArrayOps =
                 methodState.Generics
                 state
 
+        // The length is checked *after* the element type has been resolved, as CoreCLR does:
+        // the array MethodTable is in hand before `AllocateSzArray` is reached, so a type that
+        // cannot be loaded is reported as such even when the length would independently have
+        // thrown.
+        match SzArrayAllocation.checkLength len with
+        | Some err ->
+            let exceptionType, message = SzArrayAllocation.exceptionFor baseClassTypes err
+
+            // Don't advance the PC: exception dispatch needs the faulting instruction's
+            // offset for handler search and stack-trace construction.
+            IlMachineStateExecution.raiseRuntimeExceptionWithMessage
+                loggerFactory
+                baseClassTypes
+                exceptionType
+                message
+                thread
+                state
+        | None ->
+
         let arrayType = ConcreteTypeHandle.OneDimArrayZero concreteTypeHandle
 
         let alloc, state =
             IlMachineState.allocateArray arrayType (fun () -> zeroOfType) len state
 
         let state =
-            { state with
-                ThreadState = state.ThreadState |> Map.add thread currentState
-            }
+            state
             |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some alloc)) thread
             |> IlMachineState.advanceProgramCounter thread
 
