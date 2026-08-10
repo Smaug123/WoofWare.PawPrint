@@ -694,10 +694,10 @@ module Program =
         : Startup
         =
         let logger = loggerFactory.CreateLogger "Program"
-        let dotnetRuntimeDirs = hostConfig.DotnetRuntimeDirs
-        let kernelConfig = hostConfig.Kernel
+        let dotnetRuntimeDirs = hostConfig.Guest.DotnetRuntimeDirs
+        let kernelConfig = hostConfig.Guest.Kernel
         let pctSeed = hostConfig.PctSeed
-        let argv = hostConfig.Argv
+        let argv = hostConfig.Guest.Argv
 
         let dumped = Assembly.read loggerFactory originalPath fileStream
 
@@ -927,7 +927,7 @@ module Program =
         // that a host which builds its `HostConfig` some other way — the App, which replaces
         // `AppContext` wholesale with the guest's `runtimeconfig.json` — cannot drop it.
         let propertiesToSeed =
-            AppContextProperties.withRuntimeBaseline hostConfig.AppContext
+            AppContextProperties.withRuntimeBaseline hostConfig.Guest.AppContext
 
         let rec loadInitialState (state : IlMachineState) =
             match

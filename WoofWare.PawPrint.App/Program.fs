@@ -373,11 +373,14 @@ module AppProgram =
                 loggerFactory
                 (Some dllPath)
                 fileStream
-                { HostConfig.Default dotnetRuntimes with
-                    Kernel = kernelConfig
+                {
+                    Guest =
+                        { GuestConfig.Default dotnetRuntimes with
+                            Kernel = kernelConfig
+                            Argv = args
+                            AppContext = HostRuntimeConfig.forAssembly dllPath
+                        }
                     PctSeed = pctSeed
-                    Argv = args
-                    AppContext = HostRuntimeConfig.forAssembly dllPath
                 }
             |> pumpStartup
 

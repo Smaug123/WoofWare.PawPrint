@@ -620,8 +620,11 @@ module TestImpureCases =
                         (Some case.FileName)
                         peImage
                         { HostConfig.Default dotnetRuntimes with
-                            Kernel = case.KernelConfig
-                            AppContext = case.AppContext
+                            Guest =
+                                { GuestConfig.Default dotnetRuntimes with
+                                    Kernel = case.KernelConfig
+                                    AppContext = case.AppContext
+                                }
                         }
                 with
                 | RunOutcome.GuestUnhandledException (_, _, exn) ->

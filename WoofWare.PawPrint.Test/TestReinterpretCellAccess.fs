@@ -215,13 +215,7 @@ public class Probe
 
         let outcome =
             try
-                Program.run
-                    loggerFactory
-                    (Some sourceName)
-                    peImage
-                    { HostConfig.Default dotnetRuntimes with
-                        Kernel = KernelConfig.Default
-                    }
+                Program.run loggerFactory (Some sourceName) peImage (HostConfig.Default dotnetRuntimes)
             with _ ->
                 for message in messages () do
                     Console.Error.WriteLine $"{message}"
