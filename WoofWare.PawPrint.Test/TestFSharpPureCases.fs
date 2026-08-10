@@ -180,7 +180,10 @@ module TestFSharpPureCases =
                     (Some dllPath)
                     peImage
                     { HostConfig.Default dotnetRuntimes with
-                        Argv = [ testCaseName ]
+                        Guest =
+                            { GuestConfig.Default dotnetRuntimes with
+                                Argv = [ testCaseName ]
+                            }
                     }
 
             match realResult, pawPrintResult with

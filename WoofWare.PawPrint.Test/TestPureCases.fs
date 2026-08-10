@@ -104,7 +104,10 @@ module TestPureCases =
                     (Some sourceName)
                     peImage
                     { HostConfig.Default dotnetRuntimes with
-                        Kernel = kernelConfig
+                        Guest =
+                            { GuestConfig.Default dotnetRuntimes with
+                                Kernel = kernelConfig
+                            }
                     }
 
             assertResult image pawPrintResult

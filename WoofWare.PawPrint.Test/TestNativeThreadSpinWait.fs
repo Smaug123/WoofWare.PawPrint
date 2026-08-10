@@ -67,7 +67,10 @@ public static class Entry
                 (Some "ThreadSpinWaitTest.cs")
                 peImage
                 { HostConfig.Default dotnetRuntimes with
-                    Kernel = kernelConfig
+                    Guest =
+                        { GuestConfig.Default dotnetRuntimes with
+                            Kernel = kernelConfig
+                        }
                 }
         with
         | Program.ProgramStartResult.Ready prepared -> prepared

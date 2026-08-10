@@ -353,11 +353,14 @@ module DebuggerServer =
                 loggerFactory
                 (Some dllPath)
                 fileStream
-                { HostConfig.Default dotnetRuntimeDirs with
-                    Kernel = kernelConfig
+                {
+                    Guest =
+                        { GuestConfig.Default dotnetRuntimeDirs with
+                            Kernel = kernelConfig
+                            Argv = argv
+                            AppContext = HostRuntimeConfig.forAssembly dllPath
+                        }
                     PctSeed = pctSeed
-                    Argv = argv
-                    AppContext = HostRuntimeConfig.forAssembly dllPath
                 }
         with
         | Program.ProgramStartResult.Ready prepared -> SessionState.Running (prepared, 0L)
