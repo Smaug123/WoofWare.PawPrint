@@ -2598,6 +2598,14 @@ module NullaryIlOp =
                 let exceptionType =
                     ExceptionDispatching.exceptionObjectType state cliException.ExceptionObject
 
+                // No boundary is recorded here, and none should be: `IL_Rethrow`
+                // (jithelpers.cpp:890) never sets the foreign-raise flag, so the frames a
+                // `rethrow` appends are indistinguishable in the trace from the original throw's.
+                // The "--- End of stack trace from previous location ---" annotation belongs only
+                // to `ExceptionDispatchInfo.Throw()`, which is a different operation:
+                // `throwExceptionObject` handles it, and passing through here would introduce a
+                // divergence rather than fix one.
+                //
                 // A rethrow continues the exception's *own* trace, so its starting frames are
                 // whatever `_stackTrace` holds now — CoreCLR's `IL_Rethrow` (jithelpers.cpp:890)
                 // reaches dispatch without clearing that field, and every frame it goes on to

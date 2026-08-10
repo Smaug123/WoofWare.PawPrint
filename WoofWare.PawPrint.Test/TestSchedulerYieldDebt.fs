@@ -55,6 +55,7 @@ module TestSchedulerYieldDebt =
             ActiveMethodState = FrameId -1
             Status = status
             IsBackground = false
+            IsRaisingForeignException = false
             Name = None
             Cpu = CpuId 0
             OsThreadId = OsThreadId 1u

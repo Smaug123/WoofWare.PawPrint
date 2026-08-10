@@ -644,6 +644,11 @@ module ExceptionDispatching =
             {
                 Method = callerFrame.ExecutingMethod
                 IlOffset = callSitePC
+                // A frame appended during unwind belongs to the throw in progress, never to an
+                // earlier one — CoreCLR sets `stackTraceElem.flags = 0` here for the same reason
+                // (excep.cpp:3045). Only `throwExceptionObject` marks a frame, and only on frames
+                // it restored rather than built.
+                IsLastFrameFromForeignExceptionStackTrace = false
             }
 
         // A delegate's `Invoke` is a stub, not a managed method: real .NET has no frame for it,
@@ -820,6 +825,24 @@ module ExceptionDispatching =
             currentMethodState.IlOpIndex
             []
 
+    /// Mark the last frame of `frames` as the end of an earlier throw's trace. The empty list is a
+    /// fixed point, which is CoreCLR's `numCurrentFrames > 0` guard (excep.cpp:3093) and is what
+    /// gives an `ExceptionDispatchInfo` captured from a never-thrown exception a trace with no
+    /// boundary in it.
+    let private markLastFrameAsForeign
+        (frames : ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> list)
+        : ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> list
+        =
+        match List.rev frames with
+        | [] -> []
+        | last :: earlierReversed ->
+            let last =
+                { last with
+                    IsLastFrameFromForeignExceptionStackTrace = true
+                }
+
+            List.rev (last :: earlierReversed)
+
     /// Initiate exception dispatch for an exception object already on the heap.
     /// Builds the initial stack trace frame and dispatches.
     let throwExceptionObject
@@ -838,12 +861,55 @@ module ExceptionDispatching =
             {
                 Method = currentMethodState.ExecutingMethod
                 IlOffset = currentMethodState.IlOpIndex
+                IsLastFrameFromForeignExceptionStackTrace = false
             }
+
+        // `Exception.PrepareForForeignExceptionRaise` has just told us that this throw is
+        // re-raising an exception whose trace was captured earlier, so the frames behind its
+        // `_stackTrace` must survive rather than be replaced. CoreCLR splits this across two
+        // readers of the same flag — `IL_Throw` (jithelpers.cpp:814) declines to clear
+        // `_stackTrace`, and the next `StackTraceInfo::AppendElement` (excep.cpp:3087) marks the
+        // last frame already present — but PawPrint has no clear-at-throw step to decline, and
+        // appends its first frame right here, so both land in one place.
+        //
+        // The other half of `IL_Throw`'s flag branch, `SetStackTraceString(NULL)`, needs nothing
+        // here: `RestoreDispatchState` assigns `_stackTraceString = null` itself in managed code
+        // (Exception.CoreCLR.cs:141), which PawPrint interprets like any other store. CoreCLR's
+        // native null exists for flag-setters that bypass `RestoreDispatchState` — only
+        // `IL_ThrowExact` (jithelpers.cpp:937), a JIT helper with no managed caller in CoreLib.
+        //
+        // The frames come from the exception's *own* token, not from anything the flag carries:
+        // `RestoreDispatchState` (Exception.CoreCLR.cs:140) has already written the captured token
+        // into `_stackTrace`, and if some other exception were raised while the flag was set,
+        // CoreCLR would likewise splice whatever that one's `_stackTrace` held.
+        //
+        // Consumed here for every raise, not only for the `throw` opcode, matching the
+        // unconditional reset at excep.cpp:3017: the flag belongs to the thread's next dispatch,
+        // whatever raises it.
+        let state, restoredFrames =
+            if not threadState.IsRaisingForeignException then
+                state, []
+            else
+
+            let state =
+                { state with
+                    ThreadState =
+                        state.ThreadState
+                        |> Map.add
+                            currentThread
+                            { threadState with
+                                IsRaisingForeignException = false
+                            }
+                }
+
+            state,
+            IlMachineState.frozenStackTraceFrames corelib exceptionAddr state
+            |> markLastFrameAsForeign
 
         let cliException =
             {
                 ExceptionObject = exceptionAddr
-                StackTrace = [ stackFrame ]
+                StackTrace = restoredFrames @ [ stackFrame ]
             }
 
         dispatchException loggerFactory corelib state currentThread cliException exceptionType

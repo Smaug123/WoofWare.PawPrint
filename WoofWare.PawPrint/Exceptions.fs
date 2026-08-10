@@ -10,6 +10,20 @@ type ExceptionStackFrame<'typeGen, 'methodGen, 'methodVar
         Method : WoofWare.PawPrint.MethodInfo<'typeGen, 'methodGen, 'methodVar>
         /// The number of bytes into the IL of the method we were in
         IlOffset : int
+        /// This is the last frame carried over from an *earlier* throw of the same exception —
+        /// i.e. the trace continues past it with frames from a later re-raise. Set only when
+        /// `ExceptionDispatchInfo.Throw()` splices a captured trace back on; renders as
+        /// "--- End of stack trace from previous location ---" after this frame's line.
+        ///
+        /// A property of the frame rather than a separator between frames because that is how the
+        /// CLR exposes it: `STEF_LAST_FRAME_FROM_FOREIGN_STACK_TRACE` (clrex.h:26) is a bit on the
+        /// `StackTraceElement`, and `debugdebugger.cpp:475-477` materialises those bits into a
+        /// `bool[]` parallel to the frame array, which managed code reads as
+        /// `System.Diagnostics.StackFrame.IsLastFrameFromForeignExceptionStackTrace`. Any
+        /// representation PawPrint chose would have to answer that question frame by frame.
+        ///
+        /// More than one frame in a trace can carry this: each capture/rethrow hop adds another.
+        IsLastFrameFromForeignExceptionStackTrace : bool
     }
 
 /// Represents a CLI exception being propagated

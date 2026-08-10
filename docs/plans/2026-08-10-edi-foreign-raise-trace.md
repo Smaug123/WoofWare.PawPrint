@@ -1,0 +1,246 @@
+# Issue #876 — `ExceptionDispatchInfo.Throw` loses the captured stack trace
+
+## What is wrong today
+
+`Exception.PrepareForForeignExceptionRaise` is a no-op (`Native/NativeException.fs:209`). CoreCLR
+uses it to set a one-shot per-thread flag that the *next* throw on that thread reads twice; PawPrint
+models neither the flag nor either read, so a rethrow through `ExceptionDispatchInfo.Throw()`
+restarts the trace at the rethrow site and emits no boundary annotation.
+
+## Measured ground truth (.NET 10, host runtime)
+
+Probe in `scratchpad/ediprobe`. Trace text after each rethrow:
+
+| case | boundary annotations | frames before first boundary |
+|---|---|---|
+| single `Capture`/`Throw` | 1 | original throw frames |
+| capture → throw → capture → throw | 2 | original throw frames |
+| `Capture(new Exception())` (never thrown) → `Throw` | 0 | none |
+| plain `throw ex` on a caught exception | 0 | none (trace reset) |
+| `await` a faulted `Task.Run` | 2 | original throw frames |
+
+Per-frame flags read reflectively out of `System.Diagnostics.StackFrame`
+(`IsLastFrameFromForeignExceptionStackTrace`) for the nested-async case:
+
+```
+[0] foreign=False Probe.Boom
+[1] foreign=False Probe+<>c.<Inner>b__8_0
+[2] foreign=True  System.Threading.ExecutionContext.RunFromThreadPoolDispatchLoop
+[3] foreign=False System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw
+[4] foreign=False System.Threading.ExecutionContext.RunFromThreadPoolDispatchLoop
+[5] foreign=True  System.Threading.Tasks.Task.ExecuteWithThreadLocal
+[6] foreign=False System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw
+[7] foreign=False System.Runtime.CompilerServices.TaskAwaiter.ThrowForNonSuccess
+[8] foreign=False System.Runtime.CompilerServices.TaskAwaiter.HandleNonSuccessAndDebuggerNotification
+[9] foreign=True  Probe+<Inner>d__8.MoveNext
+```
+
+Two facts fall out of that dump that reasoning alone would have missed:
+
+* the flag is **per frame**, and several frames in one trace can carry it;
+* frame `[9]` carries the flag but *no annotation is printed for it*, because
+  `StackTrace.ToString` suppresses the annotation when the flag-carrying frame's declaring type is
+  a compiler-generated async state machine (`StackTrace.cs:361`, `&& !isAsync`). Frames `[3]`,
+  `[6]`, `[10]` are `[StackTraceHidden]` and are dropped by `ShowInStackTrace` before rendering.
+
+## Design decisions
+
+### (a) Where the flag lives — `ThreadState`
+
+CoreCLR keeps it in `ThreadExceptionState` (`TEF_ForeignExceptionRaise`, `exstate.h:113`): a
+per-thread runtime fact, not something the guest could learn by asking the OS. `ThreadState`
+already carries exactly this kind of thing (`IsBackground`), and `EmulatedKernel` explicitly does
+not: the kernel holds what the guest could ask the OS for. New field:
+
+```fsharp
+/// Set by `Exception.PrepareForForeignExceptionRaise`, consumed by the next throw on this thread.
+IsRaisingForeignException : bool
+```
+
+Four construction sites (`ThreadState.New` plus three in `IlMachineThreadState.fs`) must state
+`false`; the compiler asks each one.
+
+Rejected: a `Set<ThreadId>` on `IlMachineState`. There is a truthful default for an absent key
+here ("not raising"), so it is not the `Cpu`/`OsThreadId` situation — but it would put a
+thread-local runtime fact somewhere other than the thread, for no gain.
+
+### (b) How the boundary is represented — per-frame flag on `ExceptionStackFrame`
+
+```fsharp
+type ExceptionStackFrame<...> =
+    {
+        Method : MethodInfo<...>
+        IlOffset : int
+        /// This frame is the last one carried over from a previous throw of the same exception.
+        IsLastFrameFromForeignExceptionStackTrace : bool
+    }
+```
+
+Three genuinely different shapes were considered.
+
+1. **Per-frame flag** (chosen). Mirrors `STEF_LAST_FRAME_FROM_FOREIGN_STACK_TRACE`
+   (`clrex.h:26`).
+2. **Segmented trace** — `StackTrace : ExceptionStackFrame list list`, one segment per throw
+   episode, boundaries implied between segments.
+3. **Sum-type element** — `Frame of ExceptionStackFrame | ForeignBoundary` in a flat list.
+
+The argument for (2)/(3) is that a boundary is *between* frames, not a property *of* one, and (2)
+additionally makes "boundary at the very start or end" and "two adjacent boundaries"
+unrepresentable. That is a real point, and against a runtime with no other opinion it would win.
+
+It loses here because the CLR does have an opinion, and it is guest-observable.
+`System.Diagnostics.StackFrame.IsLastFrameFromForeignExceptionStackTrace` is a **per-frame
+boolean**, materialised by `debugdebugger.cpp:475-477` into a `bool[]` parallel to the frame array
+and handed to managed code. Anything PawPrint stores must be able to answer that question frame by
+frame. Shape (1) *is* that answer; shapes (2) and (3) require a flatten at every read, and the
+flatten is only well-defined because of an invariant they do not themselves enforce (a boundary
+never leads). So the "illegal states" advantage is smaller than it looks: what (2)/(3) make
+unrepresentable is a state the *producer* can already not construct, while what they make awkward
+is the shape the *consumer* demands.
+
+Blast radius also differs by an order of magnitude: (1) touches one record and its two construction
+sites; (2)/(3) change the element type of every trace list, so `CliException.StackTrace`,
+`IlMachineState.FrozenStackTraces`, both `@ [ stackFrame ]` appends and the renderer all move.
+(1) → (2)/(3) later is a mechanical refactor if that judgement turns out wrong.
+
+The renderer must stay total over the representation: it emits the annotation after a marked frame
+wherever that frame sits, including last. PawPrint's producer never marks a last frame, but that is
+the producer's invariant and encoding it in the renderer would put it in the wrong place —
+`StackTrace.ToString` is likewise position-independent (`StackTrace.cs:361-366`).
+
+### (c) Where the flag is consumed — `ExceptionDispatching.throwExceptionObject`
+
+CoreCLR consumes it in two places (`IL_Throw` decides whether to clear `_stackTrace`; the first
+`AppendElement` marks the last existing frame and resets the flag). PawPrint has no
+clear-at-throw step at all — `recordThrownStackTrace` simply overwrites `_stackTrace` at dispatch
+conclusion — so both halves collapse into one place: the point where a throw seeds its
+`CliException`.
+
+```
+throwExceptionObject:
+    if thread.IsRaisingForeignException then
+        clear the flag
+        restored = frames behind the exception's own _stackTrace token   (may be empty)
+        seed = markLastAsForeign restored @ [ throwSiteFrame ]
+    else
+        seed = [ throwSiteFrame ]
+```
+
+`markLastAsForeign []` is the identity, which is exactly CoreCLR's `numCurrentFrames > 0` guard
+(`excep.cpp:3093`) and gives the measured zero-annotation answer for an EDI over a never-thrown
+exception, for free rather than by special case.
+
+Reading the frames from the exception's *own* `_stackTrace` (rather than from anything the flag
+carries) is what makes this faithful: `RestoreDispatchState` has already written the captured token
+there, and if some other exception were somehow thrown while the flag was set, CoreCLR would
+likewise splice *that* exception's existing frames.
+
+All `throwExceptionObject` call sites consume the flag, not just the `throw` opcode. CoreCLR's
+`AppendElement` reset is likewise unconditional — the flag belongs to the thread's next dispatch,
+whatever raises it.
+
+`Rethrow` (`NullaryIlOp.fs:2426`) calls `dispatchException` directly and is untouched: `IL_Rethrow`
+(`jithelpers.cpp:890`) never sets the flag, so a real `rethrow` produces no annotation and
+accumulates frames onto the existing trace, which is already what PawPrint does. The standing TODO
+there — "record the rethrow site as a boundary" — is therefore an instruction to *introduce* a
+divergence, and is replaced with the reason not to.
+
+The other half of `IL_Throw`'s flag branch, `SetStackTraceString(NULL)`, needs no PawPrint
+counterpart: `RestoreDispatchState` assigns `_stackTraceString = null` in managed code
+(`Exception.CoreCLR.cs:141`), which PawPrint interprets like any other store. CoreCLR's native
+null is there for flag-setters that bypass `RestoreDispatchState`, of which the only one is
+`IL_ThrowExact` (`jithelpers.cpp:937`) — a JIT helper with no managed caller in CoreLib, so
+unreachable under IL interpretation.
+
+**Multi-threading.** Placing the flag on the thread (decision (a)) is what makes concurrent guests
+correct: a worker rethrowing a `Task` fault through an EDI sets and consumes its own flag, and two
+threads rethrowing the same captured exception do not interfere. The residual race — thread B
+overwriting the shared exception object's `_stackTrace` between A's `RestoreDispatchState` and A's
+throw — exists in CoreCLR too (`AppendElement` re-reads the array from the object at every append);
+PawPrint determinises one interleaving of it rather than introducing it.
+
+**Explicitly not done here**: the `else` branch does *not* clear `_stackTrace`/`_stackTraceString`,
+so PawPrint still diverges from `ClearStackTracePreservingRemoteStackTrace` on an ordinary
+`throw ex` of an already-thrown exception. That is a pre-existing, separate divergence; adding it
+to this change would alter behaviour for every ordinary throw, including the empty-frame-list case
+that produced the #870 regression. Follow-up issue.
+
+### (d) Rendering — emit unconditionally
+
+`renderExceptionStackTrace` emits `--- End of stack trace from previous location ---` on its own
+line after any frame whose flag is set. The literal is CoreLib's
+`SR.Exception_EndStackTraceFromPreviousThrow` (`Strings.resx:2291`); PawPrint has no resource
+pipeline, exactly as with `NativeException.messageForKind`.
+
+The `&& !isAsync` suppression is *not* modelled. It is one of a family of display policies in
+`StackTrace.ToString` that PawPrint's renderer implements none of — `ShowInStackTrace`'s
+`[StackTraceHidden]` and `AggressiveInlining` filters (which is why PawPrint will show the
+`ExceptionDispatchInfo.Throw` frames that real .NET hides), and `TryResolveStateMachineMethod`'s
+rewrite of `<Inner>d__8.MoveNext` back to `Inner()`. Modelling the async suppression alone would be
+half of one rule from that family. Better as one coherent follow-up covering the display filters
+together; filed as its own issue and noted in `docs/divergences.md`.
+
+This does mean a *new* line-level mismatch in async traces (PawPrint prints an annotation real .NET
+suppresses) in exchange for fixing the non-async case. Stated in the follow-up rather than left
+silent.
+
+## Change list
+
+* `Exceptions.fs` — new field on `ExceptionStackFrame`.
+* `ThreadState.fs` — new field, `ThreadState.New` sets `false`.
+* `IlMachineThreadState.fs` — three further construction sites set `false`.
+* `IlMachineRuntimeMetadata.fs` — `renderExceptionStackTrace` emits the annotation; a
+  `frozenStackTraceFrames` reader (token → frames) next to `frozenStackTraceToken`.
+* `ExceptionDispatching.fs` — `throwExceptionObject` consumes the flag and splices; the two
+  frame-construction sites set the flag `false`.
+* `NullaryIlOp.fs` — the `Rethrow` TODO asking for a boundary at the rethrow site is replaced by
+  the reason there must not be one.
+* `Native/NativeException.fs` — `PrepareForForeignExceptionRaise` sets the flag; its comment stops
+  describing a divergence.
+* `docs/divergences.md` — delete the `ExceptionDispatchInfo.Throw` entry; add the renderer
+  display-filter entry.
+* `sourcesPure/ExceptionDispatchInfoThrow.cs` — comment no longer claims the trace is lost.
+
+## Tests
+
+`sourcesPure/ExceptionDispatchInfoThrowPreservesTrace.cs`, differential on exit code, positive
+substring assertions only (trace text is not comparable across runtimes — real .NET appends
+`in file:line`, PawPrint does not). Hand-rolled substring/count helpers, because
+`string.Contains(string)` and the `StringComparison` overloads are unimplemented JIT intrinsics
+under PawPrint.
+
+1. single hop: annotation count is exactly 1, with the original throwing method's name *before* it
+   and the rethrowing method's name *after* it.
+2. double hop: annotation count is exactly 2.
+3. EDI over a never-thrown exception: trace is non-null and annotation count is 0.
+4. a plain `throw ex` of a previously-thrown exception, immediately after an `EDI.Throw()` on the
+   same thread: annotation count is 0.
+
+Counting exactly, rather than "contains", is what makes the test pin *placement* and not merely
+presence; all four counts were measured on real .NET above.
+
+Case 4 exists because of a mistake in an earlier draft of this plan, which claimed a leaked flag
+would be caught by case 2. It would not: every `EDI.Throw()` re-sets the flag before splicing, so
+cases 1–3 are blind to whether it was ever cleared, and a fresh exception thrown under a leaked
+flag splices an empty list — the identity. The one observable discriminator is a plain `throw` of
+an *already-thrown* exception under a leaked flag, which would splice and mark where real .NET
+resets the trace. Both runtimes answer 0, so it is differential-safe.
+
+Mutation results (each applied to a clean tree, then reverted from a scratchpad backup):
+
+| mutation | outcome |
+|---|---|
+| never set the flag (pre-fix behaviour) | case 1 fails, exit 13 |
+| mark every restored frame, not just the last | case 1 fails, exit 14 |
+| never clear the flag after consuming | case 4 fails, exit 43 |
+| assume a foreign raise always has restored frames (`None -> failwith`) | case 3 crashes |
+
+## Follow-ups (not this PR)
+
+* PawPrint does not clear `_stackTrace`/`_stackTraceString` on an ordinary `throw ex`
+  (`ClearStackTracePreservingRemoteStackTrace`).
+* PawPrint's trace renderer implements none of `StackTrace.ToString`'s display policy:
+  `[StackTraceHidden]`/`AggressiveInlining` filtering, async state-machine name resolution, and the
+  `!isAsync` suppression of this very annotation.
+* `renderExceptionStackTrace` joins with `System.Environment.NewLine` — a host read in a library
+  that is meant to have none, so a replay of the same run on Windows would render `\r\n`.
