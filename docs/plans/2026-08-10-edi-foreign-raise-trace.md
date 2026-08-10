@@ -187,15 +187,28 @@ which interleaves search with cleanup instead of completing a search pass first,
 the boundary on the caller frame it appends *after* the `finally` — getting both halves wrong at
 once, and regressing a case that was previously right.
 
-PawPrint has no pass one to appeal to, so the ordering is stated explicitly: `dispatchException`,
-`dispatchExceptionFromSearchPC` and `unwindToCallerAndSearch` take `mayConsumeForeignRaise`, and
-every path that *resumes* a raise after guest code has run passes `false` — the `endfinally`
-propagation resume and the `endfilter` rejection resume. Raise initiation (`throw`, `rethrow`)
-passes `true`.
+The first attempt at *that* was a `mayConsumeForeignRaise` parameter on the three dispatch
+functions, with every resume path passing `false`. Codex's fourth round produced the mirror
+scenario: set the flag *before* a `rethrow`, and let that rethrow pass through a `finally` on its
+way out. Real .NET consumes the flag when the rethrow appends its caller frame — pass one, before
+the `finally` body runs — giving 1 boundary then 0, where the parameter version gave 0 then 1.
+
+The two scenarios reach the *same* resume site and differ only in when the flag was set, so no
+constant at that site can serve both. What distinguishes them is a property of the raise:
+"was a flag already pending when I began?" So it lives on the raise, as
+`CliException.MayConsumeForeignRaise`, and the parameter is gone. Both of PawPrint's suspension
+points already carry a `CliException` — `ExceptionContinuation.PropagatingException` and
+`ExceptionFilterContinuation` — so it survives cleanup for free, which is the property the resume
+sites could not supply. It is set true only by `rethrow` (the one raise that appends no frame of
+its own at initiation), and cleared at the first append.
+
+The mutation pair is the proof: forcing the field `false` at the `endfinally` resume fails
+`ForeignRaiseFlagPendingBeforeCleanup` at exit 5, forcing it `true` fails
+`ForeignRaiseFlagSetInFinally` at exit 4. No resume-site rule passes both.
 
 The residual: a flag set from an exception *filter*. Filters run in pass one, so CoreCLR would let
-a later append of the same raise consume it, where PawPrint treats the resumed search as
-ineligible. Distinguishing that needs the real two-pass structure — issue #865 — and no
+a later append of the same raise consume it, where PawPrint's raise began before the flag existed
+and so declines. Distinguishing that needs the real two-pass structure — issue #865 — and no
 approximation short of it would be honest.
 
 A plain rethrow still carries the catch handler's snapshot rather than re-reading the token, so it
@@ -296,9 +309,10 @@ Mutation results (each applied to a clean tree, then reverted from a scratchpad 
 | never clear the flag (again, against the rethrow test) | `ForeignRaiseFlagConsumedByRethrow` fails, exit 7 |
 | consume when the raise begins rather than at the append | `ForeignRaiseFlagSurvivesFramelessRethrow` fails, exit 4 |
 | mark the in-flight snapshot instead of the exception's token | `ForeignRaiseReadsCurrentExceptionTrace` fails, exit 4 |
-| let the resume-after-`finally` path consume | `ForeignRaiseFlagSetInFinally` fails, exit 4 |
+| force the raise ineligible at the `endfinally` resume | `ForeignRaiseFlagPendingBeforeCleanup` fails, exit 5 |
+| force the raise eligible at the `endfinally` resume | `ForeignRaiseFlagSetInFinally` fails, exit 4 |
 
-Five test files, each killed by a different mutation:
+Six test files, each killed by a different mutation:
 
 * `ExceptionDispatchInfoThrowPreservesTrace.cs` — the ordinary `EDI.Capture`/`Throw` round trip.
 * `ForeignRaiseFlagConsumedByRethrow.cs` — a reflective set-then-`rethrow` that *does* unwind:
@@ -309,6 +323,8 @@ Five test files, each killed by a different mutation:
   rethrow: two annotations, only reachable by reading the token.
 * `ForeignRaiseFlagSetInFinally.cs` — the flag set from a `finally` during an unwind: no
   annotation on the unwinding exception, one on the next raise.
+* `ForeignRaiseFlagPendingBeforeCleanup.cs` — its mirror: the flag set before a `rethrow` that
+  then passes through a `finally`. One annotation, and nothing left pending.
 
 Every one of these after the first exists because a Codex round named the shape; each was measured
 on real .NET before its assertion was written, and each kills a mutation the others survive.

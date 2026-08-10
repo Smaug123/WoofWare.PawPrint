@@ -529,15 +529,13 @@ module ExceptionDispatching =
     /// Appending is not enough on its own, though, because CoreCLR appends every frame in pass one,
     /// *before* running any cleanup clause. Guest code that sets the flag from a `finally` therefore
     /// cannot have it consumed by the raise it is unwinding — that raise's appends already happened.
-    /// PawPrint has no pass one; it interleaves search with cleanup, so the caller has to say
-    /// whether its append corresponds to one CoreCLR would still have ahead of it. Every path that
-    /// *resumes* a raise after guest code has run says no. See `mayConsumeForeignRaise` at the call
-    /// sites, and `sourcesPure/ForeignRaiseFlagSetInFinally.cs`.
-    ///
-    /// The one shape this still gets wrong is a flag set from an exception *filter*: filters run in
-    /// pass one, so CoreCLR would let a later append of the same raise consume it, while PawPrint
-    /// treats the resumed search as ineligible. Distinguishing that needs the real two-pass
-    /// structure, which is issue #865.
+    /// PawPrint has no pass one; it interleaves search with cleanup, so what it has instead is
+    /// `CliException.MayConsumeForeignRaise`, set when a raise begins and carried through every
+    /// suspension. A flag that predates the raise is consumed at its first append; one set by the
+    /// raise's own cleanup is not. `sourcesPure/ForeignRaiseFlagSetInFinally.cs` covers the second,
+    /// and `ForeignRaiseFlagPendingBeforeCleanup.cs` the first — they differ only in *when* the
+    /// flag is set, so a rule that looked at the resume site rather than the raise gets one of
+    /// them wrong whichever way it decides.
     ///
     /// The frames come from the exception object rather than from any in-flight list, because
     /// CoreCLR re-reads `_stackTrace` at every append. That is observable: a nested throw of the
@@ -576,10 +574,6 @@ module ExceptionDispatching =
     /// Unwind the call stack looking for an exception handler. Pops frames until a handler is found
     /// (catch or cleanup), entering it; or until no frames remain, in which case the exception is unhandled.
     ///
-    /// `mayConsumeForeignRaise` says whether a frame appended here is one CoreCLR would have
-    /// appended *after* the guest last had a chance to set the foreign-raise flag. See
-    /// `consumeForeignExceptionRaise`; it is `false` on every path that resumes a raise which has
-    /// already run guest cleanup code.
     let rec unwindToCallerAndSearch
         (loggerFactory : ILoggerFactory)
         (corelib : BaseClassTypes<DumpedAssembly>)
@@ -587,7 +581,6 @@ module ExceptionDispatching =
         (currentThread : ThreadId)
         (cliException : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (exceptionType : ConcreteTypeHandle)
-        (mayConsumeForeignRaise : bool)
         : ExceptionDispatchResult
         =
         let threadState = state.ThreadState.[currentThread]
@@ -659,6 +652,9 @@ module ExceptionDispatching =
                     {
                         ExceptionObject = tieAddr
                         StackTrace = []
+                        // The raise carries on, so its answer to the foreign-raise question does
+                        // too: wrapping swaps the object, not the raise.
+                        MayConsumeForeignRaise = cliException.MayConsumeForeignRaise
                     }
 
                 state, wrappedCliException, tieType
@@ -700,6 +696,9 @@ module ExceptionDispatching =
                     {
                         ExceptionObject = tieAddr
                         StackTrace = []
+                        // The raise carries on, so its answer to the foreign-raise question does
+                        // too: wrapping swaps the object, not the raise.
+                        MayConsumeForeignRaise = cliException.MayConsumeForeignRaise
                     }
 
                 state, wrappedCliException, tieType
@@ -764,7 +763,7 @@ module ExceptionDispatching =
         // snapshot the catch handler was entered with, which can be staler than the token; that
         // pre-existing gap is out of scope here and noted in docs/divergences.md.
         let state, restoredFrames =
-            if isDelegateInvokeStub || not mayConsumeForeignRaise then
+            if isDelegateInvokeStub || not cliException.MayConsumeForeignRaise then
                 state, None
             else
 
@@ -785,10 +784,14 @@ module ExceptionDispatching =
 
         let cliExceptionAtCallSite =
             if isDelegateInvokeStub then
+                // Nothing appended, so nothing decided: the question stays open for the next frame.
                 cliException
             else
                 { cliException with
                     StackTrace = framesBefore @ [ stackFrame ]
+                    // Decided, one way or the other, at this raise's first appended frame; the rest of
+                    // the unwind must not ask again.
+                    MayConsumeForeignRaise = false
                 }
 
         match callerFrame.ExceptionContinuation with
@@ -837,14 +840,8 @@ module ExceptionDispatching =
                 with
                 | _state, Some state -> ExceptionDispatchResult.HandlerFound state
                 | state, None ->
-                    unwindToCallerAndSearch
-                        loggerFactory
-                        corelib
-                        state
-                        currentThread
-                        cliException
-                        exceptionType
-                        mayConsumeForeignRaise
+                    unwindToCallerAndSearch loggerFactory corelib state currentThread cliException exceptionType
+
         | _ ->
 
             match
@@ -863,14 +860,8 @@ module ExceptionDispatching =
             | _state, Some state -> ExceptionDispatchResult.HandlerFound state
             | state, None ->
                 // No handler in this frame either; continue unwinding
-                unwindToCallerAndSearch
-                    loggerFactory
-                    corelib
-                    state
-                    currentThread
-                    cliExceptionAtCallSite
-                    exceptionType
-                    mayConsumeForeignRaise
+                unwindToCallerAndSearch loggerFactory corelib state currentThread cliExceptionAtCallSite exceptionType
+
 
     let dispatchExceptionFromSearchPC
         (loggerFactory : ILoggerFactory)
@@ -879,7 +870,6 @@ module ExceptionDispatching =
         (currentThread : ThreadId)
         (cliException : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (exceptionType : ConcreteTypeHandle)
-        (mayConsumeForeignRaise : bool)
         (searchPC : int)
         (skippedFilters : ExceptionFilterRegion list)
         : ExceptionDispatchResult
@@ -928,23 +918,10 @@ module ExceptionDispatching =
                 with
                 | _state, Some state -> ExceptionDispatchResult.HandlerFound state
                 | state, None ->
-                    unwindToCallerAndSearch
-                        loggerFactory
-                        corelib
-                        state
-                        currentThread
-                        cliException
-                        exceptionType
-                        mayConsumeForeignRaise
-            | _ ->
-                unwindToCallerAndSearch
-                    loggerFactory
-                    corelib
-                    state
-                    currentThread
-                    cliException
-                    exceptionType
-                    mayConsumeForeignRaise
+                    unwindToCallerAndSearch loggerFactory corelib state currentThread cliException exceptionType
+
+            | _ -> unwindToCallerAndSearch loggerFactory corelib state currentThread cliException exceptionType
+
 
     /// Dispatch an exception that has been thrown or is being propagated. Searches for a handler
     /// in the current method; if found, enters it; otherwise unwinds to the caller.
@@ -957,7 +934,6 @@ module ExceptionDispatching =
         (currentThread : ThreadId)
         (cliException : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (exceptionType : ConcreteTypeHandle)
-        (mayConsumeForeignRaise : bool)
         : ExceptionDispatchResult
         =
         let currentMethodState = state.ThreadState.[currentThread].MethodState
@@ -969,7 +945,6 @@ module ExceptionDispatching =
             currentThread
             cliException
             exceptionType
-            mayConsumeForeignRaise
             currentMethodState.IlOpIndex
             []
 
@@ -1015,25 +990,26 @@ module ExceptionDispatching =
         //
         // Consumed here for every raise reaching this function, not only for the `throw` opcode,
         // matching the unconditional reset at excep.cpp:3017: the flag belongs to the thread's
-        // next dispatch, whatever raises it. `rethrow` does not come through here and consumes it
-        // for itself.
+        // next dispatch, whatever raises it. `rethrow` does not come through here — it appends no
+        // frame of its own — and so carries the question forward instead.
         let state, restoredFrames =
             state
             |> consumeForeignExceptionRaise
                 currentThread
                 (fun () -> IlMachineState.frozenStackTraceFrames corelib exceptionAddr state)
 
-        // Whatever the flag had to say has been said, right here at this raise's first appended
-        // frame, so the unwind below must not look again.
         let restoredFrames = restoredFrames |> Option.defaultValue []
 
         let cliException =
             {
                 ExceptionObject = exceptionAddr
                 StackTrace = restoredFrames @ [ stackFrame ]
+                // Whatever the flag had to say has been said, right here at this raise's first
+                // appended frame, so the unwind below must not ask again.
+                MayConsumeForeignRaise = false
             }
 
-        dispatchException loggerFactory corelib state currentThread cliException exceptionType false
+        dispatchException loggerFactory corelib state currentThread cliException exceptionType
 
     /// Return the HResult that the real CLR would set for a runtime-synthesised exception of the
     /// given type.  The real CLR calls the default constructor (which sets the subclass-specific

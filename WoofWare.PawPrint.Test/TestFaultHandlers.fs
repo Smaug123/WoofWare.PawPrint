@@ -200,20 +200,14 @@ module TestFaultHandlers =
             {
                 ExceptionObject = exceptionObject
                 StackTrace = []
+                // These drive dispatch directly rather than through a raise, and the skeletal
+                // state here has no `_stackTrace` for a consume to read.
+                MayConsumeForeignRaise = false
             }
 
         let state =
             match
-                // `false` for `mayConsumeForeignRaise`: this drives the unwind directly rather than
-                // through a raise, and the skeletal state here has no `_stackTrace` to read.
-                ExceptionDispatching.unwindToCallerAndSearch
-                    loggerFactory
-                    bct
-                    state
-                    thread
-                    cliException
-                    objectHandle
-                    false
+                ExceptionDispatching.unwindToCallerAndSearch loggerFactory bct state thread cliException objectHandle
             with
             | ExceptionDispatchResult.ExceptionUnhandled (state, _) -> state
             | other -> failwith $"Expected unhandled exception after unwinding to caller, got %O{other}"
@@ -282,6 +276,9 @@ module TestFaultHandlers =
             {
                 ExceptionObject = exceptionObject
                 StackTrace = []
+                // These drive dispatch directly rather than through a raise, and the skeletal
+                // state here has no `_stackTrace` for a consume to read.
+                MayConsumeForeignRaise = false
             }
 
         let state =

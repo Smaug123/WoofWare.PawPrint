@@ -33,6 +33,22 @@ type CliException<'typeGen, 'methodGen, 'methodVar when 'typeGen : comparison an
         ExceptionObject : ManagedHeapAddress
         /// Stack trace built during unwinding
         StackTrace : ExceptionStackFrame<'typeGen, 'methodGen, 'methodVar> list
+        /// Whether a foreign-raise flag pending on this thread is still *this* raise's to consume
+        /// — see `ExceptionDispatching.consumeForeignExceptionRaise`. True from the moment a raise
+        /// begins until it appends its first frame; false thereafter, and false for a flag set
+        /// after this raise was already under way.
+        ///
+        /// It lives on the raise rather than being passed down the dispatch functions because a
+        /// raise is *suspended* across guest cleanup code — a `finally` body, a filter — and has to
+        /// come back with the same answer it left with. Both of PawPrint's suspension points
+        /// already carry a `CliException` (`ExceptionContinuation.PropagatingException` and
+        /// `ExceptionFilterContinuation`), so putting it here makes it survive them for free; a
+        /// parameter at the resume sites cannot tell a flag that predates the cleanup from one the
+        /// cleanup set, and gets one of the two wrong whichever constant it picks.
+        ///
+        /// Meaningless on a `CliException` parked in `MethodState.CatchExceptions`: that raise has
+        /// concluded. A `rethrow` reading one back is starting a *new* raise and sets this afresh.
+        MayConsumeForeignRaise : bool
     }
 
 type ExceptionFilterRegion =
