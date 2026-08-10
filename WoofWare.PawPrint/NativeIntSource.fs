@@ -416,6 +416,13 @@ module TypeHandleTag =
     let forTarget (target : RuntimeTypeHandleTarget) : int64 =
         match target with
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> 0L
+        // An open constructed type is a real MethodTable, not a TypeDesc, even though it
+        // contains type variables: `TypeVarTypeDesc::LoadConstraints` loads each constraint
+        // under the declaring type's formal `SigTypeContext` (typedesc.cpp:826-830), yielding an
+        // instantiated MethodTable over `TypeVarTypeDesc` arguments. That is exactly what lets
+        // `RuntimeType.IsActualInterface` (RuntimeType.CoreCLR.cs:3488-3498) answer for one:
+        // it short-circuits to false on a TypeDesc before ever reading `MethodTable::IsInterface`.
+        | RuntimeTypeHandleTarget.OpenConstructed _ -> 0L
         // Generic parameters in CoreCLR are TypeVarTypeDesc, a TypeDesc subclass, so the
         // tagged-pointer encoding sets the second-lowest bit. Reflection paths such as
         // `RuntimeType.get_IsInterface` rely on `TypeHandle.IsTypeDesc` to short-circuit
@@ -657,6 +664,16 @@ module NativeIntSource =
             | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _, RuntimeTypeHandleTarget.Closed _ ->
                 // The closed instantiation has its own MT distinct from the typedef's canonical MT.
                 false
+            // An open constructed type has its own MethodTable too, distinct from both the
+            // definition's canonical MT and any closed instantiation's, so it aliases only
+            // itself. Canonicalisation in `RuntimeTypeHandleTarget.openConstructed` is what
+            // makes this structural equality an identity test rather than a spelling test.
+            | RuntimeTypeHandleTarget.OpenConstructed (d1, a1), RuntimeTypeHandleTarget.OpenConstructed (d2, a2) ->
+                d1 = d2 && a1 = a2
+            | RuntimeTypeHandleTarget.OpenConstructed _,
+              (RuntimeTypeHandleTarget.Closed _ | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _)
+            | (RuntimeTypeHandleTarget.Closed _ | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _),
+              RuntimeTypeHandleTarget.OpenConstructed _ -> false
             | RuntimeTypeHandleTarget.GenericParameter _, _
             | RuntimeTypeHandleTarget.MethodGenericParameter _, _
             | _, RuntimeTypeHandleTarget.GenericParameter _

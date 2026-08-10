@@ -32,6 +32,9 @@ module NativeRuntimeHelpers =
                 NativeCall.qCallTypeHandleToRuntimeTypeHandleTarget operation state qCallHandle
 
             match typeHandleTarget with
+            | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
+                failwith
+                    $"TODO: open constructed types are not handled at Native/NativeRuntimeHelpers.fs:%s{__LINE__}; got %O{openConstructed}"
             | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
                 failwith
                     $"TODO: RuntimeHelpers.RunClassConstructor for open generic type definition %O{typeHandleTarget}"

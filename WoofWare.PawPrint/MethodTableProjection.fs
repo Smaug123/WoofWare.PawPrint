@@ -296,7 +296,12 @@ module internal MethodTableProjection =
         =
         match methodTableFor with
         | RuntimeTypeHandleTarget.Closed handle -> categoryFlags baseClassTypes state handle
-        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+        // An open constructed type's category is its definition's: instantiating
+        // `IComparable`1` over a type variable does not stop it being an interface. This is
+        // the read behind `RuntimeType.IsActualInterface`, and hence behind every base-type
+        // walk over a generic parameter's constraints.
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity
+        | RuntimeTypeHandleTarget.OpenConstructed (identity, _) ->
             openGenericTypeInfoOrFail state identity
             |> categoryFlagsForTypeInfo baseClassTypes state
         | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
@@ -749,7 +754,20 @@ module internal MethodTableProjection =
         =
         match methodTableFor with
         | RuntimeTypeHandleTarget.Closed handle -> containsGcPointers loggerFactory baseClassTypes state handle
-        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+        // Answered from the definition's fields, without substituting the instantiation's
+        // arguments. That is exact for a bare definition, but an approximation for a partial
+        // construction: for `class C<A, B> { A field; }`, `C<int, T>` is reported as containing
+        // GC pointers because `A` is walked unbound, where an exact layout would clear the flag.
+        //
+        // Deliberately not fixed here, and deliberately not made to throw. The bit is inert for
+        // these targets — an open constructed type can never be allocated, and this flag only
+        // informs allocation and GC scanning — and answering conservatively extends the
+        // approximation `OpenGenericTypeDefinition` already makes rather than inventing a second
+        // one. An exact answer needs field-type substitution under a mixed
+        // closed/type-variable context, which is the same machinery the array/pointer TODO in
+        // `RuntimeTypeHandle_GetConstraints` is waiting on.
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity
+        | RuntimeTypeHandleTarget.OpenConstructed (identity, _) ->
             openGenericContainsGcPointers loggerFactory baseClassTypes state identity
         | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
             failwith
@@ -761,6 +779,11 @@ module internal MethodTableProjection =
     let private genericsFlags (state : IlMachineState) (methodTableFor : RuntimeTypeHandleTarget) : int32 =
         match methodTableFor with
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> genericsMaskTypicalInst
+        // Not `TypicalInst`: the typical instantiation is the definition applied to its own
+        // formals, which `RuntimeTypeHandleTarget.openConstructed` collapses to
+        // `OpenGenericTypeDefinition`. Anything still spelled `OpenConstructed` is a shared
+        // (canonical) instantiation over some *other* arguments.
+        | RuntimeTypeHandleTarget.OpenConstructed _ -> genericsMaskGenericInst
         | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
             failwith $"TODO: genericsFlags for generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}"
         | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
@@ -794,6 +817,10 @@ module internal MethodTableProjection =
             else
                 true
         | RuntimeTypeHandleTarget.Closed _ -> false
+        // Openness is the defining property of the case: `openConstructed` refuses an
+        // all-closed argument list, so reaching here means at least one argument transitively
+        // contains a variable.
+        | RuntimeTypeHandleTarget.OpenConstructed _ -> true
         | RuntimeTypeHandleTarget.GenericParameter _
         | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
             // A generic parameter T is itself an unbound variable, so its MethodTable contains
@@ -822,7 +849,9 @@ module internal MethodTableProjection =
             | RuntimeTypeHandleTarget.Closed handle ->
                 Option.isSome (tryArrayElement handle)
                 || isStringType baseClassTypes state handle
-            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> false
+            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+            // Neither a string nor an array: only `Closed` can name those shapes.
+            | RuntimeTypeHandleTarget.OpenConstructed _ -> false
             | RuntimeTypeHandleTarget.GenericParameter _
             | RuntimeTypeHandleTarget.MethodGenericParameter _ -> false
 
@@ -847,7 +876,10 @@ module internal MethodTableProjection =
                 | RuntimeTypeHandleTarget.Closed handle ->
                     AllConcreteTypes.lookup handle state.ConcreteTypes
                     |> Option.map (fun concreteType -> concreteType.Identity)
-                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity -> Some identity
+                // A `ref struct R<T>` keeps the flag when instantiated, just as the bare
+                // definition does; the attribute lives on the definition either way.
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity
+                | RuntimeTypeHandleTarget.OpenConstructed (identity, _) -> Some identity
                 | RuntimeTypeHandleTarget.GenericParameter _
                 | RuntimeTypeHandleTarget.MethodGenericParameter _ -> None
 
@@ -869,7 +901,8 @@ module internal MethodTableProjection =
                 let componentSize, state = componentSize baseClassTypes state handle
                 int32<uint16> componentSize, state
             | RuntimeTypeHandleTarget.Closed _
-            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> 0, state
+            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+            | RuntimeTypeHandleTarget.OpenConstructed _ -> 0, state
             | RuntimeTypeHandleTarget.GenericParameter _
             | RuntimeTypeHandleTarget.MethodGenericParameter _ -> 0, state
 
@@ -938,7 +971,8 @@ module internal MethodTableProjection =
             | "BaseSize" ->
                 match methodTableFor with
                 | RuntimeTypeHandleTarget.Closed handle -> Some (uint32Field (uint32 (baseSize handle)), state)
-                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+                | RuntimeTypeHandleTarget.OpenConstructed _ ->
                     failwith $"TODO: MethodTable::BaseSize projection for %O{methodTableFor}"
                 | RuntimeTypeHandleTarget.GenericParameter _
                 | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
@@ -948,7 +982,8 @@ module internal MethodTableProjection =
                 | RuntimeTypeHandleTarget.Closed handle ->
                     let componentSize, state = componentSize baseClassTypes state handle
                     Some (CliType.Numeric (CliNumericType.UInt16 componentSize), state)
-                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+                | RuntimeTypeHandleTarget.OpenConstructed _ ->
                     failwith $"TODO: MethodTable::ComponentSize projection for %O{methodTableFor}"
                 | RuntimeTypeHandleTarget.GenericParameter _
                 | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
@@ -965,7 +1000,8 @@ module internal MethodTableProjection =
                             state
                         )
                     | None -> failwith $"TODO: MethodTable::ElementType projection for non-array type %O{handle}"
-                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+                | RuntimeTypeHandleTarget.OpenConstructed _ ->
                     failwith $"TODO: MethodTable::ElementType projection for %O{methodTableFor}"
                 | RuntimeTypeHandleTarget.GenericParameter _
                 | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
@@ -973,10 +1009,12 @@ module internal MethodTableProjection =
             | "AuxiliaryData" ->
                 // CoreCLR represents generic parameters (TypeVarTypeDesc) as TypeDesc handles, which
                 // have no MethodTable and therefore no AuxiliaryData. Keep the projection honest:
-                // only Closed and OpenGenericTypeDefinition targets carry a MethodTable.
+                // only the MethodTable-shaped targets carry one — which, per
+                // `TypeHandleTag.forTarget`, includes an open constructed type.
                 match methodTableFor with
                 | RuntimeTypeHandleTarget.Closed _
-                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+                | RuntimeTypeHandleTarget.OpenConstructed _ ->
                     Some (CliType.RuntimePointer (CliRuntimePointer.MethodTableAuxiliaryDataPtr methodTableFor), state)
                 | RuntimeTypeHandleTarget.GenericParameter _
                 | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
@@ -984,8 +1022,11 @@ module internal MethodTableProjection =
                         $"MethodTable::AuxiliaryData projection refused for TypeDesc target %O{methodTableFor}: generic parameters have no MethodTable in CoreCLR"
             | "ParentMethodTable" ->
                 match methodTableFor with
+                // Reached for real: `Type.BaseType` on a returned class constraint (say
+                // `Comparer<T>` from `where T : Comparer<T>`) reads this.
                 | RuntimeTypeHandleTarget.Closed _
-                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+                | RuntimeTypeHandleTarget.OpenConstructed _ ->
                     let state, parent =
                         IlMachineState.resolveBaseRuntimeTypeHandleTarget
                             loggerFactory
@@ -1022,6 +1063,9 @@ module internal MethodTableProjection =
                 // explicit dictionary-index modelling before this can be
                 // broadened.
                 match methodTableFor with
+                | RuntimeTypeHandleTarget.OpenConstructed (definition, _) ->
+                    failwith
+                        $"TODO: MethodTable::PerInstInfo projection for open constructed %O{definition.TypeDefinition.Get}: the projection is deliberately gated to System.Nullable`1 (see above)"
                 | RuntimeTypeHandleTarget.Closed handle ->
                     match handle with
                     | ConcreteTypeHandle.Concrete _ ->
@@ -1114,9 +1158,10 @@ module internal MethodTableProjection =
             | "ExposedClassObjectRaw" ->
                 match methodTableFor with
                 | RuntimeTypeHandleTarget.Closed _
-                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
-                    // Both Closed instantiations and open generic type definitions
-                    // have a real MethodTable in CoreCLR, so this auxiliary cell is
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+                | RuntimeTypeHandleTarget.OpenConstructed _ ->
+                    // Closed instantiations, open generic type definitions and open constructed
+                    // types all have a real MethodTable in CoreCLR, so this auxiliary cell is
                     // well-defined. Pre-allocate the canonical RuntimeType so the
                     // read through the byref is a pure registry lookup.
                     let _addr, state =

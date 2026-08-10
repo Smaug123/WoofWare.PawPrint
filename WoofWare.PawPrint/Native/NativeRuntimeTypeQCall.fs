@@ -288,6 +288,11 @@ module NativeRuntimeTypeQCall =
 
             let genericArgumentTargets : RuntimeTypeHandleTarget list =
                 match typeHandleTarget with
+                // The arguments are already targets, and they are already canonical, so the
+                // `Type` objects handed back are the very ones the registry holds — which is
+                // what makes `typeof(Box<>).GetGenericArguments()[0]` reference-equal to the
+                // argument of its own `IComparable<T>` constraint.
+                | RuntimeTypeHandleTarget.OpenConstructed (_, arguments) -> arguments
                 | RuntimeTypeHandleTarget.Closed handle ->
                     match handle with
                     | ConcreteTypeHandle.Concrete _ ->
@@ -392,6 +397,11 @@ module NativeRuntimeTypeQCall =
             // `MethodTableProjection.targetContainsGenericVariables`.
             let definitionTarget =
                 match typeHandleTarget with
+                // `openConstructed` has already collapsed the typical instantiation to
+                // `OpenGenericTypeDefinition`, so anything still spelled `OpenConstructed` is a
+                // genuine instantiation whose definition is exactly this.
+                | RuntimeTypeHandleTarget.OpenConstructed (definition, _) ->
+                    RuntimeTypeHandleTarget.OpenGenericTypeDefinition definition
                 | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as handle) ->
                     let concreteType =
                         AllConcreteTypes.lookup handle state.ConcreteTypes
@@ -456,6 +466,9 @@ module NativeRuntimeTypeQCall =
                 NativeCall.objectHandleOnStackTarget operation state "retTypes" instruction.Arguments.[1]
 
             match typeHandleTarget with
+            | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
+                failwith
+                    $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeQCall.fs:%s{__LINE__}; got %O{openConstructed}"
             | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
                 let assembly =
                     state.LoadedAssembly declaringType.Assembly
@@ -502,6 +515,77 @@ module NativeRuntimeTypeQCall =
                     | TypeDefn.FromDefinition _
                     | TypeDefn.Void -> false
 
+                // Resolve the head of a generic instantiation to the canonical identity of its
+                // definition. Identity, not spelling: the same definition reached via
+                // `FromDefinition` and via a `FromReference` in some other assembly must produce
+                // one `ResolvedTypeIdentity`, because `TypeHandleRegistry` keys guest `Type`
+                // object identity on the resulting target.
+                let resolveDefinitionIdentity
+                    (state : IlMachineState)
+                    (genericDef : TypeDefn)
+                    : IlMachineState * ResolvedTypeIdentity
+                    =
+                    match genericDef with
+                    | TypeDefn.FromDefinition (identity, _) -> state, identity
+                    | _ ->
+                        let state, _, resolved =
+                            IlMachineState.resolveTypeFromDefn
+                                ctx.LoggerFactory
+                                ctx.BaseClassTypes
+                                genericDef
+                                ImmutableArray.Empty
+                                ImmutableArray.Empty
+                                assembly
+                                state
+
+                        state, resolved.Identity
+
+                // Map one constraint signature to the target that names it. A constraint that
+                // mentions no generic parameter is an ordinary closed type; one that does is an
+                // open constructed type, whose arguments are themselves targets — recursively,
+                // since `where T : IComparable<List<T>>` is legal.
+                let rec constraintTarget
+                    (state : IlMachineState)
+                    (ty : TypeDefn)
+                    : IlMachineState * RuntimeTypeHandleTarget
+                    =
+                    match ty with
+                    | TypeDefn.GenericTypeParameter idx ->
+                        state, RuntimeTypeHandleTarget.GenericParameter (declaringType, idx)
+                    | TypeDefn.GenericMethodParameter idx ->
+                        failwith
+                            $"%s{operation}: type-generic parameter #%d{position} of %O{declaringType.TypeDefinition.Get} declares a method-generic parameter constraint !!%d{idx}; impossible without a method context"
+                    | TypeDefn.GenericInstantiation (genericDef, args) when embedsTypeParameter ty ->
+                        let state, definition = resolveDefinitionIdentity state genericDef
+
+                        let state, argumentTargets =
+                            ((state, []), args)
+                            ||> Seq.fold (fun (state, acc) arg ->
+                                let state, target = constraintTarget state arg
+                                state, target :: acc
+                            )
+
+                        // `openConstructed` is what keeps this canonical: it collapses the
+                        // typical instantiation (the CRTP `where T : ISelf<T>`) back to the bare
+                        // definition, exactly as CoreCLR's class loader does, so the guest sees
+                        // one `Type` object rather than two.
+                        state, RuntimeTypeHandleTarget.openConstructed definition (List.rev argumentTargets)
+                    | _ when embedsTypeParameter ty ->
+                        failwith
+                            $"TODO: %s{operation}: constraint %O{ty} on type-generic parameter #%d{position} of %O{declaringType.TypeDefinition.Get} embeds a generic parameter beneath an array, pointer, byref or function-pointer shape; only generic instantiations are represented today (`RuntimeTypeHandleTarget.OpenConstructed`)"
+                    | _ ->
+                        let state, handle =
+                            IlMachineState.concretizeType
+                                ctx.LoggerFactory
+                                ctx.BaseClassTypes
+                                state
+                                assembly.Name
+                                ImmutableArray.Empty
+                                ImmutableArray.Empty
+                                ty
+
+                        state, RuntimeTypeHandleTarget.Closed handle
+
                 // Closed (non-parameter) constraints are concretized against the declaring
                 // assembly with no generic context: a constraint like `where T : List<int>`
                 // resolves to the closed type. Constraints that reference another type-generic
@@ -511,15 +595,14 @@ module NativeRuntimeTypeQCall =
                     ((List.empty, state), metadata.Constraints)
                     ||> Seq.fold (fun (acc, state) ty ->
                         match ty with
-                        | TypeDefn.GenericTypeParameter idx ->
-                            let target = RuntimeTypeHandleTarget.GenericParameter (declaringType, idx)
+                        | TypeDefn.GenericTypeParameter _
+                        | TypeDefn.GenericMethodParameter _
+                        | TypeDefn.GenericInstantiation _ ->
+                            let state, target = constraintTarget state ty
                             target :: acc, state
-                        | TypeDefn.GenericMethodParameter idx ->
-                            failwith
-                                $"%s{operation}: type-generic parameter #%d{position} of %O{declaringType.TypeDefinition.Get} declares a method-generic parameter constraint !!%d{idx}; impossible without a method context"
                         | _ when embedsTypeParameter ty ->
-                            failwith
-                                $"TODO: %s{operation}: constraint %O{ty} on type-generic parameter #%d{position} of %O{declaringType.TypeDefinition.Get} embeds a generic-parameter reference; concretization needs to bind parameters to parameter targets"
+                            let state, target = constraintTarget state ty
+                            target :: acc, state
                         | _ ->
                             let state, handle =
                                 IlMachineState.concretizeType
@@ -559,6 +642,9 @@ module NativeRuntimeTypeQCall =
                             |> List.exists (fun t ->
                                 match t with
                                 | RuntimeTypeHandleTarget.Closed h -> h = valueTypeHandle
+                                // An open constructed type is never System.ValueType, which is
+                                // non-generic.
+                                | RuntimeTypeHandleTarget.OpenConstructed _
                                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
                                 | RuntimeTypeHandleTarget.GenericParameter _
                                 | RuntimeTypeHandleTarget.MethodGenericParameter _ -> false
@@ -841,7 +927,10 @@ module NativeRuntimeTypeQCall =
             // through here.
             let typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn> option =
                 match target with
-                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+                // The declaring type of an instantiation is the declaring type of its
+                // definition — `IComparable<T>` is nested exactly where `IComparable<>` is.
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity
+                | RuntimeTypeHandleTarget.OpenConstructed (identity, _) ->
                     let assembly =
                         state.LoadedAssembly identity.Assembly
                         |> Option.defaultWith (fun () ->
@@ -922,6 +1011,9 @@ module NativeRuntimeTypeQCall =
             // shape rather than silently returning a wrong answer.
             let declaringTarget, state =
                 match target with
+                | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
+                    failwith
+                        $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeQCall.fs:%s{__LINE__}; got %O{openConstructed}"
                 | RuntimeTypeHandleTarget.GenericParameter (declaringType, _) ->
                     // The owning type of a type-generic parameter is always generic
                     // (the parameter could not exist otherwise), so the declaring
@@ -1009,6 +1101,9 @@ module NativeRuntimeTypeQCall =
                 NativeCall.objectHandleOnStackTarget operation state "result" instruction.Arguments.[1]
 
             match typeHandleTarget with
+            | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
+                failwith
+                    $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeQCall.fs:%s{__LINE__}; got %O{openConstructed}"
             | RuntimeTypeHandleTarget.GenericParameter _ ->
                 // Type-level generic parameter: CoreCLR's `defToken` is mdtTypeDef,
                 // so the early-exit branch leaves `result` null. Mirror that.
@@ -1454,6 +1549,9 @@ module NativeRuntimeTypeQCall =
 
             let state, fieldHandleIds =
                 match typeHandleTarget with
+                | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
+                    failwith
+                        $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeQCall.fs:%s{__LINE__}; got %O{openConstructed}"
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
                     // CoreCLR's RuntimeTypeHandle::GetFields walks the canonical
                     // (open-generic) MethodTable's FieldDescs. The resulting handles
@@ -1540,6 +1638,9 @@ module NativeRuntimeTypeQCall =
                 NativeCall.objectHandleOnStackTarget operation state "result" instruction.Arguments.[1]
 
             match typeHandleTarget with
+            | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
+                failwith
+                    $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeQCall.fs:%s{__LINE__}; got %O{openConstructed}"
             | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref _ as handle)
             | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Pointer _ as handle)
             | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.FunctionPointer _ as handle) ->
@@ -1603,6 +1704,9 @@ module NativeRuntimeTypeQCall =
                     // reached by the base-type walk below); byrefs, pointers and function
                     // pointers are TypeDescs, which have no MethodTable and so no map at
                     // all. Either way the walk continues to the parent rather than stopping.
+                    | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
+                        failwith
+                            $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeQCall.fs:%s{__LINE__}; got %O{openConstructed}"
                     | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.OneDimArrayZero _)
                     | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Array _)
                     | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref _)

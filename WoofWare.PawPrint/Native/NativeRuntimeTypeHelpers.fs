@@ -249,7 +249,12 @@ module NativeRuntimeTypeHelpers =
         : int32
         =
         match typeHandleTarget with
-        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+        // An open constructed type is not a TypeDesc, so CoreCLR's
+        // `TypeHandle::GetSignatureCorElementType` (typehandle.cpp:1160) routes it to
+        // `MethodTable::GetSignatureCorElementType`, which reports the EEClass's internal
+        // element type — the same CLASS/VALUETYPE the definition reports.
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity
+        | RuntimeTypeHandleTarget.OpenConstructed (identity, _) ->
             let assembly =
                 state.LoadedAssembly identity.Assembly
                 |> Option.defaultWith (fun () ->
@@ -573,7 +578,10 @@ module NativeRuntimeTypeHelpers =
         : int32
         =
         match typeHandleTarget with
-        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity -> typeDefinitionToken identity.TypeDefinition.Get
+        // An instantiation carries no metadata row of its own; `Type.MetadataToken` reports
+        // the generic definition's TypeDef row for both the open and the closed forms.
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity
+        | RuntimeTypeHandleTarget.OpenConstructed (identity, _) -> typeDefinitionToken identity.TypeDefinition.Get
         | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
             // ECMA-335 §II.22.20: GenericParam table tag 0x2A. The parameter's
             // GenericParameterHandle is owned by the declaring type's metadata
@@ -699,6 +707,9 @@ module NativeRuntimeTypeHelpers =
         : IlMachineState * int
         =
         match typeHandleTarget with
+        | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
+            failwith
+                $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeHelpers.fs:%s{__LINE__}; got %O{openConstructed}"
         | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
             // CoreCLR's GetNumVirtuals asserts !typeHandle.IsGenericVariable(); the BCL's
             // RuntimeType.GetMethodCandidates strips generic variables before calling.
@@ -850,6 +861,9 @@ module NativeRuntimeTypeHelpers =
         : ManagedHeapAddress option * IlMachineState
         =
         match typeHandleTarget with
+        | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
+            failwith
+                $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeHelpers.fs:%s{__LINE__}; got %O{openConstructed}"
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
             let assembly =
                 state.LoadedAssembly identity.Assembly
@@ -938,6 +952,9 @@ module NativeRuntimeTypeHelpers =
         =
         let baseHandle, state =
             match typeHandleTarget with
+            | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
+                failwith
+                    $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeHelpers.fs:%s{__LINE__}; got %O{openConstructed}"
             | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
                 let assembly =
                     state.LoadedAssembly identity.Assembly
@@ -1009,6 +1026,9 @@ module NativeRuntimeTypeHelpers =
         =
         let elementHandle =
             match typeHandleTarget with
+            | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
+                failwith
+                    $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeHelpers.fs:%s{__LINE__}; got %O{openConstructed}"
             | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> None
             // A generic parameter is not an array/pointer/byref, so GetElementType returns null.
             | RuntimeTypeHandleTarget.GenericParameter _
@@ -1198,6 +1218,9 @@ module NativeRuntimeTypeHelpers =
         : ConcreteTypeHandle * IlMachineState
         =
         match target with
+        | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
+            failwith
+                $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeHelpers.fs:%s{__LINE__}; got %O{openConstructed}"
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
             instantiateOpenGenericTypeDefinition loggerFactory baseClassTypes operation state identity genericArguments
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as typeHandle) ->
@@ -1246,6 +1269,9 @@ module NativeRuntimeTypeHelpers =
             | Some assembly -> Some assembly.TypeDefs.[identity.TypeDefinition.Get]
 
         match target with
+        | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
+            failwith
+                $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeHelpers.fs:%s{__LINE__}; got %O{openConstructed}"
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity -> lookupFromIdentity identity
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as handle) ->
             match AllConcreteTypes.lookup handle state.ConcreteTypes with
@@ -1798,60 +1824,127 @@ module NativeRuntimeTypeHelpers =
                 else
                     name
 
-        match typeHandleTarget with
-        | RuntimeTypeHandleTarget.Closed typeHandle -> concreteTypeHandleName typeHandle
-        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
-            let assembly =
-                state.LoadedAssembly identity.Assembly
-                |> Option.defaultWith (fun () ->
+        let rec targetName (target : RuntimeTypeHandleTarget) : string =
+            match target with
+            | RuntimeTypeHandleTarget.Closed typeHandle -> concreteTypeHandleName typeHandle
+            | RuntimeTypeHandleTarget.OpenConstructed (definition, arguments) ->
+                // CoreCLR's `TypeString::AppendType` emits the definition's name followed by the
+                // instantiation in brackets, exactly as for a closed one; the arguments simply
+                // happen to include type variables, which print as their bare parameter names.
+                let assembly =
+                    state.LoadedAssembly definition.Assembly
+                    |> Option.defaultWith (fun () ->
+                        failwith
+                            $"%s{operation}: assembly for open constructed type is not loaded: %s{definition.AssemblyFullName}"
+                    )
+
+                let typeInfo = assembly.TypeDefs.[definition.TypeDefinition.Get]
+                let name = typeInfoDisplayName includeNamespace assembly typeInfo
+
+                let name =
+                    // Same gate as the closed case just above: CoreCLR's
+                    // `TypeString::AppendType` appends the instantiation only when
+                    // FormatNamespace or FormatAssembly is set. `Type.Name` asks for neither, so
+                    // it is "IComparable`1" rather than "IComparable`1[T]"; `ToString()` asks for
+                    // FormatNamespace and so gets the brackets.
+                    if includeNamespace || includeAssembly then
+                        // Comma with no space, as the closed-handle path above does and as
+                        // CoreCLR's `TypeString` emits: `IDictionary\`2[A,B]`.
+                        let args = arguments |> List.map targetName |> String.concat ","
+                        $"%s{name}[%s{args}]"
+                    else
+                        name
+
+                if includeAssembly then
+                    $"%s{name}, %s{assemblyDisplayName noVersion definition.Assembly}"
+                else
+                    name
+            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+            | RuntimeTypeHandleTarget.GenericParameter _
+            | RuntimeTypeHandleTarget.MethodGenericParameter _ -> nonConstructedName target
+
+        and nonConstructedName (typeHandleTarget : RuntimeTypeHandleTarget) : string =
+            match typeHandleTarget with
+            | RuntimeTypeHandleTarget.Closed typeHandle -> concreteTypeHandleName typeHandle
+            | RuntimeTypeHandleTarget.OpenConstructed _ -> targetName typeHandleTarget
+            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+                let assembly =
+                    state.LoadedAssembly identity.Assembly
+                    |> Option.defaultWith (fun () ->
+                        failwith
+                            $"%s{operation}: assembly for open generic type definition is not loaded: %s{identity.AssemblyFullName}"
+                    )
+
+                let typeInfo = assembly.TypeDefs.[identity.TypeDefinition.Get]
+                let name = typeInfoDisplayName includeNamespace assembly typeInfo
+
+                let name =
+                    // A generic definition renders its own formal parameters for `ToString()`
+                    // (FormatNamespace alone): `typeof(List<>).ToString()` is
+                    // "System.Collections.Generic.List`1[T]", while `.Name` is "List`1".
+                    //
+                    // But *not* for `FullName` or `AssemblyQualifiedName`, which CoreLib asks for
+                    // with FormatFullInst set: those are "System.Collections.Generic.List`1",
+                    // because a full name has to stay parseable and `List`1[T]` is not. This is
+                    // the opposite of the closed case above, where FormatFullInst is precisely
+                    // what makes the instantiation render in full.
+                    //
+                    // The formals also matter in argument position, since the
+                    // typical-instantiation collapse puts definitions there —
+                    // `IWrap<INested<T>>` renders its argument as "INested`1[T]".
+                    let fullInst = hasFormatFlag formatFullInstFlag flags
+
+                    if includeNamespace && not fullInst && not typeInfo.Generics.IsEmpty then
+                        let formals =
+                            typeInfo.Generics |> Seq.map (fun (p, _) -> p.Name) |> String.concat ","
+
+                        $"%s{name}[%s{formals}]"
+                    else
+                        name
+
+                if includeAssembly then
+                    $"%s{name}, %s{assemblyDisplayName noVersion identity.Assembly}"
+                else
+                    name
+            | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
+                // CoreCLR's TypeString::AppendType for a generic parameter emits only the
+                // parameter name regardless of the FormatNamespace / FormatAssembly /
+                // FormatGenericParameters bits: parameters have no namespace, no owning
+                // assembly suffix, and no instantiation of their own.
+                let assembly =
+                    state.LoadedAssembly declaringType.Assembly
+                    |> Option.defaultWith (fun () ->
+                        failwith
+                            $"%s{operation}: assembly for declaring type of generic parameter is not loaded: %s{declaringType.AssemblyFullName}"
+                    )
+
+                let typeInfo = assembly.TypeDefs.[declaringType.TypeDefinition.Get]
+
+                if position < 0 || position >= typeInfo.Generics.Length then
                     failwith
-                        $"%s{operation}: assembly for open generic type definition is not loaded: %s{identity.AssemblyFullName}"
-                )
+                        $"%s{operation}: generic parameter position %d{position} is out of range for %O{declaringType.TypeDefinition.Get} (declares %d{typeInfo.Generics.Length} parameters)"
 
-            let typeInfo = assembly.TypeDefs.[identity.TypeDefinition.Get]
-            let name = typeInfoDisplayName includeNamespace assembly typeInfo
+                let parameter, _ = typeInfo.Generics.[position]
+                parameter.Name
+            | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
+                // Same as type-generic parameters: CoreCLR emits only the parameter name.
+                let assembly =
+                    state.LoadedAssembly declaringType.Assembly
+                    |> Option.defaultWith (fun () ->
+                        failwith
+                            $"%s{operation}: assembly for declaring type of method generic parameter is not loaded: %s{declaringType.AssemblyFullName}"
+                    )
 
-            if includeAssembly then
-                $"%s{name}, %s{assemblyDisplayName noVersion identity.Assembly}"
-            else
-                name
-        | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
-            // CoreCLR's TypeString::AppendType for a generic parameter emits only the
-            // parameter name regardless of the FormatNamespace / FormatAssembly /
-            // FormatGenericParameters bits: parameters have no namespace, no owning
-            // assembly suffix, and no instantiation of their own.
-            let assembly =
-                state.LoadedAssembly declaringType.Assembly
-                |> Option.defaultWith (fun () ->
+                let methodInfo = assembly.Methods.[declaringMethod.Get]
+
+                if position < 0 || position >= methodInfo.Generics.Length then
                     failwith
-                        $"%s{operation}: assembly for declaring type of generic parameter is not loaded: %s{declaringType.AssemblyFullName}"
-                )
+                        $"%s{operation}: method generic parameter position %d{position} is out of range for method %O{declaringMethod.Get} (declares %d{methodInfo.Generics.Length} method generics)"
 
-            let typeInfo = assembly.TypeDefs.[declaringType.TypeDefinition.Get]
+                let parameter, _ = methodInfo.Generics.[position]
+                parameter.Name
 
-            if position < 0 || position >= typeInfo.Generics.Length then
-                failwith
-                    $"%s{operation}: generic parameter position %d{position} is out of range for %O{declaringType.TypeDefinition.Get} (declares %d{typeInfo.Generics.Length} parameters)"
-
-            let parameter, _ = typeInfo.Generics.[position]
-            parameter.Name
-        | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
-            // Same as type-generic parameters: CoreCLR emits only the parameter name.
-            let assembly =
-                state.LoadedAssembly declaringType.Assembly
-                |> Option.defaultWith (fun () ->
-                    failwith
-                        $"%s{operation}: assembly for declaring type of method generic parameter is not loaded: %s{declaringType.AssemblyFullName}"
-                )
-
-            let methodInfo = assembly.Methods.[declaringMethod.Get]
-
-            if position < 0 || position >= methodInfo.Generics.Length then
-                failwith
-                    $"%s{operation}: method generic parameter position %d{position} is out of range for method %O{declaringMethod.Get} (declares %d{methodInfo.Generics.Length} method generics)"
-
-            let parameter, _ = methodInfo.Generics.[position]
-            parameter.Name
+        targetName typeHandleTarget
 
     /// PawPrint's rendering of CoreCLR's `CopyRuntimeTypeHandles` (runtimehandles.cpp:561), the
     /// single helper behind every QCall that hands a type list back through an
@@ -2040,6 +2133,9 @@ module ActivationInfo =
         =
         let handle =
             match target with
+            | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
+                failwith
+                    $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeHelpers.fs:%s{__LINE__}; got %O{openConstructed}"
             | RuntimeTypeHandleTarget.Closed handle -> handle
             | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
             | RuntimeTypeHandleTarget.GenericParameter _

@@ -274,6 +274,9 @@ module NativeCustomAttribute =
 
                 let instantiatedHandle =
                     match typeHandleTarget with
+                    | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
+                        failwith
+                            $"TODO: open constructed types are not handled at Native/NativeCustomAttribute.fs:%s{__LINE__}; got %O{openConstructed}"
                     | RuntimeTypeHandleTarget.Closed handle -> handle
                     | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
                         failwith
