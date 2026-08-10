@@ -96,8 +96,9 @@ module TestPureCases =
 
         try
             let pawPrintResult =
-                Program.run
+                BoundedRun.run
                     loggerFactory
+                    sourceName
                     (Some sourceName)
                     peImage
                     { HostConfig.Default dotnetRuntimes with
