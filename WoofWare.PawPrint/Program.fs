@@ -62,7 +62,23 @@ module Program =
         | CompletedBeforeMain of RunOutcome
 
     type ProgramStepOutcome =
-        | InstructionStepped of PreparedProgram * ranThread : ThreadId * whatWeDid : WhatWeDid
+        /// `effect` is the step's `StepEffect`, forwarded verbatim from
+        /// `ExecutionResult.Stepped`. It is what makes a *streaming* driver
+        /// possible: `StepEffect.WroteToFd` carries exactly the bytes this step
+        /// appended to `EmulatedKernel.OutputLog`, so a driver can write them to
+        /// a real stream as they are produced instead of waiting for a
+        /// `RunOutcome` and draining the log. That distinction is not cosmetic —
+        /// a run that never produces a `RunOutcome` (a livelocked guest, a guest
+        /// killed from outside, `Deadlocked`) has no end-of-run drain to reach,
+        /// so without streaming its output is lost entirely.
+        ///
+        /// Steps that terminate the run do not carry an effect: those outcomes
+        /// are `Completed`, and their `RunOutcome` carries the final state whose
+        /// `OutputLog` is authoritative. A driver that streams should still drain
+        /// any log entries beyond what it has written when the run ends, because
+        /// writes performed *before* the driver's own loop starts (a `.cctor`
+        /// that prints, pumped inside `prepare`) never pass through here.
+        | InstructionStepped of PreparedProgram * ranThread : ThreadId * whatWeDid : WhatWeDid * effect : StepEffect
         | WorkerTerminated of PreparedProgram * terminatingThread : ThreadId
         | Completed of RunOutcome
         | Deadlocked of PreparedProgram * stuckThreads : string
@@ -535,7 +551,11 @@ module Program =
                             LastRan = terminatingThread
                         },
                         terminatingThread,
-                        WhatWeDid.Executed
+                        WhatWeDid.Executed,
+                        // The signal dispatcher's handler frame returning past its
+                        // bottom arrives as `ExecutionResult.Terminated`, which carries
+                        // no effect: the step performed no I/O of its own.
+                        StepEffect.NoEffect
                     )
                 else
                     let state = Scheduler.onThreadTerminated terminatingThread state
@@ -555,7 +575,7 @@ module Program =
                 ProgramStepOutcome.Completed (RunOutcome.SignalTerminated (state, signal))
             | ExecutionResult.UnhandledException (state, terminatingThread, exn) ->
                 ProgramStepOutcome.Completed (RunOutcome.GuestUnhandledException (state, terminatingThread, exn))
-            | ExecutionResult.Stepped (state, whatWeDid, _) ->
+            | ExecutionResult.Stepped (state, whatWeDid, effect) ->
                 logStepOutcome logger state nextThread whatWeDid
 
                 let state = Scheduler.onStepOutcome nextThread whatWeDid state
@@ -566,7 +586,8 @@ module Program =
                         LastRan = nextThread
                     },
                     nextThread,
-                    whatWeDid
+                    whatWeDid,
+                    effect
                 )
 
     let rec pumpPrepared (loggerFactory : ILoggerFactory) (logger : ILogger) (prepared : PreparedProgram) : RunOutcome =
@@ -574,7 +595,7 @@ module Program =
         | ProgramStepOutcome.Completed outcome -> outcome
         | ProgramStepOutcome.Deadlocked (_, stuck) ->
             failwith $"Deadlock: no runnable threads and entry thread has not terminated. Stuck: {stuck}"
-        | ProgramStepOutcome.InstructionStepped (prepared, _, _)
+        | ProgramStepOutcome.InstructionStepped (prepared, _, _, _)
         | ProgramStepOutcome.WorkerTerminated (prepared, _) -> pumpPrepared loggerFactory logger prepared
 
     let internal pumpToReturn

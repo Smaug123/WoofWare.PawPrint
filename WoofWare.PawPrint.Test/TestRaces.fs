@@ -167,7 +167,7 @@ module TestRaces =
                 | Program.ProgramStepOutcome.Completed outcome -> exitCodeOfOutcome sourceName seed outcome, blocked
                 | Program.ProgramStepOutcome.Deadlocked (_, stuck) ->
                     failwith $"%s{sourceName} (seed=%A{seed}) deadlocked with threads stuck: %s{stuck}"
-                | Program.ProgramStepOutcome.InstructionStepped (p, _, whatWeDid) ->
+                | Program.ProgramStepOutcome.InstructionStepped (p, _, whatWeDid, _) ->
                     match whatWeDid with
                     | WhatWeDid.BlockedOnClassInit _ -> loop p (blocked + 1)
                     | _ -> loop p blocked
