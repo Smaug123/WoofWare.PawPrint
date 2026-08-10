@@ -646,10 +646,29 @@ module ExceptionDispatching =
                 IlOffset = callSitePC
             }
 
+        // A delegate's `Invoke` is a stub, not a managed method: real .NET has no frame for it,
+        // and an exception crossing a delegate call reports the target and then whoever called
+        // `Invoke`. PawPrint's ordinary delegate path gets that for free, because
+        // `dispatchDelegateInvoke` pops its synthetic frame before calling the target — so the
+        // frame is already gone by the time anything can throw. The exception is class
+        // initialisation, which deliberately runs *while* that frame is still active so the
+        // instruction can be retried after the `.cctor` returns; without this, a `.cctor` that
+        // throws would report a `System.Action.Invoke` frame that no real trace contains.
+        //
+        // Only `DelegateInvoke` is suppressed, not runtime-provided frames at large: an
+        // InternalCall or QCall *is* a managed method by name and real traces do show it.
+        let isDelegateInvokeStub =
+            match callerFrame.ExecutingMethod.Body with
+            | MethodBody.RuntimeProvided RuntimeBehaviour.DelegateInvoke -> true
+            | _ -> false
+
         let cliExceptionAtCallSite =
-            { cliException with
-                StackTrace = cliException.StackTrace @ [ stackFrame ]
-            }
+            if isDelegateInvokeStub then
+                cliException
+            else
+                { cliException with
+                    StackTrace = cliException.StackTrace @ [ stackFrame ]
+                }
 
         match callerFrame.ExceptionContinuation with
         | Some (ExceptionContinuation.ResumeAfterFilter continuation) ->
