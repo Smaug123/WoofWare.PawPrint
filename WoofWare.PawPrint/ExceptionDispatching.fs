@@ -757,20 +757,26 @@ module ExceptionDispatching =
         // .NET has no `StackTraceElement` for that stub and hence no `AppendElement` call to read
         // the flag, which stays pending for the next genuine frame the raise reaches.
         //
-        // Replacing the in-flight frames wholesale is safe precisely because this is the *first*
-        // append of the raise — the flag can only be consumed once, and the list it replaces is
-        // still the one the raise started with. A plain rethrow, by contrast, keeps carrying the
-        // snapshot the catch handler was entered with, which can be staler than the token; that
-        // pre-existing gap is out of scope here and noted in docs/divergences.md.
+        // The frames to mark are the ones the raise is already carrying: a `rethrow` read them out
+        // of `_stackTrace` when it began, and a `throw` seeded them at its own throw site. That is
+        // deliberately not a re-read of the token here, even though here is where CoreCLR reads it
+        // — because here can be separated from the raise's initiation by guest cleanup code, and a
+        // `finally` that throws the same exception again moves the token on. CoreCLR never faces
+        // the question: pass one appends every frame before any cleanup clause runs, so the frames
+        // it marks are the ones the raise began with, which is what this carries.
+        //
+        // The two answers cannot be told apart today. Reaching a case where they differ needs a
+        // raise inside that `finally`, and such a raise also steals the flag before this one can
+        // spend it — `sourcesPure/ForeignRaiseFlagNotStolenByCleanup.cs`, parked on issue #865. So
+        // no test pins this line; it is written this way because it is the same fact as
+        // `MayConsumeForeignRaise`, that a suspended raise comes back with the state it left with.
         let state, restoredFrames =
             if isDelegateInvokeStub || not cliException.MayConsumeForeignRaise then
                 state, None
             else
 
             state
-            |> consumeForeignExceptionRaise
-                currentThread
-                (fun () -> IlMachineState.frozenStackTraceFrames corelib cliException.ExceptionObject state)
+            |> consumeForeignExceptionRaise currentThread (fun () -> cliException.StackTrace)
 
         let framesBefore = restoredFrames |> Option.defaultValue cliException.StackTrace
 
