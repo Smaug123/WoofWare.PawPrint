@@ -103,6 +103,30 @@ public class FieldSignatureShapes
     public volatile int VolatileField;
 }
 
+// One literal per Constant-table type code the C# compiler can emit, plus the two encodings that
+// are easy to confuse: `NullString` is ELEMENT_TYPE_CLASS (four zero bytes), and `EmptyString` has
+// a zero-length blob that the runtime reports as a null pointer. `NotAConstant` has no Constant row
+// at all, which is a third thing again (ELEMENT_TYPE_VOID).
+public class ConstantShapes
+{
+    public const bool BoolConst = true;
+    public const char CharConst = 'q';
+    public const sbyte SByteConst = -1;
+    public const byte ByteConst = 200;
+    public const short Int16Const = -300;
+    public const ushort UInt16Const = 40000;
+    public const int Int32Const = 42;
+    public const uint UInt32Const = 3000000000;
+    public const long Int64Const = -1234567890123L;
+    public const ulong UInt64Const = 18446744073709551615UL;
+    public const float SingleConst = 0.25f;
+    public const double DoubleConst = 0.5;
+    public const string StringConst = "hello";
+    public const string EmptyStringConst = "";
+    public const string NullStringConst = null;
+    public static int NotAConstant = 7;
+}
+
 public class ReferencesOtherAssemblyMembers
 {
     // `string.Empty` is a static field on a corelib type, so the reference is a MemberRef row
@@ -143,6 +167,7 @@ public class TypesWithMembers
             InnerType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             SeveralNestedType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             SignatureShapesType : TypeInfo<GenericParamFromMetadata, TypeDefn>
+            ConstantShapesType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             MembersType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             InstanceField : FieldInfo<GenericParamFromMetadata, TypeDefn>
             StaticField : FieldInfo<GenericParamFromMetadata, TypeDefn>
@@ -230,6 +255,8 @@ public class TypesWithMembers
 
         let signatureShapesType = requiredTopLevelType assembly "" "FieldSignatureShapes"
 
+        let constantShapesType = requiredTopLevelType assembly "" "ConstantShapes"
+
         let membersType = requiredTopLevelType assembly "" "TypesWithMembers"
 
         let constArrayType = requiredTopLevelType corelib "System.Reflection" "ConstArray"
@@ -250,6 +277,7 @@ public class TypesWithMembers
                  baseClassTypes.Int32
                  baseClassTypes.IntPtr
                  baseClassTypes.Byte
+                 baseClassTypes.Int64
              ])
             ||> List.fold (concretizeCorelibType loggerFactory baseClassTypes)
 
@@ -281,6 +309,7 @@ public class TypesWithMembers
             InnerType = innerType
             SeveralNestedType = severalNestedType
             SignatureShapesType = signatureShapesType
+            ConstantShapesType = constantShapesType
             MembersType = membersType
             InstanceField = fieldByName "InstanceField"
             StaticField = fieldByName "StaticField"
@@ -1603,3 +1632,321 @@ public class TypesWithMembers
             Assert.Throws (fun () -> invokeGetSigOfFieldDef fixture 0x04FFFFFF fixture.State |> ignore)
 
         ex.Message |> shouldContainText "was not present in"
+
+    let private allocateSlotOut
+        (fixture : MetadataImportFixture)
+        (elementType : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        (zero : CliType)
+        (state : IlMachineState)
+        : ManagedPointerSource * IlMachineState
+        =
+        let handle =
+            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes elementType
+
+        let arrayAddr, state =
+            IlMachineState.allocateArray (ConcreteTypeHandle.OneDimArrayZero handle) (fun () -> zero) 1 state
+
+        ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), []), state
+
+    /// The four out-params of `GetDefaultValue`, read back: the 64-bit buffer, the `char*`, the
+    /// length, and the ELEMENT_TYPE code.
+    type private DefaultValueOut =
+        {
+            Value : int64
+            StringPointer : ManagedPointerSource
+            Length : int32
+            CorElementType : int32
+        }
+
+    let private invokeGetDefaultValue
+        (fixture : MetadataImportFixture)
+        (fieldToken : int32)
+        (state : IlMachineState)
+        : EvalStackValue * DefaultValueOut * IlMachineState
+        =
+        let state, metadataImportType, getDefaultValueMethod =
+            metadataImportMethod fixture state "GetDefaultValue" 6
+
+        let valueOut, state =
+            allocateSlotOut
+                fixture
+                fixture.BaseClassTypes.Int64
+                (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L)))
+                state
+
+        let stringValueOut, state =
+            allocateSlotOut
+                fixture
+                fixture.BaseClassTypes.IntPtr
+                (CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null))
+                state
+
+        let lengthOut, state = allocateInt32Out fixture 0 state
+        let corElementTypeOut, state = allocateInt32Out fixture 0 state
+
+        let state =
+            invokeMetadataImportNative
+                fixture
+                metadataImportType
+                getDefaultValueMethod
+                [
+                    metadataImportHandle fixture
+                    CliType.Numeric (CliNumericType.Int32 fieldToken)
+                    CliType.RuntimePointer (CliRuntimePointer.Managed valueOut)
+                    CliType.RuntimePointer (CliRuntimePointer.Managed stringValueOut)
+                    CliType.RuntimePointer (CliRuntimePointer.Managed lengthOut)
+                    CliType.RuntimePointer (CliRuntimePointer.Managed corElementTypeOut)
+                ]
+                state
+
+        let returnValue, state = IlMachineState.popEvalStack (ThreadId 0) state
+
+        let value =
+            match
+                IlMachineState.readManagedByref fixture.BaseClassTypes state valueOut
+                |> CliType.unwrapPrimitiveLikeDeep
+            with
+            | CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim v)) -> v
+            | other -> failwith $"expected Int64 value out, got %O{other}"
+
+        let stringPointer =
+            match
+                IlMachineState.readManagedByref fixture.BaseClassTypes state stringValueOut
+                |> CliType.unwrapPrimitiveLikeDeep
+            with
+            | CliType.RuntimePointer (CliRuntimePointer.Managed ptr) -> ptr
+            | other -> failwith $"expected managed pointer string out, got %O{other}"
+
+        let out =
+            {
+                Value = value
+                StringPointer = stringPointer
+                Length = readInt32Out fixture.BaseClassTypes state lengthOut
+                CorElementType = readInt32Out fixture.BaseClassTypes state corElementTypeOut
+            }
+
+        returnValue, out, state
+
+    let private constantField
+        (fixture : MetadataImportFixture)
+        (name : string)
+        : FieldInfo<GenericParamFromMetadata, TypeDefn>
+        =
+        fixture.ConstantShapesType.Fields
+        |> List.tryFind (fun field -> field.Name = name)
+        |> Option.defaultWith (fun () -> failwith $"constant field %s{name} not found")
+
+    [<Test>]
+    let ``MetadataImport GetDefaultValue packs each constant into the low bytes of the buffer`` () : unit =
+        let fixture = makeFixture ()
+
+        // ECMA-335 II.23.1.16 element types, and the value as CoreCLR's `m_ullValue` carries it:
+        // the blob's bytes little-endian in the low bytes, with the high bytes zero. `MdConstant`
+        // reinterprets only the low member-width bytes (`*(sbyte*)&buffer` and friends), so the
+        // *upper* bytes are unobservable to a guest and zero is PawPrint's determinism choice
+        // rather than a fidelity claim — CoreCLR leaves them as stack garbage.
+        let cases =
+            [
+                "BoolConst", 0x02, 1L, 1
+                "CharConst", 0x03, int64 'q', 2
+                // -1 as I1 is the single byte 0xFF: zero-extended here, and the managed side
+                // recovers the sign by reinterpreting the low byte.
+                "SByteConst", 0x04, 0xFFL, 1
+                "ByteConst", 0x05, 200L, 1
+                "Int16Const", 0x06, 0xFED4L, 2
+                "UInt16Const", 0x07, 40000L, 2
+                "Int32Const", 0x08, 42L, 4
+                "UInt32Const", 0x09, 3000000000L, 4
+                "Int64Const", 0x0A, -1234567890123L, 8
+                // All eight bytes set: the one case where zero-extension has nothing left to do.
+                "UInt64Const", 0x0B, -1L, 8
+                // Floating point is a bit pattern, not a conversion.
+                "SingleConst", 0x0C, int64 (System.BitConverter.SingleToInt32Bits 0.25f), 4
+                "DoubleConst", 0x0D, System.BitConverter.DoubleToInt64Bits 0.5, 8
+            ]
+
+        let mutable state = fixture.State
+
+        for name, expectedElementType, expectedValue, expectedLength in cases do
+            let field = constantField fixture name
+
+            let returnValue, out, nextState =
+                invokeGetDefaultValue fixture (fieldDefToken field.Handle) state
+
+            state <- nextState
+
+            returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+            out.CorElementType |> shouldEqual expectedElementType
+            out.Value |> shouldEqual expectedValue
+            out.Length |> shouldEqual expectedLength
+            out.StringPointer |> shouldEqual ManagedPointerSource.Null
+
+    [<Test>]
+    let ``MetadataImport GetDefaultValue points at the constant blob for a string`` () : unit =
+        let fixture = makeFixture ()
+        let field = constantField fixture "StringConst"
+
+        let _, out, state =
+            invokeGetDefaultValue fixture (fieldDefToken field.Handle) fixture.State
+
+        out.CorElementType |> shouldEqual 0x0E
+        // Length is in *characters* here and in bytes for every other code: the FCall divides by
+        // sizeof(WCHAR) only on this branch. "hello" is 5 chars in a 10-byte blob.
+        out.Length |> shouldEqual 5
+        out.Value |> shouldEqual 0L
+
+        // The pointer must carry a `ReinterpretAs` projection, not just name the range:
+        // `String.Ctor(char*, int, int)` offsets it before reading, and pointer arithmetic on a
+        // bare PE-byte-range root is refused outright — the guest case fails without one. The
+        // projection's *type* is not what makes the guest work (the offset is zero and the copy is
+        // byte-wise, so `byte` would also do); `char` is pinned here because it is the type the API
+        // declares, and pinning it is what stops it drifting silently.
+        match out.StringPointer with
+        | ManagedPointerSource.Byref (ByrefRoot.PeByteRange range, [ ByrefProjection.ReinterpretAs charType ]) ->
+            range.AssemblyFullName |> shouldEqual fixture.Assembly.Name.FullName
+            range.Size |> shouldEqual 10
+
+            range.Source
+            |> shouldEqual (PeByteRangePointerSource.ConstantBlob (ComparableFieldDefinitionHandle.Make field.Handle))
+
+            // Look up Char in the *post*-invocation state: the handler is what concretizes it.
+            let expectedCharType =
+                AllConcreteTypes.lookup
+                    (AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes fixture.BaseClassTypes.Char)
+                    state.ConcreteTypes
+                |> Option.defaultWith (fun () -> failwith "System.Char was not concretized")
+
+            charType |> shouldEqual expectedCharType
+        | other -> failwith $"expected a char pointer over the constant blob, got %O{other}"
+
+    [<Test>]
+    let ``MetadataImport GetDefaultValue reports an empty string as a null pointer`` () : unit =
+        // `_FillMDDefaultValue` nulls the pointer when the blob is zero-length
+        // (mdinternalro.cpp:3214); the managed wrapper's `stringVal ?? string.Empty` is what turns
+        // that back into "". Handing back a zero-length range instead would make the wrapper build
+        // a string from a pointer addressing nothing.
+        let fixture = makeFixture ()
+        let field = constantField fixture "EmptyStringConst"
+
+        let _, out, _ =
+            invokeGetDefaultValue fixture (fieldDefToken field.Handle) fixture.State
+
+        out.CorElementType |> shouldEqual 0x0E
+        out.Length |> shouldEqual 0
+        out.StringPointer |> shouldEqual ManagedPointerSource.Null
+
+    [<Test>]
+    let ``MetadataImport GetDefaultValue reports a null constant as ELEMENT_TYPE_CLASS`` () : unit =
+        // A null reference constant is its own element type, distinct from "no Constant row at
+        // all", and ECMA-335 II.22.9 fixes its blob at four zero bytes.
+        let fixture = makeFixture ()
+        let field = constantField fixture "NullStringConst"
+
+        let _, out, _ =
+            invokeGetDefaultValue fixture (fieldDefToken field.Handle) fixture.State
+
+        out.CorElementType |> shouldEqual 0x12
+        out.Length |> shouldEqual 4
+        out.Value |> shouldEqual 0L
+        out.StringPointer |> shouldEqual ManagedPointerSource.Null
+
+    [<Test>]
+    let ``MetadataImport GetDefaultValue reports ELEMENT_TYPE_VOID for a field with no constant`` () : unit =
+        // `MdConstant` turns VOID into DBNull.Value. CoreCLR leaves the buffer and length as stack
+        // garbage on this path; PawPrint writes zeros, because a replay must not depend on the
+        // host's stack.
+        let fixture = makeFixture ()
+        let field = constantField fixture "NotAConstant"
+
+        let returnValue, out, _ =
+            invokeGetDefaultValue fixture (fieldDefToken field.Handle) fixture.State
+
+        returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+        out.CorElementType |> shouldEqual 0x01
+        out.Value |> shouldEqual 0L
+        out.Length |> shouldEqual 0
+        out.StringPointer |> shouldEqual ManagedPointerSource.Null
+
+    [<Test>]
+    let ``MetadataImport GetDefaultValue agrees with the host runtime for every literal`` () : unit =
+        // Outside oracle: the same image in the host CLR, asked the same question through its own
+        // metadata engine. This compares the *decoded* value rather than the raw out-params, so it
+        // checks the packing and the element type together, in the way a guest would see them.
+        let fixture = makeFixture ()
+
+        let hostType =
+            (System.Reflection.Assembly.Load fixture.Image).GetType "ConstantShapes"
+
+        let literals =
+            fixture.ConstantShapesType.Fields
+            |> List.filter (fun field -> field.Attributes.HasFlag System.Reflection.FieldAttributes.Literal)
+
+        literals.Length |> shouldEqual 15
+
+        let mutable state = fixture.State
+
+        for field in literals do
+            let _, out, nextState =
+                invokeGetDefaultValue fixture (fieldDefToken field.Handle) state
+
+            state <- nextState
+
+            let expected = hostType.GetField(field.Name).GetRawConstantValue ()
+
+            // Recover the same value the managed `MdConstant` would build from our out-params.
+            let actual : obj =
+                match out.CorElementType with
+                | 0x02 -> box (out.Value <> 0L)
+                | 0x03 -> box (char (uint16 out.Value))
+                | 0x04 -> box (sbyte (byte out.Value))
+                | 0x05 -> box (byte out.Value)
+                | 0x06 -> box (int16 (uint16 out.Value))
+                | 0x07 -> box (uint16 out.Value)
+                | 0x08 -> box (int32 (uint32 out.Value))
+                | 0x09 -> box (uint32 out.Value)
+                | 0x0A -> box out.Value
+                | 0x0B -> box (uint64 out.Value)
+                | 0x0C -> box (System.BitConverter.Int32BitsToSingle (int32 (uint32 out.Value)))
+                | 0x0D -> box (System.BitConverter.Int64BitsToDouble out.Value)
+                | 0x0E ->
+                    match out.StringPointer with
+                    | ManagedPointerSource.Null -> box ""
+                    | ManagedPointerSource.Byref (ByrefRoot.PeByteRange range, _) ->
+                        let charTemplate, _ =
+                            IlMachineState.cliTypeZeroOfHandle
+                                state
+                                fixture.BaseClassTypes
+                                (AllConcreteTypes.getRequiredNonGenericHandle
+                                    state.ConcreteTypes
+                                    fixture.BaseClassTypes.Char)
+
+                        System.String (
+                            Array.init
+                                out.Length
+                                (fun i ->
+                                    match
+                                        IlMachineState.readPeByteRangeBytesAs state range (i * 2) charTemplate
+                                        |> CliType.unwrapPrimitiveLikeDeep
+                                    with
+                                    | CliType.Char (hi, lo) -> char ((int hi <<< 8) ||| int lo)
+                                    | other -> failwith $"expected Char in constant blob, got %O{other}"
+                                )
+                        )
+                        |> box
+                    | other -> failwith $"unexpected string pointer %O{other}"
+                | 0x12 -> null
+                | other -> failwith $"unexpected element type 0x%x{other} for %s{field.Name}"
+
+            actual |> shouldEqual expected
+
+    [<Test>]
+    let ``MetadataImport GetDefaultValue rejects a non-FieldDef token`` () : unit =
+        let fixture = makeFixture ()
+
+        let ex =
+            Assert.Throws (fun () ->
+                invokeGetDefaultValue fixture (typeDefToken fixture.TargetType.TypeDefHandle) fixture.State
+                |> ignore
+            )
+
+        ex.Message |> shouldContainText "expected FieldDef token"

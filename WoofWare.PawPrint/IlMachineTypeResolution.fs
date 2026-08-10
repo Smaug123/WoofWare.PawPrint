@@ -631,6 +631,31 @@ module IlMachineTypeResolution =
 
         state, byteType
 
+    let ensureCharConcreteType
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        : IlMachineState * ConcreteType<ConcreteTypeHandle>
+        =
+        let charTypeDefn =
+            DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Char
+
+        let state, charHandle =
+            concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                baseClassTypes.Corelib.Name
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                charTypeDefn
+
+        let charType =
+            AllConcreteTypes.lookup charHandle state.ConcreteTypes
+            |> Option.defaultWith (fun () -> failwith "System.Char was not present after concretization")
+
+        state, charType
+
     let peByteRangeForFieldRva
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -739,3 +764,52 @@ module IlMachineTypeResolution =
 
         state,
         ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange, [ ByrefProjection.ReinterpretAs byteType ])
+
+    /// PE byte range pointer over the Constant table's value blob for a field
+    /// definition (ECMA II.22.9).
+    let peByteRangeForConstantBlob
+        (assembly : DumpedAssembly)
+        (fieldHandle : FieldDefinitionHandle)
+        : PeByteRangePointer option
+        =
+        let mdReader = assembly.PeReader.GetMetadataReader ()
+        let fieldDef = mdReader.GetFieldDefinition fieldHandle
+        let constantHandle = fieldDef.GetDefaultValue ()
+
+        if constantHandle.IsNil then
+            None
+        else
+
+        let blobReader = mdReader.GetBlobReader (mdReader.GetConstant constantHandle).Value
+
+        {
+            AssemblyFullName = assembly.Name.FullName
+            Source = PeByteRangePointerSource.ConstantBlob (ComparableFieldDefinitionHandle.Make fieldHandle)
+            RelativeVirtualAddress = 0
+            Size = blobReader.Length
+        }
+        |> Some
+
+    /// A `char*` over a PE byte range, as opposed to `peByteRangePointer`'s `byte*`.
+    ///
+    /// Having *a* `ReinterpretAs` projection is load-bearing: `ArithmeticTarget.decompose` refuses
+    /// pointer arithmetic on a bare PE-byte-range root, and that refusal is reached even by
+    /// `ptr + 0`, since the zero-offset shortcut sits after the decomposition. A guest doing
+    /// `new string(ptr, 0, length)` offsets the pointer before reading it, so a projection-less
+    /// pointer faults there rather than here — confirmed by mutation.
+    ///
+    /// Which primitive the projection names is *not* load-bearing for that guest path: the offset is
+    /// zero and the copy that follows is byte-wise, so a `byte` projection reaches the same answer.
+    /// `char` is chosen because it is the type the API declares (`out char*`), which keeps the
+    /// pointer self-describing to anything that later inspects it.
+    let peByteRangeCharPointer
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (peByteRange : PeByteRangePointer)
+        (state : IlMachineState)
+        : IlMachineState * ManagedPointerSource
+        =
+        let state, charType = ensureCharConcreteType loggerFactory baseClassTypes state
+
+        state,
+        ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange, [ ByrefProjection.ReinterpretAs charType ])

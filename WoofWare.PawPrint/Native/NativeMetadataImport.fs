@@ -255,6 +255,94 @@ module NativeMetadataImport =
                 failwith $"%s{operation}: FieldDef token 0x%08x{mdToken} was not present in %s{assembly.Name.FullName}"
         | token -> failwith $"%s{operation}: expected FieldDef token, got %O{token} from 0x%08x{mdToken}"
 
+    /// The Constant table row (ECMA-335 II.22.9) attached to a field definition: its declared type
+    /// code and a reader over its value blob. <c>None</c> when the field has no Constant row.
+    ///
+    /// Deliberately raw, because the two callers disagree about what the answer means.
+    /// <c>NativeEnum</c> requires the type code to match the enum's declared underlying type and
+    /// fails otherwise, and treats a missing row as a corrupt image;
+    /// <c>MetadataImport.GetDefaultValue</c> must do neither, because <c>MdConstant</c> is the thing
+    /// that decides what the bytes mean, and a missing row is its ordinary "no default value"
+    /// answer.
+    let constantRowOfField
+        (metadataReader : System.Reflection.Metadata.MetadataReader)
+        (fieldHandle : System.Reflection.Metadata.FieldDefinitionHandle)
+        : (System.Reflection.Metadata.ConstantTypeCode * System.Reflection.Metadata.BlobReader) option
+        =
+        let constantHandle =
+            (metadataReader.GetFieldDefinition fieldHandle).GetDefaultValue ()
+
+        if constantHandle.IsNil then
+            None
+        else
+
+        let constant = metadataReader.GetConstant constantHandle
+        Some (constant.TypeCode, metadataReader.GetBlobReader constant.Value)
+
+    /// ECMA-335 II.23.1.16 <c>ELEMENT_TYPE_*</c> code for a Constant row's type, paired with the
+    /// number of bytes its value blob must contain — CoreCLR's <c>_FillMDDefaultValue</c> checks
+    /// exactly this width per code and reports <c>CLDB_E_FILE_CORRUPT</c> when the blob is shorter.
+    /// A *longer* blob is tolerated there and only its first <c>width</c> bytes are read, so the
+    /// width is a minimum for validation and an exact count for decoding.
+    ///
+    /// <c>ELEMENT_TYPE_STRING</c> has no fixed width; its blob is however many UTF-16 code units
+    /// the string has, so it carries width 0 and is handled separately by the caller.
+    ///
+    /// <c>System.Reflection.Metadata</c>'s <c>ConstantTypeCode</c> values happen to be the same
+    /// numbers as the element types, but this maps them explicitly rather than casting: they are
+    /// two separate contracts, and a cast would silently follow either one if it moved.
+    let private elementTypeOfConstantTypeCode
+        (operation : string)
+        (code : System.Reflection.Metadata.ConstantTypeCode)
+        : int32 * int
+        =
+        match code with
+        | System.Reflection.Metadata.ConstantTypeCode.Boolean -> 0x02, 1
+        | System.Reflection.Metadata.ConstantTypeCode.Char -> 0x03, 2
+        | System.Reflection.Metadata.ConstantTypeCode.SByte -> 0x04, 1
+        | System.Reflection.Metadata.ConstantTypeCode.Byte -> 0x05, 1
+        | System.Reflection.Metadata.ConstantTypeCode.Int16 -> 0x06, 2
+        | System.Reflection.Metadata.ConstantTypeCode.UInt16 -> 0x07, 2
+        | System.Reflection.Metadata.ConstantTypeCode.Int32 -> 0x08, 4
+        | System.Reflection.Metadata.ConstantTypeCode.UInt32 -> 0x09, 4
+        | System.Reflection.Metadata.ConstantTypeCode.Int64 -> 0x0A, 8
+        | System.Reflection.Metadata.ConstantTypeCode.UInt64 -> 0x0B, 8
+        | System.Reflection.Metadata.ConstantTypeCode.Single -> 0x0C, 4
+        | System.Reflection.Metadata.ConstantTypeCode.Double -> 0x0D, 8
+        | System.Reflection.Metadata.ConstantTypeCode.String -> 0x0E, 0
+        | System.Reflection.Metadata.ConstantTypeCode.NullReference -> 0x12, 4
+        | code -> failwith $"%s{operation}: Constant row has unrepresentable type code %O{code}"
+
+    /// <c>ELEMENT_TYPE_VOID</c>, which is how CoreCLR reports "this token has no Constant row".
+    let private elementTypeVoid : int32 = 0x01
+
+    /// <c>ELEMENT_TYPE_STRING</c>, the one code whose blob is handed back as a pointer rather than
+    /// packed into the 64-bit buffer.
+    let private elementTypeString : int32 = 0x0E
+
+    /// <c>ELEMENT_TYPE_CLASS</c>, which ECMA-335 II.22.9 permits only as a null reference: exactly
+    /// four bytes, all zero.
+    let private elementTypeClass : int32 = 0x12
+
+    /// Pack a Constant blob into the low bytes of a 64-bit buffer, little-endian, as
+    /// <c>MetaDataImport::GetDefaultValue</c>'s <c>*pDefaultValue = value.m_ullValue</c> does.
+    ///
+    /// The high bytes are zero *by PawPrint's choice*, not by CoreCLR's: there,
+    /// <c>MDDefaultValue</c> is an uninitialised stack union and <c>_FillMDDefaultValue</c> writes
+    /// only the member-width low bytes, so the rest is whatever was on the stack. That is
+    /// unobservable upstream — <c>MdConstant</c> reinterprets only the low member-width bytes for
+    /// every type code, so sign- versus zero-extension cannot be told apart by a guest — but a
+    /// replay must not depend on the host's stack, so we pick zeros and say so.
+    /// Reads exactly <paramref name="width"/> bytes, which is what CoreCLR does: a blob longer than
+    /// its type requires has its tail ignored rather than folded in.
+    let private packConstantBuffer (width : int) (bytes : byte array) : int64 =
+        let mutable buffer = 0UL
+
+        for i in 0 .. width - 1 do
+            buffer <- buffer ||| (uint64 bytes.[i] <<< (8 * i))
+
+        int64 buffer
+
     /// Walk the assembly's methods to find which one owns <paramref name="paramHandle"/>.
     /// CLI metadata exposes the param->method relation only via per-method ranges, so
     /// answering "who owns this Param row?" requires iterating method definitions.
@@ -671,6 +759,149 @@ module NativeMetadataImport =
             let state =
                 writeInt32AtPointer ctx.BaseClassTypes state attributesOut (int32 field.Attributes)
 
+            let state =
+                IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread state
+
+            NativeHandlerResult.completed state |> Some
+        | "System.Private.CoreLib",
+          "System.Reflection",
+          "MetadataImport",
+          "GetDefaultValue",
+          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int64)
+            ConcreteByref (ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Char))
+            ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
+            ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            // CoreCLR's FCall (managedmdimport.cpp:80) unpacks one `MDDefaultValue`: a string
+            // constant reports its blob as a `char*` with a length in *characters*, everything else
+            // packs into the 64-bit buffer with a length in *bytes*, and a token with no Constant
+            // row reports ELEMENT_TYPE_VOID, which `MdConstant` turns into DBNull.Value.
+            //
+            // Only FieldDef parents are covered. The Constant table's Parent is a HasConstant coded
+            // index spanning ParamDef and PropertyDef too, but neither is reachable: PawPrint has no
+            // `GetPropertyProps` handler, and the `Enum` QCall mints no ParamDef tokens, so those
+            // arms could never be executed.
+            let operation = "MetadataImport.GetDefaultValue"
+            let assemblyFullName = metadataImportHandleOfArg operation instruction.Arguments.[0]
+            let assembly = metadataImportAssembly operation state assemblyFullName
+
+            let mdToken =
+                match CliType.unwrapPrimitiveLikeDeep instruction.Arguments.[1] with
+                | CliType.Numeric (CliNumericType.Int32 mdToken) -> mdToken
+                | other -> failwith $"%s{operation}: expected Int32 mdToken argument, got %O{other}"
+
+            let valueOut =
+                NativeCall.managedPointerOfPointerArgument operation "value out pointer" instruction.Arguments.[2]
+
+            let stringValueOut =
+                NativeCall.managedPointerOfPointerArgument
+                    operation
+                    "stringMetadataEncoding out pointer"
+                    instruction.Arguments.[3]
+
+            let lengthOut =
+                NativeCall.managedPointerOfPointerArgument operation "length out pointer" instruction.Arguments.[4]
+
+            let corElementTypeOut =
+                NativeCall.managedPointerOfPointerArgument
+                    operation
+                    "corElementType out pointer"
+                    instruction.Arguments.[5]
+
+            // Rejects a non-FieldDef token, and a FieldDef absent from this assembly.
+            let field = fieldDefinition operation assembly mdToken
+            let mr = metadataReaderOf assembly
+
+            let writeInt64 (state : IlMachineState) (value : int64) : IlMachineState =
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    valueOut
+                    (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim value)))
+
+            let writeStringPointer (state : IlMachineState) (pointer : ManagedPointerSource) : IlMachineState =
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    stringValueOut
+                    (CliType.RuntimePointer (CliRuntimePointer.Managed pointer))
+
+            let state, value, stringPointer, length, corElementType =
+                match constantRowOfField mr field.Handle with
+                | None ->
+                    // CoreCLR returns here having set only `m_bType`, so its buffer and length are
+                    // whatever was on the stack. `MdConstant` looks at nothing but the element type
+                    // in this case, but a replay must not depend on the host's stack, so pick zeros.
+                    // (Its `*pStringValue = NULL` *is* written, unconditionally, by the FCall.)
+                    state, 0L, ManagedPointerSource.Null, 0, elementTypeVoid
+                | Some (typeCode, blobReader) ->
+
+                let elementType, requiredWidth = elementTypeOfConstantTypeCode operation typeCode
+                let mutable reader = blobReader
+                let bytes = reader.ReadBytes reader.Length
+
+                // `_FillMDDefaultValue` bounds-checks every fixed-width code and reports
+                // CLDB_E_FILE_CORRUPT on a short blob, so zero-padding one would fabricate a value
+                // the real runtime refuses to produce. STRING is exempt: its width is whatever the
+                // string is.
+                if bytes.Length < requiredWidth then
+                    failwith
+                        $"%s{operation}: Constant blob for %O{field.Handle} has %d{bytes.Length} bytes but element type 0x%02x{elementType} requires %d{requiredWidth}; CoreCLR reports CLDB_E_FILE_CORRUPT for this"
+
+                if elementType = elementTypeString then
+                    // An odd-length blob is *not* rejected. `_FillMDDefaultValue` applies no length
+                    // check to STRING, and the FCall's `m_cbSize / sizeof(WCHAR)` is integer
+                    // division, so CoreCLR silently drops a trailing half code unit. Refusing here
+                    // would make PawPrint decline metadata the real runtime reads without
+                    // complaint — a divergence, and one a differential test would catch.
+                    if bytes.Length = 0 then
+                        // `_FillMDDefaultValue` nulls the pointer for an empty string blob
+                        // (mdinternalro.cpp:3214), and the managed wrapper's `stringVal ?? string.Empty`
+                        // is what recovers `""`. Pointing at a zero-length range instead would make
+                        // the wrapper build a string from a pointer that addresses nothing.
+                        state, 0L, ManagedPointerSource.Null, 0, elementType
+                    else
+
+                    let peByteRange =
+                        IlMachineState.peByteRangeForConstantBlob assembly field.Handle
+                        |> Option.defaultWith (fun () ->
+                            failwith $"%s{operation}: Constant row for %O{field.Handle} vanished between reads"
+                        )
+
+                    let state, pointer =
+                        IlMachineState.peByteRangeCharPointer ctx.LoggerFactory ctx.BaseClassTypes peByteRange state
+
+                    // Length is in characters here and in bytes everywhere else — the FCall divides
+                    // by sizeof(WCHAR) only on this branch.
+                    state, 0L, pointer, bytes.Length / 2, elementType
+                else if
+
+                    elementType = elementTypeClass
+                then
+                    // ECMA-335 II.22.9: a CLASS constant is a null reference, and CoreCLR asserts
+                    // the four bytes it reads are zero before reporting CLDB_E_FILE_CORRUPT for a
+                    // non-null one. The width check above has already rejected a short blob.
+                    if packConstantBuffer 4 bytes <> 0L then
+                        failwith
+                            $"%s{operation}: ELEMENT_TYPE_CLASS Constant blob for %O{field.Handle} must be a null reference, got %A{bytes}"
+
+                    state, 0L, ManagedPointerSource.Null, bytes.Length, elementType
+                else
+
+                state, packConstantBuffer requiredWidth bytes, ManagedPointerSource.Null, bytes.Length, elementType
+
+            let state = writeInt64 state value
+            let state = writeStringPointer state stringPointer
+            let state = writeInt32AtPointer ctx.BaseClassTypes state lengthOut length
+
+            let state =
+                writeInt32AtPointer ctx.BaseClassTypes state corElementTypeOut corElementType
+
+            // The managed wrapper turns a negative HRESULT into BadImageFormatException, but as in
+            // every sibling handler the failures above are host-level crashes: the only guest caller
+            // passes a token the runtime itself minted.
             let state =
                 IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread state
 

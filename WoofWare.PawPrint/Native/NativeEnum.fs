@@ -135,16 +135,19 @@ module NativeEnum =
         (field : FieldInfo<GenericParamFromMetadata, TypeDefn>)
         : CliType
         =
-        let fieldDefinition = metadataReader.GetFieldDefinition field.Handle
-        let constantHandle = fieldDefinition.GetDefaultValue ()
+        // The raw Constant row; this projection is the *enum* view of it, which insists the row's
+        // type code agrees with the declared underlying type. `MetadataImport.GetDefaultValue` takes
+        // the same row and must not insist on anything, so the two share the lookup and not the
+        // interpretation.
+        let typeCode, blobReader =
+            NativeMetadataImport.constantRowOfField metadataReader field.Handle
+            |> Option.defaultWith (fun () ->
+                failwith $"%s{operation}: static literal enum field %s{field.Name} had no metadata constant"
+            )
 
-        if constantHandle.IsNil then
-            failwith $"%s{operation}: static literal enum field %s{field.Name} had no metadata constant"
+        let mutable reader = blobReader
 
-        let constant = metadataReader.GetConstant constantHandle
-        let mutable reader = metadataReader.GetBlobReader constant.Value
-
-        match underlying, constant.TypeCode with
+        match underlying, typeCode with
         | PrimitiveType.SByte, ConstantTypeCode.SByte ->
             CliType.Numeric (CliNumericType.UInt8 (byte (reader.ReadSByte ())))
         | PrimitiveType.Byte, ConstantTypeCode.Byte -> CliType.Numeric (CliNumericType.UInt8 (reader.ReadByte ()))

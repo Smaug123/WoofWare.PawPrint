@@ -76,7 +76,8 @@ module NativeSignature =
             let methodDef = mdReader.GetMethodDefinition method.Get
             assembly, methodDef.Signature
         | PeByteRangePointerSource.FieldRva _
-        | PeByteRangePointerSource.ManagedResource _ ->
+        | PeByteRangePointerSource.ManagedResource _
+        | PeByteRangePointerSource.ConstantBlob _ ->
             failwith $"%s{operation}: signature `_sig` byref points at non-signature PE byte range %O{peByteRange}"
 
     /// Resolve a Signature `_sig` argument to the COR signature blob bytes it
