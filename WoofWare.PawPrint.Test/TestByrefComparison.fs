@@ -61,16 +61,25 @@ module TestByrefComparison =
     let ``distinct roots are unequal`` () =
         ceq (byref (local 0us) []) (byref (local 1us) []) |> shouldEqual false
 
-    /// Two *different* fields of one value occupy disjoint extents in any layout that can
-    /// be field-addressed at all, so with no cursor on either side to walk out of those
-    /// extents, the divergence itself proves the addresses differ. Overlapping explicit
-    /// layouts are stored byte-backed and so never carry `Field` projections in the first
-    /// place. This must not be swept into the refusal: byrefs to two different fields are
-    /// the ordinary case, and refusing it would make `ceq` on byrefs largely unusable.
+    /// Even two *different* fields of one value are refused, which is not obvious: the
+    /// tempting argument is that distinct fields occupy disjoint extents, so the divergence
+    /// alone proves the addresses differ.
+    ///
+    /// That argument is false under explicit layout. `[FieldOffset(0)] int A;` and
+    /// `[FieldOffset(0)] int B;` are distinct fields at one address, and such values stay
+    /// field-backed rather than collapsing to a byte range — measured, by running
+    /// `Unsafe.AreSame(ref u.A, ref u.B)` on both runtimes: real .NET says `true`, and this
+    /// comparison used to say `false`. `AreSameExplicitLayoutOverlappingFields.cs` is the
+    /// parked guest for it.
+    ///
+    /// So the field-offset table is the only thing that separates that from an ordinary
+    /// sequential struct, and comparison does not carry it.
     [<Test>]
-    let ``distinct fields of the same root are unequal`` () =
-        ceq (byref (local 0us) [ fieldX ]) (byref (local 0us) [ fieldY ])
-        |> shouldEqual false
+    let ``distinct fields of the same root are refused`` () =
+        let exn =
+            Assert.Throws (fun () -> ceq (byref (local 0us) [ fieldX ]) (byref (local 0us) [ fieldY ]) |> ignore)
+
+        exn.Message |> shouldContainText "field offsets"
 
     /// A chain differing only by a trailing `ReinterpretAs` is address-preserving, so it
     /// still decides — this is what makes `Unsafe.As` round-trips compare equal, and it is

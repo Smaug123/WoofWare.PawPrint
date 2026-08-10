@@ -1112,21 +1112,15 @@ module ManagedPointerSource =
         | true, false when List.isEmpty rest2 -> if known1 > 0 then Some false else None
         | false, true when List.isEmpty rest1 -> if known2 > 0 then Some false else None
         | _ ->
-            // Both runs walk through fields, or one walks through fields while the other
-            // displaces without being the bare prefix. Two *different* fields of a value
-            // occupy disjoint extents, so as long as neither run also carries a cursor that
-            // could walk out of its field and into the other's, the divergence itself proves
-            // the addresses differ. A cursor removes that guarantee: in a sequential
-            // `{ int X; int Y }`, `ref s.X + 4 bytes` and `ref s.Y` are one address.
-            let divergesAtDistinctFields =
-                match rest1, rest2 with
-                | ByrefProjection.Field f1 :: _, ByrefProjection.Field f2 :: _ -> f1 <> f2
-                | _, _ -> false
-
-            if divergesAtDistinctFields && known1 = 0 && known2 = 0 then
-                Some false
-            else
-                None
+            // Both runs walk through fields. It is tempting to say that two *different*
+            // fields occupy disjoint extents, so the divergence alone proves the addresses
+            // differ — but that is false under explicit layout, where
+            // `[FieldOffset(0)] int A; [FieldOffset(0)] int B;` puts two distinct fields on
+            // one address, and such values stay field-backed rather than becoming byte
+            // ranges. `Unsafe.AreSame(ref u.A, ref u.B)` is `true` on real .NET and was
+            // measured answering `false` here. Nothing short of the declaring type's field
+            // offsets separates that from an ordinary sequential struct, so refuse.
+            None
 
     /// CEQ semantics for two normalised byref sources. Trailing address-
     /// preserving `ReinterpretAs` projections are stripped before comparison,
