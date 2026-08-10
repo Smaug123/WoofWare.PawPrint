@@ -32,6 +32,9 @@ module NativeArray =
         : ConcreteTypeHandle * ConcreteTypeHandle
         =
         match target with
+        | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
+            failwith
+                $"TODO: open constructed types are not handled at Native/NativeArray.fs:%s{__LINE__}; got %O{openConstructed}"
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
             failwith $"TODO: %s{operation} for open generic type definition %O{identity}"
         | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->

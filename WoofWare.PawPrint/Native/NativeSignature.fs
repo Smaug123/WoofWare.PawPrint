@@ -209,6 +209,11 @@ module NativeSignature =
         // An open generic definition has no instantiation to substitute. Pass empty generics and let
         // `concretizeType` fault with its own diagnostic if the signature actually needs them.
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> ImmutableArray.Empty
+        | RuntimeTypeHandleTarget.OpenConstructed (definition, _) ->
+            // An open constructed type does have an instantiation, but its arguments are targets
+            // rather than `ConcreteTypeHandle`s, which is what this slice needs to substitute.
+            failwith
+                $"TODO: %s{operation}: declaring type is the open constructed type %O{definition.TypeDefinition.Get}; substituting its arguments needs them as concrete handles, which an open instantiation has not got"
         | RuntimeTypeHandleTarget.GenericParameter _
         | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
             failwith

@@ -348,6 +348,9 @@ module NativeRuntimeMethodHandle =
             assembly.TypeDefs.[identity.TypeDefinition.Get]
 
         match target with
+        | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
+            failwith
+                $"TODO: open constructed types are not handled at Native/NativeRuntimeMethodHandle.fs:%s{__LINE__}; got %O{openConstructed}"
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as handle) ->
             let concreteType =
                 AllConcreteTypes.lookup handle state.ConcreteTypes
@@ -478,6 +481,9 @@ module NativeRuntimeMethodHandle =
             assembly, typeInfo
 
         match target with
+        | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
+            failwith
+                $"TODO: open constructed types are not handled at Native/NativeRuntimeMethodHandle.fs:%s{__LINE__}; got %O{openConstructed}"
         | RuntimeTypeHandleTarget.Closed handle ->
             match handle with
             | ConcreteTypeHandle.Concrete _ ->
@@ -884,6 +890,9 @@ module NativeRuntimeMethodHandle =
                 instantiationTargets
                 |> List.mapi (fun index target ->
                     match target with
+                    | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
+                        failwith
+                            $"TODO: open constructed types are not handled at Native/NativeRuntimeMethodHandle.fs:%s{__LINE__}; got %O{openConstructed}"
                     | RuntimeTypeHandleTarget.Closed handle -> handle
                     | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
                     | RuntimeTypeHandleTarget.GenericParameter _

@@ -86,6 +86,9 @@ module FieldHandleRegistry =
         : CliType * FieldHandleRegistry * 'allocState
         =
         match declaringType with
+        | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
+            failwith
+                $"TODO: open constructed types are not handled at FieldHandleRegistry.fs:%s{__LINE__}; got %O{openConstructed}"
         | RuntimeTypeHandleTarget.Closed _
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> ()
         | RuntimeTypeHandleTarget.GenericParameter _
