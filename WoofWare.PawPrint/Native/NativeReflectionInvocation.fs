@@ -700,8 +700,11 @@ module internal NativeReflectionInvocation =
             // how `RuntimeType.BoxCache` should box a value of this type by `calli`: an allocator
             // plus the MethodTable to hand it, where the payload starts inside the source, and how
             // many bytes of it to copy. Like its `GetActivationInfo` sibling it runs no
-            // constructor and no class initialiser — CoreCLR's trailing `EnsureInstanceActive()`
-            // activates the *module*, not the type's static state, so there is nothing to model.
+            // constructor and no class initialiser: CoreCLR's trailing `EnsureInstanceActive()`
+            // raises the *load level* of the modules owning the type, its ancestors and its
+            // generic arguments (`MethodTable_EnsureInstanceActiveHelper`, methodtable.cpp:7658),
+            // and touches no static state. PawPrint models no load levels, so there is nothing
+            // here to reproduce.
             //
             // Argument 0 is a `QCallTypeHandle` by value; the other four are raw out-pointers to
             // locals in the managed shim (RuntimeType.BoxCache.cs:116-124).
