@@ -920,6 +920,82 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Exact "System.UIntPtr"
                     IntrinsicParameterPattern.Exact "System.Int32"
                 ]
+            // BitOperations.RotateRight is the mirror image of RotateLeft above, and
+            // [Intrinsic] for the same reason (a single ROR):
+            //   uint:  (value >> offset) | (value << (32 - offset))
+            //   ulong: (value >> offset) | (value << (64 - offset))
+            //   nuint: forwards to the uint or ulong overload depending on TARGET_64BIT.
+            // Reached through BinaryPrimitives.ReverseEndianness(uint) below.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Numerics/BitOperations.cs#L724
+            pattern
+                "System.Private.CoreLib"
+                "System.Numerics.BitOperations"
+                "RotateRight"
+                [
+                    IntrinsicParameterPattern.Exact "System.UInt32"
+                    IntrinsicParameterPattern.Exact "System.Int32"
+                ]
+            pattern
+                "System.Private.CoreLib"
+                "System.Numerics.BitOperations"
+                "RotateRight"
+                [
+                    IntrinsicParameterPattern.Exact "System.UInt64"
+                    IntrinsicParameterPattern.Exact "System.Int32"
+                ]
+            pattern
+                "System.Private.CoreLib"
+                "System.Numerics.BitOperations"
+                "RotateRight"
+                [
+                    IntrinsicParameterPattern.Exact "System.UIntPtr"
+                    IntrinsicParameterPattern.Exact "System.Int32"
+                ]
+            // BinaryPrimitives.ReverseEndianness is [Intrinsic] only so the JIT can emit a
+            // single BSWAP/REV; every body is pure managed arithmetic over primitives
+            // PawPrint already supports:
+            //   ushort: (ushort)((value >> 8) + (value << 8))
+            //   uint:   RotateRight(value & 0x00FF00FF, 8) + RotateLeft(value & 0xFF00FF00, 8)
+            //   ulong:  the two 32-bit halves reversed and swapped
+            //   short/int/long: cast to the unsigned overload of the same width and back.
+            // The uint overload is why the RotateRight entries above are needed; RotateLeft
+            // was already allowlisted for the Marvin hash. The sbyte/byte/nint/nuint/char
+            // and Int128/UInt128 overloads are not [Intrinsic] and so need no entry.
+            //
+            // Reached by any guest writing big-endian on a little-endian host, and in
+            // particular by RuntimeILGenerator.InternalEmit, which writes every opcode
+            // wider than one byte with WriteInt16BigEndian — i.e. the whole 0xFE page.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Buffers/Binary/BinaryPrimitives.ReverseEndianness.cs#L41
+            pattern
+                "System.Private.CoreLib"
+                "System.Buffers.Binary.BinaryPrimitives"
+                "ReverseEndianness"
+                [ IntrinsicParameterPattern.Exact "System.Int16" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.Buffers.Binary.BinaryPrimitives"
+                "ReverseEndianness"
+                [ IntrinsicParameterPattern.Exact "System.UInt16" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.Buffers.Binary.BinaryPrimitives"
+                "ReverseEndianness"
+                [ IntrinsicParameterPattern.Exact "System.Int32" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.Buffers.Binary.BinaryPrimitives"
+                "ReverseEndianness"
+                [ IntrinsicParameterPattern.Exact "System.UInt32" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.Buffers.Binary.BinaryPrimitives"
+                "ReverseEndianness"
+                [ IntrinsicParameterPattern.Exact "System.Int64" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.Buffers.Binary.BinaryPrimitives"
+                "ReverseEndianness"
+                [ IntrinsicParameterPattern.Exact "System.UInt64" ]
             // RuntimeHelpers.IsKnownConstant overloads (Type?, string?, char, generic struct T)
             // are JIT-only intrinsics: every IL body is literally `ldc.i4.0; ret`. The JIT may
             // rewrite the call to `ldc.i4.1` when the argument is a compile-time constant;
