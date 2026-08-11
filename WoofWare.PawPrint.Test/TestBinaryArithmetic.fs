@@ -1510,7 +1510,7 @@ module TestBinaryArithmetic =
 
         let asNativeInt = EvalStackValue.NativeInt recovered
 
-        if not (EvalStackValueComparisons.ceq ptr asNativeInt) then
+        if not (EvalStackValueComparisons.ceq PointerHashState.empty ptr asNativeInt) then
             failwith $"expected Conv.U8 → Conv.U to round-trip the byref, got %O{recovered} from %O{ptr}"
 
     [<Test>]
@@ -1523,7 +1523,7 @@ module TestBinaryArithmetic =
 
         let recovered : NativeIntSource = EvalStackValue.toNativeInt widened
 
-        if not (EvalStackValueComparisons.ceq ptr (EvalStackValue.NativeInt recovered)) then
+        if not (EvalStackValueComparisons.ceq PointerHashState.empty ptr (EvalStackValue.NativeInt recovered)) then
             failwith $"expected Conv.I8 → Conv.I to round-trip the byref, got %O{recovered}"
 
     [<Test>]
@@ -1644,7 +1644,7 @@ module TestBinaryArithmetic =
                 let viaNativeInt =
                     execute ArithmeticOperation.add state ptr (EvalStackValue.Int32 (Int32Source.Verbatim capacity))
 
-                EvalStackValueComparisons.ceq viaInt64 viaNativeInt
+                EvalStackValueComparisons.ceq PointerHashState.empty viaInt64 viaNativeInt
 
         Check.One (propertyConfig, Prop.forAll (Arb.fromGen (Gen.choose (0, System.Int32.MaxValue / 2))) property)
 

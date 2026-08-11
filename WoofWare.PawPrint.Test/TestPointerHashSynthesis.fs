@@ -469,3 +469,106 @@ module TestPointerHashSynthesis =
         bitsAssy |> shouldNotEqual bitsMid
         bitsMod |> shouldNotEqual bitsMid
         PointerHashTestHelpers.nextCounter counters |> shouldEqual 3UL
+
+    // --- `tryExistingHashBits`: the read-only counterpart ---
+    //
+    // `ceq` recognises "are these synthesised bits that handle's address?" without minting,
+    // which is what keeps a comparison from perturbing the numbering every later synthesised
+    // value depends on. The contract is that it agrees with `materialiseHashBits` exactly —
+    // including the low tag bits, which are OR-ed on per source rather than stored, so a
+    // lookup that returned the bare assigned bits would silently disagree for every tagged
+    // view.
+
+    /// Every canonicalisable shape, chosen to include the two that carry tag bits
+    /// (a TypeDesc-shaped `TypeHandlePtr`, and a tagged `GcHandlePtr`) — a generator left to
+    /// its own devices does not reach those DU corners, and they are the only inputs that can
+    /// tell a tag-preserving lookup from a bare one.
+    let private canonicalisableSources : NativeIntSource list =
+        [
+            NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete 1))
+            NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete 2))
+            // TypeDesc-shaped: `TypeHandleTag.forTarget` gives this one a non-zero tag.
+            NativeIntSource.TypeHandlePtr (
+                RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Pointer (ConcreteTypeHandle.Concrete 3))
+            )
+            NativeIntSource.TypeHandlePtr (
+                RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref (ConcreteTypeHandle.Concrete 4))
+            )
+            NativeIntSource.TypeDescPtr (
+                RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Pointer (ConcreteTypeHandle.Concrete 3))
+            )
+            NativeIntSource.MethodTableAuxiliaryDataPtr (RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete 5))
+            NativeIntSource.MethodHandlePtr 11L
+            NativeIntSource.FieldHandlePtr 12L
+            NativeIntSource.GcHandlePtr (GcHandleAddress.GcHandleAddress 13, 0L)
+            // Tagged: the tag is a view over the same identity, so it must reach different bits.
+            NativeIntSource.GcHandlePtr (GcHandleAddress.GcHandleAddress 13, 1L)
+            NativeIntSource.EventPipeProviderPtr 14L
+            NativeIntSource.EventPipeEventPtr 15L
+            NativeIntSource.AssemblyHandle "A"
+            NativeIntSource.ModuleHandle "A"
+            NativeIntSource.MetadataImportHandle "A"
+        ]
+
+    [<Test>]
+    let ``tryExistingHashBits agrees with materialiseHashBits once assigned`` () : unit =
+        // Assign every source in one state, then check each lookup against the bits
+        // materialisation handed out. Doing it in one accumulated state also checks that a
+        // lookup is not confused by the other assignments around it.
+        let assigned, counters =
+            canonicalisableSources
+            |> List.fold
+                (fun (acc, counters) src ->
+                    let bits, counters = materialise src counters
+                    (src, bits) :: acc, counters
+                )
+                ([], PointerHashState.empty)
+
+        for src, expected in assigned do
+            PointerHashSynthesis.tryExistingHashBits counters src
+            |> shouldEqual (Some expected)
+
+        // Distinctness, so a lookup that returned some *other* source's bits would fail here
+        // rather than agreeing vacuously.
+        assigned
+        |> List.map snd
+        |> List.distinct
+        |> List.length
+        |> shouldEqual (List.length assigned)
+
+    [<Test>]
+    let ``tryExistingHashBits assigns nothing`` () : unit =
+        // The load-bearing half: `ceq` reads this, and `ContextSwitchPrior` bands comparisons
+        // as never mutating `PointerHashState`. A lookup that minted would make that banding
+        // false and turn every comparison into a scheduling-visible side effect.
+        for src in canonicalisableSources do
+            PointerHashSynthesis.tryExistingHashBits PointerHashState.empty src
+            |> shouldEqual None
+
+        let _, counters = materialise canonicalisableSources.Head PointerHashState.empty
+
+        for src in canonicalisableSources do
+            PointerHashSynthesis.tryExistingHashBits counters src |> ignore<int64 option>
+
+        PointerHashTestHelpers.nextCounter counters |> shouldEqual 1UL
+        PointerHashTestHelpers.assignedCount counters |> shouldEqual 1
+
+    [<Test>]
+    let ``tryExistingHashBits refuses sources that have no assigned identity`` () : unit =
+        // Domain restriction, shared with `canonicalKey`: a verbatim number, already-synthesised
+        // bits, a managed pointer and a cross-array offset are values whose bits are known (or
+        // knowably absent) without any assignment, so asking this question about them is a
+        // category error rather than a miss.
+        for src in
+            [
+                NativeIntSource.Verbatim 4L
+                NativeIntSource.OpaqueHashBits 4L
+                NativeIntSource.ManagedPointer ManagedPointerSource.Null
+            ] do
+            let exn =
+                Assert.Throws (fun () ->
+                    PointerHashSynthesis.tryExistingHashBits PointerHashState.empty src
+                    |> ignore<int64 option>
+                )
+
+            exn.Message |> shouldContainText "not a canonicalisable pointer shape"

@@ -88,8 +88,9 @@ module ContextSwitchPrior =
         | NullaryIlOp.LdcI4_8
         | NullaryIlOp.LdcI4_m1
         | NullaryIlOp.LdNull
-        // Comparisons read both operands but don't materialise pointer-hash
-        // bits, so they don't mutate `PointerHashState`.
+        // Comparisons *read* `PointerHashState` — that is how `ceq` decides whether
+        // synthesised hash bits are a given handle's address — but they never assign, so
+        // they still cannot mutate it, which is what this banding depends on.
         | NullaryIlOp.Ceq
         | NullaryIlOp.Cgt
         | NullaryIlOp.Cgt_un

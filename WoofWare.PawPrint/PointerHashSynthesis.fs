@@ -220,6 +220,29 @@ module PointerHashSynthesis =
     /// Returned as `int64` to match `Int64Source.OpaqueHashBits` storage;
     /// the conversion from the uint64 bit pattern is an unchecked
     /// reinterpret (bit-preserving).
+    /// The bits `materialiseHashBits` would return for `src`, if this state has already
+    /// assigned them; `None` if it has not. Never assigns, so a caller that only needs to
+    /// *recognise* an address — equality, rather than arithmetic — can ask without perturbing
+    /// the numbering that every later synthesised value depends on.
+    ///
+    /// Shares `canonicalKey` and `lowBitsForSource` with the minting path rather than
+    /// re-deriving them, which is what makes a tagged view answer with the bits the guest
+    /// would actually have observed: a `TypeDescPtr` masked out of a `TypeHandlePtr` differs
+    /// from it in exactly bit 1, and a tagged GC handle in its own low bits.
+    ///
+    /// The domain is the canonicalisable pointer shapes only. `Verbatim`, `OpaqueHashBits`,
+    /// managed pointers and cross-array offsets are values whose bits are known (or knowably
+    /// absent) without any assignment, so asking this question about them is a category
+    /// error; `canonicalKey` refuses them loudly and that refusal is the contract.
+    let tryExistingHashBits (counters : PointerHashState) (src : NativeIntSource) : int64 option =
+        let key = canonicalKey src
+        let tagBits = lowBitsForSource src
+
+        match counters with
+        | PointerHashState.SequentialFirstTouch (_, assigned) ->
+            Map.tryFind key assigned
+            |> Option.map (fun bits -> Operators.int64 (bits ||| tagBits))
+
     let materialiseHashBits
         (reason : string)
         (src : NativeIntSource)

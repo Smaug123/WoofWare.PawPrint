@@ -275,14 +275,13 @@ module NullaryIlOp =
     /// fails loudly on any other `ManagedPointer` and on
     /// `SyntheticCrossArrayOffset`, preserving byref / cross-storage provenance.
     ///
-    /// Note that a handle-shaped source does not survive a double complement as
-    /// itself: `~~handle` comes back as `OpaqueHashBits`, so comparing that against
-    /// the original handle hits `equalsForCli`'s "synthesised hash bits vs handle
-    /// pointer" refusal (CEQ has no `PointerHashState` with which to materialise
-    /// the handle). That is a property of the hash-synthesis design rather than of
-    /// `not`: `xorNativeIntSources` loses handle provenance the same way, so
-    /// `(handle ^ 0) ^ 0 == handle` already fails identically. The failure is loud,
-    /// and the complemented bits themselves are correct and deterministic.
+    /// Note that a handle-shaped source does not survive a double complement *as itself*:
+    /// `~~handle` comes back as `OpaqueHashBits`, not as the handle. Comparing that against
+    /// the original handle is nonetheless answered correctly — `equalsForCli` looks the
+    /// handle's assigned address up in `PointerHashState` and compares bit patterns — so
+    /// `~~handle == handle` and `(handle ^ 0) ^ 0 == handle` are both true, as they are on
+    /// real .NET. What is lost is provenance, not the answer: the result can no longer be
+    /// dereferenced or narrowed as a pointer, only compared.
     let private notNativeIntSource
         (source : NativeIntSource)
         (counters : PointerHashState)
@@ -1734,7 +1733,11 @@ module NullaryIlOp =
             let var2, state = state |> IlMachineState.popEvalStack currentThread
             let var1, state = state |> IlMachineState.popEvalStack currentThread
 
-            let comparisonResult = if EvalStackValueComparisons.ceq var1 var2 then 1 else 0
+            let comparisonResult =
+                if EvalStackValueComparisons.ceq state.PointerHashState var1 var2 then
+                    1
+                else
+                    0
 
             state
             |> IlMachineState.pushToEvalStack'
