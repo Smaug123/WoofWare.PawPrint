@@ -50,6 +50,7 @@
     <Compile Include="TestBinaryArithmetic.fs" />
     <Compile Include="TestContextSwitchPrior.fs" />
     <Compile Include="TestNullaryIlOp.fs" />
+    <Compile Include="TestIlDecoding.fs" />
     <Compile Include="TestStackMemoryPool.fs" />
     <Compile Include="TestNativeMemoryPool.fs" />
     <Compile Include="TestAbsoluteUnixPath.fs" />
@@ -86,6 +87,7 @@
     <Compile Include="Netstandard21FSharpCore.fs" />
     <Compile Include="TestZeroOfBaseAssemblies.fs" />
     <Compile Include="TestTypeResolutionBaseAssemblies.fs" />
+    <Compile Include="TestGenericEnvironmentCycles.fs" />
     <Compile Include="TestAssemblyDictionaryKeying.fs" />
     <Compile Include="TestLoadedAssemblies.fs" />
     <Compile Include="TestSharedFrameworkForwardSweep.fs" />
@@ -144,6 +146,7 @@
     <Compile Include="TestImpureCases.fs" />
     <Compile Include="TestRaces.fs" />
     <Compile Include="TestConcurrencyBugs.fs" />
+    <Compile Include="TestScheduleFork.fs" />
     <Compile Include="TestBoxedAllocationParity.fs" />
     <Compile Include="TestCalliSuspensionOutcome.fs" />
     <Compile Include="TestStepEffectStreaming.fs" />

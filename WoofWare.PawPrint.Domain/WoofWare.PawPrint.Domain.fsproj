@@ -23,12 +23,14 @@
         <Compile Include="Tokens.fs" />
         <Compile Include="TypeRef.fs" />
         <Compile Include="IlOp.fs" />
+        <Compile Include="IlDecoding.fs" />
         <Compile Include="ContextSwitchPrior.fs" />
         <Compile Include="AssemblyReference.fs" />
         <Compile Include="EventDefn.fs" />
         <Compile Include="ComparableTypeDefinitionHandle.fs" />
         <Compile Include="ComparableFieldDefinitionHandle.fs" />
         <Compile Include="ComparableMethodDefinitionHandle.fs" />
+        <Compile Include="ComparablePropertyDefinitionHandle.fs" />
         <Compile Include="ComparableSignatureHeader.fs" />
         <Compile Include="ComparableGenericParameterHandle.fs" />
         <Compile Include="TypeIdentity.fs" />

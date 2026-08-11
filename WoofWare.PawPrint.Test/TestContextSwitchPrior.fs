@@ -304,7 +304,7 @@ module TestContextSwitchPrior =
     let private unaryConstRarelyGuestVisible : UnaryConstIlOp list =
         [
             UnaryConstIlOp.Stloc 7us
-            UnaryConstIlOp.Stloc_s 3y
+            UnaryConstIlOp.Stloc_s 3uy
             UnaryConstIlOp.Ldloc 0us
             UnaryConstIlOp.Ldloc_s 0uy
             UnaryConstIlOp.Ldloca 0us

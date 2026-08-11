@@ -58,6 +58,9 @@ module IlMachineState =
     let peByteRangeForMethodSignatureBlob =
         IlMachineTypeResolution.peByteRangeForMethodSignatureBlob
 
+    let peByteRangeForPropertySignatureBlob =
+        IlMachineTypeResolution.peByteRangeForPropertySignatureBlob
+
     let peByteRangeForConstantBlob = IlMachineTypeResolution.peByteRangeForConstantBlob
 
     let peByteRangePointer = IlMachineTypeResolution.peByteRangePointer
@@ -275,18 +278,38 @@ module IlMachineState =
     let containsAnyGenericParameter =
         IlMachineRuntimeMetadata.containsAnyGenericParameter
 
+    /// Rebind the state's logging sink to a fresh logger from `lf`.
+    ///
+    /// A guest's behaviour never depends on the Logger and LoggerFactory, so this is guest-invisible.
+    /// Exists mainly for scenarios like a fan-out search with `Program.resumeFork`, where you might want to warm up
+    /// a VM and then resume many instances of it in parallel with different loggers and seeds.
+    let withLoggerFactory (lf : ILoggerFactory) (state : IlMachineState) : IlMachineState =
+        { state with
+            // Same category `IlMachineState.initial` uses, so a rebound state is indistinguishable
+            // from a freshly built one in the log.
+            Logger = lf.CreateLogger "IlMachineState"
+            LoggerFactory = lf
+        }
+
     /// Replace the scheduling policy on `state` with a fresh PCT policy
     /// seeded from `seed`. Idempotent in `state` apart from `Scheduling`:
-    /// any previous `Pct` priorities/Rng are discarded (this is meant to be
-    /// called exactly once, at program prepare time, before any
-    /// `Scheduler.chooseNext` call has observed threads). Round-robin runs
+    /// any previous `Pct` priorities/Rng are discarded. Round-robin runs
     /// don't call this and stay on the `SchedulerState.RoundRobin` default
     /// set by `IlMachineState.initial`.
     ///
+    /// Usually called for one of three reasons:
+    /// * `Program.beginStartup` is initialising the machine state;
+    /// * you're using `Program.resumeFork` to vary the upcoming scheduling choices of a machine that's already warmed
+    ///   up and is now at its first fork point;
+    /// * you're varying the scheduling choices mid-run, after at least one contended scheduling decision has been made (that
+    ///   is, you're choosing to break schedule replay to increase coverage).
+    ///
     /// Lives here rather than on `SchedulerState` so callers don't need to
-    /// open the policy module just to plug a seed in — the seam is "the
-    /// machine has a scheduling policy", and that lives on `IlMachineState`.
+    /// open the policy module just to plug a seed in.
     let withPctSeed (seed : uint64) (state : IlMachineState) : IlMachineState =
+        // Global invariant: if invoked before the machine has acted on its first fork point,
+        // the resulting run is identical to a from-scratch run
+        // seeded with `seed`.
         { state with
             Scheduling = SchedulerState.Pct (PctState.ofSeed seed)
         }

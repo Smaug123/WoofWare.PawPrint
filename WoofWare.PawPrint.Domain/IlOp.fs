@@ -369,7 +369,10 @@ type NullaryIlOp =
 
 type UnaryConstIlOp =
     | Stloc of uint16
-    | Stloc_s of int8
+    /// ECMA-335 III.3.63: the index is an *unsigned* one-byte slot number, as for every
+    /// other short-form local/argument accessor. Roslyn emits this form for slots 4..255,
+    /// so a method with enough locals reaches the half above 127.
+    | Stloc_s of uint8
     | Ldc_I8 of int64
     | Ldc_I4 of int32
     | Ldc_R4 of single
@@ -457,8 +460,10 @@ type UnaryConstIlOp =
         | Bgt_un_s _
         | Ble_un_s _
         | Blt_un_s _
-        | Leave_s _
-        | Unaligned _ -> 1 + 1 // One-byte opcode + one-byte argument
+        | Leave_s _ -> 1 + 1 // One-byte opcode + one-byte argument
+        // `unaligned.` is a prefix, so it lives on the 0xFE page: its opcode is two bytes,
+        // not one, and the alignment operand follows.
+        | Unaligned _ -> 2 + 1
         | Ldc_I8 _ -> 1 + 8 // One-byte opcode + 8-byte argument
         | Ldc_I4 _
         | Br _
