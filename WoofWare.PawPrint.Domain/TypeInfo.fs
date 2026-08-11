@@ -367,10 +367,14 @@ type BaseClassTypes<'corelib> =
 
 [<RequireQualifiedAccess>]
 module TypeInfo =
+    /// The nesting chain is joined with `+`, not `.`, matching CoreCLR's
+    /// `TypeNameBuilder::AddNestedName` (`vm/typestring.cpp`) and hence `Type.FullName` /
+    /// `Type.ToString()`: `typeof(Enclosing.Inner).FullName` is `Enclosing+Inner`. A `.` would
+    /// be ambiguous with a namespace separator, which is exactly why the CLR does not use one.
     let rec fullName (get : TypeDefinitionHandle -> TypeInfo<_, _>) (ty : TypeInfo<'a, 'b>) =
         if ty.IsNested then
             let parent = get ty.DeclaringType |> fullName get
-            $"%s{parent}.{ty.Name}"
+            $"%s{parent}+{ty.Name}"
         else if not (String.IsNullOrEmpty ty.Namespace) then
             $"{ty.Namespace}.{ty.Name}"
         else

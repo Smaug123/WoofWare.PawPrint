@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 class Base { }
 
@@ -78,6 +79,27 @@ public class Program
             {
                 Console.WriteLine(e.Message);
                 return 7;
+            }
+        }
+
+        // Generic *arguments*, by contrast, are rendered by TypeString::AppendInst, which is
+        // the ordinary reflection renderer -- so a nested argument keeps its full chain, and
+        // that chain is '+'-joined.
+        object[] genericMixed = new object[] { new List<Enclosing.Inner>() };
+        List<Enclosing.OtherInner>[] genericDest = new List<Enclosing.OtherInner>[1];
+
+        try
+        {
+            Array.Copy(genericMixed, genericDest, 1);
+            return 10;
+        }
+        catch (InvalidCastException e)
+        {
+            if (e.Message
+                != "Unable to cast object of type 'System.Collections.Generic.List`1[Enclosing+Inner]' to type 'System.Collections.Generic.List`1[Enclosing+OtherInner]'.")
+            {
+                Console.WriteLine(e.Message);
+                return 11;
             }
         }
 
