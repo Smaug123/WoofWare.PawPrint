@@ -79,8 +79,11 @@ module NativeSignature =
             // This one *is* a signature blob, so it does not belong with the arm below. It is
             // mintable as of `MetadataImport.GetPropertyProps`, and reaches here only through
             // `RuntimePropertyInfo.Signature` — which needs a fully constructed
-            // `RuntimePropertyInfo`, so `Associates.AssignAssociates` blocks it today. Parsing an
-            // ECMA II.23.2.5 PropertySig is the feature that unblocks it.
+            // `RuntimePropertyInfo`. `Associates.AssignAssociates` no longer blocks that (the
+            // associates branch of `MetadataImport.Enum` is implemented); what does is the
+            // vtable-slot duplicate check in `RuntimeType.PopulateProperties`
+            // (`RuntimeType.CoreCLR.cs:1358`), which needs `RuntimeMethodHandle.GetSlot`. Parsing an
+            // ECMA II.23.2.5 PropertySig is the feature that unblocks this arm once that lands.
             failwith
                 $"TODO: %s{operation} on a property signature blob is not implemented (%O{peByteRange}); PROPERTY signatures are not yet parsed"
         | PeByteRangePointerSource.FieldRva _
@@ -351,7 +354,8 @@ module NativeSignature =
                 // A *property*-signature blob is a different story — `RuntimePropertyInfo.Signature`
                 // does use the handle-less constructor, and `MetadataImport.GetPropertyProps` now
                 // mints such blobs — but it is still unreachable, because constructing the
-                // `RuntimePropertyInfo` that owns it needs `Associates.AssignAssociates`.
+                // `RuntimePropertyInfo` that owns it needs `RuntimeMethodHandle.GetSlot`, for the
+                // vtable-slot duplicate check in `RuntimeType.PopulateProperties`.
                 failwith
                     $"TODO: %s{operation} on a raw %O{other} blob is not implemented; only FieldDef signature blobs reach the handle-less constructor today"
 
