@@ -1280,12 +1280,14 @@ module TestNullaryIlOp =
         // In CoreCLR the two differ numerically by exactly the tag bit, so they
         // must not compare equal — otherwise `AreSameType` would conflate a
         // handle with the TypeDesc inside it.
-        NativeIntSource.equalsForCli
+        NativeIntSourceComparison.equalsForCli
+            PointerHashState.empty
             (NativeIntSource.TypeDescPtr typeDescTarget)
             (NativeIntSource.TypeHandlePtr typeDescTarget)
         |> shouldEqual false
 
-        NativeIntSource.equalsForCli
+        NativeIntSourceComparison.equalsForCli
+            PointerHashState.empty
             (NativeIntSource.TypeDescPtr typeDescTarget)
             (NativeIntSource.TypeDescPtr typeDescTarget)
         |> shouldEqual true

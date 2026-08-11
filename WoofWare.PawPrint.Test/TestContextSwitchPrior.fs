@@ -76,7 +76,6 @@ module TestContextSwitchPrior =
             NullaryIlOp.LdcI4_8
             NullaryIlOp.LdcI4_m1
             NullaryIlOp.LdNull
-            NullaryIlOp.Ceq
             NullaryIlOp.Cgt
             NullaryIlOp.Cgt_un
             NullaryIlOp.Clt
@@ -107,6 +106,10 @@ module TestContextSwitchPrior =
     /// structures.
     let private nullaryInterpreterOnly : NullaryIlOp list =
         [
+            // Reads `PointerHashState` to decide whether synthesised bits are a
+            // given handle's assigned address; a sibling thread materialising that
+            // handle first flips the answer.
+            NullaryIlOp.Ceq
             // Arithmetic that may materialise hash bits when an operand is
             // `Int64Source.WidenedNativeInt`.
             NullaryIlOp.Add
@@ -276,8 +279,6 @@ module TestContextSwitchPrior =
             UnaryConstIlOp.Brfalse_s 8y
             UnaryConstIlOp.Brtrue 8
             UnaryConstIlOp.Brtrue_s 8y
-            UnaryConstIlOp.Beq 8
-            UnaryConstIlOp.Beq_s 8y
             UnaryConstIlOp.Blt 8
             UnaryConstIlOp.Blt_s 8y
             UnaryConstIlOp.Ble 8
@@ -286,8 +287,6 @@ module TestContextSwitchPrior =
             UnaryConstIlOp.Bgt_s 8y
             UnaryConstIlOp.Bge 8
             UnaryConstIlOp.Bge_s 8y
-            UnaryConstIlOp.Bne_un 8
-            UnaryConstIlOp.Bne_un_s 8y
             UnaryConstIlOp.Bge_un 8
             UnaryConstIlOp.Bge_un_s 8y
             UnaryConstIlOp.Bgt_un 8
@@ -299,6 +298,18 @@ module TestContextSwitchPrior =
             UnaryConstIlOp.Leave 8
             UnaryConstIlOp.Leave_s 8y
             UnaryConstIlOp.Unaligned 0uy
+        ]
+
+    /// The equality branches route through the same `EvalStackValueComparisons.ceq` as the
+    /// nullary `Ceq`, so they read `PointerHashState` and answer differently depending on
+    /// whether a sibling thread has materialised the handle being compared against. The
+    /// *ordering* branches never consult it, and stay in the Never set above.
+    let private unaryConstInterpreterOnly : UnaryConstIlOp list =
+        [
+            UnaryConstIlOp.Beq 8
+            UnaryConstIlOp.Beq_s 8y
+            UnaryConstIlOp.Bne_un 8
+            UnaryConstIlOp.Bne_un_s 8y
         ]
 
     let private unaryConstRarelyGuestVisible : UnaryConstIlOp list =
@@ -321,6 +332,12 @@ module TestContextSwitchPrior =
     let ``unary const ops banded Never classify as Never`` () : unit =
         for op in unaryConstNever do
             ContextSwitchPrior.ofUnaryConst op |> shouldEqual ContextSwitchPrior.Never
+
+    [<Test>]
+    let ``unary const ops banded InterpreterOnly classify as InterpreterOnly`` () : unit =
+        for op in unaryConstInterpreterOnly do
+            ContextSwitchPrior.ofUnaryConst op
+            |> shouldEqual ContextSwitchPrior.InterpreterOnly
 
     [<Test>]
     let ``unary const ops banded RarelyGuestVisible classify as RarelyGuestVisible`` () : unit =

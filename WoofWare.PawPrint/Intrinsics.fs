@@ -741,7 +741,12 @@ module Intrinsics =
                     // The intrinsic bypasses normal method-frame construction, so coerce the eval-stack
                     // operands to the signedness/width of the overload before comparing and writing.
                     let state =
-                        if EvalStackValueComparisons.ceq currentEval (EvalStackValue.ofCliType comparandCli) then
+                        if
+                            EvalStackValueComparisons.ceq
+                                state.PointerHashState
+                                currentEval
+                                (EvalStackValue.ofCliType comparandCli)
+                        then
                             IlMachineState.writeManagedByrefWithBase baseClassTypes state byrefSrc valueCli
                         else
                             state
@@ -802,7 +807,7 @@ module Intrinsics =
                                 $"Interlocked.CompareExchange(ref native-int,...): expected NativeInt at byref target, got %O{other}"
 
                     let state =
-                        if NativeIntSource.equalsForCli currentSrc comparandSrc then
+                        if NativeIntSourceComparison.equalsForCli state.PointerHashState currentSrc comparandSrc then
                             let newValue =
                                 EvalStackValue.toCliTypeCoerced currentValue (EvalStackValue.NativeInt valueSrc)
 

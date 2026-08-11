@@ -361,7 +361,7 @@ module EvalStackValueComparisons =
         | _, EvalStackValue.Float _ -> failwith $"Ble.un invalid for comparing %O{var1} with %O{var2}"
         | _ -> not (cgtUn var1 var2)
 
-    let rec ceq (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
+    let rec ceq (counters : PointerHashState) (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
         let var1 = unwrapPlaceholderForBitComparison var1
         let var2 = unwrapPlaceholderForBitComparison var2
         // Table III.4
@@ -383,14 +383,17 @@ module EvalStackValueComparisons =
         // function-pointer, …) is decided structurally.
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src1, _)),
           EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src2, _)) ->
-            ceq (EvalStackValue.NativeInt src1) (EvalStackValue.NativeInt src2)
+            ceq counters (EvalStackValue.NativeInt src1) (EvalStackValue.NativeInt src2)
         // WidenedNativeInt × Verbatim n: the underlying source is a non-null
         // pointer shape (Null is normalised to `Verbatim 0L` by the
         // `widenedNativeInt` smart constructor), so it can't equal 0. For
-        // non-zero `n` we don't know the pointer's actual numeric address —
-        // the safe and previously-structurally-correct answer is still
-        // `false`, but we keep that arm explicit so we can revisit if a real
-        // need to compare against a known pointer value arises.
+        // non-zero `n` the answer is *deferred*, not unknowable: the same
+        // `tryExistingHashBits` lookup the OpaqueHashBits arm below performs
+        // would decide it. It is left at `false` because an untagged integer
+        // cannot be told apart from a number the guest simply computed, and
+        // that policy belongs with the change that first makes a handle
+        // reachable as untagged full-width bits (giving handles a byte
+        // image). Nothing can produce such a value today.
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt _), EvalStackValue.Int64 (Int64Source.Verbatim _)
         | EvalStackValue.Int64 (Int64Source.Verbatim _), EvalStackValue.Int64 (Int64Source.WidenedNativeInt _) -> false
         // WidenedNativeInt × SyntheticCrossArrayOffset: a real pointer can't
@@ -400,21 +403,19 @@ module EvalStackValueComparisons =
           EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _)
         | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _),
           EvalStackValue.Int64 (Int64Source.WidenedNativeInt _) -> false
-        // WidenedNativeInt × OpaqueHashBits is genuinely ambiguous: under the
-        // counter-based synthesis scheme an identity bit op such as `x ^ 0UL`
-        // or `x & ulong.MaxValue` materialises the WidenedNativeInt's bits
-        // into an OpaqueHashBits carrier whose bit pattern is *exactly* what
-        // the WidenedNativeInt would synthesise to — so the answer here is
-        // "equal iff WidenedNativeInt's materialised bits equal the
-        // OpaqueHashBits value". Producing the right answer requires reading
-        // the assignments held in `PointerHashState`, which `ceq` does not thread today.
-        // Fail loudly rather than silently returning false (which would have
-        // been wrong under identity ops) or true (which would be wrong when
-        // bits genuinely differ).
-        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt _), EvalStackValue.Int64 (Int64Source.OpaqueHashBits _)
-        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits _), EvalStackValue.Int64 (Int64Source.WidenedNativeInt _) ->
-            failwith
-                $"TODO: ceq of WidenedNativeInt vs OpaqueHashBits requires looking up the pointer's materialised hash bits via PointerHashState; thread state through ceq to resolve. Got %O{var1} vs %O{var2}"
+        // WidenedNativeInt × OpaqueHashBits: under the counter-based synthesis scheme an
+        // identity bit op such as `x ^ 0UL` or `x & ulong.MaxValue` materialises the
+        // WidenedNativeInt's bits into an OpaqueHashBits carrier whose bit pattern is
+        // *exactly* what the WidenedNativeInt would synthesise to. So the answer is "equal
+        // iff those bits are this pointer's synthesised address", which `counters` can say
+        // exactly — by lookup, never by assigning, so a comparison still cannot perturb the
+        // numbering (which is what `ContextSwitchPrior` bands `Ceq` on). Delegated so that
+        // this and the native-int-width form give one answer.
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)),
+          EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits)
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits),
+          EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
+            NativeIntSourceComparison.equalsForCli counters (NativeIntSource.OpaqueHashBits bits) src
         // Verbatim and OpaqueHashBits both carry unambiguous int64 bit patterns,
         // so equality is bit-pattern equality regardless of how the bits were
         // produced. Structural DU equality would incorrectly treat
@@ -442,11 +443,15 @@ module EvalStackValueComparisons =
         | EvalStackValue.Int64 _, _ -> failwith $"bad ceq: Int64 vs {var2}"
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> var1 = var2
         | EvalStackValue.Float _, _ -> failwith $"bad ceq: Float vs {var2}"
-        | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 -> NativeIntSource.equalsForCli var1 var2
+        | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 ->
+            NativeIntSourceComparison.equalsForCli counters var1 var2
         | EvalStackValue.NativeInt var1, EvalStackValue.Int32 (Int32Source.Verbatim var2) ->
             failwith $"TODO (CEQ): nativeint vs int32"
         | EvalStackValue.NativeInt var1, EvalStackValue.ManagedPointer var2 ->
-            ceq (EvalStackValue.NativeInt var1) (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var2))
+            ceq
+                counters
+                (EvalStackValue.NativeInt var1)
+                (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var2))
         | EvalStackValue.NativeInt _, _ -> failwith $"bad ceq: NativeInt vs {var2}"
         | EvalStackValue.NullObjectRef, EvalStackValue.NullObjectRef -> true
         | EvalStackValue.ObjectRef addr1, EvalStackValue.ObjectRef addr2 -> addr1 = addr2
@@ -474,5 +479,8 @@ module EvalStackValueComparisons =
         | EvalStackValue.NullObjectRef, _ -> failwith $"bad ceq: NullObjectRef vs {var2}"
         | EvalStackValue.ObjectRef _, _ -> failwith $"bad ceq: ObjectRef vs {var2}"
         | EvalStackValue.ManagedPointer var1, EvalStackValue.NativeInt var2 ->
-            ceq (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var1)) (EvalStackValue.NativeInt var2)
+            ceq
+                counters
+                (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var1))
+                (EvalStackValue.NativeInt var2)
         | EvalStackValue.ManagedPointer _, _ -> failwith $"bad ceq: ManagedPointer vs {var2}"
