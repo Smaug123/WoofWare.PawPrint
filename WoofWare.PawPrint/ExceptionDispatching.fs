@@ -376,11 +376,18 @@ module ExceptionDispatching =
         =
         enterHandlerAtSearchPC currentThread methodState threadState state cliException methodState.IlOpIndex [] handler
 
+    /// Reject the filter that `escaping` escaped from, and hand back everything the resumed
+    /// search for the *original* exception needs. `escaping` is discarded from here on: the CLR
+    /// catches an exception that leaves a filter at the filter boundary and reports the filter
+    /// as false.
     let private prepareRejectedFilterSearch
+        (loggerFactory : ILoggerFactory)
+        (corelib : BaseClassTypes<DumpedAssembly>)
         (currentThread : ThreadId)
         (methodState : MethodState)
         (threadState : ThreadState)
         (state : IlMachineState)
+        (escaping : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (continuation : ExceptionFilterContinuation<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         : IlMachineState *
           MethodState *
@@ -390,6 +397,30 @@ module ExceptionDispatching =
           int *
           ExceptionFilterRegion list
         =
+        // `escaping`'s dispatch ends here, so here is where its trace is complete and must be
+        // recorded. This is the third way a dispatch can conclude, alongside "a handler was
+        // found" (`tryFindAndEnterHandlerAtSearchPC`) and "no handler exists in any frame"
+        // (`unwindToCallerAndSearch`), both of which already project; without it a guest holding
+        // the object reads `StackTrace == null` on an exception that really did propagate.
+        //
+        // It belongs in this function rather than at the two call sites because both of them
+        // conclude a raise for the same reason and must not drift apart: one arrives by
+        // unwinding into the filter's frame, the other by finding no local handler for a throw
+        // inside the filter body, and `sourcesPure/FilterEscapeExceptionHasTrace.cs` covers both.
+        //
+        // Unlike the frames themselves this needs no `_isFinally` reasoning: the frame list is
+        // whatever the escaping raise accumulated before reaching the boundary, which is exactly
+        // what real .NET reports — measured on .NET 10, up to and including the frame that hosts
+        // the filter.
+        let state =
+            IlMachineState.setExceptionStackTraceString
+                loggerFactory
+                corelib
+                escaping.ExceptionObject
+                escaping.StackTrace
+                state
+            |> IlMachineState.recordThrownStackTrace loggerFactory corelib escaping.ExceptionObject escaping.StackTrace
+
         let popped, methodState = MethodState.popExceptionContinuation methodState
 
         match popped with
@@ -825,11 +856,21 @@ module ExceptionDispatching =
                 // the escaping exception. We deliberately do not append a frame here: handler search
                 // is resuming for the original exception, whose stack already records the original
                 // throw path. The filter-body exception is only the reason this filter returned false.
+                // Its own trace is recorded by `prepareRejectedFilterSearch`, which is where its
+                // dispatch concludes.
                 let threadState = state.ThreadState.[currentThread]
                 let callerFrame = ThreadState.getFrame threadState.ActiveMethodState threadState
 
                 let state, callerFrame, threadState, cliException, exceptionType, searchPC, skippedFilters =
-                    prepareRejectedFilterSearch currentThread callerFrame threadState state continuation
+                    prepareRejectedFilterSearch
+                        loggerFactory
+                        corelib
+                        currentThread
+                        callerFrame
+                        threadState
+                        state
+                        cliExceptionAtCallSite
+                        continuation
 
                 match
                     tryFindAndEnterHandlerAtSearchPC
@@ -906,8 +947,22 @@ module ExceptionDispatching =
 
             match currentMethodState.ExceptionContinuation with
             | Some (ExceptionContinuation.ResumeAfterFilter continuation) ->
+                // No handler for `cliException` anywhere in this frame, and the frame is
+                // evaluating a filter, so this is where `cliException` leaves that filter — it is
+                // the escaping exception, and the `cliException` bound below is the original one
+                // whose search resumes.
+                let escaping = cliException
+
                 let state, currentMethodState, threadState, cliException, exceptionType, searchPC, skippedFilters =
-                    prepareRejectedFilterSearch currentThread currentMethodState threadState state continuation
+                    prepareRejectedFilterSearch
+                        loggerFactory
+                        corelib
+                        currentThread
+                        currentMethodState
+                        threadState
+                        state
+                        escaping
+                        continuation
 
                 match
                     tryFindAndEnterHandlerAtSearchPC
