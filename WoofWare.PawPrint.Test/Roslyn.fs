@@ -37,12 +37,26 @@ module Roslyn =
         | Sidecar
         | None
 
+    /// Whether the compilation is optimized.
+    ///
+    /// Off by default, matching what the harness has always produced. It matters to more than
+    /// speed: unoptimized C# emits a `nop` after every call statement, and that `nop` carries
+    /// the *call's* sequence point. So in a debug build a program counter parked just past a
+    /// call still resolves to the call's own line, and a diagnostic that confuses the two looks
+    /// correct. Optimized, the `nop` is gone and the next instruction belongs to the next
+    /// statement, which is what makes the difference observable at all.
+    [<RequireQualifiedAccess>]
+    type Optimization =
+        | Release
+        | Debug
+
     let private compileCore
         (assemblyName : string)
         (outputKind : OutputKind)
         (extraReferences : MetadataReference list)
         (resources : ResourceDescription list)
         (symbols : DebugSymbols)
+        (optimization : Optimization)
         (sources : string list)
         : byte[] * byte[] option
         =
@@ -62,7 +76,13 @@ module Roslyn =
             )
             |> List.toArray
 
-        let compilationOptions = CSharpCompilationOptions(outputKind).WithAllowUnsafe true
+        let optimizationLevel =
+            match optimization with
+            | Optimization.Release -> OptimizationLevel.Release
+            | Optimization.Debug -> OptimizationLevel.Debug
+
+        let compilationOptions =
+            CSharpCompilationOptions(outputKind).WithAllowUnsafe(true).WithOptimizationLevel optimizationLevel
 
         let compilation =
             CSharpCompilation.Create (
@@ -115,7 +135,7 @@ module Roslyn =
         (sources : string list)
         : byte[]
         =
-        compileCore assemblyName outputKind extraReferences resources DebugSymbols.None sources
+        compileCore assemblyName outputKind extraReferences resources DebugSymbols.None Optimization.Debug sources
         |> fst
 
     let compileAssembly
@@ -135,7 +155,27 @@ module Roslyn =
     /// As `compile`, but the image carries an embedded portable PDB. See `DebugSymbols` for why
     /// this is a separate entry point rather than the default.
     let compileWithSymbols (sources : string list) : byte[] =
-        compileCore "PawPrintTestAssembly" OutputKind.ConsoleApplication [] [] DebugSymbols.Embedded sources
+        compileCore
+            "PawPrintTestAssembly"
+            OutputKind.ConsoleApplication
+            []
+            []
+            DebugSymbols.Embedded
+            Optimization.Debug
+            sources
+        |> fst
+
+    /// As `compileWithSymbols`, but optimized. See `Optimization` for why that changes what a
+    /// source location resolves to, and hence why a diagnostic test may need it.
+    let compileOptimizedWithSymbols (sources : string list) : byte[] =
+        compileCore
+            "PawPrintTestAssembly"
+            OutputKind.ConsoleApplication
+            []
+            []
+            DebugSymbols.Embedded
+            Optimization.Release
+            sources
         |> fst
 
     /// As `compileWithSymbols`, but the debug information is emitted as a separate portable PDB
@@ -143,7 +183,14 @@ module Roslyn =
     /// rather than embedded in the image. Returns the image and the PDB that belongs beside it.
     let compileWithSidecarSymbols (sources : string list) : byte[] * byte[] =
         let image, pdb =
-            compileCore "PawPrintTestAssembly" OutputKind.ConsoleApplication [] [] DebugSymbols.Sidecar sources
+            compileCore
+                "PawPrintTestAssembly"
+                OutputKind.ConsoleApplication
+                []
+                []
+                DebugSymbols.Sidecar
+                Optimization.Debug
+                sources
 
         match pdb with
         | Some pdb -> image, pdb

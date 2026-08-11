@@ -18,6 +18,11 @@ module NativeMetadataImport =
     /// <c>RuntimeType.PopulateProperties</c>.
     let private metadataTokenTypeProperty : int32 = 0x17000000
 
+    /// <c>mdtMethodDef</c>. As an <c>Enum</c> token type this does *not* mean "enumerate MethodDefs":
+    /// CoreCLR pairs it with a Property or Event parent to mean that member's MethodSemantics
+    /// associates (see <c>methodSemanticsForAssociation</c>).
+    let private metadataTokenTypeMethodDef : int32 = 0x06000000
+
     let private metadataEnumSmallResultLimit : int = 16
 
     /// <c>mdTypeDefNil</c>: TypeDef table code (0x02) | row 0. Returned by
@@ -328,6 +333,148 @@ module NativeMetadataImport =
         | token ->
             failwith
                 $"%s{operation}: expected TypeDef parent token for nested-type enumeration, got %O{token} from 0x%08x{parent}"
+
+    /// The MethodSemantics rows (ECMA-335 II.22.28) associated with one property or event, flattened
+    /// into the <c>[method; semantics; method; semantics; …]</c> layout the QCall reports — the one
+    /// token type whose INT32 buffer is not a list of tokens. CoreCLR fills the buffer with
+    /// <c>ASSOCIATE_RECORD</c>s, which are pairs of INT32s (inc/metadata.h:252-257), and
+    /// <c>Associates.AssignAssociates</c> reads them back at <c>[i * 2]</c> and <c>[i * 2 + 1]</c>.
+    ///
+    /// Read straight from the metadata bytes, because <c>MetadataReader</c> does not expose the
+    /// MethodSemantics table at all. It exposes only <c>PropertyDefinition.GetAccessors</c> and
+    /// <c>EventDefinition.GetAccessors</c>, which are a *view*: they classify each row into a named
+    /// slot and drop the row's real <c>Semantics</c> value for everything that is not a getter or
+    /// setter (respectively adder, remover or raiser). The QCall's contract is the rows themselves —
+    /// <c>AssignAssociates</c> switches on the raw value and assigns <c>addOn</c> for an AddOn row
+    /// even on a *property* — so the view would be lossy in a way that is visible to a guest.
+    ///
+    /// Deliberately a full scan collecting every match, where CoreCLR binary-searches for one row and
+    /// expands to the contiguous group around it (metamodel.h:689-755), which is sound only because
+    /// ECMA-335 II.24.2.6 requires this table to be sorted by Association. The scan cannot produce a
+    /// false positive: a row's Association column *is* the coded index being compared, so only rows
+    /// that declare themselves associated with this token can match, whatever the header's sorted
+    /// bit claims — a claim CoreCLR does not verify against the content either. On a conforming
+    /// image the two agree exactly; on a non-conforming one PawPrint finds rows whose group
+    /// CoreCLR's binary search could miss entirely.
+    let private methodSemanticsForAssociation
+        (operation : string)
+        (assembly : DumpedAssembly)
+        (parent : int32)
+        : int32 list
+        =
+        let metadataReader = metadataReaderOf assembly
+
+        let rowCount (table : System.Reflection.Metadata.Ecma335.TableIndex) : int =
+            System.Reflection.Metadata.Ecma335.MetadataReaderExtensions.GetTableRowCount (metadataReader, table)
+
+        // The parent must exist. CoreCLR would instead report an empty run, because
+        // `getAssociatesForToken` cannot tell "no such row" from "a real row with no accessors"; but
+        // every token that legitimately arrives here came from `RuntimeType.PopulateProperties` or
+        // `PopulateEvents`, so an out-of-range one is a PawPrint bug or a corrupt image, and an
+        // empty answer would hand the guest a silently accessor-less property instead.
+        let association : System.Reflection.Metadata.EntityHandle =
+            match MetadataToken.ofInt parent with
+            | MetadataToken.PropertyDefinition propertyHandle ->
+                if
+                    System.Reflection.Metadata.Ecma335.MetadataTokens.GetRowNumber (
+                        System.Reflection.Metadata.PropertyDefinitionHandle.op_Implicit propertyHandle
+                    )
+                    |> fun row -> row < 1 || row > rowCount System.Reflection.Metadata.Ecma335.TableIndex.Property
+                then
+                    failwith
+                        $"%s{operation}: PropertyDef token 0x%08x{parent} was not present in %s{assembly.Name.FullName}"
+
+                System.Reflection.Metadata.PropertyDefinitionHandle.op_Implicit propertyHandle
+            | MetadataToken.EventDefinition eventHandle ->
+                if
+                    System.Reflection.Metadata.Ecma335.MetadataTokens.GetRowNumber (
+                        System.Reflection.Metadata.EventDefinitionHandle.op_Implicit eventHandle
+                    )
+                    |> fun row -> row < 1 || row > rowCount System.Reflection.Metadata.Ecma335.TableIndex.Event
+                then
+                    failwith
+                        $"%s{operation}: EventDef token 0x%08x{parent} was not present in %s{assembly.Name.FullName}"
+
+                System.Reflection.Metadata.EventDefinitionHandle.op_Implicit eventHandle
+            | token ->
+                // CoreCLR falls through to the generic `EnumInit`/`EnumNext` path here, which for a
+                // TypeDef parent would mean "the methods of this type". No managed caller asks for
+                // that: `Associates.AssignAssociates` is the only one that passes mdtMethodDef at all.
+                failwith
+                    $"%s{operation}: expected Property or Event parent token for associate enumeration, got %O{token} from 0x%08x{parent}"
+
+        // ECMA-335 II.24.2.6 column widths. A simple index is 2 bytes while its target table has
+        // fewer than 2^16 rows; a coded index with `n` tag bits is 2 bytes while every table it spans
+        // has fewer than 2^(16-n). HasSemantics spans Event and Property with one tag bit.
+        let methodIndexSize =
+            if rowCount System.Reflection.Metadata.Ecma335.TableIndex.MethodDef < 0x10000 then
+                2
+            else
+                4
+
+        let associationIndexSize =
+            let widest =
+                max
+                    (rowCount System.Reflection.Metadata.Ecma335.TableIndex.Event)
+                    (rowCount System.Reflection.Metadata.Ecma335.TableIndex.Property)
+
+            if widest < 0x8000 then 2 else 4
+
+        let rowSize =
+            System.Reflection.Metadata.Ecma335.MetadataReaderExtensions.GetTableRowSize (
+                metadataReader,
+                System.Reflection.Metadata.Ecma335.TableIndex.MethodSemantics
+            )
+
+        // Not a proof — a row size of 8 is ambiguous between (2, 4, 2) and (2, 2, 4) — but it does
+        // catch a wholesale wrong rule, and it is one comparison. The Semantics column is a fixed
+        // 2-byte constant.
+        if rowSize <> 2 + methodIndexSize + associationIndexSize then
+            failwith
+                $"%s{operation}: MethodSemantics row size %d{rowSize} in %s{assembly.Name.FullName} disagrees with the ECMA-335 II.24.2.6 widths derived from the table row counts (2 + %d{methodIndexSize} + %d{associationIndexSize})"
+
+        // The coded index for the target, computed once and compared as an integer against each
+        // row's raw Association column. `CodedIndex.HasSemantics` rather than a hand-rolled tag bit,
+        // because getting the tag order backwards is the one mistake this encoding admits.
+        let target = System.Reflection.Metadata.Ecma335.CodedIndex.HasSemantics association
+
+        let rows = rowCount System.Reflection.Metadata.Ecma335.TableIndex.MethodSemantics
+
+        let tableOffset =
+            System.Reflection.Metadata.Ecma335.MetadataReaderExtensions.GetTableMetadataOffset (
+                metadataReader,
+                System.Reflection.Metadata.Ecma335.TableIndex.MethodSemantics
+            )
+
+        // `let mutable` is load-bearing: `BlobReader` is a struct, so an immutably-bound one is
+        // copied before each `Read*` call and every read would silently return the same bytes.
+        let mutable reader =
+            (assembly.PeReader.GetMetadata ()).GetReader (tableOffset, rows * rowSize)
+
+        let associates = ResizeArray ()
+
+        for _ = 1 to rows do
+            let semantics = int (reader.ReadUInt16 ())
+
+            let method =
+                if methodIndexSize = 2 then
+                    int (reader.ReadUInt16 ())
+                else
+                    reader.ReadInt32 ()
+
+            // Named for the row rather than shadowing the outer `association`, which is the
+            // target handle `target` was derived from.
+            let rowAssociation =
+                if associationIndexSize = 2 then
+                    int (reader.ReadUInt16 ())
+                else
+                    reader.ReadInt32 ()
+
+            if rowAssociation = target then
+                associates.Add (metadataTokenTypeMethodDef ||| method)
+                associates.Add semantics
+
+        List.ofSeq associates
 
     let private fieldDefinition
         (operation : string)
@@ -754,6 +901,12 @@ module NativeMetadataImport =
                     nestedTypeDefinitionsForTypeDefinition operation assembly parent
                 elif tokenType = metadataTokenTypeProperty then
                     propertyDefinitionsForTypeDefinition operation assembly parent
+                elif tokenType = metadataTokenTypeMethodDef then
+                    // The one branch whose result is not a token list: these are ASSOCIATE_RECORD
+                    // pairs, `[method; semantics; …]`, and `*length` counts INT32s rather than
+                    // records. Everything downstream — the short buffer, the large-result escape
+                    // hatch, `*length` — is indifferent to that, because it only ever moves INT32s.
+                    methodSemanticsForAssociation operation assembly parent
                 else
                     failwith
                         $"TODO: %s{operation} does not yet support token type 0x%08x{tokenType} with parent 0x%08x{parent}"
@@ -956,8 +1109,9 @@ module NativeMetadataImport =
             // index spanning ParamDef and PropertyDef too, but neither is reachable, for different
             // reasons. A ParamDef token would have to come from the `Enum` QCall, which mints none.
             // A PropertyDef Constant row is read by `RuntimePropertyInfo.GetRawConstantValue`, which
-            // needs a fully constructed `RuntimePropertyInfo` — so it is `Associates.AssignAssociates`
-            // that blocks it, not the absence of `GetPropertyProps`, which this file now implements.
+            // needs a fully constructed `RuntimePropertyInfo` — so what blocks it is
+            // `RuntimeMethodHandle.GetSlot`, which `RuntimeType.PopulateProperties` needs for its
+            // vtable-slot duplicate check, and not anything this file is missing.
             let operation = "MetadataImport.GetDefaultValue"
             let assemblyFullName = metadataImportHandleOfArg operation instruction.Arguments.[0]
             let assembly = metadataImportAssembly operation state assemblyFullName

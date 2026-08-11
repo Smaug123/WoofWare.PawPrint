@@ -4,14 +4,16 @@ using System.Reflection;
 // `ForeignRaiseFlagSetInFinally.cs` with a `rethrow` in place of the `throw`.
 //
 // The `throw` version is served by the throw itself consuming at its seed frame, so nothing is
-// left to be confused by the `finally`. A `rethrow` appends no frame at initiation, so it has to
-// carry the question forward — and what it must carry is *the flag as it stood when it began*, not
-// a blanket "yes". Here there is no flag when the rethrow begins and the `finally` sets one, so
-// the rethrown exception gets no boundary and the flag is still pending afterwards.
+// left to be confused by the `finally`. A `rethrow` appends no frame at initiation, so its answer
+// is decided later — at whichever frame boundary it first crosses. Here there is no flag when the
+// rethrow begins and the `finally` sets one, so the rethrown exception gets no boundary and the
+// flag is still pending afterwards.
 //
 // Together with `ForeignRaiseFlagPendingBeforeCleanup.cs` — same shape, flag set one statement
-// earlier — this pins the reading to raise initiation. An implementation that started every
-// rethrow eligible and read the thread flag at its delayed append would swap both answers.
+// earlier — this pins *when* the flag is read relative to cleanup. Both are satisfied by reading
+// the thread's bit at every append, provided the appends all happen before any cleanup runs, which
+// is what the first pass guarantees; an interleaved dispatcher that reached its append only after
+// running the `finally` would swap both answers.
 //
 // Measured on .NET 10 before being written: 0 boundaries, then 1.
 class ForeignRaiseFlagSetInFinallyDuringRethrow

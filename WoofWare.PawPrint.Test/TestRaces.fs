@@ -22,6 +22,11 @@ module TestRaces =
     let private dotnetRuntimes : ImmutableArray<string> =
         DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
 
+    /// Everything about the simulated process except which of its schedules we
+    /// are exploring. Naming it separately from `HostConfig` is what lets the
+    /// seed-independent prefix of a sweep be computed without a seed in scope.
+    let private guestConfig : GuestConfig = GuestConfig.Default dotnetRuntimes
+
     /// Extract the guest's exit code from a completed run. Fails the test
     /// loudly on any non-normal exit: FailFast / signal / unhandled exception
     /// under a race test would indicate either a corrupted interpreter state
@@ -45,24 +50,6 @@ module TestRaces =
         | RunOutcome.GuestUnhandledException (_, _, exn) ->
             failwith $"%s{sourceName} (seed=%A{seed}) threw unhandled exception: %O{exn.ExceptionObject}"
 
-    /// Run `image` through PawPrint with the given scheduler seed and return
-    /// the guest's exit code.
-    let private runPawPrint (sourceName : string) (image : byte[]) (seed : uint64 option) : int =
-        let _messages, loggerFactory =
-            LoggerFactory.makeTestWithProperties [ "source_file", sourceName ]
-
-        use _loggerFactoryResource = loggerFactory
-        use peImage = new MemoryStream (image)
-
-        Program.run
-            loggerFactory
-            (Some sourceName)
-            peImage
-            { HostConfig.Default dotnetRuntimes with
-                PctSeed = seed
-            }
-        |> exitCodeOfOutcome sourceName seed
-
     /// Run `image` through the real .NET runtime once. Fails the test on
     /// unhandled exception. The host's threading and memory ordering pin
     /// the schedule, so this is not a coverage probe — it's a sanity that
@@ -79,9 +66,65 @@ module TestRaces =
     // Seed sweep used to characterise PCT coverage. The first 30 splitmix64
     // outputs already hit both interleavings of ReadWriteRace; running 64
     // gives a generous margin for future races whose rarer interleavings
-    // might land deeper in the seed stream, while still completing in
-    // about a second on the existing test machine.
+    // might land deeper in the seed stream. Widening it is cheap: the seeds
+    // share their prefix (see `sweepPctExitCodes`), so an extra seed costs
+    // only the post-fork suffix of a run.
     let private pctSeedSweep : uint64 list = [ 0UL .. 63UL ]
+
+    /// Sweep `pctSeedSweep` over one guest and return the set of exit codes
+    /// observed.
+    ///
+    /// Everything up to the guest's first *contended* scheduling decision is
+    /// forced — no policy has a choice there, so every seed executes it
+    /// identically — so it is computed once under the randomness-free
+    /// round-robin policy and each seed resumes from the snapshot.
+    /// `Program.resumeFork` makes such a run bit-identical to the from-scratch
+    /// `PctSeed = Some s` run it replaces, which `TestScheduleFork` pins
+    /// directly for both guests swept here; the exact-coverage assertions below
+    /// are a second, independent check, since they are sensitive to the whole
+    /// seed-to-schedule mapping.
+    ///
+    /// A guest that never forks fails rather than answering the sweep in one
+    /// run: these tests characterise the outcomes a *race* can produce, and a
+    /// guest with no schedule space has no race left to characterise.
+    let private sweepPctExitCodes (sourceName : string) (image : byte[]) : Set<int> =
+        // Scoped to the whole sweep: `Program.resumeFork` documents that the
+        // prefix's factory must outlive every resume, since the loaded
+        // assemblies and `BaseClassTypes` were built against it. See
+        // `TestConcurrencyBugs.demonstrate` for why that is a precondition kept
+        // rather than a crash avoided.
+        let _prefixMessages, prefixLoggerFactory =
+            LoggerFactory.makeTestWithProperties [ "source_file", sourceName ; "run_phase", "shared-prefix" ]
+
+        use _prefixLoggerFactoryResource = prefixLoggerFactory
+
+        let snapshot =
+            use peImage = new MemoryStream (image)
+
+            match Program.runToFirstFork prefixLoggerFactory (Some sourceName) peImage guestConfig with
+            | Program.PrefixOutcome.ForkedAt snapshot -> snapshot
+            | Program.PrefixOutcome.NeverForked _ ->
+                failwith
+                    $"%s{sourceName} ran to completion without ever having two threads Runnable at the same tick, so every seed produces the same execution and the sweep characterises nothing."
+            | Program.PrefixOutcome.DeadlockedBeforeFork stuck ->
+                failwith $"%s{sourceName} wedged before any scheduling choice arose; stuck threads: %s{stuck}"
+            | Program.PrefixOutcome.ForkedDuringStartup contenders ->
+                failwith
+                    $"%s{sourceName} first contends during startup (contenders: %A{contenders}), which `Program.runToFirstFork` refuses to snapshot; the race is supposed to be between two threads inside Main."
+
+        pctSeedSweep
+        |> List.map (fun seed ->
+            let _messages, loggerFactory =
+                LoggerFactory.makeTestWithProperties [ "source_file", sourceName ; "pct_seed", string seed ]
+
+            use _loggerFactoryResource = loggerFactory
+            let logger = loggerFactory.CreateLogger "TestRaces"
+
+            Program.resumeFork loggerFactory (Some seed) snapshot
+            |> Program.pumpPrepared loggerFactory logger
+            |> exitCodeOfOutcome sourceName (Some seed)
+        )
+        |> Set.ofList
 
     /// The complete set of legal exit codes for ReadWriteRace.cs:
     ///   * 0 — Main reads `x` before the worker's `x = 1` runs (the
@@ -119,11 +162,7 @@ module TestRaces =
         // rather than passing silently as "well, it covered 0 and 1, so
         // who cares about the extras."
         let image = compileImage "ReadWriteRace.cs"
-
-        let observed =
-            pctSeedSweep
-            |> List.map (fun seed -> runPawPrint "ReadWriteRace.cs" image (Some seed))
-            |> Set.ofList
+        let observed = sweepPctExitCodes "ReadWriteRace.cs" image
 
         if observed <> readWriteRaceLegalOutcomes then
             let missing = Set.difference readWriteRaceLegalOutcomes observed
@@ -197,11 +236,7 @@ module TestRaces =
         // has to re-execute its `newobj` correctly, under every interleaving
         // PCT reaches, not merely under the default round-robin.
         let image = compileImage "NewobjCctorRace.cs"
-
-        let observed =
-            pctSeedSweep
-            |> List.map (fun seed -> runPawPrint "NewobjCctorRace.cs" image (Some seed))
-            |> Set.ofList
+        let observed = sweepPctExitCodes "NewobjCctorRace.cs" image
 
         if observed <> newobjCctorRaceLegalOutcomes then
             let missing = Set.difference newobjCctorRaceLegalOutcomes observed

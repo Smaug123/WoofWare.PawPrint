@@ -90,28 +90,14 @@ module BoundedRun =
 
     /// What each thread that has not terminated is doing, for a diagnostic.
     ///
-    /// The IL offset is included, not just the method name, because the name alone does not say
+    /// `GuestLocation.describe` is the same renderer the interpreter uses for its own deadlock
+    /// reports, so the four failures below and a deadlock reported by the App read alike. It
+    /// includes the IL offset and not just the method name, because the name alone does not say
     /// *where* a guest is stuck: a spin loop never leaves its method, so every stop inside it
     /// looks identical. The offset and the kernel's step counter are also the only parts of
     /// this message that two differently-timed runs could disagree about, which is what makes
     /// the stopping point observable to a test at all.
-    let private threadSummary (state : IlMachineState) : string =
-        state.ThreadState
-        |> Map.toSeq
-        |> Seq.filter (fun (_, ts) -> ts.Status <> ThreadStatus.Terminated)
-        |> Seq.map (fun (ThreadId i, ts) ->
-            // A non-terminated thread need not have a frame: `ThreadStatus.hasNoActiveFrame`
-            // names `NotStarted` and `Parked`, and `ts.MethodState` throws on both because it
-            // resolves the active frame and there isn't one. A guest holding a constructed but
-            // unstarted `Thread` is entirely ordinary, so reaching for the method
-            // unconditionally would replace this diagnostic with "Frame ... is not live" — a
-            // failure about the harness, precisely when the guest is what needs explaining.
-            if ThreadStatus.hasNoActiveFrame ts.Status then
-                $"thread %d{i} (%O{ts.Status})"
-            else
-                $"thread %d{i} (%O{ts.Status}) in %s{ts.MethodState.ExecutingMethod.Name} at IL offset %d{ts.MethodState.IlOpIndex}"
-        )
-        |> String.concat "; "
+    let private threadSummary : IlMachineState -> string = GuestLocation.describe
 
     let runWith
         (loggerFactory : ILoggerFactory)
@@ -133,12 +119,16 @@ module BoundedRun =
 
             match Program.stepPrepared loggerFactory logger prepared with
             | Program.ProgramStepOutcome.Completed outcome -> outcome
-            | Program.ProgramStepOutcome.Deadlocked (prepared, stuck) ->
+            | Program.ProgramStepOutcome.Deadlocked (_, stuck) ->
                 // `Program.run` would raise from inside `pumpPrepared`, discarding the state
                 // along with any diagnostic it carries. Reported here instead, with the same
                 // detail as a step-budget failure so the two read alike.
+                //
+                // `stuck` is already `threadSummary` of the state at the moment of detection —
+                // the interpreter builds it with the same renderer — so re-summarising the
+                // returned state here would print the same thing twice in two formats.
                 failwith
-                    $"%s{description} deadlocked: no runnable threads and the entry thread has not terminated. Stuck: %s{stuck}. Threads: %s{threadSummary prepared.State}"
+                    $"%s{description} deadlocked: no runnable threads and the entry thread has not terminated. Threads: %s{stuck}"
             | Program.ProgramStepOutcome.InstructionStepped (prepared, _, _, _)
             | Program.ProgramStepOutcome.WorkerTerminated (prepared, _) -> goMain (steps + 1L) prepared
 
@@ -171,12 +161,12 @@ module BoundedRun =
             // the budget it claims to have enforced.
             | Program.StartupStepOutcome.Completed (Program.ProgramStartResult.Ready prepared) ->
                 goMain (steps + 1L) prepared
-            | Program.StartupStepOutcome.Deadlocked (startup, stuck) ->
-                // `Program.prepare` raises on this itself, but with no guest identification and
-                // no thread summary. Reported here in the same shape as the other three
-                // failures so all four read alike.
+            | Program.StartupStepOutcome.Deadlocked (_, stuck) ->
+                // `Program.prepare` raises on this itself, but with no guest identification.
+                // Reported here in the same shape as the other three failures so all four read
+                // alike. As above, `stuck` is already the thread summary.
                 failwith
-                    $"%s{description} deadlocked during startup: no runnable threads and startup has not finished. Stuck: %s{stuck}. Threads: %s{threadSummary startup.State}"
+                    $"%s{description} deadlocked during startup: no runnable threads and startup has not finished. Threads: %s{stuck}"
             // Every remaining outcome yields a new `Startup`, and each costs a step. Counting
             // `PhaseAdvanced` — which retires no guest instruction — is deliberate: it makes the
             // loop bounded by `maxSteps` iterations whatever sequence of outcomes occurs, rather

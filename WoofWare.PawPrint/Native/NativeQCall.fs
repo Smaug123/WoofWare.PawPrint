@@ -16,6 +16,8 @@ module NativeQCall =
             NativeRuntimeMethodHandle.tryExecuteQCall "RuntimeMethodHandle_GetStubIfNeededSlow"
             "RuntimeMethodHandle_InvokeMethod",
             NativeReflectionInvocation.tryExecuteQCall "RuntimeMethodHandle_InvokeMethod"
+            "ReflectionInvocation_GetBoxInfo",
+            NativeReflectionInvocation.tryExecuteQCall "ReflectionInvocation_GetBoxInfo"
             "QCall_GetGCHandleForTypeHandle", NativeGcHandle.tryExecuteQCall "QCall_GetGCHandleForTypeHandle"
             "QCall_FreeGCHandleForTypeHandle", NativeGcHandle.tryExecuteQCall "QCall_FreeGCHandleForTypeHandle"
             "MarshalNative_SizeOfHelper", NativeMarshal.tryExecuteQCall "MarshalNative_SizeOfHelper"
@@ -51,6 +53,11 @@ module NativeQCall =
             NativeRuntimeType.tryExecuteQCall "MethodTable_CanCompareBitsOrUseFastGetHashCode"
             "TypeHandle_GetCorElementType", NativeRuntimeType.tryExecuteQCall "TypeHandle_GetCorElementType"
             "TypeHandle_CanCastTo_NoCacheLookup", NativeRuntimeType.tryExecuteQCall "TypeHandle_CanCastTo_NoCacheLookup"
+            // The *object*-castability sibling of the above. Reachable from ordinary guest code
+            // via `Type.IsInstanceOfType`, `Array.SetValue` and the casting arm of `Array.Copy`,
+            // all of which call `CastHelpers` from managed BCL source; PawPrint's cast cache is
+            // a permanently-empty sentinel, so every such call misses and lands here.
+            "IsInstanceOf_NoCacheLookup", NativeCastHelpers.tryExecuteQCall "IsInstanceOf_NoCacheLookup"
             "ThreadNative_GetCurrentThread", NativeThreading.tryExecuteQCall "ThreadNative_GetCurrentThread"
             "ThreadNative_Initialize", NativeThreading.tryExecuteQCall "ThreadNative_Initialize"
             "ThreadNative_Join", NativeThreading.tryExecuteQCall "ThreadNative_Join"

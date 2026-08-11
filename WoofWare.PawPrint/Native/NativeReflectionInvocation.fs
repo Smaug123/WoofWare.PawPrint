@@ -4,9 +4,10 @@ open System.Collections.Immutable
 open System.Reflection.Metadata
 open Microsoft.Extensions.Logging
 
-/// CoreCLR's `reflectioninvocation.cpp` QCalls that *call* a managed method, as opposed to merely
-/// describing one. Today that is `RuntimeMethodHandle_InvokeMethod`, the primitive underneath
-/// every `MethodBase.Invoke`.
+/// CoreCLR's `reflectioninvocation.cpp` QCalls, other than the `RuntimeTypeHandle_*` family that
+/// `NativeRuntimeTypeQCall` serves. Today that is `RuntimeMethodHandle_InvokeMethod`, the primitive
+/// underneath every `MethodBase.Invoke`, and `ReflectionInvocation_GetBoxInfo`, which describes to
+/// managed code how to box a value of a given type.
 [<RequireQualifiedAccess>]
 module internal NativeReflectionInvocation =
 
@@ -681,4 +682,96 @@ module internal NativeReflectionInvocation =
                     IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state resultPtr returned
 
                 NativeHandlerResult.completed state |> Some
+        | "ReflectionInvocation_GetBoxInfo",
+          "System.Private.CoreLib",
+          "",
+          "BoxCache",
+          "GetBoxInfo",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System.Runtime.CompilerServices",
+                                              "QCallTypeHandle",
+                                              typeHandleGenerics)
+            ConcretePointer (ConcreteFunctionPointer _)
+            ConcretePointer (ConcretePointer (ConcreteVoid state.ConcreteTypes))
+            ConcretePointer (ConcreteInt32 state.ConcreteTypes)
+            ConcretePointer (ConcreteUInt32 state.ConcreteTypes) ],
+          MethodReturnType.Void when typeHandleGenerics.IsEmpty ->
+            // CoreCLR: `ReflectionInvocation_GetBoxInfo`, reflectioninvocation.cpp:1909. Describes
+            // how `RuntimeType.BoxCache` should box a value of this type by `calli`: an allocator
+            // plus the MethodTable to hand it, where the payload starts inside the source, and how
+            // many bytes of it to copy. Like its `GetActivationInfo` sibling it runs no
+            // constructor and no class initialiser: CoreCLR's trailing `EnsureInstanceActive()`
+            // raises the *load level* of the modules owning the type, its ancestors and its
+            // generic arguments (`MethodTable_EnsureInstanceActiveHelper`, methodtable.cpp:7658),
+            // and touches no static state. PawPrint models no load levels, so there is nothing
+            // here to reproduce.
+            //
+            // Argument 0 is a `QCallTypeHandle` by value; the other four are raw out-pointers to
+            // locals in the managed shim (RuntimeType.BoxCache.cs:116-124).
+            let operation = "ReflectionInvocation.GetBoxInfo"
+
+            if instruction.Arguments.Length <> 5 then
+                failwith $"%s{operation}: expected five native arguments, got %d{instruction.Arguments.Length}"
+
+            let target =
+                NativeCall.qCallTypeHandleToRuntimeTypeHandleTarget
+                    operation
+                    state
+                    (EvalStackValue.ofCliType instruction.Arguments.[0])
+
+            let outAllocator =
+                NativeCall.managedPointerOfPointerArgument operation "ppfnAllocator" instruction.Arguments.[1]
+
+            let outAllocatorFirstArg =
+                NativeCall.managedPointerOfPointerArgument operation "pvAllocatorFirstArg" instruction.Arguments.[2]
+
+            let outValueOffset =
+                NativeCall.managedPointerOfPointerArgument operation "pValueOffset" instruction.Arguments.[3]
+
+            let outValueSize =
+                NativeCall.managedPointerOfPointerArgument operation "pValueSize" instruction.Arguments.[4]
+
+            let state, info = BoxInfo.classify ctx.BaseClassTypes operation target state
+
+            match info with
+            | BoxInfo.Rejected rejection ->
+                // Nothing is written on the throwing path, matching CoreCLR: `BEGIN_QCALL`
+                // unwinds past every assignment, so the shim's locals keep the `default` the
+                // managed wrapper gave them.
+                let exnType =
+                    match rejection with
+                    | BoxRejection.Void -> ctx.BaseClassTypes.ArgumentException
+                    | BoxRejection.ByRefLike -> ctx.BaseClassTypes.NotSupportedException
+
+                NativeHandlerResult.raiseException exnType state |> Some
+            | BoxInfo.Describes description ->
+                let write ptr value state =
+                    IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state ptr value
+
+                state
+                // The same helper `RuntimeTypeHandle_GetActivationInfo` hands back, and the same
+                // reason for the shape: `NativeIntSource.FunctionPointer` is what
+                // `executeAllocatorCalli` recognises when the guest calls through the slot.
+                |> write
+                    outAllocator
+                    (CliType.Numeric (
+                        CliNumericType.NativeInt (
+                            NativeIntSource.FunctionPointer FunctionPointerTarget.RuntimeAllocator
+                        )
+                    ))
+                // `pvAllocatorFirstArg` addresses a `void*` slot which the guest copies into
+                // `BoxCache`'s own `void*` field, so a `RuntimePointer` rather than a `NativeInt`:
+                // a `NativeInt`-shaped value there would force that copy down the byte-image path,
+                // which a pointer cell has no byte image for.
+                |> write
+                    outAllocatorFirstArg
+                    (CliType.RuntimePointer (
+                        CliRuntimePointer.MethodTablePtr (RuntimeTypeHandleTarget.Closed description.MethodTable)
+                    ))
+                |> write outValueOffset (CliType.Numeric (CliNumericType.Int32 description.ValueOffset))
+                // PawPrint carries CLI uint32 values as Int32 while preserving the low 32 bits;
+                // see PrimitiveType.UInt32 and `MethodTableProjection.uint32Field`.
+                |> write outValueSize (CliType.Numeric (CliNumericType.Int32 (int32 description.ValueSize)))
+                |> NativeHandlerResult.completed
+                |> Some
         | _ -> None

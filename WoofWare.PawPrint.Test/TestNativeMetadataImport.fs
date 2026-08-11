@@ -171,13 +171,22 @@ public class PropertyShapes : PropertyBase
     public int this[int i] { get { return i; } }
     public int Größe { get; set; }
 
+    // The two below go last, so that they take the highest tokens and the declaration-order
+    // expectations above only grow at the tail.
+
     // Every property C# normally emits has `Property.Flags = 0`, so without this one a flags
     // assertion over this type would be vacuous and a handler that always answered 0 would pass.
     // `[SpecialName]` on a property does set the row's `SpecialName` bit (0x0200) — checked against
-    // both the raw Property row and the host CLR's `PropertyInfo.Attributes`. It goes last so that
-    // it takes the highest token and the declaration-order expectations above only grow at the tail.
+    // both the raw Property row and the host CLR's `PropertyInfo.Attributes`.
     [System.Runtime.CompilerServices.SpecialName]
     public int Special { get; set; }
+
+    // The only property here whose MethodSemantics run does not lead with a Getter row. Every other
+    // property C# emits has either a getter alone or a getter followed by a setter, so without this
+    // one an associates handler that assumed row 0 of a run is the getter — or that a one-row run
+    // is a getter — would pass. The accessor body is explicit rather than `set;` so that this adds
+    // no backing field, leaving the FieldDef expectations for this type alone.
+    public int WriteOnly { set { } }
 }
 
 // A PROPERTY signature whose Type is ELEMENT_TYPE_VAR (`28 00 13 00`), which is the shape a handler
@@ -1071,10 +1080,10 @@ public class TypesWithMembers
         let length, tokens, storage, _ =
             invokeEnumProperties fixture fixture.PropertyShapesType fixture.State
 
-        // Seven declared properties; nothing is filtered by visibility, staticness, being an
-        // indexer, or carrying `SpecialName`, and order is guest-observable because
-        // `PopulateProperties` appends in the order it receives.
-        length |> shouldEqual 7
+        // Eight declared properties; nothing is filtered by visibility, staticness, being an
+        // indexer, being write-only, or carrying `SpecialName`, and order is guest-observable
+        // because `PopulateProperties` appends in the order it receives.
+        length |> shouldEqual 8
         storage |> shouldEqual EnumResultStorage.ShortResult
         tokens |> shouldEqual (hostPropertyTokens fixture.Image "PropertyShapes")
 
@@ -2314,7 +2323,17 @@ public class TypesWithMembers
         hostProperties
         |> Array.map (fun property -> property.Name)
         |> List.ofArray
-        |> shouldEqual [ "Alpha" ; "Beta" ; "Hidden" ; "Stat" ; "Item" ; "Größe" ; "Special" ]
+        |> shouldEqual
+            [
+                "Alpha"
+                "Beta"
+                "Hidden"
+                "Stat"
+                "Item"
+                "Größe"
+                "Special"
+                "WriteOnly"
+            ]
 
         let mutable state = fixture.State
 
@@ -2621,3 +2640,217 @@ public class TypesWithMembers
                 Assert.Throws (fun () -> invokeGetPropertyProps fixture token fixture.State |> ignore)
 
             ex.Message |> shouldContainText "was not present in"
+
+    /// ECMA-335 II.22.28's `Semantics` column, as `MethodSemanticsAttributes` spells it.
+    let private semanticsSetter : int32 = 0x0001
+    let private semanticsGetter : int32 = 0x0002
+    let private semanticsAddOn : int32 = 0x0008
+    let private semanticsRemoveOn : int32 = 0x0010
+
+    let private eventTableRowCount (fixture : MetadataImportFixture) : int =
+        System.Reflection.Metadata.Ecma335.MetadataReaderExtensions.GetTableRowCount (
+            fixture.Assembly.PeReader.GetMetadataReader (),
+            System.Reflection.Metadata.Ecma335.TableIndex.Event
+        )
+
+    /// `MetadataTokenType.MethodDef` with a Property or Event parent, as
+    /// <c>Associates.AssignAssociates</c> passes it. Alone among the token types this QCall answers,
+    /// the INT32 buffer here is not a token list: it is `ASSOCIATE_RECORD` *pairs*, and the managed
+    /// caller reads `[i * 2]` and `[i * 2 + 1]`. Re-paired here so the tests can assert what the
+    /// caller sees rather than a flat list whose stride they would have to keep in their heads.
+    let private invokeEnumAssociates
+        (fixture : MetadataImportFixture)
+        (parent : int32)
+        (state : IlMachineState)
+        : int32 * (int32 * int32) list * EnumResultStorage * IlMachineState
+        =
+        let length, values, storage, state = invokeEnum fixture 0x06000000 parent state
+
+        if values.Length % 2 <> 0 then
+            failwith $"associates result should be method/semantics pairs, but had odd length %d{values.Length}"
+
+        let pairs =
+            values |> List.chunkBySize 2 |> List.map (fun pair -> pair.[0], pair.[1])
+
+        length, pairs, storage, state
+
+    /// The (accessor method token, MethodSemantics value) pairs the *host* CLR reports for a
+    /// property, as a set. `PropertyInfo.GetGetMethod`/`GetSetMethod` come from CoreCLR's own
+    /// metadata engine, so this is an oracle from outside PawPrint's parse; what it cannot tell us
+    /// is the order the rows appear in, which is asserted separately.
+    ///
+    /// `nonPublic: true` matters: `Hidden` is private, and its accessors would otherwise vanish from
+    /// the expectation while PawPrint (correctly) still reported them.
+    let private hostPropertyAssociates (property : System.Reflection.PropertyInfo) : (int32 * int32) list =
+        let getter = property.GetGetMethod true
+        let setter = property.GetSetMethod true
+
+        [
+            if not (isNull getter) then
+                getter.MetadataToken, semanticsGetter
+            if not (isNull setter) then
+                setter.MetadataToken, semanticsSetter
+        ]
+        |> List.sort
+
+    [<Test>]
+    let ``MetadataImport Enum reports every property's accessors as method and semantics pairs`` () : unit =
+        let fixture = makeFixture ()
+
+        // Ranges over every property row in the image rather than over the handful of shapes anyone
+        // thought to write down, so a property added to the fixture is covered without anyone
+        // remembering to extend a list.
+        let mutable state = fixture.State
+        let mutable seen = 0
+
+        for hostProperty in hostPropertiesOfImage fixture.Image do
+            let _, pairs, _, nextState =
+                invokeEnumAssociates fixture hostProperty.MetadataToken state
+
+            state <- nextState
+            seen <- seen + 1
+
+            List.sort pairs |> shouldEqual (hostPropertyAssociates hostProperty)
+
+        // Guards against the whole loop being vacuous if the fixture's properties ever stopped
+        // being discoverable through the host.
+        seen |> shouldBeGreaterThan 8
+
+    [<Test>]
+    let ``MetadataImport Enum reports a property's accessors in MethodSemantics row order`` () : unit =
+        let fixture = makeFixture ()
+
+        // CoreCLR reads a contiguous run of MethodSemantics rows in *row* order and reports each
+        // row's Semantics column verbatim; it does not sort, classify or normalise. So the sequence
+        // below is a fact about the fixture's metadata, not about what an accessor "should" be.
+        //
+        // Roslyn emits the getter row before the setter row — checked over the pinned corelib, where
+        // all 485 two-row property runs are getter-first and none is setter-first — which is exactly
+        // why `WriteOnly` is here: it is the only run in the image that leads with a Setter, so
+        // without it a handler that hardcoded row 0 to Getter would pass.
+        let cases =
+            [
+                "Alpha", [ semanticsGetter ; semanticsSetter ]
+                "Beta", [ semanticsGetter ]
+                "Hidden", [ semanticsGetter ; semanticsSetter ]
+                "Stat", [ semanticsGetter ; semanticsSetter ]
+                "Item", [ semanticsGetter ]
+                "Größe", [ semanticsGetter ; semanticsSetter ]
+                "Special", [ semanticsGetter ; semanticsSetter ]
+                "WriteOnly", [ semanticsSetter ]
+            ]
+
+        let mutable state = fixture.State
+
+        for propertyName, expectedSemantics in cases do
+            let hostProperty = hostPropertyNamed fixture.Image "PropertyShapes" propertyName
+
+            let length, pairs, storage, nextState =
+                invokeEnumAssociates fixture hostProperty.MetadataToken state
+
+            state <- nextState
+
+            pairs |> List.map snd |> shouldEqual expectedSemantics
+
+            // `resultLength = associatesCount * 2` (managedmdimport.cpp:562): the reported length
+            // counts INT32s, not records, and the managed caller divides by two to get the record
+            // count. Reporting the record count would silently halve every accessor list.
+            //
+            // Always the short buffer, and deliberately so: the large-result escape hatch needs more
+            // than 16 INT32s, i.e. more than *eight* accessors on one member, which no C# construct
+            // emits. That combination is therefore unpinned for this arm. It is the same shared
+            // plumbing `MetadataImport Enum uses large result for more than sixteen FieldDef tokens`
+            // already covers, fed a plain int32 list with no length logic of its own.
+            length |> shouldEqual (2 * expectedSemantics.Length)
+            storage |> shouldEqual EnumResultStorage.ShortResult
+
+    [<Test>]
+    let ``MetadataImport Enum reports an event's accessors as method and semantics pairs`` () : unit =
+        let fixture = makeFixture ()
+
+        // The Event side of the same CoreCLR branch: `Association` is a HasSemantics coded index
+        // whose tag distinguishes Event (0) from Property (1), so this is the only test that pins
+        // the tag. A handler that assumed every parent was a Property would encode this token to
+        // some *property's* coded index and answer that property's rows.
+        //
+        // No guest can reach this today — an mdtEvent token is minted only by `Enum` with
+        // `type == mdtEvent`, which PawPrint does not implement — so driving the handler directly is
+        // the only coverage available, not a shortcut around an end-to-end test that exists.
+        let hostEvent =
+            (System.Reflection.Assembly.Load fixture.Image)
+                .GetType("TypesWithMembers", true)
+                .GetEvent (
+                    "MyEvent",
+                    System.Reflection.BindingFlags.DeclaredOnly
+                    ||| System.Reflection.BindingFlags.Public
+                    ||| System.Reflection.BindingFlags.NonPublic
+                    ||| System.Reflection.BindingFlags.Instance
+                    ||| System.Reflection.BindingFlags.Static
+                )
+
+        let _, pairs, storage, _ =
+            invokeEnumAssociates fixture hostEvent.MetadataToken fixture.State
+
+        // A field-like C# event emits exactly an adder and a remover, in that order, and no raiser
+        // (only the `raise` accessor of a VB-style custom event produces a Fire row).
+        pairs
+        |> shouldEqual
+            [
+                (hostEvent.GetAddMethod true).MetadataToken, semanticsAddOn
+                (hostEvent.GetRemoveMethod true).MetadataToken, semanticsRemoveOn
+            ]
+
+        storage |> shouldEqual EnumResultStorage.ShortResult
+
+    [<Test>]
+    let ``MetadataImport Enum rejects a MethodDef enumeration with a non-associate parent`` () : unit =
+        let fixture = makeFixture ()
+
+        // CoreCLR falls through to the generic `EnumInit`/`EnumNext` path for an mdtMethodDef
+        // enumeration whose parent is neither a Property nor an Event, which would mean "the methods
+        // of this TypeDef". Nothing in the BCL asks for that — `Associates.AssignAssociates` is the
+        // only caller that passes mdtMethodDef at all — so PawPrint says it is unimplemented rather
+        // than guessing.
+        let ex =
+            Assert.Throws (fun () ->
+                invokeEnumAssociates fixture (typeDefToken fixture.PropertyShapesType.TypeDefHandle) fixture.State
+                |> ignore
+            )
+
+        ex.ToString ()
+        |> shouldContainText "expected Property or Event parent token for associate enumeration"
+
+    [<Test>]
+    let ``MetadataImport Enum rejects an associate parent absent from the assembly`` () : unit =
+        let fixture = makeFixture ()
+
+        // Three absent rows per table, one per way the guard can be got wrong. Row 0xFFFFFF dies
+        // under almost any guard at all; the first row *past the end* is the one an off-by-one guard
+        // would wave through; and row 0 — the nil PropertyDef/EventDef token — is the one a guard
+        // written as `row > rowCount` alone would wave through, since `MetadataToken.ofInt` builds a
+        // nil handle for it perfectly happily rather than rejecting it the way it rejects a nil
+        // ModuleDefinition. Without the row-0 case the lower half of the guard is dead as far as the
+        // suite can tell: deleting it leaves every test in this file passing.
+        //
+        // CoreCLR would answer an empty run for all six rather than failing: `getAssociatesForToken`
+        // cannot tell "no such row" from "a real row with no accessors". PawPrint diverges
+        // deliberately — every token that legitimately reaches this handler came from
+        // `PopulateProperties` or `PopulateEvents`, so an out-of-range one is a PawPrint bug, and
+        // answering it with an empty list would hand the guest a silently accessor-less property
+        // instead of a loud failure.
+        let absentProperty = 0x17000000 ||| (propertyTableRowCount fixture + 1)
+        let absentEvent = 0x14000000 ||| (eventTableRowCount fixture + 1)
+
+        for token in
+            [
+                0x17FFFFFF
+                absentProperty
+                0x17000000
+                0x14FFFFFF
+                absentEvent
+                0x14000000
+            ] do
+            let ex =
+                Assert.Throws (fun () -> invokeEnumAssociates fixture token fixture.State |> ignore)
+
+            ex.ToString () |> shouldContainText "was not present in"

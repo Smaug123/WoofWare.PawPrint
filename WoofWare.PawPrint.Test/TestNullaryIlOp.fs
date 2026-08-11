@@ -5,6 +5,7 @@ open System.Collections.Generic
 open System.Collections.Immutable
 open System.IO
 open System.Reflection.Emit
+open System.Runtime.InteropServices
 open FsCheck
 open FsCheck.FSharp
 open FsUnitTyped
@@ -1706,3 +1707,184 @@ module TestNullaryIlOp =
         // memoised, not re-derived.
         let again, _ = narrow counters (NativeIntSource.MethodHandlePtr 17L)
         again |> shouldEqual first
+
+    // --- Byte views of a primitive cell at byte offset zero ---
+    //
+    // `*(byte*)&aLong` reads one byte at the address of an eight-byte cell. A *non-zero*
+    // index (`p[1]`) already worked, because C# emits the offset as pointer arithmetic and
+    // the resulting byref carries a trailing byte-view projection; index zero emits no
+    // arithmetic at all, so the byref names the whole cell and the read has to decide for
+    // itself that a narrower requested width means "reinterpret these bytes" rather than
+    // "convert this value".
+    //
+    // The oracle is `System.BitConverter`, which is not derived from PawPrint: the bytes the
+    // interpreter hands back must be the bytes the host runtime finds at that address.
+
+    /// A frame whose argument 0 holds `cell`, with `ManagedPointer` addressing that argument
+    /// on the eval stack — the shape `ldloca`/`ldarga` produces, with no projections at all.
+    let private stateWithByrefToCell
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (op : NullaryIlOp)
+        (cell : CliType)
+        : IlMachineState * ThreadId
+        =
+        // The placeholder is popped straight off again: the byref cannot be built until the
+        // frame exists, and the frame does not exist until `stateWithNullary` has run.
+        let state, thread =
+            stateWithNullary loggerFactory op (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+
+        let frame = state.ThreadState.[thread].ActiveMethodState
+        let _, state = IlMachineState.popEvalStack thread state
+
+        let ptr = ManagedPointerSource.Byref (ByrefRoot.Argument (thread, frame, 0us), [])
+
+        let state =
+            state
+            |> IlMachineState.setArgument thread frame 0us cell
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) thread
+
+        state, thread
+
+    let private runLdindOverCell (op : NullaryIlOp) (cell : CliType) : EvalStackValue =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let state, thread = stateWithByrefToCell loggerFactory op cell
+
+        match NullaryIlOp.execute loggerFactory baseClassTypes state thread op with
+        | ExecutionResult.Stepped (state, whatWeDid, _) ->
+            whatWeDid |> shouldEqual WhatWeDid.Executed
+            IlMachineState.popEvalStack thread state |> fst
+        | other -> failwith $"Expected %O{op} to step, got %O{other}"
+
+    let private int32Value (reason : string) (value : EvalStackValue) : int32 =
+        match value with
+        | EvalStackValue.Int32 source -> Int32Source.value reason source
+        | other -> failwith $"Expected an int32 for %s{reason}, got %O{other}"
+
+    [<Test>]
+    let ``a narrow ldind over an int64 cell reinterprets its bytes`` () : unit =
+        let property (value : int64) : unit =
+            let cell = CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim value))
+            let bytes = BitConverter.GetBytes value
+
+            runLdindOverCell NullaryIlOp.Ldind_u1 cell
+            |> int32Value "ldind.u1"
+            |> shouldEqual (int32 bytes.[0])
+
+            runLdindOverCell NullaryIlOp.Ldind_i1 cell
+            |> int32Value "ldind.i1"
+            |> shouldEqual (int32 (sbyte bytes.[0]))
+
+            runLdindOverCell NullaryIlOp.Ldind_u2 cell
+            |> int32Value "ldind.u2"
+            |> shouldEqual (int32 (BitConverter.ToUInt16 (bytes, 0)))
+
+            runLdindOverCell NullaryIlOp.Ldind_i2 cell
+            |> int32Value "ldind.i2"
+            |> shouldEqual (int32 (BitConverter.ToInt16 (bytes, 0)))
+
+            runLdindOverCell NullaryIlOp.Ldind_i4 cell
+            |> int32Value "ldind.i4"
+            |> shouldEqual (BitConverter.ToInt32 (bytes, 0))
+
+        // The default int64 generator is size-bounded, so drive the full range explicitly:
+        // a value whose low byte differs from its low word is what distinguishes a byte view
+        // from a truncating conversion at all.
+        let gen : Gen<int64> =
+            Gen.frequency
+                [
+                    8, ArbMap.defaults |> ArbMap.generate<int64>
+                    2, Gen.elements [ Int64.MinValue ; Int64.MaxValue ; -1L ; 0L ; 1L ; 0x0102030405060708L ]
+                ]
+
+        Check.One (config, Prop.forAll (Arb.fromGen gen) property)
+
+    [<Test>]
+    let ``a narrow ldind over a float64 cell reinterprets its bytes`` () : unit =
+        // `*(float*)&aDouble` is a reinterpretation of the low four bytes of the bit
+        // pattern, not the numeric narrowing `(float)aDouble`; 2.0 is the cleanest witness,
+        // because its low four bytes are zero while `(float)2.0` is 2.0f.
+        let cell = CliType.Numeric (CliNumericType.Float64 2.0)
+        let bytes = BitConverter.GetBytes 2.0
+
+        match runLdindOverCell NullaryIlOp.Ldind_r4 cell with
+        | EvalStackValue.Float actual -> actual |> shouldEqual (float (BitConverter.ToSingle (bytes, 0)))
+        | other -> failwith $"Expected a float from ldind.r4, got %O{other}"
+
+        runLdindOverCell NullaryIlOp.Ldind_i4 cell
+        |> int32Value "ldind.i4"
+        |> shouldEqual (BitConverter.ToInt32 (bytes, 0))
+
+    [<Test>]
+    let ``a narrow ldind over a native-int cell reinterprets its bytes`` () : unit =
+        let value = 0x1122334455667788L
+
+        let cell =
+            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim value))
+
+        let bytes = BitConverter.GetBytes value
+
+        runLdindOverCell NullaryIlOp.Ldind_u1 cell
+        |> int32Value "ldind.u1"
+        |> shouldEqual (int32 bytes.[0])
+
+        runLdindOverCell NullaryIlOp.Ldind_i4 cell
+        |> int32Value "ldind.i4"
+        |> shouldEqual (BitConverter.ToInt32 (bytes, 0))
+
+    [<Test>]
+    let ``a narrow ldind unwraps a primitive-like wrapper before deciding`` () : unit =
+        // A guest's `IntPtr` local is stored as the single-field wrapper, not as the bare
+        // native int: `EvalStackValue.ofCliType` flattens it on the way to the eval stack,
+        // so a routing decision taken on the wrapper's own shape would answer a different
+        // question from the one the value-coercion path asks.
+        let value = 0x1122334455667788L
+
+        let intPtrHandle =
+            AllConcreteTypes.getRequiredNonGenericHandle concreteTypes baseClassTypes.IntPtr
+
+        let cell =
+            {
+                CliField.Id = FieldId.named "_value"
+                CliField.Name = "_value"
+                Contents = CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim value))
+                Offset = None
+                Type = intPtrHandle
+                MarshallingDescriptor = None
+            }
+            |> List.singleton
+            |> CliValueType.OfFields baseClassTypes concreteTypes intPtrHandle Layout.Default CharSet.Ansi
+            |> CliType.ValueType
+
+        match cell with
+        | CliType.ValueType vt -> vt.PrimitiveLikeKind |> shouldEqual (Some PrimitiveLikeKind.FlattenToNativeInt)
+        | other -> failwith $"Expected a value type, got %O{other}"
+
+        let bytes = BitConverter.GetBytes value
+
+        runLdindOverCell NullaryIlOp.Ldind_u1 cell
+        |> int32Value "ldind.u1"
+        |> shouldEqual (int32 bytes.[0])
+
+    [<Test>]
+    let ``an equal-width ldind over a provenance-bearing cell keeps the provenance`` () : unit =
+        // The other side of the routing decision. A pointer identity has no byte image at all
+        // (`CliType.ToBytes` refuses one), so a read at the pointer's own width must return the
+        // cell rather than its bytes: widening the predicate to divert equal-width reads too
+        // would turn every such read into a byte-addressability refusal.
+        let handle = RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete 1)
+
+        let cell =
+            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.TypeHandlePtr handle))
+
+        runLdindOverCell NullaryIlOp.Ldind_i cell
+        |> shouldEqual (EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr handle))
+
+        // Synthesised hash bits are byte-imageless for the same reason, and `ldind.i8` over a
+        // native-int cell is a widening rather than a narrowing, so it too stays typed.
+        let hashCell =
+            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.OpaqueHashBits 0x40L))
+
+        runLdindOverCell NullaryIlOp.Ldind_i8 hashCell
+        |> shouldEqual (EvalStackValue.Int64 (Int64Source.OpaqueHashBits 0x40L))

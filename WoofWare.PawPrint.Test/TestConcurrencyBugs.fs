@@ -13,6 +13,15 @@ open WoofWare.PawPrint
 /// range of PCT seeds and asserts at least one of them produces the
 /// targeted bad outcome.
 ///
+/// The sweep does not re-run the whole guest per seed. Everything up to
+/// the first tick at which two threads are Runnable is forced — no policy
+/// has a choice there, so every seed executes it identically — so it is
+/// computed once, under the randomness-free round-robin policy, and each
+/// seed resumes from that snapshot. `Program.resumeFork` makes a resumed
+/// run bit-identical to the from-scratch `PctSeed = Some s` run it
+/// replaces, which `TestScheduleFork` pins over this exact guest corpus.
+/// The prefix is 74-94% of a run's instructions on these guests.
+///
 /// Each guest must encode the invariant violation as a deterministic,
 /// host-visible event: a sentinel exit code from Main, an unhandled
 /// guest exception, a call to Environment.FailFast, or a natural
@@ -109,15 +118,16 @@ module TestConcurrencyBugs =
         | UnhandledException of typeFullName : string * message : string option
         | FailFast of message : string
         | Signal of string
-        /// A worker spawned during a static cctor terminated the
-        /// process before Main got to run. The wrapped string is the
-        /// pre-Main `RunOutcome` collapsed to its textual classifier.
-        | CompletedBeforeMain of summary : string
 
     let private assy = typeof<RunResult>.Assembly
 
     let private dotnetRuntimes : ImmutableArray<string> =
         DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+
+    /// Everything about the simulated process except which of its schedules
+    /// we are exploring. `Program.runToFirstFork` takes this rather than a
+    /// `HostConfig` precisely so that no seed can reach the shared prefix.
+    let private guestConfig : GuestConfig = GuestConfig.Default dotnetRuntimes
 
     /// Compile the guest once per scenario. PCT sweeps reuse the resulting
     /// image across all seeds; recompiling per seed would dominate the
@@ -176,49 +186,64 @@ module TestConcurrencyBugs =
         | RunOutcome.FailFast (_, _, message) -> RunSummary.FailFast (Option.defaultValue "<no message>" message)
         | RunOutcome.SignalTerminated (_, signal) -> RunSummary.Signal (sprintf "%O" signal)
 
-    /// Run the guest under one PCT seed, returning a host-level summary of
-    /// where it ended up. Drives `Program.stepPrepared` directly instead of
-    /// `Program.run` so that `ProgramStepOutcome.Deadlocked` surfaces as a
-    /// classifier-friendly `RunSummary.Deadlock` rather than the
-    /// `failwith "Deadlock: ..."` that `pumpPrepared` would raise.
-    let private runOne (sourceName : string) (image : byte[]) (seed : uint64) : RunSummary =
+    /// Compute the part of a run that every seed in the sweep shares: everything
+    /// up to the guest's first *contended* scheduling decision.
+    ///
+    /// Every non-forking outcome is a test failure rather than a sweep of size
+    /// one, and deliberately so. A guest with no fork point has no schedule
+    /// space at all, so "PCT exhibits the bad interleaving" would be vacuous
+    /// even if that single forced run happened to match the scenario's
+    /// `BadOutcome` — nothing chose anything, so PCT cannot have found
+    /// anything. Failing here says which of the three ways it went wrong.
+    let private forkOf
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (scenario : Scenario)
+        (image : byte[])
+        : Program.ForkSnapshot
+        =
+        use peImage = new MemoryStream (image)
+
+        match Program.runToFirstFork loggerFactory (Some scenario.SourceName) peImage guestConfig with
+        | Program.PrefixOutcome.ForkedAt snapshot -> snapshot
+        | Program.PrefixOutcome.NeverForked outcome ->
+            // Collapsed to a `RunSummary` rather than rendered directly: a
+            // `RunOutcome` carries an entire `IlMachineState`, so `%A` on it
+            // would render a large chunk of the guest heap into the message.
+            failwith
+                $"%s{scenario.SourceName}: the guest ran to completion (%A{classifyRunOutcome outcome}) without ever having two threads Runnable at the same tick, so no seed can explore anything and the scenario tests nothing. A concurrency-bug guest must start a thread whose lifetime overlaps another's."
+        | Program.PrefixOutcome.DeadlockedBeforeFork stuck ->
+            failwith
+                $"%s{scenario.SourceName}: every thread blocked before any scheduling choice arose (stuck: %s{stuck}), so the guest wedges under every seed rather than under a bad interleaving."
+        | Program.PrefixOutcome.ForkedDuringStartup contenders ->
+            failwith
+                $"%s{scenario.SourceName}: a static initialiser started a thread, so the first contended decision happens during startup (contenders: %A{contenders}) and `Program.runToFirstFork` refuses to snapshot it. Start the guest's threads from Main."
+
+    /// Resume the shared prefix under one PCT seed, returning a host-level
+    /// summary of where the run ended up. Drives `Program.stepPrepared`
+    /// directly instead of `Program.pumpPrepared` so that
+    /// `ProgramStepOutcome.Deadlocked` surfaces as a classifier-friendly
+    /// `RunSummary.Deadlock` rather than the `failwith "Deadlock: ..."` the
+    /// pump would raise.
+    ///
+    /// The factory here is this seed's own: `resumeFork` rebinds the machine's
+    /// logging sink to it, so each seed's trace still carries its own
+    /// `pct_seed` property even though the prefix was logged through the
+    /// sweep's factory.
+    let private runOne (sourceName : string) (snapshot : Program.ForkSnapshot) (seed : uint64) : RunSummary =
         let _messages, loggerFactory =
             LoggerFactory.makeTestWithProperties [ "source_file", sourceName ; "pct_seed", string seed ]
 
         use _loggerFactoryResource = loggerFactory
-        use peImage = new MemoryStream (image)
         let logger = loggerFactory.CreateLogger "TestConcurrencyBugs"
 
-        match
-            Program.prepare
-                loggerFactory
-                (Some sourceName)
-                peImage
-                { HostConfig.Default dotnetRuntimes with
-                    PctSeed = (Some seed)
-                }
-        with
-        | Program.ProgramStartResult.CompletedBeforeMain outcome ->
-            // A worker spawned during a static cctor terminated the process
-            // before Main got to run. For these scenarios that almost
-            // always means the guest accidentally put effectful code into
-            // a type initializer; surface it as a labelled summary rather
-            // than silently treating it as the Main run's outcome. We
-            // collapse the inner `RunOutcome` to its string classifier so
-            // `RunSummary` itself remains equality-safe (the live
-            // `IlMachineState` in `RunOutcome` carries non-equatable
-            // fields like loggers).
-            let inner = classifyRunOutcome outcome
-            RunSummary.CompletedBeforeMain (sprintf "%A" inner)
-        | Program.ProgramStartResult.Ready prepared ->
-            let rec loop (prepared : Program.PreparedProgram) : RunSummary =
-                match Program.stepPrepared loggerFactory logger prepared with
-                | Program.ProgramStepOutcome.Completed outcome -> classifyRunOutcome outcome
-                | Program.ProgramStepOutcome.Deadlocked (_, stuck) -> RunSummary.Deadlock stuck
-                | Program.ProgramStepOutcome.InstructionStepped (p, _, _, _) -> loop p
-                | Program.ProgramStepOutcome.WorkerTerminated (p, _) -> loop p
+        let rec loop (prepared : Program.PreparedProgram) : RunSummary =
+            match Program.stepPrepared loggerFactory logger prepared with
+            | Program.ProgramStepOutcome.Completed outcome -> classifyRunOutcome outcome
+            | Program.ProgramStepOutcome.Deadlocked (_, stuck) -> RunSummary.Deadlock stuck
+            | Program.ProgramStepOutcome.InstructionStepped (p, _, _, _) -> loop p
+            | Program.ProgramStepOutcome.WorkerTerminated (p, _) -> loop p
 
-            loop prepared
+        loop (Program.resumeFork loggerFactory (Some seed) snapshot)
 
     let private matches (bad : BadOutcome) (summary : RunSummary) : bool =
         match bad, summary with
@@ -351,6 +376,22 @@ module TestConcurrencyBugs =
     let private demonstrate (scenario : Scenario) : unit =
         let image = compileImage scenario.SourceName
 
+        // Scoped to the whole sweep, not to the prefix computation:
+        // `Program.resumeFork` documents that the prefix's factory must outlive
+        // every resume, because the loaded assemblies and `BaseClassTypes` were
+        // built against it. Honouring that is cheap and the alternative is
+        // silent: disposing it right after `forkOf` was measured (with
+        // `PAWPRINT_LOG_DIR` set, so the file sinks really are closed) not to
+        // fault any seed, because `resumeFork` rebinds the machine's own sink
+        // and nothing the prefix captured logs again afterwards. So this is a
+        // documented precondition being kept, not a crash being avoided.
+        let _prefixMessages, prefixLoggerFactory =
+            LoggerFactory.makeTestWithProperties [ "source_file", scenario.SourceName ; "run_phase", "shared-prefix" ]
+
+        use _prefixLoggerFactoryResource = prefixLoggerFactory
+
+        let snapshot = forkOf prefixLoggerFactory scenario image
+
         // Sweep seeds lazily and stop at the first match. The wider the
         // default sweep grows (currently 4096), the more important this
         // is: walking the whole list would dominate the test budget when
@@ -360,11 +401,15 @@ module TestConcurrencyBugs =
         // the predicate on multiple threads concurrently, so the
         // diagnostic store must be thread-safe — a `ResizeArray.Add`
         // here races and can drop or duplicate entries (or, worse, throw
-        // out of `EnsureCapacity`), corrupting the failure diagnostic.
+        // out of `EnsureCapacity`), corrupting the failure diagnostic. The
+        // one `snapshot` is read by all of those threads at once; that is
+        // sound because everything reachable from it is persistent F# data
+        // or shared-by-design `MetadataReader` assemblies, and
+        // `TestScheduleFork` machine-checks it rather than assuming it.
         let visited = ConcurrentBag<uint64 * RunSummary> ()
 
         let visit (seed : uint64) : bool =
-            let summary = runOne scenario.SourceName image seed
+            let summary = runOne scenario.SourceName snapshot seed
             visited.Add (seed, summary)
             matches scenario.Bad summary
 
