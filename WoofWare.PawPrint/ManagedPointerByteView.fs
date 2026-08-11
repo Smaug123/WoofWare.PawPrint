@@ -2,40 +2,23 @@ namespace WoofWare.PawPrint
 
 [<RequireQualifiedAccess>]
 module ManagedPointerByteView =
-    let private arrayElementHandle (arrObj : ArrayShape) : ConcreteTypeHandle =
-        match arrObj.ConcreteType with
-        | ConcreteTypeHandle.OneDimArrayZero element -> element
-        | ConcreteTypeHandle.Array (element, _) -> element
-        | ConcreteTypeHandle.Concrete _
-        | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _
-        | ConcreteTypeHandle.FunctionPointer _ ->
-            failwith $"array object has non-array concrete type: %O{arrObj.ConcreteType}"
+    let private arrayElementHandle : ArrayShape -> ConcreteTypeHandle =
+        ArrayElementStride.elementHandle
 
+    /// The byte stride between cells of the array at `arr`.
+    ///
+    /// This used to measure cell 0 when the array was non-empty and fall back to the
+    /// element type when it was empty. Both branches computed the same number — the
+    /// stride is a property of the element type — so the non-empty branch was reading
+    /// guest memory to answer a question the type already answers. It now always takes
+    /// the type route; see `ArrayElementStride.ofShape`.
     let arrayElementSize
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (arr : ManagedHeapAddress)
         : int
         =
-        let obj = state.ManagedHeap.Arrays.[arr]
-
-        if obj.Shape.Length > 0 then
-            CliType.sizeOf obj.Elements.[0]
-        else
-            // Deliberately the non-loading walk: this returns a bare `int`, with nowhere to put
-            // an updated registry or load context. The array exists, so whatever allocated it
-            // already ran a state-threading `zeroOf` over this very element handle to produce
-            // its zero element. See `IAssemblyLoad.alreadyLoadedOnly`.
-            let zero, _, _ =
-                CliType.zeroOf
-                    IAssemblyLoad.alreadyLoadedOnly
-                    state.ConcreteTypes
-                    state._LoadedAssemblies
-                    baseClassTypes
-                    (arrayElementHandle obj.Shape)
-
-            CliType.sizeOf zero
+        ArrayElementStride.ofAddress baseClassTypes state arr
 
     /// The looked-up concrete element type of the given array, when the element
     /// is a registered concrete type. Returns `None` when the element handle is
@@ -137,8 +120,8 @@ module ManagedPointerByteView =
     /// type), but the cells are array references — `ObjectRef`-shaped, like
     /// `object[]`. Anchor those with `System.Object` as the reinterpret
     /// target: it carries the same CLI shape, the byte-stride context still
-    /// comes from `arrayElementSize` (which uses cell `CliType.sizeOf`,
-    /// independent of the reinterpret target), and the cell-aligned
+    /// comes from `arrayElementSize` (which derives the stride from the array's
+    /// element type, independent of the reinterpret target), and the cell-aligned
     /// read/write short-circuits preserve identity exactly as for `object[]`.
     ///
     /// String-char byrefs (`StringCharAt`) are anchored with `System.Char` so
