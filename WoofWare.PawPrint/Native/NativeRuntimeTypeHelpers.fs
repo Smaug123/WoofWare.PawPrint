@@ -1982,6 +1982,13 @@ module NativeRuntimeTypeHelpers =
             // formats one today, and guessing the spelling would be a silent divergence.
             failwith
                 $"TODO: %s{operation}: TypeHandle::GetName of the open generic definition %O{identity.TypeDefinition.Get} is not modelled; its canonical MethodTable's instantiation is the type's own generic parameters, whose rendering is unverified"
+        | RuntimeTypeHandleTarget.OpenConstructed (definition, _) ->
+            // Same problem as the open definition above, one step further along: the
+            // instantiation contains type variables, which `AppendInst` renders through
+            // `TypeDesc::ConstructName` as `!0` / `!!0` rather than by name. The exact
+            // interleaving with the enclosing name is unverified, so refuse rather than guess.
+            failwith
+                $"TODO: %s{operation}: TypeHandle::GetName of an open constructed instantiation of %O{definition.TypeDefinition.Get} is not modelled; its instantiation contains type variables whose rendering in this position is unverified"
         | RuntimeTypeHandleTarget.Closed handle ->
             match handle with
             | ConcreteTypeHandle.Byref inner -> $"%s{getNameOfHandle inner}&"

@@ -12,7 +12,9 @@ module NativeCastHelpers =
     /// CoreCLR's `TypeHandle::IsTypeDesc` (`typehandle.h`): a handle is a `TypeDesc` rather
     /// than a `MethodTable` exactly when it names a byref, pointer, function pointer or
     /// generic variable. Arrays of every rank *do* have MethodTables and are not TypeDescs;
-    /// nor is an open generic type definition, which has a canonical MethodTable of its own.
+    /// nor is an open generic type definition, which has a canonical MethodTable of its own,
+    /// nor an open constructed type, which CoreCLR's class loader gives a MethodTable of its
+    /// own too (`TypeVarTypeDesc::LoadConstraints`, `vm/typedesc.cpp:826`).
     ///
     /// The distinction is load-bearing for object casts: `ObjIsInstanceOfCore` answers a flat
     /// `false` for a TypeDesc target without consulting the structural walk at all.
@@ -20,7 +22,8 @@ module NativeCastHelpers =
         match target with
         | RuntimeTypeHandleTarget.GenericParameter _
         | RuntimeTypeHandleTarget.MethodGenericParameter _ -> true
-        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> false
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+        | RuntimeTypeHandleTarget.OpenConstructed _ -> false
         | RuntimeTypeHandleTarget.Closed handle ->
             match handle with
             | ConcreteTypeHandle.Byref _
@@ -39,7 +42,10 @@ module NativeCastHelpers =
             | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as handle) ->
                 AllConcreteTypes.lookup handle state.ConcreteTypes
                 |> Option.map (fun ct -> ct.Identity)
-            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity -> Some identity
+            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity
+            // An open constructed type carries the interface flag of its definition; this is
+            // the same reading `RuntimeType.IsActualInterface` performs for one.
+            | RuntimeTypeHandleTarget.OpenConstructed (identity, _) -> Some identity
             | RuntimeTypeHandleTarget.Closed _
             | RuntimeTypeHandleTarget.GenericParameter _
             | RuntimeTypeHandleTarget.MethodGenericParameter _ -> None
@@ -87,7 +93,12 @@ module NativeCastHelpers =
     ///    what keeps this function total: PawPrint's cast oracle refuses generic-parameter
     ///    targets outright (`IlMachineRuntimeMetadata.isRuntimeTypeHandleTargetAssignableTo`),
     ///    but CoreCLR never asks it about one.
-    /// 3. Otherwise the ordinary structural walk (`MethodTable::CanCastTo`).
+    /// 3. Otherwise the ordinary structural walk (`MethodTable::CanCastTo`). An *open
+    ///    constructed* target reaches this walk (it is not a TypeDesc) and the cast oracle
+    ///    refuses it loudly; that is deliberate. The answer is almost certainly `false` — no
+    ///    closed type's interface map or base chain holds an instantiation containing type
+    ///    variables — but "almost certainly" is not a basis for an answer the guest branches
+    ///    on, and such a target only arises from a reflected generic-parameter constraint.
     /// 4. If that failed and the target is an interface, CoreCLR consults the COM and
     ///    `IDynamicInterfaceCastable` fallbacks. COM is unreachable here — `FEATURE_COMINTEROP`
     ///    is Windows-only and PawPrint has no RCWs — but `IDynamicInterfaceCastable` is real
@@ -106,7 +117,11 @@ module NativeCastHelpers =
             match target with
             | RuntimeTypeHandleTarget.Closed targetHandle ->
                 IlMachineState.isNullableForType ctx.BaseClassTypes state targetHandle objType
+            // `Nullable::IsNullableForType` compares the target against a *closed* `Nullable<U>`;
+            // none of these can be one. (The object's own type is always closed, so an open
+            // target could not match even if the shape were right.)
             | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+            | RuntimeTypeHandleTarget.OpenConstructed _
             | RuntimeTypeHandleTarget.GenericParameter _
             | RuntimeTypeHandleTarget.MethodGenericParameter _ -> false
 
@@ -248,7 +263,7 @@ module NativeCastHelpers =
             let state =
                 NativeHandlerResult.raiseExceptionWithMessage
                     ctx.BaseClassTypes.InvalidCastException
-                    $"Unable to cast object of type '%s{fromName}' to type '%s{toName}'."
+                    (Some $"Unable to cast object of type '%s{fromName}' to type '%s{toName}'.")
                     state
 
             Some state
