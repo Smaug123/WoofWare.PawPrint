@@ -110,6 +110,47 @@ class Program
 }
 """
 
+    /// As `recursiveSource`, but with the lines the source-location assertions care about
+    /// marked, so those tests derive the expected line from the text rather than counting.
+    ///
+    /// Compiled with symbols. Every other guest in this file is deliberately PDB-less — which is
+    /// itself the subject of a test below, since a null `sourceLocation` is the ordinary case for
+    /// anything the compiler did not emit debug information for.
+    let private recursiveSourceWithSymbols =
+        """
+class Program
+{
+    static int Recurse(int remaining)
+    {
+        if (remaining == 0)
+        {
+            while (true) { } // SPIN
+        }
+
+        return Recurse(remaining - 1); // RECURSE
+    }
+
+    static int Main(string[] args)
+    {
+        return Recurse(4); // ENTRY
+    }
+}
+"""
+
+    /// The line of the single source line containing `marker`, 1-based as a PDB counts lines.
+    let private lineContaining (marker : string) (source : string) : int =
+        let lines = source.Replace("\r\n", "\n").Split '\n'
+
+        match
+            lines
+            |> Array.mapi (fun i l -> i, l)
+            |> Array.filter (fun (_, l) -> l.Contains marker)
+        with
+        | [| (i, _) |] -> i + 1
+        | [||] -> failwith $"guest source contains no line matching %s{marker}; the test's oracle is broken"
+        | many ->
+            failwith $"guest source has %d{many.Length} lines matching %s{marker}, so the expected line is ambiguous"
+
     let private objectOnStackSource =
         """
 class Program
@@ -147,7 +188,7 @@ class Program
                 with _ ->
                     ()
 
-    let private compileToTempDll (source : string) : string * string =
+    let private compileToTempDllWith (compile : string list -> byte[]) (source : string) : string * string =
         let suffix = Guid.NewGuid().ToString "N"
 
         let tempDir =
@@ -155,11 +196,11 @@ class Program
 
         Directory.CreateDirectory tempDir |> ignore<DirectoryInfo>
         let dllPath = Path.Combine (tempDir, "DebuggerHttpTest.dll")
-        File.WriteAllBytes (dllPath, Roslyn.compile [ source ])
+        File.WriteAllBytes (dllPath, compile [ source ])
         tempDir, dllPath
 
-    let private startServer (source : string) : RunningServer =
-        let tempDir, dllPath = compileToTempDll source
+    let private startServerWith (compile : string list -> byte[]) (source : string) : RunningServer =
+        let tempDir, dllPath = compileToTempDllWith compile source
 
         let dotnetRuntimes =
             DotnetRuntime.SelectForDll typeof<RunResult>.Assembly.Location
@@ -187,6 +228,14 @@ class Program
             BaseUrl = DebuggerServer.baseUrl app
             TempDir = tempDir
         }
+
+    let private startServer (source : string) : RunningServer = startServerWith Roslyn.compile source
+
+    /// As `startServer`, but the guest image carries an embedded portable PDB, so its frames
+    /// resolve to source. Opt-in per case: see `Roslyn.DebugSymbols` for why symbols are not the
+    /// default.
+    let private startServerWithSymbols (source : string) : RunningServer =
+        startServerWith Roslyn.compileWithSymbols source
 
     let private client (server : RunningServer) (token : string option) : HttpClient =
         let client = new HttpClient ()
@@ -555,4 +604,185 @@ class Program
 
             runJson.RootElement.GetProperty("session").GetProperty("status").GetString ()
             |> shouldEqual "running"
+        }
+
+    /// The frame a thread is actually executing must name the line it is on. Without this the
+    /// debugger reports `Assembly.Type.Method` plus an IL offset, which does not tell a reader
+    /// which of a method's statements they are looking at.
+    [<Test>]
+    let ``a frame carries the source line it is executing`` () : Task =
+        task {
+            use server = startServerWithSymbols recursiveSourceWithSymbols
+            use client = client server (Some token)
+
+            let! run = client.PostAsync ("run?maxSteps=200", emptyContent ())
+            run.StatusCode |> shouldEqual HttpStatusCode.OK
+
+            let! thread = client.GetAsync "thread/0"
+            thread.StatusCode |> shouldEqual HttpStatusCode.OK
+
+            use! threadJson = jsonDocument thread
+            let active = activeFrame threadJson.RootElement
+            let location = active.GetProperty "sourceLocation"
+
+            location.ValueKind |> shouldNotEqual JsonValueKind.Null
+
+            location.GetProperty("documentPath").GetString () |> shouldEqual "File0.cs"
+
+            location.GetProperty("startLine").GetInt32 ()
+            |> shouldEqual (lineContaining "// SPIN" recursiveSourceWithSymbols)
+        }
+
+    /// The decision this field's shape exists to make unambiguous. A caller's `ilOffset` is its
+    /// *resume* point — the instruction after the call — so attributing it there reports every
+    /// frame but the innermost one statement late. `sourceLocation` is instead resolved at the
+    /// call site, and carries the offset it used so the two can never be confused.
+    [<Test>]
+    let ``a caller frame is attributed to its call site, not its resume point`` () : Task =
+        task {
+            use server = startServerWithSymbols recursiveSourceWithSymbols
+            use client = client server (Some token)
+
+            let! run = client.PostAsync ("run?maxSteps=200", emptyContent ())
+            run.StatusCode |> shouldEqual HttpStatusCode.OK
+
+            let! thread = client.GetAsync "thread/0"
+            thread.StatusCode |> shouldEqual HttpStatusCode.OK
+
+            use! threadJson = jsonDocument thread
+
+            let frames =
+                threadJson.RootElement.GetProperty("frames").EnumerateArray () |> Seq.toList
+
+            let callers =
+                frames
+                |> List.filter (fun frame -> not (frame.GetProperty("active").GetBoolean ()))
+
+            // `Recurse(4)` plus `Main`, so there is something to be a caller.
+            callers |> List.isEmpty |> shouldEqual false
+
+            let expectedFor (method : string) : int =
+                if method.EndsWith "Main" then
+                    lineContaining "// ENTRY" recursiveSourceWithSymbols
+                else
+                    lineContaining "// RECURSE" recursiveSourceWithSymbols
+
+            for caller in callers do
+                let location = caller.GetProperty "sourceLocation"
+                location.ValueKind |> shouldNotEqual JsonValueKind.Null
+
+                location.GetProperty("startLine").GetInt32 ()
+                |> shouldEqual (expectedFor (caller.GetProperty("method").GetString ()))
+
+                // The discriminator, and the reason the offset is emitted: in a debug build the
+                // call site and the resume point often share a line — the compiler puts a `nop`
+                // after the call carrying the call's own sequence point — so equal lines would
+                // not prove the attribution happened. Differing offsets do.
+                location.GetProperty("ilOffset").GetInt32 ()
+                |> shouldNotEqual (caller.GetProperty("ilOffset").GetInt32 ())
+        }
+
+    /// A null location is the ordinary case, not a defect: the entire shared framework ships
+    /// without PDBs. The key must still be present, so a consumer can tell "not known here" from
+    /// "this server does not report locations".
+    [<Test>]
+    let ``a frame from an assembly without symbols reports a null source location`` () : Task =
+        task {
+            use server = startServer recursiveSource
+            use client = client server (Some token)
+
+            let! run = client.PostAsync ("run?maxSteps=200", emptyContent ())
+            run.StatusCode |> shouldEqual HttpStatusCode.OK
+
+            let! thread = client.GetAsync "thread/0"
+            thread.StatusCode |> shouldEqual HttpStatusCode.OK
+
+            use! threadJson = jsonDocument thread
+            let active = activeFrame threadJson.RootElement
+
+            active.GetProperty("sourceLocation").ValueKind |> shouldEqual JsonValueKind.Null
+        }
+
+    /// The field must reach every response that renders a frame, not only `GET /thread/{id}`.
+    /// They go through one writer precisely so this cannot drift apart.
+    [<Test>]
+    let ``the stack summary and state responses carry source locations too`` () : Task =
+        task {
+            use server = startServerWithSymbols recursiveSourceWithSymbols
+            use client = client server (Some token)
+
+            let! run = client.PostAsync ("run?maxSteps=200", emptyContent ())
+            run.StatusCode |> shouldEqual HttpStatusCode.OK
+
+            let spin = lineContaining "// SPIN" recursiveSourceWithSymbols
+
+            let! summary = client.GetAsync "thread/0/stack-summary?edgeFrames=2&topMethods=1"
+            summary.StatusCode |> shouldEqual HttpStatusCode.OK
+            use! summaryJson = jsonDocument summary
+
+            summaryJson.RootElement
+                .GetProperty("activeFrameSummary")
+                .GetProperty("sourceLocation")
+                .GetProperty("startLine")
+                .GetInt32 ()
+            |> shouldEqual spin
+
+            let! state = client.GetAsync "state"
+            state.StatusCode |> shouldEqual HttpStatusCode.OK
+            use! stateJson = jsonDocument state
+
+            // `heap` and `threads` sit inside the `session` object, not at the root.
+            let thread =
+                stateJson.RootElement.GetProperty("session").GetProperty("threads").EnumerateArray ()
+                |> Seq.head
+
+            thread.GetProperty("activeFrameSummary").GetProperty("sourceLocation").GetProperty("startLine").GetInt32 ()
+            |> shouldEqual spin
+        }
+
+    /// Before `Main` is installed the entry thread carries a placeholder frame: shaped like the
+    /// entry point so that everything reading a frame sees something sensible, but with a bare
+    /// `ret` body, because `Main` has not run.
+    ///
+    /// It must therefore report no source location. Resolving its offsets against the real
+    /// `Main`'s debug information would name a line of code that has not executed — and this is
+    /// reachable, not theoretical: a static initialiser that throws leaves the guest here, and
+    /// `/state` is the first call the debugging workflow tells you to make.
+    [<Test>]
+    let ``the pre-Main placeholder frame reports no source location`` () : Task =
+        task {
+            let source =
+                """
+class Program
+{
+    static readonly int Boom = int.Parse("not a number");
+
+    static int Main(string[] args)
+    {
+        return Boom;
+    }
+}
+"""
+
+            use server = startServerWithSymbols source
+            use client = client server (Some token)
+
+            let! state = client.GetAsync "state"
+            state.StatusCode |> shouldEqual HttpStatusCode.OK
+            use! stateJson = jsonDocument state
+
+            let thread =
+                stateJson.RootElement.GetProperty("session").GetProperty("threads").EnumerateArray ()
+                |> Seq.head
+
+            let frame = thread.GetProperty "activeFrameSummary"
+
+            // Asserted so the test cannot pass by the frame having become unrecognisable: it is
+            // still the entry-point-shaped placeholder, sitting at offset 0 of its `ret` body.
+            frame.GetProperty("method").GetString ()
+            |> shouldEqual "PawPrintTestAssembly.Program.Main"
+
+            frame.GetProperty("ilOffset").GetInt32 () |> shouldEqual 0
+
+            frame.GetProperty("sourceLocation").ValueKind |> shouldEqual JsonValueKind.Null
         }
