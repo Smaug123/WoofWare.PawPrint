@@ -1102,19 +1102,19 @@ module NativeRuntimeMethodHandle =
             // rejects static+virtual outside interfaces with a TypeLoadException, and
             // `PopulateMethods` routes interfaces down a branch that never reaches here.
             //
-            // Two shapes would land outside the vtable, and neither is reachable yet. Both are
-            // recorded because they are the answer to "what would CoreCLR have returned":
+            // Two shapes land outside the vtable. Both are recorded because they are the answer to
+            // "what would CoreCLR have returned":
             //
             //  - `PopulateProperties` (RuntimeType.CoreCLR.cs:1358) calls this on a property's
             //    accessor with *no* Virtual guard, testing `slot < numVirtuals` afterwards, so an
             //    ordinary non-virtual getter reaches it and CoreCLR answers with a non-vtable slot.
-            //    This is much the closer of the two to being live, and is getting closer: property
-            //    enumeration is no longer blocked on Property token enumeration (#921, #926) nor on
-            //    `Associates.AssignAssociates` (#934), and the duplicate check that reaches here is
-            //    exactly what was waiting on `GetSlot`. What still blocks it is parsing an ECMA
-            //    II.23.2.5 PropertySig -- see the `PropertySignatureBlob` arm of NativeSignature.fs,
-            //    which tracks the current state of that chain. Whoever lands PropertySig parsing
-            //    should expect to arrive here, and will need the non-vtable region.
+            //    This one is **live**: it is what the parked `UnionReflection` F# case now dies on,
+            //    reporting "method get_width occupies no slot in the vtable of its declaring type".
+            //    The chain that used to block it is gone -- Property token enumeration (#921, #926),
+            //    `Associates.AssignAssociates` (#934), and most recently the vtable layout rule for
+            //    an unmatched non-NewSlot virtual, without which a union's vtable could not be built
+            //    at all. Implementing the non-vtable region is what un-parks that case; see the
+            //    parking comment in TestFSharpPureCases for the observed failure.
             //
             //  - For a value type, the MethodTable builder duplicates every virtual, leaving the
             //    unboxing stub in the vtable slot and giving the unboxed copy a slot beyond

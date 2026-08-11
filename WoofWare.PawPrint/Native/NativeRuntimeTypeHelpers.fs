@@ -1013,23 +1013,46 @@ module NativeRuntimeTypeHelpers =
                 typeInfo.Methods
                 |> List.filter (fun method -> not method.IsStatic && method.IsVirtual)
 
-            let overrides, newSlots =
-                if typeInfo.IsInterface then
-                    // `MethodTableBuilder::PlaceVirtualMethods` adds every instance virtual an
-                    // interface declares unconditionally, without consulting NewSlot -- an
-                    // interface has no base class whose slots it could be reusing. The distinction
-                    // is not academic: corelib's `INumberBase<T>` declares
-                    // `System.IUtf8SpanFormattable.TryFormat` as `Private, Final, Virtual,
-                    // HideBySig` with no NewSlot -- measured, the only such method in corelib -- so
-                    // partitioning on NewSlot here would classify it as an override and then fail
-                    // for want of a base vtable to match it against.
-                    [], instanceVirtuals
-                else
-                    instanceVirtuals |> List.partition (fun method -> not method.IsNewSlot)
-
-            let state, slots =
-                ((state, baseSlots), overrides)
-                ||> List.fold (fun (state, slots) method ->
+            // Upstream is a single pass over the declared methods in MethodDef row order
+            // (`DeclaredMethodIterator` over the array `EnumerateClassMethods` fills in row order),
+            // and each method either replaces a parent slot or takes the next free one
+            // (`MethodTableBuilder::PlaceVirtualMethods`, methodtablebuilder.cpp:5405-5482). So
+            // overrides and fresh slots interleave, and it is *declaration* order -- not NewSlot --
+            // that decides the order of the fresh ones. Partitioning on NewSlot and appending the
+            // groups separately would agree only while fresh slots were the exclusive preserve of
+            // NewSlot methods, which stopped being true the moment the unmatched case below started
+            // allocating one. Measured on a fabricated type declaring an unmatched NewSlot virtual
+            // before an unmatched non-NewSlot one: the host CLR gives the NewSlot method the lower
+            // slot, and a NewSlot-grouped layout gets it backwards (TestFabricatedVtableLayout).
+            //
+            // Only the *parent's* slots are candidates for a match: upstream searches
+            // `bmtParent->pParentMethodHash`, built once from the parent MethodTable
+            // (methodtablebuilder.cpp:174-193) and never extended as this type's own methods are
+            // placed. A slot appended by an earlier method of *this* type is therefore not something
+            // a later one can land on.
+            //
+            // That is why the fold below carries the inherited slots and the fresh ones as two
+            // values rather than one growing list. `inherited` only ever has entries *replaced*, so
+            // it stays exactly the parent's vtable and the search cannot reach a fresh slot however
+            // the search is written. Threading one list and capping the search at the parent's length
+            // would compute the same answer, but this way the invariant is a property of the shape
+            // rather than of remembering to cap; it also keeps appending O(1) rather than copying the
+            // accumulated vtable per method, which for an interface -- where every member appends --
+            // is the difference between a linear layout and a quadratic one.
+            //
+            // The restriction is load-bearing on legal metadata, not defensive insurance. ECMA-335
+            // II.22.26 stops a type repeating a method blob-for-blob, but `candidateFillsSlot`
+            // compares *concretised* signatures -- which is what lets an ordinary override of a
+            // generic base match at all -- and that conflates blobs which genuinely differ. The
+            // worked example is `GenericConflation`1` in TestFabricatedVtableLayout: it declares
+            // `Conflated(!0)` as NewSlot and `Conflated(string)` without it, and closing it at
+            // `T = string` makes the second match the slot the first was just appended to. CoreCLR
+            // lays slots out on the generic definition, where the two are distinct, and gives each
+            // its own; a search that could see fresh slots would have the second replace the first
+            // and the vtable would come out a slot short.
+            let state, inherited, freshReversed =
+                ((state, baseSlots, []), instanceVirtuals)
+                ||> List.fold (fun (state, slots, fresh) method ->
                     let candidate =
                         {
                             VtableSlot.Method = method
@@ -1037,13 +1060,26 @@ module NativeRuntimeTypeHelpers =
                         }
 
                     let state, matched =
-                        ((state, []), List.indexed slots)
-                        ||> List.fold (fun (state, acc) (i, slot) ->
-                            let state, fills =
-                                candidateFillsSlot loggerFactory baseClassTypes operation state candidate slot
+                        if method.IsNewSlot then
+                            // "If the member is marked with a new slot we do not need to find it in
+                            // the parent" -- it is asking for a slot of its own by construction.
+                            state, []
+                        else
+                            // An interface reaches here with no inherited slots, so the search is
+                            // empty and every method it declares appends -- which is exactly what
+                            // upstream's `IsInterface` arm does, an interface having no parent whose
+                            // slots it could reuse. That arm needs no special case here, but it does
+                            // need the unmatched case below to allocate rather than fail: corelib's
+                            // `INumberBase<T>` declares `System.IUtf8SpanFormattable.TryFormat` as
+                            // `Private, Final, Virtual, HideBySig` with no NewSlot -- measured, the
+                            // only such method in corelib -- and it takes this path.
+                            ((state, []), List.indexed slots)
+                            ||> List.fold (fun (state, acc) (i, slot) ->
+                                let state, fills =
+                                    candidateFillsSlot loggerFactory baseClassTypes operation state candidate slot
 
-                            state, (if fills then i :: acc else acc)
-                        )
+                                state, (if fills then i :: acc else acc)
+                            )
 
                     // More than one slot can legitimately match: `A` declares `virtual M()`, `B :
                     // A` declares `new virtual M()` with the identical signature, and `C : B`
@@ -1123,32 +1159,39 @@ module NativeRuntimeTypeHelpers =
                             failwith
                                 $"%s{operation}: virtual method %s{method.Name} on %O{concreteTypeInfo} is not marked newslot and matches vtable slot %i{mostDerived}, which is occupied by the final method %s{occupant.Method.Name} declared by %O{occupant.DeclaredBy}; CoreCLR rejects this type at load time with a TypeLoadException rather than laying out a vtable for it"
 
-                        state, slots |> List.mapi (fun j slot -> if j = mostDerived then candidate else slot)
+                        state, (slots |> List.mapi (fun j slot -> if j = mostDerived then candidate else slot)), fresh
                     | [] ->
-                        // CoreCLR does not fail here: `MethodTableBuilder` gives an unmatched
-                        // non-newslot virtual a fresh slot. That fallback is not dead code
-                        // upstream, and the shape is not confined to corrupt images: assembly
-                        // version skew produces it, because a derived assembly compiled against a
-                        // base that has since removed or changed the virtual still carries the
-                        // non-newslot bit, and CoreCLR loads and runs that app. Roslyn does not
-                        // emit it against the assemblies it compiled against, so PawPrint has
-                        // never had a case to walk; fail with the method named rather than model a
-                        // layout no test exercises, since silently appending would shift every
-                        // later slot and corrupt the dedupe key `PopulateMethods` indexes with.
-                        failwith
-                            $"TODO: %s{operation}: virtual method %s{method.Name} on %O{concreteTypeInfo} is not marked newslot but matches no slot in the base vtable; PawPrint does not model CoreCLR's fallback of allocating it a fresh slot"
+                        // "Else, place the method in the next available empty vtable slot"
+                        // (methodtablebuilder.cpp:5401). Both kinds of method arrive here: one
+                        // marked NewSlot, which skipped the search and is asking for a slot of its
+                        // own, and one *not* marked NewSlot whose search came up empty. Upstream
+                        // makes no distinction between them -- both go to `AddVirtualMethod` -- and
+                        // neither does this.
+                        //
+                        // The second kind is what F# emits constantly: the structural equality and
+                        // comparison members of a union or record are `Public, Final, Virtual,
+                        // HideBySig` with no NewSlot, so `Equals(T)` and `CompareTo(object,
+                        // IComparer)` match nothing on `Object` and land here. Roslyn never emits
+                        // it -- 0 of corelib's 1470 non-generic classes trigger it, measured -- which
+                        // is why it looked like a contingency for corrupt or version-skewed images
+                        // for as long as PawPrint only ever read C#.
+                        //
+                        // Appending is the whole of the rule, but it costs a diagnostic: this used
+                        // to be a `failwith` naming the method, which is what a gap in
+                        // `candidateFillsSlot` announced itself as. A gap now shows up as a
+                        // spurious extra slot instead, so what catches one is the slot-by-slot
+                        // comparison against the host CLR's own `GetSlot` in TestVirtualMethodSlots
+                        // -- a check on the layout rather than merely on its length, because a walk
+                        // that appends one slot too many while dropping a real one has the right
+                        // length.
+                        state, slots, candidate :: fresh
                 )
 
-            let newSlots =
-                newSlots
-                |> List.map (fun method ->
-                    {
-                        VtableSlot.Method = method
-                        VtableSlot.DeclaredBy = concreteTypeInfo
-                    }
-                )
+            // The fresh slots were accumulated head-first, so undo that once here rather than
+            // copying the accumulated vtable on every append.
+            let slots = inherited @ List.rev freshReversed
 
-            state, slots @ newSlots
+            state, slots
 
     /// What identifies a vtable slot's occupant well enough to find it again: the full name of the
     /// assembly that declares the method, paired with the method's within-assembly identity.
