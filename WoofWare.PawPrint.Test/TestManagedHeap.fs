@@ -621,8 +621,16 @@ module TestManagedHeap =
         // The oracle is the allocation record itself: `getArrayShape` must project it
         // field-for-field, never derive or normalise. `Length` in particular is stored,
         // not recomputed from `Lengths`, and the projection must not start recomputing it.
+        //
+        // The backing store is deliberately left empty while `Length` is not. That is an
+        // inconsistent allocation, which is the point: it distinguishes a projection that
+        // reads the stored `Length` from one that derives it from `Elements.Length`, and
+        // it keeps the generator from ever materialising a large array. Bounding the rank
+        // to 6 dimensions of at most 4 keeps the product well inside Int32 too, so no
+        // seed can make this test fail for reasons unrelated to the property.
         let property (lengths : int list) : bool =
-            let lengths = lengths |> List.map (fun n -> (abs n) % 5)
+            let lengths = lengths |> List.truncate 6 |> List.map (fun n -> (abs (n % 5)))
+
             let total = lengths |> List.fold (*) 1
 
             let allocation : AllocatedArray =
@@ -633,9 +641,7 @@ module TestManagedHeap =
                             Length = total
                             Lengths = ImmutableArray.CreateRange lengths
                         }
-                    Elements =
-                        Seq.replicate total (CliType.Numeric (CliNumericType.Int32 0))
-                        |> ImmutableArray.CreateRange
+                    Elements = ImmutableArray.Empty
                 }
 
             let addr, heap = ManagedHeap.allocateArray allocation ManagedHeap.empty
