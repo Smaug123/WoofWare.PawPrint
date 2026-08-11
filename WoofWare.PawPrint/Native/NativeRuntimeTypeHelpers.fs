@@ -2212,3 +2212,171 @@ module ActivationInfo =
                 state, ActivationInfo.ValueTypeWithoutConstructor handle
             else
                 state, ActivationInfo.Rejected ActivationRejection.NoDefaultConstructor
+
+/// Why `ReflectionInvocation_GetBoxInfo` refused to describe a type, and which guest exception
+/// CoreCLR throws for it. As with `ActivationRejection`, only the exception *type* is carried:
+/// PawPrint's runtime-exception path constructs through a parameterless ctor.
+///
+/// These are the only two of `ValidateTypeAbleToBeInstantiated`'s checks a guest can reach through
+/// this QCall; see `BoxInfo.classify` for why the rest cannot.
+[<RequireQualifiedAccess>]
+type BoxRejection =
+    /// `typeHandle.GetSignatureCorElementType() == ELEMENT_TYPE_VOID` ->
+    /// `ArgumentException`. Reachable: `System.Void` is a value type with a MethodTable, so
+    /// `RuntimeHelpers.Box(ref b, typeof(void).TypeHandle)` passes every check `BoxCache`'s
+    /// constructor makes and lands here.
+    | Void
+    /// `pMT->IsByRefLike()` under `allowRefLike: false` -> `NotSupportedException`. Reachable
+    /// the same way, via any `ref struct`'s type handle.
+    | ByRefLike
+
+/// What `ReflectionInvocation_GetBoxInfo` should hand back for a type: enough for
+/// `RuntimeType.BoxCache.Box` to allocate a box by `calli` and copy the payload into it.
+type BoxDescription =
+    {
+        /// CoreCLR's `pvAllocatorFirstArg`: the MethodTable to allocate. For a `Nullable<T>` this
+        /// is *`T`'s*, not the nullable's, because a boxed `Nullable<T>` is a boxed `T`.
+        MethodTable : ConcreteTypeHandle
+        /// CoreCLR's `pValueOffset`: `Nullable::GetValueAddrOffset` for a `Nullable<T>`, else 0.
+        /// The guest adds this to the source byref before copying, and separately uses
+        /// `!= 0` as its "is this a nullable" test.
+        ValueOffset : int32
+        /// CoreCLR's `pValueSize`: `GetNumInstanceFieldBytes` of `MethodTable` — i.e. of the
+        /// substituted `T` for a nullable, not of the `Nullable<T>`.
+        ValueSize : uint32
+    }
+
+[<RequireQualifiedAccess>]
+type BoxInfo =
+    | Rejected of BoxRejection
+    | Describes of BoxDescription
+
+[<RequireQualifiedAccess>]
+module BoxInfo =
+    /// Reproduce CoreCLR's `ReflectionInvocation_GetBoxInfo` (reflectioninvocation.cpp:1909),
+    /// including its `ValidateTypeAbleToBeInstantiated(type, allowRefLike: false,
+    /// fGetUninitializedObject: true)` prologue.
+    ///
+    /// Note that the exception kinds differ from `ActivationInfo.classify`'s even where the check
+    /// is the same one: `fGetUninitializedObject` is `true` here and `false` there, which swaps
+    /// `ArgumentException` for `MissingMethodException` on the shape checks and
+    /// `MemberAccessException` for `MissingMethodException` on the abstract ones. Do not read
+    /// across from the sibling classifier without re-reading the C++.
+    ///
+    /// Most of that prologue is unreachable, because the sole managed caller —
+    /// `RuntimeType.BoxCache`'s constructor (RuntimeType.BoxCache.cs:42-55) — filters ahead of it:
+    /// it throws `ArgumentException` itself for `IsTypeDesc` and for `ContainsGenericVariables`,
+    /// and it calls this QCall *only* when `_pMT->IsValueType`. That leaves `void` and byref-like
+    /// as the two live rejections, and rules out the array, delegate, variable-length (String),
+    /// abstract and interface checks — none of which can hold of a value type emitted by any real
+    /// compiler. Rather than write five dead predicates, this asserts the caller's own
+    /// `IsValueType` gate, which is exactly what CoreCLR does immediately after the validation
+    /// (`_ASSERTE(pMT->IsValueType() || ...)`, reflectioninvocation.cpp:1936). A sixth check,
+    /// `IsSharedByGenericInstantiations`, has no analogue at all: PawPrint has no `__Canon`.
+    ///
+    /// Beware the shape of the sibling `RuntimeTypeHandle_GetActivationInfo` handler, which writes
+    /// *all-null* pointers for `Nullable<T>` because `Activator.CreateInstance(typeof(int?))` is
+    /// null. That is the opposite of what is wanted here: this QCall must describe a real
+    /// allocator, offset and size for the underlying `T`.
+    let classify
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (target : RuntimeTypeHandleTarget)
+        (state : IlMachineState)
+        : IlMachineState * BoxInfo
+        =
+        let handle =
+            match target with
+            | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
+                failwith
+                    $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeHelpers.fs:%s{__LINE__}; got %O{openConstructed}"
+            | RuntimeTypeHandleTarget.Closed handle -> handle
+            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+            | RuntimeTypeHandleTarget.GenericParameter _
+            | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
+                failwith
+                    $"%s{operation}: reached for %O{target}, which contains generic variables; RuntimeType.BoxCache's constructor should have thrown ArgumentException (Arg_TypeNotSupported) before the QCall"
+
+        match handle with
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ ->
+            // CoreCLR's `typeHandle.IsTypeDesc()`, which `BoxCache`'s constructor already
+            // rejected with ArgumentException.
+            failwith
+                $"%s{operation}: reached for the TypeDesc %O{handle}; RuntimeType.BoxCache's constructor should have thrown ArgumentException (Arg_TypeNotSupported) before the QCall"
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _ ->
+            // CoreCLR's `typeHandle.IsArray()`. An array is not a value type, so `BoxCache`'s
+            // `_pMT->IsValueType` gate is what excludes it.
+            failwith
+                $"%s{operation}: reached for the array type %O{handle}, which is not a value type; RuntimeType.BoxCache calls this QCall only when MethodTable::IsValueType"
+        | ConcreteTypeHandle.Concrete _ ->
+
+        let ct, typeInfo =
+            AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes handle
+            |> Option.defaultWith (fun () ->
+                failwith $"%s{operation}: ConcreteTypeHandle %O{handle} not found in AllConcreteTypes"
+            )
+
+        // The void check comes first in `ValidateTypeAbleToBeInstantiated`, and must stay ahead of
+        // the value-type assertion below: `System.Void` *is* a value type, so the assertion would
+        // wave it through.
+        if TypeInfo.NominallyEqual typeInfo baseClassTypes.Void then
+            state, BoxInfo.Rejected BoxRejection.Void
+        elif not (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo) then
+            failwith
+                $"%s{operation}: reached for the reference type %s{typeInfo.Namespace}.%s{typeInfo.Name}; RuntimeType.BoxCache calls this QCall only when MethodTable::IsValueType"
+        elif DumpedAssembly.isByRefLike baseClassTypes state._LoadedAssemblies typeInfo then
+            state, BoxInfo.Rejected BoxRejection.ByRefLike
+        else
+
+        // The `Nullable<T>` substitution: CoreCLR replaces the MethodTable with `T`'s and reports
+        // where `T` starts inside the nullable, so the allocator produces a boxed `T` and the copy
+        // skips `hasValue`.
+        let state, methodTable, valueOffset =
+            match InternalTypeKind.kind baseClassTypes ct with
+            | InternalTypeKind.Ordinary
+            | InternalTypeKind.NativeInt
+            | InternalTypeKind.NativeUInt -> state, handle, 0
+            | InternalTypeKind.Nullable ->
+
+            let underlying =
+                if ct.Generics.IsEmpty then
+                    failwith
+                        $"%s{operation}: System.Nullable`1 instantiation %O{handle} unexpectedly has no generic arguments"
+                else
+                    ct.Generics.[0]
+
+            // The offset comes from PawPrint's own layout of this `Nullable<T>` rather than from
+            // CoreCLR's, because it is PawPrint's byref model that has to resolve the
+            // `Unsafe.Add(ref source, _nullableValueOffset)` the guest goes on to perform. A
+            // constant taken from CoreCLR would be right only where the two layouts agree.
+            let valueField = IlMachineState.requiredOwnInstanceFieldId state handle "value"
+
+            let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes handle
+
+            let offset, _size = CliType.getFieldLayoutById valueField zero
+
+            if offset <= 0 then
+                // `hasValue` occupies offset 0 in CoreCLR and in every layout PawPrint computes
+                // (it is a `bool`, so auto-layout places it in a primitive bucket ahead of the
+                // `value` field's value-class bucket). This matters beyond tidiness: managed
+                // `Box` uses `_nullableValueOffset != 0` as its *only* test for whether the
+                // source is a nullable at all (RuntimeType.BoxCache.cs:79), so a zero offset
+                // would silently make it copy a `Nullable<T>` as though it were a `T`.
+                failwith
+                    $"%s{operation}: laid out System.Nullable`1's 'value' field at offset %d{offset} in %O{handle}; CoreCLR places it after 'hasValue', and managed BoxCache.Box reads a zero offset as 'not a nullable'"
+
+            state, underlying, offset
+
+        let valueSize, state =
+            MethodTableProjection.numInstanceFieldBytes baseClassTypes state methodTable
+
+        state,
+        BoxInfo.Describes
+            {
+                MethodTable = methodTable
+                ValueOffset = valueOffset
+                ValueSize = valueSize
+            }
