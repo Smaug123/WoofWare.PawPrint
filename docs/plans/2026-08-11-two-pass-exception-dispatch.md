@@ -92,6 +92,14 @@ correct-by-construction with a loud failure rather than a tested path.
   becomes unconditional at every append, as `StackTraceInfo::AppendElement`'s is. Re-implementing
   "first append of this raise only" as a carried boolean would reinvent the field and leave #865's
   instance 4 wrong. `ForeignRaiseFlagNotStolenByCleanup.cs` is un-parked.
+  One behaviour change comes with that, recorded here rather than in `docs/divergences.md`
+  because it moves PawPrint *towards* CoreCLR rather than away: a flag set by cleanup inside a
+  wrapping frame is now spent by the wrapper's own first append. The wrapper is a fresh raise —
+  CoreCLR's wrap is ordinary managed `throw new TargetInvocationException(e)`, whose first
+  `AppendElement` performs the same unconditional read against a still-empty trace — whereas the
+  old shape carried an eligibility flag across the wrap and declined. Reaching the difference
+  needs a `.cctor` that both throws and sets the flag from its own cleanup while under
+  `Activator.CreateInstance<T>()`, so it is reasoned rather than tested.
 * **`findExceptionHandler` and its `isCleanup` flag deleted.** A classifier every caller ignored
   is the defect; `findAcceptingClause` cannot express the wrong answer.
 * **`ExceptionDispatchResult.HandlerFound` renamed `Dispatched`.** Three of its four destinations

@@ -388,14 +388,23 @@ module ExceptionDispatching =
     /// the two callers are PawPrint's two frame-append sites, not its two dispatch entry points.
     ///
     /// The read is unconditional at every append, exactly as CoreCLR's is, with no notion of "this
-    /// raise's first append". That is only safe because appends all happen in the first pass,
-    /// before any cleanup clause runs: guest code that sets the flag from a `finally` cannot have
-    /// it consumed by the raise it is unwinding, because that raise finished appending before the
-    /// `finally` started. `sourcesPure/ForeignRaiseFlagSetInFinally.cs` and
+    /// raise's first append". Within one raise that is safe because its appends all happen in the
+    /// first pass, before any cleanup clause runs: guest code that sets the flag from a `finally`
+    /// cannot have it consumed by the raise it is unwinding, because that raise finished appending
+    /// before the `finally` started. `sourcesPure/ForeignRaiseFlagSetInFinally.cs` and
     /// `ForeignRaiseFlagPendingBeforeCleanup.cs` differ only in *when* the flag is set and pin the
     /// two sides of that. The one place guest code does run between two appends of one raise is a
     /// `filter`, which is precisely where CoreCLR would also let a flag be consumed — so the
     /// unconditional read is what makes that case come out right rather than a gap in it.
+    ///
+    /// There is a third append site where cleanup *has* already run: the seed a wrapping boundary
+    /// gives its synthesised wrapper (`deliverToTarget`), which the second pass reaches only after
+    /// running the wrapping frame's cleanup. That is not an exception to the rule but a different
+    /// raise — CoreCLR's own wrap is managed `throw new TargetInvocationException(e)`, whose first
+    /// append performs the same unconditional read — so the answer is right for the same reason.
+    /// It is called out because PawPrint's pre-two-pass shape carried an eligibility flag across
+    /// the wrap and declined; `docs/plans/2026-08-11-two-pass-exception-dispatch.md` records why
+    /// the new answer is the faithful one.
     ///
     /// The frames come from the exception object rather than from any in-flight list, because
     /// CoreCLR re-reads `_stackTrace` at every append. That is observable: a nested throw of the
@@ -625,8 +634,16 @@ module ExceptionDispatching =
             failwith
                 $"Logic error: the first pass of exception dispatch concluded that cleanup region %O{region} of %s{frame.ExecutingMethod.Name} caught an exception; only Catch and Filter can catch"
         | ExceptionSearchOutcome.AbandonedAtFilter _ ->
-            // The exception dies at the filter's boundary, so cleanup inside the filter body
-            // runs and anything enclosing the filter clause does not.
+            // The exception dies at the filter's boundary, so cleanup inside the filter body runs
+            // and anything enclosing the filter clause does not.
+            //
+            // One shape this under-runs: a cleanup clause whose `try` begins at exactly
+            // `FilterOffset` covers that offset and so is excluded, though it too is being
+            // abandoned wholesale. It needs hand-written IL — C#'s `when` puts any `try` a filter
+            // contains in a *callee* frame — and unlike the other filter-internal EH corners here
+            // it fails quietly rather than loudly, because it is a clause not run rather than a
+            // state the code cannot describe. Recorded rather than handled: what the CLR does with
+            // it is unmeasured, and inventing an answer would be worse than naming the gap.
             match activeFilterOf frame with
             | Some continuation -> Some continuation.CurrentFilter.FilterOffset
             | None ->
@@ -701,11 +718,13 @@ module ExceptionDispatching =
                         failwith
                             $"Logic error: failed to look up ConcreteType for initialising-type handle %O{finishedInitialising} when synthesising TypeInitializationException"
 
-                // The trace is already complete and projected by the time the second pass runs,
-                // but the *wrapped* exception is about to stop being the one in flight, so this
-                // is its last chance to be written down under its own identity.
-                let state = projectStackTrace loggerFactory corelib cliException state
-
+                // No projection here, unlike the pre-two-pass code, which wrote the in-flight
+                // trace onto the exception at each wrap because that was the last point at which
+                // it held one. `concludeFirstPass` has already frozen this exception's completed
+                // trace, so a write here could only be a no-op or a regression: the second pass
+                // runs the wrapping frame's cleanup before arriving, and guest code there may have
+                // moved the object's token on — `RestoreDispatchState` assigns `_stackTrace`
+                // directly — which re-projecting the search's older frames would clobber.
                 let tieAddr, tieType, state =
                     IlMachineState.synthesizeTypeInitializationException
                         loggerFactory
@@ -738,8 +757,12 @@ module ExceptionDispatching =
             state, cliException, exceptionType
         else
 
-        let state = projectStackTrace loggerFactory corelib cliException state
-
+        // As above, no projection. When both wraps fire on one boundary — the chained
+        // `Activator.CreateInstance<T>()`-over-a-throwing-`.cctor` case — `cliException` here is
+        // the `TypeInitializationException` synthesised a few lines up, whose trace is `[]`, so
+        // the pre-two-pass code's write was already inert: it stamped an empty trace onto an
+        // object born a moment earlier. That born-dead token is what leaves the chained TIE
+        // frameless, and it is `ActivatorCctorTypeInitializationTrace.cs`'s parked subject.
         let tieAddr, tieType, state =
             IlMachineState.synthesizeTargetInvocationException loggerFactory corelib cliException.ExceptionObject state
 

@@ -508,30 +508,6 @@ static void Cleaner()
 clause runs at all, that the trace it reads names every frame including `Main`'s, and that an
 `Environment.Exit` from inside it decides the exit code.
 
-## A foreign-raise flag set inside a wrapping frame's cleanup is spent by the wrapper
-
-**CoreCLR**: `Exception.PrepareForForeignExceptionRaise` sets a per-thread flag which the next
-appended stack-trace frame consumes (`StackTraceInfo::AppendElement`, excep.cpp:3016). CoreCLR's
-`RuntimeType.CreateInstanceOfT` wrap is ordinary managed code — `catch (Exception e) { throw new
-TargetInvocationException(e); }` — so the wrapper is a genuinely fresh raise, and its first append
-performs the same unconditional read-and-reset against a trace that is still empty.
-
-**PawPrint**: identical, and reached by the same route: a wrap boundary ends one first-pass search
-and seeds the next at the caller's call site, and that seed is an append like any other. The
-divergence is only from PawPrint's *own* earlier behaviour, where the wrap carried an eligibility
-flag forward and the post-wrap append could decline to consume.
-
-**Spec status**: Outside ECMA-335.
-
-**Why we chose this**: it is what the unconditional read-and-reset gives for free, and matching
-CoreCLR's rule exactly is worth more than preserving a behaviour that only existed to paper over
-the absence of a first pass. Reaching the difference needs a `.cctor` that both throws and sets the
-flag from its own cleanup while under `Activator.CreateInstance<T>()`, which is why this is
-recorded rather than tested.
-
-**Where this lives in code**: `ExceptionDispatching.consumeForeignExceptionRaise`, called from
-`appendCallerFrame` and from `throwExceptionObject`.
-
 ## `GC.AllocateUninitializedArray` returns a zeroed array
 
 **CoreCLR**: `GC.AllocateUninitializedArray<T>(int, bool)` passes `GC_ALLOC_ZEROING_OPTIONAL` to
