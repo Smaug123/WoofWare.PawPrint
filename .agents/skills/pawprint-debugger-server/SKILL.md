@@ -104,11 +104,20 @@ case for the entire shared framework (it ships without PDBs), for synthesised st
 IL the compiler marked as having no source. Only assemblies built with debug information
 resolve. Do not report a null here as a defect.
 
-**`ilOffset` inside the location is not always the frame's `ilOffset`.** For the active frame
-they agree. For any *caller*, the frame's own `ilOffset` is where it will resume — the
-instruction after the call — so the location is instead resolved at the call site, and says
-which offset it used. Read the source line from `sourceLocation`, not by looking up the
-frame's `ilOffset` yourself, or every caller will appear one statement further on than it is.
+**`ilOffset` inside the location is often not the frame's `ilOffset`, and that is not a bug.**
+The frame's `ilOffset` is its program counter; the location's is where the source was actually
+looked up. They differ in two cases, both deliberate:
+
+- For any *caller*, the frame's `ilOffset` is where it will resume — the instruction after the
+  call — so the location is resolved at the call site instead.
+- For an active frame on a thread blocked in a QCall (`blockedOnJoin`, the monitor,
+  wait-handle and sleep statuses), the program counter has already advanced past the call that
+  blocked it, so the location steps back onto that call. This is exactly the case you are most
+  likely to be inspecting, so expect the two to disagree there.
+
+Read the source line from `sourceLocation`. Never look the frame's own `ilOffset` up in the
+PDB yourself: callers would appear one statement further on than they are, and a blocked thread
+would appear to be on the statement after the one it is blocked in.
 
 `documentPath` is recorded exactly as the compiler saw it, so it names paths on whichever
 machine built the assembly. It may well not exist on this one.

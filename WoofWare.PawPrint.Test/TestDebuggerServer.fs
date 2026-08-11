@@ -739,3 +739,50 @@ class Program
             thread.GetProperty("activeFrameSummary").GetProperty("sourceLocation").GetProperty("startLine").GetInt32 ()
             |> shouldEqual spin
         }
+
+    /// Before `Main` is installed the entry thread carries a placeholder frame: shaped like the
+    /// entry point so that everything reading a frame sees something sensible, but with a bare
+    /// `ret` body, because `Main` has not run.
+    ///
+    /// It must therefore report no source location. Resolving its offsets against the real
+    /// `Main`'s debug information would name a line of code that has not executed — and this is
+    /// reachable, not theoretical: a static initialiser that throws leaves the guest here, and
+    /// `/state` is the first call the debugging workflow tells you to make.
+    [<Test>]
+    let ``the pre-Main placeholder frame reports no source location`` () : Task =
+        task {
+            let source =
+                """
+class Program
+{
+    static readonly int Boom = int.Parse("not a number");
+
+    static int Main(string[] args)
+    {
+        return Boom;
+    }
+}
+"""
+
+            use server = startServerWithSymbols source
+            use client = client server (Some token)
+
+            let! state = client.GetAsync "state"
+            state.StatusCode |> shouldEqual HttpStatusCode.OK
+            use! stateJson = jsonDocument state
+
+            let thread =
+                stateJson.RootElement.GetProperty("session").GetProperty("threads").EnumerateArray ()
+                |> Seq.head
+
+            let frame = thread.GetProperty "activeFrameSummary"
+
+            // Asserted so the test cannot pass by the frame having become unrecognisable: it is
+            // still the entry-point-shaped placeholder, sitting at offset 0 of its `ret` body.
+            frame.GetProperty("method").GetString ()
+            |> shouldEqual "PawPrintTestAssembly.Program.Main"
+
+            frame.GetProperty("ilOffset").GetInt32 () |> shouldEqual 0
+
+            frame.GetProperty("sourceLocation").ValueKind |> shouldEqual JsonValueKind.Null
+        }
