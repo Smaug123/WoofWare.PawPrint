@@ -13,6 +13,11 @@ module NativeMetadataImport =
     /// CoreCLR special-cases it to mean the nested classes of the parent (see
     /// <c>nestedTypeDefinitionsForTypeDefinition</c>).
     let private metadataTokenTypeTypeDef : int32 = 0x02000000
+
+    /// <c>mdtProperty</c>. Passed by <c>MetadataImport.EnumProperties</c>, whose only caller is
+    /// <c>RuntimeType.PopulateProperties</c>.
+    let private metadataTokenTypeProperty : int32 = 0x17000000
+
     let private metadataEnumSmallResultLimit : int = 16
 
     /// <c>mdTypeDefNil</c>: TypeDef table code (0x02) | row 0. Returned by
@@ -39,6 +44,15 @@ module NativeMetadataImport =
             System.Reflection.Metadata.TypeDefinitionHandle.op_Implicit typeHandle
 
         System.Reflection.Metadata.Ecma335.MetadataTokens.GetToken typeHandle
+
+    let private metadataTokenOfPropertyDefinitionHandle
+        (propertyHandle : System.Reflection.Metadata.PropertyDefinitionHandle)
+        : int32
+        =
+        let propertyHandle : System.Reflection.Metadata.EntityHandle =
+            System.Reflection.Metadata.PropertyDefinitionHandle.op_Implicit propertyHandle
+
+        System.Reflection.Metadata.Ecma335.MetadataTokens.GetToken propertyHandle
 
     let private metadataImportHandleOfArg (operation : string) (arg : CliType) : string =
         match CliType.unwrapPrimitiveLikeDeep arg with
@@ -199,6 +213,72 @@ module NativeMetadataImport =
         | token ->
             failwith
                 $"%s{operation}: expected TypeDef parent token for FieldDef enumeration, got %O{token} from 0x%08x{parent}"
+
+    /// The properties declared by the TypeDef named by <paramref name="parent"/>, as raw metadata
+    /// tokens, in the order the real runtime returns them.
+    ///
+    /// This reads the PropertyMap run (ECMA-335 II.22.35) straight from the metadata rather than
+    /// from a parsed index, unlike the FieldDef sibling above: PawPrint models no properties at all,
+    /// and the QCall's contract is a list of raw tokens, so a domain model would be built for this
+    /// one call site. (<c>NestedTypeDefsByEnclosing</c> exists because the NestedClass table has no
+    /// per-parent grouping at all; PropertyMap does.) That means the parent must be validated here,
+    /// because an out-of-range handle reaches the reader as
+    /// <c>BadImageFormatException: Read out of bounds</c> — a PawPrint gap wearing a corrupt image's
+    /// clothes.
+    ///
+    /// Deliberately unfiltered and non-transitive: CoreCLR's fallback branch is a plain
+    /// <c>EnumInit</c>/<c>EnumNext</c> over that run, so private, static and indexer properties are
+    /// all returned, and inherited ones are not — <c>RuntimeType.PopulateProperties</c> applies
+    /// binding flags itself and walks the base chain, calling this once per type.
+    let private propertyDefinitionsForTypeDefinition
+        (operation : string)
+        (assembly : DumpedAssembly)
+        (parent : int32)
+        : int32 list
+        =
+        match MetadataToken.ofInt parent with
+        | MetadataToken.TypeDefinition typeDefHandle ->
+            if not (assembly.TypeDefs.ContainsKey typeDefHandle) then
+                failwith $"%s{operation}: TypeDef token 0x%08x{parent} was not present in %s{assembly.Name.FullName}"
+
+            let metadataReader = metadataReaderOf assembly
+
+            (metadataReader.GetTypeDefinition typeDefHandle).GetProperties ()
+            |> Seq.map metadataTokenOfPropertyDefinitionHandle
+            |> List.ofSeq
+        | token ->
+            failwith
+                $"%s{operation}: expected TypeDef parent token for property enumeration, got %O{token} from 0x%08x{parent}"
+
+    /// The <c>#Strings</c> entry naming a property definition.
+    ///
+    /// The presence check is the same guard as <c>propertyDefinitionsForTypeDefinition</c>'s and
+    /// exists for the same reason; <c>MetadataReader</c> has no total lookup, so the row number is
+    /// compared against the table's length directly.
+    let private propertyDefinitionName
+        (operation : string)
+        (assembly : DumpedAssembly)
+        (propertyHandle : System.Reflection.Metadata.PropertyDefinitionHandle)
+        : string
+        =
+        let metadataReader = metadataReaderOf assembly
+
+        let rowNumber =
+            System.Reflection.Metadata.Ecma335.MetadataTokens.GetRowNumber (
+                System.Reflection.Metadata.PropertyDefinitionHandle.op_Implicit propertyHandle
+            )
+
+        let propertyRowCount =
+            System.Reflection.Metadata.Ecma335.MetadataReaderExtensions.GetTableRowCount (
+                metadataReader,
+                System.Reflection.Metadata.Ecma335.TableIndex.Property
+            )
+
+        if rowNumber < 1 || rowNumber > propertyRowCount then
+            failwith
+                $"%s{operation}: PropertyDef token 0x%08x{metadataTokenOfPropertyDefinitionHandle propertyHandle} was not present in %s{assembly.Name.FullName}"
+
+        metadataReader.GetString (metadataReader.GetPropertyDefinition propertyHandle).Name
 
     /// The types immediately nested inside the TypeDef named by <paramref name="parent"/>, as raw
     /// metadata tokens, in the order the real runtime returns them.
@@ -661,6 +741,8 @@ module NativeMetadataImport =
                     fieldDefinitionsForTypeDefinition operation assembly parent
                 elif tokenType = metadataTokenTypeTypeDef then
                     nestedTypeDefinitionsForTypeDefinition operation assembly parent
+                elif tokenType = metadataTokenTypeProperty then
+                    propertyDefinitionsForTypeDefinition operation assembly parent
                 else
                     failwith
                         $"TODO: %s{operation} does not yet support token type 0x%08x{tokenType} with parent 0x%08x{parent}"
@@ -767,18 +849,23 @@ module NativeMetadataImport =
             ConcreteByref (ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)) ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
             // CoreCLR's FCall (`managedmdimport.cpp:204`) answers seven token kinds, forwarding each
-            // to a different `IMDInternalImport` accessor. Only FieldDef can arrive here: of the six
-            // managed call sites — `MdFieldInfo.Name`, `RuntimeModule.ResolveLiteralField`, and the
-            // name filters in `RuntimeType`'s field/event/property population, plus
-            // `RuntimeParameterInfo.Name` — each passes a token of one fixed kind, and the Event,
-            // Property and ParamDef tokens are all minted by `MetadataImport.Enum`, which PawPrint
-            // refuses for those token types. MethodDef, `mdtModule` and TypeDef are handled by the
-            // FCall but reached by no managed caller at all: `RuntimeType.Name` goes through
-            // `Cache.GetName()`/`ConstructName`, and methods and non-literal fields have their own
-            // `RuntimeMethodHandle.GetName` / `RuntimeFieldHandle.GetName` QCalls.
+            // to a different `IMDInternalImport` accessor. This answers two, and the other five are
+            // out for two *different* reasons that are worth keeping apart.
             //
-            // So any other kind reaching here is a PawPrint gap rather than a bad image, and
-            // `fieldDefinition` says so. CoreCLR would instead return `E_FAIL` and the guest would
+            // MethodDef, `mdtModule` and TypeDef have no managed caller at all: `RuntimeType.Name`
+            // goes through `Cache.GetName()`/`ConstructName`, and methods and non-literal fields
+            // have their own `RuntimeMethodHandle.GetName` / `RuntimeFieldHandle.GetName` QCalls.
+            // Arms for those could never run whatever else PawPrint grows.
+            //
+            // Event and ParamDef *do* have callers — the name filter in
+            // `RuntimeType.PopulateEvents`, and `RuntimeParameterInfo.Name` — but their tokens are
+            // minted only by `MetadataImport.Enum`, which PawPrint still refuses for `mdtEvent` and
+            // `mdtParamDef`. That is contingent, not structural: Property was in this same group
+            // until property enumeration landed, and adding either enumeration means adding the
+            // matching arm here in the same change.
+            //
+            // Any other kind reaching here is therefore a PawPrint gap rather than a bad image, and
+            // the lookups below say so. CoreCLR would instead return `E_FAIL` and the guest would
             // see a `BadImageFormatException`, which would disguise the gap as a corrupt assembly.
             let operation = "MetadataImport.GetName"
             let assemblyFullName = metadataImportHandleOfArg operation instruction.Arguments.[0]
@@ -792,9 +879,18 @@ module NativeMetadataImport =
             let nameOut =
                 NativeCall.managedPointerOfPointerArgument operation "name out pointer" instruction.Arguments.[2]
 
-            // `FieldInfo.Name` is `mr.GetString def.Name`, i.e. the `#Strings` entry itself, so this
-            // is the same string CoreCLR's `GetNameOfFieldDef` returns rather than a reconstruction.
-            let name = (fieldDefinition operation assembly mdToken).Name
+            // Both are `mr.GetString def.Name`, i.e. the `#Strings` entry itself, so these are the
+            // same strings CoreCLR's `GetNameOfFieldDef`/`GetNameOfProperty` return rather than
+            // reconstructions. That matters for an indexer, whose metadata name (`Item`, or whatever
+            // `[IndexerName]` says) is not its C# spelling.
+            let name =
+                match MetadataToken.ofInt mdToken with
+                | MetadataToken.PropertyDefinition propertyHandle ->
+                    propertyDefinitionName operation assembly propertyHandle
+                | MetadataToken.FieldDefinition _ -> (fieldDefinition operation assembly mdToken).Name
+                | token ->
+                    failwith
+                        $"%s{operation}: expected FieldDef or PropertyDef token, got %O{token} from 0x%08x{mdToken}"
 
             completeWithUtf8String ctx nameOut name state
         | "System.Private.CoreLib",
