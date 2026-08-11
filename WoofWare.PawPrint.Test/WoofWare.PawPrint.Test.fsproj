@@ -107,6 +107,7 @@
     <Compile Include="TestCliValueTypeCoerceFrom.fs" />
     <Compile Include="TestExceptionHResults.fs" />
     <Compile Include="TestFaultHandlers.fs" />
+    <Compile Include="TestPrologueExceptionScope.fs" />
     <Compile Include="TestJsonLinesLogging.fs" />
     <Compile Include="TestHardwareIntrinsicsProfile.fs" />
     <Compile Include="TestEmulatedRuntime.fs" />
