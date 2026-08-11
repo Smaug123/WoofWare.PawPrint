@@ -545,7 +545,7 @@ module Program =
     /// fold the outcome back into the thread states. `prepared` must already have been through
     /// `advanceToDecision`; running this against an inter-tick value would consult the policy
     /// about a Runnable set that a deadline or a spurious wake was about to change.
-    let private stepDecidedCore
+    let private stepDecided
         (loggerFactory : ILoggerFactory)
         (logger : ILogger)
         (prepared : PreparedProgram)
@@ -651,42 +651,46 @@ module Program =
                 )
 
     /// <summary>
-    /// One tick, with any host failure annotated by where the guest was when it happened.
+    /// Run <paramref name="tick" />, annotating any host failure with where the guest was at
+    /// <paramref name="state" />.
     /// </summary>
     /// <remarks>
     /// <para>
     /// PawPrint fails by <c>failwith</c> in some 2,400 places, and almost none of them can name
     /// the guest: the least informative messages of all come from pure helpers inside the opcode
     /// implementations, which have no <c>IlMachineState</c> to consult and should not grow one
-    /// just to describe a failure. Annotating once here covers all of them.
+    /// just to describe a failure. Annotating at the tick covers all of them at once.
     /// </para>
     /// <para>
-    /// The whole tick is covered, not merely <c>AbstractMachine.executeOneStep</c>. Scheduler
-    /// bookkeeping runs on either side of the instruction — <c>chooseNext</c> before it,
-    /// <c>dischargeYieldDebts</c>, <c>onStepOutcome</c> and <c>onThreadTerminated</c> after —
-    /// and those failures are just as guest-provoked. `onThreadTerminated` refusing a thread
-    /// that exited still holding a monitor is a diagnostic *about the guest*, and would be far
+    /// A *whole* tick must be inside, not just the instruction. Work that can fail sits on both
+    /// sides of it: <c>advanceToDecision</c> applies spurious wakeups and moves the virtual
+    /// clock — which faults at its horizon — before the instruction, and
+    /// <c>dischargeYieldDebts</c>, <c>onStepOutcome</c> and <c>onThreadTerminated</c> run after.
+    /// Those failures are every bit as guest-provoked: <c>onThreadTerminated</c> refusing a
+    /// worker that exited still holding a monitor is a diagnostic *about the guest*, and is far
     /// less useful without knowing which guest code let go of it.
+    /// </para>
+    /// <para>
+    /// Hence the invariant this combinator exists to make checkable: <c>advanceToDecision</c> and
+    /// <c>stepDecided</c> are both private, and *every* call to either is inside an
+    /// <c>annotating</c>. There are three such sites — <c>stepPrepared</c>, and the two in the
+    /// fork-prefix sweep — and grepping for the two names finds exactly them. Adding a fourth
+    /// call site outside a wrapper is the one way to reintroduce the gap.
     /// </para>
     /// <para>
     /// The state described is the one the tick *started* from. The failure happened partway
     /// through, so there is no consistent later state to report.
     /// </para>
     /// </remarks>
-    let private stepDecided
-        (loggerFactory : ILoggerFactory)
-        (logger : ILogger)
-        (prepared : PreparedProgram)
-        : ProgramStepOutcome
-        =
+    let private annotating (state : IlMachineState) (tick : unit -> 'a) : 'a =
         try
-            stepDecidedCore loggerFactory logger prepared
+            tick ()
         with
         // Already annotated: a nested tick would otherwise repeat the thread summary once per
         // level, and the outermost frame's guest position is the least specific of them.
         | :? GuestFailureException -> reraise ()
         | e ->
-            match GuestLocation.tryOfState prepared.State with
+            match GuestLocation.tryOfState state with
             | Some guest -> raise (GuestFailureException (e, guest))
             | None -> reraise ()
 
@@ -714,7 +718,7 @@ module Program =
         (prepared : PreparedProgram)
         : ProgramStepOutcome
         =
-        stepDecided loggerFactory logger (advanceToDecision prepared)
+        annotating prepared.State (fun () -> stepDecided loggerFactory logger (advanceToDecision prepared))
 
     let rec pumpPrepared (loggerFactory : ILoggerFactory) (logger : ILogger) (prepared : PreparedProgram) : RunOutcome =
         match stepPrepared loggerFactory logger prepared with
@@ -1393,7 +1397,7 @@ module Program =
         (prepared : PreparedProgram)
         : PrefixOutcome
         =
-        let advanced = advanceToDecision prepared
+        let advanced = annotating prepared.State (fun () -> advanceToDecision prepared)
 
         match Scheduler.tryContenders advanced.State with
         | Some contenders ->
@@ -1404,7 +1408,7 @@ module Program =
                 }
         | None ->
 
-        match stepDecided loggerFactory logger advanced with
+        match annotating advanced.State (fun () -> stepDecided loggerFactory logger advanced) with
         | ProgramStepOutcome.Completed outcome -> PrefixOutcome.NeverForked outcome
         | ProgramStepOutcome.Deadlocked (_, stuck) -> PrefixOutcome.DeadlockedBeforeFork stuck
         | ProgramStepOutcome.WorkerTerminated (next, _) -> runToNextFork loggerFactory logger next
@@ -1439,7 +1443,10 @@ module Program =
             // preamble runs twice per startup tick here, once for the probe and once inside
             // `stepStartup`; that is a handful of map operations against `executeOneStep`, and it
             // is paid once for a whole sweep rather than once per seed.
-            match Scheduler.tryContenders (advanceToDecision startup.Prepared).State with
+            let probed =
+                annotating startup.Prepared.State (fun () -> advanceToDecision startup.Prepared)
+
+            match Scheduler.tryContenders probed.State with
             | Some contenders -> PrefixOutcome.ForkedDuringStartup contenders
             | None ->
 
