@@ -127,27 +127,22 @@ module TestFSharpPureCases =
     /// before recording that a case is blocked on a named primitive, un-park it and observe the
     /// failure: parking it is what stops the claim being checked.
     ///
-    /// `UnionReflection` is parked on the *associates* branch of the `MetadataImport.Enum` QCall.
-    /// Having read one of the union type's properties out of metadata, `RuntimePropertyInfo`'s
-    /// constructor calls `Associates.AssignAssociates`, which enumerates `mdtMethodDef` with a
-    /// *Property* parent. CoreCLR answers that not from the generic `EnumInit`/`EnumNext` path but
-    /// from `EnumAssociateInit`/`GetAllAssociates` (managedmdimport.cpp:527-590), which returns
-    /// `ASSOCIATE_RECORD` method/semantics *pairs* rather than plain tokens — a different result
-    /// shape, which is why it is a separate feature rather than one more token type.
+    /// `UnionReflection` is parked on the `RuntimeMethodHandle::GetSlot` InternalCall.
+    /// `Associates.AssignAssociates` now runs to completion, so `RuntimeType.PopulateProperties`
+    /// reaches its *next* step: suppressing properties whose accessor occupies a vtable slot already
+    /// claimed by a more derived one (`RuntimeType.CoreCLR.cs:1345-1368`), which asks each accessor
+    /// for its slot number. That is a question about the method table rather than about metadata,
+    /// which is why it is a separate feature from everything before it on this path.
     ///
     /// Observed by un-parking it and running: the real runtime exits 0, PawPrint reports
-    /// "TODO: MetadataImport.Enum does not yet support token type 0x06000000 with parent
-    /// 0x17000013".
+    /// "Unimplemented native method (InternalCall): System.RuntimeMethodHandle::GetSlot".
     ///
-    /// That is not the last one on this path. A throwaway spike showed `RuntimeMethodHandle::GetSlot`
-    /// behind it, and then whatever the rest of `AssignAssociates` needs.
-    ///
-    /// Eight earlier blockers are already gone: decoding each case's
+    /// Nine earlier blockers are already gone: decoding each case's
     /// `CompilationMappingAttribute(SourceConstructFlags, ...)`, whose argument is an enum;
     /// enumerating the union's nested case types; `MetadataImport::GetSigOfFieldDef`; the raw-blob
     /// path of `Signature_Init`; `MetadataImport::GetDefaultValue`; `MetadataImport::GetName`;
-    /// property enumeration; and `MetadataImport::GetPropertyProps`, which the commit this comment
-    /// sits in implements.
+    /// property enumeration; `MetadataImport::GetPropertyProps`; and the associates branch of
+    /// `MetadataImport::Enum`, which the commit this comment sits in implements.
     let unimplemented : Set<string> = Set.ofList [ "UnionReflection" ]
 
     // F# test cases that legitimately throw under both runtimes. Without this set, a test

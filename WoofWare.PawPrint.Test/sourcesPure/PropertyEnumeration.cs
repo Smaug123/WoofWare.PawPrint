@@ -10,10 +10,13 @@ using System.Reflection;
 // rejected by a name filter before any of them is constructed. Both threw before the enumeration
 // existed.
 //
-// In particular, asking for a property that *does* exist is still not observable, even now that
-// `MetadataImport.GetPropertyProps` is implemented: checked by writing that case and running it, and
-// it dies one call later in `Associates.AssignAssociates`. So `GetPropertyProps` has no end-to-end
-// coverage; its contract is pinned by TestNativeMetadataImport alone.
+// In particular, asking for a property that *does* exist is still not observable. `AssignAssociates`
+// now runs to completion — `MetadataImport.Enum` answers its associate query, and each accessor
+// resolves — but `PopulateProperties` then suppresses vtable-slot duplicates
+// (`RuntimeType.CoreCLR.cs:1358`), which calls `RuntimeMethodHandle.GetSlot`, and that is
+// unimplemented. Checked by writing the case and running it, not inferred. So neither
+// `GetPropertyProps` nor the associates branch of `Enum` has any end-to-end coverage; both contracts
+// are pinned by TestNativeMetadataImport alone.
 // The field is load-bearing, not decoration: it is what makes case 1 below able to catch an
 // implementation that enumerated the FieldDef table instead of the PropertyMap run. Such an
 // implementation reports one "property" here, and the guest then dies trying to construct a
