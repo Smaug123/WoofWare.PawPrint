@@ -19,14 +19,62 @@ module AbstractMachine =
     let private logger (loggerFactory : ILoggerFactory) : ILogger =
         loggerCache.GetValue (loggerFactory, fun f -> f.CreateLogger typeof<Dummy>.DeclaringType)
 
-    let executeOneStep
+    /// Run the active frame's prologue, if it still has one: the type-initialisation check the
+    /// CLR performs on entry to a method, before any of its instructions.
+    ///
+    /// Returns `Choice2Of2` when the check has finished and the frame may execute, and
+    /// `Choice1Of2` when it has not — the initialiser is now the active frame, the thread is
+    /// parked on another thread's, or a cached failure has been raised. The flag survives the
+    /// first two, so re-entering this frame simply asks again; the third clears it, because the
+    /// type is now `Failed` and asking again would raise a second time at every step if the
+    /// frame's own handler caught the first.
+    let private runPendingTypeInit
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (thread : ThreadId)
+        (ty : ConcreteTypeHandle)
+        : Choice<ExecutionResult, IlMachineState>
+        =
+        match IlMachineStateExecution.loadClass loggerFactory baseClassTypes ty thread state with
+        | StateLoadResult.NothingToDo state ->
+            state
+            |> IlMachineState.mapFrame
+                thread
+                state.ThreadState.[thread].ActiveMethodState
+                MethodState.clearPendingTypeInit
+            |> Choice2Of2
+        | StateLoadResult.FirstLoadThis state ->
+            ExecutionResult.stepped (state, WhatWeDid.SuspendedForClassInit) |> Choice1Of2
+        | StateLoadResult.Blocked (state, blockedBy) ->
+            ExecutionResult.stepped (state, WhatWeDid.BlockedOnClassInit blockedBy)
+            |> Choice1Of2
+        | StateLoadResult.ThrowingTypeInitializationException state ->
+            // The dispatch above already ran against this frame, so the exception's trace names
+            // it. Clear the flag on whichever frame is still ours to clear: dispatch may have
+            // unwound us entirely, in which case there is nothing to do.
+            let state =
+                match state.ThreadState |> Map.tryFind thread with
+                | None -> state
+                | Some threadState ->
+                    match threadState.MethodStates |> Map.tryFind threadState.ActiveMethodState with
+                    | None -> state
+                    | Some _ ->
+                        state
+                        |> IlMachineState.mapFrame thread threadState.ActiveMethodState MethodState.clearPendingTypeInit
+
+            ExecutionResult.stepped (state, WhatWeDid.ThrowingTypeInitializationException)
+            |> Choice1Of2
+
+    /// The active frame's prologue has run; execute one of its instructions.
+    let private executeOneStepInitialised
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (thread : ThreadId)
+        (logger : ILogger)
         : ExecutionResult
         =
-        let logger = logger loggerFactory
         let instruction = state.ThreadState.[thread].MethodState
 
         let dispatchNative () =
@@ -349,3 +397,26 @@ module AbstractMachine =
         | IlOp.UnaryStringToken (unaryStringTokenIlOp, stringHandle) ->
             UnaryStringTokenIlOp.execute loggerFactory baseClassTypes unaryStringTokenIlOp stringHandle state thread
             |> ExecutionResult.stepped
+
+    /// Execute one step of the given thread: its active frame's prologue if it still has one, and
+    /// otherwise one IL instruction.
+    ///
+    /// A prologue that finishes does not consume the step. The check is bookkeeping the CLR emits
+    /// into the callee's entry rather than an instruction the guest wrote, so charging virtual
+    /// time for it would make a call cost more the first time a type is touched.
+    let executeOneStep
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (thread : ThreadId)
+        : ExecutionResult
+        =
+        let logger = logger loggerFactory
+
+        match state.ThreadState.[thread].MethodState.PendingTypeInit with
+        | None -> executeOneStepInitialised loggerFactory baseClassTypes state thread logger
+        | Some ty ->
+
+        match runPendingTypeInit loggerFactory baseClassTypes state thread ty with
+        | Choice1Of2 result -> result
+        | Choice2Of2 state -> executeOneStepInitialised loggerFactory baseClassTypes state thread logger

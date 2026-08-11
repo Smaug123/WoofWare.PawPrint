@@ -674,6 +674,20 @@ and MethodState =
         /// not yet consumed by the following instruction. Reset to `PrefixState.empty` after
         /// consumption.
         PendingPrefix : PrefixState
+        /// This frame's declaring type still needs its initialiser run, and no instruction of
+        /// the frame may execute until it has. Cleared once the check reports nothing to do.
+        ///
+        /// This is a method prologue, which is where the CLR puts the check: the frame is
+        /// established first, so a `.cctor` that throws produces a `TypeInitializationException`
+        /// whose trace names *this* method, and a stack walk taken during the `.cctor` sees this
+        /// frame. Running it at the call site instead — as PawPrint used to — loses both, and
+        /// answers for the type named at the call site rather than the one whose method actually
+        /// runs, which differ for an interface call.
+        ///
+        /// Deliberately survives the suspension paths. When the check pushes a `.cctor` frame, or
+        /// parks the thread on another thread's initialisation, this frame is re-entered with the
+        /// field still set and simply asks again.
+        PendingTypeInit : ConcreteTypeHandle option
     }
 
     member this.IlOpIndex = this._IlOpIndex
@@ -765,6 +779,19 @@ and MethodState =
     static member clearCatchException (offset : ExceptionOffset) (state : MethodState) : MethodState =
         { state with
             CatchExceptions = state.CatchExceptions |> Map.remove offset
+        }
+
+    /// Record that this frame's declaring type must be initialised before any of its
+    /// instructions run. See `PendingTypeInit`.
+    static member withPendingTypeInit (ty : ConcreteTypeHandle) (state : MethodState) : MethodState =
+        { state with
+            PendingTypeInit = Some ty
+        }
+
+    /// The prologue's check has reported nothing left to do, so the frame may execute.
+    static member clearPendingTypeInit (state : MethodState) : MethodState =
+        { state with
+            PendingTypeInit = None
         }
 
     /// Clear any pending prefix opcodes. Must be called whenever the PC is set to a
@@ -909,5 +936,6 @@ and MethodState =
             ExceptionContinuations = []
             CatchExceptions = Map.empty
             PendingPrefix = PrefixState.empty
+            PendingTypeInit = None
         }
         |> Ok

@@ -594,10 +594,10 @@ module internal UnaryMetadataCallOps =
                 | false, _ -> failwith $"could not find method in {activeAssy.Name}"
             | k -> failwith $"Unrecognised kind: %O{k}"
 
-        // Capture the pending `constrained.` prefix up front and clear it from the current
-        // frame before attempting class init. This avoids leaking a stale prefix to later
-        // calls in the same frame if class initialisation throws into a local handler; if
-        // class init suspends this call, we re-install the prefix for re-entry.
+        // Capture the pending `constrained.` prefix up front and clear it from the current frame,
+        // so a stale prefix cannot leak to a later call in the same frame. Nothing reinstalls it:
+        // the class-initialisation check that used to make this opcode re-execute now runs as the
+        // callee's prologue, so this instruction commits exactly once.
         let activeFrameId = state.ThreadState.[thread].ActiveMethodState
 
         let pendingConstrained, state =
@@ -621,23 +621,6 @@ module internal UnaryMetadataCallOps =
                         )
 
                 cur, cleared
-
-        let reinstallConstrained (state : IlMachineState) : IlMachineState =
-            match pendingConstrained with
-            | None -> state
-            | Some h ->
-                state
-                |> IlMachineState.mapFrame
-                    thread
-                    activeFrameId
-                    (fun frame ->
-                        { frame with
-                            PendingPrefix =
-                                { frame.PendingPrefix with
-                                    Constrained = Some h
-                                }
-                        }
-                    )
 
         let state, concretizedMethod, declaringTypeHandle =
             match preConcretizedMethodGenerics with
@@ -672,34 +655,29 @@ module internal UnaryMetadataCallOps =
                     concretizedMethod
                     state
 
-        match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
-        | NothingToDo state ->
-            let threadState = state.ThreadState.[thread]
+        // No class-initialisation check here: `callMethod` arms it on the callee's frame and the
+        // dispatch loop runs it as that frame's prologue, which is where the CLR puts it. This
+        // call therefore always commits, and the opcode never re-executes — which is why nothing
+        // reinstalls the `constrained.` prefix any more.
+        let threadState = state.ThreadState.[thread]
 
-            IlMachineStateExecution.callMethod
-                loggerFactory
-                baseClassTypes
-                None
-                ConstructionState.NotConstructing
-                false
-                false
-                true
-                concretizedMethod.Generics
-                concretizedMethod
-                thread
-                threadState
-                None
-                ConstructedObjectDisposition.PushToCaller
-                false // wrapExceptionInTargetInvocation
-                state,
-            WhatWeDid.Executed
-        | FirstLoadThis state -> reinstallConstrained state, WhatWeDid.SuspendedForClassInit
-        | ThrowingTypeInitializationException state -> state, WhatWeDid.ThrowingTypeInitializationException
-        | Blocked (state, blockedBy) ->
-            // Park this thread on the other thread's in-progress cctor. The PC has not been
-            // advanced, so when the scheduler wakes us we re-execute this call opcode; restore
-            // any pending `constrained.` prefix that we cleared above so the retry sees it.
-            reinstallConstrained state, WhatWeDid.BlockedOnClassInit blockedBy
+        IlMachineStateExecution.callMethod
+            loggerFactory
+            baseClassTypes
+            None
+            ConstructionState.NotConstructing
+            false
+            false
+            true
+            concretizedMethod.Generics
+            concretizedMethod
+            thread
+            threadState
+            None
+            ConstructedObjectDisposition.PushToCaller
+            false // wrapExceptionInTargetInvocation
+            state,
+        WhatWeDid.Executed
 
     let executeCallvirt (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
@@ -835,34 +813,12 @@ module internal UnaryMetadataCallOps =
 
                 cur, cleared
 
-        let reinstallConstrained (state : IlMachineState) : IlMachineState =
-            match pendingConstrained with
-            | None -> state
-            | Some h ->
-                state
-                |> IlMachineState.mapFrame
-                    thread
-                    activeFrameId
-                    (fun frame ->
-                        { frame with
-                            PendingPrefix =
-                                { frame.PendingPrefix with
-                                    Constrained = Some h
-                                }
-                        }
-                    )
-
-        match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
-        | FirstLoadThis state ->
-            // The cctor frame has been pushed; the original callvirt will re-execute. We
-            // re-install the prefix on the original frame so the re-entry sees it.
-            reinstallConstrained state, WhatWeDid.SuspendedForClassInit
-        | ThrowingTypeInitializationException state -> state, WhatWeDid.ThrowingTypeInitializationException
-        | Blocked (state, blockedBy) ->
-            // Another thread owns the cctor lock; park this one. The PC has not been advanced,
-            // so on wake we re-execute the callvirt; re-install the cleared prefix for the retry.
-            reinstallConstrained state, WhatWeDid.BlockedOnClassInit blockedBy
-        | NothingToDo state ->
+        // No class-initialisation check here. It could not be right at this point even in
+        // principle: it would have to name the type at the call site, and the callee is not
+        // resolved until the `constrained.` transformation and virtual dispatch below have run.
+        // Measured on .NET 10, `callvirt IFace::M` resolving to `Impl.M` runs `Impl`'s
+        // initialiser and never `IFace`'s. `callMethod` arms the check on the callee's frame
+        // once that resolution has happened, and the dispatch loop runs it as the prologue.
 
         // Apply a pending `constrained.` prefix (ECMA III.2.1). The prefix transforms the
         // receiver on the stack so the rest of the callvirt logic is unchanged: for a

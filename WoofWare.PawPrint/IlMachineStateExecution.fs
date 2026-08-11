@@ -2135,6 +2135,40 @@ module IlMachineStateExecution =
 
         let state, newFrame = createNewFrame state
 
+        // The callee's prologue. Recorded on the frame rather than run here, and asked *after*
+        // virtual resolution, so it names the type whose method actually runs: measured on
+        // .NET 10, `callvirt IFace::M` resolving to `Impl.M` never runs `IFace`'s own
+        // initialiser. A `.cctor` reached from here therefore unwinds through this frame and its
+        // `TypeInitializationException` names this method, which is what the CLR reports.
+        //
+        // A `.cctor` frame is exempt: it *is* the initialisation, and asking again would see its
+        // own type in progress. `loadClass` answers `NothingToDo` for that, so this is an
+        // optimisation rather than a correctness guard — but it keeps the invariant "a frame with
+        // a pending init has not started" true of every frame that has one.
+        let newFrame =
+            let initialises =
+                if wasClassConstructor then
+                    false
+                else
+                    match methodToCall with
+                    | MethodInfo.Metadata _ -> true
+                    | MethodInfo.Synthesised (_, kind) -> SynthesisedMethod.initialisesDeclaringType kind
+
+            if not initialises then
+                newFrame
+            else
+
+            match
+                AllConcreteTypes.findExistingConcreteType
+                    state.ConcreteTypes
+                    methodToCall.DeclaringType.Identity
+                    methodToCall.DeclaringType.Generics
+            with
+            | Some handle -> newFrame |> MethodState.withPendingTypeInit handle
+            | None ->
+                failwith
+                    $"calling %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}::%s{methodToCall.Name}: the resolved method's declaring type is not registered in AllConcreteTypes, so its initialiser cannot be scheduled"
+
         let oldFrame =
             if wasClassConstructor || not advanceProgramCounterOfCaller then
                 afterPop
