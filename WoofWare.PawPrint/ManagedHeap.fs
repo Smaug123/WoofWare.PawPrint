@@ -346,11 +346,46 @@ module ManagedHeap =
         // TODO: arrays too
         heap.NonArrayObjects.[alloc]
 
+    /// Replace the entire payload of the non-array object at `alloc`. Rejects an address
+    /// that is not already a live non-array object rather than conjuring one there:
+    /// `allocateNonArray` is the only way to mint an address, and an object minted here
+    /// instead would have no entry in `SyncBlocks`, breaking the invariant that
+    /// `getSyncBlock` is total over live addresses.
     let set (alloc : ManagedHeapAddress) (v : AllocatedNonArrayObject) (heap : ManagedHeap) : ManagedHeap =
         // TODO: arrays too
+        if not (heap.NonArrayObjects.ContainsKey alloc) then
+            failwith $"set: %O{alloc} is not a live managed heap allocation of non-array kind"
+
         { heap with
             NonArrayObjects = heap.NonArrayObjects |> Map.add alloc v
         }
+
+    /// Store `value` into the field `field` of the non-array object at `alloc`, leaving
+    /// that object's other fields, and every other object, untouched.
+    ///
+    /// This is the single read-modify-write primitive for a field store, so that a field
+    /// store is one identifiable operation on the heap rather than a pattern that call
+    /// sites open-code. `stfld` and delegate construction both route through it.
+    ///
+    /// The two rejection cases are reported differently because they are different bugs:
+    /// an array address means the caller misjudged the type of the reference it was
+    /// handed, whereas an unallocated address means the reference itself is bogus.
+    let setFieldById
+        (alloc : ManagedHeapAddress)
+        (field : FieldId)
+        (value : CliType)
+        (heap : ManagedHeap)
+        : ManagedHeap
+        =
+        match heap.NonArrayObjects.TryGetValue alloc with
+        | true, obj -> set alloc (AllocatedNonArrayObject.SetFieldById field value obj) heap
+        | false, _ ->
+            if heap.Arrays.ContainsKey alloc then
+                failwith
+                    $"setFieldById: %O{alloc} is an array, so has no field %O{field} to store to; a field store reached an array reference"
+            else
+                failwith
+                    $"setFieldById: %O{alloc} is not a live managed heap allocation, so has no field %O{field} to store to"
 
     let setArrayValue (alloc : ManagedHeapAddress) (offset : int) (v : CliType) (heap : ManagedHeap) : ManagedHeap =
         let newArrs =

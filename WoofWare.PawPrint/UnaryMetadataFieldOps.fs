@@ -216,19 +216,9 @@ module internal UnaryMetadataFieldOps =
                         ManagedHeap = heap
                     }
                 | None ->
-                    match state.ManagedHeap.NonArrayObjects.TryGetValue addr with
-                    | false, _ -> failwith $"todo: array {addr}"
-                    | true, v ->
-                        let v = AllocatedNonArrayObject.SetFieldById fieldId valueToStore v
-
-                        let heap =
-                            { state.ManagedHeap with
-                                NonArrayObjects = state.ManagedHeap.NonArrayObjects |> Map.add addr v
-                            }
-
-                        { state with
-                            ManagedHeap = heap
-                        }
+                    { state with
+                        ManagedHeap = ManagedHeap.setFieldById addr fieldId valueToStore state.ManagedHeap
+                    }
             | EvalStackValue.ManagedPointer src ->
                 IlMachineState.writeManagedByrefWithBase
                     baseClassTypes
