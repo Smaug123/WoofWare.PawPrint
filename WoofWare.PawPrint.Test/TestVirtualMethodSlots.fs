@@ -199,6 +199,46 @@ module TestVirtualMethodSlots =
         |> Array.filter _.IsVirtual
         |> Array.length
 
+    /// The host CLR's own `RuntimeMethodHandle.GetSlot`, which is what `PopulateMethods` calls. It is
+    /// internal, so this is the one place the oracle reaches past the public surface -- and it is
+    /// worth it: without it the oracle can only compare vtable *lengths*, and a walk that appended a
+    /// spurious slot while dropping a real one has the right length and the wrong layout.
+    let private hostSlotOf : MethodInfo -> int =
+        let impl =
+            typeof<RuntimeMethodHandle>.GetMethods (BindingFlags.NonPublic ||| BindingFlags.Static)
+            |> Array.filter (fun candidate ->
+                candidate.Name = "GetSlot"
+                && candidate.GetParameters().[0].ParameterType.Name = "IRuntimeMethodInfo"
+            )
+            |> Array.exactlyOne
+
+        fun (method : MethodInfo) -> impl.Invoke ((null : obj), [| box method |]) :?> int
+
+    /// The host's vtable as a list of MethodDef tokens, slot 0 upwards: `GetSlot` gives the index and
+    /// `MetadataToken` names the occupant. This is the *layout*, not merely its size.
+    let private hostSlotLayout (t : Type) : int list =
+        t.GetMethods (BindingFlags.Instance ||| BindingFlags.Public ||| BindingFlags.NonPublic)
+        |> Array.filter _.IsVirtual
+        |> Array.map (fun method -> hostSlotOf method, method.MetadataToken)
+        |> Array.sortBy fst
+        |> Array.map snd
+        |> List.ofArray
+
+    /// The same list for PawPrint: each slot's occupant named by its MethodDef token.
+    let private pawPrintSlotLayout (slots : NativeRuntimeTypeHelpers.VtableSlot list) : int list =
+        slots
+        |> List.map (fun slot ->
+            match fst slot.Method.IdentityKey with
+            | Some handle ->
+                MetadataTokens.GetToken (
+                    System.Reflection.Metadata.MethodDefinitionHandle.op_Implicit handle
+                    : System.Reflection.Metadata.EntityHandle
+                )
+            // A synthesised method has no MethodDef row. None occupies a slot in any corpus type
+            // here, and -1 makes it a loud mismatch rather than a silent match if one ever does.
+            | None -> -1
+        )
+
     /// `GetSlot` finds its answer by locating the method in its declaring type's vtable, and a
     /// vtable spans assemblies: a guest type's own slots sit on top of corelib's. `IdentityKey` is
     /// a MethodDef *row number*, unique only within its own module, so row 6 of the guest and row 6
@@ -228,6 +268,11 @@ module TestVirtualMethodSlots =
     /// that makes the difference visible: `INumberBase<T>` declares
     /// `System.IUtf8SpanFormattable.TryFormat` as `Private, Final, Virtual, HideBySig` with no
     /// NewSlot. Treating it as an override would look for a base vtable that does not exist.
+    ///
+    /// `vtableOfClosed` has no interface-specific branch: with no base slots to search, the general
+    /// rule finds no match and gives the method a fresh slot, which is the same answer. This test is
+    /// what holds that equivalence down -- it was a hard-coded special case until the fresh-slot rule
+    /// existed to subsume it.
     [<Test>]
     let ``every instance virtual an interface declares gets its own slot`` () : unit =
         let state = state ()
@@ -257,7 +302,8 @@ module TestVirtualMethodSlots =
         let state, slots = vtable state handle
 
         // No base class, so the vtable is exactly the instance virtuals the interface declares --
-        // including the reuse-slot one, which is what the NewSlot partition would have dropped.
+        // including the reuse-slot one, which an implementation that refused to place an unmatched
+        // non-NewSlot virtual would have rejected outright.
         let declared =
             typeInfo.Methods
             |> List.filter (fun method -> not method.IsStatic && method.IsVirtual)
@@ -292,6 +338,42 @@ module TestVirtualMethodSlots =
         if not (List.isEmpty failures) then
             failwith (
                 "vtable size disagrees with the host CLR:\n"
+                + String.Join ("\n", List.rev failures)
+            )
+
+        exercised |> shouldEqual (List.length allCorpus)
+
+    /// Strictly stronger than the length check above, and the reason it is worth reaching for an
+    /// internal API: placing a method in the wrong slot, or appending a spurious slot while failing
+    /// to place a real one, leaves the length right and the layout wrong. That matters more now that
+    /// an unmatched non-newslot virtual *appends* instead of failing loudly -- a gap in
+    /// `candidateFillsSlot` no longer announces itself, and this is what catches it instead.
+    [<Test>]
+    let ``vtable layout agrees with the host CLR slot for slot`` () : unit =
+        let mutable exercised = 0
+        let mutable failures = []
+
+        for label, concretiseType, host in allCorpus do
+            let state, handle = concretiseType (state ())
+            let _, slots = vtable state handle
+
+            let actual = pawPrintSlotLayout slots
+            let expected = hostSlotLayout host
+
+            if actual <> expected then
+                let firstDivergence =
+                    List.zip (List.truncate (List.length expected) actual) expected
+                    |> List.tryFindIndex (fun ((a : int), (b : int)) -> a <> b)
+
+                failures <-
+                    $"%s{label}: PawPrint %i{List.length actual} slots, host %i{List.length expected}, first differing slot %A{firstDivergence}"
+                    :: failures
+
+            exercised <- exercised + 1
+
+        if not (List.isEmpty failures) then
+            failwith (
+                "vtable layout disagrees with the host CLR:\n"
                 + String.Join ("\n", List.rev failures)
             )
 
