@@ -109,10 +109,9 @@ module Scheduler =
             | Contention.Forced only -> [ only ]
             | Contention.Contended (first, second, rest) -> first :: second :: rest
 
-    /// Classify the imminent decision. This is the single definition of "contended" that the
-    /// draw sites and any external fork detector (`tryContenders`) both consume; two derivations
-    /// of the same predicate could disagree, and a detector that disagreed with the policy would
-    /// silently hand a schedule-sweeping harness the wrong prefix.
+    /// Examine the runnable threads to determine whether the scheduler has
+    /// a real ("contended") decision to make, or whether it's about to be forced to select
+    /// a specific thread to execute.
     let private classify (state : IlMachineState) : Contention =
         match runnableThreads state with
         | [] -> Contention.NoRunnable
@@ -120,22 +119,24 @@ module Scheduler =
         | first :: second :: rest -> Contention.Contended (first, second, rest)
 
     /// The Runnable threads contending for the imminent scheduling decision, if there is a
-    /// genuine choice to be made: `Some` — with at least two members, in ascending `ThreadId`
-    /// order — iff more than one thread is Runnable. Equivalently: `Some` iff a stochastic
-    /// policy may consume randomness at this tick, and iff this tick is a fork point in the
-    /// schedule space.
+    /// genuine choice to be made.
     ///
-    /// Returns the witness rather than a bare `bool` so that a caller which needs to *name* the
-    /// contenders (a fork detector recording what forked, a diagnostic) gets them from the same
-    /// evaluation that decided the question. Deriving the list separately would be a second
-    /// definition of the predicate, free to disagree with this one.
+    /// Returns `None`, or `Some` of at least two threads in ascending `ThreadId` order,
+    /// indicating the multiple contending Runnable threads.
+    /// Equivalently: `Some` iff a stochastic policy may consume randomness at this tick,
+    /// and iff this tick is a fork point in the schedule space.
     ///
-    /// Exposed for harnesses that run a guest up to its first fork point and then fan out over
-    /// seeds from there. Must be evaluated at the same moment the scheduler would make its
-    /// choice — i.e. after the driver's per-tick preamble (spurious wakeups, deadline firing,
-    /// signal-handler spawn, deadline jump), any of which can create contention within the tick
-    /// that a probe on the inter-tick state would miss.
-    let tryContenders (state : IlMachineState) : ThreadId list option =
+    /// This answers about the state you hand it, and the state that matters is the one the
+    /// scheduler is about to act on: the *post*-preamble state. Spurious wakeups, deadline
+    /// firing, signal-handler spawn and the deadline jump can each make a second thread Runnable
+    /// within a tick, so asking about the inter-tick state answers a different question and will
+    /// miss those forks.
+    ///
+    /// Internal because that state cannot be built from outside this assembly — `Program`'s
+    /// per-tick preamble is private — so an external caller could only ever ask the wrong
+    /// question. Harnesses that want to find fork points use `Program.runToFirstFork` /
+    /// `Program.runToNextFork`, which sequence the preamble and this probe correctly.
+    let internal tryContenders (state : IlMachineState) : ThreadId list option =
         match classify state with
         | Contention.Contended _ as contention -> Some contention.Runnable
         | Contention.NoRunnable
@@ -145,12 +146,9 @@ module Scheduler =
     /// that is no longer Runnable has left the run queue and cannot be waited for, so it stops
     /// counting; this is what makes the debt self-clearing across a park/wake cycle, with no
     /// hook in any wake path.
-    ///
-    /// The `IsEmpty` test is not merely a fast path for its own sake — it is the common case,
-    /// and keeping it reachable is why `onThreadTerminated` prunes rather than relying on this
-    /// filter alone. A debt holding a permanently-unrunnable member would answer correctly
-    /// here forever while scanning the whole runnable list to do it.
     let private debtDischarged (runnable : ThreadId list) (ts : ThreadState) : bool =
+        // The `IsEmpty` test is just a fast path; the global semantics are such that
+        // we'd come to the same decision without it, but more slowly.
         ts.YieldDebt.IsEmpty
         || not (runnable |> List.exists (fun tid -> ts.YieldDebt |> Set.contains tid))
 
@@ -214,15 +212,14 @@ module Scheduler =
     /// live Runnable set — but it breaks the discharge lemma that `candidates`' non-emptiness
     /// proof rests on, and missing the first also makes the `IsEmpty` fast path below
     /// permanently unreachable for any thread that yielded before a peer exited.
-    ///
-    /// Short-circuits on the common path the way the `BlockedOnClassInit` wake scan does: this
-    /// runs once per interpreted IL instruction and almost never has anything to do, because
-    /// outstanding debts exist only during yield bursts.
     let dischargeYieldDebts (ran : ThreadId) (state : IlMachineState) : IlMachineState =
         let anyDebtNames =
             state.ThreadState |> Map.exists (fun _ ts -> ts.YieldDebt |> Set.contains ran)
 
         if not anyDebtNames then
+            // Short-circuit on the common path the way the `BlockedOnClassInit` wake scan does: this
+            // function runs once per interpreted IL instruction and almost never has anything to do,
+            // because outstanding debts exist only during yield bursts.
             state
         else
 

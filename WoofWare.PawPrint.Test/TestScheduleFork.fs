@@ -439,8 +439,13 @@ module TestScheduleFork =
 
         // Precondition, asserted rather than assumed: this is the whole point of the test, and if
         // parking the thread left two Runnable anyway then the mutation this guards against would
-        // pass for the wrong reason.
-        Scheduler.tryContenders state |> shouldEqual None
+        // pass for the wrong reason. Counted directly rather than asked of
+        // `Scheduler.tryContenders`, which is internal precisely because the only state worth
+        // asking it about is one this test cannot build — the post-preamble state.
+        state.ThreadState
+        |> Map.filter (fun _ ts -> ts.Status = ThreadStatus.Runnable)
+        |> Map.count
+        |> shouldEqual 1
 
         let prepared =
             { prepared with

@@ -275,13 +275,11 @@ module IlMachineState =
     let containsAnyGenericParameter =
         IlMachineRuntimeMetadata.containsAnyGenericParameter
 
-    /// Rebind the state's logging sink to `lf`. `Logger`/`LoggerFactory` are documented as a
-    /// sink that nothing about a run's behaviour may depend on, which is exactly what makes this
-    /// legitimate: it changes where the run's diagnostics go and nothing else.
+    /// Rebind the state's logging sink to a fresh logger from `lf`.
     ///
-    /// Exists for `Program.resumeFork`. A machine state computed once and resumed under many
-    /// scheduler seeds would otherwise log every one of those runs through the factory the
-    /// *prefix* was built with, so each seed's per-run log properties would be missing or wrong.
+    /// A guest's behaviour never depends on the Logger and LoggerFactory, so this is guest-invisible.
+    /// Exists mainly for scenarios like a fan-out search with `Program.resumeFork`, where you might want to warm up
+    /// a VM and then resume many instances of it in parallel with different loggers and seeds.
     let withLoggerFactory (lf : ILoggerFactory) (state : IlMachineState) : IlMachineState =
         { state with
             // Same category `IlMachineState.initial` uses, so a rebound state is indistinguishable
@@ -296,22 +294,19 @@ module IlMachineState =
     /// don't call this and stay on the `SchedulerState.RoundRobin` default
     /// set by `IlMachineState.initial`.
     ///
-    /// Two callers, and the difference between them is worth understanding. `Program.beginStartup`
-    /// calls it before any `chooseNext` has run, so the seed is installed on a virgin policy.
-    /// `Program.resumeFork` calls it on a state that has already executed thousands of steps —
-    /// which is sound because the scheduler only mutates its policy state at contended decisions
-    /// (see `Scheduler`), and a fork snapshot is by construction a state reached without one. So
-    /// in both cases the policy the seed lands on is the one `PctState.ofSeed` would have built.
-    ///
-    /// Resuming a *mid-run* snapshot, where contended decisions have already happened, is a
-    /// different thing: the discarded priorities are real, and installing a fresh seed means "re-
-    /// randomise the future from here" rather than "replay seed `s` from the start". That is the
-    /// intended semantics for a schedule-space tree search, but it is not schedule replay.
+    /// Usually called for one of three reasons:
+    /// * `Program.beginStartup` is initialising the machine state;
+    /// * you're using `Program.resumeFork` to vary the upcoming scheduling choices of a machine that's already warmed
+    ///   up and is now at its first fork point;
+    /// * you're varying the scheduling choices mid-run, after at least one contended scheduling decision has been made (that
+    ///   is, you're choosing to break schedule replay to increase coverage).
     ///
     /// Lives here rather than on `SchedulerState` so callers don't need to
-    /// open the policy module just to plug a seed in — the seam is "the
-    /// machine has a scheduling policy", and that lives on `IlMachineState`.
+    /// open the policy module just to plug a seed in.
     let withPctSeed (seed : uint64) (state : IlMachineState) : IlMachineState =
+        // Global invariant: if invoked before the machine has acted on its first fork point,
+        // the resulting run is identical to a from-scratch run
+        // seeded with `seed`.
         { state with
             Scheduling = SchedulerState.Pct (PctState.ofSeed seed)
         }
