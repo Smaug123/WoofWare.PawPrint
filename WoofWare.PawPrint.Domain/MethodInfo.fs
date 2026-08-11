@@ -278,6 +278,27 @@ type SynthesisedMethod =
     /// <c>MarshalNative_TryGetStructMarshalStub</c>'s has-layout-non-blittable arm.
     | StructMarshalStub
 
+    /// <summary>
+    /// The placeholder frame the entry thread carries before <c>Main</c> is installed.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>Program.buildStartupFrame</c> needs a frame on the entry thread while startup runs
+    /// class initialisers, and shapes it like the entry point — same name, declaring type and
+    /// signature — so that everything reading a frame sees something sensible. Its *body*,
+    /// though, is a bare <c>ret</c>: `Main` has not run and must not.
+    /// </para>
+    /// <para>
+    /// Synthesised rather than metadata-flavoured precisely because of that substitution. Its
+    /// body is not the body the entry point's MethodDef row describes, so nothing keyed by that
+    /// row describes this frame either — and a consumer that resolved its IL offsets against the
+    /// real <c>Main</c>'s debug information would report source lines for code that has not
+    /// executed. Carrying no metadata handle makes that unrepresentable rather than merely
+    /// discouraged.
+    /// </para>
+    /// </remarks>
+    | EntryPointPlaceholder
+
 [<RequireQualifiedAccess>]
 module SynthesisedMethod =
     /// Whether calling this method obliges the runtime to initialise its declaring type first, as
@@ -298,6 +319,12 @@ module SynthesisedMethod =
     let initialisesDeclaringType (kind : SynthesisedMethod) : bool =
         match kind with
         | SynthesisedMethod.StructMarshalStub -> false
+        // Never reached: the placeholder is pushed onto the entry thread directly rather than
+        // called, so no call site asks. Answering `false` states the semantics anyway — startup
+        // drives the entry type's initialiser as part of its own class-init sweep, and having
+        // this frame demand it as a side effect of being entered would be a second, unrelated
+        // reason for the same work to happen.
+        | SynthesisedMethod.EntryPointPlaceholder -> false
 
 /// The facts that exist only because a method was read from a MethodDef row.
 ///

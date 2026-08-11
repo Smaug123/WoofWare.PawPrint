@@ -124,6 +124,19 @@ module ExceptionDispatching =
             failwith
                 $"Exception dispatch searching %s{method.Name} needs its declaring assembly %O{name}, which is not loaded; loaded assemblies are: %s{available}"
 
+    /// Whether this frame is still waiting on its prologue, and so has executed nothing.
+    ///
+    /// Such a frame has no exception-handling regions in scope. The CLR emits the
+    /// type-initialisation check outside the method's EH regions, so the
+    /// `TypeInitializationException` it raises goes to the *caller* — measured on .NET 10, a
+    /// method whose whole body is `try { … } catch (TypeInitializationException)` does not catch
+    /// its own failure. PawPrint raises it with the frame already established, which is what lets
+    /// the trace name the method, so without this the frame's own clauses would be candidates.
+    ///
+    /// The frame stays on the stack and in the trace either way; it is only its clauses that are
+    /// out of scope, for both passes. A frame that never began has no `finally` to run either.
+    let private hasNotStarted (frame : MethodState) : bool = frame.PendingTypeInit.IsSome
+
     /// The clause of `method` that accepts this exception at `currentPC`, if any: an assignable
     /// `catch`, or a `filter` whose body has not already run and rejected.
     ///
@@ -543,6 +556,10 @@ module ExceptionDispatching =
         let frame = ThreadState.getFrame search.Frame threadState
 
         let state, accepting =
+            if hasNotStarted frame then
+                state, None
+            else
+
             findAcceptingClause
                 loggerFactory
                 corelib
@@ -689,8 +706,12 @@ module ExceptionDispatching =
     /// Interpose whichever synthesised wrappers this frame boundary carries, in the CLR's order:
     /// a throwing `.cctor` surfaces as `TypeInitializationException`, and an
     /// `Activator.CreateInstance<T>()` ctor is then additionally wrapped in
-    /// `TargetInvocationException`. A single frame can carry both — that is exactly the chained
-    /// `Activator.CreateInstance<T>()`-over-a-throwing-`.cctor` case.
+    /// `TargetInvocationException`.
+    ///
+    /// The two normally land on *different* boundaries — the `.cctor` frame and the constructor
+    /// frame beneath it — because a type is initialised from its callee's prologue. One frame
+    /// carrying both is nevertheless handled here rather than ruled out, since which flags a
+    /// return state carries is not this function's to decide.
     ///
     /// Each wrapper is seeded with the frame that raises it, exactly as `throwExceptionObject`
     /// seeds an ordinary `throw`, because in CoreCLR that is literally what it is: the wrap is
@@ -782,13 +803,12 @@ module ExceptionDispatching =
             state, cliException, exceptionType
         else
 
-        // Both wraps firing on one boundary is the chained
-        // `Activator.CreateInstance<T>()`-over-a-throwing-`.cctor` case, and `cliException` here is
-        // then the `TypeInitializationException` synthesised a few lines up. Its dispatch ends at
-        // this very frame — it is caught and never propagates further — so freeze its trace now,
-        // for the reason `concludeFirstPass` freezes a search that reached a handler. Doing it
-        // here rather than at birth matches an ordinary raise, which is seeded by
-        // `throwExceptionObject` and projected only once its search concludes.
+        // When both wraps fire on one boundary, `cliException` here is the
+        // `TypeInitializationException` synthesised a few lines up. Its dispatch ends at this very
+        // frame — it is caught and never propagates further — so freeze its trace now, for the
+        // reason `concludeFirstPass` freezes a search that reached a handler. Doing it here rather
+        // than at birth matches an ordinary raise, which is seeded by `throwExceptionObject` and
+        // projected only once its search concludes.
         //
         // Only a wrapper *we* synthesised is projected. An original exception arriving here was
         // already frozen by `concludeFirstPass`, and re-projecting it could clobber a newer token
@@ -897,6 +917,12 @@ module ExceptionDispatching =
                 None
 
         let regions =
+            if hasNotStarted frame then
+                // Nothing of this frame has run, so nothing of it needs cleaning up. Same scope
+                // rule the first pass applied when declining to offer its `catch` clauses.
+                Seq.empty
+            else
+
             match MethodInfo.tryIlBody frame.ExecutingMethod with
             | None -> Seq.empty
             | Some instructions -> instructions.ExceptionRegions :> seq<_>

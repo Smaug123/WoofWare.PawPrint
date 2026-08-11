@@ -5,16 +5,17 @@ using System;
 // `Program.Main`, because the initializer check happens inside `Bad.M`'s own prologue, so
 // that frame is already established when the `.cctor` runs.
 //
-// PawPrint runs the initializer *before* establishing the target's frame — every call path
-// does `loadClass` and only then pushes the callee — so the target method never appears.
-// The direct call below involves no delegate at all and diverges identically, which is what
-// makes this a general property of class initialization rather than anything about
-// delegates: both routes report only `Program.Main`.
+// PawPrint used to run the initializer *before* establishing the target's frame, so the target
+// method never appeared and both routes reported only `Program.Main`. It now arms the check on
+// the callee's frame and runs it as that frame's prologue, which is what makes the name
+// available to report.
 //
-// The delegate route is included precisely so the two are checked to agree. An earlier state
-// of the delegate route was worse than the direct one, reporting a `System.Action.Invoke`
-// stub frame that no real trace contains; `DelegateCctorFailureTraceHasNoStubFrame.cs` is
-// the active test that keeps that from coming back.
+// The direct call below involves no delegate at all, which is what makes this a general
+// property of class initialization rather than anything about delegates; the delegate route is
+// included so the two are checked to agree. An earlier state of the delegate route was worse
+// than the direct one, reporting a `System.Action.Invoke` stub frame that no real trace
+// contains; `DelegateCctorFailureTraceHasNoStubFrame.cs` is the active test that keeps that
+// from coming back, and the stub frame is now popped before the initializer can run at all.
 
 class BadDirect
 {

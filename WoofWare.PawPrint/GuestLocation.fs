@@ -108,7 +108,7 @@ module GuestLocation =
     /// other loaded assembly would silently name a different method's lines. A synthesised method
     /// (a marshalling or delegate stub) has no row at all and so is legitimately unattributable.
     /// </remarks>
-    let private trySourceOf
+    let trySourceOf
         (state : IlMachineState)
         (method : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (ilOffset : int)
@@ -237,6 +237,66 @@ module GuestLocation =
     /// Where every thread that has not terminated is. Terminated threads are omitted: they are
     /// not why the guest is stuck, and a long-running guest accumulates many of them.
     /// </summary>
+    /// <summary>
+    /// The IL offset at which each of <paramref name="thread" />'s live frames should be
+    /// attributed to source, keyed by frame.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// For the active frame that is its program counter — stepped back onto the blocking call if
+    /// the thread parked past one, exactly as <c>positionOfThread</c> does.
+    /// </para>
+    /// <para>
+    /// For every enclosing frame it is instead the *call site* recorded by the frame it called,
+    /// not the offset it will resume at. The two differ: the resume point is the instruction
+    /// after the call, so for a call that ends a statement it belongs to the *next* statement.
+    /// A stack rendered from resume points therefore reports every caller one statement late,
+    /// which is the same error <c>positionOfThread</c> avoids when it walks outwards.
+    /// </para>
+    /// <para>
+    /// A frame that is neither active nor called by anything falls back to its own program
+    /// counter. That should not arise — a thread's frames form a chain from the active frame
+    /// outwards — but this is a diagnostic, so an unexpected shape must cost precision rather
+    /// than raise.
+    /// </para>
+    /// </remarks>
+    /// <summary>
+    /// The IL offset at which <paramref name="thread" />'s *active* frame should be attributed to
+    /// source: its program counter, stepped back onto the blocking call if the thread parked past
+    /// one.
+    /// </summary>
+    /// <remarks>
+    /// The same answer <c>attributionOffsets</c> gives for that one frame, without building a map
+    /// over the whole stack. Callers that want only the active frame — the thread summaries on
+    /// every state-bearing response — should use this: they are hit once per step, and a guest
+    /// recursing deeply would otherwise make single-stepping cost time quadratic in stack depth.
+    ///
+    /// Requires <paramref name="thread" /> to have a live frame, exactly as
+    /// <c>ThreadState.MethodState</c> does; guard with <c>ThreadStatus.hasNoActiveFrame</c>.
+    /// </remarks>
+    let activeAttributionOffset (thread : ThreadState) : int =
+        reportableOffset thread.Status thread.MethodState
+
+    let attributionOffsets (thread : ThreadState) : Map<FrameId, int> =
+        let callSites =
+            thread.MethodStates
+            |> Map.toSeq
+            |> Seq.choose (fun (_, frame) ->
+                frame.ReturnState
+                |> Option.map (fun returnState -> returnState.JumpTo, returnState.CallSiteIlOpIndex)
+            )
+            |> Map.ofSeq
+
+        thread.MethodStates
+        |> Map.map (fun frameId frame ->
+            if frameId = thread.ActiveMethodState then
+                reportableOffset thread.Status frame
+            else
+                match Map.tryFind frameId callSites with
+                | Some callSite -> callSite
+                | None -> frame.IlOpIndex
+        )
+
     let ofState (state : IlMachineState) : GuestThreadLocation list =
         state.ThreadState
         |> Map.toList

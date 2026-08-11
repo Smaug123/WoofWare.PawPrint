@@ -3,15 +3,19 @@ using System.Reflection;
 
 // The stack trace of a `TypeInitializationException` raised under `Activator.CreateInstance<T>()`.
 //
-// A cctor failure reached by plain `newobj` gives its TIE a trace in PawPrint, because the TIE
-// propagates through frames and accumulates them. This route does not: `Activator.CreateInstance<T>()`
-// sets `WrapExceptionInTargetInvocation` on the same frame that carries `WasInitialisingType`, so
-// the freshly synthesised TIE is re-wrapped in a `TargetInvocationException` before a single frame
-// is appended to it, and surfaces as `InnerException` with a null `StackTrace`.
+// This route used to produce a TIE with a null `StackTrace`, because both of PawPrint's exception
+// wraps fired on one frame: `Activator.CreateInstance<T>()` set `WrapExceptionInTargetInvocation`
+// on the very frame that carried `WasInitialisingType`, so the freshly synthesised TIE was
+// re-wrapped in a `TargetInvocationException` before a single frame could be appended to it.
+//
+// Initialising T in its constructor's own prologue separates them: `WasInitialisingType` belongs
+// to the `.cctor` frame and `WrapExceptionInTargetInvocation` to the constructor frame beneath it,
+// so the TIE is raised at one boundary and wrapped at the next, gaining the constructor frame in
+// between. That frame is what this file asserts on.
 //
 // Asserts a substring rather than mere non-nullness, so an implementation that gave the TIE an
 // empty or placeholder trace would still fail. The sibling `ActivatorCctorThrowsInnerStackTrace.cs`
-// covers what does hold today — that the read is reachable and does not throw — and passes.
+// asserts the weaker property that both wrappers carry a readable, non-empty trace.
 class ActivatorCctorTypeInitializationTrace
 {
     class Boom

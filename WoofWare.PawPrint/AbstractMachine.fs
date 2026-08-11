@@ -19,14 +19,62 @@ module AbstractMachine =
     let private logger (loggerFactory : ILoggerFactory) : ILogger =
         loggerCache.GetValue (loggerFactory, fun f -> f.CreateLogger typeof<Dummy>.DeclaringType)
 
-    let executeOneStep
+    /// Run the active frame's prologue, if it still has one: the type-initialisation check the
+    /// CLR performs on entry to a method, before any of its instructions.
+    ///
+    /// Returns `Choice2Of2` when the check has finished and the frame may execute, and
+    /// `Choice1Of2` when it has not — the initialiser is now the active frame, the thread is
+    /// parked on another thread's, or a cached failure has been raised. The flag survives the
+    /// first two, so re-entering this frame simply asks again; the third clears it, because the
+    /// type is now `Failed` and asking again would raise a second time at every step if the
+    /// frame's own handler caught the first.
+    let private runPendingTypeInit
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (thread : ThreadId)
+        (ty : ConcreteTypeHandle)
+        : Choice<ExecutionResult, IlMachineState>
+        =
+        match IlMachineStateExecution.loadClass loggerFactory baseClassTypes ty thread state with
+        | StateLoadResult.NothingToDo state ->
+            state
+            |> IlMachineState.mapFrame
+                thread
+                state.ThreadState.[thread].ActiveMethodState
+                MethodState.clearPendingTypeInit
+            |> Choice2Of2
+        | StateLoadResult.FirstLoadThis state ->
+            ExecutionResult.stepped (state, WhatWeDid.SuspendedForClassInit) |> Choice1Of2
+        | StateLoadResult.Blocked (state, blockedBy) ->
+            ExecutionResult.stepped (state, WhatWeDid.BlockedOnClassInit blockedBy)
+            |> Choice1Of2
+        | StateLoadResult.ThrowingTypeInitializationException state ->
+            // The dispatch above already ran against this frame, so the exception's trace names
+            // it. Clear the flag on whichever frame is still ours to clear: dispatch may have
+            // unwound us entirely, in which case there is nothing to do.
+            let state =
+                match state.ThreadState |> Map.tryFind thread with
+                | None -> state
+                | Some threadState ->
+                    match threadState.MethodStates |> Map.tryFind threadState.ActiveMethodState with
+                    | None -> state
+                    | Some _ ->
+                        state
+                        |> IlMachineState.mapFrame thread threadState.ActiveMethodState MethodState.clearPendingTypeInit
+
+            ExecutionResult.stepped (state, WhatWeDid.ThrowingTypeInitializationException)
+            |> Choice1Of2
+
+    /// The active frame's prologue has run; execute one of its instructions.
+    let private executeOneStepInitialised
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (thread : ThreadId)
+        (logger : ILogger)
         : ExecutionResult
         =
-        let logger = logger loggerFactory
         let instruction = state.ThreadState.[thread].MethodState
 
         let dispatchNative () =
@@ -191,37 +239,13 @@ module AbstractMachine =
                         $"delegate invocation: declaring type %s{methodPtr.DeclaringType.Namespace}.%s{methodPtr.DeclaringType.Name} of the target method is not registered in AllConcreteTypes"
                 )
 
-            // For a *synthesised* method the declaring type is the subject rather than the owner,
-            // so "calling a member initialises its type" does not follow; `initialisesDeclaringType`
-            // is the single place that question is answered. Same gate as `calli`.
-            let classInitialisation =
-                let required =
-                    match methodPtr with
-                    | MethodInfo.Metadata _ -> true
-                    | MethodInfo.Synthesised (_, kind) -> SynthesisedMethod.initialisesDeclaringType kind
-
-                if required then
-                    IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state
-                else
-                    StateLoadResult.NothingToDo state
-
-            // This runs *before* the synthetic frame is popped, which is what makes the retry
-            // free. Everything above is a pure read — `instruction.Arguments`, the heap, the
-            // concrete-type table — so on the suspension paths below we leave this frame exactly
-            // as we found it, the initialiser is pushed on top of it, and when that returns the
-            // dispatch loop re-enters `dispatchDelegateInvoke` from the top and recomputes the
-            // same values. There is nothing to save and restore, unlike `calli`, which must push
-            // its function pointer back because it had to pop it before the arguments.
-            //
-            // Re-entering a runtime-provided frame this way is the same mechanism `dispatchNative`
-            // above relies on for `NativeHandlerResult.SuspendedForClassInit`.
-            match classInitialisation with
-            | StateLoadResult.FirstLoadThis state -> ExecutionResult.stepped (state, WhatWeDid.SuspendedForClassInit)
-            | StateLoadResult.ThrowingTypeInitializationException state ->
-                ExecutionResult.stepped (state, WhatWeDid.ThrowingTypeInitializationException)
-            | StateLoadResult.Blocked (state, blockedBy) ->
-                ExecutionResult.stepped (state, WhatWeDid.BlockedOnClassInit blockedBy)
-            | StateLoadResult.NothingToDo state ->
+            // No class-initialisation check here: the target's frame carries it and runs it as its
+            // own prologue. That is what lets this synthetic frame be popped unconditionally
+            // below. Previously the check ran first precisely *because* the frame was still up —
+            // a suspension left it in place to be re-entered and recomputed — and getting that
+            // ordering wrong is what once put a `System.Action.Invoke` stub frame into a failing
+            // `.cctor`'s stack trace, which `DelegateCctorFailureTraceHasNoStubFrame.cs` pins. The
+            // stub frame is now gone before the initialiser can run, so it cannot appear at all.
 
             // When we return, we need to go back up the stack
             match state |> IlMachineState.returnFromSyntheticStackFrame thread with
@@ -268,21 +292,16 @@ module AbstractMachine =
                     false // wrapExceptionInTargetInvocation
                     state
 
-            // The class initialisation above covers the *target's declaring type*, but the target
-            // itself can still ask to suspend from inside the call: `Activator.CreateInstance<T>()`
-            // is serviced as an intrinsic and suspends to run `T`'s initialiser, and
-            // `Func<Foo> f = Activator.CreateInstance<Foo>;` is legal C#. By this point our
-            // synthetic frame is gone, so unlike a call opcode there is nothing left to re-execute
-            // and no program counter to leave unadvanced — the suspension would be silently
-            // dropped and the activator would never run. Refuse loudly instead of corrupting the
-            // frame; `calli` handles the same situation by restoring its stack and retrying, which
-            // is only open to it because its frame survives.
+            // A call cannot fail to happen any more, so there is nothing here to refuse. It used
+            // to be able to: `Activator.CreateInstance<T>()` is serviced as an intrinsic and
+            // suspended to run `T`'s initialiser, and `Func<Foo> f = Activator.CreateInstance<Foo>;`
+            // is legal C#, which reached a suspension after the delegate's synthetic frame had
+            // been popped — nothing left to re-execute, so it had to fail loudly rather than
+            // silently drop the call. Initialising `T` in its constructor's own prologue removes
+            // the suspension, and with it that whole class of shape.
             match commitment with
             | IlMachineStateExecution.CallCommitment.Committed
             | IlMachineStateExecution.CallCommitment.Raised -> ExecutionResult.stepped (state, WhatWeDid.Executed)
-            | IlMachineStateExecution.CallCommitment.SuspendedForClassInit ->
-                failwith
-                    $"TODO: delegate invocation of %s{methodPtr.DeclaringType.Namespace}.%s{methodPtr.DeclaringType.Name}::%s{methodPtr.Name} suspended for class initialisation after the delegate's synthetic frame was popped; there is no frame left to re-enter, so the call would be silently dropped"
 
         match instruction.ExecutingMethod.Body with
         | MethodBody.RuntimeProvided RuntimeBehaviour.DelegateCtor -> dispatchDelegateCtor ()
@@ -349,3 +368,26 @@ module AbstractMachine =
         | IlOp.UnaryStringToken (unaryStringTokenIlOp, stringHandle) ->
             UnaryStringTokenIlOp.execute loggerFactory baseClassTypes unaryStringTokenIlOp stringHandle state thread
             |> ExecutionResult.stepped
+
+    /// Execute one step of the given thread: its active frame's prologue if it still has one, and
+    /// otherwise one IL instruction.
+    ///
+    /// A prologue that finishes does not consume the step. The check is bookkeeping the CLR emits
+    /// into the callee's entry rather than an instruction the guest wrote, so charging virtual
+    /// time for it would make a call cost more the first time a type is touched.
+    let executeOneStep
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (thread : ThreadId)
+        : ExecutionResult
+        =
+        let logger = logger loggerFactory
+
+        match state.ThreadState.[thread].MethodState.PendingTypeInit with
+        | None -> executeOneStepInitialised loggerFactory baseClassTypes state thread logger
+        | Some ty ->
+
+        match runPendingTypeInit loggerFactory baseClassTypes state thread ty with
+        | Choice1Of2 result -> result
+        | Choice2Of2 state -> executeOneStepInitialised loggerFactory baseClassTypes state thread logger

@@ -258,26 +258,14 @@ module internal UnaryMetadataObjectOps =
                 typeArgsFromMetadata
                 state
 
-        let state, init =
-            IlMachineStateExecution.ensureTypeInitialised loggerFactory baseClassTypes thread declaringTypeHandle state
-
-        match init with
-        // Park this thread on the other thread's in-progress cctor, exactly as `call`/`callvirt`
-        // (UnaryMetadataCallOps) and the static-field ops (UnaryMetadataFieldOps) already do.
-        // Nothing has been popped yet — the constructor's arguments are consumed later, inside
-        // `callMethod` — and the program counter has not been advanced, so when the scheduler
-        // wakes us we simply re-execute this `newobj` from the top. `ensureTypeInitialised`
-        // returns the state unmodified on this path, and the work done above it (assembly
-        // loading, member resolution, concretization) is idempotent cache population, so the
-        // retry observes no partial effect of this attempt. Unlike the call ops there is no
-        // `constrained.` prefix to reinstate, because `newobj` cannot carry one.
-        | WhatWeDid.BlockedOnClassInit blockedBy -> state, WhatWeDid.BlockedOnClassInit blockedBy
-        | WhatWeDid.SuspendedForClassInit -> state, WhatWeDid.SuspendedForClassInit
-        | WhatWeDid.SuspendedForManagedCall ->
-            failwith "logic error: ensureTypeInitialised cannot suspend for an arbitrary managed call"
-        | WhatWeDid.ThrowingTypeInitializationException -> state, WhatWeDid.ThrowingTypeInitializationException
-        | WhatWeDid.VoluntaryYield _ -> failwith "logic error: ensureTypeInitialised cannot produce a VoluntaryYield"
-        | WhatWeDid.Executed ->
+        // No class-initialisation check here: the object is allocated first and the constructor's
+        // own prologue runs it, which is the order the CLR uses. Measured on .NET 10, a `.cctor`
+        // that throws under a plain `newobj` gives its `TypeInitializationException` a trace
+        // beginning `at T..ctor()`, so that frame is established before the initialiser runs, and
+        // the allocation it belongs to has already happened.
+        //
+        // An allocation whose `.cctor` then throws is therefore garbage, exactly as on the real
+        // runtime: the `newobj` never completes and nothing can reach the object.
 
         let ctorAssembly = state.LoadedAssembly ctor.DeclaringType.Assembly |> Option.get
         let ctorType = ctorAssembly.TypeDefs.[ctor.DeclaringType.Definition.Get]
