@@ -691,6 +691,16 @@ module ExceptionDispatching =
     /// `Activator.CreateInstance<T>()` ctor is then additionally wrapped in
     /// `TargetInvocationException`. A single frame can carry both — that is exactly the chained
     /// `Activator.CreateInstance<T>()`-over-a-throwing-`.cctor` case.
+    ///
+    /// Each wrapper is seeded with the frame that raises it, exactly as `throwExceptionObject`
+    /// seeds an ordinary `throw`, because in CoreCLR that is literally what it is: the wrap is
+    /// managed `throw new TargetInvocationException(e)` running in the catcher's frame. Measured
+    /// on .NET 10, `Activator.CreateInstance<T>()` over a throwing `.cctor` gives the
+    /// `TypeInitializationException` a trace ending at `RuntimeType.CreateInstanceOfT` and the
+    /// `TargetInvocationException` one beginning there — the two meet at the wrapping frame.
+    /// PawPrint inlines the `Activator` intrinsic and so has no `CreateInstanceOfT` frame of its
+    /// own; the call site in the frame that invoked `Activator.CreateInstance<T>()` stands in for
+    /// it, which is the substitution the outer `TargetInvocationException` already made.
     let private applyFrameWraps
         (loggerFactory : ILoggerFactory)
         (corelib : BaseClassTypes<DumpedAssembly>)
@@ -701,6 +711,18 @@ module ExceptionDispatching =
         (exceptionType : ConcreteTypeHandle)
         : IlMachineState * CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> * ConcreteTypeHandle
         =
+        /// Give a freshly synthesised wrapper the one frame it is raised from. The caller frame is
+        /// re-read from `state` at each use because a wrap allocates on the heap in between.
+        let seedWrapper
+            (state : IlMachineState)
+            (wrapper : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+            : IlMachineState * CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+            =
+            let caller =
+                ThreadState.getFrame returnState.JumpTo state.ThreadState.[currentThread]
+
+            appendCallerFrame currentThread caller returnState.CallSiteIlOpIndex wrapper state
+
         // If this frame was running a .cctor, mark the type initialisation as failed and wrap the
         // exception in TypeInitializationException (CLR behaviour). Synthesize the TIE first so
         // we can cache it; repeated accesses rethrow the same instance (matching CLR identity
@@ -718,13 +740,14 @@ module ExceptionDispatching =
                         failwith
                             $"Logic error: failed to look up ConcreteType for initialising-type handle %O{finishedInitialising} when synthesising TypeInitializationException"
 
-                // No projection here, unlike the pre-two-pass code, which wrote the in-flight
-                // trace onto the exception at each wrap because that was the last point at which
-                // it held one. `concludeFirstPass` has already frozen this exception's completed
-                // trace, so a write here could only be a no-op or a regression: the second pass
-                // runs the wrapping frame's cleanup before arriving, and guest code there may have
-                // moved the object's token on — `RestoreDispatchState` assigns `_stackTrace`
-                // directly — which re-projecting the search's older frames would clobber.
+                // The exception being wrapped is *not* re-projected here, unlike in the
+                // pre-two-pass code, which wrote the in-flight trace onto it at each wrap because
+                // that was the last point at which it held one. `concludeFirstPass` has already
+                // frozen its completed trace, so a write here could only be a no-op or a
+                // regression: the second pass runs the wrapping frame's cleanup before arriving,
+                // and guest code there may have moved the object's token on —
+                // `RestoreDispatchState` assigns `_stackTrace` directly — which re-projecting the
+                // search's older frames would clobber.
                 let tieAddr, tieType, state =
                     IlMachineState.synthesizeTypeInitializationException
                         loggerFactory
@@ -736,11 +759,13 @@ module ExceptionDispatching =
                 let state =
                     state.WithTypeFailedInit currentThread finishedInitialising tieAddr tieType
 
-                let wrapped =
-                    {
-                        ExceptionObject = tieAddr
-                        StackTrace = []
-                    }
+                let state, wrapped =
+                    seedWrapper
+                        state
+                        {
+                            ExceptionObject = tieAddr
+                            StackTrace = []
+                        }
 
                 state, wrapped, tieType
 
@@ -757,20 +782,32 @@ module ExceptionDispatching =
             state, cliException, exceptionType
         else
 
-        // As above, no projection. When both wraps fire on one boundary — the chained
-        // `Activator.CreateInstance<T>()`-over-a-throwing-`.cctor` case — `cliException` here is
-        // the `TypeInitializationException` synthesised a few lines up, whose trace is `[]`, so
-        // the pre-two-pass code's write was already inert: it stamped an empty trace onto an
-        // object born a moment earlier. That born-dead token is what leaves the chained TIE
-        // frameless, and it is `ActivatorCctorTypeInitializationTrace.cs`'s parked subject.
+        // Both wraps firing on one boundary is the chained
+        // `Activator.CreateInstance<T>()`-over-a-throwing-`.cctor` case, and `cliException` here is
+        // then the `TypeInitializationException` synthesised a few lines up. Its dispatch ends at
+        // this very frame — it is caught and never propagates further — so freeze its trace now,
+        // for the reason `concludeFirstPass` freezes a search that reached a handler. Doing it
+        // here rather than at birth matches an ordinary raise, which is seeded by
+        // `throwExceptionObject` and projected only once its search concludes.
+        //
+        // Only a wrapper *we* synthesised is projected. An original exception arriving here was
+        // already frozen by `concludeFirstPass`, and re-projecting it could clobber a newer token
+        // written by guest cleanup, as the comment on the first wrap explains.
+        let state =
+            match returnState.WasInitialisingType with
+            | None -> state
+            | Some _ -> projectStackTrace loggerFactory corelib cliException state
+
         let tieAddr, tieType, state =
             IlMachineState.synthesizeTargetInvocationException loggerFactory corelib cliException.ExceptionObject state
 
-        let wrapped =
-            {
-                ExceptionObject = tieAddr
-                StackTrace = []
-            }
+        let state, wrapped =
+            seedWrapper
+                state
+                {
+                    ExceptionObject = tieAddr
+                    StackTrace = []
+                }
 
         state, wrapped, tieType
 
@@ -976,11 +1013,8 @@ module ExceptionDispatching =
         let state, wrapped, wrappedType =
             applyFrameWraps loggerFactory corelib state currentThread returnState unwind.Exception unwind.ExceptionType
 
-        let threadState = state.ThreadState.[currentThread]
-        let caller = ThreadState.getFrame returnState.JumpTo threadState
-
         let threadState =
-            threadState
+            state.ThreadState.[currentThread]
             |> ThreadState.setActiveFrame returnState.JumpTo
             |> ThreadState.removeFrame unwind.Frame
 
@@ -989,21 +1023,15 @@ module ExceptionDispatching =
                 ThreadState = state.ThreadState |> Map.add currentThread threadState
             }
 
-        // The wrapper is a fresh raise beginning at the caller's call site, so it seeds that
-        // frame exactly as `throwExceptionObject` seeds a `throw`'s own. That reproduces the
-        // pre-two-pass trace byte for byte: the old code wrapped mid-unwind and then let the
-        // ordinary crossing append land on the wrapper's empty trace, which is the same frame
-        // reached by a different route.
-        let state, seeded =
-            appendCallerFrame currentThread caller returnState.CallSiteIlOpIndex wrapped state
-
+        // `applyFrameWraps` has already seeded the outermost wrapper with the caller's call site,
+        // which is where its raise begins; the search for it starts there too.
         runFirstPass
             loggerFactory
             corelib
             state
             currentThread
             {
-                Exception = seeded
+                Exception = wrapped
                 ExceptionType = wrappedType
                 StartFrame = returnState.JumpTo
                 StartPC = returnState.CallSiteIlOpIndex

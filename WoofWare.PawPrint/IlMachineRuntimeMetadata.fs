@@ -1079,12 +1079,15 @@ module IlMachineRuntimeMetadata =
     /// being true is what sends `Exception.StackTrace` down `GetStackTrace()` and into the
     /// structured decoder, so a token with no frames would promise an answer PawPrint cannot
     /// give and turn a readable `null` trace into a crash at the unimplemented
-    /// `StackTrace_GetStackFramesInternal`. That is not hypothetical: a `.cctor` that throws
-    /// under `Activator.CreateInstance<T>()` hits both the `WasInitialisingType` and
-    /// `WrapExceptionInTargetInvocation` wraps on one frame, and the second sees the freshly
-    /// synthesised `TypeInitializationException` before any frame has been appended to it.
-    /// Populating those synthesised wrappers with real frames is issue #865's business; until
-    /// then, claiming less is the honest move.
+    /// `StackTrace_GetStackFramesInternal`. Claiming less is the honest move.
+    ///
+    /// The shape that used to reach this was a `.cctor` throwing under
+    /// `Activator.CreateInstance<T>()`, which hits both the `WasInitialisingType` and
+    /// `WrapExceptionInTargetInvocation` wraps on one frame: the second saw the freshly
+    /// synthesised `TypeInitializationException` before any frame had been appended to it.
+    /// `ExceptionDispatching.applyFrameWraps` now seeds each wrapper it synthesises with the
+    /// frame raising it, so that one arrives with a frame. The guard stays because it is about
+    /// this function's contract rather than about that caller.
     let recordThrownStackTrace
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
