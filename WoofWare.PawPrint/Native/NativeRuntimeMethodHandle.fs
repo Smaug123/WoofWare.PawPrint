@@ -1083,6 +1083,76 @@ module NativeRuntimeMethodHandle =
         | "System.Private.CoreLib",
           "System",
           "RuntimeMethodHandle",
+          "GetSlot",
+          [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
+                                              "System",
+                                              "RuntimeMethodHandleInternal",
+                                              generics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when generics.IsEmpty ->
+            // CoreCLR (runtimehandles.cpp:1352): asserts non-null and returns
+            // (INT32)pMethod->GetSlot(), which is a bare read of the MethodDesc's slot number as
+            // assigned once by MethodTableBuilder::PlaceVirtualMethods. PawPrint has no persisted
+            // slot number, so the layout is recomputed from the declaring type's chain; see
+            // `NativeRuntimeTypeHelpers.vtableOfClosed` for the rule and for why MethodImpls are
+            // not consulted.
+            //
+            // Every caller that can reach this today asks only about a method whose metadata carries
+            // MethodAttributes.Virtual (`PopulateMethods`, RuntimeType.CoreCLR.cs:683), and on a
+            // class or value type such a method always occupies an instance vtable slot: CoreCLR
+            // rejects static+virtual outside interfaces with a TypeLoadException, and
+            // `PopulateMethods` routes interfaces down a branch that never reaches here.
+            //
+            // Two shapes would land outside the vtable, and neither is reachable yet. Both are
+            // recorded because they are the answer to "what would CoreCLR have returned":
+            //
+            //  - `PopulateProperties` (RuntimeType.CoreCLR.cs:1358) calls this on a property's
+            //    accessor with *no* Virtual guard, testing `slot < numVirtuals` afterwards, so an
+            //    ordinary non-virtual getter reaches it and CoreCLR answers with a non-vtable slot.
+            //    PawPrint cannot enumerate properties at all -- `MetadataImport.Enum` does not
+            //    support the Property token type -- so `GetProperties` fails well before this
+            //    point. Whoever implements property enumeration will need the non-vtable region.
+            //
+            //  - For a value type, the MethodTable builder duplicates every virtual, leaving the
+            //    unboxing stub in the vtable slot and giving the unboxed copy a slot beyond
+            //    GetNumVirtuals. Those duplicates are MethodDesc-level artifacts living in the
+            //    MethodDescChunks; PawPrint enumerates metadata MethodDefs once, so it never sees
+            //    them.
+            let operation = "RuntimeMethodHandle.GetSlot"
+
+            let identity =
+                resolveMetadataIdentityFromArg operation state instruction.Arguments.[0]
+
+            let methodInfo = methodInfoOfMetadataIdentity operation state identity
+
+            let declaringType = identity.GetDeclaringType ()
+
+            let state, vtable =
+                NativeRuntimeTypeHelpers.vtableOfClosed
+                    ctx.LoggerFactory
+                    ctx.BaseClassTypes
+                    operation
+                    state
+                    declaringType
+
+            let slot =
+                vtable
+                |> List.map NativeRuntimeTypeHelpers.slotIdentity
+                |> NativeRuntimeTypeHelpers.slotIndexOfIdentity (
+                    identity.GetAssemblyFullName (),
+                    methodInfo.IdentityKey
+                )
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"TODO: %s{operation}: method %s{methodInfo.Name} occupies no slot in the vtable of its declaring type %O{declaringType}; CoreCLR would answer with a slot in the non-vtable region beyond GetNumVirtuals, which PawPrint does not model. If you have arrived here from property enumeration, that is the expected next step: see the comment above this handler"
+                )
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 slot)) ctx.Thread state
+
+            NativeHandlerResult.completed state |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeMethodHandle",
           "IsGenericMethodDefinition",
           [ ConcreteType state.ConcreteTypes ("System.Private.CoreLib",
                                               "System",

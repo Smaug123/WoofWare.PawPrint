@@ -25,6 +25,7 @@
     <Compile Include="TestHarness.fs"/>
     <Compile Include="TestBoundedRun.fs" />
     <Compile Include="TestGuestLocation.fs" />
+    <Compile Include="TestGuestFailure.fs" />
     <Compile Include="CrossAssemblyHarness.fs" />
     <Compile Include="TestCrossAssemblyOracle.fs" />
     <Compile Include="TypeIdentityTestHelpers.fs" />
@@ -138,6 +139,7 @@
     <Compile Include="TestVariableSizeNewobj.fs" />
     <Compile Include="TestNativeMdUtf8String.fs" />
     <Compile Include="TestNativeRuntimeMethodHandle.fs" />
+    <Compile Include="TestVirtualMethodSlots.fs" />
     <Compile Include="TestLinuxCoreLibFlavour.fs" />
     <Compile Include="TestInlineArrayLayout.fs" />
     <Compile Include="TestReinterpretCellAccess.fs" />
