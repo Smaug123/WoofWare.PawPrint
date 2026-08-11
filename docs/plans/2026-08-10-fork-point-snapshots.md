@@ -1,8 +1,7 @@
 # Plan: share the machine state up to the first fork point
 
-Status: **all three PRs implemented.** §3.7 and §5.7 record where implementation contradicted the
-plan. The remaining work is stage 4 — rewiring `TestConcurrencyBugs` / `TestRaces` to fan out from
-a shared fork point — which this plan describes but does not yet cover in detail.
+Status: **complete.** All four stages are implemented; §3.7, §5.7 and §7.1 record where
+implementation contradicted the plan.
 
 Goal: when sweeping many PCT seeds over one guest, compute the single-threaded prefix *once* and
 fan every seed out from it.
@@ -399,7 +398,8 @@ should keep taking the runtime dirs and returning a whole `HostConfig`, so the c
   (`Program.fs:961`) stay the prefix's; document that the prefix factory must outlive every
   resume. The sweeps' per-seed `use _loggerFactoryResource` (`TestConcurrencyBugs.fs:188`) means
   the prefix factory must be scoped to the whole sweep; disposal-after-share fails with
-  `ObjectDisposedException`, which is loud enough.
+  `ObjectDisposedException`, which is loud enough. **That last clause is false**: stage 4 mutated
+  it and nothing failed. See §7.1.
 * **Sharing across parallel resumes is not a new exposure class.** The sweeps use
   `Array.Parallel` (`TestConcurrencyBugs.fs:359`), and everything reachable from the snapshot is
   persistent F# data or `ImmutableDictionary`; `DumpedAssembly` values are *already* shared across
@@ -557,11 +557,80 @@ Fable proposed two PRs, I proposed four; the difference was mostly the now-dropp
    logic.
 3. **`ForkSnapshot` + the fork runner — done.** §5.2, §5.7 and properties P1, P4, P5, P6, plus the
    constructed preamble-contention test of §6.1.
-4. **Rewire the sweeps.** `TestConcurrencyBugs` and `TestRaces` fan out from a shared fork point;
-   report the measured speedup against §1. Still to do, and the only stage with a user-visible
-   payoff — everything before it is the machinery that makes the payoff correct.
+4. **Rewire the sweeps — done.** `TestConcurrencyBugs` and `TestRaces` fan out from a shared fork
+   point. The only stage with a user-visible payoff — everything before it is the machinery that
+   makes the payoff correct. See §7.1.
 
 PR 1 is the one to review hardest.
+
+### 7.1 What stage 4 shipped, and what it measured
+
+**The payoff (P7).** `dotnet test --filter "FullyQualifiedName~TestConcurrencyBugs|FullyQualifiedName~TestRaces"`,
+same machine, same command, before and after:
+
+| test case | before | after |
+|---|---|---|
+| `QueueIsNotThreadSafe.cs` | 52 s | 7 s |
+| `TwoCountersSeparated.cs` | 49 s | 4 s |
+| `LostUpdate.cs` | 38 s | 2 s |
+| `InvertedMonitorDeadlock.cs` | 15 s | 0.8 s |
+| `JustABoolNotAMutex.cs` | 10 s | 6 s |
+| `SimultaneousCounter.cs` | 1 s | 0.7 s |
+| `ReadWriteRace under PCT covers every legal outcome` | 4 s | 0.15 s |
+| `NewobjCctorRace under PCT covers every legal outcome` | 5 s | 1.0 s |
+| **whole filter, wall clock** | **68 s** | **12 s** |
+
+Read the per-case column as indicative only: NUnit runs these cases concurrently, so each one's
+wall time depends on what else was in flight, and the sweeps short-circuit on the first matching
+seed — which is not the same seed, nor the same *number* of seeds, from run to run, because
+`Array.Parallel.tryFind` does not visit in index order. The whole-filter figure is the honest one.
+5.7× against §1's predicted ceiling of 4–16× (74–94% of instructions shared) is where it should be.
+
+**Where the correctness lives.** The sweeps cannot check their own fanout: they assert that *some*
+seed finds the bug, which a resume exploring a subtly different schedule space would still satisfy.
+So `TestScheduleFork`'s `forkingGuests` corpus was widened from 4 guests to all 10 — the four
+prefix-shape guests plus the whole `TestConcurrencyBugs` corpus — which puts P1's commuting square
+(full post-fork decision trace, per seed) over exactly the guests the sweeps now fan out over.
+`TestRaces`' exact-outcome-coverage assertions are a second, independent check, being sensitive to
+the whole seed-to-schedule mapping; they did not move.
+
+Widening the corpus also exposed a hole in the fixture that predates this stage. The comment first
+written for the new guests claimed they brought endings other than `exit n`; dumping the actual
+endings across the seed set showed that was half true. `SimultaneousCounter` does throw, but
+*nothing* in the fixture deadlocked under any seed — so `traceFrom`'s deadlock arm never ran, and
+the claim that a resumed run reproduces a *wedge* identically (which `BadOutcome.Deadlock` in
+`TestConcurrencyBugs` rests on entirely) was untested. Scanning 0..200 found seed 17 as the lowest
+under which `InvertedMonitorDeadlock.cs` actually deadlocks; it was added to `seeds` for that
+measured reason rather than for spread, and the comment there says so. Worth recording as a general
+lesson: "this corpus covers ending X" is a claim about the seeds too, and the seeds were chosen
+before these guests existed.
+
+**Non-forking outcomes are failures, not sweeps of size one.** §5.3 framed `NeverForked` as "a
+4096-seed sweep answered by one run", and for a general harness it is. Both of these fixtures
+refuse it instead, along with `DeadlockedBeforeFork` and `ForkedDuringStartup`, because their claim
+is about *schedules*: a guest with no fork point has no schedule space, so "PCT exhibits the bad
+interleaving" is vacuous even when that single forced run happens to match the scenario's
+`BadOutcome`. Each arm names what went wrong and what to do about it. This also retires
+`RunSummary.CompletedBeforeMain`, whose job — flagging a guest that put effectful code in a type
+initialiser — is now done more precisely by `ForkedDuringStartup` and by `NeverForked`.
+
+**Mutants, and the one that survived:**
+
+| mutant | killed by |
+|---|---|
+| `runOne` resumes with `None` rather than `Some seed` | 5 of the 6 `TestConcurrencyBugs` scenarios (`SimultaneousCounter` survives, since round-robin alone reaches its bad outcome) |
+| point a scenario at a single-threaded guest | the `NeverForked` arm of `forkOf`, with the exact diagnostic |
+| point `sweepPctExitCodes` at a single-threaded guest | the `NeverForked` arm there |
+| **dispose the prefix's `ILoggerFactory` immediately after `runToFirstFork`** | **nothing** |
+
+That last one falsifies §5.5. The plan asserted that disposing the shared factory before the
+resumes "fails with `ObjectDisposedException`, which is loud enough". It does not: measured with
+`PAWPRINT_LOG_DIR` set, so the JSONL sinks really are closed, all six scenarios still pass.
+`resumeFork` rebinds the machine's own sink per seed, and nothing the prefix captured logs again
+afterwards. The factory is still scoped to the whole sweep — `resumeFork`'s docstring makes that a
+precondition and it costs nothing to keep — but it is a documented precondition being honoured, not
+a crash being avoided, and the comment at the call site says so. Had this gone unmeasured, a future
+reader would have trusted a safety net that is not there.
 
 ## 8. Open questions
 
