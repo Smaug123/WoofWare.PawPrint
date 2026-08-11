@@ -25,6 +25,7 @@
     <Compile Include="TestHarness.fs"/>
     <Compile Include="TestBoundedRun.fs" />
     <Compile Include="TestGuestLocation.fs" />
+    <Compile Include="TestGuestFailure.fs" />
     <Compile Include="CrossAssemblyHarness.fs" />
     <Compile Include="TestCrossAssemblyOracle.fs" />
     <Compile Include="TypeIdentityTestHelpers.fs" />

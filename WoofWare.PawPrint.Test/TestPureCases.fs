@@ -271,8 +271,12 @@ public class Program
 }
 """
 
+        // `Assert.Catch`, not `Assert.Throws`, here and in the two tests below: `Assert.Throws` is
+        // an *exact* type constraint, and a failure raised while interpreting now arrives as
+        // `GuestFailureException` carrying the guest's position. These tests are about the
+        // message, not the type, so the looser assertion is the one that says what they mean.
         let exn =
-            Assert.Throws (fun () ->
+            Assert.Catch (fun () ->
                 runPawPrintSource "CalliPunnedReturn.cs" source KernelConfig.Default (fun _image _result -> ())
             )
 
@@ -301,7 +305,7 @@ public class Program
 """
 
         let exn =
-            Assert.Throws (fun () ->
+            Assert.Catch (fun () ->
                 runPawPrintSource "CalliPunnedParameter.cs" source KernelConfig.Default (fun _image _result -> ())
             )
 
@@ -339,7 +343,7 @@ public class Program
 """
 
         let exn =
-            Assert.Throws (fun () ->
+            Assert.Catch (fun () ->
                 runPawPrintSource "CalliPunnedFloatWidth.cs" source KernelConfig.Default (fun _image _result -> ())
             )
 
