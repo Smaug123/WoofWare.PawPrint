@@ -3,6 +3,7 @@ namespace WoofWare.PawPrint.Test
 open System.Collections.Generic
 open System.Collections.Immutable
 open System.IO
+open System.Runtime.InteropServices
 open FsCheck
 open FsCheck.FSharp
 open FsUnitTyped
@@ -523,6 +524,174 @@ module TestManagedHeap =
             && live.Count = ops.Length
             && live
                |> Set.forall (fun addr -> ManagedHeap.getSyncBlock addr heap = SyncBlock.Empty)
+
+        Check.One (
+            Config.QuickThrowOnFailure.WithMaxTest 200,
+            Prop.forAll (ArbMap.defaults |> ArbMap.arbitrary) property
+        )
+
+    // ---------------------------------------------------------------------
+    // Field stores.
+    //
+    // `setFieldById` is the one read-modify-write primitive for storing to a
+    // field of a non-array object. It exists so that every field store is a
+    // single identifiable event on the heap: `stfld` and delegate
+    // construction used to rebuild `NonArrayObjects` inline instead, which
+    // left three separately-maintained copies of "overwrite one field" and
+    // two of them invisible to anything watching the heap API.
+    // ---------------------------------------------------------------------
+
+    let private int32Handle : ConcreteTypeHandle =
+        AllConcreteTypes.getRequiredNonGenericHandle concreteTypes baseClassTypes.Int32
+
+    let private objectHandle : ConcreteTypeHandle =
+        AllConcreteTypes.getRequiredNonGenericHandle concreteTypes baseClassTypes.Object
+
+    let private fieldA : FieldId = FieldId.named "A"
+    let private fieldB : FieldId = FieldId.named "B"
+
+    /// An object with two Int32 fields, `A` and `B`, holding the given values.
+    let private allocateTwoFieldObject
+        (a : int)
+        (b : int)
+        (state : IlMachineState)
+        : ManagedHeapAddress * IlMachineState
+        =
+        let field (id : FieldId) (name : string) (offset : int) (value : int) : CliField =
+            {
+                Id = id
+                Name = name
+                Contents = CliType.Numeric (CliNumericType.Int32 value)
+                Offset = Some offset
+                Type = int32Handle
+                MarshallingDescriptor = None
+            }
+
+        let contents =
+            [ field fieldA "A" 0 a ; field fieldB "B" 4 b ]
+            |> CliValueType.OfFields
+                baseClassTypes
+                state.ConcreteTypes
+                objectHandle
+                (Layout.Custom (size = 8, packingSize = 0))
+                CharSet.Ansi
+
+        IlMachineState.allocateManagedObject objectHandle contents state
+
+    let private readInt32Field (id : FieldId) (addr : ManagedHeapAddress) (heap : ManagedHeap) : int =
+        match ManagedHeap.get addr heap |> AllocatedNonArrayObject.DereferenceFieldById id with
+        | CliType.Numeric (CliNumericType.Int32 v) -> v
+        | other -> failwith $"expected field %O{id} of %O{addr} to hold an Int32, got %O{other}"
+
+    [<Test>]
+    let ``setFieldById overwrites the named field and leaves its siblings alone`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let state = state loggerFactory
+
+        let addr, state = allocateTwoFieldObject 11 22 state
+
+        let heap =
+            ManagedHeap.setFieldById addr fieldA (CliType.Numeric (CliNumericType.Int32 99)) state.ManagedHeap
+
+        readInt32Field fieldA addr heap |> shouldEqual 99
+        readInt32Field fieldB addr heap |> shouldEqual 22
+
+    [<Test>]
+    let ``setFieldById leaves other heap objects untouched`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let state = state loggerFactory
+
+        let target, state = allocateTwoFieldObject 1 2 state
+        let bystander, state = allocateTwoFieldObject 3 4 state
+
+        let heap =
+            ManagedHeap.setFieldById target fieldA (CliType.Numeric (CliNumericType.Int32 42)) state.ManagedHeap
+
+        readInt32Field fieldA target heap |> shouldEqual 42
+        readInt32Field fieldA bystander heap |> shouldEqual 3
+        readInt32Field fieldB bystander heap |> shouldEqual 4
+        // The store must not disturb the object header either.
+        ManagedHeap.getSyncBlock bystander heap |> shouldEqual SyncBlock.Empty
+
+    [<Test>]
+    let ``setFieldById fails loudly for an address that was never allocated`` () : unit =
+        let exn =
+            Assert.Throws<System.Exception> (fun () ->
+                ManagedHeap.setFieldById
+                    (ManagedHeapAddress 42)
+                    fieldA
+                    (CliType.Numeric (CliNumericType.Int32 0))
+                    ManagedHeap.empty
+                |> ignore
+            )
+
+        exn.Message |> shouldContainText "not a live managed heap allocation"
+
+    [<Test>]
+    let ``setFieldById fails loudly, and distinguishably, for an array address`` () : unit =
+        // An array address reaching a field store means the caller misjudged the type of
+        // the reference it was handed; a dangling address means the reference itself is
+        // bogus. Those are different bugs, so they must not report the same way.
+        let addr, heap = ManagedHeap.allocateArray (stubArray 3) ManagedHeap.empty
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () ->
+                ManagedHeap.setFieldById addr fieldA (CliType.Numeric (CliNumericType.Int32 0)) heap
+                |> ignore
+            )
+
+        exn.Message |> shouldContainText "is an array"
+
+    [<Test>]
+    let ``set fails loudly for an address that was never allocated`` () : unit =
+        // `set` replaces the payload of an existing object; conjuring one at an
+        // unallocated address would mint a live object with no header, breaking the
+        // invariant that `getSyncBlock` is total over live addresses.
+        let exn =
+            Assert.Throws<System.Exception> (fun () ->
+                ManagedHeap.set (ManagedHeapAddress 42) stubNonArray ManagedHeap.empty |> ignore
+            )
+
+        exn.Message |> shouldContainText "not a live managed heap allocation"
+
+    [<Test>]
+    let ``setFieldById agrees with the open-coded read-modify-write it replaces`` () : unit =
+        // The oracle is precisely the code `stfld` and `executeDelegateConstructor` ran
+        // before this primitive existed. Any divergence means the refactor changed
+        // behaviour rather than merely relocating it.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let initialState = state loggerFactory
+
+        let property (writes : (bool * int) list) : bool =
+            let addr, state = allocateTwoFieldObject 0 0 initialState
+
+            let viaPrimitive =
+                writes
+                |> List.fold
+                    (fun heap (toA, value) ->
+                        let field = if toA then fieldA else fieldB
+                        ManagedHeap.setFieldById addr field (CliType.Numeric (CliNumericType.Int32 value)) heap
+                    )
+                    state.ManagedHeap
+
+            let viaOracle =
+                writes
+                |> List.fold
+                    (fun (heap : ManagedHeap) (toA, value) ->
+                        let field = if toA then fieldA else fieldB
+
+                        let updated =
+                            ManagedHeap.get addr heap
+                            |> AllocatedNonArrayObject.SetFieldById
+                                field
+                                (CliType.Numeric (CliNumericType.Int32 value))
+
+                        ManagedHeap.set addr updated heap
+                    )
+                    state.ManagedHeap
+
+            readInt32Field fieldA addr viaPrimitive = readInt32Field fieldA addr viaOracle
+            && readInt32Field fieldB addr viaPrimitive = readInt32Field fieldB addr viaOracle
 
         Check.One (
             Config.QuickThrowOnFailure.WithMaxTest 200,
