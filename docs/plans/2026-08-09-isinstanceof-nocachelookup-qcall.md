@@ -31,7 +31,19 @@ is covered instead from `Type.IsInstanceOfType`, which needs no unboxing.
 branch is covered via a generic parameter rather than `MakeByRefType()`.
 
 **No test can reach the `IDynamicInterfaceCastable` refusal**, because no guest in the suite
-implements that interface. It is a refusal path, not an answer path, so this is expected.
+implements that interface *as a reference type*. It is a refusal path, not an answer path, so
+this is expected.
+
+**The refusal was originally gated on the wrong question**, and a struct could trip it — found by
+Codex review, which built the guest and showed PawPrint aborting where real .NET answers `false`.
+The first cut asked "does the object's type implement `IDynamicInterfaceCastable`", but CoreCLR
+asks `pMT->IsIDynamicInterfaceCastable()`, a MethodTable *flag*, and `MethodTableBuilder` sets
+that flag only inside a `!IsValueClass()` guard (`vm/methodtablebuilder.cpp:1991`). A struct
+implementing the interface therefore never takes the callback, boxed or not — a boxed struct
+shares its unboxed MethodTable. Fixed by gating on the object's type not being a value type;
+`DynamicInterfaceCastableStruct.cs` pins it differentially, and reverting the gate kills the
+test. The general lesson is the one AGENTS.md states: a flag whose setter has a guard is not the
+same predicate as the assignability question it looks like.
 
 **`TypeHandle::GetName` is a different renderer from `TypeString::AppendType`** — found by
 Codex review, which demonstrated it differentially. The exception message was first built with

@@ -105,6 +105,14 @@ module NativeCastHelpers =
     ///    managed BCL surface, and answering it requires calling back into the guest's
     ///    `IsInterfaceImplemented`. PawPrint does not model that, so refuse loudly rather than
     ///    return a `false` that may be wrong.
+    ///
+    ///    That fallback is gated on `pMT->IsIDynamicInterfaceCastable()`, a MethodTable flag —
+    ///    *not* on an assignability question. `MethodTableBuilder` sets it only inside a
+    ///    `!IsValueClass()` guard (`vm/methodtablebuilder.cpp:1991`), so a struct implementing
+    ///    the interface never takes the callback however it is tested. A boxed struct shares
+    ///    its unboxed MethodTable, so the flag is absent there too and the cast simply answers
+    ///    `false`. Reading the flag as "does this type implement the interface" would refuse a
+    ///    case CoreCLR answers without complaint.
     let private objIsInstanceOfCore
         (operation : string)
         (ctx : NativeCallContext)
@@ -142,6 +150,12 @@ module NativeCastHelpers =
         if canCast then
             state, true
         elif not (isInterfaceTarget state target) then
+            state, false
+        // `MethodTableBuilder` never sets the flag on a value class, so a boxed struct that
+        // implements the interface still takes the ordinary `false`. Checked before the
+        // assignability query because it is the cheaper of the two and because it is the
+        // faithful reading of the flag, not an optimisation.
+        elif argumentIsValueType ctx.BaseClassTypes state objType then
             state, false
         else
 
