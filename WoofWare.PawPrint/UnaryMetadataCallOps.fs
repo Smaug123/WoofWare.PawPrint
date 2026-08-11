@@ -1511,109 +1511,42 @@ module internal UnaryMetadataCallOps =
                     $"calli: declaring type %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name} of the target method is not registered in AllConcreteTypes"
             )
 
-        // Calling a method runs its declaring type's initialiser first — but for a *synthesised*
-        // method the declaring type is the subject rather than the owner, so whether that follows
-        // is per-kind and `SynthesisedMethod.initialisesDeclaringType` is where the question is
-        // answered. A struct-marshal stub answers no: verified against the real runtime, a struct
-        // with an explicit static constructor keeps it dormant across `Marshal.StructureToPtr`,
-        // and `sourcesPure/MarshalStructureToPtrStaticCtorDormant.cs` pins that.
-        let classInitialisation =
-            let required =
-                match methodToCall with
-                | MethodInfo.Metadata _ -> true
-                | MethodInfo.Synthesised (_, kind) -> SynthesisedMethod.initialisesDeclaringType kind
+        // No class-initialisation check here: `callMethodWithCommitment` arms it on the callee's
+        // frame, and it is the callee's prologue that runs it. The per-kind question of whether a
+        // *synthesised* method's declaring type is initialised at all —
+        // `SynthesisedMethod.initialisesDeclaringType`, which a struct-marshal stub answers no, as
+        // `sourcesPure/MarshalStructureToPtrStaticCtorDormant.cs` pins — moved there with it, and
+        // is now asked once for every call rather than at each call site.
 
-            if required then
-                IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state
-            else
-                StateLoadResult.NothingToDo state
+        // The pointer sits above the arguments, and arguments are popped from the top of the
+        // stack, so it has to come off before we call in.
+        let fnPtrValue, state = IlMachineState.popEvalStack thread state
+        let threadState = state.ThreadState.[thread]
 
-        match classInitialisation with
-        | NothingToDo state ->
-            // Our own frame, so the restore below can target it by id: on the suspension path the
-            // *active* frame is the class initialiser's, not ours.
-            let callerFrameId = state.ThreadState.[thread].ActiveMethodState
+        let state, commitment =
+            IlMachineStateExecution.callMethodWithCommitment
+                loggerFactory
+                baseClassTypes
+                None
+                ConstructionState.NotConstructing
+                false
+                false
+                true
+                methodToCall.Generics
+                methodToCall
+                thread
+                threadState
+                None
+                ConstructedObjectDisposition.PushToCaller
+                false // wrapExceptionInTargetInvocation
+                state
 
-            // Depth before we touch anything, so the suspension path below can check that the only
-            // thing missing is the pointer we removed.
-            let depthBeforePop =
-                (IlMachineState.getFrame thread callerFrameId state).EvaluationStack.Values.Length
-
-            // The pointer sits above the arguments, and arguments are popped from the top of the
-            // stack, so it has to come off before we call in.
-            let fnPtrValue, state = IlMachineState.popEvalStack thread state
-            let threadState = state.ThreadState.[thread]
-
-            let state, commitment =
-                IlMachineStateExecution.callMethodWithCommitment
-                    loggerFactory
-                    baseClassTypes
-                    None
-                    ConstructionState.NotConstructing
-                    false
-                    false
-                    true
-                    methodToCall.Generics
-                    methodToCall
-                    thread
-                    threadState
-                    None
-                    ConstructedObjectDisposition.PushToCaller
-                    false // wrapExceptionInTargetInvocation
-                    state
-
-            // The call does not always happen. When the callee needs a class initialiser run
-            // first, the initialiser becomes the active frame and our program counter is
-            // deliberately left unadvanced so this `calli` re-executes once it returns. The retry
-            // re-pops the arguments, which `callMethodWithCommitment` left in place — but not the
-            // function pointer, which we popped out here before calling in (it sits above the
-            // arguments, and arguments are popped from the top). So restoring it is our job, and
-            // omitting it makes the retry fail with "expected a function pointer on top".
-            //
-            // We ask which case occurred rather than inferring it. The tempting proxy — "our
-            // program counter did not move" — is wrong, because `Raised` leaves it unmoved too, on
-            // purpose, so exception dispatch sees the faulting instruction's offset. Treating that
-            // as a retry would strand the pointer on a frame whose arguments are already consumed
-            // and would tell the scheduler to hold threads behind a class initialisation that is
-            // not running.
-            //
-            // The outcome is also what the scheduler sees: `Scheduler.onStepOutcome` treats
-            // `Executed` as forward progress and wakes every thread parked `BlockedOnClassInit` on
-            // us, whereas `SuspendedForClassInit` leaves them parked because our class init has not
-            // finished. Reporting the truth here is the accurate thing to do, but note it is not
-            // load-bearing for correctness: a spuriously woken thread re-checks its blocker and
-            // re-blocks, which `Scheduler.onStepOutcome` itself describes as "correct but
-            // wasteful", and the schedule stays deterministic either way. The sibling call ops
-            // still report `Executed` unconditionally in this situation.
-            match commitment with
-            | IlMachineStateExecution.CallCommitment.Committed
-            | IlMachineStateExecution.CallCommitment.Raised -> state, WhatWeDid.Executed
-            | IlMachineStateExecution.CallCommitment.SuspendedForClassInit ->
-                // The frame is still live: a class-init suspension pushes a frame on top of ours,
-                // it does not unwind us (unlike `Raised`, which can).
-                let callerFrame = IlMachineState.getFrame thread callerFrameId state
-
-                // Restoring the pointer is only sound if the suspended callee consumed nothing
-                // else. That holds today because the one intrinsic that can suspend
-                // (`Activator.CreateInstance<T>()`) takes no arguments, so nothing has been popped
-                // but our pointer — an invariant of a different module, and one that a future
-                // argument-taking intrinsic learning to suspend would break silently, leaving the
-                // retry to re-pop arguments that are no longer there. Check it rather than trust
-                // it.
-                let depthNow = callerFrame.EvaluationStack.Values.Length
-
-                if depthNow <> depthBeforePop - 1 then
-                    failwith
-                        $"calli: callee suspended for class init having consumed %d{depthBeforePop - 1 - depthNow} evaluation-stack slot(s) beyond the function pointer; restoring the pointer would corrupt the frame for the retry"
-
-                let restored = callerFrame |> MethodState.pushToEvalStack' fnPtrValue
-
-                IlMachineState.setFrame thread callerFrameId restored state, WhatWeDid.SuspendedForClassInit
-
-        | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
-        | ThrowingTypeInitializationException state -> state, WhatWeDid.ThrowingTypeInitializationException
-        | Blocked (state, blockedBy) ->
-            // Park this thread on the other thread's in-progress cctor. The PC has not been
-            // advanced and we have not popped the function pointer, so re-executing this
-            // `calli` when the scheduler wakes us sees exactly the stack we started with.
-            state, WhatWeDid.BlockedOnClassInit blockedBy
+        // This `calli` commits exactly once, so the function pointer popped above is simply gone
+        // and nothing has to put it back. It used to be restorable state: a callee needing its
+        // class initialiser run first left our program counter unadvanced so the instruction
+        // re-executed, and the retry would have looked for a pointer we had already consumed.
+        // Class initialisation now happens in the callee's own frame, after this instruction is
+        // finished with, so there is no retry to prepare for.
+        match commitment with
+        | IlMachineStateExecution.CallCommitment.Committed
+        | IlMachineStateExecution.CallCommitment.Raised -> state, WhatWeDid.Executed

@@ -239,37 +239,13 @@ module AbstractMachine =
                         $"delegate invocation: declaring type %s{methodPtr.DeclaringType.Namespace}.%s{methodPtr.DeclaringType.Name} of the target method is not registered in AllConcreteTypes"
                 )
 
-            // For a *synthesised* method the declaring type is the subject rather than the owner,
-            // so "calling a member initialises its type" does not follow; `initialisesDeclaringType`
-            // is the single place that question is answered. Same gate as `calli`.
-            let classInitialisation =
-                let required =
-                    match methodPtr with
-                    | MethodInfo.Metadata _ -> true
-                    | MethodInfo.Synthesised (_, kind) -> SynthesisedMethod.initialisesDeclaringType kind
-
-                if required then
-                    IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state
-                else
-                    StateLoadResult.NothingToDo state
-
-            // This runs *before* the synthetic frame is popped, which is what makes the retry
-            // free. Everything above is a pure read — `instruction.Arguments`, the heap, the
-            // concrete-type table — so on the suspension paths below we leave this frame exactly
-            // as we found it, the initialiser is pushed on top of it, and when that returns the
-            // dispatch loop re-enters `dispatchDelegateInvoke` from the top and recomputes the
-            // same values. There is nothing to save and restore, unlike `calli`, which must push
-            // its function pointer back because it had to pop it before the arguments.
-            //
-            // Re-entering a runtime-provided frame this way is the same mechanism `dispatchNative`
-            // above relies on for `NativeHandlerResult.SuspendedForClassInit`.
-            match classInitialisation with
-            | StateLoadResult.FirstLoadThis state -> ExecutionResult.stepped (state, WhatWeDid.SuspendedForClassInit)
-            | StateLoadResult.ThrowingTypeInitializationException state ->
-                ExecutionResult.stepped (state, WhatWeDid.ThrowingTypeInitializationException)
-            | StateLoadResult.Blocked (state, blockedBy) ->
-                ExecutionResult.stepped (state, WhatWeDid.BlockedOnClassInit blockedBy)
-            | StateLoadResult.NothingToDo state ->
+            // No class-initialisation check here: the target's frame carries it and runs it as its
+            // own prologue. That is what lets this synthetic frame be popped unconditionally
+            // below. Previously the check ran first precisely *because* the frame was still up —
+            // a suspension left it in place to be re-entered and recomputed — and getting that
+            // ordering wrong is what once put a `System.Action.Invoke` stub frame into a failing
+            // `.cctor`'s stack trace, which `DelegateCctorFailureTraceHasNoStubFrame.cs` pins. The
+            // stub frame is now gone before the initialiser can run, so it cannot appear at all.
 
             // When we return, we need to go back up the stack
             match state |> IlMachineState.returnFromSyntheticStackFrame thread with
@@ -316,21 +292,16 @@ module AbstractMachine =
                     false // wrapExceptionInTargetInvocation
                     state
 
-            // The class initialisation above covers the *target's declaring type*, but the target
-            // itself can still ask to suspend from inside the call: `Activator.CreateInstance<T>()`
-            // is serviced as an intrinsic and suspends to run `T`'s initialiser, and
-            // `Func<Foo> f = Activator.CreateInstance<Foo>;` is legal C#. By this point our
-            // synthetic frame is gone, so unlike a call opcode there is nothing left to re-execute
-            // and no program counter to leave unadvanced — the suspension would be silently
-            // dropped and the activator would never run. Refuse loudly instead of corrupting the
-            // frame; `calli` handles the same situation by restoring its stack and retrying, which
-            // is only open to it because its frame survives.
+            // A call cannot fail to happen any more, so there is nothing here to refuse. It used
+            // to be able to: `Activator.CreateInstance<T>()` is serviced as an intrinsic and
+            // suspended to run `T`'s initialiser, and `Func<Foo> f = Activator.CreateInstance<Foo>;`
+            // is legal C#, which reached a suspension after the delegate's synthetic frame had
+            // been popped — nothing left to re-execute, so it had to fail loudly rather than
+            // silently drop the call. Initialising `T` in its constructor's own prologue removes
+            // the suspension, and with it that whole class of shape.
             match commitment with
             | IlMachineStateExecution.CallCommitment.Committed
             | IlMachineStateExecution.CallCommitment.Raised -> ExecutionResult.stepped (state, WhatWeDid.Executed)
-            | IlMachineStateExecution.CallCommitment.SuspendedForClassInit ->
-                failwith
-                    $"TODO: delegate invocation of %s{methodPtr.DeclaringType.Namespace}.%s{methodPtr.DeclaringType.Name}::%s{methodPtr.Name} suspended for class initialisation after the delegate's synthetic frame was popped; there is no frame left to re-enter, so the call would be silently dropped"
 
         match instruction.ExecutingMethod.Body with
         | MethodBody.RuntimeProvided RuntimeBehaviour.DelegateCtor -> dispatchDelegateCtor ()

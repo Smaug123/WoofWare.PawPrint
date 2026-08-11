@@ -689,8 +689,12 @@ module ExceptionDispatching =
     /// Interpose whichever synthesised wrappers this frame boundary carries, in the CLR's order:
     /// a throwing `.cctor` surfaces as `TypeInitializationException`, and an
     /// `Activator.CreateInstance<T>()` ctor is then additionally wrapped in
-    /// `TargetInvocationException`. A single frame can carry both — that is exactly the chained
-    /// `Activator.CreateInstance<T>()`-over-a-throwing-`.cctor` case.
+    /// `TargetInvocationException`.
+    ///
+    /// The two normally land on *different* boundaries — the `.cctor` frame and the constructor
+    /// frame beneath it — because a type is initialised from its callee's prologue. One frame
+    /// carrying both is nevertheless handled here rather than ruled out, since which flags a
+    /// return state carries is not this function's to decide.
     ///
     /// Each wrapper is seeded with the frame that raises it, exactly as `throwExceptionObject`
     /// seeds an ordinary `throw`, because in CoreCLR that is literally what it is: the wrap is
@@ -782,13 +786,12 @@ module ExceptionDispatching =
             state, cliException, exceptionType
         else
 
-        // Both wraps firing on one boundary is the chained
-        // `Activator.CreateInstance<T>()`-over-a-throwing-`.cctor` case, and `cliException` here is
-        // then the `TypeInitializationException` synthesised a few lines up. Its dispatch ends at
-        // this very frame — it is caught and never propagates further — so freeze its trace now,
-        // for the reason `concludeFirstPass` freezes a search that reached a handler. Doing it
-        // here rather than at birth matches an ordinary raise, which is seeded by
-        // `throwExceptionObject` and projected only once its search concludes.
+        // When both wraps fire on one boundary, `cliException` here is the
+        // `TypeInitializationException` synthesised a few lines up. Its dispatch ends at this very
+        // frame — it is caught and never propagates further — so freeze its trace now, for the
+        // reason `concludeFirstPass` freezes a search that reached a handler. Doing it here rather
+        // than at birth matches an ordinary raise, which is seeded by `throwExceptionObject` and
+        // projected only once its search concludes.
         //
         // Only a wrapper *we* synthesised is projected. An original exception arriving here was
         // already frozen by `concludeFirstPass`, and re-projecting it could clobber a newer token
