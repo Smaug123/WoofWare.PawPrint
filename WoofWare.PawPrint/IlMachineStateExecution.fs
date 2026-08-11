@@ -1673,11 +1673,13 @@ module IlMachineStateExecution =
         //  - CoreCLR's `CreateInstanceOfT` wraps any exception thrown by the recursed ctor in a
         //    `TargetInvocationException`. We can't observe that in a separate Activator frame
         //    because we inline the intrinsic, so the recursive `callMethod` for the ctor sets
-        //    `WrapExceptionInTargetInvocation = true` on the ctor frame's `ReturnState`. When
-        //    `ExceptionDispatching.unwindToCallerAndSearch` pops the ctor frame, it synthesises
-        //    a fresh `TargetInvocationException` with the original exception as `_innerException`
-        //    and continues the search with the wrapped exception. A try/catch *inside* the ctor
-        //    that handles the exception is unaffected, matching CoreCLR.
+        //    `WrapExceptionInTargetInvocation = true` on the ctor frame's `ReturnState`. Exception
+        //    dispatch treats that flag as a boundary its first pass cannot see past — the wrap
+        //    changes the exception's *type*, so outer frames must be searched against the wrapper
+        //    — and its second pass, on reaching the ctor frame, pops it, synthesises a fresh
+        //    `TargetInvocationException` with the original exception as `_innerException`, and
+        //    starts a new search from the caller. A try/catch *inside* the ctor that handles the
+        //    exception is unaffected, matching CoreCLR.
         //
         // Intentional divergence (see docs/divergences.md):
         //  - For `BeforeFieldInit` reference types, CoreCLR defers the type initializer past the
@@ -1851,7 +1853,7 @@ module IlMachineStateExecution =
                             tieAddr
                             tieType
                     with
-                    | ExceptionDispatchResult.HandlerFound state -> Some (state, CallCommitment.Raised)
+                    | ExceptionDispatchResult.Dispatched state -> Some (state, CallCommitment.Raised)
                     | ExceptionDispatchResult.ExceptionUnhandled _ ->
                         failwith
                             "Unhandled TargetInvocationException wrapping a cached TypeInitializationException during Activator.CreateInstance<T>(); should have been caught by a handler"
@@ -2214,7 +2216,7 @@ module IlMachineStateExecution =
                     tieAddr
                     tieType
             with
-            | ExceptionDispatchResult.HandlerFound state -> StateLoadResult.ThrowingTypeInitializationException state
+            | ExceptionDispatchResult.Dispatched state -> StateLoadResult.ThrowingTypeInitializationException state
             | ExceptionDispatchResult.ExceptionUnhandled _ ->
                 failwith $"Unhandled TypeInitializationException during class loading for type with cached TIE"
         | Some (TypeInitState.InProgress tid) when tid = currentThread ->
@@ -2384,7 +2386,7 @@ module IlMachineStateExecution =
             match
                 ExceptionDispatching.throwExceptionObject loggerFactory baseClassTypes state thread tieAddr tieType
             with
-            | ExceptionDispatchResult.HandlerFound state -> state, WhatWeDid.ThrowingTypeInitializationException
+            | ExceptionDispatchResult.Dispatched state -> state, WhatWeDid.ThrowingTypeInitializationException
             | ExceptionDispatchResult.ExceptionUnhandled _ ->
                 failwith
                     "Unhandled TypeInitializationException during ensureTypeInitialised; should have been caught by a handler"
