@@ -94,7 +94,11 @@ module AssemblyShape =
             $"{segment.Name}`{segment.GenericArity}"
 
     let expectedFullName (path : TypePath) : string =
-        let typeName = path.Segments |> List.map metadataName |> String.concat "."
+        // A nesting chain is joined with `+` and the namespace with `.`, which is the CLR's own
+        // rule (`TypeNameBuilder::AddNestedName`) and what `Type.FullName` reports; the two
+        // separators differ precisely so a name stays unambiguous. `NestedTypeFullName.cs` pins
+        // it differentially against real .NET.
+        let typeName = path.Segments |> List.map metadataName |> String.concat "+"
 
         if String.IsNullOrEmpty path.Namespace then
             typeName

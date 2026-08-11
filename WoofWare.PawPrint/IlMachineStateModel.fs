@@ -411,16 +411,17 @@ type NativeHandlerResult =
     /// `WhatWeDid.SuspendedForManagedCall` to the Scheduler.
     | PushedManagedCallee of IlMachineState * StepEffect
     /// Native handler is raising a runtime exception. The dispatcher invokes
-    /// `IlMachineStateExecution.raiseRuntimeException` for the supplied exception type
-    /// (which must be a non-generic BCL exception with a parameterless ctor), allocating
+    /// `IlMachineStateExecution.raiseRuntimeExceptionWithMessage` for the supplied exception
+    /// type (which must be a non-generic BCL exception with a parameterless ctor), allocating
     /// the object, calling its ctor, and arming dispatch-on-return. The native frame stays
     /// on the stack so exception dispatch can unwind it on the ctor's `Ret`; the handler
     /// is never re-entered. Reports `WhatWeDid.SuspendedForManagedCall` to the Scheduler.
     ///
     /// `message` names the string the CLR would have passed to a message-taking ctor
     /// overload — for a native handler that typically means one of the `mscorrc` resource
-    /// strings CoreCLR's `EEMessageException` carries. `None` accepts the parameterless
-    /// ctor's default, which is correct wherever CoreCLR itself throws with no message.
+    /// strings CoreCLR's `EEMessageException` carries (e.g. `IDS_EE_CANNOTCAST`, which
+    /// `ObjIsInstanceOfCore` throws). `None` accepts the parameterless ctor's default, which
+    /// is correct wherever CoreCLR itself throws with no message.
     | RaiseException of
         IlMachineState *
         exnType : TypeInfo<GenericParamFromMetadata, TypeDefn> *
@@ -608,11 +609,12 @@ module NativeHandlerResult =
 
     /// `raiseException`, but with the message CoreCLR would have attached. Pass `Some` only
     /// where CoreCLR throws with an explicit message (typically an `EEMessageException`
-    /// carrying an `mscorrc` resource string); everywhere else the parameterless ctor's own
-    /// default is the faithful answer, and `raiseException` is the shorter spelling of `None`.
-    /// The `string option` shape mirrors `IlMachineStateExecution.raiseRuntimeException` and
-    /// its `WithMessage` sibling, so a caller holding a message it did not choose itself
-    /// (`SzArrayAllocation.exceptionFor`, say) can pass it straight through.
+    /// carrying an `mscorrc` resource string, e.g. `IDS_EE_CANNOTCAST`); everywhere else the
+    /// parameterless ctor's own default is the faithful answer, and `raiseException` is the
+    /// shorter spelling of `None`. The `string option` shape mirrors
+    /// `IlMachineStateExecution.raiseRuntimeException` and its `WithMessage` sibling, so a
+    /// caller holding a message it did not choose itself (`SzArrayAllocation.exceptionFor`,
+    /// say) can pass it straight through.
     let raiseExceptionWithMessage
         (exnType : TypeInfo<GenericParamFromMetadata, TypeDefn>)
         (message : string option)

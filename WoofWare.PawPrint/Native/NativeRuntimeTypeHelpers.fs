@@ -1946,6 +1946,101 @@ module NativeRuntimeTypeHelpers =
 
         targetName typeHandleTarget
 
+    /// CoreCLR's `TypeHandle::GetName` (`vm/typehandle.cpp:659`) — a *different* renderer from
+    /// `runtimeTypeHandleName` above, which models `TypeString::AppendType` (the reflection
+    /// `ConstructName` path). Use this one only where the EE itself formats a diagnostic,
+    /// notably `COMPlusThrowInvalidCastException`'s `IDS_EE_CANNOTCAST`.
+    ///
+    /// The two disagree on nested types, which is the whole reason this exists.
+    /// `TypeHandle::GetName` delegates to `MethodTable::_GetFullyQualifiedNameForClass`
+    /// (`vm/class.cpp:2270`), which reads the TypeDef row's *own* namespace and name and does
+    /// not walk the nesting chain — a nested `Outer.A` renders as bare `A`, because a nested
+    /// TypeDef row carries no namespace of its own. (Contrast the sibling
+    /// `_GetFullyQualifiedNameForClassNestedAware`, which builds `Outer+A`; `GetName` does not
+    /// call it.) `TypeInfo.fullName`, which `runtimeTypeHandleName` uses, is nesting-aware,
+    /// so it would answer `Outer.A` here and diverge from the real runtime's exception text.
+    ///
+    /// The *generic arguments*, by contrast, are rendered by `TypeString::AppendInst` with its
+    /// default `FormatNamespace` (`vm/typestring.h:169`), i.e. by the ordinary reflection
+    /// renderer — so those do delegate to `runtimeTypeHandleName`.
+    let rec typeHandleGetName
+        (operation : string)
+        (state : IlMachineState)
+        (target : RuntimeTypeHandleTarget)
+        : string
+        =
+        let getNameOfHandle (handle : ConcreteTypeHandle) : string =
+            typeHandleGetName operation state (RuntimeTypeHandleTarget.Closed handle)
+
+        match target with
+        // `TypeDesc::GetName` -> `TypeDesc::ConstructName` (`vm/typedesc.cpp:190`).
+        | RuntimeTypeHandleTarget.GenericParameter (_, position) -> $"!%d{position}"
+        | RuntimeTypeHandleTarget.MethodGenericParameter (_, _, position) -> $"!!%d{position}"
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+            // The canonical MethodTable of an open definition has an instantiation of type
+            // variables, so `GetName` would append something like `[!0]`. Nothing reachable
+            // formats one today, and guessing the spelling would be a silent divergence.
+            failwith
+                $"TODO: %s{operation}: TypeHandle::GetName of the open generic definition %O{identity.TypeDefinition.Get} is not modelled; its canonical MethodTable's instantiation is the type's own generic parameters, whose rendering is unverified"
+        | RuntimeTypeHandleTarget.OpenConstructed (definition, _) ->
+            // Same problem as the open definition above, one step further along: the
+            // instantiation contains type variables, which `AppendInst` renders through
+            // `TypeDesc::ConstructName` as `!0` / `!!0` rather than by name. The exact
+            // interleaving with the enclosing name is unverified, so refuse rather than guess.
+            failwith
+                $"TODO: %s{operation}: TypeHandle::GetName of an open constructed instantiation of %O{definition.TypeDefinition.Get} is not modelled; its instantiation contains type variables whose rendering in this position is unverified"
+        | RuntimeTypeHandleTarget.Closed handle ->
+            match handle with
+            | ConcreteTypeHandle.Byref inner -> $"%s{getNameOfHandle inner}&"
+            | ConcreteTypeHandle.Pointer inner -> $"%s{getNameOfHandle inner}*"
+            // `ConstructName` emits this literal for ELEMENT_TYPE_FNPTR, with no signature.
+            | ConcreteTypeHandle.FunctionPointer _ -> "FNPTR"
+            // An array is a MethodTable, and `_GetFullyQualifiedNameForClass` routes arrays
+            // back through `TypeDesc::ConstructName` with the element type and rank.
+            | ConcreteTypeHandle.OneDimArrayZero inner -> $"%s{getNameOfHandle inner}[]"
+            | ConcreteTypeHandle.Array (inner, rank) ->
+                let dims = if rank = 1 then "*" else System.String (',', rank - 1)
+                $"%s{getNameOfHandle inner}[%s{dims}]"
+            | ConcreteTypeHandle.Concrete _ ->
+                let concreteType =
+                    AllConcreteTypes.lookup handle state.ConcreteTypes
+                    |> Option.defaultWith (fun () ->
+                        failwith $"%s{operation}: concrete type handle was not registered: %O{handle}"
+                    )
+
+                let assembly =
+                    state.LoadedAssembly concreteType.Assembly
+                    |> Option.defaultWith (fun () ->
+                        failwith
+                            $"%s{operation}: assembly for concrete type is not loaded: %s{concreteType.Assembly.FullName}"
+                    )
+
+                let typeInfo = assembly.TypeDefs.[concreteType.Definition.Get]
+
+                // `ns::MakePath(szNamespace, szName)` from the TypeDef row. A nested row's
+                // namespace is empty, which is what collapses `Outer.A` to `A`.
+                let name =
+                    if System.String.IsNullOrEmpty typeInfo.Namespace then
+                        typeInfo.Name
+                    else
+                        $"%s{typeInfo.Namespace}.%s{typeInfo.Name}"
+
+                if concreteType.Generics.IsEmpty then
+                    name
+                else
+                    let args =
+                        concreteType.Generics
+                        |> Seq.map (fun arg ->
+                            runtimeTypeHandleName
+                                operation
+                                state
+                                formatNamespaceFlag
+                                (RuntimeTypeHandleTarget.Closed arg)
+                        )
+                        |> String.concat ","
+
+                    $"%s{name}[%s{args}]"
+
     /// PawPrint's rendering of CoreCLR's `CopyRuntimeTypeHandles` (runtimehandles.cpp:561), the
     /// single helper behind every QCall that hands a type list back through an
     /// `ObjectHandleOnStack`: `RuntimeTypeHandle_GetInstantiation`,

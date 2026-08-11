@@ -337,6 +337,14 @@ type BaseClassTypes<'corelib> =
         /// itself passed as `this` (`GetActualImplementationForArrayGenericIListOrIReadOnlyListMethod`,
         /// `src/coreclr/vm/array.cpp`); every body begins `T[] @this = Unsafe.As<T[]>(this)`.
         SZArrayHelper : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        /// `System.Runtime.InteropServices.IDynamicInterfaceCastable`. Host-known because it
+        /// participates in CoreCLR's *cast decision*: `MethodTable::IsIDynamicInterfaceCastable`
+        /// is a flag set for types implementing it, and `ObjIsInstanceOfCore`
+        /// (`src/coreclr/vm/jithelpers.cpp:426`) consults it when a structural cast to an
+        /// interface has failed, calling back into managed `IsInterfaceImplemented`. PawPrint
+        /// does not model that callback, so it identifies the interface nominally in order to
+        /// *refuse* such a cast loudly rather than answer a silent, possibly-wrong `false`.
+        IDynamicInterfaceCastable : TypeInfo<GenericParamFromMetadata, TypeDefn>
     }
 
     /// True when `identity` names one of the five CoreLib generic interfaces that a
@@ -359,10 +367,14 @@ type BaseClassTypes<'corelib> =
 
 [<RequireQualifiedAccess>]
 module TypeInfo =
+    /// The nesting chain is joined with `+`, not `.`, matching CoreCLR's
+    /// `TypeNameBuilder::AddNestedName` (`vm/typestring.cpp`) and hence `Type.FullName` /
+    /// `Type.ToString()`: `typeof(Enclosing.Inner).FullName` is `Enclosing+Inner`. A `.` would
+    /// be ambiguous with a namespace separator, which is exactly why the CLR does not use one.
     let rec fullName (get : TypeDefinitionHandle -> TypeInfo<_, _>) (ty : TypeInfo<'a, 'b>) =
         if ty.IsNested then
             let parent = get ty.DeclaringType |> fullName get
-            $"%s{parent}.{ty.Name}"
+            $"%s{parent}+{ty.Name}"
         else if not (String.IsNullOrEmpty ty.Namespace) then
             $"{ty.Namespace}.{ty.Name}"
         else
