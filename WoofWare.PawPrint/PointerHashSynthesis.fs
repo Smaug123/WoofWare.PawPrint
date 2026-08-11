@@ -112,7 +112,7 @@ module PointerHashSynthesis =
         // Same reasoning as `OpenGenericTypeDefinition`: an open constructed type is a real
         // MethodTable (see `TypeHandleTag.forTarget`), so its `MethodTablePtr` and
         // `TypeHandlePtr` are one address and must share a key — the `ceq` arm in
-        // `NativeIntSource.equalsForCli` says they are equal, and the synthesised bits have
+        // `NativeIntSourceComparison.equalsForCli` says they are equal, and the synthesised bits have
         // to agree with that.
         | NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ as target)
         | NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.OpenConstructed _ as target) ->
@@ -202,6 +202,35 @@ module PointerHashSynthesis =
         | NativeIntSource.TypeDescPtr _ -> 0UL
         | _ -> 0UL
 
+    /// For a *pointer-shaped* `src`, the bits `materialiseHashBits` would return if this state
+    /// has already assigned them; `None` if it has not. Never assigns, so a caller that only
+    /// needs to *recognise* an address — equality, rather than arithmetic — can ask without
+    /// perturbing the numbering that every later synthesised value depends on. The signature
+    /// is what guarantees that: there is no state to hand back.
+    ///
+    /// Shares `canonicalKey` and `lowBitsForSource` with the minting path rather than
+    /// re-deriving them, which is what makes a tagged view answer with the bits the guest
+    /// would actually have observed: a `TypeDescPtr` masked out of a `TypeHandlePtr` differs
+    /// from it in exactly bit 1, and a tagged GC handle in its own low bits.
+    ///
+    /// The domain is the canonicalisable pointer shapes only. `Verbatim`, `OpaqueHashBits`,
+    /// managed pointers and cross-array offsets are values whose bits are known (or knowably
+    /// absent) without any assignment, so asking this question about them is a category
+    /// error; `canonicalKey` refuses them loudly and that refusal is the contract. The same
+    /// goes for the pointer shapes `canonicalKey` itself declines — PerInstInfo chain
+    /// intermediates, a `MethodTablePtr` over a generic parameter, a function pointer to a
+    /// synthesised method — which crash here with `canonicalKey`'s diagnostic rather than a
+    /// comparison-flavoured one. They crashed before this function existed too; the message
+    /// names the shape, which is the part a failing run needs.
+    let tryExistingHashBits (counters : PointerHashState) (src : NativeIntSource) : int64 option =
+        let key = canonicalKey src
+        let tagBits = lowBitsForSource src
+
+        match counters with
+        | PointerHashState.SequentialFirstTouch (_, assigned) ->
+            Map.tryFind key assigned
+            |> Option.map (fun bits -> Operators.int64 (bits ||| tagBits))
+
     /// Synthesise deterministic 64-bit hash bits for a `NativeIntSource`.
     /// This is the single named site at which synthesised bits come into
     /// existence; every bit-mixing or arithmetic op that lifts a pointer
@@ -220,29 +249,6 @@ module PointerHashSynthesis =
     /// Returned as `int64` to match `Int64Source.OpaqueHashBits` storage;
     /// the conversion from the uint64 bit pattern is an unchecked
     /// reinterpret (bit-preserving).
-    /// The bits `materialiseHashBits` would return for `src`, if this state has already
-    /// assigned them; `None` if it has not. Never assigns, so a caller that only needs to
-    /// *recognise* an address — equality, rather than arithmetic — can ask without perturbing
-    /// the numbering that every later synthesised value depends on.
-    ///
-    /// Shares `canonicalKey` and `lowBitsForSource` with the minting path rather than
-    /// re-deriving them, which is what makes a tagged view answer with the bits the guest
-    /// would actually have observed: a `TypeDescPtr` masked out of a `TypeHandlePtr` differs
-    /// from it in exactly bit 1, and a tagged GC handle in its own low bits.
-    ///
-    /// The domain is the canonicalisable pointer shapes only. `Verbatim`, `OpaqueHashBits`,
-    /// managed pointers and cross-array offsets are values whose bits are known (or knowably
-    /// absent) without any assignment, so asking this question about them is a category
-    /// error; `canonicalKey` refuses them loudly and that refusal is the contract.
-    let tryExistingHashBits (counters : PointerHashState) (src : NativeIntSource) : int64 option =
-        let key = canonicalKey src
-        let tagBits = lowBitsForSource src
-
-        match counters with
-        | PointerHashState.SequentialFirstTouch (_, assigned) ->
-            Map.tryFind key assigned
-            |> Option.map (fun bits -> Operators.int64 (bits ||| tagBits))
-
     let materialiseHashBits
         (reason : string)
         (src : NativeIntSource)

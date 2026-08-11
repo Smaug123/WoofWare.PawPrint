@@ -387,10 +387,13 @@ module EvalStackValueComparisons =
         // WidenedNativeInt × Verbatim n: the underlying source is a non-null
         // pointer shape (Null is normalised to `Verbatim 0L` by the
         // `widenedNativeInt` smart constructor), so it can't equal 0. For
-        // non-zero `n` we don't know the pointer's actual numeric address —
-        // the safe and previously-structurally-correct answer is still
-        // `false`, but we keep that arm explicit so we can revisit if a real
-        // need to compare against a known pointer value arises.
+        // non-zero `n` the answer is *deferred*, not unknowable: the same
+        // `tryExistingHashBits` lookup the OpaqueHashBits arm below performs
+        // would decide it. It is left at `false` because an untagged integer
+        // cannot be told apart from a number the guest simply computed, and
+        // that policy belongs with the change that first makes a handle
+        // reachable as untagged full-width bits (giving handles a byte
+        // image). Nothing can produce such a value today.
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt _), EvalStackValue.Int64 (Int64Source.Verbatim _)
         | EvalStackValue.Int64 (Int64Source.Verbatim _), EvalStackValue.Int64 (Int64Source.WidenedNativeInt _) -> false
         // WidenedNativeInt × SyntheticCrossArrayOffset: a real pointer can't

@@ -537,21 +537,27 @@ module TestPointerHashSynthesis =
         |> shouldEqual (List.length assigned)
 
     [<Test>]
-    let ``tryExistingHashBits assigns nothing`` () : unit =
+    let ``tryExistingHashBits reports a miss rather than assigning`` () : unit =
         // The load-bearing half: `ceq` reads this, and `ContextSwitchPrior` bands comparisons
-        // as never mutating `PointerHashState`. A lookup that minted would make that banding
-        // false and turn every comparison into a scheduling-visible side effect.
+        // as never mutating `PointerHashState`. A lookup that answered on a state which had
+        // assigned nothing would make that banding false and turn every comparison into a
+        // scheduling-visible side effect.
+        //
+        // That it *cannot* assign needs no test: the signature returns `int64 option` with no
+        // state alongside it, and `PointerHashState` is immutable, so the type system already
+        // proves it.
         for src in canonicalisableSources do
             PointerHashSynthesis.tryExistingHashBits PointerHashState.empty src
             |> shouldEqual None
 
-        let _, counters = materialise canonicalisableSources.Head PointerHashState.empty
+        // And a state that has assigned exactly one key answers for that key alone.
+        let bits, counters = materialise canonicalisableSources.Head PointerHashState.empty
 
-        for src in canonicalisableSources do
-            PointerHashSynthesis.tryExistingHashBits counters src |> ignore<int64 option>
+        PointerHashSynthesis.tryExistingHashBits counters canonicalisableSources.Head
+        |> shouldEqual (Some bits)
 
-        PointerHashTestHelpers.nextCounter counters |> shouldEqual 1UL
-        PointerHashTestHelpers.assignedCount counters |> shouldEqual 1
+        for src in List.tail canonicalisableSources do
+            PointerHashSynthesis.tryExistingHashBits counters src |> shouldEqual None
 
     [<Test>]
     let ``tryExistingHashBits refuses sources that have no assigned identity`` () : unit =
