@@ -200,15 +200,14 @@ module TestFaultHandlers =
             {
                 ExceptionObject = exceptionObject
                 StackTrace = []
-                // These drive dispatch directly rather than through a raise, and the skeletal
-                // state here has no `_stackTrace` for a consume to read.
-                MayConsumeForeignRaise = false
             }
 
+        // Neither frame has any exception region, so the first pass runs straight off the end of
+        // the stack and the second pass has no cleanup to run — it only unwinds. The callee frame
+        // must be gone by the time the exception is reported unhandled, and the outermost frame
+        // must not be: that is the frame the report is about.
         let state =
-            match
-                ExceptionDispatching.unwindToCallerAndSearch loggerFactory bct state thread cliException objectHandle
-            with
+            match ExceptionDispatching.dispatchException loggerFactory bct state thread cliException objectHandle with
             | ExceptionDispatchResult.ExceptionUnhandled (state, _) -> state
             | other -> failwith $"Expected unhandled exception after unwinding to caller, got %O{other}"
 
@@ -235,22 +234,17 @@ module TestFaultHandlers =
 
         let methodState = state.ThreadState.[thread].MethodState
 
-        let state, handler =
-            ExceptionDispatching.findExceptionHandler
-                loggerFactory
-                bct
-                state
-                corelib
-                1
-                objectHandle
-                methodState.ExecutingMethod
+        let regions =
+            match MethodInfo.tryIlBody methodState.ExecutingMethod with
+            | Some instructions -> instructions.ExceptionRegions :> seq<_>
+            | None -> failwith "expected the test method to have an IL body"
 
+        // A `fault` is not a clause an exception can be *delivered* to, so the first pass never
+        // offers it; it is the second pass, unwinding out of the frame entirely, that selects it.
         let handler =
-            match handler with
-            | Some (ExceptionRegion.Fault offset, isCleanup) ->
-                isCleanup |> shouldEqual true
-                ExceptionRegion.Fault offset
-            | other -> failwith $"Expected fault handler, got %O{other}"
+            match ExceptionHandling.cleanupRegionsBetween regions 1 None with
+            | [ ExceptionRegion.Fault offset ] -> ExceptionRegion.Fault offset
+            | other -> failwith $"Expected exactly one fault handler to run, got %O{other}"
 
         let state =
             state
@@ -272,17 +266,26 @@ module TestFaultHandlers =
                 ThreadState = state.ThreadState |> Map.add thread threadState
             }
 
-        let cliException : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> =
+        let unwind : ExceptionUnwindState<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> =
             {
-                ExceptionObject = exceptionObject
-                StackTrace = []
-                // These drive dispatch directly rather than through a raise, and the skeletal
-                // state here has no `_stackTrace` for a consume to read.
-                MayConsumeForeignRaise = false
+                Exception =
+                    {
+                        ExceptionObject = exceptionObject
+                        StackTrace = []
+                    }
+                ExceptionType = objectHandle
+                Frame = state.ThreadState.[thread].ActiveMethodState
+                PC = 1
+                Target = ExceptionSearchOutcome.NoHandler
             }
 
+        let offset =
+            match handler with
+            | ExceptionRegion.Fault offset -> offset
+            | other -> failwith $"Expected fault handler, got %O{other}"
+
         let state =
-            ExceptionDispatching.enterHandler thread methodState threadState state cliException handler
+            ExceptionDispatching.enterFaultHandler thread methodState threadState state offset unwind
 
         let methodState = state.ThreadState.[thread].MethodState
         methodState.IlOpIndex |> shouldEqual faultOffset.HandlerOffset
@@ -291,8 +294,8 @@ module TestFaultHandlers =
 
         match methodState.ExceptionContinuation with
         | Some (ExceptionContinuation.PropagatingException actual) ->
-            actual.ExceptionObject |> shouldEqual exceptionObject
-            actual.StackTrace |> List.isEmpty |> shouldEqual true
+            actual.Exception.ExceptionObject |> shouldEqual exceptionObject
+            actual.Exception.StackTrace |> List.isEmpty |> shouldEqual true
         | other -> failwith $"Expected propagating exception continuation, got %O{other}"
 
     [<Test>]

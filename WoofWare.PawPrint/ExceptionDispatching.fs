@@ -3,11 +3,19 @@ namespace WoofWare.PawPrint
 open System.Collections.Immutable
 open Microsoft.Extensions.Logging
 
-/// Result of attempting to dispatch an exception to a handler.
+/// Result of a step of exception dispatch.
 type ExceptionDispatchResult =
-    /// A handler was found and entered; the machine state is positioned at the handler entry.
-    | HandlerFound of IlMachineState
-    /// The exception is unhandled; no handler was found in any frame.
+    /// Dispatch has parked the machine somewhere the exception's handling continues, and the
+    /// interpreter should carry on stepping: a catch handler body, a `filter` body the first
+    /// pass is evaluating, or a `finally`/`fault` clause the second pass is running.
+    ///
+    /// Deliberately not called "handler found": three of those four destinations are not
+    /// handlers, and under two-pass dispatch a `filter` can be entered long before anything is
+    /// known about whether the exception will be caught at all.
+    | Dispatched of IlMachineState
+    /// The exception is unhandled and the second pass has finished unwinding: no frame on the
+    /// thread had a handler, and every `finally`/`fault` between the throw point and the
+    /// outermost frame has now run.
     | ExceptionUnhandled of IlMachineState * CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
 
 /// Exception handler dispatch that requires IlMachineState for type resolution.
@@ -62,13 +70,6 @@ module ExceptionDispatching =
         let currentFilter = exceptionFilterRegion filterOffset handlerOffset
         skippedFilters |> List.contains currentFilter
 
-    let private exceptionRegionOffset (region : ExceptionRegion) : ExceptionOffset =
-        match region with
-        | ExceptionRegion.Catch (_, offset)
-        | ExceptionRegion.Filter (_, offset)
-        | ExceptionRegion.Finally offset
-        | ExceptionRegion.Fault offset -> offset
-
     let internal exceptionObjectType
         (state : IlMachineState)
         (exceptionObject : ManagedHeapAddress)
@@ -101,29 +102,65 @@ module ExceptionDispatching =
             |> Seq.tryHead
             |> Option.map (fun (_, _, exn) -> exn)
 
-    /// Find the first matching exception handler for the given exception at the given PC.
-    /// Also returns whether this is a cleanup block (finally/fault) rather than e.g. a catch.
-    let private findExceptionHandlerSkippingFilters
+    /// The assembly whose metadata a method's own tokens are to be resolved against.
+    ///
+    /// Read from the method rather than from `state.ActiveAssembly`, which answers for whichever
+    /// frame the thread happens to be executing. Those coincided while handler search only ever
+    /// looked at the active frame; the first pass below searches frames the thread is *not* in,
+    /// so relying on the coincidence would resolve a `catch`'s type token against the wrong
+    /// assembly as soon as an exception crossed an assembly boundary.
+    let private assemblyOfMethod
+        (state : IlMachineState)
+        (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, 'methodVar>)
+        : DumpedAssembly
+        =
+        let name = method.DeclaringType.Assembly
+
+        match state.LoadedAssembly name with
+        | Some assy -> assy
+        | None ->
+            let available = state._LoadedAssemblies.DefinitionNames |> String.concat " ; "
+
+            failwith
+                $"Exception dispatch searching %s{method.Name} needs its declaring assembly %O{name}, which is not loaded; loaded assemblies are: %s{available}"
+
+    /// The clause of `method` that accepts this exception at `currentPC`, if any: an assignable
+    /// `catch`, or a `filter` whose body has not already run and rejected.
+    ///
+    /// `finally` and `fault` are invisible here, which is the whole of the two-pass split.
+    /// Cleanup clauses are not candidates for *receiving* an exception — they run on the way to
+    /// whichever clause does — so a first pass that could return one would be answering a
+    /// different question from the one its callers ask. The predecessor of this function
+    /// returned them alongside an `isCleanup` flag that every caller ignored, which is what made
+    /// PawPrint run cleanup before its stack trace was complete (issue #865).
+    ///
+    /// When several clauses cover `currentPC`, the innermost wins: smallest `try`, then metadata
+    /// order, which ECMA-335 II.25.4.6 requires to list more deeply nested clauses first.
+    let private findAcceptingClause
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        (activeAssy : DumpedAssembly)
         (currentPC : int)
         (exceptionType : ConcreteTypeHandle)
         (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, 'methodVar>)
         (skippedFilters : ExceptionFilterRegion list)
-        : IlMachineState * (WoofWare.PawPrint.ExceptionRegion * bool) option
+        : IlMachineState * WoofWare.PawPrint.ExceptionRegion option
         =
         match MethodInfo.tryIlBody method with
         | None -> state, None
         | Some instructions ->
+
+        let activeAssy = assemblyOfMethod state method
+
+        let covers (offset : ExceptionOffset) =
+            currentPC >= offset.TryOffset && currentPC < offset.TryOffset + offset.TryLength
 
         let state, matches =
             ((state, []), instructions.ExceptionRegions |> Seq.indexed)
             ||> Seq.fold (fun (state, acc) (regionIndex, region) ->
                 match region with
                 | ExceptionRegion.Catch (typeToken, offset) ->
-                    if currentPC >= offset.TryOffset && currentPC < offset.TryOffset + offset.TryLength then
+                    if covers offset then
                         let state, matches =
                             isExceptionAssignableTo
                                 loggerFactory
@@ -136,79 +173,27 @@ module ExceptionDispatching =
                                 typeToken
 
                         if matches then
-                            state, (regionIndex, region, false) :: acc
+                            state, (regionIndex, region) :: acc
                         else
                             state, acc
                     else
                         state, acc
                 | ExceptionRegion.Filter (filterOffset, offset) ->
-                    if currentPC >= offset.TryOffset && currentPC < offset.TryOffset + offset.TryLength then
-                        if isSkippedFilter skippedFilters filterOffset offset then
-                            state, acc
-                        else
-                            state, (regionIndex, region, false) :: acc
+                    if covers offset && not (isSkippedFilter skippedFilters filterOffset offset) then
+                        state, (regionIndex, region) :: acc
                     else
                         state, acc
-                | ExceptionRegion.Finally offset ->
-                    if currentPC >= offset.TryOffset && currentPC < offset.TryOffset + offset.TryLength then
-                        state, (regionIndex, region, true) :: acc
-                    else
-                        state, acc
-                | ExceptionRegion.Fault offset ->
-                    if currentPC >= offset.TryOffset && currentPC < offset.TryOffset + offset.TryLength then
-                        state, (regionIndex, region, true) :: acc
-                    else
-                        state, acc
+                | ExceptionRegion.Finally _
+                | ExceptionRegion.Fault _ -> state, acc
             )
 
-        // When multiple regions match (e.g. a catch and a finally for the same try block),
-        // pick the innermost (smallest TryLength) handler. Among equal-sized try regions, preserve
-        // metadata order for catch/filter clauses, and prefer those clauses over cleanup handlers.
         let result =
-            match matches |> List.rev with
-            | [] -> None
-            | [ (_, region, isCleanup) ] -> Some (region, isCleanup)
-            | multiple ->
-                multiple
-                |> List.sortBy (fun (regionIndex, region, _isCleanup) ->
-                    let offset = exceptionRegionOffset region
-
-                    let clauseGroupOrder =
-                        match region with
-                        | ExceptionRegion.Catch _
-                        | ExceptionRegion.Filter _ -> 0
-                        | ExceptionRegion.Finally _
-                        | ExceptionRegion.Fault _ -> 1
-
-                    (offset.TryLength, clauseGroupOrder, regionIndex)
-                )
-                |> List.head
-                |> (fun (_, region, isCleanup) -> region, isCleanup)
-                |> Some
+            matches
+            |> List.sortBy (fun (regionIndex, region) -> (ExceptionHandling.regionOffset region).TryLength, regionIndex)
+            |> List.tryHead
+            |> Option.map snd
 
         state, result
-
-    /// Find the first matching exception handler for the given exception at the given PC.
-    /// Also returns whether this is a cleanup block (finally/fault) rather than e.g. a catch.
-    let findExceptionHandler
-        (loggerFactory : ILoggerFactory)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        (activeAssy : DumpedAssembly)
-        (currentPC : int)
-        (exceptionType : ConcreteTypeHandle)
-        (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, 'methodVar>)
-        : IlMachineState * (WoofWare.PawPrint.ExceptionRegion * bool) option
-        =
-        findExceptionHandlerSkippingFilters
-            loggerFactory
-            baseClassTypes
-            state
-            activeAssy
-            currentPC
-            exceptionType
-            method
-            []
 
     /// Enter a catch handler: set PC to the handler offset, clear eval stack, preserve any
     /// outer continuation frames, and push the exception object reference. Callers are
@@ -240,17 +225,15 @@ module ExceptionDispatching =
         }
 
     /// Enter a filter block: set PC to the filter offset, clear eval stack, push the exception
-    /// object reference, and remember how to continue the handler search when `endfilter` returns.
+    /// object reference, and park the first-pass search so `endfilter` can resume it.
     let private enterFilterHandler
         (currentThread : ThreadId)
         (methodState : MethodState)
         (threadState : ThreadState)
         (state : IlMachineState)
-        (searchPC : int)
-        (skippedFilters : ExceptionFilterRegion list)
+        (search : ExceptionSearchState<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (filterOffset : int)
         (handlerOffset : ExceptionOffset)
-        (cliException : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         : IlMachineState
         =
         let currentFilter = exceptionFilterRegion filterOffset handlerOffset
@@ -258,9 +241,7 @@ module ExceptionDispatching =
         let continuation : ExceptionFilterContinuation<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> =
             {
                 CurrentFilter = currentFilter
-                SkippedFilters = skippedFilters
-                SearchPC = searchPC
-                CliException = cliException
+                Search = search
             }
 
         let newMethodState =
@@ -271,7 +252,7 @@ module ExceptionDispatching =
             |> MethodState.pushExceptionContinuation
                 (ExceptionContinuationScope.FilterHandler currentFilter)
                 (ExceptionContinuation.ResumeAfterFilter continuation)
-            |> MethodState.pushToEvalStack' (EvalStackValue.ObjectRef cliException.ExceptionObject)
+            |> MethodState.pushToEvalStack' (EvalStackValue.ObjectRef search.Exception.ExceptionObject)
 
         let newThreadState =
             ThreadState.setFrame threadState.ActiveMethodState newMethodState threadState
@@ -281,14 +262,14 @@ module ExceptionDispatching =
         }
 
     /// Enter a finally handler: set PC to the handler offset, clear eval stack,
-    /// set exception continuation to propagate the exception after the finally completes.
+    /// park the second-pass unwind so `endfinally` can resume it.
     let enterFinallyHandler
         (currentThread : ThreadId)
         (methodState : MethodState)
         (threadState : ThreadState)
         (state : IlMachineState)
         (offset : ExceptionOffset)
-        (cliException : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (unwind : ExceptionUnwindState<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         : IlMachineState
         =
         let newMethodState =
@@ -298,7 +279,7 @@ module ExceptionDispatching =
             |> MethodState.clearPendingPrefix
             |> MethodState.pushExceptionContinuation
                 (ExceptionContinuationScope.FinallyHandler offset)
-                (ExceptionContinuation.PropagatingException cliException)
+                (ExceptionContinuation.PropagatingException unwind)
 
         let newThreadState =
             ThreadState.setFrame threadState.ActiveMethodState newMethodState threadState
@@ -308,14 +289,14 @@ module ExceptionDispatching =
         }
 
     /// Enter a fault handler: set PC to the handler offset, clear eval stack,
-    /// set exception continuation to propagate the exception after the fault completes.
+    /// park the second-pass unwind so `endfinally` can resume it.
     let enterFaultHandler
         (currentThread : ThreadId)
         (methodState : MethodState)
         (threadState : ThreadState)
         (state : IlMachineState)
         (offset : ExceptionOffset)
-        (cliException : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (unwind : ExceptionUnwindState<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         : IlMachineState
         =
         let newMethodState =
@@ -325,7 +306,7 @@ module ExceptionDispatching =
             |> MethodState.clearPendingPrefix
             |> MethodState.pushExceptionContinuation
                 (ExceptionContinuationScope.FaultHandler offset)
-                (ExceptionContinuation.PropagatingException cliException)
+                (ExceptionContinuation.PropagatingException unwind)
 
         let newThreadState =
             ThreadState.setFrame threadState.ActiveMethodState newMethodState threadState
@@ -334,198 +315,47 @@ module ExceptionDispatching =
             ThreadState = state.ThreadState |> Map.add currentThread newThreadState
         }
 
-    let private enterHandlerAtSearchPC
+    /// Enter the cleanup clause `region` of the currently-active frame, parking `unwind` on it.
+    let private enterCleanupHandler
         (currentThread : ThreadId)
         (methodState : MethodState)
         (threadState : ThreadState)
         (state : IlMachineState)
-        (cliException : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
-        (searchPC : int)
-        (skippedFilters : ExceptionFilterRegion list)
-        (handler : ExceptionRegion)
+        (region : ExceptionRegion)
+        (unwind : ExceptionUnwindState<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         : IlMachineState
         =
-        match handler with
-        | ExceptionRegion.Catch (_, offset) ->
-            enterCatchHandler currentThread methodState threadState state offset cliException
+        match region with
         | ExceptionRegion.Finally offset ->
-            enterFinallyHandler currentThread methodState threadState state offset cliException
-        | ExceptionRegion.Fault offset ->
-            enterFaultHandler currentThread methodState threadState state offset cliException
-        | ExceptionRegion.Filter (filterOffset, offset) ->
-            enterFilterHandler
-                currentThread
-                methodState
-                threadState
-                state
-                searchPC
-                skippedFilters
-                filterOffset
-                offset
-                cliException
+            enterFinallyHandler currentThread methodState threadState state offset unwind
+        | ExceptionRegion.Fault offset -> enterFaultHandler currentThread methodState threadState state offset unwind
+        | ExceptionRegion.Catch _
+        | ExceptionRegion.Filter _ ->
+            failwith
+                $"Logic error: the second pass of exception dispatch selected region %O{region} of %s{methodState.ExecutingMethod.Name} to run as cleanup, but only Finally and Fault are cleanup clauses"
 
-    /// Given a matched handler from findExceptionHandler, enter the handler. Returns the updated state.
-    let enterHandler
-        (currentThread : ThreadId)
-        (methodState : MethodState)
-        (threadState : ThreadState)
-        (state : IlMachineState)
+    /// Write a raise's accumulated frames onto the exception object, into both of the sinks a
+    /// guest can read them from: `_stackTraceString`, and the frozen `_stackTrace` token that
+    /// `Exception.HasBeenThrown` and `ExceptionDispatchInfo` key off.
+    let private projectStackTrace
+        (loggerFactory : ILoggerFactory)
+        (corelib : BaseClassTypes<DumpedAssembly>)
         (cliException : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
-        (handler : ExceptionRegion)
+        (state : IlMachineState)
         : IlMachineState
         =
-        enterHandlerAtSearchPC currentThread methodState threadState state cliException methodState.IlOpIndex [] handler
+        IlMachineState.setExceptionStackTraceString
+            loggerFactory
+            corelib
+            cliException.ExceptionObject
+            cliException.StackTrace
+            state
+        |> IlMachineState.recordThrownStackTrace
+            loggerFactory
+            corelib
+            cliException.ExceptionObject
+            cliException.StackTrace
 
-    /// Reject the filter that `escaping` escaped from, and hand back everything the resumed
-    /// search for the *original* exception needs. `escaping` is discarded from here on: the CLR
-    /// catches an exception that leaves a filter at the filter boundary and reports the filter
-    /// as false.
-    let private prepareRejectedFilterSearch
-        (loggerFactory : ILoggerFactory)
-        (corelib : BaseClassTypes<DumpedAssembly>)
-        (currentThread : ThreadId)
-        (methodState : MethodState)
-        (threadState : ThreadState)
-        (state : IlMachineState)
-        (escaping : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
-        (continuation : ExceptionFilterContinuation<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
-        : IlMachineState *
-          MethodState *
-          ThreadState *
-          CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
-          ConcreteTypeHandle *
-          int *
-          ExceptionFilterRegion list
-        =
-        // `escaping`'s dispatch ends here, so here is where its trace is complete and must be
-        // recorded. This is the third way a dispatch can conclude, alongside "a handler was
-        // found" (`tryFindAndEnterHandlerAtSearchPC`) and "no handler exists in any frame"
-        // (`unwindToCallerAndSearch`), both of which already project; without it a guest holding
-        // the object reads `StackTrace == null` on an exception that really did propagate.
-        //
-        // It belongs in this function rather than at the two call sites because both of them
-        // conclude a raise for the same reason and must not drift apart: one arrives by
-        // unwinding into the filter's frame, the other by finding no local handler for a throw
-        // inside the filter body, and `sourcesPure/FilterEscapeExceptionHasTrace.cs` covers both.
-        //
-        // Unlike the frames themselves this needs no `_isFinally` reasoning: the frame list is
-        // whatever the escaping raise accumulated before reaching the boundary, which is exactly
-        // what real .NET reports — measured on .NET 10, up to and including the frame that hosts
-        // the filter.
-        let state =
-            IlMachineState.setExceptionStackTraceString
-                loggerFactory
-                corelib
-                escaping.ExceptionObject
-                escaping.StackTrace
-                state
-            |> IlMachineState.recordThrownStackTrace loggerFactory corelib escaping.ExceptionObject escaping.StackTrace
-
-        let popped, methodState = MethodState.popExceptionContinuation methodState
-
-        match popped with
-        | Some {
-                   Scope = ExceptionContinuationScope.FilterHandler currentFilter
-                   Continuation = ExceptionContinuation.ResumeAfterFilter popped
-               } when
-            currentFilter = continuation.CurrentFilter
-            && popped.CurrentFilter = continuation.CurrentFilter
-            ->
-            ()
-        | Some frame ->
-            failwith
-                $"Expected to reject active filter %O{continuation.CurrentFilter}, but top exception continuation was scope %O{frame.Scope} with continuation %O{frame.Continuation}"
-        | None ->
-            failwith $"Expected to reject active filter %O{continuation.CurrentFilter}, but no continuation was active"
-
-        let newMethodState = methodState |> MethodState.clearEvalStack
-
-        let newThreadState =
-            ThreadState.setFrame threadState.ActiveMethodState newMethodState threadState
-
-        let state =
-            { state with
-                ThreadState = state.ThreadState |> Map.add currentThread newThreadState
-            }
-
-        let skippedFilters = continuation.CurrentFilter :: continuation.SkippedFilters
-
-        let exceptionType =
-            exceptionObjectType state continuation.CliException.ExceptionObject
-
-        state,
-        newMethodState,
-        newThreadState,
-        continuation.CliException,
-        exceptionType,
-        continuation.SearchPC,
-        skippedFilters
-
-    let private tryFindAndEnterHandlerAtSearchPC
-        (loggerFactory : ILoggerFactory)
-        (corelib : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        (currentThread : ThreadId)
-        (methodState : MethodState)
-        (threadState : ThreadState)
-        (cliException : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
-        (exceptionType : ConcreteTypeHandle)
-        (searchPC : int)
-        (skippedFilters : ExceptionFilterRegion list)
-        : IlMachineState * IlMachineState option
-        =
-        let activeAssy = state.ActiveAssembly currentThread
-
-        let state, handlerResult =
-            findExceptionHandlerSkippingFilters
-                loggerFactory
-                corelib
-                state
-                activeAssy
-                searchPC
-                exceptionType
-                methodState.ExecutingMethod
-                skippedFilters
-
-        match handlerResult with
-        | Some (handler, _isFinally) ->
-            // `_isFinally` is ignored, so this fires on cleanup handlers too, and there
-            // `cliException.StackTrace` holds only the frames unwound so far: PawPrint
-            // interleaves handler search with cleanup rather than completing a first pass
-            // first, as CoreCLR does. Managed code running in a `finally` therefore sees a
-            // truncated trace — measured, and pre-dating the frozen-trace token: the same
-            // partial list already reached `_stackTraceString` here. Issue #865 tracks giving
-            // dispatch a real two-pass structure, which is what fixes both sinks at once.
-            //
-            // Recording the partial trace is nonetheless right, rather than skipping the write
-            // for cleanup handlers: `Exception.HasBeenThrown` keys off `_stackTrace` being
-            // non-null, and the exception genuinely has been thrown by this point. Skipping
-            // would trade an incomplete trace for a wrong answer to a different question.
-            let state =
-                IlMachineState.setExceptionStackTraceString
-                    loggerFactory
-                    corelib
-                    cliException.ExceptionObject
-                    cliException.StackTrace
-                    state
-                |> IlMachineState.recordThrownStackTrace
-                    loggerFactory
-                    corelib
-                    cliException.ExceptionObject
-                    cliException.StackTrace
-
-            state,
-            enterHandlerAtSearchPC
-                currentThread
-                methodState
-                threadState
-                state
-                cliException
-                searchPC
-                skippedFilters
-                handler
-            |> Some
-        | None -> state, None
 
     /// Mark the last frame of `frames` as the end of an earlier throw's trace. The empty list is a
     /// fixed point, which is CoreCLR's `numCurrentFrames > 0` guard (excep.cpp:3093) and is what
@@ -557,16 +387,15 @@ module ExceptionDispatching =
     /// on .NET 10, and covered by `sourcesPure/ForeignRaiseFlagSurvivesFramelessRethrow.cs`. Hence
     /// the two callers are PawPrint's two frame-append sites, not its two dispatch entry points.
     ///
-    /// Appending is not enough on its own, though, because CoreCLR appends every frame in pass one,
-    /// *before* running any cleanup clause. Guest code that sets the flag from a `finally` therefore
-    /// cannot have it consumed by the raise it is unwinding — that raise's appends already happened.
-    /// PawPrint has no pass one; it interleaves search with cleanup, so what it has instead is
-    /// `CliException.MayConsumeForeignRaise`, set when a raise begins and carried through every
-    /// suspension. A flag that predates the raise is consumed at its first append; one set by the
-    /// raise's own cleanup is not. `sourcesPure/ForeignRaiseFlagSetInFinally.cs` covers the second,
-    /// and `ForeignRaiseFlagPendingBeforeCleanup.cs` the first — they differ only in *when* the
-    /// flag is set, so a rule that looked at the resume site rather than the raise gets one of
-    /// them wrong whichever way it decides.
+    /// The read is unconditional at every append, exactly as CoreCLR's is, with no notion of "this
+    /// raise's first append". That is only safe because appends all happen in the first pass,
+    /// before any cleanup clause runs: guest code that sets the flag from a `finally` cannot have
+    /// it consumed by the raise it is unwinding, because that raise finished appending before the
+    /// `finally` started. `sourcesPure/ForeignRaiseFlagSetInFinally.cs` and
+    /// `ForeignRaiseFlagPendingBeforeCleanup.cs` differ only in *when* the flag is set and pin the
+    /// two sides of that. The one place guest code does run between two appends of one raise is a
+    /// `filter`, which is precisely where CoreCLR would also let a flag be consumed — so the
+    /// unconditional read is what makes that case come out right rather than a gap in it.
     ///
     /// The frames come from the exception object rather than from any in-flight list, because
     /// CoreCLR re-reads `_stackTrace` at every append. That is observable: a nested throw of the
@@ -602,50 +431,267 @@ module ExceptionDispatching =
 
         state, framesAlreadyPresent () |> markLastFrameAsForeign |> Some
 
-    /// Unwind the call stack looking for an exception handler. Pops frames until a handler is found
-    /// (catch or cleanup), entering it; or until no frames remain, in which case the exception is unhandled.
+    /// True iff a frame boundary crossing into `caller` appends no stack-trace frame.
     ///
-    let rec unwindToCallerAndSearch
+    /// A delegate's `Invoke` is a stub, not a managed method: real .NET has no frame for it, and
+    /// an exception crossing a delegate call reports the target and then whoever called `Invoke`.
+    /// PawPrint's ordinary delegate path gets that for free, because `dispatchDelegateInvoke`
+    /// pops its synthetic frame before calling the target — so the frame is already gone by the
+    /// time anything can throw. The exception is class initialisation, which deliberately runs
+    /// *while* that frame is still active so the instruction can be retried after the `.cctor`
+    /// returns; without this, a `.cctor` that throws would report a `System.Action.Invoke` frame
+    /// that no real trace contains.
+    ///
+    /// Only `DelegateInvoke` is suppressed, not runtime-provided frames at large: an InternalCall
+    /// or QCall *is* a managed method by name and real traces do show it.
+    let private isDelegateInvokeStub (caller : MethodState) : bool =
+        match caller.ExecutingMethod.Body with
+        | MethodBody.RuntimeProvided RuntimeBehaviour.DelegateInvoke -> true
+        | _ -> false
+
+    /// Append the caller's frame to a raise's trace as the first pass crosses into it, consuming
+    /// any pending foreign-raise flag in the process.
+    ///
+    /// A suppressed delegate-`Invoke` stub appends nothing, so it consumes nothing either: real
+    /// .NET has no `StackTraceElement` for that stub and hence no `AppendElement` call to read
+    /// the flag, which stays pending for the next genuine frame the raise reaches.
+    let private appendCallerFrame
+        (currentThread : ThreadId)
+        (caller : MethodState)
+        (callSitePC : int)
+        (cliException : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (state : IlMachineState)
+        : IlMachineState * CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+        =
+        if isDelegateInvokeStub caller then
+            state, cliException
+        else
+
+        let stackFrame : ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> =
+            {
+                Method = caller.ExecutingMethod
+                IlOffset = callSitePC
+                // The frame being appended belongs to the raise in progress, never to an earlier
+                // one — CoreCLR sets `stackTraceElem.flags = 0` here for the same reason
+                // (excep.cpp:3045). A pending flag marks the frame *before* this one.
+                IsLastFrameFromForeignExceptionStackTrace = false
+            }
+
+        let state, restoredFrames =
+            state
+            |> consumeForeignExceptionRaise currentThread (fun () -> cliException.StackTrace)
+
+        let framesBefore = restoredFrames |> Option.defaultValue cliException.StackTrace
+
+        state,
+        { cliException with
+            StackTrace = framesBefore @ [ stackFrame ]
+        }
+
+    /// The innermost `filter` clause of this frame that is currently being evaluated, if any.
+    ///
+    /// Scanning the continuation stack rather than reading only its top is what lets the first
+    /// pass abandon an exception at a filter boundary. Under the old interleaved dispatch a
+    /// `finally` nested inside a filter body had already been entered *and popped* by its
+    /// `endfinally` before this question was asked, so the filter was always on top; the first
+    /// pass asks before running any cleanup, so a cleanup scope belonging to a superseded raise
+    /// can sit above the filter that still owns the frame.
+    let private activeFilterOf
+        (methodState : MethodState)
+        : ExceptionFilterContinuation<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> option
+        =
+        methodState.ExceptionContinuations
+        |> List.tryPick (fun frame ->
+            match frame.Scope, frame.Continuation with
+            | ExceptionContinuationScope.FilterHandler _, ExceptionContinuation.ResumeAfterFilter continuation ->
+                Some continuation
+            | _ -> None
+        )
+
+    /// What one run of the first pass did.
+    type private FirstPassResult =
+        /// The search reached a verdict. Frames may have been appended to the trace, but no
+        /// frame was popped and no guest code ran.
+        | SearchConcluded of
+            ExceptionSearchState<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
+            ExceptionSearchOutcome
+        /// The search met a `filter` and entered its body; the machine is parked there with the
+        /// walk state on that frame's continuation, and `endfilter` resumes it.
+        | SearchSuspendedInFilter
+
+    /// Walk frames outward from `search.Frame` looking for a clause that accepts the exception,
+    /// running each `filter` it meets in place — with the inner frames still live, which is what
+    /// CoreCLR does and what makes a filter observe a `finally` it precedes as not-yet-run.
+    let rec private firstPass
         (loggerFactory : ILoggerFactory)
         (corelib : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (currentThread : ThreadId)
-        (cliException : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
-        (exceptionType : ConcreteTypeHandle)
-        : ExceptionDispatchResult
+        (search : ExceptionSearchState<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        : IlMachineState * FirstPassResult
         =
         let threadState = state.ThreadState.[currentThread]
-        let unwoundFrameId = threadState.ActiveMethodState
-        let currentMethodState = threadState.MethodState
+        let frame = ThreadState.getFrame search.Frame threadState
 
-        match currentMethodState.ReturnState with
-        | None ->
+        let state, accepting =
+            findAcceptingClause
+                loggerFactory
+                corelib
+                state
+                search.SearchPC
+                search.ExceptionType
+                frame.ExecutingMethod
+                search.SkippedFilters
+
+        match accepting with
+        | Some (ExceptionRegion.Catch _ as region) ->
+            state, FirstPassResult.SearchConcluded (search, ExceptionSearchOutcome.CaughtAt (search.Frame, region))
+        | Some (ExceptionRegion.Filter (filterOffset, handlerOffset)) ->
+            // Guest code is about to read this exception, and CoreCLR has appended every frame
+            // the search reached so far — measured on .NET 10: a `when` clause sees a trace
+            // ending at its own frame. Project before entering, or a filter observes
+            // `StackTrace == null` on an exception that has genuinely been thrown, and
+            // `Exception.HasBeenThrown`, which keys off the frozen token, answers false.
+            let state = projectStackTrace loggerFactory corelib search.Exception state
+
+            // The filter runs in its own frame while every frame inner to it stays live: this is
+            // a *search*, not an unwind, and the second pass still has those frames to walk.
+            let threadState =
+                state.ThreadState.[currentThread] |> ThreadState.setActiveFrame search.Frame
+
+            let frame = ThreadState.getFrame search.Frame threadState
+
             let state =
-                IlMachineState.setExceptionStackTraceString
-                    loggerFactory
-                    corelib
-                    cliException.ExceptionObject
-                    cliException.StackTrace
-                    state
-                |> IlMachineState.recordThrownStackTrace
-                    loggerFactory
-                    corelib
-                    cliException.ExceptionObject
-                    cliException.StackTrace
+                { state with
+                    ThreadState = state.ThreadState |> Map.add currentThread threadState
+                }
 
-            ExceptionDispatchResult.ExceptionUnhandled (state, cliException)
+            let state =
+                enterFilterHandler currentThread frame threadState state search filterOffset handlerOffset
+
+            state, FirstPassResult.SearchSuspendedInFilter
+        | Some ((ExceptionRegion.Finally _ | ExceptionRegion.Fault _) as region) ->
+            failwith
+                $"Logic error: the first pass of exception dispatch selected cleanup region %O{region} of %s{frame.ExecutingMethod.Name} as an accepting clause; only Catch and Filter can accept"
+        | None ->
+
+        match activeFilterOf frame with
+        | Some _ ->
+            // No clause of this frame accepts, and the frame is mid-filter, so this is where the
+            // exception leaves that filter. The CLR catches an exception that escapes a filter
+            // at the filter boundary and reports the filter as false.
+            state, FirstPassResult.SearchConcluded (search, ExceptionSearchOutcome.AbandonedAtFilter search.Frame)
+        | None ->
+
+        match frame.ReturnState with
+        | None -> state, FirstPassResult.SearchConcluded (search, ExceptionSearchOutcome.NoHandler)
         | Some returnState ->
 
-        // If this frame was running a .cctor, mark the type initialisation as failed
-        // and wrap the exception in TypeInitializationException (CLR behaviour).
-        // Synthesize the TIE first so we can cache it; repeated accesses rethrow the
-        // same instance (matching CLR identity semantics).
+        if
+            returnState.WasInitialisingType.IsSome
+            || returnState.WrapExceptionInTargetInvocation
+        then
+            // Leaving this frame changes the exception's *type*, so every outer frame must be
+            // searched against the wrapper instead. The walk cannot see past it; the second pass
+            // unwinds to here, wraps, and starts a fresh first pass at the caller.
+            state, FirstPassResult.SearchConcluded (search, ExceptionSearchOutcome.WrappedAt search.Frame)
+        else
+
+        let caller = ThreadState.getFrame returnState.JumpTo threadState
+
+        let state, cliException =
+            appendCallerFrame currentThread caller returnState.CallSiteIlOpIndex search.Exception state
+
+        // Search the caller at the *call-site* PC, not at its resumed `IlOpIndex`: the latter has
+        // already been advanced past the call/callvirt/newobj, which can place it outside the
+        // protected region when the call is the last instruction in a `try`.
+        let search =
+            { search with
+                Exception = cliException
+                Frame = returnState.JumpTo
+                SearchPC = returnState.CallSiteIlOpIndex
+                SkippedFilters = []
+            }
+
+        firstPass loggerFactory corelib state currentThread search
+
+    /// The IL offset inside the target frame at which unwinding stops. `None` means the
+    /// exception is leaving that frame altogether, so every covering cleanup clause runs.
+    let private unwindBoundaryIn (frame : MethodState) (outcome : ExceptionSearchOutcome) : int option =
+        match outcome with
+        | ExceptionSearchOutcome.CaughtAt (_, ExceptionRegion.Catch (_, offset))
+        | ExceptionSearchOutcome.CaughtAt (_, ExceptionRegion.Filter (_, offset)) -> Some offset.HandlerOffset
+        | ExceptionSearchOutcome.CaughtAt (_, ((ExceptionRegion.Finally _ | ExceptionRegion.Fault _) as region)) ->
+            failwith
+                $"Logic error: the first pass of exception dispatch concluded that cleanup region %O{region} of %s{frame.ExecutingMethod.Name} caught an exception; only Catch and Filter can catch"
+        | ExceptionSearchOutcome.AbandonedAtFilter _ ->
+            // The exception dies at the filter's boundary, so cleanup inside the filter body
+            // runs and anything enclosing the filter clause does not.
+            match activeFilterOf frame with
+            | Some continuation -> Some continuation.CurrentFilter.FilterOffset
+            | None ->
+                failwith
+                    $"Logic error: the first pass of exception dispatch abandoned an exception at a filter of %s{frame.ExecutingMethod.Name}, but by the time the second pass reached that frame it had no filter under evaluation"
+        | ExceptionSearchOutcome.WrappedAt _
+        | ExceptionSearchOutcome.NoHandler -> None
+
+    /// Pop this frame's exception continuations down to and including the innermost
+    /// `FilterHandler`, which is the scope the abandoned exception is leaving, and return the
+    /// search parked on it.
+    ///
+    /// Anything above it belongs to a raise that the abandoned one superseded — a `finally` of
+    /// the filter body that was still running when this exception displaced it — and is
+    /// discarded along with the frame's filter evaluation. Meeting a non-cleanup scope on the
+    /// way is a logic error rather than a shape the CLR can produce.
+    let rec private popToActiveFilter
+        (methodState : MethodState)
+        : ExceptionFilterContinuation<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> * MethodState
+        =
+        match MethodState.popExceptionContinuation methodState with
+        | None, _ ->
+            failwith
+                $"Logic error: unwinding to the filter boundary of %s{methodState.ExecutingMethod.Name} found no exception continuation to reject"
+        | Some {
+                   Scope = ExceptionContinuationScope.FilterHandler currentFilter
+                   Continuation = ExceptionContinuation.ResumeAfterFilter continuation
+               },
+          popped ->
+            if currentFilter <> continuation.CurrentFilter then
+                failwith
+                    $"Logic error: filter continuation scope %O{currentFilter} of %s{methodState.ExecutingMethod.Name} does not match its continuation's filter %O{continuation.CurrentFilter}"
+
+            continuation, popped
+        | Some {
+                   Scope = (ExceptionContinuationScope.FinallyHandler _ | ExceptionContinuationScope.FaultHandler _)
+               },
+          popped -> popToActiveFilter popped
+        | Some frame, _ ->
+            failwith
+                $"Logic error: unwinding to the filter boundary of %s{methodState.ExecutingMethod.Name} met scope %O{frame.Scope} with continuation %O{frame.Continuation}, which is neither a filter nor cleanup"
+
+    /// Interpose whichever synthesised wrappers this frame boundary carries, in the CLR's order:
+    /// a throwing `.cctor` surfaces as `TypeInitializationException`, and an
+    /// `Activator.CreateInstance<T>()` ctor is then additionally wrapped in
+    /// `TargetInvocationException`. A single frame can carry both — that is exactly the chained
+    /// `Activator.CreateInstance<T>()`-over-a-throwing-`.cctor` case.
+    let private applyFrameWraps
+        (loggerFactory : ILoggerFactory)
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (currentThread : ThreadId)
+        (returnState : MethodReturnState)
+        (cliException : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (exceptionType : ConcreteTypeHandle)
+        : IlMachineState * CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> * ConcreteTypeHandle
+        =
+        // If this frame was running a .cctor, mark the type initialisation as failed and wrap the
+        // exception in TypeInitializationException (CLR behaviour). Synthesize the TIE first so
+        // we can cache it; repeated accesses rethrow the same instance (matching CLR identity
+        // semantics).
         let state, cliException, exceptionType =
             match returnState.WasInitialisingType with
             | None -> state, cliException, exceptionType
             | Some finishedInitialising ->
-                // Per CLR spec, a throwing .cctor surfaces to managed code as
-                // TypeInitializationException wrapping the original exception.
                 let typeFullName =
                     match AllConcreteTypes.lookup finishedInitialising state.ConcreteTypes with
                     | Some ct ->
@@ -655,18 +701,10 @@ module ExceptionDispatching =
                         failwith
                             $"Logic error: failed to look up ConcreteType for initialising-type handle %O{finishedInitialising} when synthesising TypeInitializationException"
 
-                let state =
-                    IlMachineState.setExceptionStackTraceString
-                        loggerFactory
-                        corelib
-                        cliException.ExceptionObject
-                        cliException.StackTrace
-                        state
-                    |> IlMachineState.recordThrownStackTrace
-                        loggerFactory
-                        corelib
-                        cliException.ExceptionObject
-                        cliException.StackTrace
+                // The trace is already complete and projected by the time the second pass runs,
+                // but the *wrapped* exception is about to stop being the one in flight, so this
+                // is its last chance to be written down under its own identity.
+                let state = projectStackTrace loggerFactory corelib cliException state
 
                 let tieAddr, tieType, state =
                     IlMachineState.synthesizeTypeInitializationException
@@ -679,16 +717,13 @@ module ExceptionDispatching =
                 let state =
                     state.WithTypeFailedInit currentThread finishedInitialising tieAddr tieType
 
-                let wrappedCliException =
+                let wrapped =
                     {
                         ExceptionObject = tieAddr
                         StackTrace = []
-                        // The raise carries on, so its answer to the foreign-raise question does
-                        // too: wrapping swaps the object, not the raise.
-                        MayConsumeForeignRaise = cliException.MayConsumeForeignRaise
                     }
 
-                state, wrappedCliException, tieType
+                state, wrapped, tieType
 
         // If this frame was the ctor target of `Activator.CreateInstance<T>()` (or any other
         // CreateInstanceOfT-style invocation that opts in via `WrapExceptionInTargetInvocation`),
@@ -699,295 +734,263 @@ module ExceptionDispatching =
         // synthesising an extra trampoline frame: the wrap only fires on unwind across this
         // frame's boundary, so a try/catch *inside* the ctor that handles the exception is
         // unaffected.
-        let state, cliException, exceptionType =
-            if not returnState.WrapExceptionInTargetInvocation then
-                state, cliException, exceptionType
-            else
-                let state =
-                    IlMachineState.setExceptionStackTraceString
-                        loggerFactory
-                        corelib
-                        cliException.ExceptionObject
-                        cliException.StackTrace
-                        state
-                    |> IlMachineState.recordThrownStackTrace
-                        loggerFactory
-                        corelib
-                        cliException.ExceptionObject
-                        cliException.StackTrace
+        if not returnState.WrapExceptionInTargetInvocation then
+            state, cliException, exceptionType
+        else
 
-                let tieAddr, tieType, state =
-                    IlMachineState.synthesizeTargetInvocationException
-                        loggerFactory
-                        corelib
-                        cliException.ExceptionObject
-                        state
+        let state = projectStackTrace loggerFactory corelib cliException state
 
-                let wrappedCliException =
-                    {
-                        ExceptionObject = tieAddr
-                        StackTrace = []
-                        // The raise carries on, so its answer to the foreign-raise question does
-                        // too: wrapping swaps the object, not the raise.
-                        MayConsumeForeignRaise = cliException.MayConsumeForeignRaise
-                    }
+        let tieAddr, tieType, state =
+            IlMachineState.synthesizeTargetInvocationException loggerFactory corelib cliException.ExceptionObject state
 
-                state, wrappedCliException, tieType
+        let wrapped =
+            {
+                ExceptionObject = tieAddr
+                StackTrace = []
+            }
 
-        // Pop to caller frame
-        let callerFrame = ThreadState.getFrame returnState.JumpTo threadState
+        state, wrapped, tieType
 
+    /// Run the first pass to a verdict, then the second pass to the frame it names.
+    ///
+    /// Splitting these is the whole of issue #865. CoreCLR appends every stack-trace frame and
+    /// runs every `filter` before a single `finally` executes, so managed code running in a
+    /// cleanup clause — or holding an exception the clause displaced — reads a *complete* trace.
+    /// PawPrint used to interleave the two, entering cleanup as soon as it found any covering
+    /// region, and so froze a truncated trace onto the object.
+    let rec private runFirstPass
+        (loggerFactory : ILoggerFactory)
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (currentThread : ThreadId)
+        (search : ExceptionSearchState<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        : ExceptionDispatchResult
+        =
+        match firstPass loggerFactory corelib state currentThread search with
+        | state, FirstPassResult.SearchSuspendedInFilter -> ExceptionDispatchResult.Dispatched state
+        | state, FirstPassResult.SearchConcluded (search, outcome) ->
+            concludeFirstPass loggerFactory corelib state currentThread search outcome
+
+    /// Freeze the completed trace onto the exception object and begin the second pass.
+    ///
+    /// The projection happens for *every* outcome, not only when a handler was found. An
+    /// exception that goes unhandled, one abandoned at a filter boundary, and one about to be
+    /// swallowed by a synthesised wrapper have all genuinely propagated, and a guest holding any
+    /// of them can read `StackTrace` afterwards.
+    and private concludeFirstPass
+        (loggerFactory : ILoggerFactory)
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (currentThread : ThreadId)
+        (search : ExceptionSearchState<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (outcome : ExceptionSearchOutcome)
+        : ExceptionDispatchResult
+        =
+        let state = projectStackTrace loggerFactory corelib search.Exception state
+
+        let unwind : ExceptionUnwindState<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> =
+            {
+                Exception = search.Exception
+                ExceptionType = search.ExceptionType
+                Frame = search.StartFrame
+                PC = search.StartPC
+                Target = outcome
+            }
+
+        secondPass loggerFactory corelib state currentThread unwind
+
+    /// Unwind from the throw point to the frame the first pass named, running each `finally` and
+    /// `fault` clause in between, and then deliver the exception to whatever the outcome says.
+    and private secondPass
+        (loggerFactory : ILoggerFactory)
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (currentThread : ThreadId)
+        (unwind : ExceptionUnwindState<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        : ExceptionDispatchResult
+        =
+        // The first pass runs filters in place, so it can leave the thread executing an outer
+        // frame; the unwind starts back at the throw point regardless.
         let threadState =
-            threadState
-            |> ThreadState.setActiveFrame returnState.JumpTo
-            |> ThreadState.removeFrame unwoundFrameId
+            state.ThreadState.[currentThread] |> ThreadState.setActiveFrame unwind.Frame
 
         let state =
             { state with
                 ThreadState = state.ThreadState |> Map.add currentThread threadState
             }
 
-        // Search for a handler in the caller's method at the *call-site* PC (before
-        // advanceProgramCounter).  The caller frame's IlOpIndex has already been advanced
-        // past the call/callvirt/newobj, which can place it outside the protected region
-        // when the call is the last instruction in a try block.
-        let callSitePC = returnState.CallSiteIlOpIndex
+        let frame = ThreadState.getFrame unwind.Frame threadState
 
-        let stackFrame : ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> =
-            {
-                Method = callerFrame.ExecutingMethod
-                IlOffset = callSitePC
-                // The frame being appended belongs to the raise in progress, never to an earlier
-                // one — CoreCLR sets `stackTraceElem.flags = 0` here for the same reason
-                // (excep.cpp:3045). A pending flag marks the frame *before* this one, below.
-                IsLastFrameFromForeignExceptionStackTrace = false
+        let targetFrame =
+            match unwind.Target with
+            | ExceptionSearchOutcome.CaughtAt (frameId, _)
+            | ExceptionSearchOutcome.AbandonedAtFilter frameId
+            | ExceptionSearchOutcome.WrappedAt frameId -> Some frameId
+            | ExceptionSearchOutcome.NoHandler -> None
+
+        let atTarget = targetFrame = Some unwind.Frame
+
+        let boundary =
+            if atTarget then
+                unwindBoundaryIn frame unwind.Target
+            else
+                None
+
+        let regions =
+            match MethodInfo.tryIlBody frame.ExecutingMethod with
+            | None -> Seq.empty
+            | Some instructions -> instructions.ExceptionRegions :> seq<_>
+
+        match
+            ExceptionHandling.cleanupRegionsBetween regions unwind.PC boundary
+            |> List.tryHead
+        with
+        | Some region ->
+            enterCleanupHandler currentThread frame threadState state region unwind
+            |> ExceptionDispatchResult.Dispatched
+        | None ->
+
+        if atTarget then
+            deliverToTarget loggerFactory corelib state currentThread frame threadState unwind
+        else
+
+        match frame.ReturnState with
+        | None ->
+            match unwind.Target with
+            | ExceptionSearchOutcome.NoHandler ->
+                // The outermost frame, with nothing left to run. It is deliberately not popped:
+                // the thread is terminating and its final frames stay for the report.
+                ExceptionDispatchResult.ExceptionUnhandled (state, unwind.Exception)
+            | other ->
+                failwith
+                    $"Logic error: the second pass of exception dispatch ran out of frames in %s{frame.ExecutingMethod.Name} while unwinding towards %O{other}"
+        | Some returnState ->
+
+        let threadState =
+            threadState
+            |> ThreadState.setActiveFrame returnState.JumpTo
+            |> ThreadState.removeFrame unwind.Frame
+
+        let state =
+            { state with
+                ThreadState = state.ThreadState |> Map.add currentThread threadState
             }
 
-        // A delegate's `Invoke` is a stub, not a managed method: real .NET has no frame for it,
-        // and an exception crossing a delegate call reports the target and then whoever called
-        // `Invoke`. PawPrint's ordinary delegate path gets that for free, because
-        // `dispatchDelegateInvoke` pops its synthetic frame before calling the target — so the
-        // frame is already gone by the time anything can throw. The exception is class
-        // initialisation, which deliberately runs *while* that frame is still active so the
-        // instruction can be retried after the `.cctor` returns; without this, a `.cctor` that
-        // throws would report a `System.Action.Invoke` frame that no real trace contains.
-        //
-        // Only `DelegateInvoke` is suppressed, not runtime-provided frames at large: an
-        // InternalCall or QCall *is* a managed method by name and real traces do show it.
-        let isDelegateInvokeStub =
-            match callerFrame.ExecutingMethod.Body with
-            | MethodBody.RuntimeProvided RuntimeBehaviour.DelegateInvoke -> true
-            | _ -> false
-
-        // This is one of PawPrint's two frame-append sites, so a flag left pending by
-        // `Exception.PrepareForForeignExceptionRaise` is consumed here (the other site is the
-        // throw-site frame in `throwExceptionObject`). In practice only a `rethrow` reaches this
-        // with a flag still set: a `throw` consumes it when it seeds its first frame.
-        //
-        // A suppressed delegate-`Invoke` stub appends nothing, so it consumes nothing either: real
-        // .NET has no `StackTraceElement` for that stub and hence no `AppendElement` call to read
-        // the flag, which stays pending for the next genuine frame the raise reaches.
-        //
-        // The frames to mark are the ones the raise is already carrying: a `rethrow` read them out
-        // of `_stackTrace` when it began, and a `throw` seeded them at its own throw site. That is
-        // deliberately not a re-read of the token here, even though here is where CoreCLR reads it
-        // — because here can be separated from the raise's initiation by guest cleanup code, and a
-        // `finally` that throws the same exception again moves the token on. CoreCLR never faces
-        // the question: pass one appends every frame before any cleanup clause runs, so the frames
-        // it marks are the ones the raise began with, which is what this carries.
-        //
-        // The two answers cannot be told apart today. Reaching a case where they differ needs a
-        // raise inside that `finally`, and such a raise also steals the flag before this one can
-        // spend it — `sourcesPure/ForeignRaiseFlagNotStolenByCleanup.cs`, parked on issue #865. So
-        // no test pins this line; it is written this way because it is the same fact as
-        // `MayConsumeForeignRaise`, that a suspended raise comes back with the state it left with.
-        let state, restoredFrames =
-            if isDelegateInvokeStub || not cliException.MayConsumeForeignRaise then
-                state, None
-            else
-
+        secondPass
+            loggerFactory
+            corelib
             state
-            |> consumeForeignExceptionRaise currentThread (fun () -> cliException.StackTrace)
+            currentThread
+            { unwind with
+                Frame = returnState.JumpTo
+                PC = returnState.CallSiteIlOpIndex
+            }
 
-        let framesBefore = restoredFrames |> Option.defaultValue cliException.StackTrace
-
-        // `threadState` is a *value* captured before the consume, and the handler-entry path below
-        // takes it as a parameter and writes it back into the state map. Left stale, it would
-        // resurrect the flag we just cleared — with the visible effect that the boundary appears
-        // here and the flag is *also* still there for the next raise to spend. Re-read it, which
-        // is exact: the consume changes nothing else, and the frame bookkeeping above is already
-        // in `state`.
-        let threadState = state.ThreadState.[currentThread]
-
-        let cliExceptionAtCallSite =
-            if isDelegateInvokeStub then
-                // Nothing appended, so nothing decided: the question stays open for the next frame.
-                cliException
-            else
-                { cliException with
-                    StackTrace = framesBefore @ [ stackFrame ]
-                    // Decided, one way or the other, at this raise's first appended frame; the rest of
-                    // the unwind must not ask again.
-                    MayConsumeForeignRaise = false
-                }
-
-        match callerFrame.ExceptionContinuation with
-        | Some (ExceptionContinuation.ResumeAfterFilter continuation) ->
-            match
-                tryFindAndEnterHandlerAtSearchPC
-                    loggerFactory
-                    corelib
-                    state
-                    currentThread
-                    callerFrame
-                    threadState
-                    cliExceptionAtCallSite
-                    exceptionType
-                    callSitePC
-                    []
-            with
-            | _state, Some state ->
-                // A local handler at the call site runs inside the active filter evaluation.
-                // Keep ResumeAfterFilter; the filter's eventual endfilter will pop it.
-                ExceptionDispatchResult.HandlerFound state
-            | state, None ->
-
-                // An exception escaping a callee invoked by a filter rejects the filter and discards
-                // the escaping exception. We deliberately do not append a frame here: handler search
-                // is resuming for the original exception, whose stack already records the original
-                // throw path. The filter-body exception is only the reason this filter returned false.
-                // Its own trace is recorded by `prepareRejectedFilterSearch`, which is where its
-                // dispatch concludes.
-                let threadState = state.ThreadState.[currentThread]
-                let callerFrame = ThreadState.getFrame threadState.ActiveMethodState threadState
-
-                let state, callerFrame, threadState, cliException, exceptionType, searchPC, skippedFilters =
-                    prepareRejectedFilterSearch
-                        loggerFactory
-                        corelib
-                        currentThread
-                        callerFrame
-                        threadState
-                        state
-                        cliExceptionAtCallSite
-                        continuation
-
-                match
-                    tryFindAndEnterHandlerAtSearchPC
-                        loggerFactory
-                        corelib
-                        state
-                        currentThread
-                        callerFrame
-                        threadState
-                        cliException
-                        exceptionType
-                        searchPC
-                        skippedFilters
-                with
-                | _state, Some state -> ExceptionDispatchResult.HandlerFound state
-                | state, None ->
-                    unwindToCallerAndSearch loggerFactory corelib state currentThread cliException exceptionType
-
-        | _ ->
-
-            match
-                tryFindAndEnterHandlerAtSearchPC
-                    loggerFactory
-                    corelib
-                    state
-                    currentThread
-                    callerFrame
-                    threadState
-                    cliExceptionAtCallSite
-                    exceptionType
-                    callSitePC
-                    []
-            with
-            | _state, Some state -> ExceptionDispatchResult.HandlerFound state
-            | state, None ->
-                // No handler in this frame either; continue unwinding
-                unwindToCallerAndSearch loggerFactory corelib state currentThread cliExceptionAtCallSite exceptionType
-
-
-    let dispatchExceptionFromSearchPC
+    /// The second pass has unwound to the frame the first pass named, and every cleanup clause
+    /// between the throw point and here has run. Hand the exception over.
+    and private deliverToTarget
         (loggerFactory : ILoggerFactory)
         (corelib : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (currentThread : ThreadId)
-        (cliException : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
-        (exceptionType : ConcreteTypeHandle)
-        (searchPC : int)
-        (skippedFilters : ExceptionFilterRegion list)
+        (frame : MethodState)
+        (threadState : ThreadState)
+        (unwind : ExceptionUnwindState<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         : ExceptionDispatchResult
         =
-        let threadState = state.ThreadState.[currentThread]
-        let currentMethodState = threadState.MethodState
+        match unwind.Target with
+        | ExceptionSearchOutcome.NoHandler ->
+            failwith
+                "Logic error: the second pass of exception dispatch reached a target frame for an outcome that names none (NoHandler)"
+        | ExceptionSearchOutcome.CaughtAt (_, region) ->
+            let offset =
+                match region with
+                | ExceptionRegion.Catch (_, offset)
+                | ExceptionRegion.Filter (_, offset) -> offset
+                | ExceptionRegion.Finally _
+                | ExceptionRegion.Fault _ ->
+                    failwith
+                        $"Logic error: the first pass of exception dispatch concluded that cleanup region %O{region} of %s{frame.ExecutingMethod.Name} caught an exception; only Catch and Filter can catch"
 
-        match
-            tryFindAndEnterHandlerAtSearchPC
+            // A `Filter`'s body already ran, back in the first pass, and its continuation was
+            // popped by the `endfilter` that accepted; either way what is entered here is the
+            // handler body.
+            enterCatchHandler currentThread frame threadState state offset unwind.Exception
+            |> ExceptionDispatchResult.Dispatched
+        | ExceptionSearchOutcome.AbandonedAtFilter _ ->
+            // This exception's dispatch ends here — the CLR reports the filter as false and
+            // discards it — and the search for the *original* exception, parked on the filter's
+            // continuation, resumes with this filter struck off.
+            let continuation, methodState = popToActiveFilter frame
+
+            let threadState =
+                ThreadState.setFrame unwind.Frame (MethodState.clearEvalStack methodState) threadState
+
+            let state =
+                { state with
+                    ThreadState = state.ThreadState |> Map.add currentThread threadState
+                }
+
+            let outer = continuation.Search
+
+            runFirstPass
                 loggerFactory
                 corelib
                 state
                 currentThread
-                currentMethodState
-                threadState
-                cliException
-                exceptionType
-                searchPC
-                skippedFilters
-        with
-        | _state, Some state ->
-            // A local handler at searchPC runs inside the active filter evaluation, if any.
-            // Keep ResumeAfterFilter; the filter's eventual endfilter will pop it.
-            ExceptionDispatchResult.HandlerFound state
-        | state, None ->
-            let threadState = state.ThreadState.[currentThread]
-            let currentMethodState = threadState.MethodState
+                { outer with
+                    SkippedFilters = continuation.CurrentFilter :: outer.SkippedFilters
+                }
+        | ExceptionSearchOutcome.WrappedAt _ ->
 
-            match currentMethodState.ExceptionContinuation with
-            | Some (ExceptionContinuation.ResumeAfterFilter continuation) ->
-                // No handler for `cliException` anywhere in this frame, and the frame is
-                // evaluating a filter, so this is where `cliException` leaves that filter — it is
-                // the escaping exception, and the `cliException` bound below is the original one
-                // whose search resumes.
-                let escaping = cliException
+        let returnState =
+            match frame.ReturnState with
+            | Some returnState -> returnState
+            | None ->
+                failwith
+                    $"Logic error: the first pass of exception dispatch found a wrapping boundary on %s{frame.ExecutingMethod.Name}, which has no caller to wrap towards"
 
-                let state, currentMethodState, threadState, cliException, exceptionType, searchPC, skippedFilters =
-                    prepareRejectedFilterSearch
-                        loggerFactory
-                        corelib
-                        currentThread
-                        currentMethodState
-                        threadState
-                        state
-                        escaping
-                        continuation
+        let state, wrapped, wrappedType =
+            applyFrameWraps loggerFactory corelib state currentThread returnState unwind.Exception unwind.ExceptionType
 
-                match
-                    tryFindAndEnterHandlerAtSearchPC
-                        loggerFactory
-                        corelib
-                        state
-                        currentThread
-                        currentMethodState
-                        threadState
-                        cliException
-                        exceptionType
-                        searchPC
-                        skippedFilters
-                with
-                | _state, Some state -> ExceptionDispatchResult.HandlerFound state
-                | state, None ->
-                    unwindToCallerAndSearch loggerFactory corelib state currentThread cliException exceptionType
+        let threadState = state.ThreadState.[currentThread]
+        let caller = ThreadState.getFrame returnState.JumpTo threadState
 
-            | _ -> unwindToCallerAndSearch loggerFactory corelib state currentThread cliException exceptionType
+        let threadState =
+            threadState
+            |> ThreadState.setActiveFrame returnState.JumpTo
+            |> ThreadState.removeFrame unwind.Frame
 
+        let state =
+            { state with
+                ThreadState = state.ThreadState |> Map.add currentThread threadState
+            }
 
-    /// Dispatch an exception that has been thrown or is being propagated. Searches for a handler
-    /// in the current method; if found, enters it; otherwise unwinds to the caller.
-    /// Returns the updated state with the thread positioned at the handler entry point,
-    /// or ExceptionUnhandled if no handler exists in any frame.
+        // The wrapper is a fresh raise beginning at the caller's call site, so it seeds that
+        // frame exactly as `throwExceptionObject` seeds a `throw`'s own. That reproduces the
+        // pre-two-pass trace byte for byte: the old code wrapped mid-unwind and then let the
+        // ordinary crossing append land on the wrapper's empty trace, which is the same frame
+        // reached by a different route.
+        let state, seeded =
+            appendCallerFrame currentThread caller returnState.CallSiteIlOpIndex wrapped state
+
+        runFirstPass
+            loggerFactory
+            corelib
+            state
+            currentThread
+            {
+                Exception = seeded
+                ExceptionType = wrappedType
+                StartFrame = returnState.JumpTo
+                StartPC = returnState.CallSiteIlOpIndex
+                Frame = returnState.JumpTo
+                SearchPC = returnState.CallSiteIlOpIndex
+                SkippedFilters = []
+            }
+
+    /// Dispatch an exception that has been thrown or is being propagated, starting the handler
+    /// search in the thread's active frame at its current program counter.
     let dispatchException
         (loggerFactory : ILoggerFactory)
         (corelib : BaseClassTypes<DumpedAssembly>)
@@ -997,17 +1000,97 @@ module ExceptionDispatching =
         (exceptionType : ConcreteTypeHandle)
         : ExceptionDispatchResult
         =
-        let currentMethodState = state.ThreadState.[currentThread].MethodState
+        let threadState = state.ThreadState.[currentThread]
+        let frameId = threadState.ActiveMethodState
+        let searchPC = threadState.MethodState.IlOpIndex
 
-        dispatchExceptionFromSearchPC
+        runFirstPass
             loggerFactory
             corelib
             state
             currentThread
-            cliException
-            exceptionType
-            currentMethodState.IlOpIndex
-            []
+            {
+                Exception = cliException
+                ExceptionType = exceptionType
+                StartFrame = frameId
+                StartPC = searchPC
+                Frame = frameId
+                SearchPC = searchPC
+                SkippedFilters = []
+            }
+
+    /// Resume a first-pass search that suspended to evaluate a filter, now that `endfilter` has
+    /// said whether the filter accepted. The caller has already popped the filter's continuation.
+    let resumeSearchAfterFilter
+        (loggerFactory : ILoggerFactory)
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (currentThread : ThreadId)
+        (continuation : ExceptionFilterContinuation<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (accepted : bool)
+        : ExceptionDispatchResult
+        =
+        let search = continuation.Search
+        let activeFrame = state.ThreadState.[currentThread].ActiveMethodState
+
+        if activeFrame <> search.Frame then
+            failwith
+                $"Logic error: endfilter for filter %O{continuation.CurrentFilter} resumed a search parked on frame %O{search.Frame} while the thread was executing frame %O{activeFrame}"
+
+        if accepted then
+            let region =
+                ExceptionRegion.Filter (
+                    continuation.CurrentFilter.FilterOffset,
+                    continuation.CurrentFilter.HandlerOffset
+                )
+
+            concludeFirstPass
+                loggerFactory
+                corelib
+                state
+                currentThread
+                search
+                (ExceptionSearchOutcome.CaughtAt (search.Frame, region))
+        else
+            runFirstPass
+                loggerFactory
+                corelib
+                state
+                currentThread
+                { search with
+                    SkippedFilters = continuation.CurrentFilter :: search.SkippedFilters
+                }
+
+    /// Resume a second-pass unwind that suspended to run a `finally` or `fault` clause, now that
+    /// its `endfinally` has been reached. The caller has already popped the clause's continuation.
+    ///
+    /// The resume PC is the frame's *live* program counter — the `endfinally` itself — rather
+    /// than the PC the unwind was parked with. That is what terminates a tower of nested cleanup
+    /// clauses: the just-run clause's `try` does not cover its own handler body, while a `try`
+    /// enclosing it still does, so re-searching from here finds the next clause out and nothing
+    /// else.
+    let resumeUnwindAfterCleanup
+        (loggerFactory : ILoggerFactory)
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (currentThread : ThreadId)
+        (unwind : ExceptionUnwindState<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        : ExceptionDispatchResult
+        =
+        let threadState = state.ThreadState.[currentThread]
+
+        if threadState.ActiveMethodState <> unwind.Frame then
+            failwith
+                $"Logic error: endfinally resumed an unwind parked on frame %O{unwind.Frame} while the thread was executing frame %O{threadState.ActiveMethodState}"
+
+        secondPass
+            loggerFactory
+            corelib
+            state
+            currentThread
+            { unwind with
+                PC = threadState.MethodState.IlOpIndex
+            }
 
     /// Initiate exception dispatch for an exception object already on the heap.
     /// Builds the initial stack trace frame and dispatches.
@@ -1065,9 +1148,6 @@ module ExceptionDispatching =
             {
                 ExceptionObject = exceptionAddr
                 StackTrace = restoredFrames @ [ stackFrame ]
-                // Whatever the flag had to say has been said, right here at this raise's first
-                // appended frame, so the unwind below must not ask again.
-                MayConsumeForeignRaise = false
             }
 
         dispatchException loggerFactory corelib state currentThread cliException exceptionType

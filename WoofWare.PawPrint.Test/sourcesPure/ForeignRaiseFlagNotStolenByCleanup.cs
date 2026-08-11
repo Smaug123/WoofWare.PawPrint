@@ -1,32 +1,28 @@
 using System;
 using System.Reflection;
 
-// A flag pending when a raise begins must be *reserved* for that raise, not merely earmarked.
+// A flag pending when a raise begins cannot be stolen by that raise's own cleanup.
 //
-// PawPrint records at raise initiation whether a flag was pending, and re-reads the thread's bit
-// when the raise finally appends a frame. Between those two moments the raise can run a `finally`,
-// and guest code there can move the bit: throwing and catching an exception inside the `finally`
-// starts a raise of its own, which consumes the flag the outer raise had already claimed.
+// CoreCLR appends every stack-trace frame in its first pass, so a raise has consumed any pending
+// foreign-raise flag before a single `finally` runs; a raise started by guest code inside that
+// `finally` finds nothing pending. Measured on .NET 10:
 //
-// CoreCLR has no such window. It appends every frame in pass one, so the outer raise has taken the
-// flag before any cleanup clause runs; the raise inside the `finally` finds nothing pending.
-// Measured on .NET 10, and PawPrint's answers beside them:
-//
-//                                        real .NET   PawPrint
-//     exception raised in the `finally`       0          1
-//     outer exception after the rethrow       1          0
-//     an ordinary throw afterwards            0          0
+//     exception raised in the `finally`       0 boundaries
+//     outer exception after the rethrow       1 boundary
+//     an ordinary throw afterwards            0 boundaries
 //
 // The exception thrown in the `finally` is one that has already been thrown once, which is what
-// makes the theft visible at all: a flag consumed there splices that exception's earlier frames
-// back on and marks them. Thrown fresh, it would have nothing to mark and PawPrint would answer 0
-// there too — the theft would show up only in the outer count, one step removed from its cause.
+// makes a theft visible at all: a flag consumed there would splice that exception's earlier
+// frames back on and mark the boundary between them, giving 1 rather than 0. Thrown fresh, it
+// would have nothing to mark and the theft would show up only in the outer count, one step
+// removed from its cause.
 //
-// Closing this means transferring ownership of the flag at raise initiation and handing it back if
-// the raise turns out to append nothing — and "turns out to append nothing" is only answerable once
-// dispatch knows a cleanup handler from a real one, which is the `_isFinally` that
-// `tryFindAndEnterHandlerAtSearchPC` deliberately ignores today. That is issue #865's two-pass
-// structure, so this file is parked on it rather than approximated.
+// This was parked on issue #865 while PawPrint interleaved search with cleanup: it recorded at
+// raise initiation whether a flag was pending and re-read the thread's bit at the delayed append,
+// leaving a window in which a `finally` could move the bit. Giving dispatch a real first pass
+// closes the window structurally — there is no longer any point between a raise and its appends
+// at which guest cleanup can run — which is why the eligibility field the old shape needed could
+// be deleted outright rather than patched.
 class ForeignRaiseFlagNotStolenByCleanup
 {
     const string Boundary = "--- End of stack trace from previous location ---";
