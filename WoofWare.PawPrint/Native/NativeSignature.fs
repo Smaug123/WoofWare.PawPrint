@@ -75,6 +75,14 @@ module NativeSignature =
             let mdReader = assembly.PeReader.GetMetadataReader ()
             let methodDef = mdReader.GetMethodDefinition method.Get
             assembly, methodDef.Signature
+        | PeByteRangePointerSource.PropertySignatureBlob _ ->
+            // This one *is* a signature blob, so it does not belong with the arm below. It is
+            // mintable as of `MetadataImport.GetPropertyProps`, and reaches here only through
+            // `RuntimePropertyInfo.Signature` — which needs a fully constructed
+            // `RuntimePropertyInfo`, so `Associates.AssignAssociates` blocks it today. Parsing an
+            // ECMA II.23.2.5 PropertySig is the feature that unblocks it.
+            failwith
+                $"TODO: %s{operation} on a property signature blob is not implemented (%O{peByteRange}); PROPERTY signatures are not yet parsed"
         | PeByteRangePointerSource.FieldRva _
         | PeByteRangePointerSource.ManagedResource _
         | PeByteRangePointerSource.ConstantBlob _ ->
@@ -340,6 +348,10 @@ module NativeSignature =
             | other ->
                 // A method-signature blob cannot arrive here: every managed `Signature` constructor
                 // that has a method passes the *handle*, and CoreCLR overwrites the blob from it.
+                // A *property*-signature blob is a different story — `RuntimePropertyInfo.Signature`
+                // does use the handle-less constructor, and `MetadataImport.GetPropertyProps` now
+                // mints such blobs — but it is still unreachable, because constructing the
+                // `RuntimePropertyInfo` that owns it needs `Associates.AssignAssociates`.
                 failwith
                     $"TODO: %s{operation} on a raw %O{other} blob is not implemented; only FieldDef signature blobs reach the handle-less constructor today"
 

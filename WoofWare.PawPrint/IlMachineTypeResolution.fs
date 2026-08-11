@@ -753,6 +753,26 @@ module IlMachineTypeResolution =
             Size = blobReader.Length
         }
 
+    /// PE byte range pointer over the COR signature blob bytes for a property
+    /// definition (ECMA II.23.2.5). Same storage story as
+    /// `peByteRangeForFieldSignatureBlob`.
+    let peByteRangeForPropertySignatureBlob
+        (assembly : DumpedAssembly)
+        (propertyHandle : PropertyDefinitionHandle)
+        : PeByteRangePointer
+        =
+        let mdReader = assembly.PeReader.GetMetadataReader ()
+        let propertyDef = mdReader.GetPropertyDefinition propertyHandle
+        let blobReader = mdReader.GetBlobReader propertyDef.Signature
+
+        {
+            AssemblyFullName = assembly.Name.FullName
+            Source =
+                PeByteRangePointerSource.PropertySignatureBlob (ComparablePropertyDefinitionHandle.Make propertyHandle)
+            RelativeVirtualAddress = 0
+            Size = blobReader.Length
+        }
+
     let peByteRangePointer
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)

@@ -1489,6 +1489,32 @@ module TestNullaryIlOp =
         exn.Message |> shouldContainText "claims no alignment"
 
     [<Test>]
+    let ``a property signature blob makes no alignment claim`` () : unit =
+        // Same reasoning as the method and field variants: an ECMA II.23.2.5 PropertySig lives in
+        // the metadata `#Blob` heap at an offset PawPrint does not track, so its
+        // RelativeVirtualAddress is a placeholder 0 and its low bits belong to no address.
+        let property =
+            ComparablePropertyDefinitionHandle.Make (
+                System.Reflection.Metadata.Ecma335.MetadataTokens.PropertyDefinitionHandle 1
+            )
+
+        let blob =
+            peByteRangeByref (PeByteRangePointerSource.PropertySignatureBlob property) 0
+
+        ManagedPointerSource.tryContainerAlignmentBits blob |> shouldEqual None
+
+        let exn =
+            Assert.Throws (fun () ->
+                runBinary
+                    NullaryIlOp.And
+                    (EvalStackValue.Int32 (Int32Source.NarrowedManagedPointer blob))
+                    (EvalStackValue.Int32 (Int32Source.Verbatim 1))
+                |> ignore<EvalStackValue>
+            )
+
+        exn.Message |> shouldContainText "claims no alignment"
+
+    [<Test>]
     let ``a field signature blob makes no alignment claim`` () : unit =
         // `FieldRva` and `ManagedResource` name real section offsets, and the image
         // base is page-aligned, so their low bits are the mapped address's low bits.

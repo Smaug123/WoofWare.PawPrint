@@ -4,11 +4,16 @@ using System.Reflection;
 // `RuntimeType.PopulateProperties` gets a type's property tokens from the `MetadataImport.Enum`
 // QCall with token type `mdtProperty`, then turns each into a `RuntimePropertyInfo`.
 //
-// PawPrint cannot yet construct one of those (that needs `MetadataImport.GetPropertyProps`, the
-// associates branch of `Enum`, and `RuntimeMethodHandle.GetSlot`), so what a guest can observe here
-// is exactly the two shapes below: an enumeration that comes back empty, and one that comes back
-// non-empty but whose members are all rejected by a name filter before any of them is constructed.
-// Both threw before the enumeration existed.
+// PawPrint cannot yet construct one of those (that needs the associates branch of `Enum` and
+// `RuntimeMethodHandle.GetSlot`), so what a guest can observe here is exactly the two shapes below:
+// an enumeration that comes back empty, and one that comes back non-empty but whose members are all
+// rejected by a name filter before any of them is constructed. Both threw before the enumeration
+// existed.
+//
+// In particular, asking for a property that *does* exist is still not observable, even now that
+// `MetadataImport.GetPropertyProps` is implemented: checked by writing that case and running it, and
+// it dies one call later in `Associates.AssignAssociates`. So `GetPropertyProps` has no end-to-end
+// coverage; its contract is pinned by TestNativeMetadataImport alone.
 // The field is load-bearing, not decoration: it is what makes case 1 below able to catch an
 // implementation that enumerated the FieldDef table instead of the PropertyMap run. Such an
 // implementation reports one "property" here, and the guest then dies trying to construct a
