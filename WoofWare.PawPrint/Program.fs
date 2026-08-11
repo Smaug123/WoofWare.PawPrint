@@ -138,12 +138,11 @@ module Program =
         | Completed of ProgramStartResult
         | Deadlocked of Startup * stuckThreads : string
 
-    let private deadlockDescription (state : IlMachineState) : string =
-        state.ThreadState
-        |> Map.toSeq
-        |> Seq.filter (fun (_, ts) -> ts.Status <> ThreadStatus.Terminated)
-        |> Seq.map (fun (ThreadId i, ts) -> $"thread {i} in state {ts.Status}")
-        |> String.concat "; "
+    /// Where each live thread is, for the deadlock reports below and for every host that
+    /// consumes a `Deadlocked` outcome. The status alone does not locate a guest — every thread
+    /// blocked on a monitor looks alike — so this names the frame each thread is in and, where
+    /// the guest was built with debug information, the source line it is on.
+    let private deadlockDescription (state : IlMachineState) : string = GuestLocation.describe state
 
     /// Discriminator for a fired wait deadline: which subsystem owns the
     /// parked thread, and therefore which `fireTimeout` implementation
