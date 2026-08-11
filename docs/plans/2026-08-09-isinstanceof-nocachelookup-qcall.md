@@ -50,6 +50,33 @@ the test. This also fixes the choice of diagnostic: two nested types sharing a s
 correctly reach the `IDS_EE_CANNOTCASTSAME` branch (which PawPrint refuses loudly) rather than
 silently taking the ordinary message.
 
+**`TypeInfo.fullName` joined the nesting chain with `.`, not `+`** — a *pre-existing* bug the
+second Codex review surfaced from this change's angle (a nested type in generic-*argument*
+position renders through the reflection path, so `List`1[Enclosing.Inner]` leaked out of the
+cast message). It was never confined to the message: `Type.FullName` and `Type.ToString()` were
+wrong for every nested type, and a `.` there is ambiguous with the namespace separator, which is
+exactly why CoreCLR's `TypeNameBuilder::AddNestedName` uses `+`. Fixed at the root rather than in
+the renderer. `NestedTypeFullName.cs` pins the reflection surface directly.
+
+That root fix had one consumer to repair: `IntrinsicHelpers.scalarOnlyFalseIsSupportedIntrinsics`
+is keyed on `TypeInfo.fullName`, and its per-ISA nested classes (`AdvSimd.Arm64`, `Avx.X64`, …)
+were spelled with `.`. A stale `.` there does not merely fail to fold `IsSupported` to false — it
+misses the lookup entirely and the ISA property recurses, so the suite failed loudly. The 51
+affected entries were respelled from the running CoreLib's own type names rather than by hand.
+
+**A still-unfixed divergence, filed as #929:** real .NET assembly-qualifies generic arguments
+in `Type.FullName` (``List`1[[Enclosing+Inner, CSharpExample, Version=…]]``) where PawPrint emits
+``List`1[Enclosing+Inner]``. That is `ConstructName`'s `FormatFullInst` / `FormatAssembly`
+handling and is orthogonal to the separator; `NestedTypeFullName.cs` therefore pins `ToString()`
+for the generic-argument case, which carries no assembly qualification in either runtime.
+
+**`RuntimeTypeHandleTarget.OpenConstructed`** arrived upstream while this was in review. It has a
+real MethodTable, so it is not a TypeDesc and it carries its definition's interface flag; it
+reaches the structural walk, where the cast oracle refuses it loudly. The answer is very likely
+`false` (no closed type's interface map or base chain holds an instantiation containing type
+variables), but such a target only arises from a reflected generic-parameter constraint, and
+"very likely" is not a basis for an answer a guest branches on.
+
 ## What was blocked before this change
 
 Any guest reaching `Type.IsInstanceOfType`, `Array.SetValue` on a reference-typed array, or the

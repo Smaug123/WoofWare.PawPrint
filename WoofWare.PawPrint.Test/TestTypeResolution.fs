@@ -122,7 +122,7 @@ public class Consumer
         resolvedAssembly.Name.FullName |> shouldEqual defining.Name.FullName
         resolvedType.Name |> shouldEqual "Inner"
 
-        AssemblyApi.fullName resolvedAssembly identity |> shouldEqual "N.Outer.Inner"
+        AssemblyApi.fullName resolvedAssembly identity |> shouldEqual "N.Outer+Inner"
 
         let outer = getTopLevelTypeDef defining "N" "Outer"
         let inner = getNestedTypeDef defining outer "Inner"
@@ -759,7 +759,7 @@ public class Outer
         resolvedAssembly.Name.FullName |> shouldEqual target.Name.FullName
         resolvedType.Name |> shouldEqual "Inner"
 
-        AssemblyApi.fullName resolvedAssembly identity |> shouldEqual "N.Outer.Inner"
+        AssemblyApi.fullName resolvedAssembly identity |> shouldEqual "N.Outer+Inner"
 
         let outer = getTopLevelTypeDef target "N" "Outer"
         let inner = getNestedTypeDef target outer "Inner"
