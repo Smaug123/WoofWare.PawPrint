@@ -2429,7 +2429,7 @@ module IlMachineStateExecution =
         //    begins, handler lookup and the stack-trace frame must see the faulting
         //    instruction's PC, not the next instruction.  (Same class of bug as call-site
         //    vs resumed-PC for cross-frame unwinding, which CallSiteIlOpIndex solves.)
-        let state, concretizedCtor, _declaringTypeHandle =
+        let state, concretizedCtor, ctorDeclaringTypeHandle =
             ExecutionConcretization.concretizeMethodForExecution
                 loggerFactory
                 baseClassTypes
@@ -2441,23 +2441,52 @@ module IlMachineStateExecution =
 
         let threadState = state.ThreadState.[currentThread]
 
-        callMethod
-            loggerFactory
-            baseClassTypes
-            None
-            (ConstructionState.Constructing addr) // weAreConstructingObj
-            false // no interface resolution
-            false // wasClassConstructor
-            false // do NOT advance caller PC — dispatch needs the faulting instruction's offset
-            concretizedCtor.Generics
-            concretizedCtor
-            currentThread
-            threadState
-            None
-            (ConstructedObjectDisposition.DispatchAsException message)
-            false // wrapExceptionInTargetInvocation
-            state,
-        WhatWeDid.Executed
+        let state =
+            callMethod
+                loggerFactory
+                baseClassTypes
+                None
+                (ConstructionState.Constructing addr) // weAreConstructingObj
+                false // no interface resolution
+                false // wasClassConstructor
+                false // do NOT advance caller PC — dispatch needs the faulting instruction's offset
+                concretizedCtor.Generics
+                concretizedCtor
+                currentThread
+                threadState
+                None
+                (ConstructedObjectDisposition.DispatchAsException message)
+                false // wrapExceptionInTargetInvocation
+                state
+
+        // 5. Discharge the ctor frame's prologue without running it, holding step 1's bypass.
+        //    `callMethod` arms a type-initialisation check on every metadata callee it pushes,
+        //    which for this one would run the exception type's own `.cctor` — guest code, in the
+        //    middle of manufacturing a runtime exception, able to replace it with a
+        //    `TypeInitializationException`. Clearing it here rather than teaching `callMethod` to
+        //    be told keeps the policy beside the allocation it belongs to, and off the fourteen
+        //    call sites that would otherwise gain a positional boolean they all answer the same
+        //    way.
+        //
+        //    Latent as it stands: no exception type this path manufactures has a `.cctor` in the
+        //    CoreLib we resolve. Whether the bypass is *right* is a separate and older question —
+        //    CoreCLR reaches these through `EEException::CreateThrowable` rather than through a
+        //    JIT'd prologue — and this only keeps the existing answer from changing by accident.
+        //
+        //    Checked rather than assumed, because clearing the flag off the wrong frame would
+        //    silently let a `.cctor` run somewhere else instead: the frame `callMethod` just
+        //    pushed must be active, and must be awaiting this very exception type.
+        let threadState = state.ThreadState.[currentThread]
+        let ctorFrameId = threadState.ActiveMethodState
+
+        match threadState.MethodState.PendingTypeInit with
+        | Some pending when pending = ctorDeclaringTypeHandle ->
+            state
+            |> IlMachineState.mapFrame currentThread ctorFrameId MethodState.clearPendingTypeInit,
+            WhatWeDid.Executed
+        | other ->
+            failwith
+                $"logic error: manufacturing %s{exceptionTypeInfo.Namespace}.%s{exceptionTypeInfo.Name} pushed a constructor frame whose pending type initialisation is %O{other}, not the exception's own type %O{ctorDeclaringTypeHandle}; the class-initialisation bypass cannot be applied to it"
 
     /// `raiseRuntimeExceptionWithMessage` with no message override, i.e. the exception is
     /// constructed exactly as `new SomeException()` would construct it. This is the right
