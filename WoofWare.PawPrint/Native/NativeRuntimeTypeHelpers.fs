@@ -1102,6 +1102,27 @@ module NativeRuntimeTypeHelpers =
 
                     match matched with
                     | mostDerived :: _ ->
+                        // CoreCLR refuses to load a type whose non-newslot virtual matches a
+                        // `final` parent slot: having picked the override candidate out of the
+                        // parent chain, `MethodTableBuilder::PlaceVirtualMethods` throws
+                        // `IDS_CLASSLOAD_MI_FINAL_DECL` when `IsMdFinal(dwParentAttrs)`
+                        // (methodtablebuilder.cpp:5445-5448). The check is against the single method
+                        // the lookup returned, which is the most-derived match -- the same slot the
+                        // tie-break above selects -- so testing the chosen occupant is upstream's
+                        // rule and not an approximation of it.
+                        //
+                        // Filling the slot anyway would hand out a vtable layout for a type the real
+                        // runtime would refuse to load, and every slot number derived from it would
+                        // then be answering a question about a type that cannot exist. Roslyn cannot
+                        // emit this shape, but -- like the unmatched-override case below -- assembly
+                        // version skew can, by sealing a virtual in a base that a derived assembly
+                        // was already compiled against.
+                        let occupant = List.item mostDerived slots
+
+                        if occupant.Method.IsFinal then
+                            failwith
+                                $"%s{operation}: virtual method %s{method.Name} on %O{concreteTypeInfo} is not marked newslot and matches vtable slot %i{mostDerived}, which is occupied by the final method %s{occupant.Method.Name} declared by %O{occupant.DeclaredBy}; CoreCLR rejects this type at load time with a TypeLoadException rather than laying out a vtable for it"
+
                         state, slots |> List.mapi (fun j slot -> if j = mostDerived then candidate else slot)
                     | [] ->
                         // CoreCLR does not fail here: `MethodTableBuilder` gives an unmatched
