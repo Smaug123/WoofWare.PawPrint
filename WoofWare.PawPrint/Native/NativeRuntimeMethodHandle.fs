@@ -1108,10 +1108,13 @@ module NativeRuntimeMethodHandle =
             //  - `PopulateProperties` (RuntimeType.CoreCLR.cs:1358) calls this on a property's
             //    accessor with *no* Virtual guard, testing `slot < numVirtuals` afterwards, so an
             //    ordinary non-virtual getter reaches it and CoreCLR answers with a non-vtable slot.
-            //    `MetadataImport.Enum` does now yield Property tokens, but `PopulateProperties`
-            //    still fails earlier than this: binding a property's accessors needs
-            //    `Associates.AssignAssociates` (see NativeSignature.fs:82), which is unimplemented.
-            //    Whoever finishes property enumeration will need the non-vtable region.
+            //    This is much the closer of the two to being live, and is getting closer: property
+            //    enumeration is no longer blocked on Property token enumeration (#921, #926) nor on
+            //    `Associates.AssignAssociates` (#934), and the duplicate check that reaches here is
+            //    exactly what was waiting on `GetSlot`. What still blocks it is parsing an ECMA
+            //    II.23.2.5 PropertySig -- see the `PropertySignatureBlob` arm of NativeSignature.fs,
+            //    which tracks the current state of that chain. Whoever lands PropertySig parsing
+            //    should expect to arrive here, and will need the non-vtable region.
             //
             //  - For a value type, the MethodTable builder duplicates every virtual, leaving the
             //    unboxing stub in the vtable slot and giving the unboxed copy a slot beyond
