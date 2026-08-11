@@ -944,6 +944,73 @@ module NativeRuntimeTypeHelpers =
 
         state, (candidateParams = slotParams && candidateRet = slotRet)
 
+    /// The methods of a type that CoreCLR's `DeclaredMethodIterator` ranges over, paired with their
+    /// metadata facts. Both halves of the method table are laid out from this one list, so that
+    /// neither can disagree with the other about what the type declares.
+    ///
+    /// Two kinds of row are absent from it.
+    ///
+    /// A *synthesised* method has no MethodDef row, so it is not a declared method at all. The
+    /// vtable walk excludes them only incidentally (a synthesised method is never `IsVirtual`);
+    /// beyond the vtable the exclusion is load-bearing, because such a method *is* non-virtual and
+    /// placing it would shift every later method's slot number by one. No test covers this and none
+    /// can: nothing today puts a synthesised method into a `TypeInfo` (the construction sites in
+    /// `Program.buildStartupFrame` and `StructMarshalStub` both build one for immediate execution),
+    /// so the filter is a no-op on every image that exists. It is kept because `TypeInfo.Methods` is
+    /// typed to hold either kind.
+    ///
+    /// A COM *vtable-gap marker* names empty slots in the COM interface vtable rather than declaring
+    /// a method. `EnumerateClassMethods` recognises it by `IsMdRTSpecialName` plus a `_VtblGap` name
+    /// prefix (methodtablebuilder.cpp:2749, corhdr.h:265-270) and `continue`s before it reaches
+    /// `rgDeclaredMethods` (:2852-2921), recording the run length in a `SparseVTableMap` that only
+    /// `FEATURE_COMINTEROP` reads -- so it occupies no slot in the CLR method table, virtual or
+    /// otherwise. Dropping it here rather than in one walk alone is the point: tlbimp emits these as
+    /// `virtual abstract` members of an interface, so a filter applied only past the vtable would
+    /// leave the *vtable* inflated by one slot per gap, which moves `GetNumVirtuals` and with it the
+    /// origin of everything after it.
+    ///
+    /// The name grammar is `_VtblGap` + optional digits + optionally `_` and at least one digit,
+    /// and CoreCLR throws `BadImageFormatException` for anything else (:2865-2907) rather than
+    /// treating it as an ordinary method -- so a prefix match alone would accept images the runtime
+    /// rejects.
+    let private declaredMethodsOf
+        (operation : string)
+        (concreteTypeInfo : ConcreteType<ConcreteTypeHandle>)
+        (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        : (MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> * MetadataMethodFacts) list
+        =
+        // `_VtblGap`, then the optional-number/count grammar upstream parses.
+        let isWellFormedGapName (name : string) : bool =
+            let suffix = name.Substring "_VtblGap".Length
+            let afterLeadingDigits = suffix.TrimStart [| '0' .. '9' |]
+
+            if afterLeadingDigits = "" then
+                // "_VtblGap" or "_VtblGap<n>": a single empty slot, or the count-less form.
+                true
+            elif afterLeadingDigits.[0] <> '_' then
+                false
+            else
+                let count = afterLeadingDigits.Substring 1
+                count <> "" && count |> Seq.forall System.Char.IsAsciiDigit
+
+        typeInfo.Methods
+        |> List.choose (fun method ->
+            match method.TryMetadata with
+            | None -> None
+            | Some facts ->
+                if
+                    facts.MethodAttributes.HasFlag MethodAttributes.RTSpecialName
+                    && method.Name.StartsWith ("_VtblGap", System.StringComparison.Ordinal)
+                then
+                    if not (isWellFormedGapName method.Name) then
+                        failwith
+                            $"%s{operation}: method %s{method.Name} on %O{concreteTypeInfo} is marked RTSpecialName and begins `_VtblGap`, but the rest of the name is not the vtable-gap count grammar; CoreCLR rejects the type at load time with a BadImageFormatException (methodtablebuilder.cpp:2865-2907) rather than laying out a method table for it"
+
+                    None
+                else
+                    Some (method, facts)
+        )
+
     /// The instance vtable of a closed type, base-first: index `i` is the method that currently
     /// occupies slot `i`. A type inherits its base's layout, replaces the entries its own
     /// non-newslot virtuals override, and appends a slot for each `newslot` virtual it introduces.
@@ -1007,11 +1074,14 @@ module NativeRuntimeTypeHelpers =
                 | None -> state, []
                 | Some bh -> vtableOfClosed loggerFactory baseClassTypes operation state bh
 
-            // A synthesised method occupies no vtable slot and overrides nothing, so `IsVirtual`
-            // and `IsNewSlot` are both false for one; the filter below excludes them structurally.
+            // Shared with the walk past the vtable, so that the two cannot disagree about what the
+            // type declares -- see `declaredMethodsOf` for what it drops and why. Upstream's
+            // `PlaceVirtualMethods` takes exactly the declared *instance* virtuals from that same
+            // list; a `static virtual` is placed past the vtable instead.
             let instanceVirtuals =
-                typeInfo.Methods
-                |> List.filter (fun method -> not method.IsStatic && method.IsVirtual)
+                declaredMethodsOf operation concreteTypeInfo typeInfo
+                |> List.filter (fun (method, _) -> not method.IsStatic && method.IsVirtual)
+                |> List.map fst
 
             // Upstream is a single pass over the declared methods in MethodDef row order
             // (`DeclaredMethodIterator` over the array `EnumerateClassMethods` fills in row order),
@@ -1229,41 +1299,12 @@ module NativeRuntimeTypeHelpers =
         (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
         : VtableSlot list
         =
-        // `DeclaredMethodIterator` ranges over the type's MethodDef rows, so a *synthesised* method
-        // is not a candidate for a slot at all. `vtableOfClosed` excludes them only incidentally
-        // (a synthesised method is never `IsVirtual`); here the exclusion must be deliberate,
-        // because a synthesised method *is* non-virtual and would otherwise be placed -- shifting
-        // every genuine method after it by one, and so making every slot number this function hands
-        // out wrong rather than merely adding one spurious entry.
-        //
-        // No test covers this, and none can: nothing today puts a synthesised method into a
-        // `TypeInfo` (the two construction sites, in `Program.buildStartupFrame` and
-        // `StructMarshalStub`, both build one for immediate execution), so the filter is a no-op on
-        // every image that exists. It is kept because `TypeInfo.Methods` is typed to hold either
-        // kind, so the day one is inserted is the day every slot number silently moves.
-        let declared =
-            typeInfo.Methods
-            |> List.choose (fun method ->
-                match method.TryMetadata with
-                | None -> None
-                | Some facts -> Some (method, facts)
-            )
-            // A COM vtable-gap marker is a MethodDef row that names empty slots in the *COM*
-            // interface vtable rather than declaring a method. `EnumerateClassMethods` recognises it
-            // by `IsMdRTSpecialName` plus a `_VtblGap` name prefix (methodtablebuilder.cpp:2749,
-            // corhdr.h:265-270) and `continue`s before it ever reaches `rgDeclaredMethods`
-            // (:2852-2921), recording the run length in a `SparseVTableMap` that only
-            // `FEATURE_COMINTEROP` reads. So it consumes no slot in the method table and is not a
-            // declared method at all -- dropping it here is what agrees with upstream, both for the
-            // validation below (which would otherwise see a runtime-special-named method that is
-            // not a constructor, and wrongly report that CoreCLR rejects the type) and for the
-            // placement (which would otherwise shift every later method by one).
-            |> List.filter (fun (method, facts) ->
-                not (
-                    facts.MethodAttributes.HasFlag MethodAttributes.RTSpecialName
-                    && method.Name.StartsWith ("_VtblGap", System.StringComparison.Ordinal)
-                )
-            )
+        // The same list the vtable walk is laid out from, so the two cannot disagree about what the
+        // type declares; `declaredMethodsOf` documents which rows it drops and why. In particular a
+        // vtable-gap marker never reaches the validation below, which would otherwise see a
+        // runtime-special-named method that is not a constructor and wrongly report that CoreCLR
+        // rejects the type.
+        let declared = declaredMethodsOf operation concreteTypeInfo typeInfo
 
         // `PlaceVirtualMethods` places exactly the declared *instance* virtuals, so everything else
         // is still unplaced when `PlaceNonVirtualMethods` runs. A `static virtual` -- an interface

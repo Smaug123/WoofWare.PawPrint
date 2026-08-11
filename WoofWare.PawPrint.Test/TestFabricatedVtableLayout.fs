@@ -289,19 +289,49 @@ module TestFabricatedVtableLayout =
         let vtblGap =
             moduleBuilder.DefineType ("HasVtableGap", TypeAttributes.Public ||| TypeAttributes.Class, typeof<obj>)
 
+        // Emitted `virtual`, which is how tlbimp actually writes them -- gaps appear in COM
+        // *interfaces*, whose members are all virtual. That matters: a gap filter applied only to
+        // the region past the vtable would leave this row occupying a real vtable slot, inflating
+        // `GetNumVirtuals` and moving the origin of everything after it. A non-virtual gap row would
+        // not catch that, so this one is virtual on purpose.
         let gapMethod =
             vtblGap.DefineMethod (
                 "_VtblGap1_3",
                 MethodAttributes.Public
                 ||| MethodAttributes.SpecialName
-                ||| MethodAttributes.RTSpecialName,
+                ||| MethodAttributes.RTSpecialName
+                ||| MethodAttributes.Virtual
+                ||| MethodAttributes.NewSlot,
                 typeof<Void>,
                 Type.EmptyTypes
             )
 
         (gapMethod.GetILGenerator ()).Emit OpCodes.Ret
+
+        // An ordinary virtual after the gap, so the vtable has something whose slot number moves if
+        // the gap is wrongly placed.
+        let afterGap =
+            vtblGap.DefineMethod (
+                "VirtualAfterTheGap",
+                MethodAttributes.Public
+                ||| MethodAttributes.Virtual
+                ||| MethodAttributes.NewSlot,
+                typeof<Void>,
+                Type.EmptyTypes
+            )
+
+        (afterGap.GetILGenerator ()).Emit OpCodes.Ret
         definePlain vtblGap "AfterTheGap"
         vtblGap.CreateType () |> ignore
+
+        // `_VtblGap` with a suffix that is not the count grammar: CoreCLR recognises the prefix,
+        // fails to parse the rest, and throws rather than treating the row as an ordinary method
+        // (methodtablebuilder.cpp:2865-2907). A prefix-only match would silently drop it.
+        defineMalformed
+            "MalformedGapName"
+            "_VtblGap1_"
+            (runtimeSpecial ||| MethodAttributes.Virtual ||| MethodAttributes.NewSlot)
+            typeof<Void>
 
         use stream = new MemoryStream ()
         assemblyBuilder.Save stream
@@ -427,6 +457,16 @@ module TestFabricatedVtableLayout =
             |> Array.exactlyOne
 
         fun (method : MethodBase) -> impl.Invoke ((null : obj), [| box method |]) :?> int
+
+    /// `MethodTable::GetNumVirtuals` for a fabricated type, obtained the way TestVirtualMethodSlots
+    /// does: every method `GetMethods` reports that carries `Virtual` occupies exactly one slot.
+    let private hostNumVirtualsOf (name : string) : int =
+        match hostAssembly.GetType (name, false) with
+        | null -> failwith $"host CLR could not load fabricated type %s{name}"
+        | t ->
+            t.GetMethods (BindingFlags.Instance ||| BindingFlags.Public ||| BindingFlags.NonPublic)
+            |> Array.filter _.IsVirtual
+            |> Array.length
 
     /// The host's slots past the vtable for a fabricated type, in slot order, named the way the
     /// assertions read best -- by method name, with the parameter count appended so that the two
@@ -556,6 +596,7 @@ module TestFabricatedVtableLayout =
     [<TestCase "MalformedSpecialName">]
     [<TestCase "MalformedCtorReturn">]
     [<TestCase "MalformedStaticVirtual">]
+    [<TestCase "MalformedGapName">]
     let ``a type CoreCLR refuses to load is refused here too`` (typeName : string) : unit =
         // `Assembly.Load` is lazy, so the type load -- and its failure -- happens here.
         let hostFailure =
@@ -595,8 +636,18 @@ module TestFabricatedVtableLayout =
 
         let table = slotTableOf "HasVtableGap"
 
-        // `AfterTheGap` and the compiler-supplied default constructor, and no third entry: the gap
-        // row is absent rather than occupying a slot of its own.
+        // The gap row is virtual, so the load-bearing half of this assertion is the *vtable*: it
+        // must hold Object's four and `VirtualAfterTheGap`, and not a fifth entry for the gap.
+        // Compared against the host rather than only pinned literally, since that is what makes it
+        // a claim about CoreCLR.
+        List.length table.Vtable |> shouldEqual (hostNumVirtualsOf "HasVtableGap")
+
+        table.Vtable
+        |> List.map _.Method.Name
+        |> List.last
+        |> shouldEqual "VirtualAfterTheGap"
+
+        // And past the vtable: the default constructor and the plain method, with no gap entry.
         table.BeyondVtable
         |> List.map _.Method.Name
         |> shouldEqual [ ".ctor" ; "AfterTheGap" ]
