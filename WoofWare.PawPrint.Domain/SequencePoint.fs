@@ -29,6 +29,20 @@ type SourceLocation =
         EndColumn : int
     }
 
+    /// <summary>
+    /// <c>path:line</c>, the rendering diagnostics want: greppable, and pasteable into an editor
+    /// or an IDE's go-to-line. Columns and the end position are deliberately dropped — they are
+    /// available on the record for anyone who needs them, and would only make a line of a
+    /// rendered stack harder to read.
+    /// </summary>
+    /// <remarks>
+    /// For prose. Structured output should carry the fields themselves rather than this, so that a
+    /// consumer gets a line number it can compare against rather than text it has to parse; see the
+    /// per-step trace log in <c>AbstractMachine</c> and the debugger server's frame JSON.
+    /// </remarks>
+    override this.ToString () : string =
+        $"%s{this.DocumentPath}:%i{this.StartLine}"
+
 /// <summary>
 /// One portable-PDB sequence point: the start of a range of IL which the compiler has either
 /// attributed to a source span, or explicitly declared to have none.
