@@ -1832,11 +1832,14 @@ module IlMachineStateExecution =
                     // unwinding one, so unlike the wrap sites in `ExceptionDispatching` there is
                     // no in-flight `CliException` to take a frame list from.
                     //
-                    // The cached TIE does lack a trace where the real runtime gives it one, but
-                    // that is not fixable from here — it is the chained-wrap gap in #865, where a
-                    // TIE synthesised under `Activator.CreateInstance<T>()` is re-wrapped in a
-                    // `TargetInvocationException` before any frame is appended to it. Fixing it
-                    // means giving synthesised wrappers propagation frames.
+                    // The cached TIE therefore keeps the trace it was given when it was first
+                    // raised, wherever in the program that was. Real .NET rebuilds it: measured on
+                    // .NET 10, reaching a failed initialisation from two call sites in one method
+                    // reports each site in turn, on what `loadClass`'s `Failed` branch documents
+                    // as the same cached instance. That branch matches, because it re-raises the
+                    // instance through `throwExceptionObject` and so re-seeds it; this path wraps
+                    // it in place instead and cannot. Distinct from the seeding of freshly
+                    // synthesised wrappers, which `ExceptionDispatching.applyFrameWraps` does.
                     let tieAddr, tieType, state =
                         IlMachineState.synthesizeTargetInvocationException
                             loggerFactory
