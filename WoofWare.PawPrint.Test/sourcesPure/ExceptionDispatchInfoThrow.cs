@@ -6,11 +6,11 @@ using System.Runtime.ExceptionServices;
 // `IsImmutableAgileException` and `PrepareForForeignExceptionRaise`, so this is the file that
 // says the round trip works end to end.
 //
-// Deliberately asserts identity and type, never trace *content*. Real .NET preserves the
-// original frames across the rethrow and annotates the boundary with
-// "--- End of stack trace from previous location ---"; PawPrint restarts the trace at the
-// rethrow, because it does not yet consume the foreign-raise flag. That divergence is recorded
-// in docs/divergences.md. Everything below holds on both runtimes.
+// Deliberately asserts identity and type, never trace *content*, which keeps it readable as a
+// statement about the round trip alone. The sibling
+// `ExceptionDispatchInfoThrowPreservesTrace.cs` is where the trace content is pinned: the
+// original frames survive the rethrow and the boundary is annotated with
+// "--- End of stack trace from previous location ---".
 class ExceptionDispatchInfoThrow
 {
     static void Thrower()

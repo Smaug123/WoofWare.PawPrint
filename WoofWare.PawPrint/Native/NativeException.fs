@@ -221,23 +221,35 @@ module NativeException =
             //    `STEF_LAST_FRAME_FROM_FOREIGN_STACK_TRACE`, which is what renders as
             //    "--- End of stack trace from previous location ---".
             //
-            // PawPrint does not model that flag, so this is a no-op and a rethrow through
-            // `ExceptionDispatchInfo.Throw()` behaves like an ordinary one: `recordThrownStackTrace`
-            // mints a fresh token at the next dispatch and the trace restarts at the rethrow site,
-            // losing the original frames and the boundary annotation. That is a real, now-reachable
-            // divergence rather than a shrug — it is written up in `docs/divergences.md` and
-            // tracked as issue #876, which is where the flag gets modelled and consumed.
-            //
-            // A no-op is nonetheless the right shape for *this* change. The alternative is not
-            // "crash instead of diverging": failing here would block `ExceptionDispatchInfo.Throw`
-            // outright, and with it all Task fault propagation, which is a strictly worse answer
-            // than a documented gap in trace text. Nothing observable depends on the flag until
-            // something consumes it.
+            // PawPrint collapses both reads into one place, because it has no clear-at-throw step
+            // to suppress: `ExceptionDispatching.throwExceptionObject` consumes the flag when it
+            // seeds the new `CliException`, splicing the frames behind the exception's own
+            // `_stackTrace` token in front of the throw-site frame and marking the last of them.
+            // So all this handler does is set it.
             let operation = "System.Exception.PrepareForForeignExceptionRaise"
 
             if not instruction.Arguments.IsEmpty then
                 failwith
                     $"%s{operation}: expected no arguments after matching signature, got %d{instruction.Arguments.Length}"
+
+            let threadState =
+                match state.ThreadState |> Map.tryFind ctx.Thread with
+                | Some threadState -> threadState
+                | None -> failwith $"%s{operation}: thread %O{ctx.Thread} has no ThreadState"
+
+            // Set unconditionally rather than checked-then-set. CoreCLR's `SetRaisingForeignException`
+            // is likewise an idempotent bit-set: a flag left over from an earlier `RestoreDispatchState`
+            // whose throw never happened is simply overwritten, not diagnosed.
+            let state =
+                { state with
+                    ThreadState =
+                        state.ThreadState
+                        |> Map.add
+                            ctx.Thread
+                            { threadState with
+                                IsRaisingForeignException = true
+                            }
+                }
 
             NativeHandlerResult.completed state |> Some
         | _ -> None

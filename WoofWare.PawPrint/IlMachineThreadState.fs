@@ -357,6 +357,9 @@ module IlMachineThreadState =
                 Cpu = EmulatedKernel.cpuForRotation state.NextCpuRotation state.Kernel
                 OsThreadId = EmulatedKernel.osThreadId thread
                 YieldDebt = Set.empty
+                // No IL has run on this thread, so nothing can have asked to raise a foreign
+                // exception on it.
+                IsRaisingForeignException = false
             }
 
         let newState =
@@ -414,6 +417,8 @@ module IlMachineThreadState =
                 // above, which is unique to this thread like any other's.
                 OsThreadId = EmulatedKernel.osThreadId thread
                 YieldDebt = Set.empty
+                // As above: this thread has run no IL yet.
+                IsRaisingForeignException = false
             }
 
         let newState =
@@ -513,6 +518,13 @@ module IlMachineThreadState =
                 // recomputed, so it stays correct if that ever stops holding.)
                 OsThreadId = existing.OsThreadId
                 YieldDebt = Set.empty
+                // Carried forward for the same reason as the fields above: re-parking is a
+                // status transition on one thread, and it does not cancel a pending
+                // foreign-exception raise. In practice this is always `false` here — the flag
+                // is set and consumed within a single guest `throw`, and the transition
+                // happens at a handler frame's bottom `ret` — but copying says why rather
+                // than relying on that being true.
+                IsRaisingForeignException = existing.IsRaisingForeignException
             }
 
         { state with
