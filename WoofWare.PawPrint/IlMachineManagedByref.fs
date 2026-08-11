@@ -659,6 +659,7 @@ module IlMachineManagedByref =
         // cell directly, preserving provenance; for everything else we
         // fall through to the byte-scatter loop, which validates byte
         // addressability per cell as it gathers.
+        // STRIDE-FROM-CELL: no BaseClassTypes here; see ArrayElementStride.
         let firstCellSize = CliType.sizeOf arrObj.Elements.[0]
         let cellAdvance, inCellStart = floorDivRem byteOffset firstCellSize
 
@@ -1635,6 +1636,7 @@ module IlMachineManagedByref =
         // non-byte-addressable provenance, then `p[1] = IntPtr.Zero` byte-
         // scatters into element 1: only the cells the loop actually touches
         // need to be byte-addressable, validated per iteration below.
+        // STRIDE-FROM-CELL: no BaseClassTypes here; see ArrayElementStride.
         let firstCellSize = CliType.sizeOf arrObj.Elements.[0]
 
         let cellAdvance, inCellStart = floorDivRem byteOffset firstCellSize
@@ -2240,6 +2242,7 @@ module IlMachineManagedByref =
                     if arrObj.Shape.Length = 0 then
                         None
                     else
+                        // STRIDE-FROM-CELL: no BaseClassTypes here; see ArrayElementStride.
                         let cellSize = CliType.sizeOf arrObj.Elements.[0]
                         let cellAdvance, inCellStart = floorDivRem byteOffset cellSize
                         let newSize = CliType.sizeOf newValue
@@ -3007,7 +3010,7 @@ module IlMachineManagedByref =
                     failwith
                         $"TODO: byte-view typed store into empty array %O{arr} at index %d{index} offset %d{byteOffset}"
 
-                let cellSize = CliType.sizeOf arrObj.Elements.[0]
+                let cellSize = ArrayElementStride.ofShape baseClassTypes state arrObj.Shape
                 let cellAdvance, inCellStart = floorDivRem byteOffset cellSize
                 let newSize = CliType.sizeOf newValue
 
@@ -3176,7 +3179,7 @@ module IlMachineManagedByref =
                         if arrObj.Shape.Length = 0 then
                             ValueNone
                         else
-                            let cellSize = CliType.sizeOf arrObj.Elements.[0]
+                            let cellSize = ArrayElementStride.ofShape baseClassTypes state arrObj.Shape
                             let cellAdvance, inCellStart = floorDivRem byteOffset cellSize
 
                             if inCellStart = 0 && CliType.sizeOf newValue = cellSize then

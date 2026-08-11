@@ -54,6 +54,7 @@ module NullaryIlOp =
                         // we can derive without the element type is index zero.
                         if index = 0 then Some 0 else None
                     else
+                        // STRIDE-FROM-CELL: no BaseClassTypes here; see ArrayElementStride.
                         CliType.sizeOf arrObj.Elements.[0] |> Some
 
                 match elementSize, projectionByteOffset projs with

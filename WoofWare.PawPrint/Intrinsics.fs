@@ -2696,7 +2696,7 @@ module Intrinsics =
                         if obj.Shape.Length = 0 then
                             0
                         else
-                            CliType.sizeOf obj.Elements.[0]
+                            ArrayElementStride.ofShape baseClassTypes state obj.Shape
 
                     ByteOffsetNormalisationContext.withArrayElementSize arr elementSize
                 | _ -> ByteOffsetNormalisationContext.fixedStrideRootsOnly
@@ -2725,7 +2725,7 @@ module Intrinsics =
                             if arrObj.Shape.Length = 0 then
                                 None
                             else
-                                let elementSize = CliType.sizeOf arrObj.Elements.[0]
+                                let elementSize = ArrayElementStride.ofShape baseClassTypes state arrObj.Shape
 
                                 if elementSize > 0 && offset % elementSize = 0 then
                                     Some (
@@ -2847,7 +2847,7 @@ module Intrinsics =
                         if arrObj.Shape.Length = 0 then
                             tSize
                         else
-                            CliType.sizeOf arrObj.Elements.[0]
+                            ArrayElementStride.ofShape baseClassTypes state arrObj.Shape
 
                     ByteStorageIdentity.Array arr, int64 i * int64 elementSize + projectionByteOffset projs
                 | ManagedPointerSource.Byref (ByrefRoot.StringCharAt (str, charIndex), projs) ->

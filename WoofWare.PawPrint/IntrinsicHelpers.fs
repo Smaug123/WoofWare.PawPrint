@@ -279,7 +279,7 @@ module internal IntrinsicHelpers =
                     if arrObj.Shape.Length = 0 then
                         tSize
                     else
-                        CliType.sizeOf arrObj.Elements.[0]
+                        ArrayElementStride.ofShape baseClassTypes state arrObj.Shape
 
                 // Choose between cell-index and byte-cursor walks:
                 //   - If the byref already carries a `ByteOffset` tail, we
