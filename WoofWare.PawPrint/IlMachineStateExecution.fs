@@ -2059,33 +2059,62 @@ module IlMachineStateExecution =
         // initialiser. A `.cctor` reached from here therefore unwinds through this frame and its
         // `TypeInitializationException` names this method, which is what the CLR reports.
         //
-        // A `.cctor` frame is exempt: it *is* the initialisation, and asking again would see its
-        // own type in progress. `loadClass` answers `NothingToDo` for that, so this is an
+        // Only the calls ECMA-335 II.10.5.3.1 names as triggers arm one: a static method, an
+        // instance constructor, or any instance method of a value type. An instance method call on
+        // a reference-type object that already exists is not a trigger, and the difference is
+        // observable — measured on .NET 10, an instance published by a `.cctor` that then threw
+        // still answers a virtual call, while constructing another of the same type throws
+        // `TypeInitializationException`. Arming every metadata method fails the first;
+        // arming only statics and constructors fails the value-type clause.
+        //
+        // A `.cctor` frame is exempt too: it *is* the initialisation, and asking again would see
+        // its own type in progress. `loadClass` answers `NothingToDo` for that, so this is an
         // optimisation rather than a correctness guard — but it keeps the invariant "a frame with
         // a pending init has not started" true of every frame that has one.
         let newFrame =
-            let initialises =
-                if wasClassConstructor then
-                    false
-                else
-                    match methodToCall with
-                    | MethodInfo.Metadata _ -> true
-                    | MethodInfo.Synthesised (_, kind) -> SynthesisedMethod.initialisesDeclaringType kind
-
-            if not initialises then
+            if wasClassConstructor then
                 newFrame
             else
 
-            match
-                AllConcreteTypes.findExistingConcreteType
-                    state.ConcreteTypes
-                    methodToCall.DeclaringType.Identity
-                    methodToCall.DeclaringType.Generics
-            with
-            | Some handle -> newFrame |> MethodState.withPendingTypeInit handle
-            | None ->
-                failwith
-                    $"calling %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}::%s{methodToCall.Name}: the resolved method's declaring type is not registered in AllConcreteTypes, so its initialiser cannot be scheduled"
+            let handle =
+                match
+                    AllConcreteTypes.findExistingConcreteType
+                        state.ConcreteTypes
+                        methodToCall.DeclaringType.Identity
+                        methodToCall.DeclaringType.Generics
+                with
+                | Some handle -> handle
+                | None ->
+                    failwith
+                        $"calling %s{methodToCall.DeclaringType.Namespace}.%s{methodToCall.DeclaringType.Name}::%s{methodToCall.Name}: the resolved method's declaring type is not registered in AllConcreteTypes, so its initialiser cannot be scheduled"
+
+            let initialises =
+                match methodToCall with
+                | MethodInfo.Synthesised (_, kind) -> SynthesisedMethod.initialisesDeclaringType kind
+                | MethodInfo.Metadata _ ->
+
+                if methodToCall.IsStatic then
+                    true
+                elif methodToCall.Name = ".ctor" then
+                    // Identified by name, as elsewhere in the codebase. `wasConstructing` would be
+                    // the wrong question: a derived constructor chaining to `base..ctor()` is not
+                    // constructing a fresh object and yet does trigger the base type's
+                    // initialiser — measured on .NET 10, `new Derived()` runs `Derived..cctor` and
+                    // then `Base..cctor`, the latter from that chained call's own prologue.
+                    true
+                else
+                    // An instance method of a *value type* is a trigger in its own right, and the
+                    // only instance-method shape where that is observable: a class instance
+                    // implies its constructor chain ran, and construction is itself a trigger,
+                    // whereas `default(S)` runs nothing.
+                    // `DelegateToValueTypeInstanceMethodRunsCctor.cs` is the case.
+                    AllConcreteTypes.tryIsValueType baseClassTypes state._LoadedAssemblies state.ConcreteTypes handle
+                    |> Option.defaultValue false
+
+            if initialises then
+                newFrame |> MethodState.withPendingTypeInit handle
+            else
+                newFrame
 
         let oldFrame =
             if wasClassConstructor || not advanceProgramCounterOfCaller then
