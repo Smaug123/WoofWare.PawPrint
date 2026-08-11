@@ -58,6 +58,9 @@ module IlMachineState =
     let peByteRangeForMethodSignatureBlob =
         IlMachineTypeResolution.peByteRangeForMethodSignatureBlob
 
+    let peByteRangeForPropertySignatureBlob =
+        IlMachineTypeResolution.peByteRangeForPropertySignatureBlob
+
     let peByteRangeForConstantBlob = IlMachineTypeResolution.peByteRangeForConstantBlob
 
     let peByteRangePointer = IlMachineTypeResolution.peByteRangePointer

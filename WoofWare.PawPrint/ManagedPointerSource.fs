@@ -22,6 +22,11 @@ type PeByteRangePointerSource =
     /// The COR signature blob for a method definition (ECMA II.23.2.1). Same
     /// storage story as `FieldSignatureBlob`.
     | MethodSignatureBlob of method : ComparableMethodDefinitionHandle
+    /// The COR signature blob for a property definition (ECMA II.23.2.5): the
+    /// PROPERTY calling convention, the index-parameter count, the property's
+    /// type, then one type per index parameter. Same storage story as
+    /// `FieldSignatureBlob`.
+    | PropertySignatureBlob of property : ComparablePropertyDefinitionHandle
     /// The Constant table's value blob for a field definition (ECMA II.22.9): the
     /// field's compile-time constant, in the encoding its `ConstantTypeCode`
     /// names. For a string constant those bytes are UTF-16LE characters, which is
@@ -45,6 +50,7 @@ type PeByteRangePointer =
             | PeByteRangePointerSource.ManagedResource resourceName -> $"managed resource %s{resourceName}"
             | PeByteRangePointerSource.FieldSignatureBlob field -> $"field signature blob for %O{field.Get}"
             | PeByteRangePointerSource.MethodSignatureBlob method -> $"method signature blob for %O{method.Get}"
+            | PeByteRangePointerSource.PropertySignatureBlob property -> $"property signature blob for %O{property.Get}"
             | PeByteRangePointerSource.ConstantBlob field -> $"constant blob for %O{field.Get}"
 
         $"<PE data %s{this.AssemblyFullName} %s{source} at %d{this.RelativeVirtualAddress} size %d{this.Size}>"
@@ -707,6 +713,7 @@ module ManagedPointerSource =
             | PeByteRangePointerSource.ManagedResource _ -> Some 3
             | PeByteRangePointerSource.FieldSignatureBlob _
             | PeByteRangePointerSource.MethodSignatureBlob _
+            | PeByteRangePointerSource.PropertySignatureBlob _
             | PeByteRangePointerSource.ConstantBlob _ -> None
         // Object fields, static fields, stack slots and the synthetic roots have no
         // stable in-container offset either (see `tryStableAddressBits` and

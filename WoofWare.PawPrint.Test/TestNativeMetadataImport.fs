@@ -170,6 +170,24 @@ public class PropertyShapes : PropertyBase
     public static int Stat { get; set; }
     public int this[int i] { get { return i; } }
     public int Größe { get; set; }
+
+    // Every property C# normally emits has `Property.Flags = 0`, so without this one a flags
+    // assertion over this type would be vacuous and a handler that always answered 0 would pass.
+    // `[SpecialName]` on a property does set the row's `SpecialName` bit (0x0200) — checked against
+    // both the raw Property row and the host CLR's `PropertyInfo.Attributes`. It goes last so that
+    // it takes the highest token and the declaration-order expectations above only grow at the tail.
+    [System.Runtime.CompilerServices.SpecialName]
+    public int Special { get; set; }
+}
+
+// A PROPERTY signature whose Type is ELEMENT_TYPE_VAR (`28 00 13 00`), which is the shape a handler
+// that reconstructed the blob from PawPrint's parsed type model — rather than handing back the
+// metadata bytes — would get wrong. Its own type rather than a property on `GenericMetadataFields`,
+// because a property brings a `k__BackingField` with it and would churn that type's FieldDef
+// enumeration expectations for no benefit.
+public class GenericPropertyHolder<T>
+{
+    public T GenericProperty { get; set; }
 }
 
 public class TypesWithMembers
@@ -205,6 +223,7 @@ public class TypesWithMembers
             ConstantShapesType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             FieldNamesType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             PropertyShapesType : TypeInfo<GenericParamFromMetadata, TypeDefn>
+            GenericPropertyType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             MembersType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             InstanceField : FieldInfo<GenericParamFromMetadata, TypeDefn>
             StaticField : FieldInfo<GenericParamFromMetadata, TypeDefn>
@@ -298,6 +317,8 @@ public class TypesWithMembers
 
         let propertyShapesType = requiredTopLevelType assembly "" "PropertyShapes"
 
+        let genericPropertyType = requiredTopLevelType assembly "" "GenericPropertyHolder`1"
+
         let membersType = requiredTopLevelType assembly "" "TypesWithMembers"
 
         let constArrayType = requiredTopLevelType corelib "System.Reflection" "ConstArray"
@@ -353,6 +374,7 @@ public class TypesWithMembers
             ConstantShapesType = constantShapesType
             FieldNamesType = fieldNamesType
             PropertyShapesType = propertyShapesType
+            GenericPropertyType = genericPropertyType
             MembersType = membersType
             InstanceField = fieldByName "InstanceField"
             StaticField = fieldByName "StaticField"
@@ -697,9 +719,7 @@ public class TypesWithMembers
     /// base chain and can drop inherited privates and vtable-slot duplicates, and none of that
     /// filtering is the QCall's job. Restricted to one type's own rows, the managed result is the
     /// PropertyMap run itself.
-    let private hostPropertyTokens (image : byte array) (typeName : string) : int32 list =
-        let hostType = (System.Reflection.Assembly.Load image).GetType (typeName, true)
-
+    let private hostDeclaredProperties (hostType : System.Type) : System.Reflection.PropertyInfo array =
         hostType.GetProperties (
             System.Reflection.BindingFlags.DeclaredOnly
             ||| System.Reflection.BindingFlags.Public
@@ -707,8 +727,32 @@ public class TypesWithMembers
             ||| System.Reflection.BindingFlags.Instance
             ||| System.Reflection.BindingFlags.Static
         )
+
+    let private hostPropertyTokens (image : byte array) (typeName : string) : int32 list =
+        (System.Reflection.Assembly.Load image).GetType (typeName, true)
+        |> hostDeclaredProperties
         |> Array.map (fun property -> property.MetadataToken)
         |> List.ofArray
+
+    /// Every property row in the image, as the host CLR sees it. Used where the assertion should
+    /// range over the whole image rather than over the handful of shapes anyone thought to write
+    /// down, so a property added to the fixture is covered without anyone remembering to extend a
+    /// list.
+    let private hostPropertiesOfImage (image : byte array) : System.Reflection.PropertyInfo array =
+        (System.Reflection.Assembly.Load image).GetTypes ()
+        |> Array.collect hostDeclaredProperties
+
+    /// The host CLR's `PropertyInfo` for one named property. Used as the source of the *token* to
+    /// poke PawPrint with, so that a handler bug cannot pick its own input.
+    let private hostPropertyNamed
+        (image : byte array)
+        (typeName : string)
+        (propertyName : string)
+        : System.Reflection.PropertyInfo
+        =
+        (System.Reflection.Assembly.Load image).GetType (typeName, true)
+        |> hostDeclaredProperties
+        |> Array.find (fun property -> property.Name = propertyName)
 
     let private invokeGetFieldDefProps
         (fixture : MetadataImportFixture)
@@ -1027,10 +1071,10 @@ public class TypesWithMembers
         let length, tokens, storage, _ =
             invokeEnumProperties fixture fixture.PropertyShapesType fixture.State
 
-        // Six declared properties; nothing is filtered by visibility, staticness, or being an
-        // indexer, and order is guest-observable because `PopulateProperties` appends in the order
-        // it receives.
-        length |> shouldEqual 6
+        // Seven declared properties; nothing is filtered by visibility, staticness, being an
+        // indexer, or carrying `SpecialName`, and order is guest-observable because
+        // `PopulateProperties` appends in the order it receives.
+        length |> shouldEqual 7
         storage |> shouldEqual EnumResultStorage.ShortResult
         tokens |> shouldEqual (hostPropertyTokens fixture.Image "PropertyShapes")
 
@@ -2270,7 +2314,7 @@ public class TypesWithMembers
         hostProperties
         |> Array.map (fun property -> property.Name)
         |> List.ofArray
-        |> shouldEqual [ "Alpha" ; "Beta" ; "Hidden" ; "Stat" ; "Item" ; "Größe" ]
+        |> shouldEqual [ "Alpha" ; "Beta" ; "Hidden" ; "Stat" ; "Item" ; "Größe" ; "Special" ]
 
         let mutable state = fixture.State
 
@@ -2320,3 +2364,260 @@ public class TypesWithMembers
             Assert.Throws (fun () -> invokeGetName fixture 0x17FFFFFF fixture.State |> ignore)
 
         ex.Message |> shouldContainText "was not present in"
+
+    /// `GetPropertyProps` is the one `MetadataImport` call with three out parameters, so the helper
+    /// hands back all three: the null-terminated name bytes, the raw `Property.Flags` column, and
+    /// the `ConstArray` triple (length, bytes, and the `m_constArray` pointer itself).
+    let private invokeGetPropertyProps
+        (fixture : MetadataImportFixture)
+        (propertyToken : int32)
+        (state : IlMachineState)
+        : EvalStackValue * byte array * int32 * (int32 * byte array * ManagedPointerSource) * IlMachineState
+        =
+        let state, metadataImportType, getPropertyPropsMethod =
+            metadataImportMethod fixture state "GetPropertyProps" 5
+
+        let nameOut, state =
+            allocateSlotOut
+                fixture
+                fixture.BaseClassTypes.IntPtr
+                (CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null))
+                state
+
+        let attributesOut, state = allocateInt32Out fixture 0 state
+        let signatureOut, state = allocateConstArrayOut fixture state
+
+        let state =
+            invokeMetadataImportNative
+                fixture
+                metadataImportType
+                getPropertyPropsMethod
+                [
+                    metadataImportHandle fixture
+                    CliType.Numeric (CliNumericType.Int32 propertyToken)
+                    CliType.RuntimePointer (CliRuntimePointer.Managed nameOut)
+                    CliType.RuntimePointer (CliRuntimePointer.Managed attributesOut)
+                    CliType.RuntimePointer (CliRuntimePointer.Managed signatureOut)
+                ]
+                state
+
+        let returnValue, state = IlMachineState.popEvalStack (ThreadId 0) state
+
+        let namePtr =
+            match
+                IlMachineState.readManagedByref fixture.BaseClassTypes state nameOut
+                |> CliType.unwrapPrimitiveLikeDeep
+            with
+            | CliType.RuntimePointer (CliRuntimePointer.Managed ptr) -> ptr
+            | other -> failwith $"expected a managed pointer written to the name out param, got %O{other}"
+
+        returnValue,
+        readNameBufferIncludingTerminator state namePtr,
+        readInt32Out fixture.BaseClassTypes state attributesOut,
+        readConstArrayOut fixture state signatureOut,
+        state
+
+    /// The number of rows in the image's Property table, so a test can name the first row that is
+    /// genuinely absent. This computes an *input*, not an expectation, so reading it from the same
+    /// metadata library the handler uses is not circular.
+    let private propertyTableRowCount (fixture : MetadataImportFixture) : int =
+        System.Reflection.Metadata.Ecma335.MetadataReaderExtensions.GetTableRowCount (
+            fixture.Assembly.PeReader.GetMetadataReader (),
+            System.Reflection.Metadata.Ecma335.TableIndex.Property
+        )
+
+    [<Test>]
+    let ``MetadataImport GetPropertyProps returns the name, flags and signature of each property shape`` () : unit =
+        let fixture = makeFixture ()
+
+        // ECMA-335 II.23.2.5: a PropertySig is `PROPERTY (0x08) [| HASTHIS (0x20)]`, then a
+        // compressed ParamCount, then the Type, then one Type per index parameter. These
+        // expectations come from the standard rather than being read back out of the image, so they
+        // pin the blob's width as well as its content: ELEMENT_TYPE_I4 = 0x08, _STRING = 0x0e,
+        // _VAR = 0x13 followed by the compressed generic-parameter index.
+        let cases =
+            [
+                // Instance, no index parameters: HASTHIS set, ParamCount 0.
+                "PropertyShapes", "Alpha", 0x0000, [| 0x28uy ; 0x00uy ; 0x08uy |]
+                "PropertyShapes", "Beta", 0x0000, [| 0x28uy ; 0x00uy ; 0x0Euy |]
+                "PropertyShapes", "Hidden", 0x0000, [| 0x28uy ; 0x00uy ; 0x08uy |]
+                // Static: HASTHIS *clear*. This is the byte a handler that hardcoded 0x28 gets wrong.
+                "PropertyShapes", "Stat", 0x0000, [| 0x08uy ; 0x00uy ; 0x08uy |]
+                // The indexer: ParamCount 1, so the blob carries the index type after the property
+                // type. Its metadata name is `Item`, not its C# spelling.
+                "PropertyShapes", "Item", 0x0000, [| 0x28uy ; 0x01uy ; 0x08uy ; 0x08uy |]
+                "PropertyShapes", "Größe", 0x0000, [| 0x28uy ; 0x00uy ; 0x08uy |]
+                // The only property in the image whose Property.Flags column is not zero.
+                "PropertyShapes", "Special", 0x0200, [| 0x28uy ; 0x00uy ; 0x08uy |]
+                // ELEMENT_TYPE_VAR, generic parameter 0.
+                "GenericPropertyHolder`1", "GenericProperty", 0x0000, [| 0x28uy ; 0x00uy ; 0x13uy ; 0x00uy |]
+            ]
+
+        let mutable state = fixture.State
+
+        for typeName, propertyName, expectedFlags, expectedSignature in cases do
+            let hostProperty = hostPropertyNamed fixture.Image typeName propertyName
+
+            let returnValue, nameBytes, flags, (length, signatureBytes, _), nextState =
+                invokeGetPropertyProps fixture hostProperty.MetadataToken state
+
+            state <- nextState
+
+            returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+
+            nameBytes
+            |> shouldEqual (Array.append (System.Text.Encoding.UTF8.GetBytes propertyName) [| 0uy |])
+
+            flags |> shouldEqual expectedFlags
+            signatureBytes |> shouldEqual expectedSignature
+            length |> shouldEqual expectedSignature.Length
+
+    [<Test>]
+    let ``MetadataImport GetPropertyProps agrees with the host runtime for every property`` () : unit =
+        let fixture = makeFixture ()
+
+        // Outside oracle: the same image handed to the host CLR, whose answers come from CoreCLR's
+        // own C++ metadata engine rather than from PawPrint's parse. This is what covers `Special`
+        // without writing 0x0200 down a second time, and it ranges over every property row in the
+        // image rather than the shapes listed above.
+        //
+        // The raw signature blob has no such oracle: `Module.ResolveSignature` refuses a property
+        // token outright (`ArgumentException: Token 0x17...... is not valid in the scope of module`),
+        // because the managed screen in `RuntimeModule.ResolveSignature` admits only
+        // MemberRef/MethodDef/TypeSpec/StandAloneSig/FieldDef. See the next test for the parts of
+        // the signature the host *can* answer.
+        let hostProperties = hostPropertiesOfImage fixture.Image
+
+        hostProperties.Length |> shouldEqual (propertyTableRowCount fixture)
+
+        let mutable state = fixture.State
+
+        for hostProperty in hostProperties do
+            let returnValue, nameBytes, flags, _, nextState =
+                invokeGetPropertyProps fixture hostProperty.MetadataToken state
+
+            state <- nextState
+
+            returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+
+            nameBytes
+            |> shouldEqual (Array.append (System.Text.Encoding.UTF8.GetBytes hostProperty.Name) [| 0uy |])
+
+            flags |> shouldEqual (int32 hostProperty.Attributes)
+
+    [<Test>]
+    let ``MetadataImport GetPropertyProps signature agrees with the host runtime where it can`` () : unit =
+        let fixture = makeFixture ()
+
+        // The host cannot hand back the blob, but it can independently answer the two fields the
+        // blob leads with, from the MethodSemantics rows rather than from the Property row's Type
+        // blob. That covers every property in the image, including any added later that nobody
+        // wrote a byte-for-byte expectation for.
+        let hostProperties = hostPropertiesOfImage fixture.Image
+
+        let mutable state = fixture.State
+
+        for hostProperty in hostProperties do
+            let _, _, _, (length, signatureBytes, _), nextState =
+                invokeGetPropertyProps fixture hostProperty.MetadataToken state
+
+            state <- nextState
+
+            // `PropertyInfo` has no `IsStatic` of its own; staticness is the accessors'. A property
+            // always has at least one accessor.
+            let accessor =
+                match hostProperty.GetMethod, hostProperty.SetMethod with
+                | null, null -> failwith $"property %s{hostProperty.Name} has no accessor"
+                | null, setter -> setter
+                | getter, _ -> getter
+
+            length |> shouldEqual signatureBytes.Length
+            // ECMA-335 II.23.2.5: the low nibble is the PROPERTY calling convention (0x08) and
+            // 0x20 is HASTHIS.
+            signatureBytes.[0] &&& 0x0Fuy |> shouldEqual 0x08uy
+            signatureBytes.[0] &&& 0x20uy <> 0uy |> shouldEqual (not accessor.IsStatic)
+
+            // ParamCount is a *compressed* unsigned integer, so it occupies one byte only below
+            // 0x80. Nothing in this fixture comes close, and an indexer with 128 parameters is not
+            // a shape C# can express.
+            hostProperty.GetIndexParameters().Length < 0x80 |> shouldEqual true
+
+            signatureBytes.[1]
+            |> shouldEqual (byte (hostProperty.GetIndexParameters().Length))
+
+    [<Test>]
+    let ``MetadataImport GetPropertyProps points at the property's own signature blob`` () : unit =
+        let fixture = makeFixture ()
+        let hostProperty = hostPropertyNamed fixture.Image "PropertyShapes" "Alpha"
+
+        let _, _, _, (length, _, pointer), state =
+            invokeGetPropertyProps fixture hostProperty.MetadataToken fixture.State
+
+        // The pointer's shape is part of the contract, not merely a route to the bytes, and this is
+        // the assertion that separates the two ways of building a `ConstArray`. CoreCLR hands back a
+        // PCCOR_SIGNATURE straight into the mapped metadata; PawPrint models that with a PeByteRange
+        // root naming *this* PropertyDef. Copying the blob into a managed `byte[]` instead — as the
+        // `GetMemberRefProps` sibling does — would satisfy every content assertion above and still
+        // be wrong: `NativeSignature.corSigPeByteRange` accepts only null or a PeByteRange, so the
+        // blob would be unresolvable by the one thing that ever consumes it
+        // (`RuntimePropertyInfo.Signature`, via the handle-less `Signature` constructor).
+        //
+        // The `ReinterpretAs byte` projection is equally load-bearing: `BinaryArithmetic` refuses
+        // arithmetic on a bare PeByteRange root, so without it a guest's `ConstArray[i]` — which is
+        // `((byte*)m_constArray)[index]` — would fail while every content assertion still passed.
+        let byteType =
+            AllConcreteTypes.lookup fixture.ByteHandle state.ConcreteTypes
+            |> Option.defaultWith (fun () -> failwith "System.Byte was not concretized")
+
+        let propertyHandle =
+            System.Reflection.Metadata.Ecma335.MetadataTokens.PropertyDefinitionHandle hostProperty.MetadataToken
+
+        let expected =
+            ManagedPointerSource.Byref (
+                ByrefRoot.PeByteRange
+                    {
+                        AssemblyFullName = fixture.Assembly.Name.FullName
+                        Source =
+                            PeByteRangePointerSource.PropertySignatureBlob (
+                                ComparablePropertyDefinitionHandle.Make propertyHandle
+                            )
+                        RelativeVirtualAddress = 0
+                        // `int Alpha { get; set; }` is `28 00 08`. Spelled out rather than taken
+                        // from `length`, so that a handler which derived both the struct's length
+                        // and the range's size from the same wrong place would still fail here.
+                        Size = 3
+                    },
+                [ ByrefProjection.ReinterpretAs byteType ]
+            )
+
+        length |> shouldEqual 3
+        pointer |> shouldEqual expected
+
+    [<Test>]
+    let ``MetadataImport GetPropertyProps rejects a non-PropertyDef token`` () : unit =
+        let fixture = makeFixture ()
+
+        let ex =
+            Assert.Throws (fun () ->
+                invokeGetPropertyProps fixture (typeDefToken fixture.PropertyShapesType.TypeDefHandle) fixture.State
+                |> ignore
+            )
+
+        ex.Message |> shouldContainText "expected PropertyDef token"
+
+    [<Test>]
+    let ``MetadataImport GetPropertyProps rejects a PropertyDef absent from the assembly`` () : unit =
+        let fixture = makeFixture ()
+
+        // Two absent rows, because they catch different mistakes. Row 0xFFFFFF is far outside the
+        // table and dies under almost any guard at all; the first row *past the end* is the one an
+        // off-by-one guard (`> rowCount + 1`) would wave through, and it would then surface as
+        // `BadImageFormatException: Read out of bounds` from inside the metadata reader — a PawPrint
+        // gap wearing a corrupt image's clothes, which is exactly what the guard exists to prevent.
+        let firstAbsentRow = propertyTableRowCount fixture + 1
+
+        for token in [ 0x17FFFFFF ; 0x17000000 ||| firstAbsentRow ] do
+            let ex =
+                Assert.Throws (fun () -> invokeGetPropertyProps fixture token fixture.State |> ignore)
+
+            ex.Message |> shouldContainText "was not present in"
