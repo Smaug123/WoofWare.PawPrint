@@ -1139,6 +1139,44 @@ module NullaryIlOp =
         | LdindR4 -> CliType.Numeric (CliNumericType.Float32 0.0f)
         | LdindR8 -> CliType.Numeric (CliNumericType.Float64 0.0)
 
+    /// Does a plain-byref `ldind` of `target` over a storage cell of `cell` have to
+    /// reinterpret the cell's bytes, rather than read the cell and coerce it?
+    ///
+    /// Reading the typed cell is right when the cell already holds a value of the requested
+    /// kind, and it is the *only* possibility for a cell whose provenance has no byte image —
+    /// a `TypeHandlePtr`, a `WidenedNativeInt`, synthesised hash bits — because
+    /// `CliType.ToBytes` deliberately refuses those. It is not right when the requested type
+    /// is strictly *narrower* than the cell: `*(byte*)&aLong` asks for the byte at that
+    /// address, and the cell is eight bytes of something else, so the answer is a
+    /// reinterpretation rather than a numeric conversion. Exactly that case routes through
+    /// `readManagedByrefBytesAs`, which is what every other byref root already does for it
+    /// (`readArrayBytesAs`, `readStackMemoryBytesAs`, `tryReadHeapValueFieldPrecise`).
+    ///
+    /// The test is on *width* alone, with no same-kind clause: `CliNumericType.SizeOf` is a
+    /// function of the kind constructor, so a same-kind pair can never be strictly narrower
+    /// and a `not (SameKind ...)` conjunct would be unfalsifiable. Same-width kind changes
+    /// (`ldind.i4` over a `Float32` cell, `ldind.i` over an `Int64` one) therefore keep the
+    /// incumbent answer, which is what preserves provenance through `ldind.i8` over a
+    /// native-int cell.
+    ///
+    /// Primitive-like single-field wrappers (`IntPtr`, `RuntimeTypeHandle`, enums) are
+    /// unwrapped first, because this predicate's contract is "classify what
+    /// `EvalStackValue.ofCliType` will hand to `toCliTypeCoerced`", and that function
+    /// flattens them through `CliValueType.PrimitiveLikeField` before the coercion sees
+    /// them. Classifying the wrapper itself would answer a different question. The recursion
+    /// is unguarded for the same reason `ofCliType`'s is: a value type cannot contain itself
+    /// in well-formed metadata, and both downstream routes walk the identical structure.
+    let rec private ldindNeedsByteView (target : CliNumericType) (cell : CliType) : bool =
+        match cell with
+        | CliType.ValueType vt when vt.PrimitiveLikeKind.IsSome ->
+            ldindNeedsByteView target (CliValueType.PrimitiveLikeField vt).Contents
+        | CliType.Numeric c -> CliNumericType.SizeOf target < CliNumericType.SizeOf c
+        | CliType.ValueType _
+        | CliType.Bool _
+        | CliType.Char _
+        | CliType.ObjectRef _
+        | CliType.RuntimePointer _ -> false
+
     // Unified Ldind implementation
     let private executeLdind
         (loggerFactory : ILoggerFactory)
@@ -1234,7 +1272,30 @@ module NullaryIlOp =
                 || isTrailingByteViewPointer src
                 ->
                 IlMachineState.readManagedByrefBytesAs corelib state src targetCliType
-            | EvalStackValue.ManagedPointer src -> IlMachineState.readManagedByref corelib state src
+            // Must stay *after* the guarded arm above, for two reasons. A byte-only root has no
+            // typed cell for `readManagedByref` to return, so reading one to ask the routing
+            // question would throw before the question could be answered. And
+            // `isTrailingByteViewPointer` already claims every chain ending in a `ReinterpretAs`,
+            // so what reaches here is a *plain* byref — `[]` or a chain ending in a `Field` — for
+            // which `readManagedByref` falls to its `readProjectedValue` branch and hands back
+            // the projected cell verbatim, rather than reinterpreting anything itself.
+            | EvalStackValue.ManagedPointer src ->
+                let target =
+                    match targetCliType with
+                    | CliType.Numeric target -> target
+                    | other ->
+                        failwith
+                            $"Ldind target type is always numeric (`getTargetLdindCliType`, and `ldind.ref` has its own handler), but %O{targetType} produced %O{other}"
+
+                // The cell has to be read before the routing question can be asked, and is
+                // discarded when the answer is "bytes". Reads are pure, so this costs a walk
+                // and nothing else; it is not an oversight to be optimised into a partial read.
+                let cell = IlMachineState.readManagedByref corelib state src
+
+                if ldindNeedsByteView target cell then
+                    IlMachineState.readManagedByrefBytesAs corelib state src targetCliType
+                else
+                    cell
             | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer src) ->
                 IlMachineState.readManagedByrefBytesAs corelib state src targetCliType
             | EvalStackValue.NativeInt nativeIntSource ->
