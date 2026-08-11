@@ -262,6 +262,45 @@ module ThreadStatus =
         | ThreadStatus.BlockedOnWaitHandles _ -> false
         | ThreadStatus.BlockedOnSleep _ -> false
 
+    /// True iff a thread in this status parked with its program counter already advanced
+    /// *past* the call that blocked it, so the active frame's `IlOpIndex` names the
+    /// instruction after the blocking call rather than the call itself.
+    ///
+    /// Every blocking QCall handler advances the caller's PC before parking, so that the
+    /// wake resumes after the call — `Scheduler.blockOnSleep` states that contract and
+    /// notes it is shared by "every other QCall handler that blocks" — and
+    /// `dispatchNative` then pops the native frame on `Completed`. So for these statuses
+    /// the blocking call site is one instruction back, and reporting the raw PC names the
+    /// *next* statement.
+    ///
+    /// `BlockedOnClassInit` is the exception, and for the opposite reason: the dispatcher
+    /// deliberately leaves the native frame on the stack so the handler can be re-entered
+    /// when the `.cctor` lock is released (see `NativeHandlerResult.BlockedOnClassInit`).
+    /// Nothing has been popped and no PC has advanced.
+    ///
+    /// Only diagnostics consume this; nothing about execution may depend on it. Callers
+    /// must still confirm that the preceding instruction really is a call before stepping
+    /// back onto it, because this classifier is a statement about how a status is *reached*
+    /// and cannot see the frame it is asked about.
+    ///
+    /// Fully enumerated, like `hasNoActiveFrame` above, so a new `ThreadStatus` forces an
+    /// answer here rather than silently inheriting one.
+    let parksPastTheBlockingCall (status : ThreadStatus) : bool =
+        match status with
+        | ThreadStatus.NotStarted -> false
+        | ThreadStatus.Parked -> false
+        | ThreadStatus.Runnable -> false
+        | ThreadStatus.Terminated -> false
+        | ThreadStatus.BlockedOnClassInit _ -> false
+        | ThreadStatus.BlockedOnJoin _ -> true
+        | ThreadStatus.BlockedOnMonitorAcquire _ -> true
+        | ThreadStatus.BlockedOnMonitorWait _ -> true
+        | ThreadStatus.BlockedOnSyncBlockAcquire _ -> true
+        | ThreadStatus.BlockedOnSyncBlockWait _ -> true
+        | ThreadStatus.BlockedOnWaitHandle _ -> true
+        | ThreadStatus.BlockedOnWaitHandles _ -> true
+        | ThreadStatus.BlockedOnSleep _ -> true
+
 type ThreadState =
     {
         // TODO: thread-local storage, synchronisation state, exception handling context

@@ -24,6 +24,7 @@
     <Compile Include="TestRealRuntimeOracle.fs" />
     <Compile Include="TestHarness.fs"/>
     <Compile Include="TestBoundedRun.fs" />
+    <Compile Include="TestGuestLocation.fs" />
     <Compile Include="CrossAssemblyHarness.fs" />
     <Compile Include="TestCrossAssemblyOracle.fs" />
     <Compile Include="TypeIdentityTestHelpers.fs" />
